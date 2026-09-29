@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import {
   FrameKind, buildPushdataCommitment, bytesToHex, encodeIntegerValue, type RecordEntry,
 } from '@solidcash/utils';
@@ -8,7 +9,7 @@ import {
   selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
-  layoutTransaction, participant, type CompositionDraftPlan, type DraftMaster,
+  participant, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
 /**
@@ -58,7 +59,7 @@ function plan(entry: Entry, views: Views): CompositionDraftPlan {
     { contract: 'Ledger', masters: ['ledger-1'], validator: { id: 'validator', settles: [] }, state: ['record'] },
     ...(calls > 0 ? [{ contract: 'Ping', masters: ['ping-1'], state: [] }] : []),
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const record = participant(layout, 'record').index;
   const pingPushes = [selectorOf(artifacts, 'Ping', 'ping')];
   const ledgerMaster = master({
@@ -111,7 +112,7 @@ function plan(entry: Entry, views: Views): CompositionDraftPlan {
     },
     validator: {
       id: 'validator', covers: calls > 0 ? ['Ping'] : [],
-      settles: [{ category: ledger.category, stateInputs: ['record'] }],
+      settles: [],
       redeemScript: validator.redeem,
     },
   };

@@ -66,7 +66,8 @@ describe('a call inside a data-dependent loop', () => {
         { contract: 'Looper', masters: ['looper-1'], state: [] },
         { contract: 'Cal', masters: ['cal-1'], state: [] },
       ],
-      userInputs: [{ id: 'user', index: 4 }],
+      // The facet the validator binds is one participant ahead of the user.
+      userInputs: [{ id: 'user', index: 5 }],
       masters: [
         master('caller-1', 'Caller', 'start', FrameKind.ROOT, USER_LOCK, 'user',
           [{ kind: FrameKind.CALL, callee: 'looper-1', target: looper.address, value: 0n, argumentPushes: [goSelector, one] }], []),
@@ -134,7 +135,8 @@ describe('a call whose execution depends on a run-time value', () => {
         { contract: 'Chooser', masters: ['chooser-1'], state: [] },
         { contract: 'Cal', masters: ['cal-1'], state: [] },
       ],
-      userInputs: userInputs(['user'], 4),
+      // The facet the validator binds is one participant ahead of the user.
+      userInputs: userInputs(['user'], 5),
       masters: [
         master({
           master: 'caller-1', contract: 'Caller', entry: 'start', program: caller.program,
@@ -269,7 +271,8 @@ describe('a static read whose callee reverts', () => {
         { contract: 'Reader', masters: ['reader-1'], validator: { id: 'validator', settles: [] }, state: [] },
         { contract: 'Cal', masters: ['cal-1'], state: [] },
       ],
-      userInputs: [{ id: 'user', index: 3 }],
+      // The facet the validator binds is one participant ahead of the user.
+      userInputs: [{ id: 'user', index: 4 }],
       masters: [
         build('reader-1', 'Reader', 'start', FrameKind.ROOT, USER_LOCK, 'user',
           [{ kind: FrameKind.STATIC, callee: 'cal-1', target: cal.address, value: 0n, argumentPushes: [selector] }], []),

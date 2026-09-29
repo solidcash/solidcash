@@ -19,12 +19,13 @@
  * classifies a category's UTXOs to find the records again.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
 import { perCallValidator } from 'solidc';
 import type { Artifact } from '@solidcash/utils';
 import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
+import { FACET_SATOSHIS } from '../composer/index.js';
 import { derivePerCallGenesis } from './genesis.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 
@@ -125,6 +126,14 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
     amount: dataNftAmount,
     token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
   });
+  // The facet pool: one tokenless UTXO per facet the validator program binds, at the facet's own lock. A facet
+  // holds no token and pins no category, so a composition spends any UTXO of its code.
+  for (const code of perCallValidator.buildValidatorFacets()) {
+    builder.addOutput({
+      to: encodeLockingBytecodeP2sh32(hash256(code)),
+      amount: FACET_SATOSHIS,
+    });
+  }
   // The events the constructor's own frame emitted, at the covenant locks the body rebuilt. They lead the
   // trailing region, ahead of the records the genesis creates, which is the order a composition's outputs use; an
   // event output carries the contract's category with no capability.

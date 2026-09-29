@@ -7,7 +7,8 @@ import {
   USER_LOCK, compileAndDeploy, composeAndDerive, entryName, hexOf, master, masterInput, rootOf, seededAddress,
   selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
-import { layoutTransaction, type CompositionDraftPlan, type DraftMaster } from '../../../src/per-call/composer/index.js';
+import { type CompositionDraftPlan, type DraftMaster } from '../../../src/per-call/composer/index.js';
+import { layoutWithFacets } from '../shapes/harness.js';
 
 /**
  * Fixed-size array arguments and results across a read-only call.
@@ -69,7 +70,7 @@ function drive(spec: ArrayCase): readonly bigint[] {
   ];
   const plan: CompositionDraftPlan = {
     blocks,
-    userInputs: userInputs([USER], layoutTransaction(blocks).participantCount),
+    userInputs: userInputs([USER], layoutWithFacets(blocks).participantCount),
     masters: [
       master({
         master: 'caller-1', contract: 'Caller', entry: 'start', program: caller.program,

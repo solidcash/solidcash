@@ -12,12 +12,12 @@ import { compositionMachine } from '../../../../solidc/test/per-call/machine.js'
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  layoutTransaction,
   participant,
   type CompositionDraft,
   type CompositionDraftPlan,
   type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
+import { layoutWithFacets } from './harness.js';
 import {
   USER_LOCK,
   compileAndDeploy,
@@ -247,7 +247,7 @@ function build(shares: readonly bigint[]): Run {
     { contract: 'Claimer', masters: [CLAIM_MASTER], state: [] },
     { contract: 'Token', masters: [...transferMasters], state: [TOKEN_RECORD] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const indexOf = (id: string): number => participant(layout, id).index;
 
   const rootRecord = (fields: Record<string, bigint>): Uint8Array => commitmentOf(artifacts.Root!.stateLayout!, fields);

@@ -123,7 +123,8 @@ function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType
       { contract: 'Caller', masters: [CALLER_MASTER], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
       { contract: 'Callee', masters: [CALLEE_MASTER], state: [] },
     ],
-    userInputs: [{ id: USER_ID, index: 3 }],
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: [{ id: USER_ID, index: 4 }],
     masters: [callerMaster, calleeMaster],
     inputs: {
       [CALLER_MASTER]: {
@@ -169,7 +170,8 @@ function deriveComposition(): {
  * is the user's P2PKH, whose signature is filler here, so the machine would fail it for the signature and not for
  * anything the composer built.
  */
-const CONTRACT_INPUTS = [0, 1, 2];
+// The validator's facet is a participant too, so it is input 2 and the callee follows it.
+const CONTRACT_INPUTS = [0, 1, 2, 3];
 
 /** The machine's verdict on one input. */
 function verdict(
@@ -199,7 +201,8 @@ function withCallerBlock(
 describe('a compiled caller binds the record to the callee that ran it', () => {
   it('accepts the assembled composition, so the refusals below are not malformed transactions', () => {
     const { vm, transaction, sourceOutputs } = deriveComposition();
-    expect(transaction.inputs).toHaveLength(4);
+    // The caller, the validator, its facet, the callee, then the user.
+    expect(transaction.inputs).toHaveLength(5);
     for (const index of CONTRACT_INPUTS) {
       expect(`${index}: ${verdict(vm, transaction, sourceOutputs, index).objection ?? 'accepted'}`)
         .toBe(`${index}: accepted`);

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   FrameKind,
@@ -22,7 +23,7 @@ import {
   rootOf, seededAddress, selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
-  layoutTransaction, participant, type CompositionDraftPlan, type ContractBlock, type DraftMaster,
+  participant, type CompositionDraftPlan, type ContractBlock, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
 
@@ -101,7 +102,7 @@ function setup(): Fixture {
   const deployment = compileAndDeploy(SOURCE, { Ledger: LABEL });
   const artifact = deployment.artifacts.Ledger as Artifact;
   const ledger = deployment.contracts.Ledger!;
-  const layout = layoutTransaction(BLOCKS);
+  const layout = layoutWithFacets(BLOCKS);
   const validator = validatorFor(ledger.category);
   const categoryHex = Buffer.from(ledger.category).toString('hex');
   const rootIndex = participant(layout, ROOT_MASTER).index;
@@ -307,7 +308,8 @@ describe('a witness block relabelled after the user signed', () => {
 
     expect(verdict(relabelled, fixture.signed.sourceOutputs, fixture.calledIndex).accepted).toBe(false);
     expect(verdict(relabelled, fixture.signed.sourceOutputs, fixture.rootIndex).accepted).toBe(true);
-    expect(verdict(relabelled, fixture.signed.sourceOutputs, fixture.validatorIndex).accepted).toBe(false);
+    // The retval check runs in the validator's facet, at the input after the head.
+    expect(verdict(relabelled, fixture.signed.sourceOutputs, fixture.validatorIndex + 1).accepted).toBe(false);
     expect(decisionOf(fixture, relabelled).accepted).toBe(false);
   });
 

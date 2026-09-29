@@ -11,6 +11,7 @@ import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * Calling an entry of a deployed per-call implementation through the proxy in front of it.
@@ -103,6 +104,8 @@ async function deployedWithCallerCoins(
   // 25-byte P2PKH lock rather than at the p2pkh contract's address.
   const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
   for (const coin of [hopCoin, callCoin]) await network.addUtxo(binToHex(deployerLock), coin);
+  // The hops broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(network);
 
   const deployment = await deployPerCallProxy({
     provider: network,

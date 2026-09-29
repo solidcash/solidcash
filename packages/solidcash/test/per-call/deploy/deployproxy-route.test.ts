@@ -9,6 +9,7 @@ import {
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
 import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * The ordinary `deployProxy` entry point reached with a per-call implementation.
@@ -55,6 +56,8 @@ async function fundedSigner(network: MockNetworkProvider, fill: number): Promise
       txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
     });
   }
+  // The hop broadcasts, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(network);
   return signer;
 }
 

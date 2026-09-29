@@ -12,11 +12,11 @@ import {
 } from '../../../src/per-call/deploy/index.js';
 import {
   CompositionPools,
-  layoutTransaction,
   participant,
   type CompositionDraftPlan,
   type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
+import { layoutWithFacets } from '../shapes/harness.js';
 import {
   USER_LOCK,
   compileAndDeploy,
@@ -115,7 +115,7 @@ function buildPlan(
       state: [ledger.recordId],
     })),
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const participantCount = layout.participantCount;
 
   const ledgerEntries = ledgers.flatMap((ledger): DraftMaster[] => {
@@ -243,7 +243,8 @@ describe('one contract entered nine times in one transaction', () => {
     ]);
     expect(rejectedOf(outcome)).toStrictEqual([]);
     // Every ledger master, the hub's own master, the validator and the record are accepted.
-    expect(outcome.verdicts.filter((verdict) => verdict.accepted).length).toBe(9 + 3);
+    // The nine ledger masters, the hub's own master, the validator, the facet it binds and the record.
+    expect(outcome.verdicts.filter((verdict) => verdict.accepted).length).toBe(9 + 4);
     expect(bytesToHex(outcome.transaction.outputs[recordIndex('Ledger-record')]!.token!.nft!.commitment))
       .toBe(bytesToHex(ledgers[0]!.recordOf(9n)));
   });

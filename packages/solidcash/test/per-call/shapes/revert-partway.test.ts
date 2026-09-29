@@ -17,7 +17,6 @@ import {
 import {
   createComposedDerivationHost,
   deriveComposition,
-  layoutTransaction,
   participant,
   reportCompositionRefusal,
   type CompositionDraft,
@@ -26,8 +25,8 @@ import {
   type FrameRequest,
 } from '../../../src/per-call/composer/index.js';
 import {
-  USER_LOCK, compileAndDeploy, entryName, master, masterInput, rootOf, seededAddress,
-  selectorOf, token, userInput, userInputs, validatorFor,
+  USER_LOCK, compileAndDeploy, entryName, layoutWithFacets, master, masterInput, rootOf,
+  seededAddress, selectorOf, token, userInput, userInputs, validatorFor,
   type ArtifactMap,
 } from './harness.js';
 
@@ -113,7 +112,7 @@ function buildPair(rootBody: string): PairRun {
     },
     { contract: 'Store', masters: [PAIR_STORE], state: [STORE_RECORD] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const recordIndex = participant(layout, STORE_RECORD).index;
   const storeIndex = participant(layout, PAIR_STORE).index;
   const recordWrite: RecordEntry = { in: recordIndex, out: recordIndex, viewIn: before, viewOut: after };
@@ -167,7 +166,7 @@ function buildPair(rootBody: string): PairRun {
     },
     validator: {
       id: VALIDATOR, covers: ['Store'],
-      settles: [{ category: store.category, stateInputs: [STORE_RECORD] }],
+      settles: [],
       redeemScript: validator.redeem,
     },
   };
@@ -257,7 +256,7 @@ function buildChain(deepBody: string): ChainRun {
     { contract: 'Mid', masters: [CHAIN_MID], state: [] as readonly string[] },
     { contract: 'Deep', masters: [CHAIN_DEEP], state: [] as readonly string[] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const recordIndex = participant(layout, STORE_RECORD).index;
   const storeIndex = participant(layout, CHAIN_STORE).index;
   const recordWrite: RecordEntry = { in: recordIndex, out: recordIndex, viewIn: before, viewOut: after };
@@ -328,7 +327,7 @@ function buildChain(deepBody: string): ChainRun {
     },
     validator: {
       id: VALIDATOR, covers: ['Store', 'Mid', 'Deep'],
-      settles: [{ category: store.category, stateInputs: [STORE_RECORD] }],
+      settles: [],
       redeemScript: validator.redeem,
     },
   };

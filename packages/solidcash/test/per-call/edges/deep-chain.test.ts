@@ -106,7 +106,8 @@ describe('a chain of four contracts, each calling the next', () => {
         { contract: 'C', masters: ['c-1'], state: [] },
         { contract: 'D', masters: ['d-1'], state: [] },
       ],
-      userInputs: [{ id: 'user', index: 5 }],
+      // The facet the validator binds is one participant ahead of the user.
+      userInputs: [{ id: 'user', index: 6 }],
       masters,
       inputs: {
         ...Object.fromEntries(LINKS.map((link) => [`${link.name.toLowerCase()}-1`, {
@@ -128,9 +129,9 @@ describe('a chain of four contracts, each calling the next', () => {
     });
     deriveDepthFirst({ contract: 'A', functionName: 'A.start()', kind: FrameKind.ROOT, master: 'a-1' }, host);
 
-    // The layout places the four masters around the validator, in the order they are first entered.
+    // The layout places the four masters around the validator and the facet it binds, in entry order.
     expect(LINKS.map((link) => participant(draft.layout, `${link.name.toLowerCase()}-1`).index))
-      .toStrictEqual([0, 2, 3, 4]);
+      .toStrictEqual([0, 3, 4, 5]);
 
     const vm = compositionMachine();
     const rejected = LINK_IDS.map((id) => {

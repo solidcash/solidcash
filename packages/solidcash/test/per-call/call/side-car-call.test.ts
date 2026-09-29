@@ -16,6 +16,7 @@ import type { Artifact } from '@solidcash/utils';
 import type NetworkProvider from '../../../src/network/NetworkProvider.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * A call whose entry hashes through keccak256 and recovers a signer, on the shipped call path.
@@ -100,6 +101,8 @@ async function deploy(): Promise<Deployed> {
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const fundingUtxo = { txid: CATEGORY_HEX, vout: 0, satoshis: 500_000n };
   await provider.addUtxo(funder.address, fundingUtxo);
+  // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(provider);
   const deployment = await deployStatefulContract(guard, [], {
     provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
   });

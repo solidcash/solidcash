@@ -144,7 +144,8 @@ function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType
       { contract: 'Caller', masters: [CALLER_MASTER], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
       { contract: 'Callee', masters: [CALLEE_MASTER], state: [] },
     ],
-    userInputs: [{ id: USER_ID, index: 3 }],
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: [{ id: USER_ID, index: 4 }],
     masters: [callerMaster, calleeMaster],
     inputs: {
       [CALLER_MASTER]: {
@@ -181,7 +182,8 @@ const ROOT = { contract: 'Caller', functionName: CALLER_ENTRY, kind: FrameKind.R
  * way every other per-call test fills it, so the machine would fail it for the signature and not for anything the
  * composer built; the composed spend is the three contract inputs.
  */
-const CONTRACT_INPUTS = [0, 1, 2];
+// The validator's facet is a participant too, so it is input 2 and the callee follows it.
+const CONTRACT_INPUTS = [0, 1, 2, 3];
 
 /** The machine's verdict on one input of the composed transaction. */
 function verdict(
@@ -250,7 +252,8 @@ describe('a composed transaction through the shipped compile, deployment and com
     const { draft } = deriveComposition();
     expect(participant(draft.layout, CALLER_MASTER).index).toBe(0);
     expect(participant(draft.layout, VALIDATOR_ID).index).toBe(1);
-    expect(participant(draft.layout, CALLEE_MASTER).index).toBe(2);
+    // The facet the validator binds sits at 2, so the callee follows at 3.
+    expect(participant(draft.layout, CALLEE_MASTER).index).toBe(3);
     expect(draft.layout).toBe(draft.assembly.layout);
     // The draft is the assembly: the derivation filled the same sites assembly resolved, not a private copy.
     expect(draft.unlockingBytecodeOf(CALLER_MASTER))
@@ -260,7 +263,8 @@ describe('a composed transaction through the shipped compile, deployment and com
   it('the machine accepts every contract input of the assembled caller, callee and validator spend', () => {
     const { vm, transaction, sourceOutputs } = deriveComposition();
 
-    expect(transaction.inputs).toHaveLength(4);
+    // The caller, the validator, its facet, the callee, then the user.
+    expect(transaction.inputs).toHaveLength(5);
     const outcomes = CONTRACT_INPUTS.map((index) => verdict(vm, transaction, sourceOutputs, index));
     for (const [position, outcome] of outcomes.entries()) {
       const index = CONTRACT_INPUTS[position]!;

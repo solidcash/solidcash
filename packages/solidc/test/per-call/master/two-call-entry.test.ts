@@ -14,7 +14,10 @@ import { findPlaceholderOffsets } from '../../../src/per-call/master/master-prog
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * A caller whose one entry makes two external calls, each bound to its own record where the source makes it.
@@ -48,12 +51,12 @@ const ADDRESS_A = validatorAddress(CATEGORY_A, VALIDATOR_PROGRAM);
 const ADDRESS_B = validatorAddress(CATEGORY_B, VALIDATOR_PROGRAM);
 const ADDRESS_C = validatorAddress(CATEGORY_C, VALIDATOR_PROGRAM);
 
-/** Master input indices: the caller, its two callees, the validator, then the user. */
+/** Master input indices: the caller, its two callees, the validator with its facet, then the user. */
 const A_INDEX = 0;
 const B_INDEX = 1;
 const C_INDEX = 2;
 const VALIDATOR_INDEX = 3;
-const USER_INDEX = 4;
+const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
 
 /**
  * The caller's source: one entry that makes two calls, to two code-baked addresses through one two-method
@@ -149,6 +152,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     roots: [A_INDEX], masters: [A_INDEX, B_INDEX, C_INDEX], settles: [],
   });
   const validatorLock = validator.lock;
+  const facets = validatorFacetPlacements();
 
   const recordTargets = options.recordTargets ?? [ADDRESS_B, ADDRESS_C];
   const recordCalleeRefs = options.recordCalleeRefs ?? [B_INDEX, C_INDEX];
@@ -265,6 +269,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
       sequenceNumber: 0xffffffff,
       unlockingBytecode: validator.unlockingBytecode,
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(5),
@@ -279,6 +284,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     { lockingBytecode: calleeB.lock, valueSatoshis: masterValue, token: masterToken(CATEGORY_B) },
     { lockingBytecode: calleeC.lock, valueSatoshis: masterValue, token: masterToken(CATEGORY_C) },
     { lockingBytecode: validatorLock, valueSatoshis: validatorValue, token: validatorToken },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: userValue },
   ];
 
@@ -287,6 +293,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     { lockingBytecode: calleeB.lock, valueSatoshis: masterValue, token: masterToken(CATEGORY_B) },
     { lockingBytecode: calleeC.lock, valueSatoshis: masterValue, token: masterToken(CATEGORY_C) },
     { lockingBytecode: validatorLock, valueSatoshis: validatorValue, token: validatorToken },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: userValue },
   ];
 

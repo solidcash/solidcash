@@ -15,7 +15,8 @@ import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 import {
-  ALTERNATE_ACCEPTING_PROGRAM, REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend,
+  ALTERNATE_ACCEPTING_PROGRAM, REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory,
+  validatorFacetPlacements, validatorSpend,
 } from './validator-input.js';
 
 /**
@@ -54,11 +55,12 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const ADDRESS_A = validatorAddress(CATEGORY_A, VALIDATOR_PROGRAM);
 const ADDRESS_B = validatorAddress(CATEGORY_B, VALIDATOR_PROGRAM);
 
-/** Master input indices; the caller and the validator sit after the two masters. */
+/** Input indices; two masters, the validator with its facet directly after it, then the user. */
 const A_INDEX = 0;
 const B_INDEX = 1;
 const VALIDATOR_INDEX = 2;
-const USER_INDEX = 3;
+const VALIDATOR_FACET_INDEX = VALIDATOR_INDEX + 1;
+const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
 
 /**
  * The caller's source: one entry that calls the callee at its code-baked address.
@@ -150,6 +152,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     roots: [A_INDEX], masters: [A_INDEX, B_INDEX], settles: [],
   }, validatorProgram);
   const validatorLock = validator.lock;
+  const facets = validatorFacetPlacements();
 
   const callerBlock: WitnessBlock = {
     kind: 0,
@@ -238,6 +241,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
       sequenceNumber: 0xffffffff,
       unlockingBytecode: validator.unlockingBytecode,
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(4),
@@ -251,6 +255,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     { lockingBytecode: caller.lock, valueSatoshis: masterValue, token: masterToken(CATEGORY_A) },
     { lockingBytecode: callee.lock, valueSatoshis: masterValue, token: masterToken(CATEGORY_B) },
     { lockingBytecode: validatorLock, valueSatoshis: validatorValue, token: validatorToken },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: userValue },
   ];
 
@@ -258,13 +263,14 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     { lockingBytecode: caller.lock, valueSatoshis: masterValue, token: masterToken(CATEGORY_A) },
     { lockingBytecode: callee.lock, valueSatoshis: masterValue, token: masterToken(CATEGORY_B) },
     { lockingBytecode: validatorLock, valueSatoshis: validatorValue, token: validatorToken },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: userValue },
   ];
 
   return {
     transaction: { version: 2, inputs, outputs, locktime: 0 },
     sourceOutputs,
-    order: [A_INDEX, B_INDEX, VALIDATOR_INDEX],
+    order: [A_INDEX, B_INDEX, VALIDATOR_INDEX, VALIDATOR_FACET_INDEX],
   };
 }
 
@@ -388,8 +394,9 @@ describe('a master that calls another master, covered by one validator', () => {
     mutated[0] ^= 0xff;
     const results = verdicts({ argsHash: mutated });
     expect(results[A_INDEX].accepted).toBe(false);
-    // The validator recomputes the digest from the callee's pushes, so a different record fails there too.
-    expect(results[VALIDATOR_INDEX].accepted).toBe(false);
+    // The digest is an edge rule, which the split runs in the facet at `head + 1` rather than in the head, so the
+    // facet is the input that refuses the mismatched digest.
+    expect(results[VALIDATOR_FACET_INDEX].accepted).toBe(false);
   });
 
   it('has a caller that fails when the recorded argument hash is another selector of the callee', () => {

@@ -138,7 +138,9 @@ describe('an event emitted by a nested frame', () => {
       frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: caller.address, value: 0n },
       enteredBy: 'user', origin: 'user',
       calls: [{ kind: FrameKind.CALL, callee: 'emitter-1', target: emitter.address, value: 0n, argumentPushes: [selector] }],
-      retval: new Uint8Array(0), segments: [[], []], events: [3], sends: [], argumentPushes: [], redeemScript: caller.program,
+      retval: new Uint8Array(0), segments: [[], []],
+      // The facet the validator binds is one participant ahead of the events.
+      events: [4], sends: [], argumentPushes: [], redeemScript: caller.program,
     };
     const emitterMaster: DraftMaster = {
       master: 'emitter-1', contract: 'Emitter', functionName: entryName('Emitter', 'fire'), program: emitter.program,
@@ -148,14 +150,16 @@ describe('an event emitted by a nested frame', () => {
       },
       frame: { kind: FrameKind.CALL, sender: caller.address, self: emitter.address, value: 0n },
       enteredBy: 'caller-1', origin: 'user', calls: [], retval: new Uint8Array(0), segments: [[]],
-      events: [4], sends: [], argumentPushes: [selector], redeemScript: emitter.program,
+      // The facet the validator binds is one participant ahead of the events.
+      events: [5], sends: [], argumentPushes: [selector], redeemScript: emitter.program,
     };
     const plan: CompositionDraftPlan = {
       blocks: [
         { contract: 'Caller', masters: ['caller-1'], validator: { id: 'validator', settles: [] }, state: [] },
         { contract: 'Emitter', masters: ['emitter-1'], state: [] },
       ],
-      userInputs: [{ id: 'event-0', index: 3 }, { id: 'event-1', index: 4 }, { id: 'user', index: 5 }],
+      // The facet the validator binds is one participant ahead of the users.
+      userInputs: [{ id: 'event-0', index: 4 }, { id: 'event-1', index: 5 }, { id: 'user', index: 6 }],
       masters: [callerMaster, emitterMaster],
       inputs: {
         'caller-1': { source: { lockingBytecode: caller.lockingBytecode, valueSatoshis: 20_000n, token: token(caller.category, 'minting') } },
@@ -172,7 +176,7 @@ describe('an event emitted by a nested frame', () => {
       { contract: 'Caller', functionName: entryName('Caller', 'start'), kind: FrameKind.ROOT, master: 'caller-1' },
     ]);
 
-    expect(outcome.draft.assembly.outputs.eventIndices).toStrictEqual([3, 4]);
+    expect(outcome.draft.assembly.outputs.eventIndices).toStrictEqual([4, 5]);
     expect(acceptedInputs(outcome.verdicts)).toStrictEqual([]);
     // The callee's own event is one of the two records the transaction creates.
     expect(outcome.verdicts.find((verdict) => verdict.participant === 'emitter-1')?.accepted).toBe(true);

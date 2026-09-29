@@ -8,7 +8,7 @@
  * validator transcript all come from `composeDraft`/`assembleComposition`.
  */
 
-import { createVirtualMachineBch2026 } from '@bitauth/libauth';
+import { binToHex, createVirtualMachineBch2026, encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import {
   FrameKind,
   computeFunctionSelector,
@@ -16,12 +16,15 @@ import {
   validatorAddress,
   type Artifact,
 } from '@solidcash/utils';
+import { perCallValidator } from 'solidc';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import {
+  FACET_SATOSHIS,
   createComposedDerivationHost,
   deriveComposition,
+  layoutTransaction,
   requireLearnedViews,
   type CompositionDraft,
   type CompositionDraftPlan,
@@ -29,10 +32,12 @@ import {
   type DraftInput,
   type DraftMaster,
   type DraftRecordEntry,
+  type ContractBlock,
   type DraftSourceOutput,
   type EntryFacts,
   type FrameRequest,
   type FrameWitness,
+  type TransactionLayout,
 } from '../../../src/per-call/composer/index.js';
 import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
 import {
@@ -173,6 +178,51 @@ export function userInputs(ids: readonly string[], firstIndex: number): readonly
 /** A validator input for a shape's category; the composer builds the transcript itself. */
 export function validatorFor(category: Uint8Array): ReturnType<typeof validatorSpend> {
   return validatorSpend(category, { roots: [], masters: [], settles: [] });
+}
+
+/**
+ * The facets the shipped validator program binds, keyed by every validator a plan's blocks host.
+ *
+ * A validator runs as a head plus one input per facet, so a plan that states a coordinate from its own blocks has
+ * to place the facet the head binds after it; a plan laid out without them composes one participant short.
+ */
+export function shippedFacets(blocks: readonly ContractBlock[]): Map<string, readonly Uint8Array[]> {
+  const facets = perCallValidator.buildValidatorFacets();
+  const map = new Map<string, readonly Uint8Array[]>();
+  for (const block of blocks) {
+    if (block.validator !== undefined) map.set(block.validator.id, facets);
+  }
+  return map;
+}
+
+/** Lays out a plan's blocks with the facet inputs the shipped validator program binds. */
+export function layoutWithFacets(blocks: readonly ContractBlock[]): TransactionLayout {
+  return layoutTransaction(blocks, shippedFacets(blocks));
+}
+
+/** Distinct outpoints for funded facet UTXOs, so one provider can hold several funded compositions. */
+let facetFunding = 0;
+
+/**
+ * Adds a live UTXO at each facet lock the shipped validator program binds.
+ *
+ * A composition that broadcasts spends one input per facet, and a facet holds no token and pins no category, so any
+ * UTXO of its code serves. A test that only derives its composition needs none: the composer synthesises the facet's
+ * source.
+ */
+export async function fundShippedFacets(provider: {
+  addUtxo(lockingBytecode: string, utxo: {
+    readonly txid: string; readonly vout: number; readonly satoshis: bigint;
+  }): Promise<void>;
+}): Promise<void> {
+  for (const code of perCallValidator.buildValidatorFacets()) {
+    facetFunding += 1;
+    await provider.addUtxo(binToHex(encodeLockingBytecodeP2sh32(hash256(code))), {
+      txid: `7e${facetFunding.toString(16).padStart(2, '0')}`.padEnd(64, '0'),
+      vout: 0,
+      satoshis: FACET_SATOSHIS,
+    });
+  }
 }
 
 /** The outcome of one shape run: the composer's draft, the derivation's result, and the machine's verdicts. */

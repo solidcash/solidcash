@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import { FrameKind, buildPushdataCommitment, bytesToHex, type RecordEntry } from '@solidcash/utils';
 import { VALIDATOR_PROGRAM_REASONS } from '../../../../solidc/src/per-call/validator/index.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -10,7 +11,7 @@ import {
   seededAddress, selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
-  layoutTransaction, participant,
+  participant,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
@@ -119,7 +120,7 @@ function build(overrides: { readonly proxyAfter?: Uint8Array } = {}): Built {
     { contract: 'Impl', masters: [IMPL_MASTER], state: [] },
     { contract: 'Ping', masters: [PING_MASTER], state: [] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const recordIndex = participant(layout, RECORD_ID).index;
   const proxyIndex = participant(layout, PROXY_MASTER).index;
 
@@ -284,7 +285,7 @@ describe('a proxied entry that writes state and calls another contract', () => {
       .map(([participantId]) => participantId)
       .sort();
     expect(accepted).toStrictEqual(
-      [PROXY_MASTER, IMPL_MASTER, PING_MASTER, VALIDATOR_ID, RECORD_ID].sort(),
+      [PROXY_MASTER, IMPL_MASTER, PING_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID].sort(),
     );
   });
 

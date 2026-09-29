@@ -237,7 +237,8 @@ function planFor(source: string): Run {
       { contract: 'Caller', masters: ['caller-1'], validator: { id: 'validator', settles: [] }, state: [] },
       { contract: 'Token', masters: ['token-1'], state: [] },
     ],
-    userInputs: userInputs(['user'], 3),
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: userInputs(['user'], 4),
     masters: [callerMaster, tokenMaster],
     inputs: {
       'caller-1': { source: masterInput(caller) },

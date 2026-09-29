@@ -7,14 +7,17 @@ import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  createComposedDerivationHost, layoutTransaction, participant,
+  createComposedDerivationHost, participant,
   type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { deployPerCallProxy, PerCallProxyDeployError } from '../../../src/per-call/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 import {
-  USER_LOCK, compileAndDeploy, master, masterInput, selectorOf, token, userInput, userInputs, validatorFor,
+  USER_LOCK, compileAndDeploy, layoutWithFacets, master, masterInput, selectorOf, token,
+  userInput,
+  userInputs, validatorFor,
 } from '../shapes/harness.js';
 
 /**
@@ -68,6 +71,8 @@ async function funded(network: MockNetworkProvider): Promise<{
   const proxyFunding = { txid: PROXY_CATEGORY, vout: 0, satoshis: 500_000n };
   await network.addUtxo(funder.address, implFunding);
   await network.addUtxo(funder.address, proxyFunding);
+  // The hop broadcasts, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(network);
   return {
     funder: funder.unlock.spend(alicePub, signature),
     implFunding,
@@ -84,7 +89,8 @@ describe('a proxied initialize that writes state', () => {
     const implContract = contracts.Impl!;
     const implementation = implContract.address;
     const selector = selectorOf(artifacts, 'Impl', 'initialize');
-    const recordIndex = 2;
+    // The proxy master, its validator and the facet the validator binds precede the record.
+    const recordIndex = 3;
     const state = (initialized: bigint, version: bigint): Uint8Array => new Uint8Array(Buffer.from(
       buildPushdataCommitment(artifacts.Proxy!.stateLayout!, { implementation, initialized, version }, 0), 'hex'));
     const written = state(1n, 7n);
@@ -128,7 +134,7 @@ describe('a proxied initialize that writes state', () => {
       // A record the entry rewrites is spent on the covenant's write path, which names a master of the record's
       // own category; a record it leaves alone needs no master.
       const writes = bytesToHex(before) !== bytesToHex(after);
-      const proxyMasterIndex = participant(layoutTransaction(blocks), 'proxy-1').index;
+      const proxyMasterIndex = participant(layoutWithFacets(blocks), 'proxy-1').index;
       const recordSource = {
         lockingBytecode: stateRecordLockingBytecode(proxyCategoryHex), valueSatoshis: 20_000n,
         token: token(proxyContract.category, 'mutable', before),
@@ -136,7 +142,8 @@ describe('a proxied initialize that writes state', () => {
       const validator = validatorFor(proxyContract.category);
       return {
         blocks,
-        userInputs: userInputs(['user'], 4),
+        // The facet the validator binds is one participant ahead of the user.
+        userInputs: userInputs(['user'], 5),
         masters: [proxyMaster, implementationMaster],
         inputs: {
           'proxy-1': { source: masterInput(proxyContract) },

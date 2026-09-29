@@ -15,6 +15,7 @@ import {
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { aliceAddress, alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * Calling an entry on a deployed per-call contract that keeps a mapping.
@@ -98,6 +99,8 @@ async function deploy(artifact: Artifact = ledger, seed: Uint8Array = SEED_LOCK)
   const callerLock = CALLER_LOCK;
   const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 200_000n };
   await provider.addUtxo(binToHex(callerLock), callerUtxo);
+  // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(provider);
   return { provider, categoryId: deployment.categoryId, callerUtxo, callerLock, funder: signature.unlockP2PKH() };
 }
 
@@ -211,6 +214,8 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
     const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 200_000n };
     await provider.addUtxo(binToHex(callerLock), callerUtxo);
+    // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+    await fundShippedFacets(provider);
 
     await expect(callPerCallEntry({
       provider, artifact: moving, categoryId: deployment.categoryId, functionName: 'move',
@@ -250,6 +255,8 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
     const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 200_000n };
     await provider.addUtxo(binToHex(callerLock), callerUtxo);
+    // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+    await fundShippedFacets(provider);
 
     const result = await callPerCallEntry({
       provider, artifact, categoryId: deployment.categoryId, functionName: 'deposit',
@@ -354,6 +361,8 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     });
     const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 200_000n };
     await provider.addUtxo(binToHex(CALLER_LOCK), callerUtxo);
+    // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+    await fundShippedFacets(provider);
 
     // The constructor seeded the caller's key, so the caller's write rewrites a held node and the recipient's
     // insert relinks it: the same coordinate the case above covers, now with the entry emitting beside it.

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import {
   FrameKind,
   INDEX_NONE,
@@ -25,7 +26,7 @@ import {
   userInput, userInputs, validatorFor, type DeployedContract,
 } from '../shapes/harness.js';
 import {
-  chunkRecordId, createComposedDerivationHost, layoutTransaction, layOutChunkRun, participant,
+  chunkRecordId, createComposedDerivationHost, layOutChunkRun, participant,
   planChunkRun, type ChunkRecordPlacement, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
@@ -200,7 +201,7 @@ function build(): Built {
   // The proxy's block hosts the master, the validator and the record, then the run's kept chunks. A probe with the
   // right number of state participants fixes the geometry the band starts from.
   const probes = Array.from({ length: keptCount }, (_unused, offset) => `kept#${offset}`);
-  const probeLayout = layoutTransaction([
+  const probeLayout = layoutWithFacets([
     {
       contract: proxyContract, masters: [PROXY_MASTER],
       validator: { id: VALIDATOR_ID, settles: [] as readonly string[] }, state: [RECORD_ID, ...probes],
@@ -398,7 +399,7 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
     const keptChunkIds = built.records.filter((record) => record.role === 'kept').map((record) => record.id);
     expect(keptChunkIds.length).toBeGreaterThan(0);
     expect([...asked].sort()).toStrictEqual(
-      [PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, RECORD_ID, ...keptChunkIds].sort(),
+      [PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID, ...keptChunkIds].sort(),
     );
   });
 

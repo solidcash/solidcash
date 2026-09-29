@@ -16,6 +16,7 @@ import {
 import { readPerCallEntry } from '../../../src/per-call/read/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * Value carried by a call into a deployed per-call contract (spec 4b), through the shipped path.
@@ -72,6 +73,8 @@ async function deploy(artifact: Artifact): Promise<Deployed> {
   const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
   const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 200_000n };
   await provider.addUtxo(binToHex(callerLock), callerUtxo);
+  // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(provider);
   return {
     artifact, provider, categoryId: deployment.categoryId, callerUtxo, callerLock, funder: signature.unlockP2PKH(),
   };

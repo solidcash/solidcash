@@ -14,12 +14,12 @@ import { eventOutput } from '../../../../solidc/test/per-call/master/event-input
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
-  layoutTransaction,
   participant,
   type CompositionDraftPlan,
   type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
+import { layoutWithFacets } from './harness.js';
 import {
   USER_LOCK,
   compileAndDeploy,
@@ -329,7 +329,7 @@ function build(trips: number, options: { readonly mixed?: boolean } = {}): Run {
     { contract: 'Oracle', masters: [RATE_MASTER], state: [ORACLE_RECORD] },
     { contract: 'Token', masters: transferMasters, state: [TOKEN_RECORD] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const rootIndex = participant(layout, ROOT_MASTER).index;
   const releaseIndex = participant(layout, RELEASE_MASTER).index;
   const rateIndex = participant(layout, RATE_MASTER).index;

@@ -14,7 +14,10 @@ import { refusalMessageOf } from './refused-entry.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * A call to an address the caller read from its own state.
@@ -45,12 +48,13 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const ANSWER = 42n;
 const ANSWER_RETVAL = encodeResultList([encodeIntegerValue(ANSWER)]);
 
-/** Master input indices: the caller, its callee, the validator, the caller's record, then the user. */
+/** Master input indices: the caller, its callee, the validator with its facet, the caller's record, then the user. */
 const CALLER_INDEX = 0;
 const CALLEE_INDEX = 1;
 const VALIDATOR_INDEX = 2;
-const STATE_RECORD_INDEX = 3;
-const USER_INDEX = 4;
+const VALIDATOR_FACET_INDEX = VALIDATOR_INDEX + 1;
+const STATE_RECORD_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
+const USER_INDEX = STATE_RECORD_INDEX + 1;
 
 const scriptBytes = (artifact: { bytecode: string }): Uint8Array => scriptToBytecode(asmToScript(artifact.bytecode));
 
@@ -142,6 +146,7 @@ function build(options: Options = {}): Composition {
   const validator = validatorSpend(CATEGORY_CALLER, {
     roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
   });
+  const facets = validatorFacetPlacements();
   const declaration: RecordEntry = {
     in: STATE_RECORD_INDEX, out: STATE_RECORD_INDEX, viewIn: COUNTER_BEFORE, viewOut: COUNTER_AFTER,
   };
@@ -202,6 +207,7 @@ function build(options: Options = {}): Composition {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(3), sequenceNumber: 0xffffffff,
       unlockingBytecode: validator.unlockingBytecode,
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(4), sequenceNumber: 0xffffffff,
       unlockingBytecode: encodeDataPush(new Uint8Array([1])),
@@ -215,6 +221,7 @@ function build(options: Options = {}): Composition {
     { lockingBytecode: callerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(callee.category, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable', COUNTER_AFTER) },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
@@ -222,6 +229,7 @@ function build(options: Options = {}): Composition {
     { lockingBytecode: callerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(callee.category, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable', COUNTER_BEFORE) },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
@@ -232,7 +240,7 @@ function build(options: Options = {}): Composition {
 function verdicts(options: Options = {}): Record<number, boolean> {
   const composition = build(options);
   const vm = compositionMachine();
-  return Object.fromEntries([CALLER_INDEX, CALLEE_INDEX, VALIDATOR_INDEX].map((index) => [
+  return Object.fromEntries([CALLER_INDEX, CALLEE_INDEX, VALIDATOR_INDEX, VALIDATOR_FACET_INDEX].map((index) => [
     index,
     vm.stateSuccess(vm.evaluate({
       inputIndex: index, sourceOutputs: composition.sourceOutputs, transaction: composition.transaction,
@@ -243,27 +251,28 @@ function verdicts(options: Options = {}): Record<number, boolean> {
 describe('a call to an address the caller read from its own state', () => {
   it('is accepted at the caller, the callee and the validator', () => {
     expect(verdicts()).toStrictEqual({
-      [CALLER_INDEX]: true, [CALLEE_INDEX]: true, [VALIDATOR_INDEX]: true,
+      [CALLER_INDEX]: true, [CALLEE_INDEX]: true, [VALIDATOR_INDEX]: true, [VALIDATOR_FACET_INDEX]: true,
     });
   });
 
   it('is refused at the caller when the record names another address', () => {
     // The caller reads the address from its own record and hands it to the check, so a record that names another
     // address disagrees with the bytes the caller's code produced. The callee it points at is a genuine master, so
-    // the caller's own check is what refuses.
+    // the caller's own check is what refuses. The edge rule that binds the callee's `self` to the target runs in
+    // the facet at `head + 1`, so the facet is the validator input that refuses too.
     const results = verdicts({ recordedTarget: ADDRESS_CALLER });
     expect(results[CALLER_INDEX]).toBe(false);
     expect(results[CALLEE_INDEX]).toBe(true);
-    expect(results[VALIDATOR_INDEX]).toBe(false);
+    expect(results[VALIDATOR_FACET_INDEX]).toBe(false);
   });
 
   it('is refused when the callee that runs is not the contract the caller named', () => {
     // The record names the address the caller read from its state, and the caller's own code accepts it, but the
-    // master co-spent as the callee is another contract. The validator's edge rule binds that callee's `self` to
-    // the recorded target and refuses the composition.
+    // master co-spent as the callee is another contract. The facet's edge rule binds that callee's `self` to the
+    // recorded target and refuses the composition.
     const results = verdicts({ callee: IMPOSTOR_CALLEE });
     expect(results[CALLEE_INDEX]).toBe(true);
-    expect(results[VALIDATOR_INDEX]).toBe(false);
+    expect(results[VALIDATOR_FACET_INDEX]).toBe(false);
   });
 });
 

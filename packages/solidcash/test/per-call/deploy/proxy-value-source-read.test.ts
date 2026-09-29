@@ -12,6 +12,7 @@ import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * A proxied call whose mapping value is built from fields of the node it writes.
@@ -62,6 +63,8 @@ async function funded(network: MockNetworkProvider): Promise<Funding> {
   const callUtxo = { txid: SECOND_CALLER_TXID, vout: 0, satoshis: 100_000n };
   await network.addUtxo(funder.address, implFunding);
   await network.addUtxo(funder.address, proxyFunding);
+  // The hop broadcasts, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(network);
   await network.addUtxo(binToHex(deployerLock), callerUtxo);
   await network.addUtxo(binToHex(deployerLock), callUtxo);
   return {

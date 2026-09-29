@@ -9,7 +9,6 @@ import {
   stateRecordUnlockingBytecode,
 } from '../../../src/per-call/deploy/index.js';
 import {
-  layoutTransaction,
   participant,
   type CompositionDraftPlan,
   type DraftMaster,
@@ -17,6 +16,7 @@ import {
 import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { tryParseEventCommitment } from '../../../src/stateful/StateReader.js';
+import { layoutWithFacets } from './harness.js';
 import {
   USER_LOCK, VALIDATOR_PROGRAM, compileAndDeploy, composeAndDerive, entryName, hexOf, master, masterInput,
   rootOf, seededAddress, selectorOf, token, userInput, validatorFor,
@@ -191,7 +191,7 @@ function buildPlan(userLock: Uint8Array = SELLER_LOCK): {
     { contract: 'Token', masters: [TOKEN_MASTER], state: [TOKEN_RECORD_ID] },
     { contract: 'Store', masters: [STORE_MASTER], state: [STORE_RECORD_ID] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const base = layout.participantCount;
   const escrowMasterIndex = participant(layout, ESCROW_MASTER).index;
   const ledgerMasterIndex = participant(layout, LEDGER_MASTER).index;
@@ -325,12 +325,7 @@ function buildPlan(userLock: Uint8Array = SELLER_LOCK): {
     ],
     validator: {
       id: VALIDATOR_ID, covers: ['Escrow', 'Ledger', 'Token', 'Store'],
-      settles: [
-        { category: escrow.category, stateInputs: [ESCROW_RECORD_ID] },
-        { category: ledger.category, stateInputs: [LEDGER_RECORD_ID] },
-        { category: tokenContract.category, stateInputs: [TOKEN_RECORD_ID] },
-        { category: store.category, stateInputs: [STORE_RECORD_ID] },
-      ],
+      settles: [],
       redeemScript: validator.redeem,
     },
   };

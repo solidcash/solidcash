@@ -10,7 +10,9 @@ import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorFacetPlacements, validatorSpend,
+} from './validator-input.js';
 
 /**
  * A contract with two masters in one transaction is settled by one validator that covers both.
@@ -56,15 +58,21 @@ type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['eval
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
-/** Inputs: Counter's root master, Poker's root master, Counter's called master, two validators, two records, user. */
+/**
+ * Inputs: Counter's root master, Poker's root master, Counter's called master, Counter's validator with its facet,
+ * Poker's validator with its facet, the two records, then the user. Each validator's facet sits directly after its
+ * head, which is where the head's binding reads it.
+ */
 const COUNTER_ROOT = 0;
 const POKER_ROOT = 1;
 const COUNTER_CALLED = 2;
 const COUNTER_VALIDATOR = 3;
-const POKER_VALIDATOR = 4;
-const COUNTER_RECORD = 5;
-const POKER_RECORD = 6;
-const USER = 7;
+const COUNTER_FACET = 4;
+const POKER_VALIDATOR = 5;
+const POKER_FACET = 6;
+const COUNTER_RECORD = 7;
+const POKER_RECORD = 8;
+const USER = 9;
 
 type Capability = 'minting' | 'mutable';
 const token = (category: Uint8Array, capability: Capability, commitment = new Uint8Array(0)): VmOutput['token'] =>
@@ -111,6 +119,8 @@ function verdicts(written: bigint, split: boolean): Record<string, boolean> {
   };
   const counterLock = encodeLockingBytecodeP2sh32(hash256(COUNTER_PROGRAM));
   const pokerLock = encodeLockingBytecodeP2sh32(hash256(POKER_PROGRAM));
+  // Both validators run the shipped program, so they bind the same facet code and the same lock.
+  const facet = validatorFacetPlacements()[0]!;
   const input = (fill: number, unlockingBytecode: Uint8Array): VmTransaction['inputs'][number] => ({
     outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(fill), sequenceNumber: 0xffffffff,
     unlockingBytecode,
@@ -127,19 +137,25 @@ function verdicts(written: bigint, split: boolean): Record<string, boolean> {
       ...encodeDataPush(COUNTER_PROGRAM),
     ])),
     input(4, counterValidator.unlockingBytecode),
-    input(5, split ? pokerValidator.unlockingBytecode : encodeDataPush(new Uint8Array([1]))),
-    input(6, encodeDataPush(new Uint8Array([1]))),
-    input(7, encodeDataPush(new Uint8Array([1]))),
-    input(8, callerUnlockingBytecode()),
+    input(5, facet.input.unlockingBytecode),
+    input(6, split ? pokerValidator.unlockingBytecode : encodeDataPush(new Uint8Array([1]))),
+    input(7, split ? facet.input.unlockingBytecode : encodeDataPush(new Uint8Array([1]))),
+    input(8, encodeDataPush(new Uint8Array([1]))),
+    input(9, encodeDataPush(new Uint8Array([1]))),
+    input(10, callerUnlockingBytecode()),
   ];
-  // Joined, Poker's validator is not spent: its place holds a plain coin.
+  // Joined, Poker's validator is not spent: its place holds a plain coin, and its facet's place too.
   const masters: VmOutput[] = [
     { lockingBytecode: counterLock, valueSatoshis: 20_000n, token: token(CATEGORY_COUNTER, 'minting') },
     { lockingBytecode: pokerLock, valueSatoshis: 20_000n, token: token(CATEGORY_POKER, 'minting') },
     { lockingBytecode: counterLock, valueSatoshis: 20_000n, token: token(CATEGORY_COUNTER, 'minting') },
     { lockingBytecode: counterValidator.lock, valueSatoshis: 20_000n, token: token(CATEGORY_COUNTER, 'mutable') },
+    { lockingBytecode: facet.output.lockingBytecode, valueSatoshis: 20_000n },
     split
       ? { lockingBytecode: pokerValidator.lock, valueSatoshis: 20_000n, token: token(CATEGORY_POKER, 'mutable') }
+      : { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n },
+    split
+      ? { lockingBytecode: facet.output.lockingBytecode, valueSatoshis: 20_000n }
       : { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n },
   ];
   const sourceOutputs: VmProgram['sourceOutputs'] = [
@@ -163,11 +179,14 @@ function verdicts(written: bigint, split: boolean): Record<string, boolean> {
     poker: accepted(POKER_ROOT),
     counterCalled: accepted(COUNTER_CALLED),
     counterValidator: accepted(COUNTER_VALIDATOR),
-    ...(split ? { pokerValidator: accepted(POKER_VALIDATOR) } : {}),
+    counterFacet: accepted(COUNTER_FACET),
+    ...(split ? { pokerValidator: accepted(POKER_VALIDATOR), pokerFacet: accepted(POKER_FACET) } : {}),
   };
 }
 
-const JOINED_ACCEPT = { counterRoot: true, poker: true, counterCalled: true, counterValidator: true };
+const JOINED_ACCEPT = {
+  counterRoot: true, poker: true, counterCalled: true, counterValidator: true, counterFacet: true,
+};
 
 describe('a contract with a master in each of two call trees', () => {
   it('is settled when one validator covers both trees, and a forged record is refused', () => {
@@ -175,13 +194,17 @@ describe('a contract with a master in each of two call trees', () => {
     expect(verdicts(1000n, false).counterValidator).toBe(false);
   });
 
-  it('is refused by both validators when each tree has its own, forged record or not', () => {
+  it('is refused by both facets when each tree has its own validator, forged record or not', () => {
     // Before V8 counted a contract's masters over the whole transaction, every input accepted the forged record.
+    // The rule that a shared contract has to be settled is one the split runs in each validator's facet at
+    // `head + 1`, so a tree whose validator settles nothing is refused there and the heads themselves accept.
     expect(verdicts(1000n, true)).toStrictEqual({
-      counterRoot: true, poker: true, counterCalled: true, counterValidator: false, pokerValidator: false,
+      counterRoot: true, poker: true, counterCalled: true, counterValidator: true, counterFacet: false,
+      pokerValidator: true, pokerFacet: false,
     });
     expect(verdicts(7n, true)).toStrictEqual({
-      counterRoot: true, poker: true, counterCalled: true, counterValidator: false, pokerValidator: false,
+      counterRoot: true, poker: true, counterCalled: true, counterValidator: true, counterFacet: false,
+      pokerValidator: true, pokerFacet: false,
     });
   });
 });

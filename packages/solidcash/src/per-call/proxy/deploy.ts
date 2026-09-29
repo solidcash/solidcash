@@ -29,7 +29,7 @@
  * same way.
  */
 
-import { createVirtualMachineBch2026, encodeDataPush, hexToBin } from '@bitauth/libauth';
+import { binToHex, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
 import {
   FrameKind, bytesEqual, bytesToHex, sha256, validatorRedeemScript,
   type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo,
@@ -45,10 +45,10 @@ import { decodeEntryCommitment, headSentinelCommitment } from '../../stateful/So
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
 import {
-  PerCallComposerError, createComposedDerivationHost, deriveComposition, describeInnermost, layoutTransaction,
-  participant, reportCompositionRefusal, requireLearnedViews,
-  type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftInput, type DraftMaster,
-  type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
+  PerCallComposerError, createComposedDerivationHost, deriveComposition, describeInnermost, facetId,
+  layoutTransaction, participant, reportCompositionRefusal, requireLearnedViews, validatorFacetsOf,
+  type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftCall, type DraftInput,
+  type DraftMaster, type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
 import { readComputedDeclaration } from '../deploy/declaration.js';
 import { eventLockingBytecode, eventSentinel } from '../deploy/genesis.js';
@@ -59,6 +59,11 @@ import {
 import { decodeReturnValues } from '../read/index.js';
 import { PerCallProxyDeployError } from './errors.js';
 import { hopEntryWrites, mappingHeadCollection, mappingNodeSlot, type HopEntryWrites } from './entry-writes.js';
+import {
+  planHopExternalCalls,
+  type HopCallee,
+  type PerCallProxyExternal,
+} from './external-calls.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
@@ -105,6 +110,14 @@ export interface PerCallProxyDeployOptions {
    * root caller — so the UTXO must sit at `callerLockingBytecode`, the same lock the witness sender is bound to.
    */
   readonly callerFunding?: PerCallProxyCallerFunding;
+  /**
+   * The contracts the entry's published call sites reach, keyed by the interface the site calls.
+   *
+   * An entry that makes an external call has that call bound by its own frame, so the hop states the call's record
+   * and runs its callee as a frame of its own. A call whose callee is not named here has nowhere to run and is
+   * refused by name.
+   */
+  readonly externals?: Readonly<Record<string, PerCallProxyExternal>>;
   /** The machine the initialize transaction is evaluated on. Defaults to the provider's BCH-2026 machine. */
   readonly vm?: Machine;
 }
@@ -460,6 +473,24 @@ export async function deployPerCallProxy(
     ...(headCollections.length === 0 ? {} : { headCollections }),
   });
 
+  // The genesis published the facet pool, so the hop spends a facet from the outpoint the genesis actually created
+  // rather than searching the provider for it: a facet holds no token and pins no category, so any UTXO of its code
+  // serves.
+  const facetSpends = new Map<string, Utxo>();
+  const facetLocks = perCallValidator.buildValidatorFacets()
+    .map((code) => binToHex(encodeLockingBytecodeP2sh32(hash256(code))));
+  for (const [at, lock] of facetLocks.entries()) {
+    for (const genesis of [implementation.tx, proxy.tx]) {
+      const vout = (genesis.outputs ?? []).findIndex((output) => binToHex(output.lockingBytecode) === lock);
+      if (vout !== -1) {
+        facetSpends.set(facetId(VALIDATOR_ID, at + 1), {
+          txid: genesis.txid, vout, satoshis: (genesis.outputs ?? [])[vout]!.valueSatoshis,
+        });
+        break;
+      }
+    }
+  }
+
   // The proxy's records are read back by enumerating the proxy's category and decoding each commitment through the
   // shipped pushdata decoder: one record per data NFT of the proxy's layout, in data-NFT order.
   const layout = proxyArtifact.stateLayout!;
@@ -494,6 +525,12 @@ export async function deployPerCallProxy(
   const retvalPlaceholder = (initializeEntry?.outputs ?? []).length > 0
     ? hopRetvalPlaceholder(implementationArtifact.contractName, options.initialize.functionName)
     : undefined;
+  // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
+  // frame runs from the live deployment the caller named for it.
+  const externalPlan = await planHopExternalCalls({
+    provider, artifact: implementationArtifact, functionName: options.initialize.functionName,
+    args: options.initialize.args ?? [], externals: options.externals ?? {}, validatorProgram,
+  });
   const settled = await settleHop({
     vm,
     proxyArtifact,
@@ -502,19 +539,22 @@ export async function deployPerCallProxy(
     maximumCommitmentBytes,
     recordCommitments,
     ...(entryWrites === undefined ? {} : { entryWrites }),
+    ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees }),
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.initialize.functionName, proxyCategory, maximumCommitmentBytes,
     ),
     ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.initialize.functionName),
     planFor: (
-      writtenCommitments, attemptWrites, entryWriteViews, eventCommitments, implementationRetval,
+      writtenCommitments, attemptWrites, entryWriteViews, eventCommitments, implementationRetval, calleeRetvals,
     ) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments, recordLockingBytecode,
       ...(attemptWrites === undefined ? {} : { entryWrites: attemptWrites }),
       entryWriteViews,
       implementationRetval,
+      ...(externalPlan.calls.length === 0 ? {} : { calls: externalPlan.calls }),
+      ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees, calleeRetvals }),
       eventOutputs: hopEventOutputs(
         implementationArtifact, options.initialize.functionName, proxyCategory, eventCommitments,
       ),
@@ -551,7 +591,9 @@ export async function deployPerCallProxy(
     implementationCategoryId: implementation.categoryId,
     program,
     draft,
-    ...(entryWrites === undefined ? {} : { spentUtxos: entryWrites.spentUtxos }),
+    ...(entryWrites === undefined && externalPlan.utxos.size === 0 && facetSpends.size === 0
+      ? {}
+      : { spentUtxos: new Map([...(entryWrites?.spentUtxos ?? []), ...externalPlan.utxos, ...facetSpends]) }),
   });
 
   return {
@@ -635,6 +677,8 @@ interface SettleHopOptions {
    * does. A void entry requires the slot empty, which is what `absent` leaves it.
    */
   readonly retvalPlaceholder?: Uint8Array;
+  /** The callee frames the implementation frame's calls reach, in the order the entry reaches them. */
+  readonly callees?: readonly HopCallee[];
   /** The entry, for the refusal's own words, e.g. `"initialize" entry`. */
   readonly entryLabel: string;
   /** The plan for a given set of per-record, per-entry-write, per-event and `retval` candidate end values. */
@@ -644,7 +688,63 @@ interface SettleHopOptions {
     entryWriteViews: readonly Uint8Array[],
     eventCommitments: readonly Uint8Array[],
     implementationRetval: Uint8Array,
+    calleeRetvals: ReadonlyMap<string, Uint8Array>,
   ) => CompositionDraftPlan;
+}
+
+/**
+ * Learns what each callee frame's entry computed, before the caller that reaches it is settled.
+ *
+ * A callee's own frame is the authority on its return: the plan states a candidate in its `retval` slot and the
+ * close the entry's own `return` comparison leaves behind names the bytes it built. A void callee has nothing to
+ * learn, but its frame is still run so a callee that refuses — or one that turns out to rewrite the record the
+ * plan declared kept — is named here rather than reported as the caller's failure.
+ */
+async function settleCallees(options: {
+  readonly vm: Machine;
+  readonly artifacts: readonly Artifact[];
+  readonly planFor: (calleeRetvals: ReadonlyMap<string, Uint8Array>) => CompositionDraftPlan;
+  readonly callees: readonly HopCallee[];
+  readonly maximumCommitmentBytes: number;
+}): Promise<Map<string, Uint8Array>> {
+  const learned = new Map<string, Uint8Array>();
+  for (const callee of options.callees) {
+    const placeholder = hopRetvalPlaceholder(callee.contract, callee.entry);
+    for (let attempt = 0; attempt < MAXIMUM_HOP_ATTEMPTS; attempt += 1) {
+      const candidate = createComposedDerivationHost({
+        vm: options.vm, artifacts: options.artifacts, plan: options.planFor(learned),
+      });
+      const program = candidate.draft.programFor(callee.master);
+      const state = options.vm.evaluate({
+        inputIndex: participant(candidate.draft.layout, callee.master).index,
+        sourceOutputs: program.sourceOutputs,
+        transaction: program.transaction,
+      });
+      if (options.vm.stateSuccess(state) === true) break;
+      const reading = readComputedDeclaration({
+        vm: options.vm, program, maximumCommitmentBytes: options.maximumCommitmentBytes,
+      });
+      // A returning entry's own `return` compares the blob it built against the frame's `retval` slot; whichever
+      // operand the candidate sits on, the other is what the body computed. A callee the plan states no candidate
+      // for has nothing to learn, so a close that is not its return is the frame's own refusal.
+      if (callee.returns && reading.ok && bytesEqual(reading.computed, placeholder)) {
+        learned.set(callee.master, Uint8Array.from(reading.declared));
+        continue;
+      }
+      if (callee.returns && reading.ok && bytesEqual(reading.declared, placeholder)) {
+        learned.set(callee.master, Uint8Array.from(reading.computed));
+        continue;
+      }
+      const refusal = reportCompositionRefusal({ draft: candidate.draft, artifacts: options.artifacts, vm: options.vm });
+      const attributed = refusal.innermost === undefined
+        ? describeReading(reading, callee.records[0]?.commitment ?? new Uint8Array(0))
+        : describeInnermost(refusal.innermost);
+      throw new PerCallProxyDeployError(
+        `the call's callee "${callee.functionName}" did not settle through the proxy: ${attributed}`,
+      );
+    }
+  }
+  return learned;
 }
 
 /**
@@ -671,7 +771,25 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   // earlier attempt learned.
   const learnedExtras = new Map<string, Uint8Array>();
   let maximumAttempts = MAXIMUM_HOP_ATTEMPTS;
+  // The callees are settled first: the implementation frame's call records carry what each callee's own body
+  // computed, so the plan cannot state the caller's records until the callees have answered.
+  const artifacts: readonly Artifact[] =
+    [proxyArtifact, implementationArtifact, ...(options.callees ?? []).map((callee) => callee.artifact)];
+  const calleeRetvals = options.callees === undefined || options.callees.length === 0
+    ? new Map<string, Uint8Array>()
+    : await settleCallees({
+      vm,
+      artifacts,
+      callees: options.callees,
+      maximumCommitmentBytes: options.maximumCommitmentBytes,
+      planFor: (learned) => options.planFor(
+        writtenCommitments, entryWrites, entryWrites?.learningCandidates ?? [],
+        writtenEvents, learnedRetval ?? new Uint8Array(0), learned),
+    });
   let composed: ReturnType<typeof createComposedDerivationHost> | undefined;
+  // The derivation an attempt already ran, so a hop that settled inside the loop is not derived a second time:
+  // the draft's blocks keep the references the first derivation filled, and a rerun would read them as settled.
+  let derivedInLoop: ReturnType<typeof deriveComposition> | undefined;
   for (let attempt = 0; attempt < MAXIMUM_HOP_ATTEMPT_CAP; attempt += 1) {
     const extras = entryWrites?.learningCandidates ?? [];
     const writtenExtras = extras.map((candidate) => learnedExtras.get(bytesToHex(candidate)) ?? candidate);
@@ -685,10 +803,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     );
     if (attempt >= maximumAttempts) break;
     const plan = options.planFor(
-      writtenCommitments, entryWrites, writtenExtras, writtenEvents, learnedRetval ?? new Uint8Array(0));
-    const candidate = createComposedDerivationHost({
-      vm, artifacts: [proxyArtifact, implementationArtifact], plan,
-    });
+      writtenCommitments, entryWrites, writtenExtras, writtenEvents, learnedRetval ?? new Uint8Array(0),
+      calleeRetvals);
+    const candidate = createComposedDerivationHost({ vm, artifacts, plan });
     const implementationProgram = candidate.draft.programFor(IMPLEMENTATION_MASTER_ID);
     const state = vm.evaluate({
       inputIndex: participant(candidate.draft.layout, IMPLEMENTATION_MASTER_ID).index,
@@ -698,6 +815,17 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     if (vm.stateSuccess(state) === true) {
       composed = candidate;
       break;
+    }
+    // A frame that makes calls only reaches its own close once the derivation has bound each call to its callee and
+    // derived it, so the hop is derived here rather than read from a program that is still missing its callees.
+    if (options.callees !== undefined && options.callees.length > 0) {
+      try {
+        derivedInLoop = deriveComposition([options.root], candidate.host);
+        composed = candidate;
+        break;
+      } catch {
+        // The frame stopped on a declaration it has to be told; it is read below like any other.
+      }
     }
     const reading = readComputedDeclaration({
       vm, program: implementationProgram, maximumCommitmentBytes: options.maximumCommitmentBytes,
@@ -735,7 +863,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       // machine's verdict is paired with the artifacts' own publication to attribute the entry's reason: the
       // refusing frame is named, and for a dispatched body its `debug.functionDebug` requirement is the message.
       const refusal = reportCompositionRefusal({
-        draft: candidate.draft, artifacts: [proxyArtifact, implementationArtifact], vm,
+        draft: candidate.draft, artifacts, vm,
       });
       const attributed = refusal.innermost === undefined
         ? describeReading(reading, writtenCommitments[0] ?? new Uint8Array(0))
@@ -768,7 +896,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   // implementation frame's `retval` is the value its body computed, and the two cannot both hold. That shape cannot
   // carry a returning entry, and it is named as such rather than reported as an anonymous stalled derivation.
   let derived: ReturnType<typeof deriveComposition>;
-  try {
+  if (derivedInLoop !== undefined) {
+    derived = derivedInLoop;
+  } else try {
     derived = deriveComposition([options.root], host);
   } catch (error) {
     if (options.retvalPlaceholder !== undefined && error instanceof PerCallComposerError
@@ -828,6 +958,16 @@ interface HopPlanOptions {
   readonly implementationCategory: Uint8Array;
   /** The entry the proxy forwards to, and its arguments in parameter order. */
   readonly entry: { readonly functionName: string; readonly args?: readonly FunctionArgument[] };
+  /**
+   * The external calls the entry's own body makes, in the order it reaches them, and the callee frames they reach.
+   *
+   * A per-call body binds each external call to its own frame's k-th record, so the delegate frame states one
+   * record per call and runs each callee as a frame of its own.
+   */
+  readonly calls?: readonly DraftCall[];
+  readonly callees?: readonly HopCallee[];
+  /** The bytes each callee frame's `retval` carries: what a returning callee computed, or its candidate. */
+  readonly calleeRetvals?: ReadonlyMap<string, Uint8Array>;
   /** The records the entry's own body writes beyond the data-NFT records, or absent when it writes none. */
   readonly entryWrites?: HopEntryWrites;
   readonly recordCommitments: readonly Uint8Array[];
@@ -905,11 +1045,14 @@ function hopEventSentinels(
 function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const { proxyArtifact, implementationArtifact, proxyMaster, implementationMaster } = options;
   const pushes = callPushes(implementationArtifact, options.entry.functionName, options.entry.args ?? []);
+  const calls = options.calls ?? [];
+  const callees = options.callees ?? [];
 
   // One participant per data NFT of the proxy's layout, in data-NFT order: the record the proxy's genesis minted
   // for it. The proxy's block holds its master, its validator and them; the implementation's master follows, and
   // the deployer's signed input enters the composition. A record the entry's own body writes — a mapping node — is
-  // a participant of the same block, after them.
+  // a participant of the same block, after them. A callee the entry calls runs as its own block, its own master and
+  // its own records, exactly as a caller the composer builds for itself lays one out.
   const recordIds = options.recordCommitments.map((_commitment, nftIndex) => proxyRecordParticipantId(nftIndex));
   const entryWriteIds = options.entryWrites?.participantIds ?? [];
   const blocks: ContractBlock[] = [
@@ -920,8 +1063,17 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       state: [...recordIds, ...entryWriteIds],
     },
     { contract: implementationArtifact.contractName, masters: [IMPLEMENTATION_MASTER_ID], state: [] },
+    ...callees.map((callee) => ({
+      contract: callee.contract,
+      masters: [callee.master],
+      state: callee.records.map((record) => record.id),
+    })),
   ];
-  const layout = layoutTransaction(blocks);
+  // The validator runs as a head plus its facet inputs, so the hop's own layout has to place the same facets the
+  // composer places; otherwise the indices the plan states and the ones the assembled transaction uses would differ.
+  const validatorRedeem = validatorRedeemScript(options.proxyCategory, perCallValidator.buildValidatorProgram());
+  const facets = validatorFacetsOf({ id: VALIDATOR_ID, covers: [], settles: [], redeemScript: validatorRedeem });
+  const layout = layoutTransaction(blocks, new Map([[VALIDATOR_ID, facets]]));
   // The events the delegate frame lists sit in the trailing region, which starts past the participants. The
   // assembly allocates them there and refuses a plan that names any other index.
   const eventIndices = options.eventOutputs.map((_output, position) => layout.participantCount + position);
@@ -957,9 +1109,20 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     [...recordKept],
     recordKept.map((_entry, nftIndex) => at(recordAfter, nftIndex)),
   ];
-  const implementationSegments: RecordEntry[][] = [
-    recordKept.slice(0, implementationRecords).map((_entry, nftIndex) => at(recordWritten, nftIndex)),
-  ];
+  // A call closes the segment the code before it runs in, so a frame that makes `k` calls declares `k + 1`
+  // segments. A record the entry writes beside a call would land in the segment the source fixes, which the
+  // artifact does not publish, so the hop refuses that shape rather than declare the write in every segment.
+  if (calls.length > 0 && (writes.some(Boolean) || options.entryWrites !== undefined)) {
+    throw new PerCallProxyDeployError(
+      `the implementation's ${entryLabelFor(options.entry.functionName)} writes a record beside an external call: `
+      + 'which segment the write lands in follows the source order, which the artifact does not publish, so the '
+      + 'hop cannot declare it',
+    );
+  }
+  const implementationSegments: RecordEntry[][] = Array.from(
+    { length: calls.length + 1 },
+    () => recordKept.slice(0, implementationRecords).map((_entry, nftIndex) => at(recordWritten, nftIndex)),
+  );
   // The records the entry's own body writes follow the state records its frame declares, which is the ordinal the
   // body's group walk reads them at. A created node is a trailing output past the events.
   const laidWrites = options.entryWrites?.lay({
@@ -1004,11 +1167,14 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     contract: implementationArtifact.contractName,
     functionName: entryName(implementationArtifact, options.entry.functionName),
     program: implementationMaster.script,
-    facts: factsOf(implementationArtifact, options.entry.functionName, FrameKind.DELEGATE, false),
+    facts: factsOf(
+      implementationArtifact, options.entry.functionName, FrameKind.DELEGATE, calls.length > 0),
     frame: { kind: FrameKind.DELEGATE, sender: options.callerLockingBytecode, self: proxyMaster.address, value: 0n },
     enteredBy: PROXY_MASTER_ID,
     origin: USER_ID,
-    calls: [],
+    // The calls the entry's own body makes, in the order it reaches them: the plan states one record per call,
+    // whose result is what the callee frame's own body computed.
+    calls,
     // The value the entry returns, which the plan stated and the derivation learned; empty for a void entry, which
     // the body requires the slot to be.
     retval: options.implementationRetval,
@@ -1021,6 +1187,38 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     argumentPushes: pushes,
     redeemScript: implementationMaster.script,
   };
+  // One frame per callee, entered by the implementation master: its own master, its own live records declared
+  // kept, and the return value the caller's record carries. A callee whose own body rewrites its record is refused
+  // by the callee's own frame below rather than declared here.
+  const calleeMasterDrafts: DraftMaster[] = callees.map((callee, index) => {
+    const indices = callee.records.map((record) => participant(layout, record.id).index);
+    return {
+      master: callee.master,
+      contract: callee.contract,
+      functionName: callee.functionName,
+      program: callee.deployed.script,
+      facts: {
+        contract: callee.contract, functionName: callee.functionName, kind: callee.kind,
+        callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 1,
+      },
+      frame: { kind: callee.kind, sender: proxyMaster.address, self: callee.deployed.address, value: 0n },
+      enteredBy: IMPLEMENTATION_MASTER_ID,
+      origin: USER_ID,
+      calls: [],
+      retval: callee.returns
+        ? options.calleeRetvals?.get(callee.master)
+          ?? hopRetvalPlaceholder(callee.contract, callee.entry)
+        : new Uint8Array(0),
+      segments: [callee.records.map((record, nftIndex): RecordEntry => ({
+        in: indices[nftIndex]!, out: indices[nftIndex]!,
+        viewIn: record.commitment, viewOut: record.commitment,
+      }))],
+      events: [],
+      sends: [],
+      argumentPushes: calls[index]!.argumentPushes,
+      redeemScript: callee.deployed.script,
+    };
+  });
 
   const proxyMasterAmount = options.proxyMasterAmount;
   const implementationMasterAmount = options.implementationMasterAmount;
@@ -1028,7 +1226,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   return {
     blocks,
     userInputs: [{ id: USER_ID, index: layout.participantCount }],
-    masters: [proxyMasterDraft, implementationMasterDraft],
+    masters: [proxyMasterDraft, implementationMasterDraft, ...calleeMasterDrafts],
     inputs: {
       [PROXY_MASTER_ID]: {
         source: masterSource(proxyMaster.lockingBytecode, options.proxyCategory, proxyMasterAmount),
@@ -1060,11 +1258,24 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: options.callerSatoshis },
         unlockingBytecode: callerUnlocking(),
       },
+      ...Object.fromEntries(callees.flatMap((callee) => {
+        const masterIndex = participant(layout, callee.master).index;
+        const masterEntry = [callee.master, {
+          source: masterSource(callee.deployed.lockingBytecode, callee.category, callee.masterSatoshis),
+        }] as const;
+        const recordEntries = callee.records.map((record, nftIndex) => [record.id, {
+          source: mutableSource(record.lockingBytecode, record.satoshis, callee.category, record.commitment),
+          output: mutableSource(record.lockingBytecode, record.satoshis, callee.category, record.commitment),
+          // A callee frame is planned as a read of its records, so each is spent on the covenant's read-only path.
+          unlockingBytecode: stateRecordUnlockingBytecode(callee.categoryId, masterIndex, 0),
+        }] as const);
+        return [masterEntry, ...recordEntries];
+      })),
       ...(laidWrites?.inputs ?? {}),
     },
     validator: {
       id: VALIDATOR_ID,
-      covers: [implementationArtifact.contractName],
+      covers: [implementationArtifact.contractName, ...callees.map((callee) => callee.contract)],
       settles: [{
         category: options.proxyCategory,
         stateInputs: [...recordIds, ...entryWriteIds],
@@ -1200,12 +1411,19 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   for (const placed of draft.layout.participants) {
     const source = program.sourceOutputs[placed.index];
     const unlockingBytecode = program.transaction.inputs[placed.index]?.unlockingBytecode;
-    const real = options.spentUtxos?.get(placed.id)
-      ?? participantUtxo(placed.id === IMPLEMENTATION_MASTER_ID ? implementationPools : proxyPools, placed.id);
     if (source === undefined || unlockingBytecode === undefined) {
       throw new PerCallProxyDeployError(
         `the derived hop carries no input for participant "${placed.id}"`);
     }
+    // A validator's facet holds no token and pins no category, so any live UTXO of its code serves the input; the
+    // composer supplies its source, so the lookup is by the lock the plan states.
+    const facetUtxos = placed.kind === 'facet'
+      ? await provider.getUtxosForLockingBytecode(source.lockingBytecode)
+      : [];
+    const real = options.spentUtxos?.get(placed.id)
+      ?? participantUtxo(placed.id === IMPLEMENTATION_MASTER_ID ? implementationPools : proxyPools, placed.id)
+      ?? facetUtxos.find((utxo) => utxo.satoshis === source.valueSatoshis)
+      ?? facetUtxos[0];
     if (real === undefined) {
       throw new PerCallProxyDeployError(
         `the deployment holds no live UTXO for the hop's "${placed.id}"`);
@@ -1282,6 +1500,8 @@ export interface PerCallProxyCallOptions {
   readonly callerLockingBytecode: Uint8Array;
   readonly funder: Unlocker;
   readonly changeAddress?: string | Uint8Array;
+  /** The contracts the entry's published call sites reach, keyed by the interface the site calls. */
+  readonly externals?: Readonly<Record<string, PerCallProxyExternal>>;
   readonly vm?: Machine;
 }
 
@@ -1421,6 +1641,12 @@ export async function callPerCallProxyEntry(
   // the record's own close hands back the length the body wrote, and the run is laid at that length's chunks.
   const entryWritesFor = (commitments: readonly Uint8Array[]): HopEntryWrites | undefined =>
     hopEntryWrites({ ...writesRequest, writtenCommitments: commitments });
+  // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
+  // frame runs from the live deployment the caller named for it.
+  const externalPlan = await planHopExternalCalls({
+    provider, artifact: implementationArtifact, functionName: options.functionName,
+    args: options.args ?? [], externals: options.externals ?? {}, validatorProgram,
+  });
   const settled = await settleHop({
     vm,
     proxyArtifact,
@@ -1429,19 +1655,22 @@ export async function callPerCallProxyEntry(
     maximumCommitmentBytes,
     recordCommitments,
     entryWritesFor,
+    ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees }),
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.functionName, proxyCategory, maximumCommitmentBytes,
     ),
     ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.functionName),
     planFor: (
-      writtenCommitments, attemptWrites, entryWriteViews, eventCommitments, implementationRetval,
+      writtenCommitments, attemptWrites, entryWriteViews, eventCommitments, implementationRetval, calleeRetvals,
     ) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments,
       ...(attemptWrites === undefined ? {} : { entryWrites: attemptWrites }),
       entryWriteViews,
       implementationRetval,
+      ...(externalPlan.calls.length === 0 ? {} : { calls: externalPlan.calls }),
+      ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees, calleeRetvals }),
       eventOutputs: hopEventOutputs(implementationArtifact, options.functionName, proxyCategory, eventCommitments),
       recordLockingBytecode: stateRecordLockingBytecode(options.proxyCategoryId),
       recordCategoryHex: options.proxyCategoryId,
@@ -1469,7 +1698,9 @@ export async function callPerCallProxyEntry(
     implementationCategoryId: options.implementationCategoryId,
     program: settled.program,
     draft: settled.draft,
-    ...(settled.entryWrites === undefined ? {} : { spentUtxos: settled.entryWrites.spentUtxos }),
+    ...(settled.entryWrites === undefined && externalPlan.utxos.size === 0
+      ? {}
+      : { spentUtxos: new Map([...(settled.entryWrites?.spentUtxos ?? []), ...externalPlan.utxos]) }),
   });
 
   const retval = settled.retval;

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from './harness.js';
 import {
   FrameKind,
   INDEX_NONE,
@@ -30,7 +31,6 @@ import {
   USER_LOCK,
 } from './harness.js';
 import {
-  layoutTransaction,
   participant,
   planMappingWrite,
   type CompositionDraftPlan,
@@ -129,7 +129,7 @@ function buildPlan(entry: Entry, shape: NodeShape): CompositionDraftPlan {
     { contract: 'Oracle', masters: [ORACLE_MASTER], state: [] },
     { contract: 'Escrow', masters: [ESCROW_MASTER], state: [] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const nodeIndex = participant(layout, NODE_ID).index;
   const createdIndex = layout.participantCount;
   const amountOf = [selectorOf(artifacts, 'Oracle', 'amountOf'), ID_PUSH];
@@ -205,10 +205,7 @@ function buildPlan(entry: Entry, shape: NodeShape): CompositionDraftPlan {
     }),
     validator: {
       id: VALIDATOR_ID, covers: ['Oracle', 'Escrow'],
-      settles: [{
-        category: arbiter.category, stateInputs: [NODE_ID],
-        ...(shape.created === undefined ? {} : { createdOutputs: [createdIndex] }),
-      }],
+      settles: [],
       redeemScript: validator.redeem,
     },
   };

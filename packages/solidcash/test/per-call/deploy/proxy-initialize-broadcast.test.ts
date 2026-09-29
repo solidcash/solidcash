@@ -10,6 +10,7 @@ import { participant } from '../../../src/per-call/composer/index.js';
 import { deployPerCallProxy, proxyRecordParticipantId } from '../../../src/per-call/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * A proxied initialize that is broadcast, not only derived.
@@ -62,6 +63,8 @@ async function funded(network: MockNetworkProvider): Promise<{
   const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 100_000n };
   await network.addUtxo(funder.address, implFunding);
   await network.addUtxo(funder.address, proxyFunding);
+  // The hop broadcasts, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(network);
   await network.addUtxo(binToHex(deployerLock), callerUtxo);
   return {
     funder: funder.unlock.spend(alicePub, signature),
@@ -119,16 +122,19 @@ describe('a broadcast per-call proxy initialization', () => {
     for (const txid of txids) expect(await network.getRawTransaction(txid)).toMatch(/^[0-9a-f]+$/);
 
     // Every convention participant, then the caller's own input, recreate in place, then the caller's change.
-    expect(hop.inputs.length).toBe(5);
-    expect(hop.outputs.length).toBe(5);
+    expect(hop.inputs.length).toBe(6);
+    expect(hop.outputs.length).toBe(6);
     // The hop places each participant on the outpoint its genesis actually created: the proxy's master, validator
     // and record come from the proxy's genesis, the implementation's master from the implementation's, and the
     // caller's own coin from the coin it funded.
     const at = (index: number): string => binToHex(hop.inputs[index]!.outpointTransactionHash);
-    expect([at(0), at(1), at(2)]).toStrictEqual(
+    // The validator's facet sits at 2, so the record follows at 3; the facet is a standalone coin, not a genesis UTXO.
+    expect([at(0), at(1), at(3)]).toStrictEqual(
       [deployment.proxy.tx.txid, deployment.proxy.tx.txid, deployment.proxy.tx.txid]);
-    expect(at(3)).toBe(deployment.implementation.tx.txid);
-    expect(at(4)).toBe(CALLER_TXID);
+    // The facet comes from the facet pool a genesis published, so its outpoint is one of the geneses'.
+    expect([deployment.proxy.tx.txid, deployment.implementation.tx.txid]).toContain(at(2));
+    expect(at(4)).toBe(deployment.implementation.tx.txid);
+    expect(at(5)).toBe(CALLER_TXID);
 
     // The machine still accepts the hop the deployment settled, on its real shape.
     expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -173,7 +179,9 @@ describe('a broadcast per-call proxy initialization', () => {
 
     // The derived specification is still returned; nothing was broadcast for it.
     expect(deployment.initialize.broadcast).toBeUndefined();
-    expect(deployment.initialize.transaction.inputs.length).toBe(5);
+    // The participants the hop spends - the proxy's master, its validator and facet, the implementation's master
+    // and the record - then the deployer's own coin.
+    expect(deployment.initialize.transaction.inputs.length).toBe(6);
     expect(deployment.initialize.accepted).toBe(true);
     // The record still sits at the state the proxy's genesis minted, because the derived hop never ran on chain.
     const state = await readPerCallState(network, deployment.proxy.categoryId, artifacts.Proxy!.stateLayout!);

@@ -14,7 +14,10 @@ import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { refusalMessageOf } from './refused-entry.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * A call that passes an argument, between two compiled masters that one validator covers.
@@ -49,11 +52,11 @@ const OTHER_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', 
 /** The argument `7`, in the one encoding the wire format allows: a minimal push of its script number. */
 const ARGUMENT_PUSHES = encodeArgumentList([encodeIntegerValue(7n)]);
 
-/** Master input indices: the caller, its callee, the validator that covers both, then the user. */
+/** Master input indices: the caller, its callee, the validator with its facet, then the user. */
 const CALLER_INDEX = 0;
 const CALLEE_INDEX = 1;
 const VALIDATOR_INDEX = 2;
-const USER_INDEX = 3;
+const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
 
 interface Variant {
   readonly withArgument: boolean;
@@ -136,6 +139,7 @@ function buildComposition(variant: Variant, options: CompositionOptions = {}): C
     roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
   });
   const validatorLock = validator.lock;
+  const facets = validatorFacetPlacements();
 
   const callerBlock: WitnessBlock = {
     kind: 0,
@@ -207,6 +211,7 @@ function buildComposition(variant: Variant, options: CompositionOptions = {}): C
         ...validator.unlockingBytecode,
       ]),
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(4),
@@ -219,12 +224,14 @@ function buildComposition(variant: Variant, options: CompositionOptions = {}): C
     { lockingBytecode: callerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validatorLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const sourceOutputs = [
     { lockingBytecode: callerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validatorLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
 
@@ -274,7 +281,8 @@ describe('a caller that passes an argument to its callee', () => {
  */
 
 /** The input count of the transaction these cases build, which the array source reads at run time. */
-const INPUT_COUNT = 4;
+/** The array's first element reads `tx.inputs.length`: the caller, the callee, the validator with its facet and the user. */
+const INPUT_COUNT = USER_INDEX + 1;
 
 /** The caller's entry argument `n`, in the one encoding the wire allows. */
 const entryPush = (n: bigint): Uint8Array => encodeDataPush(encodeIntegerValue(n));
@@ -357,6 +365,7 @@ function buildComposite(
   const validator = validatorSpend(CATEGORY_CALLER, {
     roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
   });
+  const facets = validatorFacetPlacements();
 
   const callerBlock: WitnessBlock = {
     kind: 0,
@@ -428,6 +437,7 @@ function buildComposite(
       sequenceNumber: 0xffffffff,
       unlockingBytecode: validator.unlockingBytecode,
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(4),
@@ -439,6 +449,7 @@ function buildComposite(
     { lockingBytecode: callerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const sourceOutputs = [...outputs];

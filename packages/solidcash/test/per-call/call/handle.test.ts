@@ -8,6 +8,7 @@ import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import type { PerCallFunctionCall } from '../../../src/per-call/call/index.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * The call surface a deployed per-call contract's handle exposes.
@@ -58,6 +59,8 @@ async function deploy(): Promise<{ calls: TallyCalls; handle: StatefulContract; 
   await provider.addUtxo(signer.getAddress(), fundingUtxo);
   // The caller's own coin, at the signer's own P2PKH lock: a root frame binds `msg.sender` to its input's lock.
   await provider.addUtxo(signer.getAddress(), { txid: '66'.repeat(32), vout: 0, satoshis: 200_000n });
+  // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(provider);
 
   const deployment = await deployStatefulContract(tally, [], {
     provider,

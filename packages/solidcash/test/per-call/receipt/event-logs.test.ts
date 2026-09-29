@@ -79,9 +79,10 @@ describe('an event emitted by a nested frame', () => {
         { contract: 'Emitter', masters: ['emitter-1'], state: [] },
       ],
       userInputs: [
-        { id: 'event-caller', index: 3 },
-        { id: 'event-emitter', index: 4 },
-        { id: 'user', index: 5 },
+        // The facet the validator binds is one participant ahead of the users.
+        { id: 'event-caller', index: 4 },
+        { id: 'event-emitter', index: 5 },
+        { id: 'user', index: 6 },
       ],
       masters: [
         {
@@ -98,7 +99,8 @@ describe('an event emitted by a nested frame', () => {
               value: 0n, argumentPushes: [fire],
             }],
           }),
-          events: [3],
+          // The facet the validator binds is one participant ahead of the events.
+          events: [4],
         },
         {
           ...master({
@@ -110,7 +112,8 @@ describe('an event emitted by a nested frame', () => {
             frame: { kind: FrameKind.CALL, sender: caller.address, self: emitter.address, value: 0n },
             enteredBy: 'caller-1', origin: 'user', argumentPushes: [fire],
           }),
-          events: [4],
+          // The facet the validator binds is one participant ahead of the events.
+          events: [5],
         },
       ],
       inputs: {
@@ -144,7 +147,8 @@ describe('an event emitted by a nested frame', () => {
     const logs = compositionEventLogs(outcome.draft, [artifacts.Caller!, artifacts.Emitter!], {
       validatorProgram: VALIDATOR_PROGRAM,
     });
-    expect(logs.map((log) => log.outputIndex)).toStrictEqual([3, 4]);
+    // The events sit one participant on: the caller, the head, the facet it binds, then the events.
+    expect(logs.map((log) => log.outputIndex)).toStrictEqual([4, 5]);
 
     // The caller's own event, reported with the caller's address.
     const ping = logs.find((log) => log.eventName === 'Ping')!;
@@ -238,9 +242,10 @@ describe('an event covenant no frame lists', () => {
         { contract: 'Emitter', masters: ['emitter-1'], state: [] },
       ],
       userInputs: [
-        { id: 'event-caller', index: 3 },
-        { id: 'event-emitter', index: 4 },
-        { id: 'user', index: 5 },
+        // The facet the validator binds is one participant ahead of the users.
+        { id: 'event-caller', index: 4 },
+        { id: 'event-emitter', index: 5 },
+        { id: 'user', index: 6 },
       ],
       masters: [
         {
@@ -257,7 +262,8 @@ describe('an event covenant no frame lists', () => {
               value: 0n, argumentPushes: [fire],
             }],
           }),
-          events: [3],
+          // The facet the validator binds is one participant ahead of the events.
+          events: [4],
         },
         {
           ...master({
@@ -269,7 +275,8 @@ describe('an event covenant no frame lists', () => {
             frame: { kind: FrameKind.CALL, sender: caller.address, self: emitter.address, value: 0n },
             enteredBy: 'caller-1', origin: 'user', argumentPushes: [fire],
           }),
-          events: [4],
+          // The facet the validator binds is one participant ahead of the events.
+          events: [5],
         },
       ],
       inputs: {
@@ -300,7 +307,7 @@ describe('an event covenant no frame lists', () => {
     const listed = compositionEventLogs(outcome.draft, [artifacts.Caller!, artifacts.Emitter!], {
       validatorProgram: VALIDATOR_PROGRAM,
     });
-    expect(listed.map((log) => log.outputIndex)).toStrictEqual([3, 4]);
+    expect(listed.map((log) => log.outputIndex)).toStrictEqual([4, 5]);
 
     // The transaction carries one more output locked by a listed event's own covenant, but no frame lists it, so
     // the frames' declarations are the census and it is not reported.
@@ -309,6 +316,6 @@ describe('an event covenant no frame lists', () => {
       validatorProgram: VALIDATOR_PROGRAM,
       outputs: [...derived, stray as unknown as (typeof derived)[number]],
     });
-    expect(withStray.map((log) => log.outputIndex)).toStrictEqual([3, 4]);
+    expect(withStray.map((log) => log.outputIndex)).toStrictEqual([4, 5]);
   });
 });

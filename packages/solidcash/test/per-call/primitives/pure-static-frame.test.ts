@@ -7,7 +7,8 @@ import {
   USER_LOCK, compileAndDeploy, composeAndDerive, entryName, hexOf, master, masterInput, rootOf, seededAddress,
   selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
-import { layoutTransaction, type CompositionDraftPlan } from '../../../src/per-call/composer/index.js';
+import { type CompositionDraftPlan } from '../../../src/per-call/composer/index.js';
+import { layoutWithFacets } from '../shapes/harness.js';
 
 /**
  * A `pure` callee reached as a read-only frame, with a fixed-size array on both boundaries.
@@ -61,7 +62,7 @@ function planFor(argumentExpression: string, declarations = ''): {
   ];
   const plan: CompositionDraftPlan = {
     blocks,
-    userInputs: userInputs(['user'], layoutTransaction(blocks).participantCount),
+    userInputs: userInputs(['user'], layoutWithFacets(blocks).participantCount),
     masters: [
       master({
         master: 'caller-1', contract: 'Caller', entry: 'start', program: caller.program,

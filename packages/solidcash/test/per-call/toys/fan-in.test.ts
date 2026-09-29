@@ -43,7 +43,8 @@ const HOLDER = seededAddress(HUB_LABEL);
 /** The composer gives a user-entered master no call data, so the root takes no argument and the amount is fixed. */
 const AMOUNT = 40n;
 const PREVIOUS = 7n;
-const NODE_INDEX = 5;
+// The hub, its validator and the facet it binds, the vault, the token's two masters, then the node.
+const NODE_INDEX = 6;
 const ZERO_SLOT = new Uint8Array(32);
 
 const SOURCE = 'pragma solidcash ^0.13.0;'

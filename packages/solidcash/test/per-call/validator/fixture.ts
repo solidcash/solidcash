@@ -183,6 +183,11 @@ export interface CompositionPlan {
    * the virtual machine states the real program here.
    */
   readonly validatorTemplate?: Uint8Array;
+  /**
+   * The facet codes the head program binds, one per input at `validatorIndex + k`. Defaults to none, which is what
+   * a placeholder template binds.
+   */
+  readonly validatorFacets?: readonly Uint8Array[];
 }
 
 /** One input of a laid-out composition, before it is encoded. */
@@ -197,6 +202,7 @@ export interface CompositionInput {
     redeemScript: Uint8Array;
   };
   validator?: { transcript: Transcript; redeemScript: Uint8Array };
+  facet?: { redeemScript: Uint8Array };
   state?: { redeemScript: Uint8Array };
   user?: { signature: Uint8Array; publicKey: Uint8Array };
 }
@@ -206,6 +212,8 @@ export interface Composition {
   readonly inputs: CompositionInput[];
   readonly outputs: OutputView[];
   readonly validatorIndex: number;
+  /** The index of the facet input at `validatorIndex + k`, in order. Empty when the head binds none. */
+  readonly facetIndices: readonly number[];
   readonly masterIndex: ReadonlyMap<string, number>;
   /** A state slot's input index, or a created slot's output index. */
   readonly slotIndex: ReadonlyMap<string, number>;
@@ -239,6 +247,7 @@ interface Frame {
 /** Lays a plan out into a composition. */
 export function planComposition(plan: CompositionPlan): Composition {
   const template = plan.validatorTemplate ?? VALIDATOR_TEMPLATE;
+  const facets = plan.validatorFacets ?? [];
   const contractById = new Map(plan.contracts.map((contract) => [contract.id, contract]));
   const userById = new Map(plan.users.map((user) => [user.id, user]));
   const masterById = new Map(plan.masters.map((master) => [master.id, master]));
@@ -326,11 +335,12 @@ export function planComposition(plan: CompositionPlan): Composition {
   }
 
   interface PlannedInput {
-    kind: 'master' | 'validator' | 'state' | 'user';
+    kind: 'master' | 'validator' | 'facet' | 'state' | 'user';
     contractId?: string;
     masterId?: string;
     slotId?: string;
     userId?: string;
+    facet?: number;
   }
   const touchedSlots = new Set<string>();
   for (const master of plan.masters) {
@@ -348,6 +358,8 @@ export function planComposition(plan: CompositionPlan): Composition {
     if (contractId === validatorContract) {
       validatorIndex = plannedInputs.length;
       plannedInputs.push({ kind: 'validator', contractId });
+      // The facets follow the head, so the facet at `head + k` is the plan's `k`th facet code.
+      facets.forEach((_code, at) => plannedInputs.push({ kind: 'facet', contractId, facet: at + 1 }));
     }
     for (const slot of plan.stateSlots) {
       if (slot.contract !== contractId) continue;
@@ -482,6 +494,15 @@ export function planComposition(plan: CompositionPlan): Composition {
           transcript: { roots: [], masters: [], settles: [] },
           redeemScript: validatorRedeemScript(contract.category, template),
         },
+      };
+    }
+    if (planned.kind === 'facet') {
+      const code = facets[planned.facet! - 1]!;
+      return {
+        value: 10_000n,
+        lockingBytecode: encodeLockingBytecodeP2sh32(hash256(code)),
+        token: emptyToken(),
+        facet: { redeemScript: code },
       };
     }
     if (planned.kind === 'state') {
@@ -638,6 +659,7 @@ export function planComposition(plan: CompositionPlan): Composition {
     inputs,
     outputs,
     validatorIndex,
+    facetIndices: plannedInputs.flatMap((planned, index) => (planned.kind === 'facet' ? [index] : [])),
     masterIndex,
     slotIndex,
     blocks,
@@ -664,6 +686,9 @@ export function materialise(composition: Composition): PerCallTransaction {
         encodeDataPush(encodeTranscript(input.validator.transcript)),
         encodeDataPush(input.validator.redeemScript),
       ]);
+    } else if (input.facet !== undefined) {
+      // A facet's unlocking bytecode is its own code and nothing else: it reads the transcript from the head.
+      unlockingBytecode = encodeDataPush(input.facet.redeemScript);
     } else if (input.state !== undefined) {
       unlockingBytecode = encodeDataPush(input.state.redeemScript);
     } else if (input.user !== undefined) {

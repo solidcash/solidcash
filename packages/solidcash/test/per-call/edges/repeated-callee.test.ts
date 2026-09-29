@@ -19,9 +19,10 @@ import {
 } from '../shapes/harness.js';
 import { PER_CALL_MASTER_PADDING_BYTES } from '../../../../solidc/src/per-call/master/master-program.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { layoutWithFacets } from '../shapes/harness.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  createComposedDerivationHost, deriveDepthFirst, layoutTransaction, participant,
+  createComposedDerivationHost, deriveDepthFirst, participant,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
@@ -97,7 +98,8 @@ function build(turns: number, sourceTurns: number = turns): Run {
 
   // The layout places the hub's master and its validator, then one master per turn of the loop, then the record,
   // then the user's signed input.
-  const recordIndex = 2 + turns;
+  // The hub's master, its validator, the facet it binds, then one master per turn, then the record.
+  const recordIndex = 3 + turns;
   const userIndex = recordIndex + 1;
   const recordOf = (total: bigint): Uint8Array =>
     new Uint8Array(Buffer.from(buildPushdataCommitment(artifacts.Log!.stateLayout!, { total }, 0), 'hex'));
@@ -155,7 +157,7 @@ function build(turns: number, sourceTurns: number = turns): Run {
   ];
   // Every turn rewrites the log's record, and the covenant's write path names one writer: the hub's master and
   // validator precede the log's masters, so the first log master is the index the spend is authorized by.
-  const masterIndex = participant(layoutTransaction(blocks), 'log-1').index;
+  const masterIndex = participant(layoutWithFacets(blocks), 'log-1').index;
   const plan: CompositionDraftPlan = {
     blocks,
     userInputs: [{ id: USER_ID, index: userIndex }],
@@ -396,7 +398,7 @@ describe('the tables and the layout the shape publishes', () => {
   it('places one master per turn between the caller and its record, and chains that record', () => {
     const { run, derived: { draft } } = derivedTwoTurns();
     expect(draft.layout.participants.map((placed) => `${placed.id}@${placed.index}`))
-      .toStrictEqual(['hub-1@0', 'validator@1', 'log-1@2', 'log-2@3', 'record-log@4']);
+      .toStrictEqual(['hub-1@0', 'validator@1', 'validator/1@2', 'log-1@3', 'log-2@4', 'record-log@5']);
     expect(draft.blockOf('log-1').segments.map((segment) => segment.map((entry) => [entry.in, entry.out])))
       .toStrictEqual([[[run.recordIndex, run.recordIndex]]]);
     // The record's written commitment is the last declaration any frame made, which is the second turn's.

@@ -120,7 +120,8 @@ function build(calleeBody: string, callerBody: string): Composition {
       { contract: 'Caller', masters: [CALLER_MASTER], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
       { contract: 'Callee', masters: [CALLEE_MASTER], state: [] },
     ],
-    userInputs: [{ id: USER_ID, index: 3 }],
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: [{ id: USER_ID, index: 4 }],
     masters: [callerMaster, calleeMaster],
     inputs: {
       [CALLER_MASTER]: {

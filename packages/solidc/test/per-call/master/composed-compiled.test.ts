@@ -11,7 +11,10 @@ import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * Two contracts that call each other, both compiled as masters and co-spent with a validator.
@@ -64,11 +67,12 @@ const token = (
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
-/** Master input indices: the caller, its callee, the validator that covers both, then the user. */
+/** Master input indices: the caller, its callee, the validator with its facet, then the user. */
 const CALLER_INDEX = 0;
 const CALLEE_INDEX = 1;
 const VALIDATOR_INDEX = 2;
-const USER_INDEX = 3;
+const VALIDATOR_FACET_INDEX = VALIDATOR_INDEX + 1;
+const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
 
 interface CompositionOptions {
   /** How the callee claims its frame was entered. */
@@ -108,6 +112,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
   });
   const validatorLock = validator.lock;
+  const facets = validatorFacetPlacements();
 
   const callerBlock: WitnessBlock = {
     kind: 0,
@@ -177,6 +182,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
         ...validator.unlockingBytecode,
       ]),
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(4),
@@ -189,12 +195,14 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     { lockingBytecode: callerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validatorLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const sourceOutputs = [
     { lockingBytecode: callerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validatorLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
 
@@ -247,8 +255,9 @@ describe('two compiled masters that call each other', () => {
     // on a caller that is itself a master.
     const rootClaim = { calleeKind: 0, calleeCallerRef: CALLER_INDEX, calleeOriginRef: CALLER_INDEX };
     expect(accepted(rootClaim, CALLEE_INDEX)).toBe(false);
-    // The call recorded a message frame, so a callee that presents a root frame fails the validator as well.
-    expect(accepted(rootClaim, VALIDATOR_INDEX)).toBe(false);
+    // The frame's kind is an edge rule, which the split runs in the facet at `head + 1`, so the facet is the
+    // validator input that refuses a callee presenting itself as a root.
+    expect(accepted(rootClaim, VALIDATOR_FACET_INDEX)).toBe(false);
   });
 
   it('refuses a call frame that claims the root frame\'s zero value', () => {
@@ -258,7 +267,7 @@ describe('two compiled masters that call each other', () => {
       calleeSender: USER_LOCK, calleeValue: 1n,
     };
     expect(accepted(rootClaim, CALLEE_INDEX)).toBe(false);
-    // The call recorded a message frame of value zero, so this root claim fails the validator as well.
-    expect(accepted(rootClaim, VALIDATOR_INDEX)).toBe(false);
+    // The recorded value is bound by the same edge rule, in the facet, so a root claim of value one fails there.
+    expect(accepted(rootClaim, VALIDATOR_FACET_INDEX)).toBe(false);
   });
 });

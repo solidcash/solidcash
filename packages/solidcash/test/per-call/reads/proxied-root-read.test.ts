@@ -10,6 +10,7 @@ import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { PerCallFunctionCall } from '../../../src/per-call/call/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * A read-only call through a proxy handle.
@@ -71,6 +72,8 @@ async function deployedWithCallerCoin(network: MockNetworkProvider): Promise<{
   // The hop's root frame binds `msg.sender` to the lock of the coin it names, so it sits at the deployer's P2PKH.
   const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
   await network.addUtxo(binToHex(deployerLock), hopCoin);
+  // The hops broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(network);
 
   const deployment = await deployPerCallProxy({
     provider: network,

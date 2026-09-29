@@ -96,6 +96,7 @@ import {
   participant,
   readPublishedStopSites,
   reportCompositionRefusal,
+  validatorFacetsOf,
   type CompositionDraft,
   type CompositionDraftPlan,
   type CompositionRefusal,
@@ -670,7 +671,11 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       ...(payee.mapping?.participantIds ?? []).map((id) => receiveNodeId(index, id)),
     ],
   }))];
-  const layout = layoutTransaction(blocks);
+  // The validator runs as a head plus the facet inputs its program binds, so the call's own layout has to place
+  // the same facets the composer places; otherwise the indices the plan states and the assembled ones differ.
+  const validatorRedeem = validatorRedeemScript(category, validatorProgram);
+  const facets = validatorFacetsOf({ id: VALIDATOR_ID, covers: [], settles: [], redeemScript: validatorRedeem });
+  const layout = layoutTransaction(blocks, new Map([[VALIDATOR_ID, facets]]));
   const masterIndex = participant(layout, MASTER_ID).index;
   // The trailing region is events first, then the created mapping nodes. An entry that emits declares one output
   // per emit, in emit order, at the covenant the body rebuilds; each output's commitment is the payload the body
@@ -1078,25 +1083,8 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       validator: {
         id: VALIDATOR_ID,
         covers: payees.map((payee) => payee.artifact.contractName),
-        settles: [{
-          category,
-          stateInputs: [...recordIds, ...mappingIds],
-          ...(laid === undefined || laid.createdOutputs.length === 0
-            ? {} : { createdOutputs: laid.createdOutputs }),
-        }, ...payees.flatMap((payee, index) => {
-          // A paid contract that writes a mapping settles several records, as the entry's own contract does.
-          const mapping = payeeLaid[index]!.mapping;
-          if (mapping === undefined) return [];
-          return [{
-            category: payee.category,
-            stateInputs: [
-              ...payee.records.map((_record, nftIndex) => receiveRecordId(index, nftIndex)),
-              ...(payee.mapping?.participantIds ?? []).map((id) => receiveNodeId(index, id)),
-            ],
-            ...(mapping.createdOutputs.length === 0 ? {} : { createdOutputs: mapping.createdOutputs }),
-          }];
-        })],
-        redeemScript: validatorRedeemScript(category, validatorProgram),
+        settles: [],
+        redeemScript: validatorRedeem,
       },
     };
   };
@@ -1513,10 +1501,16 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
   for (const placed of draft.layout.participants) {
     const source = program.sourceOutputs[placed.index];
     const unlockingBytecode = derivedInputs[placed.index]?.unlockingBytecode;
-    const real = options.liveUtxos.get(placed.id);
     if (source === undefined || unlockingBytecode === undefined) {
       throw new PerCallCallError(`the derived call carries no input for participant "${placed.id}"`);
     }
+    // A facet holds no token and pins no category, so any live UTXO at its lock serves the input.
+    const facetUtxos = placed.kind === 'facet'
+      ? await provider.getUtxosForLockingBytecode(source.lockingBytecode)
+      : [];
+    const real = options.liveUtxos.get(placed.id)
+      ?? facetUtxos.find((utxo) => utxo.satoshis === source.valueSatoshis)
+      ?? facetUtxos[0];
     if (real === undefined) {
       throw new PerCallCallError(`the deployment holds no live UTXO for the call's "${placed.id}"`);
     }

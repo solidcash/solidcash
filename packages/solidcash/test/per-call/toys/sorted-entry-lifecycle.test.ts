@@ -46,9 +46,10 @@ const DEFAULT = 0n;
 // The inserting master sits last among the Ledger masters, so the node it creates lands at the output just past
 // its own input. The head the insert relinks is a state input that recreates in place after the masters, and the
 // user follows.
-const CREATED_INDEX = 5;
-const HEAD_INDEX = 6;
-const USER_INDEX = 7;
+// The hub, its validator, the facet it binds, the ledger's three masters, then the created node, its head and the user.
+const CREATED_INDEX = 6;
+const HEAD_INDEX = 7;
+const USER_INDEX = 8;
 const ZERO_SLOT = new Uint8Array(32);
 const VALUE_TAIL_BYTES = 64;
 

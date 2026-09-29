@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import {
   FrameKind, buildPushdataCommitment, type Artifact,
 } from '@solidcash/utils';
@@ -15,7 +16,7 @@ import {
   rootOf, selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
-  layoutTransaction, participant,
+  participant,
   type CompositionDraftPlan, type ContractBlock, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
@@ -171,7 +172,7 @@ interface Composed {
 /** Lays the hop out with the coordinates the shipped block layout assigns, never a literal. */
 function composeHop(hop: Hop): Composed {
   const fixture = setup();
-  const layout = layoutTransaction(blocksFor(hop));
+  const layout = layoutWithFacets(blocksFor(hop));
   const recordIndex = participant(layout, RECORD_ID).index;
   const masterIndex = participant(layout, PROXY_MASTER).index;
   const userBase = layout.participantCount;
@@ -273,7 +274,8 @@ describe('a DELEGATE edge binds the callee to the implementation the proxy\'s re
     // the derivation, the reference and the on-chain program refuse the same bytes rather than diverging.
     const composed = hostile();
     expect(VALIDATOR_PROGRAM_REASONS).toContain('V5_DELEGATE_TARGET_MISMATCH');
-    expect(verdict(composed, VALIDATOR_ID).accepted).toBe(false);
+    // The edge rule runs in the validator's facet, at the input after the head.
+    expect(verdict(composed, `${VALIDATOR_ID}/1`).accepted).toBe(false);
   });
 
   it('leaves the proxy\'s own input admissible, so the refusal is the validator\'s edge and not a broken plan', () => {

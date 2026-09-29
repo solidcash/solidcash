@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   FrameKind,
@@ -109,10 +110,8 @@ function buildRoundTrip(): {
     { contract: 'A', masters: [A_FIRST, A_SECOND], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
     { contract: 'B', masters: [B_MASTER], state: [] },
   ];
-  const eventIndex = blocks.reduce(
-    (count, block) => count + block.masters.length + (block.validator === undefined ? 0 : 1) + block.state.length,
-    0,
-  );
+  // The trailing region starts at the participant count, which includes the facet each validator binds.
+  const eventIndex = layoutWithFacets(blocks).participantCount;
 
   const aFirst: DraftMaster = {
     master: A_FIRST, contract: 'A', functionName: ENTRY_F, program: a.script,
@@ -149,7 +148,7 @@ function buildRoundTrip(): {
 
   const plan: CompositionDraftPlan = {
     blocks,
-    userInputs: [{ id: USER_ID, index: 4 }],
+    userInputs: [{ id: USER_ID, index: eventIndex }],
     masters: [aFirst, bMaster, aSecond],
     inputs: {
       [A_FIRST]: { source: { lockingBytecode: a.lockingBytecode, valueSatoshis: 20_000n, token: token(CATEGORY_A, 'minting') } },

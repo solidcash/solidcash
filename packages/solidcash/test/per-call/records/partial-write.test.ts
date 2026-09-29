@@ -31,7 +31,8 @@ const RECORD_ID = 'record';
 const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 const MASTER_ID = 'vault-1';
-const RECORD_INDEX = 2;
+// The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
+const RECORD_INDEX = 3;
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Other { function ping() { require(true); } }'
@@ -82,7 +83,8 @@ function derive(counterWritten: bigint): {
     blocks: [
       { contract: 'Vault', masters: [MASTER_ID], validator: { id: VALIDATOR_ID, settles: [] }, state: [RECORD_ID] },
     ],
-    userInputs: userInputs([USER_ID], 3),
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: userInputs([USER_ID], 4),
     masters: [vaultMaster],
     inputs: {
       [MASTER_ID]: { source: masterInput(vault) },

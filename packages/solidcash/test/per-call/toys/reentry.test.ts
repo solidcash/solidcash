@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import {
   FrameKind,
   buildEntryNftCovenantScript,
@@ -23,7 +24,7 @@ import {
 } from '../shapes/harness.js';
 import {
   createComposedDerivationHost, deriveDepthFirst, layOutMappingWrites,
-  layoutTransaction, participant, planMappingWrite, type CompositionDraft, type CompositionDraftPlan,
+  participant, planMappingWrite, type CompositionDraft, type CompositionDraftPlan,
   type DraftMaster, type MappingNodePlacement,
 } from '../../../src/per-call/composer/index.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
@@ -161,8 +162,9 @@ function driveSettled(
   // block, and the entering user after every participant. A created record is a funder's recreation, so it and the
   // head sentinel follow every participant instead.
   const stateCount = insert ? 0 : 1;
-  const participantCount = 2 + 1 + stateCount + 1;
-  const nodeIndex = 3;
+  // Two Vault masters, its validator, the facet it binds, its state record, then the Claimer's master.
+  const participantCount = 2 + 1 + 1 + stateCount + 1;
+  const nodeIndex = 4;
   const createdIndex = insert ? participantCount : nodeIndex;
   const headIndex = createdIndex + 1;
   const userIndex = participantCount + (insert ? 2 : 0);
@@ -526,7 +528,7 @@ function driveGraph(): GraphOutcome {
     { contract: 'Claimer', masters: ['claim-1'], state: [] },
     { contract: 'Token', masters: ['transfer-1', 'transfer-2'], state: ['tokenNode'] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const vaultNodeIndex = participant(layout, 'vaultNode').index;
   const tokenNodeIndex = participant(layout, 'tokenNode').index;
   const releaseIndex = participant(layout, 'release-1').index;
@@ -743,7 +745,7 @@ describe('the vault graph: release, two payments through the token and the emit'
       .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
     expect(rejected).toStrictEqual([]);
     expect(verdicts.map((verdict) => verdict.participant)).toStrictEqual([
-      'release-1', 'markClaimed-1', 'pay-1', 'pay-2', 'validator', 'vaultNode', 'claim-1',
+      'release-1', 'markClaimed-1', 'pay-1', 'pay-2', 'validator', 'validator/1', 'vaultNode', 'claim-1',
       'transfer-1', 'transfer-2', 'tokenNode',
     ]);
     expect(participant(draft.layout, 'vaultNode').index).toBe(vaultNodeIndex);
@@ -891,7 +893,7 @@ function driveReadBack(): GraphOutcome {
     },
     { contract: 'Claimer', masters: ['claim-1'], state: [] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const vaultNodeIndex = participant(layout, 'vaultNode').index;
   const placements = new Map<string, MappingNodePlacement>([
     [bytesToHex(slot), { in: vaultNodeIndex, out: vaultNodeIndex }],
@@ -1029,7 +1031,7 @@ describe('the claimer\'s read-back of the record `release` wrote', () => {
       .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
     expect(refused).toStrictEqual([]);
     expect(verdicts.map((verdict) => `${verdict.participant}:${verdict.accepted}`)).toStrictEqual([
-      'release-1:true', 'get-1:true', 'validator:true', 'vaultNode:true', 'claim-1:true',
+      'release-1:true', 'get-1:true', 'validator:true', 'validator/1:true', 'vaultNode:true', 'claim-1:true',
     ]);
   });
 
@@ -1102,7 +1104,7 @@ function driveCreatedReadBack(): {
     { contract: 'Vault', masters: ['release-1', 'get-1'], validator: { id: 'validator', settles: [] }, state: [] },
     { contract: 'Claimer', masters: ['claim-1'], state: [] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const createdIndex = layout.participantCount;
   const headIndex = createdIndex + 1;
   const userIndex = headIndex + 1;

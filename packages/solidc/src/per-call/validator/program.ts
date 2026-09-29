@@ -16,8 +16,8 @@
  * is the unit of progress.
  */
 
-import { Opcodes, encodeDataPush } from '@bitauth/libauth';
-import { FrameKind, TokenCapability, VALIDATOR_PIN_PUSH_LENGTH, encodeInt } from '@solidcash/utils';
+import { Opcodes, encodeDataPush, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
+import { FrameKind, TokenCapability, VALIDATOR_PIN_PUSH_LENGTH, encodeInt, hash256 } from '@solidcash/utils';
 import {
   dropFirstPushScript,
   dropLastPushScript,
@@ -159,6 +159,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V7_SEND_OUTPUT_SHARED',
   'V7_VALUE_NOT_CONSERVED',
   'V8_SETTLE_REQUIRED_MISSING',
+  'V8_SETTLE_NOT_REQUIRED',
   'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
 
@@ -174,11 +175,63 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
 /** The identifier the depth-first visit is defined under; the program defines no other function. */
 const ORDERED_VISIT_ID = 1;
 
+/** One check: a run of instructions that takes the stack shape `[M]` and leaves it. */
+type CheckEmitter = (e: Emitter) => void;
+
 /**
- * Builds the validator program's bytecode.
+ * The checks the head input runs, in the order it decides them.
  *
- * The emitted sequence, with the stack shown bottom first and the program's own bytes kept on the alternate stack
- * for the whole run:
+ * A check stays in the head when its rule is about the input that runs it: V1 recreates the validator at its own
+ * index, V9 and the settle rule read this input's own token, V3 reads the validator reference the machine is
+ * evaluating, V7's census reads the input its own output belongs to, and V11 derives the address of the script now
+ * running.
+ */
+const HEAD_CHECKS: readonly CheckEmitter[] = [
+  emitSelfRecreation,
+  emitTranscriptHeader,
+  emitRootCategory,
+  emitRootsAreInputs,
+  emitMasterIndices,
+  emitSettledStateInputs,
+  emitCompleteness,
+  emitSettlementStateInputs,
+  emitDefineOrderedVisit,
+  emitSettlementCensus,
+  emitFrameAddresses,
+];
+
+/** The checks each facet runs, in order: the input at `head + k` runs the `k`th group. */
+const FACET_CHECKS: readonly (readonly CheckEmitter[])[] = [
+  [
+    emitRootRules,
+    emitEdgeRules,
+    emitExecutionOrder,
+    emitReadOnlyFrames,
+    emitSettleCategoriesAreDistinct,
+    emitSettlementMembership,
+    emitSettlementNecessity,
+    emitSettlementFungibleAmounts,
+  ],
+];
+
+/**
+ * Builds the validator program's parts: the head, then one facet per further input.
+ *
+ * A validator's redeem script is `push(pin(cat)) || head`, so the head executes with the transcript `M` on the
+ * stack below the pin and its own bytes on the alternate stack. The checks it carries are the ones whose rule is
+ * about the input that runs them (see {@link HEAD_CHECKS}); everything else the validator decides runs in a facet.
+ *
+ * Facet `k` is the input at `head + k`, locked by `P2SH32(F_k)` and carrying no token. It reads `M` from the first
+ * push of the unlocking bytecode of the input `k` places below its own, which is the head: a facet reads the
+ * transcript once, from the head, so no check reads a master's input twice. A facet decides nothing about itself —
+ * the head holds it in place.
+ *
+ * The head carries every facet's lock as a constant and requires the input and the output at `head + k` to be that
+ * lock, the output worth at least the input. A position holds one lock and a facet's lock is not a head's, so a
+ * facet cannot be left out, moved, replaced or shared by two heads. Because those constants are part of the head,
+ * the address every master presents commits to every facet's code.
+ *
+ * The emitted sequence, with the stack shown bottom first:
  *
  * 1. entry: `[M, pin]` — the pin must be a 33-byte pinned category whose capability is mutable; then it is dropped;
  * 2. V1 on `[M, pin]`: the validator recreates itself at its own index, and a master of its category is spent;
@@ -186,30 +239,89 @@ const ORDERED_VISIT_ID = 1;
  *    master and settled state input it lists names a real input. Nothing follows the settle list;
  * 4. V9 on `[M, rootCount, rest]`: the first root's own category is this validator's;
  * 5. V3 on `[M]`: `M.masters` is exactly the set of minting inputs whose witness names this validator;
- * 6. V4 on `[M]`: the roots are the covered masters a user entered, and every other covered master is called by one;
- * 7. edges on `[M]`: every call names a covered master that records this caller, this kind, this origin, the value,
+ * 6. the facets: each input at `head + k` is the facet's lock and recreates it;
+ * 7. the settle rule on `[M]`: the state UTXOs the transaction spends are exactly the ones the transcript lists;
+ * 8. census on `[M]`: no input and no output of a settled contract's own category carries a fungible amount, a
+ *    mutable own-category output is one a frame on that contract declares for a record it writes, a bare 32-byte
+ *    own-category output is an event a frame on that contract lists, every listed event names an output of the
+ *    transaction, no two frames list the same one, every master of the contract is recreated by a master output at
+ *    its own index, the record indices the frames read are exactly the state UTXOs the contract spends, every
+ *    record's declarations chain in the depth-first order the call tree gives, every record a frame writes
+ *    keeps at least the value it came with, the frame's own sends included, no two frames list the same send, and
+ *    the contract's containers grow by at least what its frames receive less what they pay;
+ * 9. V11 on `[M]`: a covered master whose address comes from its own category presents that category's address.
+ *
+ * A facet's sequence, on the same `[M]`:
+ *
+ * 1. entry: the transcript, taken from the head's unlocking bytecode;
+ * 2. V4 on `[M]`: the roots are the covered masters a user entered, and every other covered master is called by one;
+ * 3. edges on `[M]`: every call names a covered master that records this caller, this kind, this origin, the value,
  *    the sender, the address and the result the call recorded, and the argument hash of the callee's own pushes.
  *    A DELEGATE call's target is the address of the callee master's own category, so the callee's code is the
  *    implementation the caller's record named. Every covered master that is not a root is named by exactly one call;
- * 8. order on `[M]`: walking from the roots reaches every covered master, and no master is entered twice;
- * 9. read-only frames on `[M]`: a read-only frame leaves every record unchanged, emits nothing, sends nothing and
+ * 4. order on `[M]`: walking from the roots reaches every covered master, and no master is entered twice;
+ * 5. read-only frames on `[M]`: a read-only frame leaves every record unchanged, emits nothing, sends nothing and
  *    calls only read-only frames;
- * 10. settles on `[M]`: no category is settled twice, and every category the covered masters need settled — one that
- *     two of them share, or that a delegate or internal frame runs on — is one the transcript settles;
- * 11. census on `[M]`: no input and no output of a settled contract's own category carries a fungible amount, a
- *     mutable own-category output is one a frame on that contract declares for a record it writes, a bare 32-byte
- *     own-category output is an event a frame on that contract lists, every listed event names an output of the
- *     transaction, no two frames list the same one, every master of the contract is recreated by a master output at
- *     its own index, the record indices the frames read are exactly the state UTXOs the contract spends, every
- *     record's declarations chain in the depth-first order the call tree gives, every record a frame writes
- *     keeps at least the value it came with, the frame's own sends included, no two frames list the same send, and
- *     the contract's containers grow by at least what its frames receive less what they pay.
+ * 6. settles on `[M]`: no category is settled twice, every category the covered masters need settled — one that
+ *    two of them share, or that a delegate or internal frame runs on — is one the transcript settles, and every
+ *    category the transcript settles is one they need;
+ * 7. the settled contracts' fungible amounts on `[M]`.
  */
-export function buildValidatorProgram(): Uint8Array {
-  const e = new Emitter();
-  const O = Opcodes;
+export function buildValidatorParts(): readonly Uint8Array[] {
+  const facets = FACET_CHECKS.map((checks, at) => {
+    const e = new Emitter();
+    emitFacetEntry(e, at + 1);
+    for (const check of checks) check(e);
+    emitProgramEnd(e);
+    return e.done();
+  });
 
-  // Entry: `[M, pin]`.
+  const e = new Emitter();
+  emitHeadEntry(e);
+  for (const check of HEAD_CHECKS) check(e);
+  emitFacetBinding(e, facets);
+  emitProgramEnd(e);
+  return [e.done(), ...facets];
+}
+
+/** The head: the validator input's program, and the bytes a master's reserved slot hashes to. */
+export function buildValidatorProgram(): Uint8Array {
+  return buildValidatorParts()[0]!;
+}
+
+/** The facet codes, in order: the code the input at `head + k` is locked by is the `k`th of them. */
+export function buildValidatorFacets(): readonly Uint8Array[] {
+  return buildValidatorParts().slice(1);
+}
+
+/**
+ * One facet as a hand-laid transaction states it: the lock its input and its recreation share, and the input's
+ * unlocking bytecode, which is the facet's own code and nothing else.
+ */
+export interface ValidatorFacetSpend {
+  readonly code: Uint8Array;
+  readonly lock: Uint8Array;
+  readonly unlockingBytecode: Uint8Array;
+}
+
+/**
+ * The facet spends the head holds directly after it, one per facet, in order.
+ *
+ * The head binds each facet's lock as a constant, so a facet input is spent at the P2SH32 of the facet's own code
+ * and recreated by an output of that same lock. A transaction laid out by hand places these at `head + k` so the
+ * binding holds.
+ */
+export function validatorFacetSpends(facets: readonly Uint8Array[]): readonly ValidatorFacetSpend[] {
+  return facets.map((code) => ({
+    code,
+    lock: encodeLockingBytecodeP2sh32(hash256(code)),
+    unlockingBytecode: encodeDataPush(code),
+  }));
+}
+
+/** Entry `[M, pin]`. The head's own lock, its own category, and its own bytes for the rest of the run. */
+function emitHeadEntry(e: Emitter): void {
+  const O = Opcodes;
   e.op(O.OP_SIZE).count(33).op(O.OP_NUMEQUALVERIFY);
   e.op(O.OP_DUP).count(32).op(O.OP_SPLIT, O.OP_NIP);
   e.push(Uint8Array.from([TokenCapability.MUTABLE])).op(O.OP_EQUALVERIFY);
@@ -226,38 +338,60 @@ export function buildValidatorProgram(): Uint8Array {
   e.push(new Uint8Array([0xaa, 0x20])).op(O.OP_SWAP, O.OP_CAT);
   e.push(new Uint8Array([0x87])).op(O.OP_CAT);
   e.op(O.OP_INPUTINDEX, O.OP_UTXOBYTECODE, O.OP_EQUALVERIFY);
+}
 
-  emitSelfRecreation(e);
-  emitTranscriptHeader(e);
-  emitRootCategory(e);
-  emitRootsAreInputs(e);
-  emitMasterIndices(e);
-  emitSettledStateInputs(e);
-  // `[M, 0, unread]`. The settle walk leaves an empty tail exactly when it consumed the list. A trailing
-  // byte is a transcript the decoder rejects.
-  e.op(O.OP_NIP, O.OP_SIZE);
-  e.count(0).op(O.OP_NUMEQUALVERIFY, O.OP_DROP);
+/**
+ * Entry `[]`, exit `[M]`. Facet `k` reads the transcript from the head, `k` inputs below its own.
+ *
+ * The head holds the facet at that position, so the input read here is the head whose `M` the head itself runs on.
+ * The head's program — its redeem script less the pin push — is parked on the alternate stack, where a check that
+ * derives an address reads it from: the address is the lock of `push(pin) || program`, and the program is one
+ * script while the checks are another.
+ */
+function emitFacetEntry(e: Emitter, k: number): void {
+  const O = Opcodes;
+  e.op(O.OP_INPUTINDEX).count(k).op(O.OP_SUB);
+  e.op(O.OP_INPUTBYTECODE);
+  // `[M, headProgram]`, from a copy of the head's unlocking bytecode: its first push is the transcript and its
+  // last is the redeem script, whose tail after the pin push is the program.
+  e.op(O.OP_DUP);
+  e.script(splitFirstPushScript());
+  e.op(O.OP_DROP, O.OP_SWAP);
+  e.script(dropFirstPushScript());
+  e.script(splitFirstPushScript());
+  e.op(O.OP_DROP);
+  e.count(VALIDATOR_PIN_PUSH_LENGTH).op(O.OP_SPLIT, O.OP_NIP, O.OP_TOALTSTACK);
+}
 
-  emitCompleteness(e);
-  emitRootRules(e);
-  emitEdgeRules(e);
-  emitExecutionOrder(e);
-  emitReadOnlyFrames(e);
-  emitSettleCategoriesAreDistinct(e);
-  emitSettlementMembership(e);
-  emitSettlementStateInputs(e);
-  emitSettlementFungibleAmounts(e);
-  emitDefineOrderedVisit(e);
-  emitSettlementCensus(e);
-  emitFrameAddresses(e);
+/** Entry `[M]`, exit `[M]`. Every facet input is at `head + k`, locked by its own code, and recreated in place. */
+function emitFacetBinding(e: Emitter, facets: readonly Uint8Array[]): void {
+  const O = Opcodes;
+  facets.forEach((facet, at) => {
+    const k = at + 1;
+    const lock = encodeLockingBytecodeP2sh32(hash256(facet));
+    // `[M, i]`, where `i` is the input this facet must sit at.
+    e.op(O.OP_INPUTINDEX).count(k).op(O.OP_ADD);
+    e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+    e.op(O.OP_DUP, O.OP_UTXOBYTECODE);
+    e.push(lock).op(O.OP_EQUALVERIFY);
+    // The facet recreates itself, worth at least what it came with, so a pool of facets cannot run out inside a
+    // transaction.
+    e.op(O.OP_DUP, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+    e.op(O.OP_DUP, O.OP_OUTPUTBYTECODE);
+    e.push(lock).op(O.OP_EQUALVERIFY);
+    e.op(O.OP_DUP, O.OP_UTXOVALUE, O.OP_OVER, O.OP_OUTPUTVALUE, O.OP_LESSTHANOREQUAL, O.OP_VERIFY);
+    e.op(O.OP_DROP);
+  });
+}
 
-  // The padding block: pushed and dropped where the program ends, so the stack a caller sees is the one the checks
-  // produced, and the input's own bytes pay for the walk over the covered masters' inputs.
+/**
+ * Entry `[M]`, exit `[M, 1]`. The padding block is pushed and dropped where the part ends, so the stack a caller
+ * sees is the one the checks produced, and the input's own bytes pay for the walk over the covered masters' inputs.
+ */
+function emitProgramEnd(e: Emitter): void {
+  const O = Opcodes;
   e.push(new Uint8Array(VALIDATOR_INPUT_PADDING_BYTES)).op(O.OP_DROP);
-
-  // `[M]`. The input succeeds when the program reaches the end and leaves one truthy item.
   e.op(O.OP_DROP, O.OP_1);
-  return e.done();
 }
 
 /** Appends instructions, encoding each data push minimally. */
@@ -470,10 +604,11 @@ function emitMasterIndices(e: Emitter): void {
 /**
  * V2, the state inputs and created records each settled contract lists.
  *
- * Entry `[M, 0, suffix]`, where `suffix` begins at the settle count. A settled contract is a 32-byte category, a
- * count with that many input indices, then a count with that many output indices. The category is not decided
- * here, and neither is what each list means: only that a state input names a real input and a created record a
- * real output.
+ * Entry `[M, 0, suffix]`, exit `[M]`, where `suffix` begins at the settle count. A settled contract is a 32-byte
+ * category, a count with that many input indices, then a count with that many output indices. The category is not
+ * decided here, and neither is what each list means: only that a state input names a real input and a created
+ * record a real output. The walk leaves an empty tail exactly when it consumed the list, so a trailing byte — a
+ * transcript the decoder rejects — fails the size check it ends on.
  */
 function emitSettledStateInputs(e: Emitter): void {
   const O = Opcodes;
@@ -491,6 +626,8 @@ function emitSettledStateInputs(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
   e.op(O.OP_ENDIF);
   e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUALVERIFY, O.OP_DROP);
 }
 
 /**
@@ -851,7 +988,7 @@ function emitDelegateEdge(e: Emitter): void {
   // `OP_UTXOTOKENCATEGORY` answers a master's minting pin; the address is derived from the mutable pin.
   e.count(32).op(O.OP_SPLIT, O.OP_DROP);
   e.push(Uint8Array.from([TokenCapability.MUTABLE])).op(O.OP_CAT);
-  e.script(addressFromPinScript({ fromActiveBytecode: true }));
+  e.script(addressFromPinScript({ fromAltStack: true }));
   e.count(9).op(O.OP_PICK, O.OP_EQUALVERIFY);
   e.op(O.OP_ENDIF);
 }
@@ -1197,7 +1334,7 @@ function emitSettlementMembership(e: Emitter): void {
 /**
  * The category on top is one the transcript settles.
  *
- * Entry `[..., category]`, exit `[..., category]`. `declared` is peeked from the alternate stack, so the run is
+ * Entry `[..., category]`, exit `[...]`. `declared` is peeked from the alternate stack, so the run is otherwise
  * unchanged.
  */
 function emitRequireDeclaredCategory(e: Emitter): void {
@@ -1205,6 +1342,73 @@ function emitRequireDeclaredCategory(e: Emitter): void {
   e.op(O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK, O.OP_SWAP);
   emitFound32(e);
   e.op(O.OP_VERIFY);
+}
+
+/**
+ * Every contract the transcript settles is one the covered masters need settled.
+ *
+ * Entry `[M]`, exit `[M]`. This is the converse of {@link emitSettlementMembership}: that walk requires each
+ * category the covered masters need to be settled, and this one requires each settled category to be one they need.
+ * The two together make the settle list exactly the needed set, so a transcript cannot name a contract nothing
+ * needs settled just to widen what its figures may say.
+ */
+function emitSettlementNecessity(e: Emitter): void {
+  const O = Opcodes;
+  emitNeededCategories(e);
+  e.op(O.OP_TOALTSTACK);
+  emitDeclaredCategories(e);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(32).op(O.OP_SPLIT, O.OP_SWAP);
+  emitRequireDeclaredCategory(e);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_FROMALTSTACK, O.OP_DROP);
+}
+
+/**
+ * The contracts the covered masters need settled, as one 32-byte category each.
+ *
+ * Entry `[M]`, exit `[M, needed]`. The same walk as {@link emitSettlementMembership} decides each master: a master
+ * whose own category holds another master anywhere in the transaction needs that category settled, and a frame that
+ * borrows its caller's records needs the category it runs on. The categories are read in the order the machine
+ * reports a spent token's, to match the declared list this is compared against.
+ */
+function emitNeededCategories(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_0, O.OP_TOALTSTACK);
+  emitMasterByteString(e);
+  e.op(O.OP_DUP);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP, O.OP_UTXOTOKENCATEGORY, O.OP_DUP);
+  e.script(countMastersScript());
+  e.op(O.OP_SWAP);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP, O.OP_SWAP);
+  e.op(O.OP_DUP);
+  e.count(2).op(O.OP_GREATERTHANOREQUAL, O.OP_IF);
+  e.op(O.OP_DROP);
+  emitAppendAccumulated(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_DUP);
+  emitIndexHead(e);
+  e.op(O.OP_2DROP);
+  e.op(O.OP_DUP);
+  e.count(FrameKind.DELEGATE).op(O.OP_NUMEQUAL);
+  e.op(O.OP_OVER);
+  e.count(FrameKind.INTERNAL).op(O.OP_NUMEQUAL);
+  e.op(O.OP_BOOLOR, O.OP_IF);
+  e.op(O.OP_DROP);
+  emitContextCategory(e);
+  emitAppendAccumulated(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_DROP, O.OP_FROMALTSTACK);
 }
 
 /**

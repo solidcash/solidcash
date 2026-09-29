@@ -28,8 +28,8 @@ export interface ContractBlock {
   readonly recovery?: Readonly<Record<string, readonly string[]>>;
 }
 
-/** What a participant is: a master of a contract, a validator, a state UTXO, or a recovery side-car input. */
-export type ParticipantKind = 'master' | 'validator' | 'state' | 'recovery';
+/** What a participant is: a master of a contract, a validator, a facet of one, a state UTXO, or a recovery input. */
+export type ParticipantKind = 'master' | 'validator' | 'facet' | 'state' | 'recovery';
 
 /** One participant's coordinates. A participant recreates at its own index, so input and output index agree. */
 export interface PlacedParticipant {
@@ -97,7 +97,10 @@ export function placeTrailingOutputs<T>(
 }
 
 /** Assigns every participant its input and output index, following the block convention. */
-export function layoutTransaction(blocks: readonly ContractBlock[]): TransactionLayout {
+export function layoutTransaction(
+  blocks: readonly ContractBlock[],
+  facets: ReadonlyMap<string, readonly Uint8Array[]> = new Map(),
+): TransactionLayout {
   const seenContracts = new Set<string>();
   const seenIds = new Set<string>();
   const participants: PlacedParticipant[] = [];
@@ -119,7 +122,14 @@ export function layoutTransaction(blocks: readonly ContractBlock[]): Transaction
       // further step from that input than the one before.
       for (const sideCar of block.recovery?.[master] ?? []) place(sideCar, block.contract, 'recovery');
     }
-    if (block.validator !== undefined) place(block.validator.id, block.contract, 'validator');
+    if (block.validator !== undefined) {
+      const hosted = block.validator;
+      place(hosted.id, block.contract, 'validator');
+      // A validator's facets follow its head, one input each, so the facet a program names `k`th sits at
+      // `head + k`: a position holds one lock, which is what keeps a facet from being left out or shared.
+      (facets.get(hosted.id) ?? []).forEach((_code, at) =>
+        place(facetId(hosted.id, at + 1), block.contract, 'facet'));
+    }
     for (const state of block.state) place(state, block.contract, 'state');
   }
 
@@ -129,6 +139,11 @@ export function layoutTransaction(blocks: readonly ContractBlock[]): Transaction
     participantCount: participants.length,
     funderInputBase: participants.length,
   };
+}
+
+/** The identity of a validator's facet input at `head + k`; `k` counts from one. */
+export function facetId(validatorId: string, k: number): string {
+  return `${validatorId}/${k}`;
 }
 
 /** The participant placed under this id, or `undefined` when the layout has none. */

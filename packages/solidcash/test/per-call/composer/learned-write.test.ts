@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import { FrameKind, buildPushdataCommitment, bytesToHex } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
@@ -7,7 +8,7 @@ import {
   token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
-  createComposedDerivationHost, deriveDepthFirst, layoutTransaction, participant, requireLearnedViews,
+  createComposedDerivationHost, deriveDepthFirst, participant, requireLearnedViews,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster, type DraftRecordEntry,
 } from '../../../src/per-call/composer/index.js';
 
@@ -30,7 +31,8 @@ const RECORD_ID = 'record';
 const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 const MASTER_ID = 'vault-1';
-const RECORD_INDEX = 2;
+// The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
+const RECORD_INDEX = 3;
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Vault {'
@@ -76,7 +78,8 @@ function buildPlan(statedView?: Uint8Array): CompositionDraftPlan {
     blocks: [
       { contract: 'Vault', masters: [MASTER_ID], validator: { id: VALIDATOR_ID, settles: [] }, state: [RECORD_ID] },
     ],
-    userInputs: userInputs([USER_ID], 3),
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: userInputs([USER_ID], 4),
     masters: [vaultMaster],
     inputs: {
       [MASTER_ID]: { source: masterInput(vault) },
@@ -93,7 +96,7 @@ function buildPlan(statedView?: Uint8Array): CompositionDraftPlan {
     },
     validator: {
       id: VALIDATOR_ID, covers: [],
-      settles: [{ category: vault.category, stateInputs: [RECORD_ID] }],
+      settles: [],
       redeemScript: validator.redeem,
     },
   };
@@ -143,7 +146,8 @@ describe('a plan that leaves a record write unstated', () => {
     expect(bytesToHex(output.token!.nft!.commitment)).toBe(bytesToHex(commitment(WRITTEN)));
     // Every participant accepts: the master closes against the learned view, and the settlement holds.
     expect(verdicts(draft)).toStrictEqual([
-      `${MASTER_ID}:accepted`, `${VALIDATOR_ID}:accepted`, `${RECORD_ID}:accepted`,
+      `${MASTER_ID}:accepted`, `${VALIDATOR_ID}:accepted`, `${VALIDATOR_ID}/1:accepted`,
+      `${RECORD_ID}:accepted`,
     ]);
   });
 
@@ -208,7 +212,7 @@ function buildSplitPlan(): {
     { contract: 'Callee', masters: [SPLIT_CALLEE_MASTER], state: [] },
   ];
   const selector = selectorOfSignature('ping');
-  const recordIndex = participant(layoutTransaction(blocks), SPLIT_RECORD).index;
+  const recordIndex = participant(layoutWithFacets(blocks), SPLIT_RECORD).index;
   const facts = (contract: string, entry: string, kind: number, mastersOfContract: number,
     makesExternalCall: boolean, callerIsUser: boolean): DraftMaster['facts'] => ({
     contract, functionName: entryName(contract, entry), kind, callerIsUser, originEqualsCaller: callerIsUser,
@@ -242,7 +246,8 @@ function buildSplitPlan(): {
   };
   const plan: CompositionDraftPlan = {
     blocks,
-    userInputs: userInputs([USER_ID], 4),
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: userInputs([USER_ID], 5),
     masters: [ledgerMaster, calleeMaster],
     inputs: {
       [SPLIT_LEDGER]: { source: masterInput(ledger) },
@@ -254,7 +259,7 @@ function buildSplitPlan(): {
       [SPLIT_RECORD]: {
         source: recordSource,
         // A master of the record's own category rewrites it, so the covenant's write path authorizes the spend.
-        unlockingBytecode: stateRecordUnlockingBytecode(categoryHex, participant(layoutTransaction(blocks), SPLIT_LEDGER).index, 1),
+        unlockingBytecode: stateRecordUnlockingBytecode(categoryHex, participant(layoutWithFacets(blocks), SPLIT_LEDGER).index, 1),
       },
       [USER_ID]: userInput(),
     },
@@ -279,6 +284,6 @@ describe('a frame that writes on both sides of a call', () => {
     const accepted = draft.layout.participants.map((placed) => vm.stateSuccess(vm.evaluate({
       inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
     })) === true);
-    expect(accepted).toStrictEqual([true, true, true, true]);
+    expect(accepted).toStrictEqual([true, true, true, true, true]);
   });
 });

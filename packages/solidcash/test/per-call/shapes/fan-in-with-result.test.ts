@@ -23,7 +23,6 @@ import {
   createComposedDerivationHost,
   deriveComposition,
   layOutMappingWrites,
-  layoutTransaction,
   participant,
   planMappingWrite,
   type CompositionDraftPlan,
@@ -34,6 +33,7 @@ import { compositionMachine } from '../../../../solidc/test/per-call/machine.js'
 import { bytesToSlotValue, encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { createUnlockingBytecode, scriptToLockingBytecode } from '../../../src/utils.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
+import { layoutWithFacets } from './harness.js';
 import {
   USER_LOCK,
   compileAndDeploy,
@@ -339,7 +339,7 @@ function buildPlan(): Built {
       state: [ALLOWANCE_NODE_ID, ROOT_BALANCE_NODE_ID, ESCROW_BALANCE_NODE_ID],
     },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const indexOf = (id: string): number => participant(layout, id).index;
   const base = layout.participantCount;
 
@@ -546,11 +546,8 @@ function buildPlan(): Built {
     ],
     validator: {
       id: VALIDATOR_ID, covers: ['Store', 'Arbiter', 'Escrow', 'Token'],
+      // Only the token's category is shared by more than one master, so only it needs settling.
       settles: [
-        { category: root.category, stateInputs: [ROOT_RECORD_ID] },
-        { category: store.category, stateInputs: [STORE_RECORD_ID] },
-        { category: arbiter.category, stateInputs: [ARBITER_RECORD_ID] },
-        { category: escrow.category, stateInputs: [ESCROW_RECORD_ID] },
         { category: tokenContract.category, stateInputs: [ALLOWANCE_NODE_ID, ROOT_BALANCE_NODE_ID, ESCROW_BALANCE_NODE_ID] },
       ],
       redeemScript: validatorFor(root.category).redeem,
@@ -705,7 +702,7 @@ function buildTwoKeyPlan(): {
     { contract: 'Store', masters: ['store-1'], state: ['storeRecord'] },
     { contract: 'Token', masters: ['token-1'], state: ['node1', 'node2'] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const indexOf = (id: string): number => participant(layout, id).index;
   const storeRecord = new Uint8Array(Buffer.from(
     buildPushdataCommitment(twoKey.artifacts.Store!.stateLayout!, { fee }, 0), 'hex'));
@@ -789,10 +786,7 @@ function buildTwoKeyPlan(): {
     },
     validator: {
       id: VALIDATOR_ID, covers: ['Store', 'Token'],
-      settles: [
-        { category: store.category, stateInputs: ['storeRecord'] },
-        { category: tokenContract.category, stateInputs: ['node1', 'node2'] },
-      ],
+      settles: [],
       redeemScript: validatorFor(root.category).redeem,
     },
   };
@@ -838,7 +832,7 @@ function buildReadAfterWritePlan(): { readonly plan: CompositionDraftPlan; reado
     { contract: 'Store', masters: ['store-1'], state: ['storeRecord'] },
     { contract: 'Token', masters: ['write-1', 'read-1'], state: ['node'] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const indexOf = (id: string): number => participant(layout, id).index;
   const storeRecord = new Uint8Array(Buffer.from(
     buildPushdataCommitment(raw.artifacts.Store!.stateLayout!, { fee }, 0), 'hex'));
@@ -932,8 +926,8 @@ function buildReadAfterWritePlan(): { readonly plan: CompositionDraftPlan; reado
     },
     validator: {
       id: VALIDATOR_ID, covers: ['Store', 'Token'],
+      // The token's write and read masters share its category, so only it needs settling.
       settles: [
-        { category: store.category, stateInputs: ['storeRecord'] },
         { category: tokenContract.category, stateInputs: ['node'] },
       ],
       redeemScript: validatorFor(root.category).redeem,
@@ -1026,7 +1020,7 @@ function buildOnePullPlan(): { readonly plan: CompositionDraftPlan; readonly art
       state: ['tokenRecord', 'rootNode', 'escrowNode'],
     },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const indexOf = (id: string): number => participant(layout, id).index;
   const mk = (fields: Record<string, bigint | Uint8Array>): Uint8Array => new Uint8Array(Buffer.from(
     buildPushdataCommitment(raw.artifacts.Token!.stateLayout!, fields, 0), 'hex'));
@@ -1175,8 +1169,8 @@ function buildOnePullPlan(): { readonly plan: CompositionDraftPlan; readonly art
     },
     validator: {
       id: VALIDATOR_ID, covers: ['Store', 'Escrow', 'Token'],
+      // The token's four masters share its category, so only it needs settling.
       settles: [
-        { category: store.category, stateInputs: ['storeRecord'] },
         { category: tokenContract.category, stateInputs: ['tokenRecord', 'rootNode', 'escrowNode'] },
       ],
       redeemScript: validatorFor(root.category).redeem,
@@ -1280,8 +1274,9 @@ describe('the obstacles this flow replica works around', () => {
         : output)),
     };
     const vm = compositionMachine();
+    // The token's category is unshared and unsettled, so the token master's own frame refuses the tamper.
     const state = vm.evaluate({
-      inputIndex: participant(draft.layout, VALIDATOR_ID).index,
+      inputIndex: participant(draft.layout, 'token-1').index,
       sourceOutputs: program.sourceOutputs, transaction,
     });
     expect(vm.stateSuccess(state)).not.toBe(true);

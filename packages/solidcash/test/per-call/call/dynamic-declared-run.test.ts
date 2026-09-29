@@ -15,6 +15,7 @@ import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/pr
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePriv, alicePub, alicePkh } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * A proxied call that appends a default element and fills its fields with a value the artifact cannot state.
@@ -89,6 +90,8 @@ async function funded(network: MockNetworkProvider): Promise<Funding> {
   await network.addUtxo(funder.address, proxyFunding);
   await network.addUtxo(binToHex(deployerLock), callerUtxo);
   await network.addUtxo(binToHex(deployerLock), callUtxo);
+  // The hops broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(network);
   return {
     network, signature, funder: funder.unlock.spend(alicePub, signature),
     implFunding, proxyFunding, callerUtxo, callUtxo, deployerLock, changeAddress: funder.address,

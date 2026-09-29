@@ -52,10 +52,14 @@ export {
 } from './reasons.js';
 
 export {
+  buildValidatorFacets,
+  buildValidatorParts,
   buildValidatorProgram,
   MAX_TRANSCRIPT_COUNT,
   TRANSCRIPT_MAGIC,
   VALIDATOR_INPUT_PADDING_BYTES,
   VALIDATOR_PROGRAM_CHECKS,
   VALIDATOR_PROGRAM_REASONS,
+  validatorFacetSpends,
+  type ValidatorFacetSpend,
 } from './program.js';

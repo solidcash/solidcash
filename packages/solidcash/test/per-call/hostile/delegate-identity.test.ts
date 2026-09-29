@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind, buildPushdataCommitment, type Artifact } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -14,7 +15,7 @@ import {
   rootOf, selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
-  layoutTransaction, participant,
+  participant,
   type CompositionDraftPlan, type ContractBlock, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
@@ -175,7 +176,7 @@ interface Composed {
 
 /** Lays the hop out with the coordinates the shipped block layout assigns, never a literal. */
 function composeHop(identity: Identity, fixture: Fixture = setup()): Composed {
-  const layout = layoutTransaction(blocksFor());
+  const layout = layoutWithFacets(blocksFor());
   const recordIndex = participant(layout, RECORD_ID).index;
   const masterIndex = participant(layout, PROXY_MASTER).index;
   const userBase = layout.participantCount;
@@ -283,7 +284,8 @@ describe('a DELEGATE frame inherits its caller\'s sender and self', () => {
     // The delegate callee's own head leaves the witness claim alone, so its input is not what refuses.
     expect(verdict(composed, IMPL_MASTER)).toStrictEqual({ accepted: true });
     expect(verdict(composed, PROXY_MASTER)).toStrictEqual({ accepted: true });
-    expect(verdict(composed, VALIDATOR_ID).accepted).toBe(false);
+    // The edge rule runs in the validator's facet, at the input after the head.
+    expect(verdict(composed, `${VALIDATOR_ID}/1`).accepted).toBe(false);
   });
 
   it('refuses a delegate callee whose witness self is not the caller\'s, by name', () => {
@@ -295,7 +297,8 @@ describe('a DELEGATE frame inherits its caller\'s sender and self', () => {
     // As with the sender forgery, the callee's own program admits the frame and only the validator refuses it.
     expect(verdict(composed, IMPL_MASTER)).toStrictEqual({ accepted: true });
     expect(verdict(composed, PROXY_MASTER)).toStrictEqual({ accepted: true });
-    expect(verdict(composed, VALIDATOR_ID).accepted).toBe(false);
+    // The edge rule runs in the validator's facet, at the input after the head.
+    expect(verdict(composed, `${VALIDATOR_ID}/1`).accepted).toBe(false);
   });
 
   it('leaves the caller\'s frame and the callee\'s own input admissible, so the refusal is the edge rule', () => {
@@ -308,8 +311,8 @@ describe('a DELEGATE frame inherits its caller\'s sender and self', () => {
         .filter((row) => row.accepted)
         .map((row) => row.participant)
         .sort();
-      // A verifier-independent read: the composer's own machine run accepts everything except the validator.
-      expect(accepted).toStrictEqual([PROXY_MASTER, IMPL_MASTER, RECORD_ID].sort());
+      // The head accepts and the refusal lands on its facet, which is what the machine run excludes here.
+      expect(accepted).toStrictEqual([PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, RECORD_ID].sort());
     }
   });
 });

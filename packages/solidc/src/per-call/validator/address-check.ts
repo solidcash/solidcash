@@ -27,22 +27,38 @@ const P2SH32_PREFIX = new Uint8Array([Opcodes.OP_HASH256, Opcodes.OP_PUSHBYTES_3
 const P2SH32_SUFFIX = new Uint8Array([Opcodes.OP_EQUAL]);
 
 /**
+ * Where a derivation reads the program's bytes from.
+ *
+ * A fraction of the program runs in the head input and the rest in its facets, and the address is the P2SH32 lock
+ * of `push(pin) || program`, so both need the program's bytes. Pushing them as a constant would nest the program
+ * inside itself; a script that is the program reads them from itself; a facet is another script, so its entry parks
+ * the head's program on the alternate stack and a derivation reads it from there.
+ */
+export type ProgramBytesSource =
+  | Uint8Array
+  | { readonly fromActiveBytecode: true }
+  | { readonly fromAltStack: true };
+
+/**
  * The P2SH32 lock of `push(pin) || program`, the address a covered master of `pin`'s category presents.
  *
  * Entry is `[pin]`, exit is `[address]`; anything the caller holds below `pin` is left in place. `pin` is the
  * 33-byte mutable category pin in chain order. Pass the validator program to push it as a constant, which is how a
- * test runs the fragment on its own. Pass `{ fromActiveBytecode: true }` from the validator: the redeem script is
- * `push(pin) || program`, so the program is what follows that push in the script now running. Pushing the program
- * as a constant would nest it inside itself.
+ * test runs the fragment on its own. Pass `{ fromActiveBytecode: true }` from the head, whose redeem script is
+ * `push(pin) || program`, so the program is what follows that push in the script now running. Pass
+ * `{ fromAltStack: true }` from a facet, where the program is the item the entry parked; it is left in place, so
+ * one parking serves every derivation.
  */
-export function addressFromPinScript(source: Uint8Array | { fromActiveBytecode: true }): Uint8Array {
+export function addressFromPinScript(source: ProgramBytesSource): Uint8Array {
   const programOnStack = source instanceof Uint8Array
     ? concat(encodeDataPush(source), op(Opcodes.OP_CAT))
-    : concat(
-      op(Opcodes.OP_ACTIVEBYTECODE),
-      pushInt(1 + CATEGORY_PIN_LENGTH),
-      op(Opcodes.OP_SPLIT, Opcodes.OP_NIP, Opcodes.OP_CAT),
-    );
+    : 'fromAltStack' in source
+      ? concat(op(Opcodes.OP_FROMALTSTACK, Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK, Opcodes.OP_CAT))
+      : concat(
+        op(Opcodes.OP_ACTIVEBYTECODE),
+        pushInt(1 + CATEGORY_PIN_LENGTH),
+        op(Opcodes.OP_SPLIT, Opcodes.OP_NIP, Opcodes.OP_CAT),
+      );
 
   // `[pin, 0x21 || pin || program]`, hashed and wrapped into the P2SH32 lock.
   return concat(
@@ -65,7 +81,7 @@ export function addressFromPinScript(source: Uint8Array | { fromActiveBytecode: 
  * {@link addressFromPinScript} derives. Delegate and internal frames inherit their caller's address rather than
  * presenting this one, so the rule does not decide them.
  */
-export function addressCheckScript(source: Uint8Array | { fromActiveBytecode: true }): Uint8Array {
+export function addressCheckScript(source: ProgramBytesSource): Uint8Array {
   return concat(
     // `[pin, payload]`. The pin is the 33-byte mutable category.
     op(Opcodes.OP_SWAP, Opcodes.OP_SIZE),

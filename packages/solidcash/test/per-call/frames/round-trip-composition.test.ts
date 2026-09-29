@@ -166,7 +166,8 @@ function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType
       { contract: 'A', masters: [A_FIRST, A_SECOND], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
       { contract: 'B', masters: [B_MASTER], state: [] },
     ],
-    userInputs: [{ id: USER_ID, index: 4 }],
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: [{ id: USER_ID, index: 5 }],
     masters: [aFirst, bMaster, aSecond],
     inputs: {
       [A_FIRST]: { source: masterSource(a.lockingBytecode, CATEGORY_A) },
@@ -288,7 +289,8 @@ describe('a contract entered twice, composed on the machine', () => {
     expect(participant(draft.layout, A_FIRST).index).toBe(0);
     expect(participant(draft.layout, A_SECOND).index).toBe(1);
     expect(participant(draft.layout, VALIDATOR_ID).index).toBe(2);
-    expect(participant(draft.layout, B_MASTER).index).toBe(3);
+    // The facet the validator binds sits at 3, so B follows at 4.
+    expect(participant(draft.layout, B_MASTER).index).toBe(4);
   });
 
   it('accepts the root master once its call record is filled, and answers the same verdict twice', () => {

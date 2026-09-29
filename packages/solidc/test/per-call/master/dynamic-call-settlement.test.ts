@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FrameKind, bytesToHex } from '@solidcash/utils';
 import {
-  createComposedDerivationHost, deriveComposition, layOutChunkRun, layoutTransaction, participant, planChunkRun,
+  createComposedDerivationHost, deriveComposition, layOutChunkRun, participant, planChunkRun,
   type CompositionDraftPlan, type DraftRecordEntry,
 } from '../../../../solidcash/src/per-call/composer/index.js';
 import { compositionMachine } from '../machine.js';
@@ -9,8 +9,8 @@ import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../../../../solidcash/src/per-call/deploy/index.js';
 import {
-  USER_LOCK, compileAndDeploy, composeAndDerive, hexOf, master, masterInput, rootOf, seededAddress,
-  selectorOf, token, userInput, validatorFor,
+  USER_LOCK, compileAndDeploy, composeAndDerive, hexOf, layoutWithFacets, master, masterInput, rootOf,
+  seededAddress, selectorOf, token, userInput, validatorFor,
 } from '../../../../solidcash/test/per-call/shapes/harness.js';
 import { seededCategory } from './validator-input.js';
 
@@ -79,7 +79,7 @@ function build(): Built {
 
   // The state NFT stays at its own index, so the block is laid out first with only the header, the run is placed
   // past it, and the kept chunks then become participants after the header (and any filler).
-  const opened = layoutTransaction(blocks(['name']));
+  const opened = layoutWithFacets(blocks(['name']));
   const stateIndex = participant(opened, 'name').index;
   const masterIndex = participant(opened, APP_MASTER).index;
   const base = stateIndex + stateLayout.dataNftCount;
@@ -92,7 +92,7 @@ function build(): Built {
   const removed = chunks.records.filter((record) => record.role === 'removed');
 
   const finalBlocks = blocks(['name', ...kept.map((record) => record.id)]);
-  const layout = layoutTransaction(finalBlocks);
+  const layout = layoutWithFacets(finalBlocks);
 
   // Every written view is left to the derivation: the body computes it, so the plan states only what each segment
   // reads at its start (the spent commitment).
@@ -198,8 +198,8 @@ describe('a per-call master whose dynamic write shares the frame with a call', (
   it('accepts every contract input of the settled transaction', () => {
     const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted);
     expect(rejected).toStrictEqual([]);
-    // The master, the callee, the validator and the two records are all asked.
-    expect(outcome.verdicts.length).toBe(5);
+    // The master, the callee, the validator with its facet and the two records are all asked.
+    expect(outcome.verdicts.length).toBe(6);
   });
 
   it('refuses a chunk output whose commitment the body did not compute', () => {

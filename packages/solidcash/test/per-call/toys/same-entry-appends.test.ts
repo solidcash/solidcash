@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import {
   FrameKind,
   INDEX_NONE,
@@ -23,7 +24,7 @@ import {
   token, userInput, validatorFor,
 } from '../shapes/harness.js';
 import {
-  assertCompositionSettlement, createComposedDerivationHost, deriveDepthFirst, layOutChunkRun, layoutTransaction,
+  assertCompositionSettlement, createComposedDerivationHost, deriveDepthFirst, layOutChunkRun,
   participant, planChunkRun, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
@@ -142,7 +143,8 @@ function build(initial: readonly bigint[], appends: readonly bigint[], withEvent
   const validator = validatorFor(HUB_CATEGORY);
 
   const frames = appends.length;
-  const headerIndex = frames + 2;
+  // The hub, its validator, the facet it binds, then one log master per frame, then the header record.
+  const headerIndex = frames + 3;
   // The run band sits one layout width past the frame's declared record block, so it does not move with the event
   // region, which is a trailing output the layout places after the participants.
   const base = headerIndex + layout.dataNftCount;
@@ -240,7 +242,7 @@ function build(initial: readonly bigint[], appends: readonly bigint[], withEvent
   const removed = run.records.filter((record) => record.role === 'removed');
   const trailing = [...emitted, ...created.map((record) => record.output!)];
   const logState = [HEADER_ID, ...kept.map((record) => record.id)];
-  const funderInputBase = layoutTransaction([
+  const funderInputBase = layoutWithFacets([
     { contract: 'Hub', masters: ['hub-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
     {
       contract: 'Log',
@@ -298,7 +300,8 @@ function build(initial: readonly bigint[], appends: readonly bigint[], withEvent
           lockingBytecode: stateRecordLockingBytecode(bytesToHex(LOG_CATEGORY)), valueSatoshis: 20_000n,
           token: token(LOG_CATEGORY, 'mutable', headers[frames]!),
         },
-        unlockingBytecode: stateRecordUnlockingBytecode(bytesToHex(LOG_CATEGORY), 2, 1),
+        // The first log master sits after the hub, its validator and the facet the validator binds.
+        unlockingBytecode: stateRecordUnlockingBytecode(bytesToHex(LOG_CATEGORY), 3, 1),
       },
       ...Object.fromEntries(run.records.filter((record) => record.input !== undefined)
         .map((record) => [record.id, record.input!])),

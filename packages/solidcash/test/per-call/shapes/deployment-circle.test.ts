@@ -22,12 +22,14 @@ import {
 } from '../../../src/per-call/deploy/index.js';
 import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import {
-  composeDraft, createComposedDerivationHost, deriveComposition, layoutTransaction, participant,
+  composeDraft, createComposedDerivationHost, deriveComposition, participant,
   type CompositionDraft, type CompositionDraftPlan,
 } from '../../../src/per-call/composer/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { master, token as tokenOf } from './harness.js';
+import { fundShippedFacets } from '../shapes/harness.js';
+import { layoutWithFacets } from './harness.js';
 
 /**
  * A deployment: four contracts at predicted addresses, a proxy pair, and a token.
@@ -131,6 +133,8 @@ async function fundedSigner(count: number, fill: number): Promise<{
     await provider.addUtxo(signer.getAddress(), utxo);
     utxos.push(utxo);
   }
+  // The hops broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(provider);
   return { provider, signer, utxos };
 }
 
@@ -275,7 +279,7 @@ async function statefulCallPlan(options: {
   const recordId = 'call-record';
   const contract = options.artifact.contractName;
   const blocks = [{ contract, masters: [masterId], state: [recordId] }];
-  const planLayout = layoutTransaction(blocks);
+  const planLayout = layoutWithFacets(blocks);
   const recordIndex = participant(planLayout, recordId).index;
   const segment = [{ in: recordIndex, out: recordIndex, viewIn: currentCommitment, viewOut: writtenCommitment }];
 
@@ -482,6 +486,8 @@ describe('two contracts deployed behind the built-in proxy', () => {
       await network.addUtxo(deployer.address, implFunding);
       await network.addUtxo(deployer.address, proxyFunding);
       await network.addUtxo(binToHex(deployerLock), callerUtxo);
+      // The hops broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+      await fundShippedFacets(network);
       return deployPerCallProxy({
         provider: network,
         implementationArtifact: artifacts.Impl!,

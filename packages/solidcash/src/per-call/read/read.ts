@@ -25,11 +25,14 @@ import { hexToBin } from '@bitauth/libauth';
 import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import {
+  VALUE_HEAD_SIZE,
   VALUE_INLINE_LIMIT,
   FrameKind,
   bytesEqual,
   bytesToHex,
   decodePushdataValue,
+  joinValueChunks,
+  parseValueChunkCommitment,
   sha256,
   validatorAddress,
   validatorRedeemScript,
@@ -44,6 +47,7 @@ import {
 import type { FunctionArgument } from '../../Argument.js';
 import { encodeFunctionArgument } from '../../Argument.js';
 import { decodeAuthenticatedProducerResultVector } from '../../stateful/external-return-encoding.js';
+import { decodeEntryCommitment } from '../../stateful/SortedList.js';
 import { PerCallCallRecordError, readEntryNode } from '../call/entry-records.js';
 import {
   deployMaster,
@@ -65,9 +69,11 @@ import {
   deriveDepthFirst,
   describeInnermost,
   layoutTransaction,
+  mappingValueChunkLock,
   participant,
   readPublishedStopSites,
   reportCompositionRefusal,
+  validatorFacetsOf,
   type CompositionDraft,
   type CompositionDraftPlan,
   type CompositionRefusal,
@@ -195,6 +201,14 @@ interface ReadFrame {
   masterSatoshis: bigint;
   validatorSatoshis: bigint;
   records: readonly ReadRecord[];
+  /**
+   * The long mapping values the frame's body reads, by value-witness slot.
+   *
+   * A node whose value crosses the inline limit keeps only its digest in the tail, so the body takes the value
+   * itself from the frame's block. Slot `k` is the value-witness slot the entry's own access at entry slot `k`
+   * reads, which is where the body's parameter of that name is parked.
+   */
+  valueWitnesses: Map<number, Uint8Array>;
 }
 
 /** The identities the read's plan names; the layout is the only source of their coordinates. */
@@ -317,6 +331,7 @@ function planReadFrames(options: {
     masterSatoshis: 0n,
     validatorSatoshis: 0n,
     records: [],
+    valueWitnesses: new Map(),
   };
   const frames: ReadFrame[] = [root];
   const byMaster = new Map<string, ReadFrame>([[root.master, root]]);
@@ -381,6 +396,7 @@ function planReadFrames(options: {
         masterSatoshis: 0n,
         validatorSatoshis: 0n,
         records: [],
+        valueWitnesses: new Map(),
       };
       frames.push(callee);
       byMaster.set(calleeMaster, callee);
@@ -463,8 +479,50 @@ function dataNftReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, n
   };
 }
 
+/** One live mapping node a frame reads, with the long value its body needs when the tail cannot hold one. */
+interface EntryRead {
+  readonly record: ReadRecord;
+  /** The whole value the node holds, when it crosses the inline limit and the body reads it by witness. */
+  readonly value?: Uint8Array;
+}
+
+/**
+ * The whole value a mapping node holds, joined across the continuation chunks the deployment holds.
+ *
+ * A chunkable value past the inline limit keeps only its digest and first bytes in the node's tail; the rest sit in
+ * chunk records at the value's own collection covenant, salted with the collection, the node's slot and that digest.
+ * The node's declared length is the authority: the chunks are joined and the result truncated to it, so a set that
+ * does not account for the whole value is refused rather than read short. The bytes come from the shipped chunk
+ * decoder; nothing here re-derives them.
+ */
+function joinedNodeValue(
+  frame: ReadFrame,
+  node: ReturnType<typeof readEntryNode>,
+  deployment: PerCallDeploymentSet,
+): Uint8Array | undefined {
+  const { slot, value: tail } = decodeEntryCommitment(node.commitment);
+  if (tail.length < 4 + 32 + VALUE_HEAD_SIZE) return undefined;
+  const length = new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
+  const root = tail.slice(4, 4 + 32);
+  const head = tail.slice(4 + 32, 4 + 32 + VALUE_HEAD_SIZE);
+  const lock = bytesToHex(mappingValueChunkLock(frame.category, node.collection, { slot, root }));
+  // A mapping value's chunks sit at their own root-salted covenant, so the classification files them with the
+  // unfiled collection nodes rather than with a dynamic variable's chunks; both pools are searched for the lock.
+  const chunks = [...deployment.chunks, ...deployment.collectionNodes]
+    .filter((utxo) => utxo.token?.nft?.commitment !== undefined && utxo.lockingBytecode !== undefined
+      && bytesToHex(utxo.lockingBytecode) === lock)
+    .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment!))
+    .sort((left, right) => left.chunkIndex - right.chunkIndex);
+  if (chunks.length === 0) return undefined;
+  try {
+    return joinValueChunks(head, chunks, length);
+  } catch {
+    return undefined;
+  }
+}
+
 /** The live mapping node one entry slot reads, as the deployment layer's own classification locates it. */
-function entryReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, slotIndex: number): ReadRecord {
+function entryReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, slotIndex: number): EntryRead {
   let node: ReturnType<typeof readEntryNode>;
   try {
     node = readEntryNode({
@@ -480,23 +538,30 @@ function entryReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, slo
     if (error instanceof PerCallCallRecordError) throw new PerCallReadError(error.message);
     throw error;
   }
-  // A node the key names holds the value inline or, past 60 bytes, only its hash with the bytes in chunk records,
-  // which a read does not fetch. A node the key is read beside is never read for its value, so its width is free.
+  // A node the key names holds its value inline, or past the inline limit as a digest whose bytes sit in chunk
+  // records the deployment holds. A node the key is read beside is never read for its value, so its width is free.
   const tail = node.commitment.slice(64);
   const length = tail.length < 4 ? 0 : new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
+  let value: Uint8Array | undefined;
   if (node.present && length > VALUE_INLINE_LIMIT) {
-    throw new PerCallReadError(
-      `the node of collection "${node.collection}" the entry reads holds a ${length}-byte value whose bytes sit `
-      + 'in chunk records, which a read does not fetch',
-    );
+    value = joinedNodeValue(frame, node, deployment);
+    if (value === undefined) {
+      throw new PerCallReadError(
+        `the node of collection "${node.collection}" the entry reads holds a ${length}-byte value whose bytes sit `
+        + `in chunk records that category ${frame.categoryId} does not hold, so the read cannot state its witness`,
+      );
+    }
   }
   const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(frame.categoryId, node.signature);
   return {
-    id: `${frame.master}-entry-${bytesToHex(node.slot)}`,
-    commitment: node.commitment,
-    satoshis: node.utxo.satoshis,
-    lockingBytecode,
-    unlockingBytecode,
+    record: {
+      id: `${frame.master}-entry-${bytesToHex(node.slot)}`,
+      commitment: node.commitment,
+      satoshis: node.utxo.satoshis,
+      lockingBytecode,
+      unlockingBytecode,
+    },
+    ...(value === undefined ? {} : { value }),
   };
 }
 
@@ -504,7 +569,8 @@ function entryReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, slo
  * The records one frame declares, in the order its entry's block slots read them.
  *
  * An entry that publishes no block layout is one this path cannot order, so it falls back to the data-NFT records of
- * the layout; an entry that does is read slot by slot, the data-NFT slots and the mapping entry slots alike.
+ * the layout; an entry that does is read slot by slot, the data-NFT slots and the mapping entry slots alike. A slot
+ * that reads a node whose value crosses the inline limit also contributes the value witness the body binds.
  */
 function frameReadRecords(
   frame: ReadFrame,
@@ -516,15 +582,17 @@ function frameReadRecords(
     return Array.from({ length: stateLayout.dataNftCount }, (_unused, nftIndex) =>
       dataNftReadRecord(frame, deployment, nftIndex));
   }
-  return [...slots].sort((left, right) => left.offset - right.offset).flatMap((slot): ReadRecord[] => {
-    if (slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft') {
-      return slot.nftIndex === undefined ? [] : [dataNftReadRecord(frame, deployment, slot.nftIndex)];
+  const records: ReadRecord[] = [];
+  for (const slot of [...slots].sort((left, right) => left.offset - right.offset)) {
+    if ((slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft') && slot.nftIndex !== undefined) {
+      records.push(dataNftReadRecord(frame, deployment, slot.nftIndex));
+    } else if (slot.kind === 'entry' && slot.slotIndex !== undefined) {
+      const read = entryReadRecord(frame, deployment, slot.slotIndex);
+      records.push(read.record);
+      if (read.value !== undefined) frame.valueWitnesses.set(slot.slotIndex, read.value);
     }
-    if (slot.kind === 'entry') {
-      return slot.slotIndex === undefined ? [] : [entryReadRecord(frame, deployment, slot.slotIndex)];
-    }
-    return [];
-  });
+  }
+  return records;
 }
 
 /** The entries one frame declares: one kept record entry per record it reads, data NFT or mapping node alike. */
@@ -536,6 +604,14 @@ function readSegments(
     const index = participant(layout, record.id).index;
     return { in: index, out: index, viewIn: record.commitment, viewOut: record.commitment };
   });
+}
+
+/** The value-witness slots a frame's block lists, in slot order, with the empty value past the ones it reads. */
+function valueWitnessSlots(witnesses: ReadonlyMap<number, Uint8Array>): Uint8Array[] {
+  return Array.from(
+    { length: Math.max(...witnesses.keys()) + 1 },
+    (_unused, slot) => witnesses.get(slot) ?? new Uint8Array(0),
+  );
 }
 
 /**
@@ -662,7 +738,11 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
     ...(index === 0 ? { validator: { id: VALIDATOR_ID, settles: [] } } : {}),
     state: stateOfBlocks.get(contract)!,
   }));
-  const layout = layoutTransaction(blocks);
+  // The validator runs as a head plus its facet inputs, so the read's own layout has to place the same facets the
+  // composer places; otherwise the indices the plan states and the ones the assembled transaction uses would differ.
+  const validatorRedeem = validatorRedeemScript(root.category, validatorProgram);
+  const facets = validatorFacetsOf({ id: VALIDATOR_ID, covers: [], settles: [], redeemScript: validatorRedeem });
+  const layout = layoutTransaction(blocks, new Map([[VALIDATOR_ID, facets]]));
 
   // How many masters of each contract the read spends: a contract a caller reaches twice has two frames.
   const mastersPerContract = new Map<string, number>();
@@ -698,6 +778,9 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
     events: [],
     sends: [],
     argumentPushes: frame.argumentPushes,
+    // The long values the frame's body reads, one entry per value-witness slot: a slot the body does not read as
+    // a whole value stays empty, which is what the head's own value region expects.
+    ...(frame.valueWitnesses.size === 0 ? {} : { values: valueWitnessSlots(frame.valueWitnesses) }),
     redeemScript: frame.deployed.script,
     ...(index === 0 ? { dispatches: true } : {}),
   }));
@@ -785,7 +868,7 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
       id: VALIDATOR_ID,
       covers: [...new Set(frames.slice(1).map((frame) => frame.contract))],
       settles: [],
-      redeemScript: validatorRedeemScript(root.category, validatorProgram),
+      redeemScript: validatorRedeem,
     },
   };
 

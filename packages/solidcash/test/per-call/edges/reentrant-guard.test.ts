@@ -3,12 +3,13 @@ import { FrameKind, buildPushdataCommitment, type RecordEntry } from '@solidcash
 import { compileAndDeploy, entryName, hexOf, seededAddress, userInput, USER_LOCK } from '../shapes/harness.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  createComposedDerivationHost, deriveDepthFirst, layoutTransaction, participant,
+  createComposedDerivationHost, deriveDepthFirst, participant,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { REAL_VALIDATOR_PROGRAM, validatorSpend } from '../../../../solidc/test/per-call/master/validator-input.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { layoutWithFacets } from '../shapes/harness.js';
 
 /**
  * A guard field in the record, on both sides of a call.
@@ -52,7 +53,8 @@ const BEFORE = commitment(0n, 5n);
 // The segment boundary at the call: the guard is set and the first increment done.
 const MIDDLE = commitment(1n, 6n);
 const AFTER = commitment(0n, 8n);
-const RECORD_INDEX = 2;
+// The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
+const RECORD_INDEX = 3;
 const kept = (viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry =>
   ({ in: RECORD_INDEX, out: RECORD_INDEX, viewIn, viewOut });
 
@@ -94,14 +96,15 @@ function plan(): CompositionDraftPlan {
   ];
   // The record is the guarded contract's data NFT, so it sits at the covenant its category derives and its spend
   // carries that covenant's write path with the index of the master that rewrites it.
-  const masterIndex = participant(layoutTransaction(blocks), 'guarded-1').index;
+  const masterIndex = participant(layoutWithFacets(blocks), 'guarded-1').index;
   const recordSource = {
     lockingBytecode: stateRecordLockingBytecode(categoryHex), valueSatoshis: 20_000n,
     token: tokenWith(guarded.category, 'mutable', BEFORE),
   };
   return {
     blocks,
-    userInputs: [{ id: 'user', index: 4 }],
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: [{ id: 'user', index: 5 }],
     masters: [guardedMaster, calleeMaster],
     inputs: {
       'guarded-1': { source: { lockingBytecode: guarded.lockingBytecode, valueSatoshis: 20_000n, token: tokenWith(guarded.category, 'minting', new Uint8Array(0)) } },

@@ -106,7 +106,8 @@ function writeComposition(by: bigint): { readonly written: Uint8Array; readonly 
     frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: ADDRESS, value: 0n },
     enteredBy: 'user', origin: 'user',
     calls: [], retval: empty,
-    segments: [[{ in: 2, out: 2, viewIn: before, viewOut: after }]],
+    // The record sits one participant further on: caller, head, facet, then the record.
+    segments: [[{ in: 3, out: 3, viewIn: before, viewOut: after }]],
     events: [], sends: [], argumentPushes: [BUMP_SELECTOR, encodeIntegerValue(by)],
     redeemScript: deployed.script, dispatches: true,
   };
@@ -117,7 +118,8 @@ function writeComposition(by: bigint): { readonly written: Uint8Array; readonly 
   };
   const plan: CompositionDraftPlan = {
     blocks: [{ contract: 'Counter', masters: ['writer'], validator: { id: 'validator', settles: [] }, state: ['record'] }],
-    userInputs: [{ id: 'user', index: 3 }],
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: [{ id: 'user', index: 4 }],
     masters: [writer],
     inputs: {
       writer: {

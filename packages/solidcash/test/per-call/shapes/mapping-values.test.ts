@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from './harness.js';
 import {
   FrameKind,
   INDEX_NONE,
@@ -33,7 +34,6 @@ import {
 } from './harness.js';
 import {
   layOutMappingBatch,
-  layoutTransaction,
   mappingValueChunkLock,
   participant,
   planMappingBatch,
@@ -163,7 +163,7 @@ function buildPlan(shape: Shape): { readonly plan: CompositionDraftPlan; readonl
     { contract: shape.hub, masters: [HUB_MASTER], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
     { contract: shape.entryContract, masters: [ENTRY_MASTER], state: [NODE_ID] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const nodeIndex = participant(layout, NODE_ID).index;
   const record: RecordEntry = { in: nodeIndex, out: nodeIndex, viewIn: shape.before, viewOut: shape.after };
   const laid = shape.lay?.(layout.participantCount, nodeIndex);
@@ -218,10 +218,7 @@ function buildPlan(shape: Shape): { readonly plan: CompositionDraftPlan; readonl
     ...(laid === undefined ? {} : { trailingOutputs: laid.outputs }),
     validator: {
       id: VALIDATOR_ID, covers: [shape.entryContract],
-      settles: [{
-        category: entryContract.category, stateInputs: [NODE_ID],
-        ...(laid === undefined ? {} : { createdOutputs: [...laid.created] }),
-      }],
+      settles: [],
       redeemScript: validator.redeem,
     },
   };

@@ -12,7 +12,10 @@ import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * A per-call contract paying another contract (spec 4b): a value send whose recipient is not a user's lock is a
@@ -50,10 +53,11 @@ type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['eval
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
+/** Inputs: the payer, the recipient, the validator with its facet, the user, then the containers spent. */
 const PAYER_INDEX = 0;
 const VAULT_INDEX = 1;
 const VALIDATOR_INDEX = 2;
-const USER_INDEX = 3;
+const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
 
 function program(name: string, category: Uint8Array, address: Uint8Array): Uint8Array {
   const artifact = artifacts[name]!;
@@ -85,6 +89,7 @@ function verdicts(payment: Payment = {}): Record<'payer' | 'vault' | 'validator'
   const validator = validatorSpend(CATEGORY_PAYER, {
     roots: [PAYER_INDEX], masters: [PAYER_INDEX, VAULT_INDEX], settles: [],
   });
+  const facets = validatorFacetPlacements();
   const payerBlock: WitnessBlock = {
     kind: 0,
     callerRef: USER_INDEX,
@@ -138,6 +143,7 @@ function verdicts(payment: Payment = {}): Record<'payer' | 'vault' | 'validator'
       ...encodeDataPush(vaultProgram),
     ])),
     input(3, validator.unlockingBytecode),
+    ...facets.map((facet) => facet.input),
     input(4, callerUnlockingBytecode()),
     ...payerIn.map((_, index) => input(5 + index, encodeDataPush(new Uint8Array([1])))),
   ];
@@ -145,6 +151,7 @@ function verdicts(payment: Payment = {}): Record<'payer' | 'vault' | 'validator'
     { lockingBytecode: payerLock, valueSatoshis: 20_000n, token: token(CATEGORY_PAYER, 'minting') },
     { lockingBytecode: vaultLock, valueSatoshis: 20_000n, token: token(CATEGORY_VAULT, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(CATEGORY_PAYER, 'mutable') },
+    ...facets.map((facet) => facet.output),
   ];
   const sourceOutputs: VmProgram['sourceOutputs'] = [
     ...participants,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import { FrameKind, buildPushdataCommitment, type Artifact, type RecordEntry } from '@solidcash/utils';
 import {
   decideValidator, type PerCallTransaction, type TokenShape,
@@ -9,7 +10,7 @@ import {
   rootOf, seededAddress, selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
-  layoutTransaction, participant, type CompositionDraftPlan, type ContractBlock, type DraftMaster,
+  participant, type CompositionDraftPlan, type ContractBlock, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
 /**
@@ -121,7 +122,7 @@ function planFor(fixture: Fixture, variant: Variant): CompositionDraftPlan {
   const a = contracts.A!;
   const b = contracts.B!;
   const blocks = blocksFor(variant);
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const mastersOfA = variant.reader === undefined ? 2 : 3;
   const recordIndex = participant(layout, RECORD_ID).index;
   const rootIndex = participant(layout, A_ROOT).index;
@@ -290,7 +291,7 @@ describe('a master whose declared segments are out of order (T9, T30)', () => {
     expect(decisionOf(composed).accepted).toBe(true);
     // The control is a spend every input accepts, so the swap below is the only difference from an honest spend.
     expect(composed.outcome.verdicts.map((verdict) => `${verdict.participant}:${verdict.accepted}`))
-      .toStrictEqual(['a-f:true', 'a-k:true', 'validator:true', 'record:true', 'b-g:true']);
+      .toStrictEqual(['a-f:true', 'a-k:true', 'validator:true', 'validator/1:true', 'record:true', 'b-g:true']);
   });
 
   it('refuses the swapped spend by name, and the machine refuses it at the validator', () => {

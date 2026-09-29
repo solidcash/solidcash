@@ -4,11 +4,12 @@ import { compileAndDeploy, entryName, hexOf, seededAddress, userInput, USER_LOCK
 import { REAL_VALIDATOR_PROGRAM, validatorSpend } from '../../../../solidc/test/per-call/master/validator-input.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  createComposedDerivationHost, deriveDepthFirst, layoutTransaction, participant,
+  createComposedDerivationHost, deriveDepthFirst, participant,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { layoutWithFacets } from '../shapes/harness.js';
 
 /**
  * An execution that writes before and after an external call.
@@ -55,7 +56,8 @@ const BEFORE = commitment(5n);
 const MIDDLE = commitment(6n);
 const AFTER = commitment(8n);
 
-const RECORD_INDEX = 2;
+// The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
+const RECORD_INDEX = 3;
 
 /** The record kept in place: read where the transaction spends it and written where the body leaves it. */
 const kept = (viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry =>
@@ -97,14 +99,15 @@ function planFor(source: string): { plan: CompositionDraftPlan; artifacts: Retur
   ];
   // The record is the ledger's data NFT, so it sits at the covenant its category derives and its spend carries
   // that covenant's write path with the index of the master that rewrites it.
-  const masterIndex = participant(layoutTransaction(blocks), 'ledger-1').index;
+  const masterIndex = participant(layoutWithFacets(blocks), 'ledger-1').index;
   const recordSource = {
     lockingBytecode: stateRecordLockingBytecode(categoryHex), valueSatoshis: 20_000n,
     token: tokenWith(ledger.category, 'mutable', BEFORE),
   };
   const plan: CompositionDraftPlan = {
     blocks,
-    userInputs: [{ id: 'user', index: 4 }],
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: [{ id: 'user', index: 5 }],
     masters: [ledgerMaster, calleeMaster],
     inputs: {
       'ledger-1': { source: { lockingBytecode: ledger.lockingBytecode, valueSatoshis: 20_000n, token: tokenWith(ledger.category, 'minting', new Uint8Array(0)) } },

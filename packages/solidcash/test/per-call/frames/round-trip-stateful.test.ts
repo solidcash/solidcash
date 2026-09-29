@@ -83,14 +83,15 @@ const USER_ID = 'user';
 // The layout is one block per contract: `A`'s masters, its validator and its record, then `B`'s master and its
 // record, then the user. A participant recreates at its own index, so these are also the output indices.
 const A_FIRST_INDEX = 0;
-const B_MASTER_INDEX = 4;
-const RECORD_A_INDEX = 3;
-const RECORD_B_INDEX = 5;
-const USER_INDEX = 6;
+const B_MASTER_INDEX = 5;
+const RECORD_A_INDEX = 4;
+const RECORD_B_INDEX = 6;
+// The two A masters, the validator, the facet it binds, A's record, B's master and B's record precede it.
+const USER_INDEX = 7;
 // The first output past the six participants, where the layout opens the trailing region: the same indices spec
 // 5.2's worked transaction has, with the entry's event at 6 and the user's change behind it at 7.
-const EVENT_INDEX = 6;
-const CHANGE_INDEX = 7;
+const EVENT_INDEX = 7;
+const CHANGE_INDEX = 8;
 
 const F_SELECTOR = computeFunctionSelector(computeFunctionSignature('f', []));
 const G_SELECTOR = computeFunctionSelector(computeFunctionSignature('g', []));
@@ -437,7 +438,7 @@ describe('a two-contract round trip where both contracts keep records', () => {
     expect(participant(draft.layout, A_SECOND).index).toBe(1);
     expect(participant(draft.layout, VALIDATOR_ID).index).toBe(2);
     expect(participant(draft.layout, RECORD_A).index).toBe(RECORD_A_INDEX);
-    expect(participant(draft.layout, B_MASTER).index).toBe(4);
+    expect(participant(draft.layout, B_MASTER).index).toBe(5);
     expect(participant(draft.layout, RECORD_B).index).toBe(RECORD_B_INDEX);
     expect(draft.blockOf(A_FIRST).segments.map((segment) => segment.map((entry) => entry.in)))
       .toStrictEqual([[RECORD_A_INDEX], [RECORD_A_INDEX]]);

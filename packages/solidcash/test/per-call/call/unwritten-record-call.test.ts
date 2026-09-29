@@ -8,6 +8,7 @@ import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * A call whose entry leaves one of its contract's records untouched.
@@ -49,6 +50,8 @@ describe('a call whose entry leaves a record of its contract untouched', () => {
     });
     const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 200_000n };
     await provider.addUtxo(binToHex(CALLER_LOCK), callerUtxo);
+    // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+    await fundShippedFacets(provider);
 
     const result = await callPerCallEntry({
       provider, artifact, categoryId: deployment.categoryId, functionName: 'transfer',

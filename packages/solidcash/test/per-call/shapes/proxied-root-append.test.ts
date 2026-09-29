@@ -25,10 +25,11 @@ import {
 } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
 import {
-  chunkRecordId, createComposedDerivationHost, deriveComposition, layoutTransaction, layOutChunkRun, participant,
+  chunkRecordId, createComposedDerivationHost, deriveComposition, layOutChunkRun, participant,
   planChunkRun, readPublishedStopSites, reportCompositionRefusal,
   type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
+import { layoutWithFacets } from './harness.js';
 import {
   EMPTY,
   USER_LOCK,
@@ -300,12 +301,12 @@ function buildAppend(setup: ImplSetup = APPEND_SETUP, sender: Uint8Array = ROOT_
   ];
   // A probe with the same block geometry fixes the record block's width, because the log's run begins one layout
   // width past the store's header, which the emitted body derives from the frame's own declaration.
-  const probe = layoutTransaction(blockOf('probe-chunk'));
+  const probe = layoutWithFacets(blockOf('probe-chunk'));
   const headerIndex = participant(probe, HEADER_ID).index;
   const base = headerIndex + STORE_PROXY_LAYOUT.dataNftCount;
   const chunkId = chunkRecordId('items', base);
   const blocks = blockOf(chunkId);
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const indexOf = (id: string): number => participant(layout, id).index;
   const recordIndex = indexOf(RECORD_ID);
   const storeProxyIndices = STORE_PROXY_MASTERS.map((id) => indexOf(id));
@@ -524,7 +525,7 @@ describe('a proxied root appending through one store behind its proxy', () => {
     expect(outcome.verdicts.filter((verdict) => verdict.accepted)
       .map((verdict) => verdict.participant).sort())
       .toStrictEqual([PROXY_MASTER, IMPL_MASTER, ...STORE_PROXY_MASTERS, ...STORE_IMPL_MASTERS,
-        VALIDATOR_ID, RECORD_ID, HEADER_ID, built.chunkId].sort());
+        VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID, HEADER_ID, built.chunkId].sort());
   });
 
   it('reaches the store as a delegate frame on the store proxy\'s record, entered by a call frame', () => {
@@ -717,7 +718,7 @@ function buildRead(): {
     { contract: READ_IMPL_ARTIFACT.contractName, masters: [READ_IMPL_MASTER], state: [] as readonly string[] },
     { contract: READER_ARTIFACT.contractName, masters: [...READ_MASTERS], state: [READER_RECORD_ID] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const indexOf = (id: string): number => participant(layout, id).index;
   const recordIndex = indexOf(READ_RECORD_ID);
   const readerIndex = indexOf(READER_RECORD_ID);

@@ -5,6 +5,7 @@ import { concatBytes, splitFirstPush, type PerCallTransaction as ModelledTransac
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/index.js';
 import {
+  buildValidatorFacets,
   buildValidatorProgram,
   decideValidator,
   type ValidatorReasonName,
@@ -14,6 +15,9 @@ import { abbaPlan } from '../validator/plans.js';
 
 /** The bytes every master hashes and every address derives from. */
 export const PROGRAM = buildValidatorProgram();
+
+/** How many facet inputs the head binds after itself; the validator is the head plus these. */
+const VALIDATOR_FACET_COUNT = buildValidatorFacets().length;
 
 type VmProgram = Parameters<ReturnType<typeof machine>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
@@ -63,21 +67,30 @@ export function toVm(transaction: ModelledTransaction): { transaction: VmTransac
   };
 }
 
-/** Whether the machine accepts the validator input of a modelled transaction. */
+/**
+ * Whether the machine accepts the validator of a modelled transaction.
+ *
+ * The validator is the head input plus the facets the head binds, each the input at `validatorIndex + k`, so a
+ * verdict is every one of those inputs accepting: the head carries the rules about the input that runs it, and a
+ * facet carries the rest.
+ */
 export function accepted(transaction: ModelledTransaction, validatorIndex: number): boolean {
   const vm = machine();
   const program = toVm(transaction);
-  const state = vm.evaluate({
-    inputIndex: validatorIndex,
-    sourceOutputs: program.sourceOutputs,
-    transaction: program.transaction,
-  });
-  return vm.stateSuccess(state) === true;
+  for (let offset = 0; offset <= VALIDATOR_FACET_COUNT; offset += 1) {
+    const state = vm.evaluate({
+      inputIndex: validatorIndex + offset,
+      sourceOutputs: program.sourceOutputs,
+      transaction: program.transaction,
+    });
+    if (vm.stateSuccess(state) !== true) return false;
+  }
+  return true;
 }
 
-/** The fixture composition laid out against the shipped program. */
+/** The fixture composition laid out against the shipped program, with the facets the head binds after it. */
 export function laidOut(plan: CompositionPlan): Composition {
-  return planComposition({ ...plan, validatorTemplate: PROGRAM });
+  return planComposition({ ...plan, validatorTemplate: PROGRAM, validatorFacets: buildValidatorFacets() });
 }
 
 /** The two-contract reference composition, laid out and modelled. */

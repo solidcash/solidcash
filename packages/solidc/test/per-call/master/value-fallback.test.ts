@@ -12,7 +12,10 @@ import { compileString, compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * A per-call `fallback()` at the EVM's dispatch: a selector a body has runs that body, and any other runs the
@@ -171,10 +174,13 @@ describe('a contract paying another contract that has a fallback, compiled per-c
     const payerProgram = program('Payer', CATEGORY_PAYER, ADDRESS_PAYER);
     const payeeProgram = program(payee, CATEGORY_PAYEE, ADDRESS_PAYEE);
     const validator = validatorSpend(CATEGORY_PAYER, { roots: [0], masters: [0, 1], settles: [] });
+    const facets = validatorFacetPlacements();
+    // Inputs: the payer, the payee, the validator with its facet, then the user and the container.
+    const userIndex = 2 + VALIDATOR_INPUT_SPAN;
     const payerBlock: WitnessBlock = {
       kind: 0,
-      callerRef: 3,
-      originRef: 3,
+      callerRef: userIndex,
+      originRef: userIndex,
       validatorRef: 2,
       sender: USER_LOCK,
       self: ADDRESS_PAYER,
@@ -195,7 +201,7 @@ describe('a contract paying another contract that has a fallback, compiled per-c
     const payeeBlock: WitnessBlock = {
       kind: 1,
       callerRef: 0,
-      originRef: 3,
+      originRef: userIndex,
       validatorRef: 2,
       sender: ADDRESS_PAYER,
       self: ADDRESS_PAYEE,
@@ -221,6 +227,7 @@ describe('a contract paying another contract that has a fallback, compiled per-c
         ...encodeDataPush(payeeProgram),
       ])),
       input(3, validator.unlockingBytecode),
+      ...facets.map((facet) => facet.input),
       input(4, callerUnlockingBytecode()),
       input(5, encodeDataPush(new Uint8Array([1]))),
     ];
@@ -234,6 +241,7 @@ describe('a contract paying another contract that has a fallback, compiled per-c
         token: token(CATEGORY_PAYEE, 'minting'),
       },
       { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(CATEGORY_PAYER, 'mutable') },
+      ...facets.map((facet) => facet.output),
     ];
     const sourceOutputs: VmProgram['sourceOutputs'] = [
       ...participants,

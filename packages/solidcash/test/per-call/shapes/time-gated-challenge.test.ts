@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from './harness.js';
 import {
   FrameKind,
   buildEntryNftCovenantScript,
@@ -17,7 +18,6 @@ import {
 import {
   createComposedDerivationHost,
   deriveComposition,
-  layoutTransaction,
   layOutMappingWrites,
   participant,
   planMappingWrite,
@@ -184,7 +184,7 @@ function buildPlan(locktime: number): {
       state: [PAY_NODE_ID, CHALLENGE_NODE_ID],
     },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const payIndex = participant(layout, PAY_NODE_ID).index;
   const challengeNodeIndex = participant(layout, CHALLENGE_NODE_ID).index;
   const challengeIndex = participant(layout, CHALLENGE_MASTER).index;
@@ -346,7 +346,7 @@ describe('a user-entered root that reaches an escrow through a judge gated on th
     expect(rejected).toStrictEqual([]);
     expect(outcome.verdicts.filter((verdict) => verdict.accepted).map((verdict) => verdict.participant).sort())
       .toStrictEqual([ROOT_MASTER, JUDGE_MASTER, PAID_AT_MASTER, CHALLENGE_MASTER, VALIDATOR_ID,
-        PAY_NODE_ID, CHALLENGE_NODE_ID].sort());
+        `${VALIDATOR_ID}/1`, PAY_NODE_ID, CHALLENGE_NODE_ID].sort());
 
     // The transaction's one clock reaches every frame.
     expect(outcome.transaction.locktime).toBe(LOCKTIME_AFTER_PAYMENT);
@@ -452,7 +452,7 @@ function buildSingleRecordPlan(locktime: number): CompositionDraftPlan {
     { contract: 'Judge', masters: [JUDGE_MASTER], state: [] },
     { contract: 'Escrow', masters: [PAID_AT_MASTER, CHALLENGE_MASTER], state: [RECORD_ID] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const recordIndex = participant(layout, RECORD_ID).index;
   const challengeIndex = participant(layout, CHALLENGE_MASTER).index;
   const participantCount = layout.participantCount;
@@ -573,7 +573,7 @@ describe('the same composition over one data-NFT state record', () => {
     expect(outcome.verdicts.filter((verdict) => verdict.accepted)
       .map((verdict) => verdict.participant).sort())
       .toStrictEqual([ROOT_MASTER, JUDGE_MASTER, PAID_AT_MASTER, CHALLENGE_MASTER, VALIDATOR_ID,
-        RECORD_ID].sort());
+        `${VALIDATOR_ID}/1`, RECORD_ID].sort());
 
     // The record the reading frame left carries the counted value the writing frame computed.
     const written = outcome.transaction.outputs[planRecordIndex(plan)]!.token!.nft!.commitment;
@@ -607,5 +607,5 @@ describe('the same composition over one data-NFT state record', () => {
 
 /** The layout index the plan's single record sits at. */
 function planRecordIndex(plan: CompositionDraftPlan): number {
-  return participant(layoutTransaction(plan.blocks), RECORD_ID).index;
+  return participant(layoutWithFacets(plan.blocks), RECORD_ID).index;
 }

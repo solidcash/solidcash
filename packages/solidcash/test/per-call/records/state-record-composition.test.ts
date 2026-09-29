@@ -56,7 +56,8 @@ const CALLEE_MASTER = 'callee-1';
 const VALIDATOR_ID = 'validator';
 const RECORD_ID = 'record';
 const USER_ID = 'user';
-const RECORD_INDEX = 2;
+// The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
+const RECORD_INDEX = 3;
 const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
 const VALUE = 20_000n;
 
@@ -186,7 +187,8 @@ function buildComposition(options: {
       },
       { contract: 'Callee', masters: [CALLEE_MASTER], state: [] },
     ],
-    userInputs: [{ id: USER_ID, index: 4 }],
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: [{ id: USER_ID, index: 5 }],
     masters: [ledgerMaster, calleeMaster],
     inputs: {
       [LEDGER_MASTER]: {

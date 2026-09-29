@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from './harness.js';
 import {
   FrameKind,
   buildEntryNftCovenantScript,
@@ -29,7 +30,6 @@ import {
   USER_LOCK,
 } from './harness.js';
 import {
-  layoutTransaction,
   participant,
   planMappingDelete,
   type CompositionDraftPlan,
@@ -76,7 +76,8 @@ const NODE_ID = 'node';
 const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 /** The node's own master sits second, after the hub block's master and validator. */
-const NODE_MASTER_INDEX = 2;
+// The Tags master sits after the Hub, its validator and the facet the validator binds.
+const NODE_MASTER_INDEX = 3;
 
 const { artifacts, contracts } = compileAndDeploy(SOURCE, { Hub: HUB_LABEL, Tags: TAGS_LABEL });
 const HUB = contracts.Hub!;
@@ -115,7 +116,7 @@ function buildPlan(): {
     },
     { contract: 'Tags', masters: [MASTER_ID], state: [NODE_ID] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const nodeIndex = participant(layout, NODE_ID).index;
   const tagsIndex = participant(layout, MASTER_ID).index;
   const record: RecordEntry = { in: nodeIndex, out: nodeIndex, viewIn: NODE_BEFORE, viewOut: NODE_AFTER };
@@ -173,7 +174,7 @@ function buildPlan(): {
     },
     validator: {
       id: VALIDATOR_ID, covers: ['Tags'],
-      settles: [{ category: TAGS.category, stateInputs: [NODE_ID] }],
+      settles: [],
       redeemScript: validator.redeem,
     },
   };

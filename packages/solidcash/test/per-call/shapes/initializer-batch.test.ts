@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from './harness.js';
 import {
   FrameKind,
   INDEX_NONE,
@@ -21,7 +22,6 @@ import {
 } from '../../../src/per-call/deploy/index.js';
 import {
   layOutMappingBatch,
-  layoutTransaction,
   participant,
   planMappingBatch,
   type CompositionDraftPlan,
@@ -143,7 +143,7 @@ function buildPlan(options: { readonly relinkLowest?: Uint8Array; readonly forge
     contract: artifact.contractName, masters: [MASTER],
     validator: { id: VALIDATOR_ID, settles: [] as readonly string[] }, state: [RECORD_ID, HEAD_ID],
   }];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const recordIndex = participant(layout, RECORD_ID).index;
   const headIndex = participant(layout, HEAD_ID).index;
   const eventIndex = layout.participantCount;
@@ -229,10 +229,7 @@ function buildPlan(options: { readonly relinkLowest?: Uint8Array; readonly forge
     ],
     validator: {
       id: VALIDATOR_ID, covers: [],
-      settles: [{
-        category: CATEGORY, stateInputs: [RECORD_ID, HEAD_ID],
-        createdOutputs: options.forged === undefined ? created : [...created, forgedIndex].sort((a, b) => a - b),
-      }],
+      settles: [],
       redeemScript: validatorFor(CATEGORY).redeem,
     },
   };

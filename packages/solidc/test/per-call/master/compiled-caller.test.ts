@@ -13,7 +13,8 @@ import { assertPlaceholders, fillPlaceholders } from '../../../src/per-call/mast
 import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 import {
-  ALTERNATE_ACCEPTING_PROGRAM, REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend,
+  ALTERNATE_ACCEPTING_PROGRAM, REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory,
+  validatorFacetPlacements, validatorSpend,
 } from './validator-input.js';
 
 /**
@@ -72,11 +73,12 @@ const token = (
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 
-/** Master input indices: the caller, its callee, the validator that covers both, then the user. */
+/** Master input indices: the caller, its callee, the validator with its facet, then the user. */
 const CALLER_INDEX = 0;
 const CALLEE_INDEX = 1;
 const VALIDATOR_INDEX = 2;
-const USER_INDEX = 3;
+const VALIDATOR_FACET_INDEX = VALIDATOR_INDEX + 1;
+const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
 
 interface CompositionOptions {
   /** The hash the caller's reserved slot is filled with, so a wrong value can be refused. */
@@ -130,6 +132,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
   });
   const validatorLock = validator.lock;
+  const facets = validatorFacetPlacements();
 
   const callerBlock: WitnessBlock = {
     kind: 0,
@@ -199,6 +202,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
         ...validator.unlockingBytecode,
       ]),
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(4),
@@ -211,12 +215,14 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     { lockingBytecode: callerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validatorLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const sourceOutputs = [
     { lockingBytecode: callerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validatorLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
 
@@ -227,7 +233,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
 function verdicts(options: CompositionOptions = {}): Record<number, boolean> {
   const composition = buildComposition(options);
   const vm = compositionMachine();
-  return Object.fromEntries([CALLER_INDEX, CALLEE_INDEX, VALIDATOR_INDEX].map((index) => [
+  return Object.fromEntries([CALLER_INDEX, CALLEE_INDEX, VALIDATOR_INDEX, VALIDATOR_FACET_INDEX].map((index) => [
     index,
     vm.stateSuccess(vm.evaluate({
       inputIndex: index, sourceOutputs: composition.sourceOutputs, transaction: composition.transaction,
@@ -257,7 +263,9 @@ describe('a compiled caller that makes a call', () => {
 
 describe('a caller, its callee and a validator evaluated in the BCH-2026 virtual machine', () => {
   it('is accepted at every input when the reserved hash is the validator program\'s', () => {
-    expect(verdicts()).toStrictEqual({ [CALLER_INDEX]: true, [CALLEE_INDEX]: true, [VALIDATOR_INDEX]: true });
+    expect(verdicts()).toStrictEqual({
+      [CALLER_INDEX]: true, [CALLEE_INDEX]: true, [VALIDATOR_INDEX]: true, [VALIDATOR_FACET_INDEX]: true,
+    });
   });
 
   it('has a caller that fails when its reserved hash is not the validator program\'s', () => {
@@ -273,8 +281,9 @@ describe('a caller, its callee and a validator evaluated in the BCH-2026 virtual
     mutated[0] ^= 0xff;
     const results = verdicts({ argsHash: mutated });
     expect(results[CALLER_INDEX]).toBe(false);
-    // The validator recomputes the digest from the callee's pushes, so a different record fails there too.
-    expect(results[VALIDATOR_INDEX]).toBe(false);
+    // The digest is an edge rule, which the split runs in the facet at `head + 1`, so the facet is what refuses a
+    // record whose digest is not the callee's own.
+    expect(results[VALIDATOR_FACET_INDEX]).toBe(false);
   });
 
   it('has a caller refused for a hash type other than SIGHASH_ALL, while the callee is unaffected', () => {

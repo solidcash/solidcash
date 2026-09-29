@@ -27,8 +27,9 @@ import {
   USER_LOCK, VALIDATOR_PROGRAM, composeAndDerive, entryName, hexOf, master, masterInput, rootOf,
   selectorOf, token, userInput, userInputs, validatorFor, type DeployedContract,
 } from '../shapes/harness.js';
+import { layoutWithFacets } from '../shapes/harness.js';
 import {
-  createComposedDerivationHost, layoutTransaction, layOutChunkRun, participant, planChunkRun,
+  createComposedDerivationHost, layOutChunkRun, participant, planChunkRun,
   type ChunkRecordPlacement, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
@@ -259,7 +260,7 @@ function build(): Built {
   // A probe with the run's records fixes the geometry: the record is the proxy block's first state UTXO and the
   // run's band begins one layout width past it.
   const probeState = [RECORD_ID, ...runPlan.written.chunks.map((_chunk, offset) => `items#probe${offset}`)];
-  const probeLayout = layoutTransaction([
+  const probeLayout = layoutWithFacets([
     {
       contract: proxyContract, masters: Array.from({ length: APPEND_COUNT }, (_u, t) => proxyMasterId(t + 1)),
       validator: { id: VALIDATOR_ID, settles: [] as readonly string[] }, state: probeState,
@@ -289,7 +290,7 @@ function build(): Built {
       state: [] as readonly string[],
     },
   ];
-  const layoutTx = layoutTransaction(blocks);
+  const layoutTx = layoutWithFacets(blocks);
   if (participant(layoutTx, RECORD_ID).index !== recordIndex) {
     throw new Error('the probe fixed a record index the final layout does not place the record at');
   }
@@ -451,7 +452,7 @@ function buildHubCall(forward = false): Built {
 
   const runPlan = planChunkRun({ layout, variable: 'items', spent: stages[0]!, written: stages[APPEND_COUNT]! });
   const probeState = [RECORD_ID, ...runPlan.written.chunks.map((_chunk, offset) => `items#probe${offset}`)];
-  const probeLayout = layoutTransaction([
+  const probeLayout = layoutWithFacets([
     {
       contract: hubContract, masters: [HUB_MASTER],
       validator: { id: VALIDATOR_ID, settles: [] as readonly string[] }, state: [] as readonly string[],
@@ -489,7 +490,7 @@ function buildHubCall(forward = false): Built {
       state: [] as readonly string[],
     },
   ];
-  const layoutTx = layoutTransaction(blocks);
+  const layoutTx = layoutWithFacets(blocks);
 
   const recordEntry = (viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry =>
     ({ in: recordIndex, out: recordIndex, viewIn, viewOut });
@@ -659,7 +660,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
     expect([...asked].sort()).toStrictEqual([
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => proxyMasterId(turn + 1)),
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => implMasterId(turn + 1)),
-      VALIDATOR_ID, RECORD_ID, ...built.records.map((record) => record.id),
+      VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID, ...built.records.map((record) => record.id),
     ].sort());
   });
 
@@ -771,7 +772,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
       HUB_MASTER,
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => proxyMasterId(turn + 1)),
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => implMasterId(turn + 1)),
-      VALIDATOR_ID, RECORD_ID, ...built.records.map((record) => record.id),
+      VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID, ...built.records.map((record) => record.id),
     ].sort());
   });
 

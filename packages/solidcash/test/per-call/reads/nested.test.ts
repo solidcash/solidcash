@@ -27,6 +27,7 @@ import {
   type CompositionDraftPlan,
   type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
+import { layoutWithFacets } from '../shapes/harness.js';
 import { readPerCallEntry } from '../../../src/per-call/read/index.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
@@ -84,6 +85,11 @@ function buildPlan(): { readonly plan: CompositionDraftPlan; readonly commitment
   const commitment = new Uint8Array(
     Buffer.from(buildPushdataCommitment(bArtifact.stateLayout!, { v: BVALUE }, 0), 'hex'),
   );
+  const blocks = [
+    { contract: 'A', masters: ['read-1'], validator: { id: 'validator', settles: [] }, state: [] },
+    { contract: 'B', masters: ['value-1'], state: ['record-b'] },
+  ];
+  const layout = layoutWithFacets(blocks);
 
   const readMaster: DraftMaster = {
     master: 'read-1', contract: 'A', functionName: 'A.peek()', program: a.script,
@@ -110,15 +116,13 @@ function buildPlan(): { readonly plan: CompositionDraftPlan; readonly commitment
     enteredBy: 'read-1', origin: 'record-b',
     calls: [], retval: new Uint8Array(32).fill(0xef),
     // The record B's frame reads, at the index the layout gives it.
-    segments: [[{ in: 3, out: 3, viewIn: commitment, viewOut: commitment }]],
+    segments: [[{ in: participant(layout, 'record-b').index, out: participant(layout, 'record-b').index,
+      viewIn: commitment, viewOut: commitment }]],
     events: [], sends: [], argumentPushes: [VALUE_SELECTOR], redeemScript: b.script,
   };
 
   const plan: CompositionDraftPlan = {
-    blocks: [
-      { contract: 'A', masters: ['read-1'], validator: { id: 'validator', settles: [] }, state: [] },
-      { contract: 'B', masters: ['value-1'], state: ['record-b'] },
-    ],
+    blocks,
     userInputs: [],
     masters: [readMaster, valueMaster],
     inputs: {
@@ -137,7 +141,7 @@ function buildPlan(): { readonly plan: CompositionDraftPlan; readonly commitment
           valueSatoshis: 20_000n, token: token('mutable', CATEGORY_B, commitment),
         },
         // A read leaves the record where it is, so it takes the covenant's read-only path.
-        unlockingBytecode: stateRecordUnlockingBytecode(CATEGORY_B_HEX, 2, 0),
+        unlockingBytecode: stateRecordUnlockingBytecode(CATEGORY_B_HEX, participant(layout, 'value-1').index, 0),
       },
     },
     validator: { id: 'validator', covers: ['B'], settles: [], redeemScript: validator.redeem },

@@ -13,6 +13,7 @@ import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/Sor
 import { encodeFunctionArgument, type FunctionArgument } from '../../../src/Argument.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * Calls whose entry reads a record it does not write, or names only some of its contract's records, through the
@@ -110,6 +111,8 @@ async function deploy(artifact: Artifact): Promise<Deployed> {
   });
   const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
   await provider.addUtxo(binToHex(callerLock), { txid: CALLER_TXID, vout: 0, satoshis: 200_000n });
+  // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(provider);
   return { artifact, provider, categoryId: deployment.categoryId, callerLock, funder: signature.unlockP2PKH() };
 }
 

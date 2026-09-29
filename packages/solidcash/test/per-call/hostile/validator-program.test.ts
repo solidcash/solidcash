@@ -3,7 +3,9 @@ import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import { FrameKind, type PerCallTransaction as ModelledTransaction, type TokenShape } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/index.js';
-import { buildValidatorProgram, decideValidator } from '../../../../solidc/src/per-call/validator/index.js';
+import {
+  buildValidatorFacets, buildValidatorProgram, decideValidator,
+} from '../../../../solidc/src/per-call/validator/index.js';
 import {
   emptyToken,
   materialise,
@@ -30,6 +32,9 @@ import { abbaContracts, abbaPlan, userPlan } from '../validator/plans.js';
  */
 
 const PROGRAM = buildValidatorProgram();
+
+/** How many facet inputs the head binds after itself; the validator is the head plus these. */
+const FACETS = buildValidatorFacets();
 
 type VmProgram = Parameters<ReturnType<typeof machine>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
@@ -79,21 +84,24 @@ function toVm(transaction: ModelledTransaction): { transaction: VmTransaction; s
   };
 }
 
-/** Whether the machine accepts the validator input of a modelled transaction. */
+/** Whether the machine accepts the validator of a modelled transaction: its head and every facet the head binds. */
 function accepted(transaction: ModelledTransaction, validatorIndex: number): boolean {
   const vm = machine();
   const program = toVm(transaction);
-  const state = vm.evaluate({
-    inputIndex: validatorIndex,
-    sourceOutputs: program.sourceOutputs,
-    transaction: program.transaction,
-  });
-  return vm.stateSuccess(state) === true;
+  for (let offset = 0; offset <= FACETS.length; offset += 1) {
+    const state = vm.evaluate({
+      inputIndex: validatorIndex + offset,
+      sourceOutputs: program.sourceOutputs,
+      transaction: program.transaction,
+    });
+    if (vm.stateSuccess(state) !== true) return false;
+  }
+  return true;
 }
 
-/** The fixture composition laid out against the shipped program. */
+/** The fixture composition laid out against the shipped program, with the facets the head binds after it. */
 function laidOut(): Composition {
-  return planComposition({ ...abbaPlan(), validatorTemplate: PROGRAM });
+  return planComposition({ ...abbaPlan(), validatorTemplate: PROGRAM, validatorFacets: FACETS });
 }
 
 const FOREIGN = seedBytes('hostile foreign category', 32);
@@ -173,7 +181,7 @@ function delegateRootPlan(): CompositionPlan {
 
 describe('the shipped validator program refuses a covered master that is not at its derived address', () => {
   test('accepts the delegate-call reference, so the refusal below is the address rule', () => {
-    const composition = planComposition({ ...delegateRootPlan(), validatorTemplate: PROGRAM });
+    const composition = planComposition({ ...delegateRootPlan(), validatorTemplate: PROGRAM, validatorFacets: FACETS });
     const modelled = materialise(composition);
     expect(decideValidator(modelled, { validatorTemplate: PROGRAM, validatorInputIndex: composition.validatorIndex }).accepted)
       .toBe(true);
@@ -181,7 +189,7 @@ describe('the shipped validator program refuses a covered master that is not at 
   });
 
   test('refuses a covered master whose presented address is not the one derived for its category', () => {
-    const composition = planComposition({ ...delegateRootPlan(), validatorTemplate: PROGRAM });
+    const composition = planComposition({ ...delegateRootPlan(), validatorTemplate: PROGRAM, validatorFacets: FACETS });
     const index = composition.validatorIndex;
     // The presented address is recomputed by the validator from its own program and the master's own category.
     // A P2SH32 of unrelated bytes is not that address for either contract. The delegate callee inherits the

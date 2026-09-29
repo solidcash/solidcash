@@ -19,7 +19,10 @@ import {
 } from '../../../src/per-call/validator/index.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * A read admitted under the per-call convention: the caller records the call as a static frame, the callee runs
@@ -52,11 +55,12 @@ const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 const ANSWER = 42n;
 const ANSWER_RETVAL = encodeArgumentList([encodeIntegerValue(ANSWER)]);
 
-/** Master input indices: the caller, its callee, the validator that covers both, then the user. */
+/** Master input indices: the caller, its callee, the validator with its facet, then the user. */
 const CALLER_INDEX = 0;
 const CALLEE_INDEX = 1;
 const VALIDATOR_INDEX = 2;
-const USER_INDEX = 3;
+const VALIDATOR_FACET_INDEX = VALIDATOR_INDEX + 1;
+const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
 
 const scriptBytes = (artifact: { bytecode: string }): Uint8Array => scriptToBytecode(asmToScript(artifact.bytecode));
 
@@ -116,6 +120,7 @@ function buildRead(
   const validator = validatorSpend(CATEGORY_CALLER, {
     roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
   });
+  const facets = validatorFacetPlacements();
   const readerBlock: WitnessBlock = {
     kind: 0,
     callerRef: USER_INDEX,
@@ -174,6 +179,7 @@ function buildRead(
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(3), sequenceNumber: 0xffffffff,
       unlockingBytecode: validator.unlockingBytecode,
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(4), sequenceNumber: 0xffffffff,
       unlockingBytecode: callerUnlockingBytecode(),
@@ -183,6 +189,7 @@ function buildRead(
     { lockingBytecode: readerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   return { transaction: { version: 2, inputs, outputs, locktime: 0 }, sourceOutputs: outputs };
@@ -269,9 +276,9 @@ const commitment = (counter: bigint): Uint8Array =>
 const BEFORE = commitment(5n);
 const AFTER = commitment(6n);
 
-/** Input indices for the stateful case: the record sits after the validator, before the user. */
-const RECORD_INDEX = 3;
-const MUTANT_USER_INDEX = 4;
+/** Input indices for the stateful case: the record sits after the validator's facet, before the user. */
+const RECORD_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
+const MUTANT_USER_INDEX = RECORD_INDEX + 1;
 
 interface MutantComposition {
   readonly transaction: VmTransaction;
@@ -282,6 +289,7 @@ function buildMutant(): MutantComposition {
   const validator = validatorSpend(CATEGORY_CALLER, {
     roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
   });
+  const facets = validatorFacetPlacements();
   const declaration: RecordEntry = { in: RECORD_INDEX, out: RECORD_INDEX, viewIn: BEFORE, viewOut: AFTER };
   const readerBlock: WitnessBlock = {
     kind: 0,
@@ -336,6 +344,7 @@ function buildMutant(): MutantComposition {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(3), sequenceNumber: 0xffffffff,
       unlockingBytecode: validator.unlockingBytecode,
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(4), sequenceNumber: 0xffffffff,
       unlockingBytecode: encodeDataPush(new Uint8Array([1])),
@@ -349,6 +358,7 @@ function buildMutant(): MutantComposition {
     { lockingBytecode: readerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: mutantLock, valueSatoshis: masterValue, token: token(CATEGORY_MUTANT, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: masterValue, token: token(CATEGORY_MUTANT, 'mutable', AFTER) },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
@@ -356,6 +366,7 @@ function buildMutant(): MutantComposition {
     { lockingBytecode: readerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: mutantLock, valueSatoshis: masterValue, token: token(CATEGORY_MUTANT, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: masterValue, token: token(CATEGORY_MUTANT, 'mutable', BEFORE) },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
@@ -409,11 +420,11 @@ function validatorModel(composition: MutantComposition): PerCallTransaction {
 describe('a static frame that would write its record', () => {
   it('is accepted by the callee\'s own code and refused by the validator, as the static-frame rule', () => {
     // The callee settles its own record: it is its contract's only master, so the write it computed is its own
-    // business and its own code admits it. The validator is what refuses it, because a static frame may not change
-    // a record at all.
+    // business and its own code admits it. The read-only-frame rule is one the split runs in the facet at
+    // `head + 1`, so the facet is the validator input that refuses a static frame changing a record.
     expect(mutantAccepted(CALLEE_INDEX)).toBe(true);
     expect(mutantAccepted(CALLER_INDEX)).toBe(true);
-    expect(mutantAccepted(VALIDATOR_INDEX)).toBe(false);
+    expect(mutantAccepted(VALIDATOR_FACET_INDEX)).toBe(false);
 
     const decision = decideValidator(validatorModel(buildMutant()), {
       validatorTemplate: VALIDATOR_PROGRAM, validatorInputIndex: VALIDATOR_INDEX,
@@ -457,9 +468,9 @@ const stateCommitment = (counter: bigint): Uint8Array =>
 const COUNTER_BEFORE = stateCommitment(5n);
 const COUNTER_AFTER = stateCommitment(6n);
 
-/** Input indices for the stateful caller: the record sits after the validator, before the user. */
-const STATE_RECORD_INDEX = 3;
-const STATEFUL_USER_INDEX = 4;
+/** Input indices for the stateful caller: the record sits after the validator's facet, before the user. */
+const STATE_RECORD_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
+const STATEFUL_USER_INDEX = STATE_RECORD_INDEX + 1;
 
 interface StatefulComposition {
   readonly transaction: VmTransaction;
@@ -471,6 +482,7 @@ function buildStateful(viewIn: Uint8Array): StatefulComposition {
   const validator = validatorSpend(CATEGORY_STATEFUL, {
     roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
   });
+  const facets = validatorFacetPlacements();
   const declaration: RecordEntry = {
     in: STATE_RECORD_INDEX, out: STATE_RECORD_INDEX, viewIn, viewOut: COUNTER_AFTER,
   };
@@ -527,6 +539,7 @@ function buildStateful(viewIn: Uint8Array): StatefulComposition {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(3), sequenceNumber: 0xffffffff,
       unlockingBytecode: validator.unlockingBytecode,
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(4), sequenceNumber: 0xffffffff,
       unlockingBytecode: encodeDataPush(new Uint8Array([1])),
@@ -540,6 +553,7 @@ function buildStateful(viewIn: Uint8Array): StatefulComposition {
     { lockingBytecode: counterLock, valueSatoshis: masterValue, token: token(CATEGORY_STATEFUL, 'minting') },
     { lockingBytecode: answerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_STATEFUL, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: masterValue, token: token(CATEGORY_STATEFUL, 'mutable', COUNTER_AFTER) },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
@@ -547,6 +561,7 @@ function buildStateful(viewIn: Uint8Array): StatefulComposition {
     { lockingBytecode: counterLock, valueSatoshis: masterValue, token: token(CATEGORY_STATEFUL, 'minting') },
     { lockingBytecode: answerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_STATEFUL, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: masterValue, token: token(CATEGORY_STATEFUL, 'mutable', COUNTER_BEFORE) },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
@@ -605,7 +620,7 @@ describe('the reads a master still cannot compile', () => {
  * holds when it reads, and the callee answers with the value it received — so the same frame settles both the
  * argument the caller computed and the return the callee computed.
  */
-const ARGUMENT_READ_ENTRY_COUNT = 4;
+const ARGUMENT_READ_ENTRY_COUNT = USER_INDEX + 1;
 const ARGUMENT_READ = 'pragma solidcash ^0.13.0;'
   + ' interface IReader { function peek(int n) returns (int); }'
   + ' contract Answer { function peek(int n) view returns (int) { return n; } }'
@@ -613,7 +628,7 @@ const ARGUMENT_READ = 'pragma solidcash ^0.13.0;'
   + `   int r = IReader(0x${toHex(ADDRESS_CALLEE)}).peek.staticcall(tx.inputs.length); `
   + `require(r == ${ARGUMENT_READ_ENTRY_COUNT}); require(true); } }`;
 
-/** The push the caller computes for the argument: the input count's minimal script number, `OP_4` here. */
+/** The push the caller computes for the argument: the input count's minimal script number, `OP_5` here. */
 const ARGUMENT_PUSHES = encodeCallDataArguments([encodeIntegerValue(BigInt(ARGUMENT_READ_ENTRY_COUNT))]);
 /** What the callee's own code returns: the value it received. */
 const ARGUMENT_RETVAL = encodeResultList([encodeIntegerValue(BigInt(ARGUMENT_READ_ENTRY_COUNT))]);
@@ -627,7 +642,7 @@ describe('a read whose argument exists only when the code runs', () => {
   });
 
   it('is refused when the call data carries another argument', () => {
-    const other = encodeCallDataArguments([encodeIntegerValue(5n)]);
+    const other = encodeCallDataArguments([encodeIntegerValue(BigInt(ARGUMENT_READ_ENTRY_COUNT + 1))]);
     const verdicts = readVerdicts(ARGUMENT_READ, { argumentPushes: other, calleeRetval: ARGUMENT_RETVAL });
     expect(verdicts[CALLER_INDEX]).toBe(false);
   });
@@ -635,7 +650,7 @@ describe('a read whose argument exists only when the code runs', () => {
   it('is refused when the callee records another return value', () => {
     const verdicts = readVerdicts(ARGUMENT_READ, {
       argumentPushes: ARGUMENT_PUSHES,
-      calleeRetval: encodeResultList([encodeIntegerValue(5n)]),
+      calleeRetval: encodeResultList([encodeIntegerValue(BigInt(ARGUMENT_READ_ENTRY_COUNT + 1))]),
     });
     expect(verdicts[CALLEE_INDEX]).toBe(false);
   });

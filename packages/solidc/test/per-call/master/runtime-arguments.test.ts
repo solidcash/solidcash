@@ -12,7 +12,10 @@ import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * A call whose argument exists only when the code runs.
@@ -41,8 +44,9 @@ const FOREIGN_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x33));
 
 const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 
-/** The input count of the transaction these cases build, which the numeric form passes as its argument. */
-const INPUT_COUNT = 4;
+/** The input count of the transaction these cases build: the caller, the callee, the validator with its facet and
+ * the user. The numeric form passes it as its argument, so it tracks the validator's own layout. */
+const INPUT_COUNT = 5;
 
 /** The caller passes a bounded number only the running code counts. */
 const NUMERIC_SOURCE = 'pragma solidcash ^0.13.0;'
@@ -84,11 +88,12 @@ const PAIR_CONSTANT_SOURCE = 'pragma solidcash ^0.13.0;'
   + `   function callIt() { ICallee(0x${toHex(ADDRESS_CALLEE)}).ping(7, hex"aabb"); require(true); }`
   + ' }';
 
-/** Master input indices: the caller, its callee, the validator that covers both, then the user. */
+/** Master input indices: the caller, its callee, the validator with its facet, then the user. */
 const CALLER_INDEX = 0;
 const CALLEE_INDEX = 1;
 const VALIDATOR_INDEX = 2;
-const USER_INDEX = 3;
+const VALIDATOR_FACET_INDEX = VALIDATOR_INDEX + 1;
+const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
 
 /** The finished script as bytes: the artifact publishes it as ASM, deployment fills the slots in the bytes. */
 const scriptBytes = (artifact: { bytecode: string }): Uint8Array => scriptToBytecode(asmToScript(artifact.bytecode));
@@ -150,6 +155,7 @@ function buildComposition(source: string, pushes: Uint8Array, options: Compositi
   const validator = validatorSpend(CATEGORY_CALLER, {
     roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
   });
+  const facets = validatorFacetPlacements();
 
   const callerBlock: WitnessBlock = {
     kind: 0,
@@ -212,6 +218,7 @@ function buildComposition(source: string, pushes: Uint8Array, options: Compositi
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(3), sequenceNumber: 0xffffffff,
       unlockingBytecode: validator.unlockingBytecode,
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(4), sequenceNumber: 0xffffffff,
       unlockingBytecode: callerUnlockingBytecode(),
@@ -221,6 +228,7 @@ function buildComposition(source: string, pushes: Uint8Array, options: Compositi
     { lockingBytecode: callerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const sourceOutputs = [...outputs];
@@ -263,7 +271,7 @@ describe('a call whose argument exists only when the code runs', () => {
   it('is refused when the record carries the digest of another value', () => {
     // The caller recomputes the argument where it calls, so a record over another number or another lock is
     // refused: the disagreement cannot be absorbed by the record moving with the bytes it is compared against.
-    const otherCount = encodeArgumentList([encodeIntegerValue(5n)]);
+    const otherCount = encodeArgumentList([encodeIntegerValue(BigInt(INPUT_COUNT + 1))]);
     const otherOrigin = encodeArgumentList([FOREIGN_LOCK]);
     expect(accepted(NUMERIC_SOURCE, COUNT_PUSHES, {
       recordedArgsHash: argsHash(fixture(NUMERIC_SOURCE, COUNT_PUSHES).selector, otherCount),
@@ -277,7 +285,7 @@ describe('a call whose argument exists only when the code runs', () => {
 
   it('is refused when the callee carries a value the caller did not compute', () => {
     expect(accepted(NUMERIC_SOURCE, COUNT_PUSHES, {
-      calleeArgumentPushes: encodeArgumentList([encodeIntegerValue(5n)]),
+      calleeArgumentPushes: encodeArgumentList([encodeIntegerValue(BigInt(INPUT_COUNT + 1))]),
     }, CALLER_INDEX)).toBe(false);
     expect(accepted(BYTES_SOURCE, ORIGIN_PUSHES, {
       calleeArgumentPushes: encodeArgumentList([FOREIGN_LOCK]),
@@ -315,8 +323,9 @@ describe('a call that passes more than one argument', () => {
     expect(accepted(PAIR_SOURCE, PAIR_PUSHES, options, CALLEE_INDEX)).toBe(false);
     // The caller hashes the callee's call data itself, so it refuses the same call data without the callee's help.
     expect(accepted(PAIR_SOURCE, PAIR_PUSHES, options, CALLER_INDEX)).toBe(false);
-    // The validator hashes the callee's pushes against the record too, so it is the third refusal.
-    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, options, VALIDATOR_INDEX)).toBe(false);
+    // The digest of the callee's pushes against the record is an edge rule, which the split runs in the facet at
+    // `head + 1`, so the facet is the third refusal.
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, options, VALIDATOR_FACET_INDEX)).toBe(false);
     expect(accepted(PAIR_SOURCE, PAIR_PUSHES, {}, CALLER_INDEX)).toBe(true);
   });
 
@@ -325,7 +334,8 @@ describe('a call that passes more than one argument', () => {
       recordedArgsHash: argsHash(fixture(PAIR_SOURCE, PAIR_PUSHES).selector, PAIR_PUSHES_BY_PARAMETER),
     };
     expect(accepted(PAIR_SOURCE, PAIR_PUSHES, options, CALLER_INDEX)).toBe(false);
-    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, options, VALIDATOR_INDEX)).toBe(false);
+    // The record's digest is the same edge rule, so the facet is the validator input that refuses it too.
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, options, VALIDATOR_FACET_INDEX)).toBe(false);
     expect(accepted(PAIR_SOURCE, PAIR_PUSHES, {}, CALLER_INDEX)).toBe(true);
   });
 

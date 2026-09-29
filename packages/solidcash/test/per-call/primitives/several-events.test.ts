@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import {
   FrameKind, buildEventNftCovenantScript, computeEventNameHash, encodeEventCommitment, hash256, scriptToBytecode,
@@ -8,7 +9,7 @@ import {
   userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
-  allocateOutputRegions, layoutTransaction,
+  allocateOutputRegions,
   type CompositionDraftPlan, type DraftMaster, type DraftTrailingOutput,
 } from '../../../src/per-call/composer/index.js';
 import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
@@ -43,7 +44,7 @@ describe('two events of one contract emitted from two frames', () => {
     const blocks = [{
       contract: 'Log', masters: ['log-first', 'log-second'], validator: { id: 'validator', settles: [] }, state: [],
     }];
-    const layout = layoutTransaction(blocks);
+    const layout = layoutWithFacets(blocks);
     const regions = allocateOutputRegions(layout, { events: 2, sends: 0, created: 0 });
 
     // The shipped encoders build each event's covenant lock and NFT commitment.

@@ -14,6 +14,7 @@ import {
   INDEX_NONE,
   PerCallEncodingError,
   SELECTOR_LENGTH,
+  VALIDATOR_PIN_PUSH_LENGTH,
   argsHash,
   bytesEqual,
   encodeArgumentList,
@@ -21,9 +22,12 @@ import {
   type RecordEntry,
   type Transcript,
 } from '@solidcash/utils';
+import { encodeDataPush } from '@bitauth/libauth';
+import { perCallValidator } from 'solidc';
 import { assertValidatorCoverage, type EntryFacts } from './need-test.js';
 import {
   allocateOutputRegions,
+  facetId,
   layoutTransaction,
   type ContractBlock,
   type OutputRegions,
@@ -114,6 +118,13 @@ export interface PlannedValidator {
   readonly covers: readonly string[];
   /** The validator's redeem script: the category pin followed by the validator program. */
   readonly redeemScript: Uint8Array;
+  /**
+   * The codes the validator's program binds as facets, one per input at `head + k`.
+   *
+   * Facet `k` is locked by `P2SH32(facets[k - 1])` and carries only its own code, so its input reads the transcript
+   * from the head. Empty — the default — is a validator that runs in one input.
+   */
+  readonly facets?: readonly Uint8Array[];
   /** The contracts the validator settles, with the state inputs each spends. */
   readonly settles: readonly PlannedSettlement[];
 }
@@ -142,6 +153,29 @@ export function declaredValidators(plan: { readonly validator?: PlannedValidator
   const declared = plan.validator;
   if (declared === undefined) return [];
   return Array.isArray(declared) ? declared : [declared];
+}
+
+/**
+ * The shipped validator program and the facets it binds, built once.
+ *
+ * A plan states its validator by its redeem script, so recognising the shipped program is what lets the facets it
+ * binds be composed without every plan restating them.
+ */
+const SHIPPED_VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const SHIPPED_VALIDATOR_FACETS = perCallValidator.buildValidatorFacets();
+
+/**
+ * The facets a validator's plan composes.
+ *
+ * A plan that states the codes composes those. A plan that states none and carries the shipped validator program
+ * composes the facets that program binds: the head carries each facet's lock as a constant, so a composition that
+ * left one out is one the head refuses, and every plan of the shipped program would have to state the same codes.
+ * A plan that composes a program of its own states its facets, because the composer knows only this one's.
+ */
+export function validatorFacetsOf(validator: PlannedValidator): readonly Uint8Array[] {
+  if (validator.facets !== undefined) return validator.facets;
+  const program = validator.redeemScript.slice(VALIDATOR_PIN_PUSH_LENGTH);
+  return bytesEqual(program, SHIPPED_VALIDATOR_PROGRAM) ? SHIPPED_VALIDATOR_FACETS : [];
 }
 
 /** How a plan's validators bind to the contracts their masters run on. */
@@ -380,7 +414,11 @@ function samePushes(left: readonly Uint8Array[], right: readonly Uint8Array[]): 
  */
 export function assembleComposition(plan: CompositionPlan): CompositionAssembly {
   assertCallDataAgrees(plan);
-  const layout = layoutTransaction(plan.blocks);
+  const declared = declaredValidators(plan);
+  const layout = layoutTransaction(
+    plan.blocks,
+    new Map(declared.map((validator) => [validator.id, validatorFacetsOf(validator)])),
+  );
   const outputs = resolveOutputRegions(plan, layout);
   const indexOf = new Map<string, number>();
   for (const participant of layout.participants) indexOf.set(participant.id, participant.index);
@@ -473,6 +511,11 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
       id: validator.id,
       index: resolve(validator.id, 'validator'),
       unlockingBytecode: validatorWitness.unlockingBytecode,
+    });
+    // A facet's unlocking bytecode is its own code and nothing else: the transcript rides with the head.
+    validatorFacetsOf(validator).forEach((code, at) => {
+      const id = facetId(validator.id, at + 1);
+      assembled.push({ id, index: resolve(id, 'facet'), unlockingBytecode: encodeDataPush(code) });
     });
     transcripts.push({ validator: validator.id, transcript });
   }

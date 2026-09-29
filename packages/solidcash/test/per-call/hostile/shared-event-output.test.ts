@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   FrameKind, buildMasterUnlockingBytecode, encodeEventCommitment, type Artifact, type WitnessBlock,
@@ -13,7 +14,7 @@ import {
   rootOf, seededAddress, selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
-  layoutTransaction, participant, type CompositionDraftPlan, type ContractBlock,
+  participant, type CompositionDraftPlan, type ContractBlock,
 } from '../../../src/per-call/composer/index.js';
 
 /**
@@ -72,7 +73,7 @@ function setup(): Fixture {
   const deployment = compileAndDeploy(SOURCE, { Own: LABEL });
   const artifact = deployment.artifacts.Own as Artifact;
   const own = deployment.contracts.Own!;
-  const layout = layoutTransaction(BLOCKS);
+  const layout = layoutWithFacets(BLOCKS);
   const validator = validatorFor(own.category);
   const event = artifact.events![0]!;
   const commitment = encodeEventCommitment(event.parameters, [7n]);

@@ -10,6 +10,7 @@ import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { deployMaster, stateRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
 import { participant } from '../../../src/per-call/composer/index.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
@@ -82,6 +83,8 @@ async function deploy(): Promise<Deployed> {
   const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
   const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 200_000n };
   await provider.addUtxo(binToHex(callerLock), callerUtxo);
+  // The composition broadcasts, so its facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(provider);
   return {
     provider,
     categoryId: deployment.categoryId,

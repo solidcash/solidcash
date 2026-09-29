@@ -30,8 +30,8 @@ const PAY = hexOf(seededAddress(PAY_LABEL));
 /** Where the later call's second argument comes from. */
 type IdMode = 'literal' | 'runtime';
 const LITERAL_ID = 7n;
-/** The composed transaction's input count: the three masters, the validator and the user. */
-const RUNTIME_ID = 5n;
+/** The composed transaction's input count: the three masters, the validator, the facet it binds and the user. */
+const RUNTIME_ID = 6n;
 
 /** The source, with `id` taken from a literal or the running transaction's input count. */
 function source(mode: IdMode): string {
@@ -91,7 +91,8 @@ function build(mode: IdMode): Built {
       { contract: 'Fee', masters: ['fee-1'], state: [] },
       { contract: 'Pay', masters: ['pay-1'], state: [] },
     ],
-    userInputs: userInputs(['user'], 4),
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: userInputs(['user'], 5),
     masters: [
       draftMaster({
         master: 'claimer-1', contract: 'Claimer', functionName: 'Claimer.f()', program: claimer.program,

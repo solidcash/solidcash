@@ -14,7 +14,10 @@ import { findPlaceholderOffsets } from '../../../src/per-call/master/master-prog
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * A caller whose two entries make different calls, each bound where its own source makes the call.
@@ -46,11 +49,11 @@ const ADDRESS_A = validatorAddress(CATEGORY_A, VALIDATOR_PROGRAM);
 const ADDRESS_B = validatorAddress(CATEGORY_B, VALIDATOR_PROGRAM);
 const ADDRESS_C = validatorAddress(CATEGORY_C, VALIDATOR_PROGRAM);
 
-/** Master input indices: the caller, its callee, the validator, then the user. */
+/** Master input indices: the caller, its callee, the validator with its facet, then the user. */
 const A_INDEX = 0;
 const CALLEE_INDEX = 1;
 const VALIDATOR_INDEX = 2;
-const USER_INDEX = 3;
+const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
 
 /** Which entry the unlocking bytecode dispatches into, and the one call that entry makes. */
 type Entry = 'a' | 'b';
@@ -186,6 +189,7 @@ function buildComposition(entry: Entry, options: EntryCompositionOptions = {}): 
   const validator = validatorSpend(CATEGORY_A, {
     roots: [A_INDEX], masters: [A_INDEX, CALLEE_INDEX], settles: [],
   });
+  const facets = validatorFacetPlacements();
 
   const callerBlock: WitnessBlock = {
     kind: 0,
@@ -275,6 +279,7 @@ function buildComposition(entry: Entry, options: EntryCompositionOptions = {}): 
       sequenceNumber: 0xffffffff,
       unlockingBytecode: validator.unlockingBytecode,
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(4),
@@ -288,6 +293,7 @@ function buildComposition(entry: Entry, options: EntryCompositionOptions = {}): 
     { lockingBytecode: caller.lock, valueSatoshis: masterValue, token: token(CATEGORY_A, 'minting') },
     { lockingBytecode: callee.lock, valueSatoshis: masterValue, token: token(called.calleeCategory, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: validatorValue, token: token(CATEGORY_A, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: userValue },
   ];
   const sourceOutputs = [...outputs];

@@ -7,7 +7,7 @@ import {
   validatorRedeemScript,
   type Transcript,
 } from '@solidcash/utils';
-import { buildValidatorProgram } from '../../../src/per-call/validator/index.js';
+import { buildValidatorFacets, buildValidatorProgram, validatorFacetSpends } from '../../../src/per-call/validator/index.js';
 
 /** A category that is not a repeated byte, so the chain's order differs from the display order. */
 export function seededCategory(label: string): Uint8Array {
@@ -63,3 +63,42 @@ export function validatorSpend(
     templateHash: sha256(program),
   };
 }
+
+/** The value a facet UTXO holds; the head requires the output that recreates it to be worth at least as much. */
+export const FACET_VALUE = 10_000n;
+
+/** One facet as a hand-laid transaction states it: the input at `head + k` and the output that recreates it. */
+export interface ValidatorFacetPlacement {
+  readonly input: {
+    readonly outpointIndex: number;
+    readonly outpointTransactionHash: Uint8Array;
+    readonly sequenceNumber: number;
+    readonly unlockingBytecode: Uint8Array;
+  };
+  readonly output: { readonly lockingBytecode: Uint8Array; readonly valueSatoshis: bigint };
+}
+
+/** The facet spends the shipped head holds directly after it, in order. */
+const VALIDATOR_FACETS = validatorFacetSpends(buildValidatorFacets());
+
+/**
+ * The facets a hand-laid validator carries directly after its head, in order.
+ *
+ * The head binds each facet's lock as a constant and requires the input and the output at `head + k` to be that
+ * lock, the output worth at least the input, so a fixture places these immediately after the validator input and
+ * recreates each at its own index. A hand-laid transaction that evaluates the validator input needs them.
+ */
+export function validatorFacetPlacements(valueSatoshis: bigint = FACET_VALUE): readonly ValidatorFacetPlacement[] {
+  return VALIDATOR_FACETS.map((facet, at) => ({
+    input: {
+      outpointIndex: 0,
+      outpointTransactionHash: new Uint8Array(32).fill(0xf0 + at),
+      sequenceNumber: 0xffffffff,
+      unlockingBytecode: facet.unlockingBytecode,
+    },
+    output: { lockingBytecode: facet.lock, valueSatoshis },
+  }));
+}
+
+/** How many inputs a hand-laid validator occupies: its head plus the facets the head binds. */
+export const VALIDATOR_INPUT_SPAN = 1 + VALIDATOR_FACETS.length;

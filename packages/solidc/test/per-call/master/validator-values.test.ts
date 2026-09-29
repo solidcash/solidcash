@@ -11,7 +11,10 @@ import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * V7's value rule: a contract entered twice in one transaction is weighed as a whole by the validator that settles
@@ -47,12 +50,12 @@ type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['eval
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
-/** Inputs: the two masters, the validator, the record, the user, then the containers spent. */
+/** Inputs: the two masters, the validator with its facet, the record, the user, then the containers spent. */
 const FIRST = 0;
 const SECOND = 1;
 const VALIDATOR = 2;
-const RECORD = 3;
-const USER = 4;
+const RECORD = VALIDATOR + VALIDATOR_INPUT_SPAN;
+const USER = RECORD + 1;
 
 const token = (capability: 'minting' | 'mutable', commitment = new Uint8Array(0)): VmOutput['token'] =>
   ({ category: CATEGORY, amount: 0n, nft: { capability, commitment } });
@@ -75,6 +78,7 @@ function verdicts(
   const validator = validatorSpend(CATEGORY, {
     roots: [FIRST, SECOND], masters: [FIRST, SECOND], settles: [{ category: CATEGORY, stateInputs: [RECORD] }],
   });
+  const facets = validatorFacetPlacements();
   const block = (frame: Frame): WitnessBlock => ({
     kind: 0, callerRef: USER, originRef: USER, validatorRef: VALIDATOR, sender: USER_LOCK, self: ADDRESS,
     value: frame.value, retval: new Uint8Array(0), calls: [],
@@ -96,18 +100,21 @@ function verdicts(
     masterInput(1, frames[0]),
     masterInput(2, frames[1]),
     input(3, validator.unlockingBytecode),
-    input(4, encodeDataPush(new Uint8Array([1]))),
-    input(5, callerUnlockingBytecode()),
-    ...containersIn.map((_value, index) => input(6 + index, encodeDataPush(new Uint8Array([1])))),
+    ...facets.map((facet, at) => input(VALIDATOR + 1 + at, facet.input.unlockingBytecode)),
+    input(RECORD, encodeDataPush(new Uint8Array([1]))),
+    input(USER, callerUnlockingBytecode()),
+    ...containersIn.map((_value, index) => input(USER + 1 + index, encodeDataPush(new Uint8Array([1])))),
   ];
   const sourceOutputs: VmProgram['sourceOutputs'] = [
     master, master, validatorOutput,
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n, token: token('mutable', view(frames[0].views[0])) },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
     ...containersIn.map(container),
   ];
   const outputs: VmOutput[] = [
     master, master, validatorOutput,
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n, token: token('mutable', view(frames[1].views[1])) },
     payment(1_000n),
     ...trailing,
@@ -140,8 +147,8 @@ describe('a contract entered twice, weighed by the validator that settles it', (
   const pay = (amount: bigint, views: readonly [bigint, bigint], send: number): Frame => ({
     entry: 'pay', args: [encodeIntegerValue(amount)], value: 0n, views, sends: [send],
   });
-  // Outputs from 5: a container, the first send, a container, the second send.
-  const payments: [Frame, Frame] = [pay(7_000n, [0n, 1n], 6), pay(4_000n, [1n, 2n], 8)];
+  // Outputs from 6: a container, the first send, a container, the second send.
+  const payments: [Frame, Frame] = [pay(7_000n, [0n, 1n], 7), pay(4_000n, [1n, 2n], 9)];
 
   it('accepts two sends each after a container, paid from the containers together', () => {
     const trailing = [container(20_000n), payment(7_000n), container(19_000n), payment(4_000n)];
@@ -154,13 +161,13 @@ describe('a contract entered twice, weighed by the validator that settles it', (
   });
 
   it('is refused by the validator when both frames list the same send', () => {
-    // Two equal sends listed once: each master pins its send to output 6, and the containers keep what paying both
+    // Two equal sends listed once: each master pins its send to output 7, and the containers keep what paying both
     // would leave, so only counting the output once shows that one of the sends was never paid.
-    const shared: [Frame, Frame] = [pay(7_000n, [0n, 1n], 6), pay(7_000n, [1n, 2n], 6)];
+    const shared: [Frame, Frame] = [pay(7_000n, [0n, 1n], 7), pay(7_000n, [1n, 2n], 7)];
     const trailing = [container(36_000n), payment(7_000n)];
     expect(verdicts(shared, [50_000n], trailing)).toStrictEqual({ ...ACCEPTED, validator: false });
     // The control: the same two sends listed at their own outputs.
-    const own: [Frame, Frame] = [pay(7_000n, [0n, 1n], 6), pay(7_000n, [1n, 2n], 8)];
+    const own: [Frame, Frame] = [pay(7_000n, [0n, 1n], 7), pay(7_000n, [1n, 2n], 9)];
     const honest = [container(20_000n), payment(7_000n), container(16_000n), payment(7_000n)];
     expect(verdicts(own, [50_000n], honest)).toStrictEqual(ACCEPTED);
   });

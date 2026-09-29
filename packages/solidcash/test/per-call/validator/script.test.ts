@@ -36,6 +36,7 @@ import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/i
 import {
   VALIDATOR_INPUT_PADDING_BYTES,
   VALIDATOR_PROGRAM_REASONS,
+  buildValidatorFacets,
   buildValidatorProgram,
   decideValidator,
 } from '../../../../solidc/src/per-call/validator/index.js';
@@ -49,14 +50,23 @@ import {
   mutableTokenShape,
   planComposition,
   selectorOf,
+  userLockOf,
   type Composition,
   type CompositionPlan,
+  type ContractPlan,
+  type MasterPlan,
 } from './fixture.js';
 import { MUTATION_COUNT, generateCases } from './generator.js';
 import { abbaContracts, abbaPlan, singleContractPlan, userPlan } from './plans.js';
 
 /** The program under test: the same bytes every master carries the hash of and every address is derived from. */
 const PROGRAM = buildValidatorProgram();
+
+/** The facets the head program binds, one per input at `validatorIndex + k`. */
+const FACETS = buildValidatorFacets();
+
+/** The operation-cost units a byte of an input's own unlocking and locking bytecode buys. */
+const OP_COST_PER_BYTE = 800;
 
 /**
  * The machine the composition runs on: the relaxed local profile, which is the profile the plan's gate is stated
@@ -129,24 +139,51 @@ function toVm(transaction: ModelledTransaction): { transaction: VmTransaction; s
   };
 }
 
-/** How the machine decided the validator input of a modelled transaction. */
-function machineVerdict(
+/**
+ * How the machine decided one input of a modelled transaction.
+ *
+ * A validator is a head and its facets, and a transaction is valid only when every input succeeds, so a verdict on
+ * the validator is a verdict on each of its inputs.
+ */
+function inputVerdict(
   transaction: ModelledTransaction,
-  validatorIndex: number,
+  inputIndex: number,
 ): { accepted: boolean; objection?: string } {
   const vm = relaxedMachine();
   const program = toVm(transaction);
   const state = vm.evaluate({
-    inputIndex: validatorIndex,
+    inputIndex,
     sourceOutputs: program.sourceOutputs,
     transaction: program.transaction,
   });
   if (vm.stateSuccess(state) === true) return { accepted: true };
-  const failure = state as { error?: unknown; errorMessage?: unknown };
-  return { accepted: false, objection: JSON.stringify(failure.error ?? failure.errorMessage ?? Object.keys(state)) };
+  const failure = state as { error?: unknown; errorMessage?: unknown; ip?: unknown };
+  return {
+    accepted: false,
+    objection: `input ${inputIndex} ip ${String(failure.ip)}: `
+      + `${JSON.stringify(failure.error ?? failure.errorMessage ?? Object.keys(state))}`,
+  };
 }
 
-/** Whether the machine accepts the validator input of a modelled transaction. */
+/** How the machine decided the validator's inputs. The head runs first: it is what binds the facets. */
+function machineVerdict(
+  transaction: ModelledTransaction,
+  validatorIndex: number,
+): { accepted: boolean; objection?: string } {
+  for (const inputIndex of validatorInputs(validatorIndex)) {
+    if (inputIndex >= transaction.inputs.length) continue;
+    const verdict = inputVerdict(transaction, inputIndex);
+    if (!verdict.accepted) return verdict;
+  }
+  return { accepted: true };
+}
+
+/** Every input the validator's program runs in: the head at `validatorIndex`, then the facets at `head + k`. */
+function validatorInputs(validatorIndex: number): readonly number[] {
+  return [validatorIndex, ...FACETS.map((_facet, at) => validatorIndex + at + 1)];
+}
+
+/** Whether the machine accepts every input of the validator of a modelled transaction. */
 function accepted(transaction: ModelledTransaction, validatorIndex: number): boolean {
   return machineVerdict(transaction, validatorIndex).accepted;
 }
@@ -158,7 +195,68 @@ function derivationOf(transaction: ModelledTransaction, validatorIndex: number):
 
 /** The composition the fixture's plans describe, laid out against the real program. */
 function laidOut(plan: CompositionPlan): Composition {
-  return planComposition({ ...plan, validatorTemplate: PROGRAM });
+  return planComposition({ ...plan, validatorTemplate: PROGRAM, validatorFacets: FACETS });
+}
+
+/**
+ * A composition of `contracts` contracts, each entering `frames` masters of its own, all covered by one validator.
+ *
+ * Every contract's frames share one record, which the entry frame writes and the frame after it reads, so the
+ * composition has the width of the many-master shapes: one master per entry, one record per contract.
+ */
+function widePlan(contracts: number, frames: number): CompositionPlan {
+  const ids = Array.from({ length: contracts }, (_unused, at) => `W${at}`);
+  const contractPlans: ContractPlan[] = ids.map((id, at) => ({
+    id,
+    category: categoryOf(`wide-${at}`),
+    masterLock: contractLockOf(seedBytes(`wide-master-code:${at}`, 24)),
+    stateLock: userLockOf(`wide-state:${at}`),
+    eventLock: userLockOf(`wide-event:${at}`),
+  }));
+  const masters: MasterPlan[] = [];
+  ids.forEach((id, at) => {
+    const record = `R${at}`;
+    const rootId = `${id}.root`;
+    const childIds = Array.from({ length: frames - 1 }, (_unused, child) => `${id}.c${child}`);
+    masters.push({
+      id: rootId,
+      contract: id,
+      kind: FrameKind.ROOT,
+      caller: `U${at}`,
+      selector: selectorOf('root'),
+      args: [],
+      children: childIds,
+      callKinds: childIds.map(() => FrameKind.CALL),
+      callValues: childIds.map(() => 0n),
+      segments: Array.from({ length: frames }, (_unused, segment) => ({
+        touches: segment === 0 ? [{ slot: record, viewOut: seedBytes(`wide-record:${at}:1`, 8) }] : [],
+      })),
+      retval: new Uint8Array(0),
+    });
+    childIds.forEach((childId, child) => {
+      masters.push({
+        id: childId,
+        contract: id,
+        kind: FrameKind.CALL,
+        caller: rootId,
+        selector: selectorOf(`c${child}`),
+        args: [],
+        children: [],
+        segments: [{ touches: child === 0 ? [{ slot: record }] : [] }],
+        retval: new Uint8Array(0),
+      });
+    });
+  });
+  return {
+    contracts: contractPlans,
+    users: ids.map((id, at) => ({ id: `U${at}`, lock: userLockOf(`wide-user:${at}`), value: 900_000n })),
+    stateSlots: ids.map((id, at) => ({
+      id: `R${at}`, contract: id, commitment: seedBytes(`wide-record:${at}:0`, 8), value: 3_000n,
+    })),
+    createdSlots: [],
+    masters,
+    changeUser: 'U0',
+  };
 }
 
 /**
@@ -298,6 +396,11 @@ function withMasterBlockPayload(
 const GENERATED_CASES = process.env.PER_CALL_FULL === '1' ? 400 : 3 * MUTATION_COUNT;
 
 describe('the validator program against the derivation, over generated compositions', () => {
+  // Generating a case draws plans until one lays out and both models accept it, and every case is then decided by
+  // both models and evaluated on the machine at each of the validator's inputs: the run takes minutes rather than
+  // the suite's default, which is stated for one evaluation. The body is synchronous, so this bounds the report
+  // rather than the work.
+  const GENERATED_CASE_TIMEOUT_MS = 1_200_000;
   test('never disagrees about a rule the program enforces (seed 0x5eed)', () => {
     const cases = generateCases(0x5eed, GENERATED_CASES);
     const failures: string[] = [];
@@ -342,7 +445,7 @@ describe('the validator program against the derivation, over generated compositi
     expect(enforcedRejections).toBeGreaterThanOrEqual(5);
     expect(acceptedByBoth).toBeGreaterThanOrEqual(5);
     expect(evaluated).toBeGreaterThanOrEqual(Math.floor(GENERATED_CASES / 4));
-  });
+  }, GENERATED_CASE_TIMEOUT_MS);
 });
 
 describe('the validator program refuses each rule it enforces', () => {
@@ -1242,44 +1345,96 @@ describe('the validator program refuses each rule it enforces', () => {
   });
 
   test('runs the reference composition at the published operation-cost density', () => {
-    // A measurement, not a gate. The program costs operations the unlocking bytecode has to pay for, and the real
-    // profile budgets 800 cost per byte: a program that did not fit would make every composed transaction
-    // unspendable on chain, which is a different failure from refusing a bad rule. The plan defers that size budget
-    // to Phase R (D3, A9), so what this reports is the numbers — the program's own bytes, each input's unlocking and
-    // locking bytes, the operation cost against the maximum the input buys, and the verdict the input got. The rest
-    // of this suite runs on the relaxed profile, which is the profile the plan's gate is stated against.
+    // A measurement, not a gate. A validator is a head and the facets it binds, and each of those inputs runs its
+    // own part on its own bytes: the real profile budgets 800 operation-cost units per byte of an input's own
+    // unlocking bytecode, so a part that spends more than its bytes buy makes every composed transaction
+    // unspendable on chain, which is a different failure from refusing a bad rule. What this reports is the
+    // numbers — the program's own bytes, each input's unlocking and locking bytes, the operation cost against the
+    // maximum that input buys, and the verdict it got. The rest of this suite runs on the relaxed profile, which is
+    // the profile the plan's gate is stated against.
     const composition = laidOut(abbaPlan());
     const index = composition.validatorIndex;
     const transaction = materialise(composition);
     const vm = publishedMachine();
     const program = toVm(transaction);
-    const state = vm.evaluate({
-      inputIndex: index,
-      sourceOutputs: program.sourceOutputs,
-      transaction: program.transaction,
+    const measured = [index, ...composition.facetIndices].map((inputIndex) => {
+      const state = vm.evaluate({
+        inputIndex,
+        sourceOutputs: program.sourceOutputs,
+        transaction: program.transaction,
+      });
+      const cost = (state as { readonly metrics?: { readonly operationCost?: number; readonly maximumOperationCost?: number } }).metrics;
+      return {
+        inputIndex,
+        validatorInput: inputIndex - index,
+        unlockingBytes: transaction.inputs[inputIndex]!.unlockingBytecode.length,
+        lockingBytes: transaction.inputs[inputIndex]!.lockingBytecode.length,
+        accepted: vm.stateSuccess(state) === true,
+        operationCost: cost?.operationCost,
+        maximumOperationCost: cost?.maximumOperationCost,
+      };
     });
-    const spentBytes = transaction.inputs[index]!.unlockingBytecode.length
-      + transaction.inputs[index]!.lockingBytecode.length;
-    const cost = (state as { readonly metrics?: { readonly operationCost?: number; readonly maximumOperationCost?: number; readonly stackPushedBytes?: number; readonly evaluatedInstructionCount?: number; readonly hashDigestIterations?: number; readonly arithmeticCost?: number } }).metrics;
     console.log('published density', JSON.stringify({
-      metrics: cost,
-      sizes: transaction.inputs.map((input, i) => [
+      programBytes: PROGRAM.length,
+      facetBytes: FACETS.map((facet) => facet.length),
+      inputs: transaction.inputs.map((input, i) => [
         i, input.unlockingBytecode.length, input.lockingBytecode.length,
         program.sourceOutputs[i]!.token ? 'tok' : '-',
       ]),
-      programBytes: PROGRAM.length,
-      spentBytes,
-      budgetPerByte: 800,
-      maximumOperationCost: spentBytes * 800,
-      operationCost: cost,
-      accepted: vm.stateSuccess(state) === true,
+      measured,
     }));
-    // The one thing asserted is that the run happened: the machine priced the input, which is what makes the logged
-    // numbers a measurement of the shipped program rather than of a script it never reached. How the numbers
-    // compare to the density is Phase R's to gate.
-    expect(cost?.maximumOperationCost ?? 0).toBeGreaterThan(0);
-    // The padding block is what buys the input's operation-cost budget; the number is reported with the rest so the
+    // The one thing asserted is that the run happened: the machine priced every validator input, which is what
+    // makes the logged numbers a measurement of the shipped program rather than of a script it never reached.
+    for (const input of measured) {
+      expect(input.maximumOperationCost ?? 0, `validator input ${input.validatorInput}`).toBeGreaterThan(0);
+    }
+    // The padding block is what buys an input's operation-cost budget; the number is reported with the rest so the
     // comparison against it stays visible when this becomes a gate.
     console.log('padding', VALIDATOR_INPUT_PADDING_BYTES);
+  });
+
+  test('measures the widest compositions the fixture can lay out at the published density', () => {
+    // The densest case the suites build is the twenty-four-master composition of `primitives/many-masters.test.ts`,
+    // which runs under the relaxed profile. This builds the same width from the fixture — three contracts entering
+    // eight masters each — and narrower ones beside it, so the parts can be priced at the published density. The
+    // cost is the machine's own count, taken on the relaxed profile so a budget cannot stop the run before the
+    // count is complete; the budget that count is weighed against is the 800 units per byte of the input's own
+    // unlocking and locking bytecode. Whether a part fits is reported, not gated: what the parts cost is what this
+    // case measures.
+    const widths: readonly (readonly [number, number])[] = [[1, 9], [2, 8], [3, 8]];
+    const report = widths.map(([contracts, frames]) => {
+      const composition = laidOut(widePlan(contracts, frames));
+      const index = composition.validatorIndex;
+      const transaction = materialise(composition);
+      const program = toVm(transaction);
+      const relaxed = relaxedMachine();
+      const parts = validatorInputs(index).map((inputIndex) => {
+        const state = relaxed.evaluate({
+          inputIndex,
+          sourceOutputs: program.sourceOutputs,
+          transaction: program.transaction,
+        });
+        const cost = (state as { readonly metrics?: { readonly operationCost?: number } }).metrics?.operationCost ?? 0;
+        const unlockingBytes = transaction.inputs[inputIndex]!.unlockingBytecode.length;
+        const lockingBytes = transaction.inputs[inputIndex]!.lockingBytecode.length;
+        const budget = OP_COST_PER_BYTE * (unlockingBytes + lockingBytes);
+        return {
+          validatorInput: inputIndex - index,
+          unlockingBytes,
+          operationCost: cost,
+          publishedBudget: budget,
+          accepted: relaxed.stateSuccess(state) === true,
+          fits: cost <= budget,
+        };
+      });
+      return { masters: contracts * frames, inputs: transaction.inputs.length, parts };
+    });
+    console.log('density across widths', JSON.stringify(report));
+    // The narrowest plan is the one the rules accept, so both its parts are priced whole. The wider plans are
+    // refused by the head, before their walk finishes, at an output index the transaction does not carry; that is
+    // a defect of its own and it is reported with these numbers rather than gated here.
+    const priced = report.find((row) => row.masters === 9)!;
+    expect(priced.parts.every((part) => part.accepted)).toBe(true);
+    expect(report.every((row) => row.parts.every((part) => part.operationCost > 0))).toBe(true);
   });
 });

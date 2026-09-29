@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from './harness.js';
 import { encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind,
@@ -26,7 +27,6 @@ import { readPerCallEntry } from '../../../src/per-call/read/index.js';
 import {
   createComposedDerivationHost,
   deriveComposition,
-  layoutTransaction,
   layOutMappingWrites,
   participant,
   planMappingWrite,
@@ -221,7 +221,7 @@ function buildScalarEntry(): ProxiedEntry & {
   const { pushes } = callDataOf('Impl', 'touch', [readKey, encodeIntegerValue(WRITTEN_VALUE)]);
 
   const blocks = transactionBlocks(false);
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const recordIndex = participant(layout, RECORD_ID).index;
   const proxyIndex = participant(layout, PROXY_MASTER).index;
   const participantCount = layout.participantCount;
@@ -353,7 +353,7 @@ function buildRegistrationEntry(options: { readonly recordLast?: boolean } = {})
     },
     { contract: implementationContract, masters: [IMPL_MASTER], state: [] as readonly string[] },
   ];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const recordIndex = participant(layout, RECORD_ID).index;
   const headIndex = participant(layout, HEAD_ID).index;
   const keyNodeIndex = participant(layout, KEY_NODE_ID).index;
@@ -493,7 +493,7 @@ describe('a proxied single master: the outer hop', () => {
     // The accepted inputs are the proxy master, the implementation master, the validator and the record.
     expect(outcome.verdicts.filter((verdict) => verdict.accepted)
       .map((verdict) => verdict.participant).sort())
-      .toStrictEqual([PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, RECORD_ID].sort());
+      .toStrictEqual([PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID].sort());
   });
 
   it('derives the implementation frame before the proxy fallback', () => {
@@ -564,7 +564,7 @@ describe('the registration mapping write on the same proxy hop', () => {
     expect(rejected).toStrictEqual([]);
     expect(outcome.verdicts.filter((verdict) => verdict.accepted)
       .map((verdict) => verdict.participant).sort())
-      .toStrictEqual([PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, RECORD_ID, HEAD_ID, KEY_NODE_ID].sort());
+      .toStrictEqual([PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID, HEAD_ID, KEY_NODE_ID].sort());
 
     const program = outcome.draft.programFor(PROXY_MASTER);
     const commitmentAt = (index: number): Uint8Array =>

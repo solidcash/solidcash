@@ -13,7 +13,10 @@ import { isServed } from './refused-entry.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * An entry that returns one scalar value, settled against the frame's witness `retval`.
@@ -56,11 +59,12 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `   function ask() { int r = IAnswer(0x${toHex(ADDRESS_CALLEE)}).answer(); require(r == ${ANSWER}); require(true); }`
   + ' }';
 
-/** Master input indices: the caller, its callee, the validator that covers both, then the user. */
+/** Master input indices: the caller, its callee, the validator with its facet, then the user. */
 const CALLER_INDEX = 0;
 const CALLEE_INDEX = 1;
 const VALIDATOR_INDEX = 2;
-const USER_INDEX = 3;
+const VALIDATOR_FACET_INDEX = VALIDATOR_INDEX + 1;
+const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
 
 /** The finished script as bytes: the artifact publishes it as ASM, deployment fills the slots in the bytes. */
 const scriptBytes = (artifact: { bytecode: string }): Uint8Array => scriptToBytecode(asmToScript(artifact.bytecode));
@@ -107,6 +111,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
   const validator = validatorSpend(CATEGORY_CALLER, {
     roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
   });
+  const facets = validatorFacetPlacements();
 
   const callerBlock: WitnessBlock = {
     kind: 0,
@@ -167,6 +172,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(3), sequenceNumber: 0xffffffff,
       unlockingBytecode: validator.unlockingBytecode,
     },
+    ...facets.map((facet) => facet.input),
     {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(4), sequenceNumber: 0xffffffff,
       unlockingBytecode: callerUnlockingBytecode(),
@@ -176,6 +182,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     { lockingBytecode: callerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'minting') },
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const sourceOutputs = [...outputs];
@@ -206,9 +213,10 @@ describe('an entry that returns one scalar value', () => {
     const nonCanonical = encodeArgumentList([new Uint8Array([0x2a, 0x00])]);
     expect(accepted({ calleeRetval: nonCanonical }, CALLEE_INDEX)).toBe(false);
     // The caller only binds its record, which still carries the computed value, and has no view of the callee's
-    // own frame field; the validator is what refuses the disagreement.
+    // own frame field; the retval rule is one the split runs in the facet at `head + 1`, so the facet refuses the
+    // disagreement.
     expect(accepted({ calleeRetval: OTHER_RETVAL }, CALLER_INDEX)).toBe(true);
-    expect(accepted({ calleeRetval: OTHER_RETVAL }, VALIDATOR_INDEX)).toBe(false);
+    expect(accepted({ calleeRetval: OTHER_RETVAL }, VALIDATOR_FACET_INDEX)).toBe(false);
   });
 
   it('reaches the caller with the value the callee computed', () => {

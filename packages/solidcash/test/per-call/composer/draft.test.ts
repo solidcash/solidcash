@@ -30,7 +30,8 @@ import {
  * `assemble.ts`, then produces each execution's starting witness block and the VM program it runs. The caller here
  * supplies no geometry: the input indices, the frame references and the callee's input all come from the composer.
  *
- * The plan places the validator in the caller's block, so the layout is caller@0, validator@1, callee@2, user@3.
+ * The plan places the validator in the caller's block, so the layout is caller@0, validator@1, the facet the
+ * validator's program binds@2, callee@3, user@4.
  * A hand-built fixture would put the callee at 1 and the validator at 2, so the assertions below fail if the host
  * ever goes back to trusting a caller-supplied draft.
  */
@@ -153,8 +154,9 @@ function buildFixture(): Fixture {
       { contract: 'Caller', masters: [CALLER_MASTER], validator: { id: 'validator', settles: [] }, state: [] },
       { contract: 'Callee', masters: [CALLEE_MASTER], state: [] },
     ],
-    // The user follows the participants, so the layout puts it at 3, after caller@0, validator@1 and callee@2.
-    userInputs: [{ id: 'user', index: 3 }],
+    // The user follows the participants, so the layout puts it at 4: caller@0, validator@1, the facet the
+    // validator's program binds@2 and callee@3 precede it.
+    userInputs: [{ id: 'user', index: 4 }],
     masters: [callerMaster, calleeMaster],
     inputs: {
       [CALLER_MASTER]: {
@@ -189,10 +191,12 @@ describe('the composer laying a plan out for derivation', () => {
     const { plan } = buildFixture();
     const draft = composeDraft(plan);
 
-    // The composed geometry: caller@0, validator@1, callee@2, user@3. A hand-built fixture would swap 1 and 2.
+    // The composed geometry: caller@0, validator@1, the facet it binds@2, callee@3, user@4. A hand-built fixture
+    // would put the callee where the validator sits.
     expect(participant(draft.layout, CALLER_MASTER).index).toBe(0);
     expect(participant(draft.layout, 'validator').index).toBe(1);
-    expect(participant(draft.layout, CALLEE_MASTER).index).toBe(2);
+    expect(participant(draft.layout, `${'validator'}/1`).index).toBe(2);
+    expect(participant(draft.layout, CALLEE_MASTER).index).toBe(3);
     // The layout the composer derives from is the one assembly produced, not a second, private one.
     expect(draft.layout).toBe(draft.assembly.layout);
   });
@@ -208,7 +212,7 @@ describe('the composer laying a plan out for derivation', () => {
     const block = run.initialBlock();
     const outcome = run.fill({ kind: 'call', site: 0, callIndex: 0 }, block);
 
-    expect(block.calls[0]!.calleeRef).toBe(2);
+    expect(block.calls[0]!.calleeRef).toBe(3);
     expect(outcome.callee).toStrictEqual({
       contract: 'Callee', functionName: CALLEE_ENTRY, kind: FrameKind.CALL, master: CALLEE_MASTER,
     });
@@ -220,10 +224,10 @@ describe('the composer laying a plan out for derivation', () => {
     const program = draft.programFor(CALLER_MASTER);
 
     expect(program.inputIndex).toBe(0);
-    expect(program.transaction.inputs).toHaveLength(4);
+    expect(program.transaction.inputs).toHaveLength(5);
     // The VM's source output at the callee's index is the callee master: index 1 is the validator.
     expect(program.sourceOutputs[1]!.lockingBytecode).toStrictEqual(plan.inputs.validator!.source.lockingBytecode);
-    expect(program.sourceOutputs[2]!.lockingBytecode).toStrictEqual(calleeLock);
+    expect(program.sourceOutputs[3]!.lockingBytecode).toStrictEqual(calleeLock);
   });
 
   it('derives the caller, its callee completing first, exactly as the hand-built fixture did', () => {

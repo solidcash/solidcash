@@ -27,7 +27,7 @@
  * witness the body computes, such as a keccak256 preimage, is learned the same way from the body's own bind.
  */
 
-import { createVirtualMachineBch2026 } from '@bitauth/libauth';
+import { createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import {
   INDEX_NONE,
   argsHash,
@@ -35,6 +35,7 @@ import {
   bytesEqual,
   bytesToHex,
   encodeArgumentList,
+  hash256,
   sha256,
   type CallRecord,
   type FrameKindValue,
@@ -51,6 +52,7 @@ import {
   type PlannedMaster,
   type PlannedUserInput,
   type PlannedValidators,
+  validatorFacetsOf,
 } from './assemble.js';
 import type { EntryFacts } from './need-test.js';
 import { viewUnlearned } from './refusals.js';
@@ -63,6 +65,7 @@ import {
   type ShippedVmProgram,
 } from './shipped-host.js';
 import {
+  facetId,
   placeTrailingOutputs,
   type ContractBlock,
   type PlacedTrailingOutput,
@@ -86,6 +89,9 @@ const DEFAULT_MAXIMUM_COMMITMENT_BYTES = 128;
 
 /** The machine's stack item limit, the bound on a side-car witness a derivation will learn. */
 const MAXIMUM_STACK_ITEM_BYTES = 10_000;
+
+/** What a facet UTXO a composition supplies is worth. A facet holds no token and pays its own input's fee share. */
+export const FACET_SATOSHIS = 10_000n;
 
 /**
  * One record entry as a plan states it.
@@ -505,6 +511,10 @@ export function composeDraft(
   }
 
   // Inputs in index order, each with the source output the machine reads and how its unlocking bytecode is built.
+  const facetCode = new Map<string, Uint8Array>();
+  for (const validator of binding.hosted) {
+    validatorFacetsOf(validator).forEach((code, at) => facetCode.set(facetId(validator.id, at + 1), code));
+  }
   const inputCount = Math.max(0, ...indices.values()) + 1;
   const byIndex = new Array<{ id: string } | undefined>(inputCount).fill(undefined);
   for (const [id, index] of indices) {
@@ -518,8 +528,14 @@ export function composeDraft(
 
   const sourceOf = (id: string): DraftSourceOutput => {
     const input = plan.inputs[id];
-    if (input === undefined) throw new CompositionDraftError(`input "${id}" has no source output`);
-    return input.source;
+    if (input !== undefined) return input.source;
+    // A validator's facets are a function of the validator program, so no plan states their UTXOs: a facet UTXO
+    // holds no token and pins no category, so any UTXO of its code serves any composition.
+    const code = facetCode.get(id);
+    if (code !== undefined) {
+      return { lockingBytecode: encodeLockingBytecodeP2sh32(hash256(code)), valueSatoshis: FACET_SATOSHIS };
+    }
+    throw new CompositionDraftError(`input "${id}" has no source output`);
   };
   /** The output an input recreates: a learned witness's, the plan's, or the input unchanged. */
   const outputOf = (id: string): DraftSourceOutput =>
@@ -592,9 +608,11 @@ export function composeDraft(
     }
     const validator = validatorUnlocking.get(id);
     if (validator !== undefined) return validator;
+    const facet = facetCode.get(id);
+    if (facet !== undefined) return encodeDataPush(facet);
     const provided = settled.get(id)?.unlockingBytecode ?? plan.inputs[id]?.unlockingBytecode;
     if (provided === undefined) {
-      throw new CompositionDraftError(`input "${id}" is not a master or a validator, so it needs unlocking bytecode`);
+      throw new CompositionDraftError(`input "${id}" is not a master, a validator or a facet, so it needs unlocking bytecode`);
     }
     return provided;
   };

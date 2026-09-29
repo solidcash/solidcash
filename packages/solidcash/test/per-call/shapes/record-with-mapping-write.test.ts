@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { layoutWithFacets } from './harness.js';
 import {
   FrameKind,
   buildEntryNftCovenantScript,
@@ -23,7 +24,6 @@ import {
   createComposedDerivationHost,
   deriveComposition,
   layOutMappingWrites,
-  layoutTransaction,
   participant,
   planMappingWrite,
   type CompositionDraftPlan,
@@ -156,7 +156,7 @@ function buildPlan(options: { readonly recordLast?: boolean } = {}): BuiltPlan {
     validator: { id: VALIDATOR_ID, settles: [] as readonly string[] },
     state: [RECORD_ID, READ_NODE_ID, HEAD_ID],
   }];
-  const layout = layoutTransaction(blocks);
+  const layout = layoutWithFacets(blocks);
   const recordIndex = participant(layout, RECORD_ID).index;
   const headIndex = participant(layout, HEAD_ID).index;
   const readNodeIndex = participant(layout, READ_NODE_ID).index;
@@ -249,9 +249,7 @@ function buildPlan(options: { readonly recordLast?: boolean } = {}): BuiltPlan {
     ],
     validator: {
       id: VALIDATOR_ID, covers: [],
-      settles: [{
-        category: CATEGORY, stateInputs: [RECORD_ID, HEAD_ID, READ_NODE_ID], createdOutputs: [createdIndex],
-      }],
+      settles: [],
       redeemScript: validatorFor(CATEGORY).redeem,
     },
   };
@@ -300,8 +298,9 @@ describe('an entry that keeps its record and writes a mapping batch', () => {
         : output)),
     };
     const vm = compositionMachine();
+    // The category is unshared and unsettled, so the master's own frame is what refuses the tamper.
     const state = vm.evaluate({
-      inputIndex: participant(draft.layout, VALIDATOR_ID).index,
+      inputIndex: participant(draft.layout, MASTER).index,
       sourceOutputs: program.sourceOutputs, transaction,
     });
     expect(vm.stateSuccess(state)).not.toBe(true);

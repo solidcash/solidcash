@@ -10,6 +10,7 @@ import type { PerCallFunctionCall } from '../../../src/per-call/call/index.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * A writing entry whose own body refuses.
@@ -66,6 +67,8 @@ async function deploy(): Promise<Deployed> {
   const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
   const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 200_000n };
   await provider.addUtxo(binToHex(callerLock), callerUtxo);
+  // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(provider);
   return { provider, categoryId: deployment.categoryId, callerUtxo, callerLock, funder: signature.unlockP2PKH() };
 }
 
@@ -90,6 +93,8 @@ async function connectWrites(): Promise<CounterCalls> {
   const signer = HDSigner.fromPhrase(PHRASE, provider);
   const fundingUtxo = { txid: CATEGORY_HEX, vout: 0, satoshis: 500_000n };
   await provider.addUtxo(signer.getAddress(), fundingUtxo);
+  // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
+  await fundShippedFacets(provider);
   const deployment = await deployStatefulContract(counter, [], {
     provider, fundingUtxo, funder: signer.unlockP2PKH(), changeAddress: signer.getAddress(),
   });

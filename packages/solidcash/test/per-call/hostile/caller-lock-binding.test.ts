@@ -64,7 +64,8 @@ function build(): Built {
       { contract: 'Caller', masters: ['caller-1'], validator: { id: 'validator', settles: [] }, state: [] },
       { contract: 'Callee', masters: ['callee-1'], state: [] },
     ],
-    userInputs: userInputs(['user'], 3),
+    // The facet the validator binds is one participant ahead of the user.
+    userInputs: userInputs(['user'], 4),
     masters: [
       master({
         master: 'caller-1', contract: 'Caller', entry: 'callIt', program: caller.program,
@@ -111,7 +112,8 @@ describe('a composed root master binds msg.sender to its caller\'s lock', () => 
   it('accepts the assembled composition on every contract input', () => {
     const { outcome } = build();
     expect(outcome.verdicts.map((row) => `${row.participant}: ${row.objection ?? 'accepted'}`))
-      .toStrictEqual(['caller-1: accepted', 'validator: accepted', 'callee-1: accepted']);
+      // The validator's facet is a participant too, and it accepts.
+      .toStrictEqual(['caller-1: accepted', 'validator: accepted', 'validator/1: accepted', 'callee-1: accepted']);
   });
 
   it('refuses a root whose witness sender is not the caller\'s lock, while the validator still accepts', () => {

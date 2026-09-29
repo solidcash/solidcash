@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeAll } from 'vitest';
+import { layoutWithFacets } from '../shapes/harness.js';
 import { binToHex, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
@@ -16,7 +17,7 @@ import { computeEcrecoverWitness } from '../../../src/ecrecover/ecrecoverRecover
 import { probeEcrecoverSplit } from '../../../src/ecrecover/ecrecoverComputeSidecar.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  buildKeccakSideCars, buildRecoverySideCars, composeDraft, keccakPreimagesOf, layoutTransaction, participant,
+  buildKeccakSideCars, buildRecoverySideCars, composeDraft, keccakPreimagesOf, participant,
   recoveryCallsOf, type CompositionDraftPlan, type DraftMaster, type RecoverySideCars,
 } from '../../../src/per-call/composer/index.js';
 import {
@@ -353,7 +354,7 @@ describe('a composed per-call recovery in a frame that runs on its caller\'s rec
       { contract: 'Proxy', masters: ['proxy-1'], validator: { id: 'validator', settles: [] }, state: ['record'] },
       { contract: 'Impl', masters: ['impl-1'], state: [], recovery: { 'impl-1': ids } },
     ];
-    const layout = layoutTransaction(blocks);
+    const layout = layoutWithFacets(blocks);
     const read = { in: participant(layout, 'record').index, out: participant(layout, 'record').index,
       viewIn: state, viewOut: state };
     const frameFacts = (contract: string, entry: string, kind: FrameKindValue): DraftMaster['facts'] => ({
@@ -413,7 +414,7 @@ describe('a composed per-call recovery in a frame that runs on its caller\'s rec
     const outcome = composeAndDerive(plan, [artifacts.Proxy!, artifacts.Impl!], [rootOf('Proxy', '__fallback', 'proxy-1')]);
     for (const verdict of outcome.verdicts) expect(verdict.accepted, verdict.participant).toBe(true);
     expect(outcome.verdicts.map((verdict) => verdict.participant)).toStrictEqual(
-      ['proxy-1', 'validator', 'record', 'impl-1', ...ids]);
+      ['proxy-1', 'validator', 'validator/1', 'record', 'impl-1', ...ids]);
   }, 120_000);
 });
 

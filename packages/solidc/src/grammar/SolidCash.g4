@@ -508,7 +508,7 @@ bareTypeExpressionStatement
 // Applying `{gas: ...}` / `{value: ...}` to a function value does not perform a call. Solidity accepts the
 // resulting function reference as a discarded expression statement (`a.call{value: 42};`, `this.f{gas: 42};`).
 bareCallOptionsStatement
-    : expression '.' Identifier callOptions callOptionsFunctionMember? ';'
+    : (Identifier | 'this') '.' Identifier callOptions callOptionsFunctionMember? ';'
     ;
 
 callOptionsFunctionMember

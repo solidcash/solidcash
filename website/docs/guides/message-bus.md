@@ -104,8 +104,8 @@ Use this path for inspection, offline signing, and mutation tests.
 ## Admission and limits
 
 Unsupported recursion, dynamic cardinality, call options, delegate contexts, introspection, or effect shapes fail
-with a named compiler or SDK diagnostic. There is no legacy-controller fallback. The current limits and the exact
-`Artifact.messageBus` fields are generated from the compiler schema in the
+with a named compiler or SDK diagnostic. There is no legacy-controller fallback. The exact limits and the complete
+`Artifact.messageBus` field list are generated from the compiler schema in the
 [Message Bus Artifact Reference](../reference/message-bus-artifact.md).
 
 The default calling convention is the **kernel row loop**: each admitted handler is one `OP_DEFINE` body, and the
@@ -114,8 +114,36 @@ route wrapper (`selector` `53434231`) is the only layout owner. `artifact.messag
 are not compiled as historical per-row clones. Pass `messageBusKernel: false` only to reproduce that older
 unroll for compatibility tests.
 
-This convention is experimental in 0.13.1. Compose only `eligible` handlers from an `available` artifact. A
-successful compile is not a deployability claim if the executable route exceeds Bitcoin Cash's 10,000-byte
-per-input limit. The frozen proof inventory is `scripts/kernel-beta-manifest.json`.
+Each artifact publishes the ceilings of its own route. A kernel row loop batches up to the BCH-2026 stack-item
+ceiling (10,000 bytes) with a one-byte row count, so `maximumBlobBytes` is 10,000 and `maximumRows` is 255. An
+individual argument, effect frame, or resource budget can reach its own limit sooner. A legacy unrolled route
+keeps the historical 520-byte envelope and eight rows; a compact resource batch publishes two (`minimumRows`).
+
+## Reading the artifact
+
+The **admission stamp** (`admittedHandlerIds`, `refusedHandlerIds`, `admissionSource`) states which handlers
+analysis admitted and how that decision was produced, independently of the published `handlers[].eligible` flags.
+On the kernel path `admissionSource` is `attribution-spans`, and an artifact whose admission analysis is missing
+fails closed rather than falling back.
+
+`resourceBudgets` publishes the compiler's worst-case bound for every resource axis, including the
+`maximumSemanticDerivationPasses` budget that participant auto-derivation spends while it discovers a graph's
+mutable claims. Composition prefers these published budgets over SDK constants and fails closed on the kernel path
+when the field is absent.
+
+`deployability` turns "does this route fit on chain" into a written claim. `status` is `asserted` when the measured
+route bytecode fits `P2SH_BYTECODE_LIMIT` (10,000 bytes) and `over-budget` when it does not, alongside the measured
+size and the limit. `utils.assertDeployabilityCertificate()` fails closed for a missing certificate as well as an
+over-budget one, so an artifact that carries no certificate is never treated as deployable.
+
+`capabilitySchema` records one concrete status per optional capability (`asserted`, `legacy`, `unsupported`,
+`inactive`, `incomplete`), so `undefined` never has to be guessed at; read it with
+`utils.resolveKernelCapability()` / `utils.assertKernelCapabilityStatus()`. `kernelExecutionPlans` commits each
+admitted handler's plan digest into the route bytecode, which
+`messageBus.assertReadableKernelExecutionPlans()` checks before a reader trusts the plan.
+
+This convention is experimental in 0.13.1. Compose only `eligible` handlers from an `available` artifact, and check
+the deployability certificate before treating a compiled route as broadcastable. The frozen proof inventory is
+`scripts/kernel-beta-manifest.json`.
 
 For local state semantics, see [How the State Journal Works](./state-journal.md).

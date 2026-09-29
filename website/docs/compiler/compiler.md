@@ -167,6 +167,7 @@ set. See [Large Contracts & Split Bundles](./large-contracts.md) for planning, d
 | `userLibraries` | Register custom script-precompile code and its ABI |
 | `brandLibrary` | Bind a deployed delegate library to its owning consumer's category |
 | `messageBus` | `undefined` for inference, `true` to request a route, `false` to forbid it |
+| `messageBusKernel` | Default `true`: compile message-bus routes as the kernel row loop instead of the legacy unroll |
 
 `importResolver` and `rootFileId` are the browser/tooling hooks for imported sources. `compileFile*` supplies a
 Node filesystem resolver automatically, including `node_modules` and optional `.sol` resolution.

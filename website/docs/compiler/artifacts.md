@@ -155,7 +155,10 @@ external calls, state/effects, recursion, and boundedness for splitting and atom
 analysis, not permission to bypass a covenant.
 
 When eligible, `messageBus` publishes the route ABI, handler eligibility, verifier program, canonical envelope
-limits, and participant/row bounds consumed by `messageBus.compose()`. Treat these as versioned wire metadata; see
+limits, and participant/row bounds consumed by `messageBus.compose()`. It also carries the admission stamp
+(`admittedHandlerIds`, `refusedHandlerIds`, `admissionSource`), the published `resourceBudgets`, and a concrete
+`deployability` certificate stating whether the measured route bytecode fits the 10,000-byte P2SH limit. Treat
+these as versioned wire metadata; see
 [Message Bus Artifact Reference](/docs/reference/message-bus-artifact).
 
 `externalLibraries` describes inline or co-spent libraries and compute sidecars, including branding, integrity

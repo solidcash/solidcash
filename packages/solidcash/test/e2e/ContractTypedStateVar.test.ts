@@ -292,8 +292,9 @@ describe('Contract-Typed State Variables', () => {
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
 
-    // Zero address (25 zero bytes for locking bytecode)
+    // The supplied all-zero locking bytecode is canonicalized to address(0), an empty bytecode.
     const zeroAddr = new Uint8Array(25);
+    const canonicalZeroAddr = new Uint8Array();
 
     let categoryId: string;
     let saltedContract: Contract;
@@ -319,7 +320,7 @@ describe('Contract-Typed State Variables', () => {
     it('should read initial state with zero address', () => {
       const reader = new StateReader(stateLayout);
       const state = reader.readState([dataNftUtxo]);
-      expect(state.marketplace).toEqual(zeroAddr);
+      expect(state.marketplace).toEqual(canonicalZeroAddr);
     });
 
     it('should update marketplace address via transaction', async () => {
@@ -362,6 +363,7 @@ describe('Contract-Typed State Variables', () => {
     const stateLayout = artifact.stateLayout!;
 
     const zeroAddr = new Uint8Array(25);
+    const canonicalZeroAddr = new Uint8Array();
 
     let categoryId: string;
     let saltedContract: Contract;
@@ -385,8 +387,8 @@ describe('Contract-Typed State Variables', () => {
     it('should read initial state with all zero values', () => {
       const reader = new StateReader(stateLayout);
       const state = reader.readState([dataNftUtxo]);
-      expect(state.marketplace).toEqual(zeroAddr);
-      expect(state.escrow).toEqual(zeroAddr);
+      expect(state.marketplace).toEqual(canonicalZeroAddr);
+      expect(state.escrow).toEqual(canonicalZeroAddr);
       expect(state.counter).toBe(0n);
     });
 
@@ -418,7 +420,7 @@ describe('Contract-Typed State Variables', () => {
       const reader = new StateReader(stateLayout);
       const newState = reader.readState([updatedDataNft]);
       expect(newState.marketplace).toEqual(newMarketplaceLbc);
-      expect(newState.escrow).toEqual(zeroAddr);
+      expect(newState.escrow).toEqual(canonicalZeroAddr);
       expect(newState.counter).toBe(1n);
     });
 
@@ -488,6 +490,7 @@ describe('Contract-Typed State Variables', () => {
     const stateLayout = artifact.stateLayout!;
 
     const zeroAddr = new Uint8Array(25);
+    const canonicalZeroAddr = new Uint8Array();
 
     let categoryId: string;
     let saltedContract: Contract;
@@ -513,7 +516,7 @@ describe('Contract-Typed State Variables', () => {
     it('should read initial state', () => {
       const reader = new StateReader(stateLayout);
       const state = reader.readState([dataNftUtxo]);
-      expect(state.token).toEqual(zeroAddr);
+      expect(state.token).toEqual(canonicalZeroAddr);
     });
 
     it('should update token address via transaction', async () => {

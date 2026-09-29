@@ -68,7 +68,7 @@ contract X10Only() {
   }
 }`;
 
-const OUT = { master: 0, dataNft: 1, mintNew: 2, mintBatch: 3, mintChunk0: 4, chunk0: 3, chunk1: 4 } as const;
+const OUT = { master: 0, dataNft: 1, mintNew: 2, mintPredecessor: 3, mintChunk0: 4, chunk0: 3, chunk1: 4 } as const;
 
 async function deploy(source: string): Promise<{ provider: Provider; sc: StatefulContract<any> }> {
   const provider = createTestProvider();
@@ -101,6 +101,14 @@ function commitmentsOf(hex: string): string[] {
     .map((o) => (o.token?.nft?.commitment ? binToHex(o.token.nft.commitment) : ''));
 }
 
+function expectPaddedHeadPredecessor(commitments: string[]): void {
+  const predecessor = commitments[OUT.mintPredecessor];
+  expect(predecessor).toHaveLength(256); // slot32 || next32 || 64-byte empty-value pad
+  expect(predecessor.slice(0, 64)).toBe('00'.repeat(32));
+  expect(predecessor.slice(64, 128)).toBe(commitments[OUT.mintNew].slice(0, 64));
+  expect(predecessor.slice(128)).toBe('00'.repeat(64));
+}
+
 function mutate(hex: string, apply: (tx: Tx) => void): string {
   const tx = decodeTransactionUnsafe(hexToBin(hex));
   apply(tx);
@@ -110,13 +118,13 @@ function mutate(hex: string, apply: (tx: Tx) => void): string {
 describe('X10 trailing chunk region beside a vmap entry mint', () => {
   it('settles a single-chunk write beside the entry mint', async () => {
     // Positive control on the VM: the shape the bound does NOT reach still settles, and its physical layout
-    // follows the fixed-batch topology: the minted NEW node at output 2, its batch node at output 3, then one
+    // follows the fixed-batch topology: the minted NEW node at output 2, its padded HEAD predecessor at output 3, then one
     // real chunk at output 4.
     const { outcome, broadcasts } = await attempt(MINT, 120);
     expect(outcome).toBe('ACCEPTED');
     const commitments = commitmentsOf(broadcasts[broadcasts.length - 1]);
     expect(commitments[OUT.mintNew].length).toBe(130); // NEW node: slot32 || next32 || value
-    expect(commitments[OUT.mintBatch].length).toBe(128); // fixed-width batch node
+    expectPaddedHeadPredecessor(commitments);
     expect(commitments[OUT.mintChunk0].startsWith('004c78')).toBe(true);
     expect(commitments[OUT.mintChunk0].length).toBe(246); // 3-byte header + 120 data bytes
   }, 180_000);

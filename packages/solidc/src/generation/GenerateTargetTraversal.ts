@@ -7747,6 +7747,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
       return;
     }
+    // Repeated constant-depth ROLL rotates the surviving top `index` words one place to the right:
+    // [a,b,c,new] -> [b,c,new,a] -> [c,new,a,b] -> [new,a,b,c]. For the common 4..17-deep
+    // replacement frame the depth operand is one byte, so this uses 2*(index-1) bytes/ops instead of
+    // the swap/alt-stack shuttle's 3*index-5, without changing either stack's final contents.
+    if (index >= 4 && index <= 17) {
+      for (let i = 0; i < index - 1; i += 1) {
+        this.emit(encodeInt(BigInt(index - 1)), locationData);
+        this.emit(Op.OP_ROLL, locationData);
+      }
+      return;
+    }
     for (let i = 0; i < index - 1; i += 1) {
       this.emit(Op.OP_SWAP, locationData);
       if (i < index - 2) {

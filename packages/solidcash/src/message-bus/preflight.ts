@@ -3269,9 +3269,15 @@ function describeMessageBusBatchRows(
     const batchRows = describeMessageBusBatchRows(
       transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(), input?.unlocker?.contract?.artifact,
     );
+    // An ordinary selector's bare `require` has no custom reason to append. Preserve the established raw
+    // preflight message for callers matching that exact VM objection; the exact source site remains available
+    // as structured `requireStatement` metadata. Named reasons and explicit debug traces still render inline.
+    const directRequireSite = exactRequire !== undefined
+      && exactRequire.requireStatement.message === undefined && !detailedFailure
+      ? '' : requireSite;
     const mapped = new Error(
       `messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}${batchRows ?? ''}: `
-      + `${rawVmReason}${requireSite}`,
+      + `${rawVmReason}${directRequireSite}`,
     );
     if (exactRequire !== undefined) {
       Object.assign(mapped, { requireStatement: exactRequire.requireStatement, inputIndex });

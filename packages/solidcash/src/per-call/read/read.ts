@@ -23,7 +23,7 @@
  * turns the arguments fix and locates each turn's node.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin, isVmNumberError, vmNumberToBigInt } from '@bitauth/libauth';
 import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import {
@@ -35,6 +35,7 @@ import {
   bytesToHex,
   decodePushdataValue,
   joinValueChunks,
+  parsePushdataCommitment,
   parseValueChunkCommitment,
   sha256,
   validatorAddress,
@@ -622,6 +623,38 @@ function pagedKey(label: string, inputs: readonly { readonly name: string }[]): 
 }
 
 /**
+ * A collection label over a computed index, which is how a key that reads a state array is published.
+ *
+ * A getter that walks a mapping by an element of a state array reads `values[items[start + i]]`, which the
+ * artifact publishes as `map:items(binop:+(id:start,id:i))`: the label names the array the key is read from and,
+ * in its argument, the index the key is read at. A label whose inner access is anything but a paged sum — or that
+ * names no state array the artifact publishes — is left to the shipped resolver, which refuses what it cannot
+ * evaluate.
+ */
+const PAGED_COLLECTION_LABEL = /^map:([A-Za-z_$][\w$]*)\((.*)\)$/;
+
+/** A collection label over a computed index: the array it reads and the sum whose turn is the index. */
+interface PagedArrayKey {
+  /** The state array the key is an element of, which the artifact publishes as a variable. */
+  readonly array: string;
+  /** The label of the index the array is read at, which is a paged sum over an argument and the counter. */
+  readonly inner: string;
+  /** The entry argument the index reads. */
+  readonly named: string;
+  /** The loop's own counter, which no parameter binds. */
+  readonly counter: string;
+}
+
+/** The array a collection label reads and the sum it reads it at, or `undefined` when the label is not one. */
+function pagedArrayKey(label: string, inputs: readonly { readonly name: string }[]): PagedArrayKey | undefined {
+  const collection = PAGED_COLLECTION_LABEL.exec(label);
+  if (collection === null) return undefined;
+  const inner = pagedKey(collection[2]!, inputs);
+  if (inner === undefined) return undefined;
+  return { array: collection[1]!, inner: collection[2]!, named: inner.named, counter: inner.counter };
+}
+
+/**
  * The key a paged access names at one turn of the entry's counter loop.
  *
  * The loop's counter opens at zero and advances by one, so a turn's value is the turn's own index; substituting it
@@ -709,9 +742,10 @@ function locatedNode(
  * The live mapping nodes one entry slot reads, in the order its own turns run.
  *
  * An entry slot whose key the frame's own arguments determine names one node, which the shipped resolver locates. A
- * key that is a sum over an argument and the loop's own counter is one no single key resolution can evaluate, so
- * the turns the frame's own arguments fix are enumerated instead and each turn resolves its own key. A node two
- * turns share — a bracketing predecessor — is one input and is declared once.
+ * key that is a sum over an argument and the loop's own counter — or an element of a state array read at such a
+ * sum — is one no single key resolution can evaluate, so the turns the frame's own arguments fix are enumerated
+ * instead and each turn resolves its own key. A node two turns share — a bracketing predecessor — is one input and
+ * is declared once.
  */
 function entryReadRecords(
   frame: ReadFrame,
@@ -720,7 +754,9 @@ function entryReadRecords(
 ): readonly EntryRead[] {
   const label = entryKeyLabel(frame, slotIndex);
   const paged = label === undefined ? undefined : pagedKey(label, frame.entry.inputs);
-  if (label === undefined || paged === undefined) {
+  const arrayed = label === undefined || paged !== undefined
+    ? undefined : pagedArrayKey(label, frame.entry.inputs);
+  if (paged === undefined && arrayed === undefined) {
     return [entryReadRecord(frame, deployment, slotIndex)];
   }
   const fn = frame.artifact.abi.find((candidate) => candidate.name === frame.entry.name);
@@ -733,10 +769,14 @@ function entryReadRecords(
       + 'not publish as a collection',
     );
   }
+  const turns = loopTurns(frame.args, frame.entry.inputs, (paged ?? arrayed!).named);
   const reads: EntryRead[] = [];
   const declared = new Set<string>();
-  for (let turn = 0; turn < loopTurns(frame.args, frame.entry.inputs, paged.named); turn += 1) {
-    const key = pagedKeyAt(label, paged.counter, frame.args, frame.entry.inputs, turn);
+  for (let turn = 0; turn < turns; turn += 1) {
+    const keyType = collection.keyTypes?.[0] ?? collection.keyType;
+    const key = paged !== undefined
+      ? pagedKeyAt(label!, paged.counter, frame.args, frame.entry.inputs, turn)
+      : arrayElementKeyAt(frame, deployment, arrayed!, keyType, turn);
     if (key === undefined) {
       throw new PerCallReadError(
         `entry "${frame.entry.name}" names mapping "${access?.collection ?? '<unnamed>'}" at a key no run of its `
@@ -749,6 +789,55 @@ function entryReadRecords(
     reads.push(read);
   }
   return reads;
+}
+
+/**
+ * The key one turn of a collection label names: the element of the state array at the index that turn reads it at.
+ *
+ * The index is the label's own inner sum evaluated against the frame's arguments with the counter substituted, so
+ * it is a value the frame's arguments fix. The array is a state variable the artifact publishes, and its live value
+ * is the data-NFT record the frame already declares, decoded with the shipped commitment parser; the element is
+ * encoded as the key type the entry's own collection declares, which is how the body's key is built. A dynamic
+ * variable keeps no element in its record — its bytes sit in chunk records a read does not co-spend — so a key
+ * indexing one is refused rather than resolved short.
+ */
+function arrayElementKeyAt(
+  frame: ReadFrame,
+  deployment: PerCallDeploymentSet,
+  paged: PagedArrayKey,
+  keyType: string,
+  turn: number,
+): Uint8Array | undefined {
+  const layout = frame.artifact.stateLayout;
+  if (layout === undefined) return undefined;
+  const variable = layout.variables?.find((candidate) => candidate.name === paged.array);
+  if (variable === undefined) return undefined;
+  if (variable.dynamic === true) {
+    throw new PerCallReadError(
+      `entry "${frame.entry.name}" reads the key at an index of "${paged.array}", a dynamic array whose elements `
+      + 'live in chunk records a read does not co-spend',
+    );
+  }
+  const indexed = pagedKeyAt(paged.inner, paged.counter, frame.args, frame.entry.inputs, turn);
+  if (indexed === undefined) return undefined;
+  const decoded = vmNumberToBigInt(indexed, { maximumVmNumberByteLength: 32 });
+  if (isVmNumberError(decoded)) return undefined;
+  const index = Number(decoded);
+  if (!Number.isSafeInteger(index) || index < 0) return undefined;
+  const record = deployment.records[variable.nftIndex ?? 0];
+  const commitment = record?.token?.nft?.commitment;
+  if (commitment === undefined) {
+    throw new PerCallReadError(
+      `category ${frame.categoryId} holds no data-NFT record at index ${variable.nftIndex ?? 0}, which the entry `
+      + `reads "${paged.array}" from`,
+    );
+  }
+  const values = parsePushdataCommitment(commitment, layout, variable.nftIndex ?? 0);
+  const array = values[paged.array];
+  if (!Array.isArray(array)) return undefined;
+  const element = array[index];
+  if (element === undefined) return undefined;
+  return encodeFunctionArgument(element, keyType, structDefinitionsOf(frame.artifact)) as Uint8Array;
 }
 
 /**

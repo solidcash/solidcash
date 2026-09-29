@@ -1566,6 +1566,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // reads the stale input. Only an invariant-key write would be sound (last-write-wins), which is pointless in
   // a loop, so any mapping write here is rejected (fail closed). Collection iteration is a distinct node.
   private plainLoopDepth = 0;
+  // The loop counter a per-call paging read advances with, set only while its entry coordinate is emitted.
+  private perCallPagingTurnAddend: string | undefined;
 
   // Dynamic-storage writes (string / unbounded bytes): the value is kept on the stack until the
   // epilogue, where the chunk write loop (split + verify trailing chunk outputs) is emitted.
@@ -22485,8 +22487,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
 
     // 3. input[slot] bytecode == entryAddr (a real entry of this collection; omission -> mismatch -> revert),
-    // then read its commitment -> slot32, nextKey32.
+    // then read its commitment -> slot32, nextKey32. A paged read names the turn's own node, which the frame
+    // declares one past the slot's, so the coordinate counts the loop's counter while it is emitted.
+    this.perCallPagingTurnAddend = this.pagingTurnAddend(slotIndex);
     this.emitEntryInputIndex(slotIndex, loc, 2);      // [Hk32, entryAddr, idx]
+    this.perCallPagingTurnAddend = undefined;
     // Several absent keys in one verified map can share a single predecessor outpoint. A fixed route slot that
     // received a placeholder may use an earlier aliased slot, but the selected input is still authenticated
     // against this collection's entry covenant below.
@@ -31088,6 +31093,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitPickTrackedFromBottom(name, loc);
     this.emit(encodeInt(BigInt(this.perCallEntryOffset(slotIndex))), loc);
     this.emit(Op.OP_ADD, loc);
+    // A paging read names a different node each turn, and the frame declares one per turn past the slot's own; the
+    // counter is how many turns in the read is, so the coordinate counts it. Every other read leaves the slot's own.
+    if (this.perCallPagingTurnAddend !== undefined) {
+      this.emitPickTrackedFromBottom(this.perCallPagingTurnAddend, loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+  }
+
+  /**
+   * The loop counter a per-call paging read's key advances with, or `undefined` when the key is not a paged one.
+   *
+   * A getter that walks a collection by its own argument and a loop counter reads `cells[start + i]`, which the
+   * artifact publishes as a sum over the argument and the counter. The frame declares one node per turn, so the
+   * node the read names sits a turn past the slot's own coordinate; the counter names how many turns in the read
+   * is. A key whose operands the arguments alone name — or whose counter the frame does not carry — is not paged.
+   */
+  private pagingTurnAddend(slotIndex: number): string | undefined {
+    if (!this.perCallMaster || this.plainLoopDepth === 0) return undefined;
+    const keyParams = this.entrySlots[slotIndex]?.keyParams ?? [];
+    if (keyParams.length !== 1) return undefined;
+    const names = [...keyParams[0]!.matchAll(/id:([A-Za-z_$][\w$]*)/g)].map((match) => match[1]!);
+    const parameters = new Set((this.currentFunction.parameters ?? []).map((parameter) => parameter.name));
+    const bound = names.filter((name) => parameters.has(name));
+    const counters = [...new Set(names.filter((name) => !parameters.has(name)))]
+      .filter((name) => this.getStackIndex(name, true) >= 0);
+    return bound.length === 1 && counters.length === 1 ? counters[0] : undefined;
   }
 
   /**

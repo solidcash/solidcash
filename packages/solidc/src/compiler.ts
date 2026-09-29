@@ -13356,6 +13356,23 @@ function compileResolvedAst(
   const hasInternalHelpers = ast.freeFunctions.length > 0
     || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.INTERNAL)
       || fn.modifiers.includes(FunctionModifier.PRIVATE));
+  // Public entry points can also be called internally. A collection-touching public callee owns direct-route
+  // witnesses that do not exist as source-level arguments at its call site; inline that body into the caller's
+  // physical frame before SymbolTableTraversal adds those parameters. Keep the ordinary public definition.
+  const publicEntryNames = needsCollectionJournal
+    ? new Set(ast.contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name))
+    : new Set<string>();
+  let hasInternallyCalledPublicEntry = false;
+  if (publicEntryNames.size > 0) {
+    for (const fn of ast.contract.functions) {
+      if (!fn.body) continue;
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof FunctionCallNode && publicEntryNames.has(node.identifier.name)
+          && !node.fromThisCall) hasInternallyCalledPublicEntry = true;
+      });
+      if (hasInternallyCalledPublicEntry) break;
+    }
+  }
   if (hasInternalHelpers) {
     ast = ast.accept(new InlineReturningStateHelpers(
       mergedCompilerOptions.solidityImportCompat ?? false,
@@ -13373,7 +13390,8 @@ function compileResolvedAst(
   // low-level calls, deploys, events and transfers) in the physical entry frame. Those shapes need no `storage`
   // token in source, and skipping the pass leaves the effect behind OP_INVOKE without a block layout. Run it
   // whenever an internal helper exists; the traversal's own eligibility checks retain the cheap no-op path.
-  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) && hasInternalHelpers) {
+  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers)
+    && (hasInternalHelpers || hasInternallyCalledPublicEntry)) {
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,

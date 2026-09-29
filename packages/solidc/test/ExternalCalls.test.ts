@@ -496,7 +496,7 @@ describe('SBE-13: void external-call helpers are inlined at internal call sites 
     const a = compileString(`${IFACE}
       contract C(IERC20 token1, IERC20 token2) {
         int n;
-        function _safe(IERC20 t, address f, address r, int v) {
+        function _safe(IERC20 t, address f, address r, int v) internal {
           bool sent = t.transferFrom(f, r, v); require(sent);
         }
         function go(address f, address r, sig s, pubkey pk) {

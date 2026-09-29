@@ -135,7 +135,7 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
    * handler survives can exceed the budget. Measured on this branch: `decrement(10_000)` refuses `Unsuccessful
    * evaluation: completed with a non-truthy value on top of the stack`, and every depth from 4 to 40 BUILDS.
    * The old assertion matched only the SDK's wrapper sentence, so it could not tell the two apart. With the
-   * current bytecode, depth 20 fits the stock density budget; depth 30 reaches a concrete density refusal.
+   * current bytecode, depth 28 fits the stock density budget; depth 32 reaches a concrete density refusal.
    *
    * REPAIRED BY PINNING THE CEILING TO A PUBLISHED PROFILE. The subject runs against the STOCK BCH-2026
    * consensus budget, read from libauth's own `ConsensusBch2026` and never restated here, and the expected
@@ -150,7 +150,7 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
    * This row stages its own `MockNetworkProvider` rather than `createTestProvider()` because its subject is
    * the SDK's preflight decider - a pure VM decision on published consensus limits, with no node in it.
    */
-  const OVER_BUDGET_DEPTH = 30n;
+  const OVER_BUDGET_DEPTH = 32n;
   const STOCK_BUDGET = ConsensusBch2026.operationCostBudgetPerByte;
   // NOT MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte: that default is now the REAL 800, identical to
   // STOCK_BUDGET, which would silently collapse the control arm below into the subject and make the pair

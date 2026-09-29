@@ -608,16 +608,17 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
     // became their second caller, and the per-file call counts are asserted in
     // `X186SendCovenantAbsorption.test.ts` row 5b. What stays here is the half whose subject is these four
     // sites: they route, and none of them calls the bare gate.
-    const source = readFileSync(fileURLToPath(new URL('../../src/stateful/StatefulContract.ts', import.meta.url)),
-      'utf8');
-    const call = (name: string): string[] => source.split('\n')
-      .filter((line) => new RegExp(`${name}\\(`).test(line) && !/^\s*[*/]/.test(line)
-        && !/^import|^\s{2}\w+,?$/.test(line));
-    expect(call('assertFinalizedBytesWithCovenant'), 'routed sites').toHaveLength(4);
-    expect(call('assertFinalizedTransactionBytes'), 'bare gate calls').toHaveLength(0);
-    expect(source).toMatch(
-      /import \{[\s\S]*?assertFinalizedBytesWithCovenant[\s\S]*?\} from '\.\.\/message-bus\/preflight\.js'/,
-    );
+    for (const [file, count] of [
+      ['sc-destroy.ts', 1], ['sc-split-merge.ts', 2], ['sc-send-raw-builder.ts', 1],
+    ] as const) {
+      const source = readFileSync(fileURLToPath(new URL(`../../src/stateful/${file}`, import.meta.url)), 'utf8');
+      const call = (name: string): string[] => source.split('\n')
+        .filter((line) => new RegExp(`${name}\\(`).test(line) && !/^\s*[*/]/.test(line)
+          && !/^import|^\s{2}\w+,?$/.test(line));
+      expect(call('assertFinalizedBytesWithCovenant'), `${file}: routed sites`).toHaveLength(count);
+      expect(call('assertFinalizedTransactionBytes'), `${file}: bare gate calls`).toHaveLength(0);
+      expect(source, `${file}: imports the shared helper`).toContain('assertFinalizedBytesWithCovenant');
+    }
   });
 
   /* ---------------------------------------------------------------------------------------------------- */
@@ -632,7 +633,8 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
     const root = fileURLToPath(new URL('../../src/', import.meta.url));
     const files = [
       'TransactionBuilder.ts', 'message-bus/preflight.ts',
-      'stateful/StatefulContract.ts', 'stateful/StatefulTransactionBuilder.ts',
+      'stateful/sc-destroy.ts', 'stateful/sc-send-raw-builder.ts',
+      'stateful/sc-split-merge.ts', 'stateful/stb-submit-final-transaction.ts',
     ];
     const callSites: string[] = [];
     for (const file of files) {
@@ -647,6 +649,11 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
     // Seven live sites, one per gated path. A new entry here is a new broadcast path that must be gated
     // before this list is updated.
     expect(callSites).toHaveLength(7);
-    expect(callSites.filter((site) => site.startsWith('stateful/StatefulContract.ts'))).toHaveLength(4);
+    expect(callSites.map((site) => site.split(':')[0]).sort()).toEqual([
+      'TransactionBuilder.ts', 'message-bus/preflight.ts',
+      'stateful/sc-destroy.ts', 'stateful/sc-send-raw-builder.ts',
+      'stateful/sc-split-merge.ts', 'stateful/sc-split-merge.ts',
+      'stateful/stb-submit-final-transaction.ts',
+    ].sort());
   });
 });

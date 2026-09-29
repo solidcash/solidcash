@@ -327,9 +327,9 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
     // return, so this row is what makes "it cannot cost anything" checkable rather than asserted.
     const body = readFileSync(`${SRC_ROOT}message-bus/preflight.ts`, 'utf8')
       .split('export function assertFinalizedBytesWithCovenant')[1];
-    expect(body.indexOf('assessFinalizedTransactionBytes(transaction, subjects)'))
-      .toBeLessThan(body.indexOf('if (verdict.admitted) return;'));
-    expect(body.indexOf('if (verdict.admitted) return;'))
+    expect(body.indexOf('assessFinalizedTransactionBytes(transaction, subjects, options.consensusLimits)'))
+      .toBeLessThan(body.indexOf('if (enforced.length === 0) return;'));
+    expect(body.indexOf('if (enforced.length === 0) return;'))
       .toBeLessThan(body.indexOf('covenantObjectionOf(builder, transaction)'));
   });
 
@@ -339,15 +339,21 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
       // four routed sites inside `StatefulContract.ts`; the helper now lives in `message-bus/preflight.ts` and
       // `TransactionBuilder.send` is its second caller, so the count is per file and lives here.
       //
-      // A new broadcast path added later gets whichever gate its author copies from a neighbour. Every
-      // neighbour at a site with no covenant verdict ahead of it now calls the routed one.
+      // The four lifecycle-admin calls were extracted into three modules. A new broadcast path added later
+      // gets whichever gate its author copies from a neighbour, so pin each current routed site by module.
       const builder = read('TransactionBuilder.ts');
       expect(callsTo(builder, 'assertFinalizedBytesWithCovenant')).toHaveLength(1);
       expect(callsTo(builder, 'assertFinalizedTransactionBytes')).toHaveLength(0);
 
-      const stateful = read('stateful/StatefulContract.ts');
-      expect(callsTo(stateful, 'assertFinalizedBytesWithCovenant')).toHaveLength(4);
-      expect(callsTo(stateful, 'assertFinalizedTransactionBytes')).toHaveLength(0);
+      for (const [file, count] of [
+        ['stateful/sc-destroy.ts', 1],
+        ['stateful/sc-split-merge.ts', 2],
+        ['stateful/sc-send-raw-builder.ts', 1],
+      ] as const) {
+        const lines = read(file);
+        expect(callsTo(lines, 'assertFinalizedBytesWithCovenant'), file).toHaveLength(count);
+        expect(callsTo(lines, 'assertFinalizedTransactionBytes'), file).toHaveLength(0);
+      }
 
       // Inside `preflight.ts` the bare gate keeps three callers: the covenant-clean branch of the helper
       // itself, and the two message bus entry points that run `evaluateEveryInput` BEFORE it - a guaranteed
@@ -370,7 +376,7 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
       // conditional on `strictVmPreflight` - so no covenant verdict is guaranteed ahead of it either. That
       // window is NOT closed by this row, and `L4GateAtSubmitSite` row 1 asserts `refused by 1 byte rule(s)`,
       // which the combined message would not match. Whoever routes it must update that file in the same change.
-      const submit = read('stateful/StatefulTransactionBuilder.ts');
+      const submit = read('stateful/stb-validate-send-fee-caps-and-bytes.ts');
       expect(callsTo(submit, 'assertFinalizedTransactionBytes')).toHaveLength(1);
       expect(callsTo(submit, 'assertFinalizedBytesWithCovenant')).toHaveLength(0);
     });

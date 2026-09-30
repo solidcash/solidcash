@@ -8467,13 +8467,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // one is read back beside the genuine log. Delegate functions are pinned regardless of `declaresEvents`:
       // the readable signature may be declared by the proxy, which the implementation cannot see.
       const declaresEvents = this.eventDefinitions.length > 0 || this.currentContractEmitsEvent
-        || (node.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent');
+        || ((node.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent')
+          && !this.perCallProxyFallback);
       const proxyCanAdmitDelegateEvent = this.functionHasDelegatecall
         && (this.getStackIndex('__internal__callInputIndex', true) >= 0
           || this.getStackIndex('__internal__callInputIndex0', true) >= 0);
       // A split root publishes the exact event offsets owned by its co-spent delegate-only facet. The facet pins
       // those proxy-category immutable outputs itself; emitting the root census too would duplicate authority and
       // make the earlier input, rather than the producing facet, decide the event family.
+      // A per-call proxy's fallback declares no event of its own: its `returnEvent` slot is where the delegate's
+      // returned bytes are recorded, and the events a delegated body emits are minted by that body's own frame
+      // program, which emits them and is pinned by its own event declaration at the offsets they occupy. Pinning
+      // this body instead admits only the offset this body's own layout names, which is not the offset the delegated
+      // output sits at, so an honest emit would be refused.
       const splitDelegateOwnsImmutableEvents = node.splitDelegateEventOffsets !== undefined;
       if (node.name !== '__construct' && isStatefulContract
         && !splitDelegateOwnsImmutableEvents

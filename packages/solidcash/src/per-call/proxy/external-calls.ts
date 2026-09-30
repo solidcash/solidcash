@@ -149,6 +149,16 @@ export interface HopCallee {
   readonly masterSatoshis: bigint;
   /** True when the entry returns a value, so the frame's `retval` is a candidate the derivation learns. */
   readonly returns: boolean;
+  /**
+   * Index in `callees` of the frame whose `retval` this frame records verbatim, or absent when its own body
+   * computes the return.
+   *
+   * A proxy's fallback has no return of its own: it forwards the call data to its implementation and records the
+   * bytes the delegate returned, so its `retval` is the delegate frame's. The caller's record for the call names
+   * the proxy, so that recorded value is what the caller reads, and it is the implementation entry's own declared
+   * return encoding that the caller decodes.
+   */
+  readonly retvalFrom?: number;
   /** The address this frame runs as, i.e. `address(this)`: the delegate frame runs as the proxy's. */
   readonly selfAddress: Uint8Array;
   readonly records: readonly HopCalleeRecord[];
@@ -1124,6 +1134,8 @@ async function placeProxiedCallee(
   // A delegate frame runs on the proxy's records, so a write its entry makes lands at the proxy's category and is
   // planned against the proxy's own live records and collection nodes.
   const live = liveDeploymentOf(external.categoryId, proxyDeployment);
+  // Whether the entry the proxy forwards to returns a value, which the fallback frame records in its own `retval`.
+  const returnsValue = (entry.outputs ?? []).length > 0;
   for (const [occurrence, call] of resolved.entries()) {
     const proxyIndex = ctx.callees.length;
     const implementationIndex = proxyIndex + 1;
@@ -1142,7 +1154,10 @@ async function placeProxiedCallee(
       deployed: proxyDeployed,
       kind: call.kind,
       masterSatoshis: proxyMasterUtxo.satoshis,
-      returns: false,
+      // The fallback records the bytes the delegate returned, so the frame returns exactly when the entry it
+      // forwards to does; the value it records is the implementation frame's own, not one its body computed.
+      returns: returnsValue,
+      ...(returnsValue ? { retvalFrom: implementationIndex } : {}),
       selfAddress: proxyDeployed.address,
       records,
       readNodes: [],
@@ -1234,6 +1249,7 @@ interface CollectionReach {
 export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): void {
   const byCollection = new Map<string, {
     readonly collection: string;
+    readonly chunkable: boolean;
     readonly reaches: CollectionReach[];
   }>();
   for (const callee of callees) {
@@ -1243,7 +1259,8 @@ export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): vo
     const owner = callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!;
     for (const write of writes.reachWrites) {
       const key = `${bytesToHex(owner.category)}|${write.collection}`;
-      const group = byCollection.get(key) ?? { collection: write.collection, reaches: [] };
+      const group = byCollection.get(key)
+        ?? { collection: write.collection, chunkable: write.chunkable, reaches: [] };
       group.reaches.push({
         functionName: callee.functionName,
         targets: write.targets,
@@ -1254,6 +1271,9 @@ export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): vo
   }
   for (const group of byCollection.values()) {
     if (group.reaches.length < 2) continue;
+    // A dynamic value's reaches write versions of one value: each frame mints the chunks of its own version and
+    // states the view it continues from, so the reaches chain through the node rather than collide over it.
+    if (group.chunkable) continue;
     const where = `the hop reaches the entry "${group.reaches[0]!.functionName}" `
       + `${group.reaches.length} times`;
     const clashes = (left: readonly string[], right: readonly string[]): string | undefined =>

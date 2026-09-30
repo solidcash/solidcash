@@ -1497,12 +1497,17 @@ function producedCallResults(
     const call = externalPlan.calls[base];
     if (call === undefined) continue;
     const callee = externalPlan.callees.find((candidate) => candidate.master === call.callee);
-    const retval = settled.calleeRetvals.get(call.callee);
-    if (callee === undefined || retval === undefined) continue;
-    const entry = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
+    if (callee === undefined) continue;
+    // A proxied callee's own frame records nothing: it is the implementation frame that computed the value, so
+    // the result decodes against that frame's artifact and the entry it ran.
+    const producer = callee.retvalFrom === undefined ? callee : externalPlan.callees[callee.retvalFrom];
+    if (producer === undefined) continue;
+    const retval = settled.calleeRetvals.get(producer.master);
+    if (retval === undefined) continue;
+    const entry = producer.artifact.abi.find((candidate) => candidate.name === producer.entry);
     const values = decodeReturnValues(
-      retval, entry?.outputs ?? [], structDefinitionsOf(callee.artifact),
-      entry?.resultEncoding, callee.artifact.enums,
+      retval, entry?.outputs ?? [], structDefinitionsOf(producer.artifact),
+      entry?.resultEncoding, producer.artifact.enums,
     );
     if (values.length === 0) continue;
     results.set(callsiteId, (values.length === 1 ? values[0] : values) as FunctionArgument);
@@ -1763,6 +1768,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const pushes = callPushes(implementationArtifact, options.entry.functionName, options.entry.args ?? []);
   const calls = options.calls ?? [];
   const callees = options.callees ?? [];
+  // A fallback that publishes a return records the delegate frame's `retval`, so the proxy frame the hop enters on
+  // carries the same bytes the implementation frame does; one that publishes none leaves the slot empty.
+  const proxyReturnsValue = (proxyArtifact.abi.find((entry) => entry.name === '__fallback')?.outputs ?? []).length > 0;
 
   // One participant per data NFT of the proxy's layout, in data-NFT order: the record the proxy's genesis minted
   // for it. The proxy's block holds its master, its validator and them; the implementation's master follows, and
@@ -1949,7 +1957,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       value: 0n,
       argumentPushes: pushes,
     }],
-    retval: new Uint8Array(0),
+    // A proxy whose fallback returns records the delegate frame's own `retval`, so its frame carries the value the
+    // implementation entry computed; a fallback that records nothing leaves the slot empty.
+    retval: proxyReturnsValue ? options.implementationRetval : new Uint8Array(0),
     segments: proxySegments,
     events: [],
     sends: [],
@@ -2158,9 +2168,12 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       origin: USER_ID,
       calls: callee.calls,
       ...(callee.callBases.length === 0 ? {} : { callBaseBySite: callee.callBases }),
+      // A proxy's fallback records the delegate frame's own `retval`, so the value a caller reads for a call
+      // through the proxy is the implementation entry's; every other frame records what its own body computed.
       retval: callee.returns
-        ? options.calleeRetvals?.get(callee.master)
-          ?? hopRetvalPlaceholder(callee.contract, callee.entry)
+        ? options.calleeRetvals?.get(
+          callee.retvalFrom === undefined ? callee.master : callees[callee.retvalFrom]!.master,
+        ) ?? hopRetvalPlaceholder(callee.contract, callee.entry)
         : new Uint8Array(0),
       // A frame that makes k calls closes k + 1 segments, each declaring its own records kept and the one the
       // frame writes in.

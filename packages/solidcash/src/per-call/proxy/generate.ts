@@ -35,6 +35,17 @@ function pragmaFor(artifact: Artifact): string {
   return `pragma solidcash ^${major}.${minor}.0;`;
 }
 
+/**
+ * True when some entry a caller can reach through the proxy records a return value.
+ *
+ * A constructor runs at the genesis and is never reached through the fallback, so it does not count; every other
+ * entry with a declared output does, because the proxy's fallback is the one body that forwards all of them.
+ */
+function carriesDelegateReturn(implementationArtifact: Artifact): boolean {
+  return implementationArtifact.abi.some((entry) =>
+    entry.name !== '__construct' && (entry.outputs ?? []).length > 0);
+}
+
 /** The base identifier of a possibly-array type: `Outer[2]` and `Outer` both name `Outer`. */
 function baseTypeName(type: string): string {
   const bracket = type.indexOf('[');
@@ -145,14 +156,21 @@ export function generateProxySource(implementationArtifact: Artifact): string {
     // frame writes past its own declaration.
     lines.push(`  address external ${IMPLEMENTATION_FIELD};`);
   }
-  // The fallback consumes the delegated call's result through the pair binding, so the record its own frame keeps
-  // for the call carries the bytes the implementation frame returned. A bare call statement drops them, and a
-  // returning entry's frame compares the slot against the value its own body computed, so the two would disagree
-  // and the hop could not be derived at all.
-  lines.push(
-    `  fallback(bytes input) external { (bool ok, bytes returned) = this.${IMPLEMENTATION_FIELD}`
-    + '.delegatecall(input); require(ok); require(returned.length >= 0); }',
-  );
+  // A fallback that publishes a return records the bytes its delegate frame recorded, so both the call record its
+  // own frame keeps and the frame's `retval` carry what a caller naming the proxy reads. Declaring the return is
+  // also what gives the proxy master a `returnEvent` block slot, and that slot is what puts the fallback body under
+  // the compiler's own-category immutable-NFT pin. The pin admits the event outputs a *declared* event of the
+  // fallback's own layout names; a delegated event output sits at the implementation entry's own block offset,
+  // which the proxy cannot mirror, so once the pin is emitted the delegated event is refused and the hop cannot
+  // settle. A proxy therefore publishes a return only when the implementation has a return to carry: for an
+  // implementation whose entries all record nothing the fallback records nothing either, keeps no return slot, and
+  // the pin is never emitted. The void form still binds the delegated result — the frame keeps a call record for it
+  // — and consumes the binding with a size test so nothing is left unused.
+  lines.push(carriesDelegateReturn(implementationArtifact)
+    ? `  fallback(bytes input) external returns (bytes) { (bool ok, bytes returned) = `
+      + `this.${IMPLEMENTATION_FIELD}.delegatecall(input); require(ok); return returned; }`
+    : `  fallback(bytes input) external { (bool ok, bytes returned) = `
+      + `this.${IMPLEMENTATION_FIELD}.delegatecall(input); require(ok); require(returned.length >= 0); }`);
   lines.push('}');
   return lines.join('\n');
 }

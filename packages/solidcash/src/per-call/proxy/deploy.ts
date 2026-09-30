@@ -56,10 +56,11 @@ import {
   type DraftMaster, type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
 import { readComputedDeclaration } from '../deploy/declaration.js';
+import { frameDataRecordIndices } from '../call/entry-records.js';
 import { eventLockingBytecode, eventSentinel } from '../deploy/genesis.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import {
-  readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
+  readPerCallDeployment, entryRecordReadUnlock, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../deploy/records.js';
 import { decodeReturnValues } from '../read/index.js';
 import { PerCallProxyDeployError } from './errors.js';
@@ -71,6 +72,7 @@ import {
   deploymentStateValues,
   planHopExternalCalls,
   type HopCallee,
+  type HopCalleeRecord,
   type PerCallProxyExternal,
 } from './external-calls.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
@@ -1420,6 +1422,36 @@ function delegateOwnerIndices(callees: readonly HopCallee[]): readonly number[] 
   return owners;
 }
 
+/** The records one callee frame's own entry declares, in the order its block layout names them. */
+function calleeDeclaredRecords(
+  callee: HopCallee, owned: readonly HopCalleeRecord[],
+): readonly HopCalleeRecord[] {
+  return frameDataRecordIndices(callee.artifact, callee.entry)
+    .map((nftIndex) => owned[nftIndex])
+    .filter((record): record is HopCalleeRecord => record !== undefined);
+}
+
+/**
+ * The records of one category the hop's callee frames declare, each named once.
+ *
+ * A delegate frame's records are its owner's, and the two frames may name different subsets, so a category's
+ * declared records are the union over every frame that runs on it.
+ */
+function calleeDeclaredRecordsOfCategory(
+  callees: readonly HopCallee[], categoryKey: string,
+): readonly string[] {
+  const ids: string[] = [];
+  for (const callee of callees) {
+    const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner];
+    if (bytesToHex((owner ?? callee).category) !== categoryKey) continue;
+    const owned = owner === undefined ? callee.records : owner.records;
+    for (const record of calleeDeclaredRecords(callee, owned)) {
+      if (!ids.includes(record.id)) ids.push(record.id);
+    }
+  }
+  return ids;
+}
+
 /** Lays out the delegate hop from the deployed masters and the proxy's records. */
 function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const { proxyArtifact, implementationArtifact, proxyMaster, implementationMaster } = options;
@@ -1445,13 +1477,24 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       calleeBlocks.set(callee.contract, block);
     }
     block.masters.push(callee.master);
-    if (callee.recordOwner !== undefined) continue;
-    for (const record of callee.records) {
-      if (!block.state.includes(record.id)) block.state.push(record.id);
+    // A delegate frame's records, the nodes it reads and the nodes its write touches all sit at its owner's
+    // category, so they are placed in the owner's block; the owner is placed before the delegate.
+    const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner]!;
+    const target = owner === undefined ? block : calleeBlocks.get(owner.contract);
+    if (target === undefined) continue;
+    const owned = owner === undefined ? callee.records : owner.records;
+    // The records the entry's own block layout names, in that order; a record no body of the frame reads is not
+    // spent, so it is placed in no block and declared in no segment.
+    for (const record of calleeDeclaredRecords(callee, owned)) {
+      if (!target.state.includes(record.id)) target.state.push(record.id);
     }
-    // The nodes the frame's own write spends sit in the same block, after the records it declares.
+    // The nodes the frame reads sit after the data records its own block layout names, ahead of any write.
+    for (const node of callee.readNodes) {
+      if (!target.state.includes(node.id)) target.state.push(node.id);
+    }
+    // The nodes the frame's own write spends sit after the records it declares.
     for (const id of callee.entryWrites?.participantIds ?? []) {
-      if (!block.state.includes(id)) block.state.push(id);
+      if (!target.state.includes(id)) target.state.push(id);
     }
   }
   const blocks: ContractBlock[] = [
@@ -1643,16 +1686,10 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     for (const out of createdOutputs) if (!merged.createdOutputs.includes(out)) merged.createdOutputs.push(out);
     settlementOf.set(key, merged);
   };
-  // The records the transaction spends of a category are the ones its record-owning frames place; a category whose
-  // masters all run as delegates on another contract's records spends none of its own.
-  const spentRecordsOf = (categoryKey: string): string[] => {
-    const ids: string[] = [];
-    for (const callee of callees) {
-      if (callee.recordOwner !== undefined || bytesToHex(callee.category) !== categoryKey) continue;
-      for (const record of callee.records) if (!ids.includes(record.id)) ids.push(record.id);
-    }
-    return ids;
-  };
+  // The records the transaction spends of a category are the ones its frames declare; a category whose masters all
+  // run as delegates on another contract's records spends only what their owners' frames already place.
+  const spentRecordsOf = (categoryKey: string): string[] =>
+    [...calleeDeclaredRecordsOfCategory(callees, categoryKey)];
   const mastersOfCategory = new Map<string, { category: Uint8Array; count: number }>();
   for (const callee of callees) {
     const key = bytesToHex(callee.category);
@@ -1700,7 +1737,10 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   });
   settle(options.proxyCategory, [...recordIds, ...entryWriteIds], laidWrites?.createdOutputs ?? []);
   for (const owner of delegateOwnerIndices(callees)) {
-    settle(callees[owner]!.category, callees[owner]!.records.map((record) => record.id));
+    settle(
+      callees[owner]!.category,
+      calleeDeclaredRecordsOfCategory(callees, bytesToHex(callees[owner]!.category)),
+    );
   }
   for (const [key, group] of mastersOfCategory) {
     if (group.count > 1) settle(group.category, spentRecordsOf(key));
@@ -1717,6 +1757,15 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     if (!settlementOf.has(bytesToHex(category))) return;
     settle(category, writes.participantIds, laid.createdOutputs);
   });
+  // The nodes a frame only reads are state inputs of the category their records sit at, so a settlement that
+  // reaches that category accounts for them too, exactly as a frame's own write does.
+  for (const callee of callees) {
+    if (callee.readNodes.length === 0) continue;
+    const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner];
+    const category = (owner ?? callee).category;
+    if (!settlementOf.has(bytesToHex(category))) continue;
+    settle(category, callee.readNodes.map((node) => node.id));
+  }
   const settles = [...settlementOf.values()].map((entry) => ({
     category: entry.category,
     stateInputs: entry.stateInputs,
@@ -1726,10 +1775,15 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     // A frame that owns the records it lists places them; a delegate frame reads the records of the proxy frame
     // that entered it, which are the first ones that frame declares.
     const owned = callee.recordOwner === undefined ? callee.records : callees[callee.recordOwner]!.records;
-    const declared = callee.recordOwner === undefined
-      ? owned.length
-      : callee.artifact.stateLayout?.dataNftCount ?? owned.length;
-    const indices = owned.slice(0, declared).map((record) => participant(layout, record.id).index);
+    // The records the entry's own code reads, in the order its block layout names them: the ones it names first,
+    // then, for a batch, the rest a batch's groups follow. The frame's segments declare exactly those, so the read
+    // nodes the entry names past them sit where its own group walk reads them.
+    const declaredRecords = calleeDeclaredRecords(callee, owned);
+    // The nodes the entry only reads sit after the data records, in the order its own code reads them.
+    const readEntries: RecordEntry[] = callee.readNodes.map((node) => {
+      const index = participant(layout, node.id).index;
+      return { in: index, out: index, viewIn: node.commitment, viewOut: node.commitment };
+    });
     // The frame's own call-data band is the pushes of the call that reaches it; a callee a loop reaches has several
     // records, and the first of them carries the same selector and shape as the rest.
     const argumentPushes = callTo.get(callee.master)?.argumentPushes ?? [];
@@ -1740,11 +1794,13 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     // own writes lands in the segment its source fixes, which the artifact publishes per write: the records it
     // spends are kept at the commitment they were spent with before that segment and at the written one after it.
     const laidCalleeWrites = calleeWriteRecords[calleePosition];
-    const segments: RecordEntry[][] = Array.from({ length: callee.calls.length + 1 }, () =>
-      owned.slice(0, declared).map((record, nftIndex): RecordEntry => ({
-        in: indices[nftIndex]!, out: indices[nftIndex]!,
-        viewIn: record.commitment, viewOut: record.commitment,
-      })));
+    const segments: RecordEntry[][] = Array.from({ length: callee.calls.length + 1 }, () => [
+      ...declaredRecords.map((record): RecordEntry => {
+        const index = participant(layout, record.id).index;
+        return { in: index, out: index, viewIn: record.commitment, viewOut: record.commitment };
+      }),
+      ...readEntries,
+    ]);
 
     if (laidCalleeWrites !== undefined) {
       placeLaidWrites(segments, resolveLaidWriteSegments(
@@ -1833,18 +1889,30 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         const masterEntry = [callee.master, {
           source: masterSource(callee.deployed.lockingBytecode, callee.category, callee.masterSatoshis),
         }] as const;
-        // Only the frame that owns a block declares its records; a delegate frame's records are the proxy's, whose
-        // inputs the proxy leg already placed.
-        const owned = callee.recordOwner === undefined ? callee.records : [];
-        const recordEntries = owned.map((record) => [record.id, {
-          source: mutableSource(record.lockingBytecode, record.satoshis, callee.category, record.commitment),
-          output: mutableSource(record.lockingBytecode, record.satoshis, callee.category, record.commitment),
+        // A delegate frame's records are its owner's, spent at the owner's category; each frame declares the
+        // records its own block layout names, and the two frames' declarations union into the same inputs.
+        const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner]!;
+        const recordCategory = (owner ?? callee).category;
+        const recordCategoryId = (owner ?? callee).categoryId;
+        const owned = owner === undefined ? callee.records : owner.records;
+        const recordEntries = calleeDeclaredRecords(callee, owned).map((record) => [record.id, {
+          source: mutableSource(record.lockingBytecode, record.satoshis, recordCategory, record.commitment),
+          output: mutableSource(record.lockingBytecode, record.satoshis, recordCategory, record.commitment),
           // A callee frame is planned as a read of its records, so each is spent on the covenant's read-only path.
           unlockingBytecode: stateRecordUnlockingBytecode(
-            callee.categoryId, participant(layout, callee.master).index, 0,
+            recordCategoryId, participant(layout, callee.master).index, 0,
           ),
         }] as const);
-        return [masterEntry, ...recordEntries];
+        // The nodes the entry only reads are spent on the entry covenant's read-only path and recreated unchanged,
+        // so no output is stated for them.
+        const readNodeEntries = callee.readNodes.map((node) => {
+          const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(recordCategoryId, node.signature);
+          return [node.id, {
+            source: mutableSource(lockingBytecode, node.utxo.satoshis, recordCategory, node.commitment),
+            unlockingBytecode,
+          }] as const;
+        });
+        return [masterEntry, ...recordEntries, ...readNodeEntries];
       })),
       ...(laidWrites?.inputs ?? {}),
       // Each callee frame's own write spends the collection nodes it names, which its own block already placed.

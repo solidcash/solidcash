@@ -76,6 +76,7 @@ import {
   type AbiEntryRow, type CallResolver, type HopCallInputs, type ResolvedCall,
 } from './call-resolution.js';
 import { hopEntryWrites, type HopEntryWrites, type HopLiveDeployment } from './entry-writes.js';
+import { readEntryNode } from '../call/entry-records.js';
 import { PerCallProxyDeployError } from './errors.js';
 
 /** One contract the caller names for a call an implementation entry makes, keyed by the interface it calls. */
@@ -105,6 +106,16 @@ export interface HopCalleeRecord {
   readonly lockingBytecode: Uint8Array;
 }
 
+/** One mapping node a callee frame's entry only reads, with the live UTXO it sits on. */
+export interface HopCalleeReadNode {
+  readonly id: string;
+  readonly collection: string;
+  /** The collection's canonical signature, which derives the covenant lock the node sits at. */
+  readonly signature: string;
+  readonly commitment: Uint8Array;
+  readonly utxo: Utxo;
+}
+
 /** One callee frame the hop runs: the master, the live records it reads, and the UTXO each participant sits on. */
 export interface HopCallee {
   readonly master: string;
@@ -126,6 +137,14 @@ export interface HopCallee {
   /** The address this frame runs as, i.e. `address(this)`: the delegate frame runs as the proxy's. */
   readonly selfAddress: Uint8Array;
   readonly records: readonly HopCalleeRecord[];
+  /**
+   * The mapping nodes this frame's own entry only reads, in the order its code reads them.
+   *
+   * A body that reads a key declares the node the key's slot holds — or the node that brackets it when the list
+   * holds no such key — whether or not it also writes, because the frame's segment has to carry the record for the
+   * body's own group walk. They sit after the data records the entry's block layout names and ahead of any write.
+   */
+  readonly readNodes: readonly HopCalleeReadNode[];
   /**
    * Index in `callees` of the frame whose live records this frame reads and whose block hosts them.
    *
@@ -588,6 +607,98 @@ function calleeEntryWrites(
 }
 
 /**
+ * The mapping nodes one callee frame's entry only reads, in the order its own code reads them.
+ *
+ * A per-call body that touches a sorted mapping does not read one value in place: the mapping is a chain of entry
+ * NFTs, so the frame's segment has to carry the node each key's group walk reads. An entry that rewrites no record
+ * still reads one, so those nodes are planned here rather than folded into a write: the body reads them at fixed
+ * positions past the data records its block layout names, and each is spent on the entry covenant's read-only path.
+ *
+ * The node is the deployment's own classification, so no second classifier is built here, and the key is resolved
+ * from the reach's own call data and its frame's sender. A key this hop cannot resolve to a node, or a node whose
+ * value the hop cannot state, is refused by name rather than guessed at.
+ */
+function calleeReadNodes(options: {
+  readonly artifact: Artifact;
+  readonly functionName: string;
+  readonly args: readonly FunctionArgument[];
+  readonly senderAddress: Uint8Array | undefined;
+  readonly categoryId: string;
+  readonly deployment: PerCallDeploymentSet;
+}): readonly HopCalleeReadNode[] {
+  const fn = options.artifact.abi.find((candidate) => candidate.name === options.functionName);
+  if (fn === undefined) return [];
+  const accesses = fn.entryAccesses ?? [];
+  if (accesses.length === 0) return [];
+  const batched = new Set((fn.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
+  // A key the entry only reads is declared here; a key it also writes belongs to the write planner.
+  const reads = accesses.filter((access) =>
+    (access.slotIndex === undefined || !batched.has(access.slotIndex))
+    && !access.operations.some((operation) => operation !== 'read'));
+  if (reads.length === 0) return [];
+  const slots = (fn.blockLayout?.slots ?? [])
+    .filter((slot) => slot.kind === 'entry' && slot.slotIndex !== undefined
+      && !batched.has(slot.slotIndex) && reads.some((access) => access.slotIndex === slot.slotIndex))
+    .sort((left, right) => left.offset - right.offset);
+  // A read at no fixed entry slot has no position in the frame's segment, so the body would walk past it and read
+  // a record the plan never declared: refused by name rather than dropped from the plan.
+  if (reads.some((access) => !slots.some((slot) => slot.slotIndex === access.slotIndex))) {
+    throw new PerCallProxyDeployError(
+      `the callee "${options.artifact.contractName}.${options.functionName}()" reads a mapping key at no fixed `
+      + 'entry slot, which this hop does not declare a node for',
+    );
+  }
+  return slots.map((slot): HopCalleeReadNode => {
+    let node: ReturnType<typeof readEntryNode>;
+    try {
+      node = readEntryNode({
+        artifact: options.artifact,
+        functionName: options.functionName,
+        args: options.args,
+        callerLockingBytecode: options.senderAddress ?? new Uint8Array(0),
+        categoryId: options.categoryId,
+        nodesByCollection: options.deployment.nodesByCollection,
+        slotIndex: slot.slotIndex!,
+      });
+    } catch (error) {
+      throw new PerCallProxyDeployError(
+        `the callee "${options.artifact.contractName}.${options.functionName}()" reads a mapping node this hop `
+        + `cannot declare: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return {
+      id: `mapping-read-${node.collection}-${bytesToHex(node.slot)}`,
+      collection: node.collection,
+      signature: node.signature,
+      commitment: node.commitment,
+      utxo: node.utxo,
+    };
+  });
+}
+
+/**
+ * The nodes a callee reads, or none when the artifact publishes a shape this planner does not state.
+ *
+ * A read the planner cannot state leaves the frame planned without it, exactly as a write it cannot state does: the
+ * callee's own frame reports its refusal when it is settled, naming the callee, rather than the hop fabricating a
+ * plan for a record it cannot place.
+ */
+function calleeReadNodesOrNone(options: {
+  readonly artifact: Artifact;
+  readonly functionName: string;
+  readonly args: readonly FunctionArgument[];
+  readonly senderAddress: Uint8Array | undefined;
+  readonly categoryId: string;
+  readonly deployment: PerCallDeploymentSet;
+}): readonly HopCalleeReadNode[] {
+  try {
+    return calleeReadNodes(options);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * The records a callee contract's masters read, one participant per data NFT, named for the contract.
  *
  * A contract's records are the deployment's, not a frame's: every master the hop places for the contract reads
@@ -666,6 +777,12 @@ async function placeCalleeMasters(
     // write different nodes.
     const writes = calleeEntryWrites(
       external.artifact, entry.name, call.argumentValues, caller.selfAddress, live);
+    // The nodes the entry only reads are planned the same way, from the reach's own call data.
+    const readNodes = calleeReadNodesOrNone({
+      artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
+      senderAddress: caller.selfAddress, categoryId, deployment,
+    });
+    for (const node of readNodes) ctx.utxos.set(node.id, node.utxo);
     const frame: HopCallee = {
       master,
       contract,
@@ -680,6 +797,7 @@ async function placeCalleeMasters(
       returns: (entry.outputs ?? []).length > 0,
       selfAddress: deployed.address,
       records,
+      readNodes,
       utxos: new Map<string, Utxo>([[master, masterUtxo]]),
       ...(writes === undefined ? {} : { entryWrites: writes }),
       calls: [],
@@ -736,7 +854,15 @@ async function placeProxiedCallee(
   const proxyLayout = proxyArtifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
   const implementationLayout =
     external.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
-  const proxyDeployment = await deploymentOf(ctx, external.categoryId, proxyLayout);
+  // A delegate frame runs the implementation's own code, so the mapping nodes at the proxy's category were minted
+  // by the implementation's own collection covenants. The generated proxy mirrors the implementation's record
+  // fields but declares none of its collections, so the proxy's live UTXOs are classified with the implementation's
+  // collections beside the proxy's records: otherwise a node the entry reads would be unfiled and unread.
+  const proxyReadLayout: StateLayout = {
+    ...proxyLayout,
+    ...(implementationLayout.collections === undefined ? {} : { collections: implementationLayout.collections }),
+  };
+  const proxyDeployment = await deploymentOf(ctx, external.categoryId, proxyReadLayout);
   const implementationDeployment = await deploymentOf(ctx, implementationCategoryId, implementationLayout);
   const proxyBase = ctx.masterSlots.get(proxyContract) ?? 0;
   const implementationBase = ctx.masterSlots.get(implementationContract) ?? 0;
@@ -789,6 +915,7 @@ async function placeProxiedCallee(
       returns: false,
       selfAddress: proxyDeployed.address,
       records,
+      readNodes: [],
       utxos: new Map<string, Utxo>([[proxyMaster, proxyMasterUtxo]]),
       // The fallback forwards the call data the caller recorded to the address its own record holds, which is the
       // implementation's master at its own category.
@@ -805,6 +932,12 @@ async function placeProxiedCallee(
     // The implementation entry's own write is planned from this reach's call data, against the proxy's deployment.
     const implementationWrites = calleeEntryWrites(
       external.artifact, entry.name, call.argumentValues, caller.selfAddress, live);
+    // The nodes the entry only reads are the proxy's own, planned against the proxy's deployment.
+    const implementationReads = calleeReadNodesOrNone({
+      artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
+      senderAddress: caller.selfAddress, categoryId: external.categoryId, deployment: proxyDeployment,
+    });
+    for (const node of implementationReads) ctx.utxos.set(node.id, node.utxo);
     const implementationBaseFrame: HopCallee = {
       master: implementationMaster,
       contract: implementationContract,
@@ -821,6 +954,7 @@ async function placeProxiedCallee(
       selfAddress: proxyDeployed.address,
       records: [],
       recordOwner: proxyIndex,
+      readNodes: implementationReads,
       utxos: new Map<string, Utxo>([[implementationMaster, implementationMasterUtxo]]),
       ...(implementationWrites === undefined ? {} : { entryWrites: implementationWrites }),
       calls: [],

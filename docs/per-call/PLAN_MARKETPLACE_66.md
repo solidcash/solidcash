@@ -1639,6 +1639,11 @@ risk. Take the slices in order, each with its own tests.
     reads the create sentinel and drops the proof-input comparison), but the composed `implementation-master` fails
     an `OP_VERIFY` before the body's insert runs — not the splice verification, which was ruled out by no-opping it.
     One agent is finding the failing invariant, on the SDK side if the placement is wrong.
+  - **Claimed by the parallel worker, from `69f2819ca`:** E8, simulation before funding (spec 18, G2 row 18). A
+    call from a wallet that holds no coin derives and evaluates over a stand-in coin at the signer's own lock,
+    through a provider whose broadcast is refused, so a body that refuses reports its own revert (for example
+    `OwnableUnauthorizedAccount`) instead of the funding error, and one that would settle reports the funding error
+    it reports now. Files: the per-call handle (`call/handle.ts`) only; the hop and the call path are untouched.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

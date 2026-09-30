@@ -137,7 +137,14 @@ lands it removes the claim line.
   (`SymbolTableTraversal.ts`'s per-call layout push, `Artifact.ts`'s in-loop access filter, `perCallWriteSteps`'s
   fact, then `GenerateTargetTraversal`'s frame-relative per-turn coordinate in `emitSortedUpsertLoopBody` /
   `pushIdx` and the `runtimeLoopEntry` arm of `emitEntryInputIndex`, then the SDK's per-turn node planning in
-  `packages/solidcash/src/per-call/call/entry-records.ts`). No partial landing: adding the slot without the emission
+  `packages/solidcash/src/per-call/call/entry-records.ts`). **The first two steps were written, measured and
+  reverted the same day**: with the per-call `entry` slot published (`{blockSize: 2, slots: [master, {kind: 'entry',
+  offset: 1, slotIndex: 0, conditional: true}]}`) and the emitter addressing the frame's own base, the master's
+  failure moves from `Program failed an OP_VERIFY operation.` to a read at the no-record sentinel
+  (`requested index: -32767`) and the shipped path refuses by name (`touches mapping "balances" as write outside a
+  sorted batch, which a call does not plan`), so the accept waits on the SDK's per-turn node planning: the frame's
+  witness declares the collection's nodes at a base the plan chooses, so a hand-built witness cannot supply them
+  without re-implementing that plan. No partial landing: adding the slot without the emission
   moves `blockSize` for that body, and publishing the access without the SDK's per-turn planning changes what the
   shipped path does with the entry, so the three land as one sequence with the fixture census held at 0 refusals.
 - **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder

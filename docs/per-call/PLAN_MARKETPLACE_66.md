@@ -1700,6 +1700,18 @@ risk. Take the slices in order, each with its own tests.
     `try`, the origin checks) first; each cross-contract row is recorded as served or refused by name, with no work
     on the hop's side. Files: the new conformance directory, and the subroutine operands and admission a row finds
     missing (the generation pass, `support.ts` merged onto the implementer's working tree).
+  - **Claimed by the second worker (this one), from `8734368b0`:** **Y7's exact `sweep(t)` spelling** -- a self
+    call whose argument is a **mapping read**, `this.transfer(t, this.bal[address(this)])`. The compiler throws
+    rather than emitting the shape: `Found parameters (address,int256) in call to function 'transfer' where
+    parameters (address,int256,bytes32,bigint,...) were expected`, i.e. the hidden per-call operands a mapping
+    access needs are demanded of the *source* call, which passes only the declared parameters. The same call with a
+    scalar argument compiles and settles, which is why `toys/identity.test.ts` carries the scalar version and pins
+    the refusal of the plan's exact spelling (`MAPPING_SWEEP_SOURCE`, two cases). Serving it means the call resolves
+    against the callee's declared parameters and the mapping read the argument performs is threaded the way the
+    body's own access is, so `sweep` debits `bal[address(this)]` and credits the treasury as the EVM does. Files:
+    the per-call call resolution and its lowering under `packages/solidc/src/`, and the identity toy's own cases.
+    **This worker is a second, non-ladder worker**: it takes no scoreboard title, no ladder-order item, and no
+    fixture/harness file.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

@@ -22,7 +22,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 571 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 575 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 14 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
@@ -35,20 +35,20 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 146 |
-| `packages/solidcash/test/per-call/call/` | `solidcash` | 92 |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 94 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 113 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 108 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 39 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 10 |
-| `packages/solidcash/test/per-call/toys/` | `solidcash` | 76 |
+| `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 2 |
 
-Total: 1725 checks (115 + 617 + 991 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1733 checks (115 + 621 + 995 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`, measured at `520a21d9c`: `solidc` 617 is the four rows above it (82 files, 22.3 s warm),
-`solidcash` 991 (988 passed, three skipped; 161 files, 137.7 s warm) is the
+`vitest.per-call.config.ts`, measured at `520a21d9c`: `solidc` 621 is the four rows above it (83 files, 22.3 s warm),
+`solidcash` 995 (992 passed, three skipped; 161 files, 137.7 s warm) is the
 seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one

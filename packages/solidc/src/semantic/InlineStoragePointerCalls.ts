@@ -54,6 +54,7 @@ import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
+import { readsMessageField } from './selfMessageCall.js';
 
 /**
  * Inlines internal calls to void functions that take `storage` reference parameters
@@ -85,6 +86,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   constructor(
     private readonly inlineSolidityInitializers = false,
     private readonly inlineDelegateStateHelpers = false,
+    private readonly keepSelfMessageCalls = false,
   ) { super(); }
 
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
@@ -622,7 +624,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         }
         if (callee) this.reorderNamedTail(stmt.call, callee);
         if (callee && this.inlinedFns.has(callee.name) && !stack.includes(inlineKey(callee.name, callee.parameters.length))
-          && args.length === callee.parameters.length) {
+          && args.length === callee.parameters.length && !this.keepsMessageCall(stmt.call, callee)) {
           if (this.ambiguousInlineKeys.has(inlineKey(callee.name, args.length))) {
             throw new AmbiguousInlineOverloadError(stmt.call, callee.name, args.length);
           }
@@ -633,6 +635,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       out.push(stmt);
     }
     return out;
+  }
+
+  /** A per-call `this.f()` whose callee reads its own message stays the call it is (`readsMessageField`). */
+  private keepsMessageCall(call: FunctionCallNode, callee: FunctionDefinitionNode): boolean {
+    return this.keepSelfMessageCalls && call.fromThisCall === true
+      && readsMessageField(callee, (name) => this.funcByName.get(name), (fn) => this.nodesOf(fn));
   }
 
   private recurseNestedBlocks(stmt: StatementNode, stack: string[]): void {

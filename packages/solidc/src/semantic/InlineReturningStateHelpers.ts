@@ -63,6 +63,7 @@ import {
 } from '@solidcash/utils';
 import { GlobalFunction, Modifier } from '../ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { readsMessageField } from './selfMessageCall.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
@@ -156,6 +157,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private ambiguousInlineKeys: Set<string> = new Set(); // H8: <name>/<arity> shared by >1 overload.
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
+  private sortedCollectionNames: Set<string> = new Set();
   private mappingNames: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private stillCalled: Set<string> = new Set();
@@ -180,7 +182,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private readonly analysisNodes = new Map<FunctionDefinitionNode, Node[]>();
 
 
-  constructor(private solidityImportCompat = false) {
+  constructor(private solidityImportCompat = false, private readonly keepSelfMessageCalls = false) {
     super();
   }
 
@@ -411,6 +413,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     }
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
+    this.sortedCollectionNames = new Set(node.collections.filter((c) => c.sorted).map((c) => c.name));
     this.mappingNames = new Set(node.collections.filter((c) => c.type instanceof MappingType).map((c) => c.name));
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
     this.stateValueTypes = new Map(node.stateVariables.map((sv) => [sv.name, sv.type]));
@@ -438,7 +441,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const fn of node.functions) {
       if (!fn.graphEmissionHandler && !fn.messageBusDetachedSignatureHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
-        && (this.readsEntry(fn) || this.touchesScalarState(fn)
+        && (this.readsEntry(fn) || this.writesSortedEntry(fn) || this.touchesScalarState(fn)
           || this.containsMsgSender(fn) || this.containsKeccak(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
           || this.transitivelyContainsEvent(fn))) {
@@ -669,8 +672,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (fn.collectionJournal) return false;
     if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
     if (!this.eligibleShape(fn)) return false;
-    return this.readsEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn)
-      || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn)
+    return this.readsEntry(fn) || this.writesSortedEntry(fn) || this.touchesScalarState(fn)
+      || this.containsLowLevelCall(fn) || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn)
       || this.transitivelyContainsEvent(fn);
   }
 
@@ -1048,6 +1051,24 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return false;
   }
 
+  // Writes an entry of a sorted collection, which co-spends that entry's slots the way a read does; its batch
+  // witnesses are the writing function's own parameters, which a call cannot pass.
+  // A function that calls itself is the recursion lowering's to serve, and a message-bus handler owns its
+  // collection topology, so neither is an inliner's.
+  private writesSortedEntry(fn: FunctionDefinitionNode): boolean {
+    if (fn.name.startsWith('__message_bus_')) return false;
+    const nodes = this.nodesOf(fn);
+    if (nodes.some((n) => n instanceof FunctionCallNode && n.identifier?.name === fn.name)) return false;
+    return nodes.some((n) => (n instanceof ArrayAssignNode || n instanceof MappingAssignNode
+      || n instanceof MappingFieldAssignNode || n instanceof MappingDeleteNode) && this.sortedCollectionNames.has(n.name));
+  }
+
+  /** A per-call `this.f()` whose callee reads its own message stays the call it is (`readsMessageField`). */
+  private keepsMessageCall(call: FunctionCallNode, callee: FunctionDefinitionNode): boolean {
+    return this.keepSelfMessageCalls && call.fromThisCall === true
+      && readsMessageField(callee, (name) => this.funcByName.get(name), (fn) => this.nodesOf(fn));
+  }
+
   // Per statement: visit it (replacing inlined calls with temps + filling this.hoists), then emit
   // [hoists, statement]. Nested blocks recurse through the standard traversal and flush their own hoists.
   visitBlock(node: BlockNode): Node {
@@ -1320,14 +1341,14 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // conditional evaluation point. BentoBox `_tokenBalanceOf(token).sub(..)` is this shape.
     if (this.suppress && callee && this.inlinedFns.has(name)
       && !this.stack.includes(inlineKey(name, arity)) && arity === callee.parameters.length
-      && callee.returnTypes.length === 1) {
+      && callee.returnTypes.length === 1 && !this.keepsMessageCall(node, callee)) {
       const reduced = this.inlineConditionalExpression(callee, node.parameters as ExpressionNode[]);
       if (reduced) return reduced;
     }
     if (!this.suppress && callee && this.inlinedFns.has(name)
       && !this.stack.includes(inlineKey(name, arity))
       && arity === callee.parameters.length
-      && callee.returnTypes.length === 1) {
+      && callee.returnTypes.length === 1 && !this.keepsMessageCall(node, callee)) {
       if (this.ambiguousInlineKeys.has(inlineKey(name, arity))
         && !this.pickOverloadByReturnArity(name, arity, 1, node.parameters as ExpressionNode[])) {
         throw new AmbiguousInlineOverloadError(node, name, arity);
@@ -1408,7 +1429,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       callee = this.pickOverloadByReturnArity(name, arity, -1) ?? callee;
     }
     if (!callee || !this.inlinedFns.has(name) || this.stack.includes(inlineKey(name, arity))
-      || arity !== callee.parameters.length || callee.returnTypes.length < 2) return undefined;
+      || arity !== callee.parameters.length || callee.returnTypes.length < 2
+      || this.keepsMessageCall(expr, callee)) return undefined;
     expr.parameters = this.visitList(expr.parameters) as ExpressionNode[]; // inline nested scalar calls in args
     return this.inlineCall(callee, expr.parameters as ExpressionNode[], expr.sourceActivationConditions);
   }

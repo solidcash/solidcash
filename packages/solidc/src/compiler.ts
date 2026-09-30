@@ -4178,6 +4178,40 @@ function pathEffectBoolParamActivationsForEmits(
   return result;
 }
 
+/**
+ * Whether a body of the contract calls another of the contract's functions by name. A call to itself is the
+ * recursion lowering's, and `this.f()` is a message call, whose callee does not keep the caller's sender.
+ */
+const callsOwnFunction = (contract: ContractNode): boolean => {
+  const names = new Set(contract.functions.map((fn) => fn.name));
+  let found = false;
+  let caller = '';
+  const visited = new WeakSet<Node>();
+  const walk = (node: Node): void => {
+    if (found || visited.has(node)) return;
+    visited.add(node);
+    if (node instanceof FunctionCallNode && !node.fromThisCall && names.has(node.identifier.name)
+      && node.identifier.name !== caller) {
+      found = true;
+      return;
+    }
+    for (const [field, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+        'stateVariable', 'type'].includes(field)) continue;
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) walk(item);
+      }
+    }
+  };
+  for (const fn of [contract.constructorDef, ...contract.functions, contract.fallbackDef, contract.receiveDef]) {
+    if (fn?.body === undefined) continue;
+    caller = fn.name;
+    walk(fn.body);
+  }
+  return found;
+};
+
 const nodeContainsChunkableWrite = (
   root: Node,
   chunkableNames: ReadonlySet<string>,
@@ -12870,9 +12904,11 @@ function compileResolvedAst(
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
+      mergedCompilerOptions.composition === 'per-call',
     )) as Ast;
     ast = ast.accept(new InlineReturningStateHelpers(
       mergedCompilerOptions.solidityImportCompat ?? false,
+      mergedCompilerOptions.composition === 'per-call',
     )) as Ast;
     // Returning-helper reduction can expose scalar state inside a previously context-only void wrapper
     // (`_checkOwner -> owner()` is the canonical Solidity shape). Reach the same state-helper fixed point as
@@ -12881,6 +12917,7 @@ function compileResolvedAst(
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
+      mergedCompilerOptions.composition === 'per-call',
     )) as Ast;
     if (earlyEntryFeatures?.needsExternalCallLowering) {
       // External-call covenant operands belong to the physical function which owns the call. Inline eligible
@@ -13233,9 +13270,11 @@ function compileResolvedAst(
       ast = ast.accept(new InlineStoragePointerCalls(
         mergedCompilerOptions.solidityImportCompat ?? false,
         inlineDelegateStateHelpers,
+        mergedCompilerOptions.composition === 'per-call',
       )) as Ast;
       ast = ast.accept(new InlineReturningStateHelpers(
         mergedCompilerOptions.solidityImportCompat ?? false,
+        mergedCompilerOptions.composition === 'per-call',
       )) as Ast;
     }
   }
@@ -13284,9 +13323,11 @@ function compileResolvedAst(
   const hasInternalHelpers = ast.freeFunctions.length > 0
     || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.INTERNAL)
       || fn.modifiers.includes(FunctionModifier.PRIVATE));
-  if (hasInternalHelpers) {
+  const inlinesOwnCalls = hasInternalHelpers || callsOwnFunction(ast.contract);
+  if (inlinesOwnCalls) {
     ast = ast.accept(new InlineReturningStateHelpers(
       mergedCompilerOptions.solidityImportCompat ?? false,
+      mergedCompilerOptions.composition === 'per-call',
     )) as Ast;
   }
 
@@ -13301,10 +13342,13 @@ function compileResolvedAst(
   // low-level calls, deploys, events and transfers) in the physical entry frame. Those shapes need no `storage`
   // token in source, and skipping the pass leaves the effect behind OP_INVOKE without a block layout. Run it
   // whenever an internal helper exists; the traversal's own eligibility checks retain the cheap no-op path.
-  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) && hasInternalHelpers) {
+  // An entry another body calls by name is inlined there too: a mapping write's batch witnesses are the entry's own
+  // parameters, which that call does not pass.
+  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) && inlinesOwnCalls) {
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
+      mergedCompilerOptions.composition === 'per-call',
     )) as Ast;
   }
   // A function returning a REASSIGNED `mapping storage` pointer (`returns (mapping storage r){ r=a; r=b; }`) is
@@ -16910,12 +16954,15 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineReturningStateHelpers(
       compilerOptions.solidityImportCompat ?? false,
+      compilerOptions.composition === 'per-call',
     )) as Ast;
     singleAst = singleAst.accept(new LowerDynamicStateJournalHelpers()) as Ast;
     singleAst = singleAst.accept(new LowerCollectionJournalHelpers(
       compilerOptions.messageBusKernel === true,
     )) as Ast;
-    singleAst = singleAst.accept(new InlineStoragePointerCalls(compilerOptions.solidityImportCompat ?? false)) as Ast;
+    singleAst = singleAst.accept(new InlineStoragePointerCalls(
+      compilerOptions.solidityImportCompat ?? false, false, compilerOptions.composition === 'per-call',
+    )) as Ast;
     singleAst = singleAst.accept(new InlineMappingReturnFunctions()) as Ast;
     singleAst = singleAst.accept(new LowerMappingStorageAlias()) as Ast;
     singleAst = singleAst.accept(new DesugarDynamicArrayCopyCast()) as Ast;

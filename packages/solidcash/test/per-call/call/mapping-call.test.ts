@@ -189,6 +189,59 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     expect(result.broadcast).toBeDefined();
   });
 
+  it('settles an entry that calls another entry by name, which writes the caller\'s own node', async () => {
+    // `viaSet` calls the entry `set`, and `viaSetAndReturn` the returning `setAndReturn`, each writing the node the
+    // constructor seeded for the caller. The called entry is inlined into its caller, whose own batch then covers
+    // the write; the call used not to compile at all.
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Ledger {'
+      + '   mapping(address => uint) balances;'
+      + '   constructor(address owner) { this.balances[owner] = 1; }'
+      + '   function set(uint amount) { this.balances[msg.sender] = amount; }'
+      + '   function setAndReturn(uint amount) returns (uint) { this.balances[msg.sender] = amount; return amount; }'
+      + '   function viaSet(uint amount) { set(amount); }'
+      + '   function viaSetAndReturn(uint amount) returns (uint) { return setAndReturn(amount) + 1; }'
+      + ' }';
+    const token = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+    for (const [entry, amount] of [['viaSet', 7n], ['viaSetAndReturn', 9n]] as const) {
+      const deployed = await deploy(token, CALLER_LOCK);
+      const result = await callPerCallEntry({
+        provider: deployed.provider, artifact: token, categoryId: deployed.categoryId, functionName: entry,
+        args: [amount], callerUtxo: deployed.callerUtxo, callerLockingBytecode: deployed.callerLock,
+        funder: deployed.funder, vm: compositionMachine(),
+      });
+      expect(result.verdicts.filter((verdict) => !verdict.accepted), entry).toStrictEqual([]);
+      const node = result.draft.layout.participants.find((placed) => placed.id.startsWith('mapping-node-'))!;
+      const decoded = decodeEntryCommitment(nodeOutput(result, node.index));
+      expect(bytesToHex(decoded.slot)).toBe(bytesToHex(keyToSlotMulti([keyOf(CALLER_LOCK)])));
+      expect(bytesToHex(decoded.value)).toBe(bytesToHex(valueOf(amount)));
+      if (entry === 'viaSetAndReturn') expect(result.values).toStrictEqual([amount + 1n]);
+    }
+  });
+
+  it('settles an entry that calls, by name or through this, one reading msg.sender to write a scalar', async () => {
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Ledger {'
+      + '   mapping(address => uint) balances;'
+      + '   int total;'
+      + '   constructor(address owner) { this.balances[owner] = 1; }'
+      + '   function bump() { require(msg.sender != 0x); this.total = this.total + 1; }'
+      + '   function viaBump() returns (int) { bump(); return this.total; }'
+      + '   function viaThisBump() returns (int) { this.bump(); return this.total; }'
+      + ' }';
+    const token = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+    for (const entry of ['viaBump', 'viaThisBump']) {
+      const deployed = await deploy(token, CALLER_LOCK);
+      const result = await callPerCallEntry({
+        provider: deployed.provider, artifact: token, categoryId: deployed.categoryId, functionName: entry,
+        args: [], callerUtxo: deployed.callerUtxo, callerLockingBytecode: deployed.callerLock,
+        funder: deployed.funder, vm: compositionMachine(),
+      });
+      expect(result.verdicts.filter((verdict) => !verdict.accepted), entry).toStrictEqual([]);
+      expect(result.values, entry).toStrictEqual([1n]);
+    }
+  });
+
   it('refuses a key the entry only reads beside its write when the write relinks its node, naming the fact', async () => {
     // `move` writes `to` but reads `from` beside that write. The read's node is declared kept ahead of the batch's
     // groups, but `to` sorts right above `from` and is spliced in beside it, so the insert relinks the node the read

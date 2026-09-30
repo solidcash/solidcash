@@ -213,6 +213,14 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
     expect(refusal.message).toMatch(/Found parameters .* call to function 'transfer'/);
   });
 
+  it('is refused in the same shape when the contract also declares an internal helper', () => {
+    // A helper runs the inliner that moves a called body into its caller, and it used to take this self-call too,
+    // so the transfer read the caller's `msg.sender`: the sweep settled with the caller's balance debited. The
+    // inliner now keeps a self-call whose callee reads its own message, so the shape stays refused.
+    const withHelper = MAPPING_SWEEP_SOURCE.replace(/ }$/, ' function h(int x) private returns (int) { return x + 1; } }');
+    expect(compileRefusal(withHelper).message).toMatch(/Found parameters .* call to function 'transfer'/);
+  });
+
   it('accepts the contract-debited commitment: the self-call debits the contract, as the EVM does', () => {
     // In the EVM `sweep` runs `this.transfer`, so the callee's msg.sender is address(this): the guard debits
     // `balSelf`, which falls by the swept amount, while `balUser` is unchanged. The plan declares that value and
@@ -230,6 +238,18 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
     expect(rejected).toStrictEqual([]);
     // The written commitment is the body's own computation: balSelf debited, balUser unchanged.
     expect(new Uint8Array(outcome.transaction.outputs[1]!.token!.nft!.commitment)).toStrictEqual(committed(0n, 1000n));
+  });
+
+  it('still debits the contract when the contract also declares an internal helper', () => {
+    // The helper runs the inliner that would move the self-called body into `sweep`; the self-call stays a call.
+    const source = SCALAR_SWEEP_SOURCE.replace(/ }$/, ' function h(int x) private returns (int) { return x + 1; } }');
+    const { artifacts, contracts } = compileAndDeploy(source, { Tok: TOK_LABEL });
+    const tok = contracts.Tok!;
+    const committed = (balSelf: bigint, balUser: bigint): Uint8Array =>
+      new Uint8Array(Buffer.from(buildPushdataCommitment(artifacts.Tok!.stateLayout!, { balSelf, balUser }, 0), 'hex'));
+    const kept: RecordEntry = { in: 1, out: 1, viewIn: committed(100n, 1000n), viewOut: committed(0n, 1000n) };
+    const { rejected } = settlePlan(singlePlan(artifacts, tok, 'sweep', USER_LOCK, [[kept]]), artifacts, 'Tok', 'sweep');
+    expect(rejected).toStrictEqual([]);
   });
 
   it('refuses the caller-debited commitment the old inline call produced', () => {

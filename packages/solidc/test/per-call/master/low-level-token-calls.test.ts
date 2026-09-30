@@ -27,13 +27,13 @@ const OPAQUE_RETURN_REFUSAL = "the call to '__raw__' takes the direct path's ret
   + 'machinery, which a per-call body does not emit';
 
 /**
- * The P2SH validation the general `.code` extractor emits, with `17` and `23` the P2SH20 and P2SH32 lengths.
+ * The P2SH test the per-call `.code` extractor emits, with `17` and `23` the P2SH20 and P2SH32 lengths.
  *
- * The per-call gate takes this extractor, not the boolean "is a contract" fold the message-bus graph path uses, so
- * it accepts only P2SH locking bytecode and fails the script for anything else. A plain account or zero-address
- * target therefore does not answer 0; a P2SH contract target does answer non-zero.
+ * The per-call gate takes this extractor, not the boolean "is a contract" fold the message-bus graph path uses: a
+ * target that is no P2SH lock, a plain account or the zero address, answers empty code, as the EVM answers an
+ * account without code, and a P2SH contract target answers its script.
  */
-const CODE_EXTRACT_VERIFY = 'OP_SIZE OP_NIP OP_DUP 17 OP_EQUAL OP_OVER 23 OP_EQUAL OP_BOOLOR OP_VERIFY';
+const CODE_EXTRACT_TEST = 'OP_SIZE OP_DUP 17 OP_NUMEQUAL OP_SWAP 23 OP_NUMEQUAL OP_BOOLOR OP_NOTIF OP_DROP OP_0 OP_ELSE';
 
 /** A caller whose token call data is built by `abi.encodeCall` and invoked through `address(token).call`. */
 const ENCODE_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
@@ -169,9 +169,9 @@ describe('SafeERC20 token-call shapes under per-call', () => {
     expect(entry!.sites.sites.length).toBeGreaterThan(0);
   });
 
-  it('compiles the gate through the P2SH-only .code extractor', () => {
+  it('compiles the gate through the .code extractor that answers empty code for a target with none', () => {
     const artifact = compileString(CODE_LENGTH_SOURCE, { composition: 'per-call' });
-    expect(artifact.bytecode).toContain(CODE_EXTRACT_VERIFY);
+    expect(artifact.bytecode).toContain(CODE_EXTRACT_TEST);
   });
 
   it('serves the typed call the same argument values would make', () => {

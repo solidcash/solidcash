@@ -180,6 +180,15 @@ const GATED_ZERO = HEAD
   + '   require(ok);'
   + ' } }';
 
+/** A plain account and the zero address, gated on having no code: true, as the EVM answers an account without code. */
+const GATED_NO_CODE = HEAD
+  + ' contract Caller { function f() {'
+  + `   require(address(${RECIPIENT}).code.length == 0);`
+  + '   require(address(0).code.length == 0);'
+  + `   bool ok = IERC20(${TARGET}).transfer(${RECIPIENT}, ${AMOUNT});`
+  + '   require(ok);'
+  + ' } }';
+
 /** Why the per-call convention refuses an unlowered low-level call. */
 const RAW_REFUSAL =
   "the call to '__raw__' takes the direct path's return-event or value-transfer machinery, "
@@ -392,10 +401,12 @@ describe('the address.code.length gate on a token target', () => {
     expect(() => composeAndDerive(empty.plan, empty.artifacts, [ROOT])).toThrow(/PER_CALL_DERIVATION_STALLED/);
   });
 
-  it('pins the boundary: a plain account and the zero address fail the P2SH-only extractor', () => {
-    // A P2PKH lock is 25 bytes and the zero address is empty, so neither matches the 23- or 35-byte P2SH form the
-    // served `.code` extractor accepts. Both fail the script at its `OP_VERIFY` instead of answering zero; the
-    // rule ("zero for a non-contract target") is not claimed, the boundary is.
+  it('answers zero for a plain account and the zero address, as the EVM does for an account without code', () => {
+    // A P2PKH lock is 25 bytes and the zero address is empty, neither the 23- or 35-byte P2SH form, so neither holds
+    // a script: the gate on having none settles, and the gate on having some fails at the body's own require.
+    const { plan, artifacts } = planFor(GATED_NO_CODE);
+    const outcome = composeAndDerive(plan, artifacts, [ROOT]);
+    expect(outcome.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     for (const source of [GATED_PLAIN_ACCOUNT, GATED_ZERO]) {
       expect(machineObjection(source)).toBe('Program failed an OP_VERIFY operation.');
     }

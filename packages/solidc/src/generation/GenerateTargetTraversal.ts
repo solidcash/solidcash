@@ -39336,10 +39336,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * Stack before: [..., lbc]
    * Stack after:  [..., redeemScript]
-   * Runtime VERIFY-fails if not P2SH20 or P2SH32.
+   * Runtime VERIFY-fails if not P2SH20 or P2SH32; a per-call body answers empty code there instead.
    */
   private emitCode(locationData: SingleLocationData): void {
     // Stack: [lbc]
+    if (this.perCallMaster) {
+      // A per-call target that is no P2SH lock holds no script: a user's P2PKH lock and the zero address answer
+      // empty code, as the EVM answers an account that has none.
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(encodeInt(23n), locationData);
+      this.emit(Op.OP_NUMEQUAL, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(encodeInt(35n), locationData);
+      this.emit(Op.OP_NUMEQUAL, locationData);
+      this.emit(Op.OP_BOOLOR, locationData);       // [lbc, isP2SH]
+      this.emit(Op.OP_NOTIF, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.emit(Op.OP_0, locationData);            // [code]
+      this.emit(Op.OP_ELSE, locationData);
+      this.emit(Op.OP_DUP, locationData);          // [lbc, lbc]
+      this.emitP2shCode(locationData);             // [redeemScript]
+      this.emit(Op.OP_ENDIF, locationData);
+      this.popFromStack();
+      this.pushToStack('(value)');
+      return;
+    }
     this.emit(Op.OP_DUP, locationData);            // [lbc, lbc]
 
     // Validate P2SH format
@@ -39355,7 +39377,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BOOLOR, locationData);         // [lbc, lbc, len, isP2SH]
     this.emit(Op.OP_VERIFY, locationData);         // [lbc, lbc, len] - FAIL if not P2SH
     this.emit(Op.OP_DROP, locationData);           // [lbc, lbc]
+    this.emitP2shCode(locationData);
 
+    // Stack tracking: consumed lbc, produced redeemScript
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
+  /** [lbc, lbc] -> [redeemScript]: the running script for this input's own lock, else a co-spent input's. */
+  private emitP2shCode(locationData: SingleLocationData): void {
     // Check: does this match current input's lockingBytecode?
     this.emit(Op.OP_INPUTINDEX, locationData);
     this.emit(Op.OP_UTXOBYTECODE, locationData);   // [lbc, lbc, my_lbc]
@@ -39371,10 +39401,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitCodeSlowPath(locationData);
 
     this.emit(Op.OP_ENDIF, locationData);
-
-    // Stack tracking: consumed lbc, produced redeemScript
-    this.popFromStack();
-    this.pushToStack('(value)');
   }
 
   /**

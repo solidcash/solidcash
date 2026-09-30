@@ -246,6 +246,16 @@ lands it removes the claim line.
   read path's own convention and the reason a frame that declares only the node at the base reads the neighbouring
   participant. So piece 2's declaration is `[one record at the base, turn 0's node, turn 1's node, ...]` with the
   loop's transition views - the shape of the list is settled; what the records carry is not.
+- **The fixture's own value is a literal, and that does not unblock it (2026-09-30).** `updateJobWhitelist` stores
+  `true` under every key (`whitelistWorkers[jobId][w] = true`), and the artifact says so: its `sortedUpsertLoopInfo`
+  publishes `valueConst: "1"` (measured on a neutral replica, `{SCRATCH}/literal-probe.log`). So the plan can state
+  the written value rather than leaving it to be learned - and the derivation *still* refuses with the same
+  `the call's write to mapping "whitelist" did not hand back every node it rewrites, so the frame cannot declare
+  their commitments`, for one turn and for two. **The blocker is therefore the run-time loop's own close**, which
+  hands back its journal's stream rather than one commitment per rewritten node: a per-call frame must take the
+  loop's minted nodes from that stream (the kernel lane's `KernelEntryJournal` output layout) instead of expecting a
+  hand-back per node. That is the concrete remaining work of piece 2, and it is the same conclusion for a literal
+  value and a parameter value.
 - **Piece 2 attempted: the turns' records were planned as a batch, and the derivation names why that is not the
   loop's protocol (2026-09-30).** The wiring that reaches the derivation is settled and reproducible: derive the loop
   plan (piece 1), filter the loop's collection out of `planReadNodes`' accesses **and** its `slotIndex` out of the

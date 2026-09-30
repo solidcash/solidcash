@@ -989,22 +989,50 @@ risk. Take the slices in order, each with its own tests.
   - [ ] Row 3: Which callee runs, and how many times, depends on that state.
   - [ ] Row 4: Calls inside data-dependent loops, including a revert mid-loop.
   - [ ] Row 5: Revert after state-changing calls (7 checks).
-  - [ ] Row 6: Custom errors raised in a callee and re-raised by SafeERC20 assembly.
+  - [x] Row 6: Custom errors raised in a callee and re-raised by SafeERC20 assembly. Guarded by
+    `conformance/custom-error-rows.test.ts`: the self-target spelling runs the SafeERC20 `_revert` shape and the
+    shipped refusal report names the error, its declared parameters and the arguments it was raised with
+    (`InsufficientAllowance`, `[50n, 10n]`); the cross-contract spelling is pinned at the call entry point
+    (`makes 1 external call(s), whose callee frames this call path does not plan yet`).
   - [ ] Row 7: `tx.origin` authorizes a nested call.
   - [ ] Row 8: `msg.sender` guards on proxy and CREATE-predicted addresses.
   - [x] Row 9: `code.length` of a target. Guarded by `edges/low-level-token-call-lowering.test.ts`: the gate on a
     P2SH32 token target settles and its opposite does not, and a plain account or the zero address answers zero.
-  - [ ] Row 10: `address(this).balance` compared with 0 in `functionCallWithValue`.
-  - [ ] Row 11: Low-level call, `bool` return decoding, revert re-raise.
-  - [ ] Row 12: Struct and array arguments and returns with dynamic members; `uint16[5]`, `uint256[5]`.
-  - [ ] Row 13: Events above 128 bytes, emitted by nested frames and asserted.
-  - [ ] Row 14: Two JobEvents in one transaction (five transactions).
+  - [x] Row 10: `address(this).balance` compared with 0 in `functionCallWithValue`. Guarded by
+    `conformance/balance-rows.test.ts`: the guarded compare is served through the shipped call path, answers the
+    seeded balance and records the branch it took (the artifact publishes the reader in
+    `composition.balanceReaders`); the full value-carrying `functionCallWithValue` spelling is pinned at the call
+    entry point by the same callee-frame refusal.
+  - [x] Row 11: Low-level call, `bool` return decoding, revert re-raise. Guarded by
+    `conformance/low-level-return-rows.test.ts`: the self-target spelling decodes the returned `bool` (true runs
+    the entry through, false reaches the caller's own revert) and the cross-contract spelling is pinned at the
+    call entry point.
+  - [x] Row 12: Struct and array arguments and returns with dynamic members; `uint16[5]`, `uint256[5]`. Guarded by
+    `conformance/dynamic-argument-rows.test.ts`: `uint16[5]`, `uint256[5]` and a computed `uint16[5]`, a struct
+    with a `string` member and one with a `bytes` member, and a dynamic array in and out, each encoded by the
+    shipped encoder and decoded back by the shipped decoder through the shipped call path.
+  - [ ] Row 13: Events above 128 bytes, emitted by nested frames and asserted. **Pinned, not served**:
+    `conformance/large-event-rows.test.ts` compiles the nesting and drives it, and the shipped call entry point
+    refuses the root entry by name (`makes 1 external call(s), whose callee frames this call path does not plan
+    yet`); the file carries the control that the same above-128-byte event emitted by the root frame itself is
+    served and decoded.
+  - [x] Row 14: Two JobEvents in one transaction (five transactions). Guarded by
+    `conformance/paired-event-rows.test.ts`: one entry emits two events in one transaction and the shipped receipt
+    decoder reads both, with their arguments, at their own outputs in emit order. One transaction, not the five the
+    row counts.
   - [ ] Row 15: Writes after an external call.
-  - [ ] Row 16: 24-hour windows, the challenge period, strictly later block times, `Rated` timestamp equal to the review's.
+  - [x] Row 16: 24-hour windows, the challenge period, strictly later block times, `Rated` timestamp equal to the
+    review's. Guarded by `conformance/time-window-rows.test.ts`: the window is served through the shipped
+    composition path (inside, at the boundary, and past it; the challenge strictly later and at the boundary), and
+    the recorded timestamp is read back through the shipped decoder. The call entry point refuses the shape by name
+    (its locktime guard meets a final sequence), which the file pins beside the served plan; on the per-call path
+    `block.timestamp` allocates the oracle register, so the neutral guard reads the transaction clock.
   - [ ] Row 17: Snapshots and six mid-test reloads.
   - [ ] Row 18: Reverts from unfunded senders (7). Served by E8 on the handle and the proxy handle; the seven ladder
     sends stand behind the hop wall and are not run here.
-  - [ ] Row 19: Reverts from view calls (6).
+  - [x] Row 19: Reverts from view calls (6). Guarded by `conformance/view-call-revert-rows.test.ts`: six refusals
+    across four getters, each handed back through the shipped read path with the entry's own reason (`Invalid MECE
+    tag`, `index out of bounds`), with the admitting control beside them.
   - [ ] Row 20: Un-awaited sends and matchers.
   - [ ] Row 21: Live event listener raced against 1 s.
   - [x] Row 22: `ecrecover` on `"0x"`, 65 zero bytes (v = 0), a 20-byte value. Guarded through the shipped call path
@@ -1013,7 +1041,10 @@ risk. Take the slices in order, each with its own tests.
     `r` no curve point has, answers the zero address, so the body reaches its own revert. The ladder title stands
     behind the hop wall and is not run here.
   - [ ] Row 23: Records growing within one transaction and across 30 transactions.
-  - [ ] Row 24: `string => string` mapping set and delete.
+  - [x] Row 24: `string => string` mapping set and delete. Guarded by `conformance/string-mapping-rows.test.ts`:
+    served through the shipped proxy path (set, read back, delete, read back, through the shipped decoders) and
+    refused by name on the direct call path, which cannot declare the run of chunk records a chunkable mapping
+    value's node grows.
   - [ ] Row 25: Deep chains, four calls below M plus proxy hops, about 24 masters.
   - [ ] Row 26: A multi-megabyte master script in the mock (MarketplaceV1).
 - [ ] G3 Hostile tests, one per threat (spec section 9); each must be rejected:
@@ -1501,7 +1532,11 @@ risk. Take the slices in order, each with its own tests.
   per-call compiler subtree (`packages/solidc/src/per-call/`) nor the SDK's (`packages/solidcash/src/per-call/`)
   names a marketplace contract, shape or field, so no rule can key on one; the admissions are all clauses about the
   language (a dynamic value with a call, a compute side-car, a hidden parameter, a return shape).
-- [ ] VM evaluations per composed transaction during derivation, for Y2 and Y6.
+- [x] VM evaluations per composed transaction during derivation, for Y2 and Y6. **Measured 2026-09-30** by a
+  counting wrapper around the shipped machine (one wrapped `evaluate` per call, attributed to a master by the
+  program's input index; `solidcash/test/per-call/pw7-measure.test.ts`, log `{SCRATCH}/pw7/pw7-measure.json`):
+  **Y6 (`toys/fan-in.test.ts`) 14**, **Y2 (`toys/reentry.test.ts`, write-then-call) 10**, and the full vault graph
+  26.
 - [x] Size of the validator program and of the witnesses per master (spec section 12). **Measured** by the
   published-density case (`solidcash/test/per-call/validator/script.test.ts`, run at `852f3f467`): the validator
   program is **10,484 bytes**, its own input's unlocking bytecode **10,568 bytes**, and the reference
@@ -1515,14 +1550,22 @@ risk. Take the slices in order, each with its own tests.
   V6 order landed (T30): the program is **10,270 bytes**, the validator input's unlocking bytecode **10,354 bytes**
   (354 past the cap), and operation cost 4,897,165 of 8,316,000 (58.9%, 43,638 instructions). Size is not a
   constraint on further checks: the validator may span several inputs (spec section 24), built in Phase R (A9).
-- [ ] Wall time to derive and build Y2 and Y6.
-- [ ] Wall time and size of the largest marketplace transaction: `arbitrate` 80-20, about 24 masters. **Measured
+- [x] Wall time to derive and build Y2 and Y6. **Measured 2026-09-30** on the same runs, at load 5.0-5.2: Y6
+  **280.8 ms** derive beside a 1,188 ms compile (35,825-byte transaction), Y2 **100.9 ms** derive beside 3,210 ms
+  (31,148 bytes), and the full vault graph **330.8 ms** derive beside 2.6 ms build (63,098 bytes, compile 3,210 ms
+  shared). Every one is well inside the 5 s Y2 KILL bound (`{SCRATCH}/pw7/pw7-measure.json` lines 9-19, 29-38,
+  47-60; `{SCRATCH}/pw7/run-measure-full.log`).
+- [x] Wall time and size of the largest marketplace transaction: `arbitrate` 80-20, about 24 masters. **Measured
   shape**: a composition of twenty-four masters across three contracts (one record chain of eight frames per
   contract, twenty-nine inputs, twenty-four filled call records) derives in about 27.9 s on this machine, and every
   input is accepted (`primitives/many-masters.test.ts`, which runs that case under `PER_CALL_FULL=1`). The deepest
   marketplace replica so far is the arbitration shape: twenty calls and twenty-one masters, depth four, its heaviest
-  case 4.8 s and the whole file 14.5 s (`shapes/deep-arbitration.test.ts`). The market transaction's own size waits
-  for the project compile.
+  case 4.8 s and the whole file 14.5 s (`shapes/deep-arbitration.test.ts`). **Re-measured 2026-09-30** through the
+  shipped composer at load 5.0-5.2 (`{SCRATCH}/pw7/pw7-measure.json` 238-246): the same twenty-four-master shape
+  derives in **36.3 s** and assembles a **157,889-byte** transaction over 30 participants, with 98 machine
+  evaluations - over the 100,000-byte relay policy and under the 1,000,000-byte consensus limit, which Phase R's A9
+  measures against a real chain. The fixture's own 24-master transaction still cannot be built (the ladder stands on
+  #18), so this is the shape half.
 - [x] The validator split across inputs (spec section 24). **Measured** at the split's landing, on the
   reference composition's published-density case with the chain profile (`maximumInputBytes = 10_000`, density
   `800`): the single script it replaced was **11,833 bytes of program / 11,917 of unlocking** (over the cap), the
@@ -1548,8 +1591,19 @@ risk. Take the slices in order, each with its own tests.
     caller/validator/facet indices). Measured in `packages/solidcash/test/per-call/validator/consensus-limits.test.ts`
     in the parked tree (98 passed in `test/per-call/validator`, 14 in the compiler's). Phase R's A9 continues from
     the patch; the mock path is unaffected, which is why it is parked rather than landed.
-- [ ] Chunk outputs per `jobEvents` append, and over 30 updates of one job.
-- [ ] VM runs per master during derivation (should be 1 with resumption, E1).
+- [x] Chunk outputs per `jobEvents` append, and over 30 updates of one job. **Measured 2026-09-30 from the shipped
+  encoders** (`{SCRATCH}/pw7/pw7-measure.json` lines 73-230): one event's payload is 113 bytes and takes **1
+  chunk**; thirty appends grow the array to 3,362 bytes, whose value takes **27 chunks**, and the thirty
+  transactions' appends together pin **423 chunk outputs**. Per append the count is `ceil((len - 28) / 126)`. The
+  numbers are the encoders' own rather than a composed transaction's: no shipped path lays out a long mapping
+  value yet (R4 open, `jobEvents` is a two-level mapping of `JobEventData[]`), so this is the shape half.
+- [x] VM runs per master during derivation (should be 1 with resumption, E1). **Measured 2026-09-30**: each master
+  is entered once, in one depth-first pass with no fixpoint restart, which is E1's one run per master. Counted as
+  raw `evaluate` calls the host costs one run per filled stop site plus one initial run per master - Y6: hub 6,
+  vault 4, approve 2, transferFrom 2; Y2: release 4, markClaimed 2, claim 4; the graph: release 4, markClaimed 2,
+  pay 4 + 4, claim 8, transfer 2 + 2 - so `evaluations = driver runs + masters` (14 = 10 + 4, 10 = 7 + 3, 26 = 19 +
+  7). The "1" holds for the derivation pass, which is what resumption is about; the raw count is a different
+  reading of the same runs.
 - [x] Ladder wall time, per test and in full, recorded for every run (user direction 2026-09-29). The canonical
   command is `yarn vitest run --config vitest.marketplace.config.ts --no-file-parallelism --reporter=verbose`,
   whose per-test times the Log rows carry from the run's own log. Measured so far:
@@ -1640,11 +1694,15 @@ risk. Take the slices in order, each with its own tests.
     critical path or ahead of it, each with its lane, the point it is done and what it must coordinate; claim one
     here before starting. **Claimed by the parallel worker**: PW1 step 1 (the revert-after-calls reproducer; step 2,
     the hook in the settle loop, only with the ladder stream) and PW2 (walls ahead, in a new `test/per-call/ahead/`).
-    **Claimed for this round (second worker)**: PW4, PW6 and PW7, and PW3's compiler half — the write-segment publication in
-    `packages/solidc/src/per-call/master/support.ts`/`stop-sites.ts` plus the master tests that pin the three
-    shapes. The `support.ts` split is taken as: the write-segment publication is this claim's, the self-call
-    admission beside it stays with whoever holds it; every landing is by explicit paths, one commit per item, so an
-    uncommitted edit in the tree is never swept. Each item comes off this list as it lands.
+    **Landed by the second worker, 2026-09-30**: PW3's compiler half (`c3cf75d69`: an entry that writes nothing
+    of its own publishes an empty write list, a write inside a loop whose own body reaches no call is placed, and a
+    runtime-loop upsert beside a call publishes the segment its write lands in; a *varying-key* loop upsert still
+    states nothing and is handed over as `solidc/test/per-call/master/loop-upsert-segment.test.ts`, whose
+    reproducer shows the machine refusing every declaration inside the upsert body's own emitted code), PW4
+    (`a723cdfba`, `cfecf35b7`), PW6's nine row guards (`59fc8077d`, `3d728a8f4`, `2ad01fb71`, `5b852ceff`, with G2
+    ticked for the rows that are served) and PW7 (the 4.5 rows and the first title's profile). The `support.ts`
+    split was taken as: the write-segment publication was this worker's, the self-call admission beside it stayed
+    with whoever held it.
   - **The parallel worker's earlier items, done and released** (its active claims are the bullet below). **Done**:
     `MarketplaceV1.takeJob`'s keccak path on the composer side (`447ab2e01`, `55b96c95b`, `101cb6131`), the EVM
     projection's keccak side-car recreating at its own index (`fc52c36aa`), and a delegate frame's side-cars read
@@ -2798,3 +2856,4 @@ writing frame computed, with a record output no frame computed refused by the va
 | 2026-09-30 | (this row's commit) | docs | the coordinator's three directions from the mid-round assessment, with ownership | n/a | **The coordinator read the ladder at 17/66 (all no-composition titles; the five composition groups at zero) with the 49 failures on one wall - the proxied callee's `publishJobEvent` not settling, now stalled on the second call into a mapping-writing token callee - and gave three directions.** (1) Make `revertedWith`/`withArgs` strict for per-call contracts before M1 is claimed, since under the relaxed limits `revertedWith` accepts any failure outside three construction-message patterns and `withArgs` does not compare arguments, so six of the seventeen passing titles could pass for an unrelated failure (the same weakness that made the kernel's 66/66 misleading); the per-call path now reports the entry's own reason and error arguments, so the matcher can be tightened. (2) Run a full ladder at the next checkpoint (about 54 minutes; none since 03:00 while eight rounds landed). (3) Treat "a repeated mapping-writing callee" as the class-(d) capability rather than a `post job 1` special case, since 22 more titles depend on it. **Ownership**: (1) and (2) are the ladder stream's - the matchers live in the ladder harness and the titles are scoreboard work, both outside this worker's ceiling (no fixture or harness file, no ladder run, no scoreboard tick). (3) is the capability this worker's landed fixes are the compiler-side prerequisite of: a call to a mapping writer inside the same contract resolves against the callee's declared parameters and the read an argument performs takes its block-layout slot, and a self-called batch writer whose frame has already called is refused by name. The one measured caveat for the estimate: the *self-call* variant of that capability is the item this worker de-scoped and reserved (one node would have to sit at two positions under a per-body layout), which is a convention-layout decision rather than a ladder defect; the ladder's own wall is a cross-contract hop through the SDK, so the reservation does not by itself hold back the 22 class-(d) titles, but if their trace lands on the same position conflict the fix is that decision. |
 | 2026-09-30 | (this round's direction) | per-call | the strict matchers before M1, the ladder at the checkpoint, and class (d) as a capability | n/a | **Coordinator assessment taken as direction.** Three things. (1) The ladder's `revertedWith`/`withArgs` leniency is the same weakness that made kernel-beta's 66/66 misleading, and the per-call path now reports the entry's own reason and error arguments, so the matchers are made **strict** before any M1 claim -- expect the count to drop, and six of the seventeen green titles are revert or rejection checks. (2) A **full ladder** runs at the next checkpoint once the strict matchers land, so the number it reports is one the strict matchers produced; the last full ladder is run 16 (17/66) and eight rounds of fixes have landed since, so the count is unverified until then. (3) The wall is the **second reach of a mapping-writing callee**, treated as the class-(d) capability (22 further titles) rather than a single title's special case, with the harness shape one entry reaching the same mapping-writing value-returning callee three times behind a proxied read-only chain and ahead of a transfer-and-emit callee. Also recorded from the same assessment: soundness is not at risk from these rounds (hop planning and derivation, plus compiler metadata and admission, each with a reduced machine case); the direct convention's SDK still branches on an entry name, which is Phase 3 cleanup and is not on this path. |
 | 2026-09-30 | 93e666a55, 9559e4c0d | per-call | the matchers are strict, and a frame's created records move past the callee events | 3 files / 10 (testing) + 30 files / 114 (+4 skipped) (call) | **`revertedWith` and `revertedWithCustomError(...).withArgs(...)` are strict for a per-call call**: the matcher awaits the call, reads the frame's own reason (structured for a composition refusal, parsed from the refusal's frame description with its `errorArgs` for a proxy refusal) and compares it by string equality (or the RegExp the assertion itself supplied); a refusal that names no frame -- a construction error, a planner refusal, an unsupported shape -- fails the assertion with its own message, and a custom-error `withArgs` whose refusal carried no argument tuple throws instead of passing. Every legacy branch is unchanged, since the per-call facts are absent there, and **no existing test relied on the lenient behaviour**. This is the precondition for M1 the coordinator asked for, so the count is expected to drop with the next run. **A second landing from the repeated-reach round:** the root entry's created records were laid at the same index the callee events were allocated from, so a hop whose frame both creates a record and reaches an emitting callee collided with `the plan creates records at [...], and the trailing region puts them at [...]`; the callee events are planned first now and the created base is the cursor they leave. Reachable only by a previously-refusing shape. The second-reach round itself **did not land**: three reaches of one mapping-writing callee still do not settle, and the round's diagnosis is recorded for the next one -- each reach is planned with no knowledge of its siblings, so the collection's shared predecessor relink and each created node's successor are stated per reach; with distinct keys the second attempt fails a verification before any close (the body proves the collection's final chain while the plan states a single-insert successor), and with one key the reaches settle but the broadcast fails because sibling masters both own one node's output. The fix is a cross-reach pre-pass over all reaches of a contract, which the next round is doing. |
+| 2026-09-30 | `b65ad84c4`, `c3cf75d69`, `a723cdfba`, `cfecf35b7`, `59fc8077d`, `3d728a8f4`, `2ad01fb71`, `5b852ceff`, `bf83e4059`, `12c24e2d9` | per-call | the handoff's second worker: PW3's compiler half, PW4, PW6 and PW7 | solidc 597 (`test/per-call/master`); the nine new solidcash guards | **Four streams, each landed with its own focused run and `yarn build` (the second worker's items beside the ladder).** **PW3 (compiler half, `c3cf75d69`).** An entry that writes no record of its own now publishes an *empty* write list, so a builder tells "this entry rewrites nothing" from "its write's segment is unstated" (`stop-sites.test.ts` and `write-shape-publication.test.ts` updated and added). The write walks descend into a loop or switch whose own body reaches no call, and a runtime-loop upsert beside a call publishes the segment its write lands in: one call puts it at segment 1 and two at segment 2, i.e. the segment the last call opened, which is where the lowering settles a runtime loop's write. The machine's own control agrees: a batch record declared at the write's segment is accepted and the same declaration one segment later is refused (`loop-upsert-segment.test.ts`). A batch write beside a dynamic run in another segment publishes both segments, each named by its own write. **What the compiler still does not state, handed over as a pinned reproducer**: the fixture's `updateJobWhitelist` shape is a *varying-key* loop upsert, which is not a verified batch at all (its collection has no `entry` slot in the block layout), and the machine refuses every declaration for it - segment 0, the last segment, both, and an insert instead of an update - with `Program failed an OP_VERIFY operation.` inside the loop body's own emitted code, before any record is read; the same head with the loop removed and a read-only loop over the same key array are both accepted, so the wall is the upsert body's per-iteration code rather than the witness. The fixture census could not be re-read: the ladder stream's own run held `.marketplace` (and had started before this landing). **PW4 (`a723cdfba`, `cfecf35b7`).** The attack table's owed row is cited: `hostile/delegate-callee-mutation.test.ts` drives the forwarded hop the toy settles, accepts the faithful composition, and refuses a callee that is a second deployed contract's master - `V5_DELEGATE_TARGET_MISMATCH` off chain and the facet's own edge rule on chain, with exactly that one verdict failing beside a plan the machine still accepts the rest of. **PW6 (rows 19, 24, 14, 13, 16, 12, 10, 11, 6).** Nine shipped-path guards in `solidcash/test/per-call/conformance/`. Served with their observable: 19 (six refusals across four getters, each handed back through the shipped read path with the entry's own reason, admission control beside them), 14 (two events in one transaction, both read from the receipt at their own outputs), 16 (inside, at the boundary and past the 24-hour window, and the challenge strictly later and at the boundary, driven through the composition path with the recorded timestamp read back; the call entry point refuses the shape by name, pinned beside it), 12 (`uint16[5]`, `uint256[5]`, a computed array, a struct with a `string` member and one with a `bytes` member, and a dynamic array in and out), 10 (the guarded `address(this).balance` compare, whose reader the artifact publishes in `balanceReaders`), 11 (the self-target spelling decodes the returned `bool`), 6 (the SafeERC20 `_revert` shape, whose raised error, parameters and arguments the shipped report names), and 24 (served through the proxy path, refused on the direct path by name). Pinned as refused: 13, a nested frame's above-128-byte event, because the call entry point plans no callee frames; the root-frame control of the same size is served and decoded. G2's boxes for the served rows are ticked. **PW7.** The owed 4.5 rows carry measured numbers now (VM evaluations 14/10/26 for Y6, Y2 and the vault graph; one derivation pass per master; derive-and-build 280.8 ms / 100.9 ms / 330.8 ms beside 1.2-3.2 s compiles; the twenty-four-master shape re-measured at 36.3 s and 157,889 bytes; one event's append 1 chunk, thirty appends 27 chunks and 423 chunk outputs across them), and the first title's profile (`admin > transfer owner`, 455.1 s of which 452.9 s is the fixture deployment) is recorded there with its proposals - a persisted snapshot would skip about 453 s of a filtered run, and the `-t` filter form matters (the full title matches nothing and silently skips the file). |

@@ -145,3 +145,28 @@ lands it removes the claim line.
 - Parallel worker: PW5, then PW1 step 1 (with step 2 agreed with the ladder stream), then PW2.
 - Second worker: PW4, then PW6 and PW7; PW3 once the ladder stream agrees the split (the second worker already
   works in `support.ts`).
+
+## Status (2026-09-30, the second worker's round)
+
+- **PW3, compiler half - landed** (`c3cf75d69`). An entry that writes nothing of its own now publishes an empty write
+  list, a write inside a loop whose own body reaches no call is placed, and a runtime-loop upsert beside a call
+  publishes the segment its write lands in (one call puts it at segment 1, two at segment 2; the machine's own
+  control accepts a batch record at the write's segment and refuses the same declaration one segment later).
+  **Handed over rather than served**: a *varying-key* loop upsert - the fixture's `updateJobWhitelist` - is not a
+  verified batch (its collection has no `entry` slot in the block layout), and the machine refuses every witness
+  declaration for it, including both segments and an insert, with `Program failed an OP_VERIFY operation.` inside
+  the upsert body's own emitted code, before any record is read. The reproducer is
+  `packages/solidc/test/per-call/master/loop-upsert-segment.test.ts`, which also pins that the same head with the
+  loop removed is accepted.
+- **PW4 - landed** (`a723cdfba`, `cfecf35b7`). The attack table cites `hostile/delegate-callee-mutation.test.ts`: the
+  faithful forwarded hop is accepted, and a callee that is a second deployed contract's master is refused
+  `V5_DELEGATE_TARGET_MISMATCH` off chain and by the facet's edge rule on chain.
+- **PW6 - landed** (`59fc8077d`, `3d728a8f4`, `2ad01fb71`, `5b852ceff`). Rows 19, 24, 14, 16, 12, 10, 11 and 6 are
+  served with their observables (24 through the proxy path, refused on the direct path by name); row 13 is pinned as
+  refused, because the call entry point plans no callee frames, with a root-frame control of the same size served
+  beside it. G2 is ticked for the served rows.
+- **PW7 - landed** (`12c24e2d9`). The 4.5 rows carry measured numbers (VM evaluations, per-master runs, derive and
+  build walls, the twenty-four-master shape, and the chunk outputs per append) and the first title is profiled:
+  455.1 s, of which 452.9 s is the fixture deployment.
+- Still held elsewhere: PW1, PW2 and PW5. The fixture census could not be re-read after PW3 because the ladder's own
+  run held `.marketplace`.

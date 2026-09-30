@@ -20,11 +20,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * trip count the execution decides: the shipped path accepts that spend, and the case after it mutates the
  * transaction the path assembled - the record the entry wrote carries a commitment its code did not compute - and
  * the machine refuses it. The second body writes a key that is an element of a caller-supplied array, so a different
- * node per turn: the per-call layout does declare the collection's `entry` slot and the artifact publishes the
- * in-loop access, but the call path has no record protocol for a loop's per-turn nodes, so it refuses the write by
- * name at the seam that planning replaces (`touches mapping "balances" as write outside a sorted batch, which a
- * call does not plan`). The two bodies differ only in where the key comes from, which is what separates the loop
- * upsert the path serves from the one it does not yet.
+ * node per turn: the per-call layout declares the collection's `entry` slot and the artifact publishes the in-loop
+ * access, and the call path plans one node per turn - the predecessor and its new node for an insert, chained
+ * through the node the turn before created - and declares them where the emitted coordinate reads them. The same
+ * accept-and-refused-mutation pair is taken there too, on the records the loop itself wrote.
  */
 
 const FIXED_SOURCE = 'pragma solidcash ^0.13.0;'
@@ -124,14 +123,39 @@ describe('a mapping upsert inside a run-time loop, through the shipped call path
     expect(vm.stateSuccess(state)).not.toBe(true);
   });
 
-  it('the shipped path refuses the loop upsert whose key varies per turn, at the protocol it does not plan', async () => {
-    // The refusal is by name now rather than the machine's: the per-call lane has no record protocol for a loop's
-    // per-turn nodes, and the frame the plan builds declares none of them for the collection, which is what
-    // `solidc/test/per-call/master/loop-upsert-segment.test.ts` shows the machine reading as the no-record sentinel
-    // when it is handed such a frame. This named refusal is the seam the per-turn planning replaces.
-    await expect(call(VARYING_SOURCE, 'move', [[KEY], 42n])).rejects.toThrow(
-      // The turn count is the array's own, which is what the per-call lane derives before planning records.
-      /writes mapping "balances" at 1 turn\(s\) of "workers", a run-time loop whose per-turn records a call does not declare yet/,
-    );
+  it('accepts the loop upsert whose key varies per turn, and refuses a record it wrote being changed', async () => {
+    // The per-call layout declares the collection's `entry` slot and the artifact publishes the in-loop access, so
+    // the call path plans one node per turn of the caller's array and declares each where the emitted per-turn
+    // coordinate reads it. `accepted` is true only when every participant's verdict is accepted, so this assertion
+    // is the machine's verdict on the well-formed spend of a mapping upsert whose key varies per turn.
+    const answered = await call(VARYING_SOURCE, 'move', [[KEY], 42n]);
+    expect({ accepted: answered.accepted, objections: objectionsOf(answered) })
+      .toStrictEqual({ accepted: true, objections: '' });
+
+    // The records the loop wrote are the outputs whose commitments differ from the inputs at the same index; the
+    // first of them is the node the insert created, whose commitment carries the value the entry's own code stored.
+    const index = answered.transaction.outputs.findIndex((output, at) =>
+      commitmentOf(output) !== undefined
+      && binToHex(commitmentOf(output)!) !== binToHex(commitmentOf(answered.sourceOutputs[at]!) ?? new Uint8Array()));
+    expect(index).toBeGreaterThanOrEqual(0);
+
+    // The mutated spend: the same transaction with one byte of that commitment changed, so the record no longer
+    // carries the value the entry's own code computed.
+    const committed = commitmentOf(answered.transaction.outputs[index]!)!;
+    const changed = new Uint8Array(committed);
+    changed[changed.length - 1] = (changed[changed.length - 1]! ^ 0x01) & 0xff;
+    const mutated = {
+      ...answered.transaction,
+      outputs: answered.transaction.outputs.map((output, at) => (at === index
+        ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: changed } } }
+        : output)),
+    };
+    const master = answered.verdicts.findIndex((verdict) => verdict.accepted);
+    expect(master).toBeGreaterThanOrEqual(0);
+    const vm = compositionMachine();
+    const state = vm.evaluate({
+      inputIndex: master, sourceOutputs: answered.sourceOutputs, transaction: mutated,
+    });
+    expect(vm.stateSuccess(state)).not.toBe(true);
   });
 });

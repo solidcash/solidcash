@@ -39,16 +39,17 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
  * its record in the segment the write lands in and refused with it in the last segment, so the segment the machine
  * reads for a mapping record is decided by the machine and not assumed here.
  *
- * The runtime-loop upsert whose *key the frame holds* is a different shape, and the machine accepts it: its
- * well-formed spend is settled, with the record it wrote changed refused beside it, on the shipped path in
- * `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`: the case at `:94` asserts
- * `{ accepted: true, objections: '' }` at `:99` and refuses the record it wrote being changed at `:124` - a
- * citation of `:86-97` reads the revision before `fddae17aa` - and the same shape through the proxy path is at
- * `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts:217`/`:221`, its mutation refused at
- * `:238`. This file's verdicts
- * are about the varying key: the frame the shipped call path plans declares no record for its collection, which the
- * machine reads as the no-record sentinel, and a declaration the frame does carry puts the turn's coordinate on
- * another participant's UTXO.
+ * The run-time-loop upsert's per-turn nodes are the per-call lane's own protocol: the row's first turn reads the
+ * record the frame declares at the slot's offset from its base and a later turn reads the node the turn before
+ * created, named by its position in the declaration. So the frame that declares the rewritten node in the segment
+ * before the call is accepted, while one that declares it in the last segment the run opens parks the no-record
+ * sentinel and is refused. The run-time-loop upsert whose *key the frame holds* is the same row with a different
+ * key source: its well-formed spend is settled, with the record it wrote changed refused beside it, on the shipped
+ * path in `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` - the first case asserts
+ * `{ accepted: true, objections: '' }` and refuses the record it wrote being changed; the second does the same for
+ * the array element key - and the same shape through the proxy path is at
+ * `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts`. This file's verdicts are the machine's own
+ * on a hand-built witness, taken so the segment question is answered without the plan in between.
  */
 
 const CATEGORY_LEDGER = seededCategory('loop upsert segment ledger');
@@ -329,13 +330,13 @@ describe('a per-call master whose entry upserts a mapping in a run-time loop bes
     expect(outcome.accepted, outcome.objection).toBe(true);
   });
 
-  it('refuses the run-time-loop upsert with its records in the segment before the call', () => {
-    // The frame's own base is the index of the record its block declares first, so a node declared in the segment
-    // before the call puts the loop's per-turn coordinate on another participant and the body fails its comparison.
+  it('accepts the run-time-loop upsert with its records in the segment before the call', () => {
+    // The loop's per-turn coordinate is the frame's declared base plus the slot's offset plus the turn, so a node
+    // declared in the segment before the call sits exactly where the body reads its turn and the machine accepts the
+    // well-formed frame. A node record declared for the varying key is one the loop's own code rewrote, so the write
+    // it proves is the one the frame declares.
     const outcome = verdict(build(loopProgram, loopLock, WORKERS, [NODE_RECORD], WRITE_SEGMENT));
-    expect({ accepted: outcome.accepted, objection: outcome.objection }).toStrictEqual({
-      accepted: false, objection: 'Program failed an OP_VERIFY operation.',
-    });
+    expect(outcome.accepted, outcome.objection).toBe(true);
   });
 
   it('refuses the run-time-loop upsert with its records in the last segment the run opens', () => {
@@ -464,8 +465,8 @@ describe('the run-time-loop upsert the shipped path settles, its machine verdict
     // verdict on the well-formed spend of a mapping upsert that runs inside a loop.
     expect({
       accepted: answered.accepted,
-      objections: answered.verdicts.filter((verdict) => !verdict.accepted)
-        .map((verdict) => String(verdict.objection ?? 'refused')),
+      objections: answered.verdicts.filter((participant) => !participant.accepted)
+        .map((participant) => String(participant.objection ?? 'refused')),
     }).toStrictEqual({ accepted: true, objections: [] });
 
     // The record the loop wrote is the output whose commitment differs from the input at the same index.
@@ -483,7 +484,7 @@ describe('the run-time-loop upsert the shipped path settles, its machine verdict
         ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: changed } } }
         : output)),
     };
-    const master = answered.verdicts.findIndex((verdict) => verdict.accepted);
+    const master = answered.verdicts.findIndex((participant) => participant.accepted);
     expect(master).toBeGreaterThanOrEqual(0);
     const vm = compositionMachine();
     expect(vm.stateSuccess(vm.evaluate({

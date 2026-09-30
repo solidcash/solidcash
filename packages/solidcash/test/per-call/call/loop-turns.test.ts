@@ -18,8 +18,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * artifact publishes the shape (`sortedUpsertLoopInfo`: the collection, the array the loop walks and the parameter
  * the value comes from) and the loop's access carries the key as a label with the counter among its operands. This
  * file pins the derivation the per-call lane reads: one turn per element of the array the caller handed the entry,
- * each turn's key the element at its index - and the same derivation reached through the shipped call path, which
- * names the turns it derived in its refusal.
+ * each turn's key the element at its index - and the same derivation reached through the shipped call path, whose
+ * frame declares one node per derived turn where the emitted coordinate reads it.
  *
  * Nothing is re-implemented here: the artifact comes from the shipped compiler, the keys the derivation is checked
  * against are the ones the caller passed, and the shipped-path case drives `callPerCallEntry` over a real deployment.
@@ -83,7 +83,7 @@ describe('the turns of a run-time-loop mapping write', () => {
     })).toThrow(/writes mapping "balances" in a run-time loop over "workers"/);
   });
 
-  it('names the turns it derived when the shipped call path refuses the write', async () => {
+  it('settles the derived turns through the shipped call path, one node per element', async () => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
     const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -96,13 +96,19 @@ describe('the turns of a run-time-loop mapping write', () => {
     const callerLockingBytecode = encodeLockingBytecodeP2pkh(alicePkh);
     const callerUtxo = { txid: outpointHash(0x50), vout: 0, satoshis: 200_000n };
     await provider.addUtxo(binToHex(callerLockingBytecode), callerUtxo);
-    await expect(callPerCallEntry({
+    const answered = await callPerCallEntry({
       provider, artifact, categoryId: deployment.categoryId, functionName: 'move',
-      args: [WORKERS, 42n] as never,
+      args: [WORKERS.slice(0, 2), 42n] as never,
       callerUtxo, callerLockingBytecode, funder: signature.unlockP2PKH(), vm: compositionMachine(),
-    })).rejects.toThrow(
-      // The count is the array's own: three elements, three turns, named by the shipped call path's own refusal.
-      /writes mapping "balances" at 3 turn\(s\) of "workers", a run-time loop whose per-turn records a call does not declare yet/,
-    );
+    });
+    // One node per derived turn, declared where the emitted coordinate reads it: the frame's first turn co-spends
+    // the bracketing predecessor and the next turn chains through the node the turn before created, so the machine
+    // accepts every participant. A third element reaches a further wall - the run-time loop's third chained insert -
+    // which this pin does not cover.
+    expect({
+      accepted: answered.accepted,
+      objections: answered.verdicts.filter((verdict) => !verdict.accepted)
+        .map((verdict) => String(verdict.objection ?? 'refused')),
+    }).toStrictEqual({ accepted: true, objections: [] });
   }, 600_000);
 });

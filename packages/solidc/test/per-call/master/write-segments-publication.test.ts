@@ -140,11 +140,13 @@ describe('the segment each write of a per-call entry lands in, as an artifact pu
   });
 
   it('publishes nothing for a batch write whose target varies per turn of a loop that calls', () => {
-    // The target is the loop's own element, so the batch is not one write the walk places: no fact states where its
-    // records land, and a builder refuses the entry by name instead of guessing a segment. The shape stays unstated
-    // for a deeper reason, which `loop-upsert-segment.test.ts` pins: the entry's block layout reserves no entry slot
-    // for the mapping (the upsert is carried by the run-time-loop machinery rather than by a verified batch), and
-    // the machine refuses the well-formed spend for the entry wherever its node record is declared.
+    // The target is the loop's own element, so the batch is not one write the walk places: no compile-time fact
+    // states where its records land, and a builder reading only the artifact cannot guess a segment. The shape stays
+    // unstated by design, not because it is unserved: the per-call lane's call path plans the loop's turns itself -
+    // one node per element of the caller's array, the first turn's node at the frame's declared offset and each
+    // later insert chained through the node the turn before created - and declares each where the emitted per-turn
+    // coordinate reads it, which `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` drives end to
+    // end (the machine accepts the well-formed spend and refuses a record the loop wrote being changed).
     expect(publishedWrites(varyingLoop, 'Ledger', 'move')).toStrictEqual({});
   });
 });

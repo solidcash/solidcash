@@ -1843,6 +1843,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertPendValName: string = '(pu_val)';   // deferred entry new value
   private sortedUpsertPendNextName: string = '(pu_next)'; // deferred entry nextKey (empty b'' = +inf)
   private sortedUpsertPendActive: boolean = false;        // the pending-defer registers are live on the stack
+  // A per-call run-time loop with no batch ahead of it creates its records as trailing outputs, so every mint names
+  // the record by its position in the segment's declaration rather than by the direct convention's trailing band.
+  // True while such a loop is emitted, carrying its entry slot; false for every other loop and convention.
+  private perCallDeclaredLoopOut: boolean = false;
+  private perCallDeclaredLoopSlot: number = -1;
   // READ ABSENCE CACHE: once a read authenticates and reproduces a real entry, its [slot,nextKey) interval can
   // prove any immediately following missing keys in that same gap without co-spending the entry again.
   private sortedUpsertReadProofSlotName: string = '(read_proof_slot)';
@@ -7105,6 +7110,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallReadSegment = undefined;
     this.perCallBatchWriteSegment = 0;
     this.perCallBatchWriteRuntime = false;
+    this.perCallDeclaredLoopOut = false;
+    this.perCallDeclaredLoopSlot = -1;
     this.perCallStaleWrites = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
@@ -25210,6 +25217,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (closesTheWriteSegment) {
       leadings.push(this.perCallRecordsBeforeGroups());
     }
+    // A run-time loop with no batch ahead of it declares its per-turn records itself, so every record from the
+    // loop's slot on is one its own code wrote and verified: the records the frame declares before the slot are the
+    // ones this segment must still hold kept.
+    if (this.perCallDeclaredLoopOut) {
+      leadings.push(this.perCallEntryOffset(this.perCallDeclaredLoopSlot) - 1);
+    }
     if (atEnd && this.perCallWritesDynamicField()) leadings.push(this.perCallDynamicChunkWidth() - 1);
     const leading = leadings.length === 0 ? {} : { leading: Math.min(...leadings) };
     if (this.perCallCallsMadeActive) {
@@ -27288,6 +27301,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slotIndex = writeNode.entrySlotIndex >= 0 ? writeNode.entrySlotIndex
       : this.entrySlots.findIndex((slot) => slot.collection === collection.name && slot.inLoop);
     if (slotIndex < 0 || !this.entrySlots[slotIndex]) return false;
+    // A per-call frame with no batch ahead of this loop creates its records as trailing outputs, so every mint of
+    // the loop - the body's own and the teardown's pending flush - names the record by its position in the frame's
+    // declaration. The flag is held from the loop's setup to the end of the function, so the segment close that
+    // exempts those records sees it too.
+    this.perCallDeclaredLoopOut = this.readsRecordsFromFrame && this.batchTargetSlots().length === 0
+      && this.entrySlots[slotIndex]?.inLoop === true;
+    this.perCallDeclaredLoopSlot = slotIndex;
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
 
     // SDK metadata: leading FIXED key params + the VARYING key array + the per-key VALUE array + the op.
@@ -27840,15 +27860,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitBytesNonEmpty(loc);
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
-    // outIdx = master + write-path trailing base + outCounter (U=1)
-    this.emitTrailingWriteOutputBase(blockSize, loc);
-    if (this.sortedUpsertGrouped) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertOutputBaseName) + 1)), loc);
-      this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
+    // outIdx = master + write-path trailing base + outCounter (U=1). A per-call frame with no batch ahead of the loop
+    // names the deferred node by its position in the segment's declaration instead, so the shared close reads the
+    // record the plan declared for it rather than an output the direct band happens to address.
+    if (this.perCallDeclaredLoopOut) {
+      this.emit(encodeInt(BigInt(-this.perCallEntryOffset(this.perCallDeclaredLoopSlot))), loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(outCtr) + 1)), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_SUB, loc);
+    } else {
+      this.emitTrailingWriteOutputBase(blockSize, loc);
+      if (this.sortedUpsertGrouped) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertOutputBaseName) + 1)), loc);
+        this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
+      }
+      this.emit(encodeInt(BigInt(this.getStackIndex(outCtr) + 1)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
     }
-    this.emit(encodeInt(BigInt(this.getStackIndex(outCtr) + 1)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
     this.emitVerifySortedValueOutput(loc, this.getStackIndex(this.sortedUpsertLoopAddrName) + 1,
-      this.getStackIndex(pSlot) + 1, this.getStackIndex(pNext) + 1, this.getStackIndex(pVal) + 1);
+      this.getStackIndex(pSlot) + 1, this.getStackIndex(pNext) + 1, this.getStackIndex(pVal) + 1,
+      1, this.perCallDeclaredLoopOut);
     // outCounter += 1
     this.emit(encodeInt(BigInt(this.getStackIndex(outCtr))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
     this.emitReplace(this.getStackIndex(outCtr) + 1, { location: loc.location } as unknown as Node);
@@ -27876,8 +27905,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const pNext = this.sortedUpsertPendNextName;
     const hk = '(credit_hk)';
     const amt = '(credit_amt)';
-    // mintIdx: push output index master + blockSize + outCounter + add (u = untracked count currently above)
+    // mintIdx: push output index master + blockSize + outCounter + add (u = untracked count currently above). A
+    // per-call frame with no batch ahead of the loop names the record by its declared position, as above.
     const mintIdx = (add: number, u: number): void => {
+      if (this.perCallDeclaredLoopOut) {
+        this.emit(encodeInt(BigInt(-this.perCallEntryOffset(this.perCallDeclaredLoopSlot))), loc);
+        if (add !== 0) { this.emit(encodeInt(BigInt(add)), loc); this.emit(Op.OP_SUB, loc); }
+        this.emit(encodeInt(BigInt(this.getStackIndex(outCtr) + u + 1)), loc); this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_SUB, loc);
+        return;
+      }
       this.emitTrailingWriteOutputBase(blockSize, loc, undefined, u);
       if (add !== 0) { this.emit(encodeInt(BigInt(add)), loc); this.emit(Op.OP_ADD, loc); }
       if (this.sortedUpsertGrouped) {
@@ -27965,7 +28002,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (or the next non-chaining flush) mints the last deferred new node. =====
     mintIdx(0, 0); // P' outIdx U=1
     this.emitVerifySortedValueOutput(loc, this.getStackIndex(addr) + 1,
-      this.getStackIndex(pSlot) + 1, this.getStackIndex(hk) + 1, this.getStackIndex(pVal) + 1); // P' = pSlot|Hk|pVal -> U=0
+      this.getStackIndex(pSlot) + 1, this.getStackIndex(hk) + 1, this.getStackIndex(pVal) + 1,
+      1, this.perCallDeclaredLoopOut); // P' = pSlot|Hk|pVal -> U=0
     this.emit(encodeInt(BigInt(this.getStackIndex(outCtr))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
     this.emitReplace(this.getStackIndex(outCtr) + 1, node); // outCounter += 1 -> U=0
     this.emit(encodeInt(BigInt(this.getStackIndex(amt))), loc); this.emit(Op.OP_PICK, loc);          // amt copy U=1
@@ -27979,7 +28017,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // ===== NORMAL flush: mint [pu_slot|pu_next|pu_val]; outCounter += 1; clear; consumed = 0 =====
     mintIdx(0, 0); // outIdx U=1
     this.emitVerifySortedValueOutput(loc, this.getStackIndex(addr) + 1,
-      this.getStackIndex(pSlot) + 1, this.getStackIndex(pNext) + 1, this.getStackIndex(pVal) + 1); // -> U=0
+      this.getStackIndex(pSlot) + 1, this.getStackIndex(pNext) + 1, this.getStackIndex(pVal) + 1,
+      1, this.perCallDeclaredLoopOut); // -> U=0
     this.emit(encodeInt(BigInt(this.getStackIndex(outCtr))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
     this.emitReplace(this.getStackIndex(outCtr) + 1, node); // outCounter += 1 -> U=0
     this.emit(Op.OP_0, loc); this.emitReplace(this.getStackIndex(pSlot) + 1, node); // clear pending -> U=0
@@ -29251,13 +29290,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A per-call frame with no sorted batch ahead of the loop creates its records as trailing outputs, so the turn's
     // output is named by its position in the segment's declared list - the negative ordinal a batch's created record
     // uses - with the loop's own counter subtracted past the records the frame declares before them.
-    const declaredOut = this.readsRecordsFromFrame
-      && this.batchTargetSlots().length === 0 && this.entrySlots[slotIndex]?.inLoop === true;
+    const declaredOut = this.perCallDeclaredLoopOut;
     const pushIdx = (counterName: string, add: number, u: number): void => {
       const side = counterName === this.sortedUpsertLoopOutCounterName ? 'out' : 'in';
       const declaredSide = declaredOut && side === 'out';
       if (declaredSide) {
-        this.emit(encodeInt(BigInt(-(this.perCallRecordsBeforeGroups() + 1))), loc);
+        // The loop's records follow the ones the frame declares before the slot, and the negative form names the
+        // position the shared close reads: the ordinal of the record `add + counter` places past that base.
+        this.emit(encodeInt(BigInt(-this.perCallEntryOffset(slotIndex))), loc);
       } else if (this.readsRecordsFromFrame) {
         // The frame's own witness declares the loop's nodes past the slot's coordinate, so the turn's node is the
         // frame's parked base plus that offset, counted by the loop's own counter.
@@ -29267,7 +29307,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         this.emitTrailingWriteInputBase(blockSize, loc, undefined, u);
       }
-      if (add !== 0) { this.emit(encodeInt(BigInt(add)), loc); this.emit(Op.OP_ADD, loc); }
+      if (add !== 0) { this.emit(encodeInt(BigInt(add)), loc); this.emit(declaredSide ? Op.OP_SUB : Op.OP_ADD, loc); }
       // Final settlement follows the compiler-owned transaction schedule, which can interleave collections and
       // streams. Its trailing-input helper already added the route-global cursor; per-stream bases/counters would
       // select a different physical order. They remain active only as separately checked logical cardinalities.
@@ -29422,7 +29462,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         // ---- UPDATE (debit/delete loops): mint output[..+outCounter] = coSlot|coNext|newValue immediately ----
         pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                  // outIdx (U=4)
-        this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1, 4);   // addr, coSlot, coNext, newValue
+        this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1, 4, declaredOut);   // addr, coSlot, coNext, newValue
         this.emit(Op.OP_1, loc);                                             // delta = 1 (U=4)
       }
       // The target was present, so this operation did not consume an absence predecessor. Replace the disposable
@@ -29461,12 +29501,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // one output and no mapping entry for Hk. This makes an absent mapping read observationally pure.
         if (!settleReadCarrier) {
           pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);
-          this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1, 4);
+          this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1, 4, declaredOut);
         }
         this.emit(Op.OP_1, loc);
       } else if (!settleScalar) {
         pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                  // P' outIdx (U=4)
-        this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, hkIdx() + 4, 1, 4); // P' = coSlot|Hk|coValue
+        this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, hkIdx() + 4, 1, 4, declaredOut); // P' = coSlot|Hk|coValue
       }
       if (op !== 'read' && useLegacyPending) {
         // CHAIN-DEFER: defer the NEW node (pu_slot=Hk, pu_val=amt, pu_next=coNext) instead of minting it, so a further
@@ -29482,7 +29522,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else if (op !== 'read' && !settleScalar) {
         pushIdx(this.sortedUpsertLoopOutCounterName, 1, 3);                  // NEW outIdx2 (U=4)
         this.emitVerifySortedValueOutput(
-          loc, addrIdx() + 4, hkIdx() + 4, 2, amtIdx() + 4, 4,
+          loc, addrIdx() + 4, hkIdx() + 4, 2, amtIdx() + 4, 4, declaredOut,
         ); // NEW = Hk|coNext|v[i]
         this.emit(Op.OP_2, loc);                                             // delta = 2 (U=4)
       } else if (op !== 'read') {

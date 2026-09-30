@@ -4,7 +4,7 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { compileStringMulti } from 'solidc';
 import { formatArtifact } from '@solidcash/utils';
-import { perCallDeploy, type PerCallProxyDeployment, type PerCallProxyHandle } from 'solidcash';
+import { HDSigner, perCallDeploy, type PerCallProxyDeployment, type PerCallProxyHandle } from 'solidcash';
 import { upgrades } from '../../src/index.js';
 import { createHardhatRuntimeEnvironment } from '../../src/hre.js';
 import { resolveConfig } from '../../src/config.js';
@@ -108,4 +108,25 @@ describe('the testing layer and a per-call contract behind upgrades.deployProxy'
       await (deployment as unknown as { bump: (by: bigint) => Promise<unknown> }).bump(4n);
       expect(await recordTotal(provider, record.proxy.categoryId, layout)).toBe(10n);
     });
+
+  it('simulates a call from a wallet that holds no coin before funding it: a refusal is the entry\'s own', async () => {
+    const hre = projectHarness(projectWithCompiledContract());
+    const [signer] = await hre.ethers.getSigners(1);
+    const deployment = await upgrades.deployProxy(
+      hre.ethers.getContractFactory('Counter', signer) as never, [5n],
+    ) as unknown as PerCallProxyHandle;
+    const record = deployment.proxyDeployment;
+    const unfunded = HDSigner.fromPhrase(
+      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about', signer.provider,
+    );
+    const calls = (deployment as unknown as { connect: (runner: unknown) => unknown }).connect(unfunded) as
+      { bump: (by: bigint) => Promise<unknown> };
+
+    // `bump(-100)` takes the total below the entry's own `require(this.total >= 0)`, which the simulation reports.
+    await expect(calls.bump(-100n)).rejects.toThrow(/did not settle through the proxy/);
+    // `bump(4)` would settle, so what the caller hears is that it cannot pay for it; nothing was sent either way.
+    await expect(calls.bump(4n)).rejects.toThrow(/holds no tokenless UTXO to pay the call with/);
+    const layout = record.proxy.contract.inner.artifact.stateLayout!;
+    expect(await recordTotal(hre.ethers.provider, record.proxy.categoryId, layout)).toBe(6n);
+  });
 });

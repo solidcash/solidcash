@@ -21,6 +21,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
 
 const CATEGORY_HEX = '55'.repeat(32);
 const PHRASE = 'test test test test test test test test test test test junk';
+/** A wallet no test funds. */
+const UNFUNDED_PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
 // Two entries, so the master dispatches by selector; `add` writes and `current` only reads.
 const SOURCE = 'pragma solidcash ^0.13.0;'
@@ -104,6 +106,26 @@ describe('the call surface of a deployed per-call contract', () => {
       /PER_CALL_COMPOSITION_REFUSED: frame "master" of Tally\.add\(\) at line \d+/,
     );
     // Nothing was broadcast, so the record still carries the commitment the deployment minted.
+    expect(await recordCommitment(provider, handle.categoryId)).toBe(before);
+  });
+
+  it('reports the entry\'s own refusal for a caller that holds no coin, simulated before any funding', async () => {
+    const { handle, provider } = await deploy();
+    const before = await recordCommitment(provider, handle.categoryId);
+    const calls = handle.connect(HDSigner.fromPhrase(UNFUNDED_PHRASE, provider)).call as unknown as TallyCalls;
+    // The call is derived over a stand-in coin at the caller's own lock, so the body's refusal is what it reports,
+    // not that the caller cannot pay.
+    await expect(calls.add(-1n)).rejects.toThrow(
+      /PER_CALL_COMPOSITION_REFUSED: frame "master" of Tally\.add\(\) at line \d+/,
+    );
+    expect(await recordCommitment(provider, handle.categoryId)).toBe(before);
+  });
+
+  it('reports that a caller holding no coin cannot pay for a call that would settle, and sends nothing', async () => {
+    const { handle, provider } = await deploy();
+    const before = await recordCommitment(provider, handle.categoryId);
+    const calls = handle.connect(HDSigner.fromPhrase(UNFUNDED_PHRASE, provider)).call as unknown as TallyCalls;
+    await expect(calls.add(4n)).rejects.toThrow(/holds no tokenless UTXO to pay the call with/);
     expect(await recordCommitment(provider, handle.categoryId)).toBe(before);
   });
 });

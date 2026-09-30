@@ -15,6 +15,10 @@
  * where the implementation's delegate frame finds the records it runs on. A call's fluent modifiers (a time lock, an
  * age lock, an extra output) have no per-call equivalent here yet and are not aliased; the entry's own arguments are
  * the whole of what it takes.
+ *
+ * A call from a wallet that holds no coin is simulated before any funding: it is derived and evaluated over a
+ * stand-in coin at the signer's own lock, through a provider that refuses the broadcast, so a body that refuses
+ * reports its own revert, and only a call that would settle reports that the caller cannot pay for it.
  */
 
 import type { Artifact, StateValue } from '@solidcash/utils';
@@ -94,13 +98,29 @@ export class PerCallFunctionCall {
 
   /** Composes and derives the call without requiring it to be accepted, for a caller that wants the verdicts. */
   public async compose(): Promise<PerCallCallResult> {
-    const { artifact, categoryId, provider, signer, proxyImplementationCategoryId } = this.contract;
+    const { provider, signer } = this.contract;
     if (signer === undefined) {
       throw new PerCallCallError(
         `a call to "${this.functionName}" needs the signer whose coin enters the frame; connect one to the handle`,
       );
     }
     const callerUtxo = await callerCoin(provider, signer);
+    if (callerUtxo === undefined) {
+      try {
+        return await this.composeWith(simulationProvider(provider), signer, STAND_IN_COIN);
+      } catch (error) {
+        if (!(error instanceof SimulationAccepted)) throw error;
+        throw new PerCallCallError(
+          `the caller's address ${signer.getAddress()} holds no tokenless UTXO to pay the call with`,
+        );
+      }
+    }
+    return this.composeWith(provider, signer, callerUtxo);
+  }
+
+  /** Composes the call over the caller's coin `callerUtxo`, reading and broadcasting through `provider`. */
+  private async composeWith(provider: NetworkProvider, signer: Signer, callerUtxo: Utxo): Promise<PerCallCallResult> {
+    const { artifact, categoryId, proxyImplementationCategoryId } = this.contract;
     if (proxyImplementationCategoryId !== undefined) {
       if (this.value > 0n) {
         throw new PerCallCallError(
@@ -188,14 +208,28 @@ export class PerCallFunctionCall {
 }
 
 /** The caller's own coin: the largest tokenless UTXO at the signer's address, which pays the call's fee. */
-async function callerCoin(provider: NetworkProvider, signer: Signer): Promise<Utxo> {
+async function callerCoin(provider: NetworkProvider, signer: Signer): Promise<Utxo | undefined> {
   const utxos = await provider.getUtxos(signer.getAddress());
   const spendable = utxos.filter((utxo) => utxo.token === undefined);
-  const coin = spendable.sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))[0];
-  if (coin === undefined) {
-    throw new PerCallCallError(
-      `the caller's address ${signer.getAddress()} holds no tokenless UTXO to pay the call with`,
-    );
-  }
-  return coin;
+  return spendable.sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))[0];
+}
+
+/** The coin a simulation composes over in place of a caller's: its outpoint is never spent. */
+const STAND_IN_COIN: Utxo = { txid: '5a'.repeat(32), vout: 0, satoshis: 1_000_000_000n };
+
+/** Raised where a simulation's broadcast would be: the machine accepted the composition. */
+class SimulationAccepted extends Error {}
+
+/** The provider a simulation composes through: its reads are the provider's own, and a broadcast is refused. */
+function simulationProvider(provider: NetworkProvider): NetworkProvider {
+  const refuse = async (): Promise<never> => {
+    throw new SimulationAccepted('the simulated call was accepted');
+  };
+  return new Proxy(provider, {
+    get(target, property): unknown {
+      if (property === 'sendRawTransaction' || property === 'sendPreparedTransaction') return refuse;
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
 }

@@ -15269,46 +15269,6 @@ function compileResolvedAst(
     && messageBusVerifierLifecycleSources.has(singlePassVerifierSource)) {
     detachedVerifierProgram.lifecycle = true;
   }
-  // X149. `artifact.bytecode` IS NOT BYTES. `generateArtifact` publishes it as `scriptToAsm(script)` - the
-  // human-readable listing, in which one 1-byte opcode occupies `OP_CHECKSIGVERIFY ` - so `.length / 2` is
-  // half a character count and OVERSTATES the script on every contract: 1,332 against a real 283 on a small
-  // stateful contract (4.7x), and 32,432 against a real 30,981 on a large compatibility contract.
-  //
-  // X136 read that overstatement as a SILENT BAND ("`debug.bytecode` is the shorter of the two on every row")
-  // and took `Math.max` of the two to close it. There is no band: `debug.bytecode` is
-  // `binToHex(scriptToBytecode(optimisationResult.script))` of the SAME script the ASM lists, so it is the
-  // exact byte count, and the max was measuring the ASM listing on every contract that reached this line. It
-  // is the same script - measured twice, once correctly.
-  const artifactBytes = scriptToBytecode(optimisationResult.script).length;
-  const maximumInputBytes = mergedCompilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE;
-  // A placeholder-bound pass temporarily contains the participant route and the detached verifier closure in one
-  // bare artifact. It is never deployed: publication extracts the verifier covenant and recompiles the participant,
-  // whose own artifact is checked here on that final pass. Reporting this intermediate sum as one BCH input gives a
-  // false consensus error even when both independently deployed scripts fit the limit.
-  const detachedVerifierIntermediate = (mergedCompilerOptions as InternalCompilerOptions)
-    .__synthesizeBoundRoutePlaceholder === true
-    || (!!detachedVerifierProgram && !mergedCompilerOptions.__messageBusVerifierProgram
-      && !solidcEnvFlagEnabled('SOLIDC_SKIP_MESSAGE_BUS_BINDER'));
-  if (artifactBytes > maximumInputBytes && !detachedVerifierIntermediate) {
-    const message = `Contract '${artifact.contractName}' is ${artifactBytes} bytes, exceeding the configured `
-      + `${maximumInputBytes}-byte input-script limit by ${artifactBytes - maximumInputBytes}. `
-      + 'Every spend of it is invalid at consensus; it cannot be deployed without splitting '
-      + '(compileFileSplit / compileStringSplit) or reduction.';
-    // X149. APPEND. This used to assign, and it is the only site on this path that does not - so any diagnostic
-    // recorded before it would be dropped by the contract that most needs its other diagnostics kept.
-    artifact.diagnostics = [
-      ...(artifact.diagnostics ?? []),
-      { severity: 'error', code: 'contract-size-limit', message },
-    ];
-    // X149. SAY IT OUT LOUD, from the compiler rather than from one caller of it. The diagnostic is severity
-    // `error` and no consumer reads the field: not the SDK, not the benches, not the corpus probe. `solidc-cli`
-    // prints its own warning, so a contract compiled through the CLI was told and a contract compiled through
-    // `compileFile`/`compileString` - which is every bench, every test and every SDK user - was not. Measured
-    // on the large-contract corpus, an ordinary direct-mode contract compiled while 20,981 bytes over.
-    // This is not the refusal; a refusal belongs at the spend boundary, where a script length is fatal rather
-    // than merely measurable. It is the compiler no longer being the quietest thing in the chain.
-    console.warn(`Error: ${message}`);
-  }
   const messageBusRouteAbi = artifact.abi.find((fn) => fn.name === '__message_bus1');
   // Witness inputs must come from the same finalized AST parameters used by code generation. Eligible
   // folds receive their complete-value witness before codegen; appending it only to a published direct
@@ -15983,6 +15943,40 @@ function compileResolvedAst(
   if (boundVerifierProgram && artifact.messageBus?.route.inputs.some((input) =>
     input.name === '__internal__activeVerifierIndex')) {
     boundVerifierProgramIdentityByArtifact.set(artifact, verifierProgramIdentity(boundVerifierProgram));
+  }
+  // Admission stamps append one executable push/drop plan commitment per eligible kernel handler. Measure the
+  // published ASM only after those stamps: the optimizer's pre-stamp script is shorter (78 bytes for two handlers),
+  // and using it for either the diagnostic or the deployability certificate can falsely assert consensus fit.
+  // X149 still applies: ASM character length is not byte length.
+  const artifactBytes = asmToBytecode(artifact.bytecode).length;
+  if (artifact.messageBus?.deployability) {
+    const budgets = artifact.messageBus.deployability.budgets;
+    artifact.messageBus.deployability = buildDeployabilityCertificate({
+      measuredBytecodeBytes: artifactBytes,
+      maximumRows: budgets?.maximumRows,
+      maximumBlobBytes: budgets?.maximumBlobBytes,
+      maximumParticipants: budgets?.maximumParticipants,
+    });
+  }
+  const maximumInputBytes = mergedCompilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE;
+  // A placeholder-bound pass temporarily contains the participant route and detached verifier closure in one
+  // bare artifact. It is never deployed; the final verifier-bound participant is checked on its own pass.
+  const detachedVerifierIntermediate = (mergedCompilerOptions as InternalCompilerOptions)
+    .__synthesizeBoundRoutePlaceholder === true
+    || (!!detachedVerifierProgram && !mergedCompilerOptions.__messageBusVerifierProgram
+      && !solidcEnvFlagEnabled('SOLIDC_SKIP_MESSAGE_BUS_BINDER'));
+  if (artifactBytes > maximumInputBytes && !detachedVerifierIntermediate) {
+    const message = `Contract '${artifact.contractName}' is ${artifactBytes} bytes, exceeding the configured `
+      + `${maximumInputBytes}-byte input-script limit by ${artifactBytes - maximumInputBytes}. `
+      + 'Every spend of it is invalid at consensus; it cannot be deployed without splitting '
+      + '(compileFileSplit / compileStringSplit) or reduction.';
+    // Append rather than overwrite diagnostics already recorded by other compiler passes.
+    artifact.diagnostics = [
+      ...(artifact.diagnostics ?? []),
+      { severity: 'error', code: 'contract-size-limit', message },
+    ];
+    // A compiler warning is diagnostic only; the actual refusal remains at the spend boundary.
+    console.warn(`Error: ${message}`);
   }
   return artifact;
 }

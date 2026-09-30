@@ -169,4 +169,29 @@ describe('X149: the size gate measures the script, not its listing', () => {
     const codes = (artifact.diagnostics ?? []).map((entry) => entry.code).sort();
     expect(codes).toEqual(['contract-size-limit', 'message-bus-route-not-synthesized']);
   }, 120_000);
+
+  it('MEASURED: post-stamp kernel bytes drive the certificate and configured size diagnostic', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const limit = MAX_INPUT_BYTESIZE;
+    const artifact = compileString(`contract Stamped() {
+      event Changed(uint key);
+      uint count;
+      function one(uint key) public {
+        this.count = this.count + 1;
+        emit Changed(key);
+        require(this.count > 0);
+      }
+      function two() public returns (uint) { return this.count; }
+    }`, { forceStateful: true, messageBus: true });
+    const scriptBytes = asmToBytecode(artifact.bytecode).length;
+
+    expect(artifact.messageBus?.kernelExecutionPlans?.plans).toHaveLength(2);
+    expect(scriptBytes).toBeGreaterThan(limit);
+    expect(artifact.messageBus?.deployability?.measuredBytecodeBytes).toBe(scriptBytes);
+    const found = sizeDiagnostics(artifact);
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toContain(`${scriptBytes} bytes`);
+    expect(found[0].message).toContain(`limit by ${scriptBytes - limit}`);
+    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toContain(`${scriptBytes} bytes`);
+  }, 120_000);
 });

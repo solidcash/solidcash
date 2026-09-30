@@ -1862,8 +1862,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const writes = options.recordCommitments.map((commitment, nftIndex) =>
     !bytesEqual(commitment, options.writtenCommitments[nftIndex]!));
   const proxyMasterIndex = participant(layout, PROXY_MASTER_ID).index;
-  // The proxy's own master declares every record of its layout; the delegate frame declares the implementation's,
-  // which are the proxy's first ones, because a body addresses the records its own declaration names.
+  // The proxy's own master declares every record of its layout; the delegate frame declares those of the
+  // implementation's records its entry's block layout names, as a callee frame does, because a body addresses each
+  // record by its position in that list and reads its chunk run right after them.
   const implementationRecords = implementationArtifact.stateLayout?.dataNftCount ?? recordIds.length;
   const at = (entries: readonly RecordEntry[], nftIndex: number): RecordEntry =>
     (writes[nftIndex] ? entries[nftIndex]! : recordKept[nftIndex]!);
@@ -1890,7 +1891,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // in that segment, so any other segment declares it unchanged.
   const implementationSegments: RecordEntry[][] = Array.from(
     { length: calls.length + 1 },
-    (_unused, segmentIndex) => recordKept.slice(0, implementationRecords).map((_entry, nftIndex): RecordEntry => {
+    (_unused, segmentIndex) => frameDataRecordIndices(implementationArtifact, options.entry.functionName)
+      .filter((nftIndex) => nftIndex < implementationRecords).map((nftIndex): RecordEntry => {
       const writeAt = recordWriteAt[nftIndex];
       if (writeAt === undefined) return recordKept[nftIndex]!;
       if (segmentIndex < writeAt) return recordKept[nftIndex]!;

@@ -513,9 +513,8 @@ async function seedJob(world: World, seeded: readonly FunctionArgument[]): Promi
   expectSettled(await enter(world, 'Desk', 'note', [JOB, 0n]));
 }
 
-/** Where the token's pull, the close and a job writer's first read of the jobs are reported. */
+/** Where the token's pull and the close are reported. */
 const PULL_LINE = lineOf('function transferFrom(', 'contract Coin');
-const MARK_READ_LINE = lineOf('"not creator"', 'function mark(');
 const CLOSE_LINE = lineOf('function close(');
 
 /** The suffix a refusal carries when the entry's run of chunk records is sized from its record's declared length. */
@@ -645,15 +644,9 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): a job updated, c
       expectArmOutOfBounds(await enter(world, 'Desk', 'update', updateArgs(50n, ['LA'], NO_JUDGE)), -50n);
     }, 900_000);
 
-    it('a job writer whose block names only the first record stops at its first read of the jobs', async () => {
-      const outcome = await enter(world, 'Desk', 'mark', [JOB, DIGEST]);
-      // The frame's segments declare both of the root's records while its block names one, and the body refuses at
-      // its first read of the jobs; the guarded writers, whose blocks name both, get past it. The wall
-      // `block-oracle-beside-array.test.ts` pins. Owner: the SDK hop, `buildHopPlan` (proxy/deploy.ts); patch
-      // docs/per-call/patches/hop-implementation-records.diff.
-      expectRefused(outcome, `the implementation's "mark" entry did not settle through the proxy: frame `
-        + `"implementation-master" of Desk.mark() at line ${MARK_READ_LINE}: no source message (Program failed an `
-        + `OP_VERIFY operation.)${SIZED_RUN}`);
+    it('a job writer whose block names only the first record settles', async () => {
+      // The delegate frame declares the one record the entry names (`buildHopPlan`, `frameDataRecordIndices`).
+      expectSettled(await enter(world, 'Desk', 'mark', [JOB, DIGEST]));
     }, 900_000);
 
     it('closing before a day (36) stops at the payout the execution skips', async () => {

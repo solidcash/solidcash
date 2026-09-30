@@ -29,13 +29,11 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * the contract's own fields, and the oracle owner's key, which the compiler isolates in a data NFT of its own after
  * every other record. No source entry reads that key, so an entry that appends to the task array publishes a block
  * layout naming only the array's record, and its body addresses the array's chunk run as the records that follow
- * the ones it names. The hop's delegate frame declares every record of the implementation's layout instead, so the
- * key's record sits where the body looks for the run: the append is refused at the entry's own line, after the
- * close of segment 0 stalls when the entry also calls a store (the post's shape, with the fixture's clock stamp).
- *
- * The block oracle is incidental: an isolated field of the source's own stops the append the same way, the clock
- * alone settles, and a record the entry does not name ahead of one it does moves its first read onto the wrong
- * record. The direct call path declares the entry's own records and settles that entry.
+ * the ones it names. The hop's delegate frame used to declare every record of the implementation's layout, which
+ * put the key's record where the body looks for the run; it now declares the records the entry names, as a callee
+ * frame does, and each shape below settles (the post's, with the fixture's clock stamp beside a store call; the
+ * append alone; an isolated field of the source's own in place of the key; a record the entry does not name ahead
+ * of one it does). The direct call path declares the entry's own records the same way.
  *
  * A second wall, reported beside it: a proxied store's `view` read whose value the root ignores derives every frame,
  * the validator refuses the store proxy's STATIC frame for its DELEGATE leg (V10), and the hop broadcasts anyway,
@@ -181,11 +179,6 @@ function readSource(view: boolean): string {
     '  function peek(address who) { IJournal(this.journal).isMember(who); require(true); }',
     '}',
   ].join('\n');
-}
-
-/** The 1-based line of the first line of `source` containing `needle`. */
-function lineOf(source: string, needle: string): number {
-  return source.split('\n').findIndex((line) => line.includes(needle)) + 1;
 }
 
 type ArtifactMap = ReturnType<typeof compileStringMulti>;
@@ -344,24 +337,10 @@ function expectSettled(outcome: Outcome): void {
   expect(outcome.coinLive).toBe(false);
 }
 
-/** The hop was refused by name before anything was broadcast, with exactly `message`. */
-function expectRefused(outcome: Outcome, message: string): void {
-  expect(outcome.error).toBeInstanceOf(PerCallProxyDeployError);
-  expect(outcome.error!.message).toBe(message);
-  expect(outcome.coinLive).toBe(true);
+/** The proxy records the settled hop's delegate frame declared ahead of anything else. */
+function settledRecords(outcome: Outcome): string[] {
+  return declaredRecords((outcome.result as PerCallProxyCallResult).draft);
 }
-
-/** The words the hop refuses the root's entry with when its own frame fails a check the source wrote no message for. */
-function entryRefusal(entry: string, line: number, sizedRun: boolean): string {
-  return `the implementation's "${entry}" entry did not settle through the proxy: frame "implementation-master" of `
-    + `Desk.${entry}() at line ${line}: no source message (Program failed an OP_VERIFY operation.)`
-    + (sizedRun ? ', and the run it declares for dynamic "tasks" is 1 chunk(s), sized from the length the record\'s '
-      + 'own declaration states' : '');
-}
-
-/** The stall the close of the entry's first segment gives, once per attempt the derivation ran. */
-const CLOSE_STALL = 'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.open() filled no witness at '
-  + 'site 1 (close of segment 0)';
 
 /** The data-NFT indices the entry's published block layout names, in the order its body reads them. */
 function namedRecords(artifact: Artifact, functionName: string): number[] {
@@ -424,22 +403,17 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: block-oracle state be
     expect(compiled(postSource(false)).Desk!.stateLayout!.dataNftCount).toBe(1);
   });
 
-  it('the post\'s writes stamped with the clock beside a store call stall at the close of segment 0', async () => {
-    const source = postSource(true);
-    const { Journal, Desk } = compiled(source);
+  it('the post\'s writes stamped with the clock beside a store call settle on the record the entry names', async () => {
+    const { Journal, Desk } = compiled(postSource(true));
     const chain = await freshChain();
     const journal = await deployProxied(chain, Journal!, [JOURNAL_IMPL_CATEGORY, JOURNAL_PROXY_CATEGORY],
       [addressOf(DESK_PROXY_CATEGORY)]);
     const desk = await deployProxied(chain, Desk!, [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], [journal.address]);
     const outcome = await enter(chain, desk, 'open', [TITLE, 100n, true], { IJournal: externalOf(journal) });
-    // The delegate frame declares the key's record beside the one the entry names, where the body looks for the
-    // task's chunk, so the run's close fails on every attempt and the entry is refused at its own line. Owner: the
-    // SDK hop (`proxy/deploy.ts`, `buildHopPlan`: the delegate frame's segments declare every data NFT of the
-    // implementation, `recordKept.slice(0, implementationRecords)`, where a callee frame declares the records its
-    // entry names through `frameDataRecordIndices`).
-    expectRefused(outcome, entryRefusal('open', lineOf(source, 'function open('), true));
-    expect(outcome.stalls).toStrictEqual([CLOSE_STALL, CLOSE_STALL]);
-    expect(declaredRecords(outcome.draft!)).toStrictEqual(['proxy-record-0', 'proxy-record-1']);
+    // The delegate frame declares the records its entry's block layout names (`buildHopPlan`,
+    // `frameDataRecordIndices`), so the key's record no longer stands where the body reads the task's chunk.
+    expectSettled(outcome);
+    expect(settledRecords(outcome)).toStrictEqual(['proxy-record-0']);
   }, 300_000);
 
   it('the same post without the clock settles and broadcasts', async () => {
@@ -451,28 +425,25 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: block-oracle state be
     expectSettled(await enter(chain, desk, 'open', [TITLE, 100n, true], { IJournal: externalOf(journal) }));
   }, 300_000);
 
-  it('the clock-stamped append alone, with no call, is refused at the entry\'s own line', async () => {
-    const source = appendSource('clock');
+  it('the clock-stamped append alone, with no call, settles on the record the entry names', async () => {
     const chain = await freshChain();
-    const desk = await deployProxied(chain, compiled(source).Desk!, [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
+    const desk = await deployProxied(chain, compiled(appendSource('clock')).Desk!,
+      [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
     const outcome = await enter(chain, desk, 'open', [TITLE, 100n]);
-    // An entry that makes no call is read without a derivation, so nothing stalls. Owner: the SDK hop, as above.
-    expectRefused(outcome, entryRefusal('open', lineOf(source, 'function open('), true));
-    expect(outcome.stalls).toStrictEqual([]);
+    expectSettled(outcome);
     expect(namedRecords(desk.artifact, 'open')).toStrictEqual([0]);
-    expect(declaredRecords(outcome.draft!)).toStrictEqual(['proxy-record-0', 'proxy-record-1']);
+    expect(settledRecords(outcome)).toStrictEqual(['proxy-record-0']);
   }, 300_000);
 
-  it('an isolated field of the source\'s own in place of the key stops the append the same way', async () => {
-    const source = appendSource('spare');
+  it('an isolated field of the source\'s own in place of the key settles the append the same way', async () => {
     const chain = await freshChain();
-    const desk = await deployProxied(chain, compiled(source).Desk!, [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
+    const desk = await deployProxied(chain, compiled(appendSource('spare')).Desk!,
+      [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
     const outcome = await enter(chain, desk, 'open', [TITLE, 100n]);
-    // No block oracle here: any record the entry does not name, after the ones it does, stands where the run is
-    // read. Owner: the SDK hop, as above.
-    expectRefused(outcome, entryRefusal('open', lineOf(source, 'function open('), false));
+    expectSettled(outcome);
     expect(desk.artifact.stateLayout!.dataNftCount).toBe(2);
     expect(namedRecords(desk.artifact, 'open')).toStrictEqual([0]);
+    expect(settledRecords(outcome)).toStrictEqual(['proxy-record-0']);
   }, 300_000);
 
   it('the append without the clock settles and broadcasts', async () => {
@@ -492,16 +463,15 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: block-oracle state be
     expectSettled(await enter(chain, desk, 'open', []));
   }, 300_000);
 
-  it('a record the entry does not name ahead of one it does moves its first read onto the wrong record', async () => {
+  it('a record the entry does not name ahead of one it does is left undeclared, and the entry settles', async () => {
     const chain = await freshChain();
     const desk = await deployProxied(chain, compiled(SECOND_RECORD_SOURCE).Desk!,
       [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
     const outcome = await enter(chain, desk, 'open', []);
-    // The body reads its one record at the first coordinate of the frame's block, where the hop declared record 0.
-    // Owner: the SDK hop, as above.
-    expectRefused(outcome, entryRefusal('open', lineOf(SECOND_RECORD_SOURCE, 'this.count = this.count + 1;'), false));
+    // The body reads its one record at the first coordinate of the frame's block, which is where that record is.
+    expectSettled(outcome);
     expect(namedRecords(desk.artifact, 'open')).toStrictEqual([1]);
-    expect(declaredRecords(outcome.draft!)).toStrictEqual(['proxy-record-0', 'proxy-record-1']);
+    expect(settledRecords(outcome)).toStrictEqual(['proxy-record-1']);
   }, 300_000);
 
   it('the same entry through the direct call path, which declares the records the entry names, settles', async () => {

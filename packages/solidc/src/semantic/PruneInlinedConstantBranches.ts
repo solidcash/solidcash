@@ -109,6 +109,12 @@ export default class PruneInlinedConstantBranches extends AstTraversal {
 
   private truth(expression: ExpressionNode): boolean | undefined {
     if (expression instanceof BoolLiteralNode) return expression.value;
+    if (expression instanceof IdentifierNode) {
+      const value = this.constants.get(expression.name);
+      if (value === 'bool:true') return true;
+      if (value === 'bool:false') return false;
+      return undefined;
+    }
     if (expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT) {
       const inner = this.truth(expression.expression);
       return inner === undefined ? undefined : !inner;

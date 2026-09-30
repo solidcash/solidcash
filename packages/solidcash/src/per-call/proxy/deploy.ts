@@ -29,9 +29,12 @@
  * same way.
  */
 
-import { binToHex, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
 import {
-  FrameKind, bytesEqual, bytesToHex, sha256, validatorRedeemScript,
+  binToHex, createVirtualMachineBch2026, encodeDataPush,
+  encodeLockingBytecodeP2sh32, hash256, hexToBin,
+} from '@bitauth/libauth';
+import {
+  FrameKind, INDEX_NONE, bytesEqual, bytesToHex, sha256, validatorRedeemScript,
   type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
@@ -903,8 +906,14 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
         // The frame stopped on a declaration it has to be told; it is read below like any other.
       }
     }
+    // A call record names its callee's input, and only a derivation fills that reference: a program read before the
+    // attempt stops on the unfilled reference rather than on a declaration the body closed against. The draft's own
+    // program is therefore read once the attempt has run, so a value the entry computed past a call is still read
+    // from the close that compared it.
+    const readingProgram = candidate.draft.programFor(IMPLEMENTATION_MASTER_ID);
     const reading = readComputedDeclaration({
-      vm, program: implementationProgram, maximumCommitmentBytes: options.maximumCommitmentBytes,
+      vm, program: readingProgram,
+      maximumCommitmentBytes: options.maximumCommitmentBytes,
     });
     // A returning entry compares what its own `return` built against the frame's `retval` slot, which leaves the
     // slot as the operand below that blob: the plan's candidate sits where the close's `computed` operand is, and
@@ -1232,24 +1241,34 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // A call closes the segment the code before it runs in, so a frame that makes `k` calls declares `k + 1`
   // segments. A record the entry writes lands in exactly one of them: the segment the entry's own source names,
   // which the artifact publishes as the count of calls before the write or as the run's last segment when every
-  // call precedes it. The hop declares the write's records there rather than in the segment the frame begins in.
+  // call precedes it. The hop declares the write's records there rather than in the segment the frame begins in,
+  // and keeps each record the frame holds in the segments on either side of it.
   const writeSegment = publishedWriteSegment(implementationArtifact, options.entry.functionName);
-  if (calls.length > 0 && writes.some(Boolean)) {
+  const writesRecords = writes.some(Boolean) || options.entryWrites !== undefined;
+  if (calls.length > 0 && writesRecords && writeSegment === undefined) {
     throw new PerCallProxyDeployError(
-      `the implementation's ${entryLabelFor(options.entry.functionName)} rewrites one of the proxy's own records `
-      + 'beside an external call, and the segment that write lands in is not published, so the hop cannot declare '
-      + 'it',
+      `the implementation's ${entryLabelFor(options.entry.functionName)} writes a record beside an external call, `
+      + 'and the segment that write lands in is not fixed by the entry\'s own source, so the hop cannot declare it',
     );
   }
-  if (calls.length > 0 && options.entryWrites !== undefined && writeSegment === undefined) {
+  // An entry that writes nothing has no write to place, so the published fact is only read where there is one.
+  const writeAt = !writesRecords ? 0 : calls.length === 0 ? 0 : writeSegment === 'last' ? calls.length : writeSegment;
+  if (writeAt === undefined || writeAt < 0 || writeAt > calls.length) {
     throw new PerCallProxyDeployError(
-      `the implementation's ${entryLabelFor(options.entry.functionName)} writes a record beside an external call: `
-      + 'the segment the write lands in is not published for the entry, so the hop cannot declare it',
+      `the implementation's ${entryLabelFor(options.entry.functionName)} publishes segment ${String(writeAt)} for `
+      + `its record write, which the hop's ${calls.length + 1} segment(s) do not hold`,
     );
   }
+  // Each record the entry rewrites is kept at the commitment the proxy spent until the segment its write opens,
+  // written in that segment, and kept at the written commitment afterwards: its own code writes it exactly once,
+  // in that segment, so any other segment declares it unchanged.
   const implementationSegments: RecordEntry[][] = Array.from(
     { length: calls.length + 1 },
-    () => recordKept.slice(0, implementationRecords).map((_entry, nftIndex) => at(recordWritten, nftIndex)),
+    (_unused, segmentIndex) => recordKept.slice(0, implementationRecords).map((_entry, nftIndex): RecordEntry => {
+      if (!writes[nftIndex]) return recordKept[nftIndex]!;
+      if (segmentIndex < writeAt) return recordKept[nftIndex]!;
+      return segmentIndex === writeAt ? recordWritten[nftIndex]! : recordAfter[nftIndex]!;
+    }),
   );
   // The records the entry's own body writes follow the state records its frame declares, which is the ordinal the
   // body's group walk reads them at. A created node is a trailing output past the events.
@@ -1262,16 +1281,28 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     learnedViews: options.entryWriteViews,
   });
   if (laidWrites !== undefined) {
-    // A body that makes no call has one segment to write in; one that makes calls writes in the segment the
-    // artifact published, whose index is the run's last segment when every call precedes the write.
-    const target = calls.length === 0 ? 0 : writeSegment === 'last' ? calls.length : writeSegment!;
-    if (target < 0 || target > calls.length) {
-      throw new PerCallProxyDeployError(
-        `the implementation's ${entryLabelFor(options.entry.functionName)} publishes segment ${String(target)} for `
-        + `its record write, which the hop's ${calls.length + 1} segment(s) do not hold`,
-      );
+    // A mapping node or a value chunk the frame spends is an input the transaction carries from its first segment
+    // on, so the segments on either side of the write declare it kept: at the commitment it was spent with before,
+    // and at the one it is written with after. A record the write creates has no such earlier side.
+    const keptBefore = new Map<number, RecordEntry>();
+    const keptAfter = new Map<number, RecordEntry>();
+    for (const entry of laidWrites.entries) {
+      if (entry.in === INDEX_NONE) continue;
+      if (!keptBefore.has(entry.in)) {
+        keptBefore.set(entry.in, { in: entry.in, out: entry.in, viewIn: entry.viewIn, viewOut: entry.viewIn });
+      }
+      if (!keptAfter.has(entry.in)) {
+        keptAfter.set(entry.in, { in: entry.in, out: entry.in, viewIn: entry.viewOut, viewOut: entry.viewOut });
+      }
     }
-    implementationSegments[target] = [...implementationSegments[target]!, ...laidWrites.entries];
+    for (let segmentIndex = 0; segmentIndex < implementationSegments.length; segmentIndex += 1) {
+      if (segmentIndex === writeAt) continue;
+      implementationSegments[segmentIndex] = [
+        ...implementationSegments[segmentIndex]!,
+        ...(segmentIndex < writeAt ? keptBefore.values() : keptAfter.values()),
+      ];
+    }
+    implementationSegments[writeAt] = [...implementationSegments[writeAt]!, ...laidWrites.entries];
   }
 
   const proxyMasterDraft: DraftMaster = {

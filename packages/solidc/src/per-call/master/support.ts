@@ -797,29 +797,116 @@ export function perCallBatchWriteFollowsEveryCall(entry: FunctionDefinitionNode)
 }
 
 /**
- * The segment an entry's derived mapping write is declared in, as the artifact publishes it for a builder.
+ * The segment an entry's own record write is declared in, as the artifact publishes it for a builder.
  *
  * A fixed number is the count of external calls the entry makes before the write; `'last'` is the last segment the
- * run opens, which is where a write every call precedes lands. A builder reads the same fact the derivation does
- * and declares the write's records in that one segment rather than refusing the entry.
+ * run opens, which is where a write every call precedes lands and where a write to a field whose bytes the record
+ * only sizes lands whatever the source order. A builder reads the same fact code generation does and declares the
+ * write's records in that one segment rather than refusing the entry.
  */
 export type PerCallWriteSegment = number | 'last';
 
 /**
- * The segment an entry's derived mapping write is declared in, or undefined when the artifact cannot state one.
+ * True for a write to a record the entry's own frame holds: a data-NFT field, a dynamic value's record, or a
+ * target of the verified mapping batch the entry plans.
  *
- * The derivation reads the records of the segment the write lands in, so the fact a builder needs is exactly the
- * value code generation acts on: a fixed count names the write's segment outright, and a write every call precedes
- * lands in the segment the witness block's own declared call count names. A write a call the source does not fix
- * follows lands in neither, so it stays unstated and the entry is refused rather than declared in a guessed
+ * A call closes the segment the code before it runs in, so which segment such a write is declared in is the number
+ * of calls the entry's own source makes before it.
+ */
+function writesEntryRecord(statement: Node, batchSlots: ReadonlySet<number>): boolean {
+  if (statement instanceof MappingAssignNode || statement instanceof MappingDeleteNode) {
+    return batchSlots.has(statement.entrySlotIndex);
+  }
+  return statement instanceof StateAssignNode
+    || statement instanceof StateArrayPushNode || statement instanceof StateArrayPopNode
+    || statement instanceof StateArrayAssignNode || statement instanceof StateArrayDeleteNode;
+}
+
+/**
+ * True for a write to a field whose bytes the record does not hold: the record carries the value's length and the
+ * bytes live in a run of chunk records the epilogue pins.
+ *
+ * Such a write is declared in the segment the epilogue runs in — the run's last one — wherever the source makes it:
+ * the record is only rebuilt once the chunk run is written, so an earlier segment's close declares it kept.
+ */
+function writesSizedField(statement: Node): boolean {
+  const stateVariable = (statement as { readonly stateVariable?: { readonly isDynamic?: boolean } }).stateVariable;
+  return stateVariable?.isDynamic === true;
+}
+
+/** True when every write to the entry's own records runs after every call the entry reaches. */
+function entryRecordWritesFollowEveryCall(entry: FunctionDefinitionNode, batchSlots: ReadonlySet<number>): boolean {
+  // A body that sends pays a recipient's `receive()` after its own code, which is a call after every write the
+  // source shows, so a sending body never qualifies.
+  if ((entry.transferInfos?.length ?? 0) > 0) return false;
+  let order = 0;
+  let lastCall = -1;
+  let firstWrite = Number.POSITIVE_INFINITY;
+  walkInvocationAst(entry.body, (node) => {
+    if (node instanceof ExternalFunctionCallNode
+      || node instanceof LowLevelCallStatementNode || node instanceof LowLevelCallNode) {
+      lastCall = order;
+    } else if (writesEntryRecord(node, batchSlots)) {
+      firstWrite = Math.min(firstWrite, order);
+    }
+    order += 1;
+  });
+  return lastCall < firstWrite;
+}
+
+/**
+ * The segment an entry's own record write is declared in, or undefined when the artifact cannot state one.
+ *
+ * The body emits each write in the segment the code before it runs in, so the fact a builder needs is exactly the
+ * value code generation acts on: a fixed count names the write's segment outright, a write every call precedes
+ * lands in the segment the witness block's own declared call count names, and a write to a field whose bytes the
+ * record only sizes lands in that same last segment wherever the source makes it. Every write the entry makes has
+ * to name the same segment, because one fact is published for the entry; a write a call the source does not fix
+ * follows lands in none of them, so it stays unstated and the entry is refused rather than declared in a guessed
  * segment.
  */
 export function perCallWriteSegment(entry: FunctionDefinitionNode): PerCallWriteSegment | undefined {
-  const slots = new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
-  if (slots.size === 0) return undefined;
-  const fixed = perCallBatchWriteSegment(entry);
-  if (fixed !== undefined) return fixed;
-  return perCallBatchWriteFollowsEveryCall(entry) ? 'last' : undefined;
+  const batchSlots = new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
+  const facts: (PerCallWriteSegment | undefined)[] = [];
+  const record = (statement: Node, calls: CallRange): void => {
+    if (writesSizedField(statement)) { facts.push('last'); return; }
+    facts.push(calls === undefined || calls.least !== calls.most ? undefined : calls.least);
+  };
+  const walkBlock = (block: BlockNode | undefined, incoming: CallRange): CallRange => {
+    let range = incoming;
+    for (const statement of block?.statements ?? []) range = walkStatement(statement, range);
+    return range;
+  };
+  const walkStatement = (statement: Node, incoming: CallRange): CallRange => {
+    if (writesEntryRecord(statement, batchSlots)) {
+      record(statement, incoming);
+      return advanceCallRange(incoming, statement);
+    }
+    if (statement instanceof BranchNode) {
+      const afterCondition = advanceCallRange(incoming, statement.condition);
+      const thenRange = walkBlock(statement.ifBlock, afterCondition);
+      const elseRange = statement.elseBlock === undefined
+        ? afterCondition
+        : walkBlock(statement.elseBlock, afterCondition);
+      return joinCallRanges(thenRange, elseRange);
+    }
+    if (statement instanceof BlockNode) return walkBlock(statement, incoming);
+    if (statement instanceof SwitchNode || statement instanceof CollectionIterationNode
+      || statement instanceof WhileNode || statement instanceof DoWhileNode) {
+      // A loop, switch or iteration makes a number of calls its own bound decides; a call-free one makes none.
+      return reachesExternalCall(statement) ? undefined : incoming;
+    }
+    if (statement instanceof TryCatchNode) {
+      // A catch block is not an executable path, matching the invocation walk.
+      return walkBlock(statement.tryBlock, advanceCallRange(incoming, statement.expression));
+    }
+    return advanceCallRange(incoming, statement);
+  };
+  walkBlock(entry.body, { least: 0, most: 0 });
+  if (facts.length === 0) return undefined;
+  if (facts.every((fact) => fact !== undefined && fact === facts[0])) return facts[0];
+  // The write's own segment is not fixed: every call has to precede it for the run's last segment to be the answer.
+  return entryRecordWritesFollowEveryCall(entry, batchSlots) ? 'last' : undefined;
 }
 
 /** True for a hidden operand that is neither a frame value nor a sorted-batch operand the master derives. */
@@ -884,10 +971,10 @@ export interface PerCallEntryCallSites {
   /** True when the entry's calls run inside a loop, so one execution reaches a site a number of times. */
   readonly repeats?: boolean;
   /**
-   * The segment the entry's derived mapping write is declared in, when it writes one and the fact is published.
+   * The segment the entry's own record write is declared in, when it writes one and the fact is published.
    *
-   * A builder declares the write's records in that one segment; absent means the entry writes no such record, or
-   * writes one the artifact cannot place.
+   * A builder declares the write's records in that one segment; absent means the entry writes no record, or writes
+   * one whose segment the source does not fix.
    */
   readonly writeSegment?: PerCallWriteSegment;
 }

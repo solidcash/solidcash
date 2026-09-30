@@ -48,11 +48,13 @@ export interface PublishedEntryStopSites {
   /** One record per external call, in call order. */
   readonly calls: readonly PublishedCallSite[];
   /**
-   * The segment the entry's derived mapping write is declared in, when the entry writes one.
+   * The segment the entry's own record write is declared in, when the entry writes one.
    *
-   * A fixed number is the count of external calls the entry makes before the write; `'last'` is the last segment
-   * the run opens, which is where a write every call precedes lands. A builder declares the write's records in
-   * that one segment; absent means the entry writes no such record, or writes one whose segment is not published.
+   * The records are the frame's own: a data-NFT field, a dynamic value's record, or a verified mapping's nodes. A
+   * fixed number is the count of external calls the entry makes before the write; `'last'` is the last segment the
+   * run opens, which is where a write every call precedes lands and where a write to a field whose bytes the record
+   * only sizes lands whatever the source order. A builder declares the write's records in that one segment; absent
+   * means the entry writes no record, or writes one whose segment the source does not fix.
    */
   readonly writeSegment?: number | 'last';
   /** The sites in the order the driver reaches them, validated before publication. */
@@ -120,8 +122,9 @@ export function entryStopSites(
  * Each entry publishes the calls its own source makes, so a driver that resumes an entry names the callees that
  * entry's sites bind rather than another entry's. The entries share the call count the head fixes, but not the
  * calls themselves. Each call carries its own `repeats` marker, so a fixed call beside a loop keeps a fixed site.
- * An entry that writes a verified mapping also publishes the segment its records are declared in, which a builder
- * places them in rather than declaring them in every segment.
+ * An entry that writes a record of its own — a data-NFT field, a dynamic value's record, or a verified mapping's
+ * nodes — also publishes the segment that write is declared in, which a builder places the records in rather than
+ * declaring them in every segment.
  */
 export function publishPerCallStopSites(
   contractName: string,

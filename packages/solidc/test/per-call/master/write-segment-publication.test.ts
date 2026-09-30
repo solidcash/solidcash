@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { asmToScript, scriptToBytecode } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { declaredSegmentsSkipRuntimeScript, declaredSegmentsSkipScript } from '../../../src/per-call/master/declared-view.js';
+import {
+  declaredSegmentsSkipRuntimeScript, declaredSegmentsSkipScript,
+} from '../../../src/per-call/master/declared-view.js';
 
 /**
  * The segment a per-call entry's derived mapping write lands in, as the artifact publishes it.
@@ -72,12 +74,78 @@ const WRITE_AFTER_GUARDED_CALL_SOURCE = `pragma solidcash ^0.13.0;${PING}`
   + '   }'
   + ' }';
 
+/** The same three positions for a write that lands on the entry's own record rather than a mapping node. */
+const RECORD_WRITE_FIRST_SOURCE = `pragma solidcash ^0.13.0;${PING}`
+  + ' contract Ledger {'
+  + '   uint public count;'
+  + '   function bump() {'
+  + '     this.count = this.count + 1;'
+  + `     IOther(${OTHER}).ping.call();`
+  + '     require(true);'
+  + '   }'
+  + ' }';
+
+const RECORD_WRITE_AFTER_ONE_CALL_SOURCE = `pragma solidcash ^0.13.0;${PING}`
+  + ' contract Ledger {'
+  + '   uint public count;'
+  + '   function bump() {'
+  + `     IOther(${OTHER}).ping.call();`
+  + '     this.count = this.count + 1;'
+  + '     require(true);'
+  + '   }'
+  + ' }';
+
+const RECORD_WRITE_AFTER_GUARDED_CALL_SOURCE = `pragma solidcash ^0.13.0;${PING}`
+  + ' contract Ledger {'
+  + '   uint public count;'
+  + '   function bump(bool go) {'
+  + `     if (go) { IOther(${OTHER}).ping.call(); }`
+  + '     this.count = this.count + 1;'
+  + '     require(true);'
+  + '   }'
+  + ' }';
+
+/**
+ * A write to a field the record only sizes: the bytes live in a chunk run the epilogue pins, so the record is
+ * declared written in the run's last segment wherever the source makes the write relative to the calls.
+ */
+const SIZED_FIELD_BEFORE_CALL_SOURCE = `pragma solidcash ^0.13.0;${PING}`
+  + ' contract Ledger {'
+  + '   string[] public names;'
+  + '   function push() {'
+  + '     this.names.push("hi");'
+  + `     IOther(${OTHER}).ping.call();`
+  + '     require(true);'
+  + '   }'
+  + ' }';
+
+const SIZED_FIELD_AFTER_CALL_SOURCE = `pragma solidcash ^0.13.0;${PING}`
+  + ' contract Ledger {'
+  + '   string[] public names;'
+  + '   function push() {'
+  + `     IOther(${OTHER}).ping.call();`
+  + '     this.names.push("hi");'
+  + '     require(true);'
+  + '   }'
+  + ' }';
+
 // Optimisation is off so the emitted bytes carry the derivation's own skip recipe verbatim: the optimiser
 // rewrites equivalent sequences, which would hide the recipe this case matches the published fact against.
 const writeFirst = compileStringMulti(WRITE_FIRST_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
-const writeAfterOneCall = compileStringMulti(WRITE_AFTER_ONE_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+const writeAfterOneCall =
+  compileStringMulti(WRITE_AFTER_ONE_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
 const writeAfterGuardedCall =
   compileStringMulti(WRITE_AFTER_GUARDED_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+const recordWriteFirst =
+  compileStringMulti(RECORD_WRITE_FIRST_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+const recordWriteAfterOneCall =
+  compileStringMulti(RECORD_WRITE_AFTER_ONE_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+const recordWriteAfterGuardedCall =
+  compileStringMulti(RECORD_WRITE_AFTER_GUARDED_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+const sizedFieldBeforeCall =
+  compileStringMulti(SIZED_FIELD_BEFORE_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
+const sizedFieldAfterCall =
+  compileStringMulti(SIZED_FIELD_AFTER_CALL_SOURCE, { composition: 'per-call', optimise: false }).Ledger!;
 
 const RUNTIME_SKIP = Buffer.from(declaredSegmentsSkipRuntimeScript()).toString('hex');
 const SKIP_ONE = Buffer.from(declaredSegmentsSkipScript(1)).toString('hex');
@@ -97,5 +165,31 @@ describe('the segment a derived mapping write lands in, as an artifact publishes
     expect(publishedWriteSegment(writeAfterGuardedCall, 'Ledger', 'move')).toBe('last');
     // The emitted derivation steps over the number of segments the witness block itself declares.
     expect(emittedProgram(writeAfterGuardedCall)).toContain(RUNTIME_SKIP);
+  });
+});
+
+describe('the segment a write to the entry\'s own record lands in, as an artifact publishes it', () => {
+  it('publishes the frame\'s opening segment for a record write that precedes the entry\'s calls', () => {
+    expect(publishedWriteSegment(recordWriteFirst, 'Ledger', 'bump')).toBe(0);
+  });
+
+  it('publishes the fixed index a call precedes the record write in', () => {
+    expect(publishedWriteSegment(recordWriteAfterOneCall, 'Ledger', 'bump')).toBe(1);
+    // The record is rebuilt and compared against the declaration of the segment its write landed in.
+    expect(emittedProgram(recordWriteAfterOneCall)).toContain(SKIP_ONE);
+  });
+
+  it('publishes the run\'s last segment for a record write every call precedes', () => {
+    expect(publishedWriteSegment(recordWriteAfterGuardedCall, 'Ledger', 'bump')).toBe('last');
+    expect(emittedProgram(recordWriteAfterGuardedCall)).toContain(RUNTIME_SKIP);
+  });
+});
+
+describe('the segment a write to a field the record only sizes lands in, as an artifact publishes it', () => {
+  it('publishes the run\'s last segment whether the write precedes the entry\'s call or follows it', () => {
+    // The record carries the value's length and the bytes live in the run the epilogue pins, so the record is
+    // declared written where that run is: the source position of the write does not name its segment.
+    expect(publishedWriteSegment(sizedFieldBeforeCall, 'Ledger', 'push')).toBe('last');
+    expect(publishedWriteSegment(sizedFieldAfterCall, 'Ledger', 'push')).toBe('last');
   });
 });

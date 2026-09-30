@@ -108,7 +108,7 @@ lands it removes the claim line.
   segment the call opened (one call: segment 1; it is the criterion's loop-upsert-beside-a-call shape with a
   machine accept and a refused mutation). So a loop upsert is served for a fixed record and open for a chain node
   once a call shares the body.
-  **Served for one and two turns, open from the third (2026-09-30, `18bd5bda5`)**: the varying-key shape now settles
+  **Served (2026-09-30, `18bd5bda5` + `2149801f7`)**: the varying-key shape settles
   through the shipped deploy and call path - `conformance/loop-upsert-settlement.test.ts` drives a loop upsert whose
   key is an element of the caller's array, the machine accepts the well-formed spend, and one byte of a record the
   loop wrote changed is refused; `call/loop-turns.test.ts` settles a two-element array the same way, one node per
@@ -125,9 +125,15 @@ lands it removes the claim line.
   refused mutation). What the emitted loop cannot do is a **descending arrival**: the plan builds the gap's chain in
   slot order while the body chains in array order, so a key below the pending turn co-spends a predecessor the plan
   never declared (measured operands at the loop's `OP_EQUALVERIFY`, `key(5) → key(1)` computed against
-  `key(5) → key(6)` declared). That is refused **by name** now - `... at turn N of "workers" under a key that does
-  not sit above the turn before it ...` - and serving it needs the pending-defer machinery to accept a turn that
-  arrives below the pending node. The
+  `key(5) → key(6)` declared). **A descending arrival settles now** (`2149801f7`): the fix is on the plan side, not
+  the emitter - for a loop whose value is one literal or one scalar parameter (an invariant), `planCallLoopWrites`
+  orders its turns by slot and `orderLoopKeyArgs` hands the frame the key array in that order, the same
+  semantics-preserving reorder the direct convention already makes in `loadCreateBuilderSortedInsertLoops`. Two- and
+  three-element descending arrays settle for both bodies, each with a refused record mutation
+  (`conformance/loop-upsert-settlement.test.ts`, `call/loop-turns.test.ts`: 12 cases green in those two files); the
+  named refusal stays for the shapes the reorder is not licensed for - a **per-key** value array
+  (`balances[workers[i]] = amounts[i]`), whose array is not the SDK's to permute, and a repeated slot, which
+  `planMappingBatch` refuses independently of order. The
   entry still publishes no write-segment fact, which is now stated as by design at
   `solidc/test/per-call/master/write-segments-publication.test.ts:142`.
   The paragraphs below record the state before that landing:
@@ -340,7 +346,8 @@ lands it removes the claim line.
   stream has taken the published facts. **Status 2026-09-30: two of the three shapes are done.** The census read back
   with this round's compiler shows seven contracts and **0 refusals**, `postThreadMessage` publishes
   `writeSegments: []` and `refund` its batch and its run, the master tests pass, and the facts are in the ladder
-  stream's hands. **The third shape is the varying key, and it is in this lane** (the coordinator's 2026-09-30
+  stream's hands. **The third shape is the varying key, it is in this lane, and the loop protocol is served**
+  (the coordinator's 2026-09-30
   decision below): its compiler half is landed and its SDK half is the next rounds' work. The fixture's
   `updateJobWhitelist` writes a **different node per turn** — its key is an element of a caller-supplied array —
   and that variant publishes no write fact, while its collection now has an `entry` slot in the frame's layout and a
@@ -455,10 +462,15 @@ lands it removes the claim line.
   the upsert body's own emitted code, before any record is read - and the shipped call path refuses it on the frame
   it plans itself (`conformance/loop-upsert-settlement.test.ts`), while the same mapping written once from a
   parameter settles there. The reproducers are `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the
-  fixture's own shape, the machine's refusals, and its segment control) and that conformance guard. **PW3 stays
-  open for this shape** under the coordinator's 2026-09-30 decision that it stays in PW3 (recorded above); the item's
-  box is unticked until the fixture shape settles, and an earlier round's wording that put the shape "outside PW3's
-  done-when" was withdrawn in `c612e351b`. **That wording was never the item's Done-when**: the Done-when line is
+  fixture's own shape, the machine's refusals, and its segment control) and that conformance guard. **PW3's box is
+  ticked at `2149801f7`**, under the coordinator's 2026-09-30 decision that the varying key stays in PW3 (recorded
+  above) and on the item's own Done-when: the three refusals are gone from the published census (7 contracts,
+  0 refusals, `{SCRATCH}/census2-head.log`, `BUILD=0`, `COMPILE=0`), the master tests pass (610 in 82 files), and the
+  published facts are in the ladder stream's hands. Two shapes are recorded as refused **by name** rather than
+  served, and neither is one of the item's three: a **per-key** value array (`balances[workers[i]] = amounts[i]`,
+  the reorder is not licensed there), and a loop whose **body makes the call**, which needs the hop's callee-frame
+  planning (PW1/PW2's lane). An earlier round's wording that put the shape "outside PW3's done-when" was withdrawn
+  in `c612e351b`. **That wording was never the item's Done-when**: the Done-when line is
   byte-identical at `1ec400927` and at HEAD ("the three refusals are gone from the published census, the master tests
   pass, and the ladder stream has taken the published facts"), with only a status sentence appended below it
   (`git show 1ec400927:docs/per-call/HANDOFF_PARALLEL.md | grep -n -A2 'Done when'`), so PW3's requirement was

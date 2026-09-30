@@ -524,17 +524,19 @@ lands it removes the claim line.
   unfilled reference, so five checks report their own reason and the revert inside the third token call names the
   callee's custom error. Left in the settle loop (`proxy/deploy.ts`, the ladder stream's): `errorArgs` on the thrown
   error, and the callee-first order that lets an unreached callee's revert beat an earlier check of the entry.
-- **PW2 - landed but for its last probe** (`8f3ae98ee`, `48c4e03d3`, `315e2b853`, `a808809d9`, `c27583fa5`,
-  `86c803be1`, `d99258e47`, `b5273653e`; job updates, close and reopen in flight). The probes in
-  `test/per-call/ahead/`, the plan's "Walls ahead" table (shape, first wall, what stands behind it, file, owner) and
-  `ahead/` in `MANIFEST.md`. Fixed on the way, each with its focused case: a call site's branch predicate published
-  as it stands where its branch starts (`569c0d60d`); a method named like a built-in on a contract receiver compiled
-  as the built-in (`73265877c`, `2aa73362e`); a long mapping value's chunk taken as a data record by the deployment
-  classifier (`82493523a`); and a constructor's struct-literal mapping value, which crashed the genesis rather than
-  being refused by name (`25173d5a3`). Handed over through the table: the hop's walls, with a patch for the delegate
-  frame declaring records its entry does not name (`docs/per-call/patches/hop-implementation-records.diff`). Beyond
-  PW8 on `post job 1`'s own path stand PW10's `view` reads through the data proxy and, as last probed, two reaches of
-  one mapping node (`publishJobPost`'s `balanceOf(msg.sender)` beside `transferFrom(msg.sender)`).
+- **PW2 - landed** (`8f3ae98ee`, `48c4e03d3`, `315e2b853`, `a808809d9`, `c27583fa5`, `86c803be1`, `d99258e47`,
+  `b5273653e`, `c51f24376`). The probes in `test/per-call/ahead/`, the plan's "Walls ahead" table (shape, first wall,
+  what stands behind it, file, owner) and `ahead/` in `MANIFEST.md`. Fixed on the way, each with its focused case: a
+  call site's branch predicate published as it stands where its branch starts (`569c0d60d`); a method named like a
+  built-in on a contract receiver compiled as the built-in (`73265877c`, `2aa73362e`); a long mapping value's chunk
+  taken as a data record by the deployment classifier (`82493523a`); and a constructor's struct-literal mapping value,
+  which crashed the genesis rather than being refused by name (`25173d5a3`). Handed over through the table: the hop's
+  walls, with a patch for the delegate frame declaring records its entry does not name
+  (`docs/per-call/patches/hop-implementation-records.diff`), and the per-call clock that never moves
+  (`oracle/blockOracleUpdater.ts`). Beyond PW8 on `post job 1`'s own path stand PW10's `view` reads through the data
+  proxy, the token pull's allowance read beside its balances batch, which the hop drops (`job-updates.test.ts`), and,
+  as last probed, two reaches of one mapping node (`publishJobPost`'s `balanceOf(msg.sender)` beside
+  `transferFrom(msg.sender)`).
 - **PW9 - landed, for a different cause** (`039dbdf5b`). There was no coordinate mismatch: the ip the machine reports
   and the published `requires` are both in the invoked body's coordinates, and the reporter reads them correctly. The
   zero-target entry failed first at its call-count guard, pinned to a fixed count because a call in the right operand

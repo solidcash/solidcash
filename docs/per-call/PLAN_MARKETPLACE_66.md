@@ -2268,6 +2268,20 @@ what the same entry meets with its first wall stepped around. The hop is `proxy/
   sit above the turn before it ...`), and serving it needs the pending-defer machinery to take a turn arriving
   below the pending node. The entry still publishes no write-segment fact; that is now stated as by design, with its reason, at
   `solidc/test/per-call/master/write-segments-publication.test.ts:142`.
+- **Why the fixture's own entry still publishes no fact, stated from the source (2026-09-30).**
+  `.marketplace/contracts/MarketplaceV1.sol:474-497` shows the shape: inside ONE loop iteration the body writes
+  `whitelistWorkers[jobId_][allowedWorkers_[i]] = true` and then calls `publishJobEvent(...)`. So the write's segment
+  is decided by a call *inside* the loop body, which is the `callFreeNestedBlocks` refusal
+  (`packages/solidc/src/per-call/master/support.ts:722` returns undefined for any loop whose body reaches a call):
+  no compile-time walk can place a write whose segment a run-time call decides. Two consequences worth separating,
+  because they are different blockers: (a) the **loop protocol** is served - a loop upsert with no call in its body
+  settles for one and two turns, and (for keys ascending by slot value) for three and four, through the shipped path
+  (`call/loop-turns.test.ts`, `conformance/loop-upsert-settlement.test.ts`); (b) the **fixture's variant**, whose
+  loop body makes the call, needs the hop's callee-frame planning before its per-turn records can be declared in the
+  segments the loop's iterations open - `callPerCallEntry` refuses it for that reason (`entry "move" makes 1 external
+  call(s), whose callee frames this call path does not plan yet`), which is PW1/PW2's lane and explicitly outside
+  this objective. So `updateJobWhitelist` publishing `writeSegments` undefined is the (a)+(b) combination, not an
+  unserved loop protocol, and the census read-back records it as such.
 - **Superseded (kept for the record): the shape was not served.** The fixture's
   `MarketplaceV1.updateJobWhitelist` upserts a mapping whose key is an element of a caller-supplied array, inside a
   loop whose body also makes the entry's call. Measured by `solidc/test/per-call/master/loop-upsert-segment.test.ts`,

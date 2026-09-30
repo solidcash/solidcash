@@ -930,6 +930,14 @@ export interface SortedUpsertLoopAbi {
   valueArrayOffset?: string;   // set value = valueArrayParam[i] + this signed decimal constant
   valueScalarParam?: string;   // a loop-INVARIANT param value (same for every key), e.g. `+= amount` (fixed airdrop)
   valueConst?: string;         // a loop-invariant INT LITERAL value (decimal string), e.g. `+= 100`
+  /**
+   * The loop stores this bool literal under every key.
+   *
+   * A bool literal's tail is `0x01` for true and empty for false, which are the same bytes as the int literals 1
+   * and 0, so an emitter that states the value in {@link valueConst} as `1` or `0` carries exactly the same write.
+   * A reader that needs the distinction reads this field when it is published and falls back to the constant.
+   */
+  valueBool?: boolean;
   valueRuntimeLocal?: string;
   valueRuntimeExpression?: boolean;
   /** Authenticated source-order trace for a mapping value which carries state between loop iterations. */

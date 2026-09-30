@@ -343,7 +343,7 @@ const sortedUpsertLoopAbiFields = Object.freeze({
   multiArmConstructedKeyReplay: true, crossArrayKeyReplay: true, nestedHelperReturnReplay: true,
   sameIterationMutableSelectionReplay: true, keyDecodeTupleIndex: true, keyDecodeTupleTypes: true,
   predicateArrayParam: true, predicateEquals: true, valueArrayParam: true, valueArrayIndexParam: true,
-  valueArrayOffset: true, valueScalarParam: true, valueConst: true, valueRuntimeLocal: true,
+  valueArrayOffset: true, valueScalarParam: true, valueConst: true, valueBool: true, valueRuntimeLocal: true,
   valueRuntimeExpression: true, valueTraceWitnessParam: true, valueTraceLocal: true,
   valueTraceInitial: true, valueTraceUpdates: true, valueTraceAfterUpdates: true,
   prefixCountWitnessParam: true, prefixCountCondition: true, mutation: true,

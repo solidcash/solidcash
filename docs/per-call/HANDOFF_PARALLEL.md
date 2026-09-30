@@ -580,3 +580,23 @@ lands it removes the claim line.
   and `chunk-array-range-read.test.ts` already reported its own message (since `f2e34600d`). Not measured: the
   fixture's revert titles. Handed over: such a call site publishes no condition, so the planner states a visit
   whenever its target is non-zero.
+
+### PW3 addendum: the nested-key run-time-loop write the job posting entry makes
+
+- **Measured on the committed base** (`354ccf998`, `17697ac0e`), fixture recompiled from scratch, filtered run
+  `-t 'post job 1|post job with invalid deadline|remove mece tag'`: `remove mece tag` passes; both job-posting
+  titles stop on `the implementation's "publishJobPost" entry writes 1 mapping entry(ies) across 0 sorted
+  batch(es), and this hop plans one batch to one collection`.
+- **The write**: `whitelistWorkers[jobs.length - 1][allowedWorkers_[i]] = true`, inside
+  `if (allowedWorkers_.length > 0) { for (uint i = 0; i < allowedWorkers_.length; i++) … }`. The artifact publishes
+  it in `entryAccesses` (`slotIndex 0`, `keySources` = an expression for the job id and
+  `arridx(id:allowedWorkers_, id:__sp10_i)`, `operations: ["write"]`, `valueSource: "lit:true"`) and
+  **`sortedUpsertLoops` is empty** for the entry, so the hop's batch planner has nothing to plan and refuses.
+  `stateLayout.collections` has the collection as `sorted: true` with key types `["uint256","address"]`.
+- **Why it is PW3's**: it is the same nested-key, varying-element write shape as `updateJobWhitelist`, and the
+  reason it is not served is the machine's own refusal of every declaration tried for that shape (recorded in PW3's
+  status), not the planner's choice. Whoever publishes and serves the varying-key loop row serves both entries —
+  this one is the fixture's own acceptance title (`post job 1`), so it is worth measuring against it directly:
+  `cd /Code/cashscript/.worktrees/per-call && node --max-old-space-size=8192 packages/testing/dist/cli.js compile
+  --jobs 4` then `yarn vitest run --config vitest.marketplace.config.ts --no-file-parallelism -t 'post job 1'`
+  (~8 minutes, most of it the fixture deployment).

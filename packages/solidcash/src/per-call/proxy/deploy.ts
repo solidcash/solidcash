@@ -35,7 +35,7 @@ import {
 } from '@bitauth/libauth';
 import {
   FrameKind, INDEX_NONE, buildEntryNftCovenantScript, bytesEqual, bytesToHex, computeCollectionHash,
-  dynamicChunkSignature, sha256, validatorRedeemScript,
+  dynamicChunkSignature, frameKindName, sha256, validatorRedeemScript,
   type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
@@ -50,8 +50,8 @@ import { decodeEntryCommitment, headSentinelCommitment } from '../../stateful/So
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails, scriptToLockingBytecode } from '../../utils.js';
 import {
-  PerCallComposerError, createComposedDerivationHost, deriveComposition, describeInnermost, facetId,
-  layoutTransaction, participant, reportCompositionRefusal, requireLearnedViews, validatorFacetsOf,
+  PerCallComposerError, UNFILLED_CALLEE_REF, createComposedDerivationHost, deriveComposition, describeInnermost,
+  facetId, layoutTransaction, participant, reportCompositionRefusal, requireLearnedViews, validatorFacetsOf,
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftCall, type DraftInput,
   type DraftMaster, type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
@@ -64,6 +64,7 @@ import {
 } from '../deploy/records.js';
 import { decodeReturnValues } from '../read/index.js';
 import { PerCallProxyDeployError } from './errors.js';
+import { hopTrace, hopTraceError, hopTraceOn } from './hop-trace.js';
 import {
   hopEntryWrites, mappingHeadCollection, mappingNodeSlot,
   type HopEntryWrites, type LaidHopEntryWrites,
@@ -1001,6 +1002,7 @@ async function settleCallees(options: {
   readonly writeViews: Map<string, readonly (Uint8Array | undefined)[]>;
   readonly events: Map<string, readonly Uint8Array[]>;
 }> {
+  const trace = hopTraceOn();
   const learned = new Map<string, Uint8Array>();
   const writeViews = new Map<string, readonly (Uint8Array | undefined)[]>();
   // Each callee's event payloads start from the sentinel the plan states there; the body's own comparison of the
@@ -1039,6 +1041,11 @@ async function settleCallees(options: {
         vm: options.vm, artifacts: options.artifacts,
         plan: options.planFor(learned, writeViews, calleeEvents),
       });
+      if (trace) {
+        hopTrace(`attempt callee=${callee.master} `
+          + `${traceFrameFacts(callee.master, callee.functionName, callee.kind)} n=${attempt} `
+          + `refs-before=[${traceCallRefs(candidate.draft, callee.master)}]`);
+      }
       // A callee that makes calls cannot accept before its own calls are derived, so its subtree is derived first;
       // a stall there is the callee's own return comparison or one of its own write's declarations, read below.
       if (callee.calls.length > 0) {
@@ -1047,8 +1054,16 @@ async function settleCallees(options: {
         };
         try {
           deriveComposition([frame], candidate.host);
+          if (trace) {
+            hopTrace(`stop callee=${callee.master} reason=derived `
+              + `refs-after=[${traceCallRefs(candidate.draft, callee.master)}]`);
+          }
           break;
         } catch (error) {
+          if (trace) {
+            hopTrace(`stop callee=${callee.master} reason=stall:${hopTraceError(error)} `
+              + `refs-after=[${traceCallRefs(candidate.draft, callee.master)}]`);
+          }
           const learnable = callee.returns
             || (callee.entryWrites?.learningCandidates.length ?? 0) > 0
             || (calleeEvents.get(callee.master)?.length ?? 0) > 0;
@@ -1063,7 +1078,10 @@ async function settleCallees(options: {
         sourceOutputs: program.sourceOutputs,
         transaction: program.transaction,
       });
-      if (options.vm.stateSuccess(state) === true) break;
+      if (options.vm.stateSuccess(state) === true) {
+        if (trace) hopTrace(`stop callee=${callee.master} reason=accepted`);
+        break;
+      }
       const reading = readComputedDeclaration({
         vm: options.vm, program, maximumCommitmentBytes: options.maximumCommitmentBytes,
       });
@@ -1071,10 +1089,12 @@ async function settleCallees(options: {
       // operand the candidate sits on, the other is what the body computed. A callee the plan states no candidate
       // for has nothing to learn, so a close that is not its return is the frame's own refusal.
       if (callee.returns && reading.ok && bytesEqual(reading.computed, placeholder)) {
+        if (trace) hopTrace(`stop callee=${callee.master} reason=learned-retval`);
         learned.set(callee.master, Uint8Array.from(reading.declared));
         continue;
       }
       if (callee.returns && reading.ok && bytesEqual(reading.declared, placeholder)) {
+        if (trace) hopTrace(`stop callee=${callee.master} reason=learned-retval`);
         learned.set(callee.master, Uint8Array.from(reading.computed));
         continue;
       }
@@ -1087,6 +1107,7 @@ async function settleCallees(options: {
         const computedAt = candidates.findIndex((entry) => bytesEqual(reading.computed, entry));
         const at = declaredAt >= 0 ? declaredAt : computedAt;
         if (at >= 0) {
+          if (trace) hopTrace(`stop callee=${callee.master} reason=learned-write at=${at}`);
           const views: (Uint8Array | undefined)[] = [...(writeViews.get(callee.master) ?? [])];
           while (views.length <= at) views.push(undefined);
           views[at] = Uint8Array.from(declaredAt >= 0 ? reading.computed : reading.declared);
@@ -1103,6 +1124,7 @@ async function settleCallees(options: {
         const computedAt = events.findIndex((entry) => bytesEqual(reading.computed, entry));
         const at = declaredAt >= 0 ? declaredAt : computedAt;
         if (at >= 0) {
+          if (trace) hopTrace(`stop callee=${callee.master} reason=learned-event at=${at}`);
           const next = [...events];
           next[at] = Uint8Array.from(declaredAt >= 0 ? reading.computed : reading.declared);
           calleeEvents.set(callee.master, next);
@@ -1117,12 +1139,64 @@ async function settleCallees(options: {
       const attributed = refusal.innermost === undefined
         ? describeReading(reading, settledRecords[0]?.commitment ?? new Uint8Array(0))
         : describeInnermost(refusal.innermost);
+      // The reporter names the deepest frame the machine refused, which is not always the frame this settle
+      // evaluated: a call the settle never bound leaves its caller reading an unfilled callee reference, and a proxy
+      // leg that merely forwards can refuse before the frame it forwards to. The evaluated frame is named beside the
+      // reported one, so the failing frame is read off this message rather than inferred from the reporter.
+      const failing = trace && refusal.innermost !== undefined && refusal.innermost.master !== callee.master
+        ? `frame "${callee.master}" of ${callee.functionName} (${frameKindName(callee.kind)}) did not accept; the `
+          + `refusal reporter named ${attributed}`
+        : attributed;
+      if (trace) {
+        hopTrace(`stop callee=${callee.master} reason=refused evaluated=${callee.master} `
+          + `reported=${refusal.innermost?.master ?? 'none'} `
+          + `refs=[${traceCallRefs(candidate.draft, callee.master)}]`);
+        hopTrace(`close callee=${callee.master} reason=${attributed}`);
+      }
       throw new PerCallProxyDeployError(
-        `the call's callee "${callee.functionName}" did not settle through the proxy: ${attributed}`,
+        `the call's callee "${callee.functionName}" did not settle through the proxy: ${failing}`,
       );
     }
   }
   return { retvals: learned, writeViews, events: calleeEvents };
+}
+
+/**
+ * The frame facts a refusal message is built from, as the hop trace's own fields.
+ *
+ * The same master id, entry label and kind a refusal names, so a trace line and a refusal can be matched without
+ * inferring one from the other.
+ */
+function traceFrameFacts(master: string, functionName: string, kind: number): string {
+  return `frame=${master} fn=${functionName} kind=${frameKindName(kind)}`;
+}
+
+/**
+ * The entry identity a frame's run publishes, as the refusal reporter resolves it.
+ *
+ * `reportCompositionRefusal` names a frame by the functionName of the run keyed to its master, so the trace reads
+ * the same fact from the same place; a master the draft holds no run for is named by its own id.
+ */
+function traceRunFunctionName(draft: CompositionDraft, master: string): string {
+  return draft.runs.find((run) => run.master === master)?.functionName ?? master;
+}
+
+/**
+ * One frame's call records as the draft currently states them, for the hop trace.
+ *
+ * Each record names the callee its reference points at — the id the plan stated, or `?` for a reference that
+ * points at no participant — and the reference itself: the unfilled sentinel (which a frame reads as a negative
+ * input index), `none`, or the callee's input index once the derivation filled it.
+ */
+function traceCallRefs(draft: CompositionDraft, master: string): string {
+  const byIndex = new Map(draft.layout.participants.map((placed) => [placed.index, placed.id]));
+  return draft.blockOf(master).calls.map((call) => {
+    const ref = call.calleeRef === UNFILLED_CALLEE_REF
+      ? 'unfilled'
+      : call.calleeRef === INDEX_NONE ? 'none' : String(call.calleeRef);
+    const callee = byIndex.get(call.calleeRef) ?? '?';
+    return `${callee}@${ref}->${binToHex(call.target).slice(0, 8)}`;
+  }).join(' ');
 }
 
 /** The category a frame's own events are emitted under: its own, or its caller's for a delegate frame. */
@@ -1144,6 +1218,7 @@ function calleeEventCategory(callees: readonly HopCallee[], callee: HopCallee): 
  */
 async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   const { vm, proxyArtifact, implementationArtifact } = options;
+  const trace = hopTraceOn();
   let writtenCommitments = [...options.recordCommitments];
   let writtenEvents = [...options.eventCommitments];
   let learnedRetval = options.retvalPlaceholder;
@@ -1197,6 +1272,12 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       writtenCommitments, entryWrites, writtenExtras, writtenEvents, learnedRetval ?? new Uint8Array(0),
       calleeRetvals, calleeWriteViews, calleeEvents);
     const candidate = createComposedDerivationHost({ vm, artifacts, plan });
+    if (trace) {
+      hopTrace(`attempt entry=${IMPLEMENTATION_MASTER_ID} `
+        + `${traceFrameFacts(IMPLEMENTATION_MASTER_ID, traceRunFunctionName(candidate.draft, IMPLEMENTATION_MASTER_ID),
+          FrameKind.DELEGATE)} n=${attempt} `
+        + `refs-before=[${traceCallRefs(candidate.draft, IMPLEMENTATION_MASTER_ID)}]`);
+    }
     const implementationProgram = candidate.draft.programFor(IMPLEMENTATION_MASTER_ID);
     const state = vm.evaluate({
       inputIndex: participant(candidate.draft.layout, IMPLEMENTATION_MASTER_ID).index,
@@ -1204,6 +1285,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       transaction: implementationProgram.transaction,
     });
     if (vm.stateSuccess(state) === true) {
+      if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=accepted`);
       composed = candidate;
       break;
     }
@@ -1212,10 +1294,18 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     if (options.callees !== undefined && options.callees.length > 0) {
       try {
         derivedInLoop = deriveComposition([options.root], candidate.host);
+        if (trace) {
+          hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=derived `
+            + `refs-after=[${traceCallRefs(candidate.draft, IMPLEMENTATION_MASTER_ID)}]`);
+        }
         composed = candidate;
         break;
-      } catch {
+      } catch (error) {
         // The frame stopped on a declaration it has to be told; it is read below like any other.
+        if (trace) {
+          hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=stall:${hopTraceError(error)} `
+            + `refs-after=[${traceCallRefs(candidate.draft, IMPLEMENTATION_MASTER_ID)}]`);
+        }
       }
     }
     // A call record names its callee's input, and only a derivation fills that reference: a program read before the
@@ -1233,11 +1323,13 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     // the `retval` is read here before the candidates below are matched.
     if (reading.ok && options.retvalPlaceholder !== undefined
       && bytesEqual(reading.computed, options.retvalPlaceholder)) {
+      if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-retval`);
       learnedRetval = Uint8Array.from(reading.declared);
       continue;
     }
     if (reading.ok && options.retvalPlaceholder !== undefined
       && bytesEqual(reading.declared, options.retvalPlaceholder)) {
+      if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-retval`);
       learnedRetval = Uint8Array.from(reading.computed);
       continue;
     }
@@ -1265,24 +1357,42 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       const attributed = refusal.innermost === undefined
         ? describeReading(reading, writtenCommitments[0] ?? new Uint8Array(0))
         : describeInnermost(refusal.innermost);
+      // The reporter names the deepest refused frame, which a frame below the implementation can be; the frame this
+      // settle evaluated is named beside it so the failing frame is not read off the reporter alone.
+      const failing = trace && refusal.innermost !== undefined
+        && refusal.innermost.master !== IMPLEMENTATION_MASTER_ID
+        ? `frame "${IMPLEMENTATION_MASTER_ID}" of `
+          + `${traceRunFunctionName(candidate.draft, IMPLEMENTATION_MASTER_ID)} `
+          + `(${frameKindName(FrameKind.DELEGATE)}) did not accept; the refusal reporter named ${attributed}`
+        : attributed;
+      if (trace) {
+        hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=refused evaluated=${IMPLEMENTATION_MASTER_ID} `
+          + `reported=${refusal.innermost?.master ?? 'none'} `
+          + `refs=[${traceCallRefs(candidate.draft, IMPLEMENTATION_MASTER_ID)}]`);
+        hopTrace(`close entry=${IMPLEMENTATION_MASTER_ID} reason=${attributed}`);
+      }
       throw new PerCallProxyDeployError(
-        `the implementation's ${options.entryLabel} did not settle through the proxy: ${attributed}`
+        `the implementation's ${options.entryLabel} did not settle through the proxy: ${failing}`
         + sizedRunClause(entryWrites),
         refusal.innermost?.reason.arguments,
       );
     }
     if (learned >= 0) {
+      if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-record nft=${learned}`);
       writtenCommitments = writtenCommitments.map((candidate, nftIndex) =>
         (nftIndex === learned ? Uint8Array.from(reading.computed) : candidate));
       entryWrites = options.entryWritesFor?.(writtenCommitments) ?? entryWrites;
     } else if (learnedExtra >= 0) {
+      if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-write at=${learnedExtra}`);
       learnedExtras.set(bytesToHex(extras[learnedExtra]!), Uint8Array.from(reading.computed));
     } else {
+      if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-event at=${learnedEvent}`);
       writtenEvents = writtenEvents.map((candidate, emitIndex) =>
         (emitIndex === learnedEvent ? Uint8Array.from(reading.computed) : candidate));
     }
   }
   if (composed === undefined) {
+    if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=exhausted attempts=${maximumAttempts}`);
     throw new PerCallProxyDeployError(
       `the implementation's ${options.entryLabel} did not settle through the proxy in `
       + `${maximumAttempts} attempts${sizedRunClause(entryWrites)}`,
@@ -1311,6 +1421,10 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     throw error;
   }
   requireLearnedViews(draft);
+  if (trace) {
+    hopTrace(`stop root=${PROXY_MASTER_ID} reason=derived `
+      + `refs-after=[${traceCallRefs(draft, PROXY_MASTER_ID)}]`);
+  }
 
   const program = draft.programFor(PROXY_MASTER_ID);
   const verdicts = draft.layout.participants.map((placed): InitializeVerdict => {
@@ -1953,7 +2067,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const proxyMasterAmount = options.proxyMasterAmount;
   const implementationMasterAmount = options.implementationMasterAmount;
   const proxyRecordAmount = options.validatorAmount;
-  return {
+  const plan: CompositionDraftPlan = {
     blocks,
     userInputs: [{ id: USER_ID, index: layout.participantCount }],
     masters: [proxyMasterDraft, implementationMasterDraft, ...calleeMasterDrafts],
@@ -2055,6 +2169,17 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       ...calleeTrailing.flatMap((written) => written.laid?.trailingOutputs ?? []),
     ],
   };
+  // The frames the plan lays, in order, with the calls it states for each: the plan states a callee identity and the
+  // target address, while the assembled draft is what carries the callee reference.
+  if (hopTraceOn()) {
+    for (const master of plan.masters) {
+      const calls = master.calls.map((call) =>
+        `${call.callee}:${frameKindName(call.kind)}->${binToHex(call.target).slice(0, 8)}`).join(' ');
+      hopTrace(`plan ${traceFrameFacts(master.master, master.functionName, master.frame.kind)} `
+        + `contract=${master.contract} calls=[${calls}]`);
+    }
+  }
+  return plan;
 }
 
 /** The satoshi value an event output carries, as a genesis's own event outputs do. */

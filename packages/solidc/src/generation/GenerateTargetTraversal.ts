@@ -5479,11 +5479,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // repeated entry/handler scaffolding into invocation-delimited fragments, and a 39-handler corpus measurement
     // recovered another 4,608 bytes in 61ms (127,429 -> 122,821) from precisely those tails.
     const kernelOutline = this.currentContractHasMessageBus && this.compilerOptions.messageBusKernel === true;
-    const nearConsensusOutline = !this.currentContractHasMessageBus && !largeBodyOutline
-      && result !== undefined
-      && emittedBytesBeforeOutline - result.savedBytes >= 9_000
-      && emittedBytesBeforeOutline - result.savedBytes <= MAX_INPUT_BYTESIZE + 1_000;
-    if ((largeBodyOutline || kernelOutline || nearConsensusOutline)
+    if ((largeBodyOutline || kernelOutline)
       && result !== undefined && result.functions.length > 0) {
       const leftoverStart = Date.now();
       // First-pass outlining walks from -12 into three-byte pushes. Unused two-byte slots (typically

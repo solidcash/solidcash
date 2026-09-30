@@ -100,6 +100,32 @@ strictFieldAccess = false,
     return '';
   };
   const solidityImportCompat = artifactUsesSolidityAbi(artifact);
+  // The type the artifact's own declarations give a read: a struct field through its struct, a state variable
+  // through the state layout, an element through its array's type.
+  const declaredType = (candidate: ExternalCallExpression): string => {
+    const published = inferredType(candidate);
+    if (published) return published;
+    if (candidate.kind === 'field' && candidate.expression && candidate.name) {
+      const struct = declaredType(candidate.expression);
+      return (artifact.structs ?? artifact.stateLayout?.structs)?.find((entry) => entry.name === struct)
+        ?.fields.find((field) => field.name === candidate.name)?.type ?? '';
+    }
+    if (candidate.kind === 'state' && candidate.name) {
+      return artifact.stateLayout?.variables.find((variable) => variable.name === candidate.name)?.type ?? '';
+    }
+    if (candidate.kind === 'arrayAccess' && candidate.left) {
+      return declaredType(candidate.left).match(/^(.*)\[\d*\]$/)?.[1] ?? '';
+    }
+    return '';
+  };
+  // The compiler publishes a struct field read inside `abi.encodePacked` with no type (it serializes before type
+  // checking), and an imported-Solidity body packs an `address` as its 20-byte identity, so such a field is packed
+  // by its declared type rather than as the locking bytecode it stores.
+  const packedFieldType = (candidate: ExternalCallExpression | undefined): string => {
+    if (!solidityImportCompat || candidate?.kind !== 'field') return '';
+    const type = declaredType(candidate);
+    return type === 'address' || type === 'address payable' ? type : '';
+  };
   const isStandardLockingBytecode = (locking: Uint8Array): boolean => (
     locking.length === 0
     || (locking.length === 35 && locking[0] === 0xaa && locking[1] === 0x20 && locking[34] === 0x87)
@@ -457,7 +483,7 @@ strictFieldAccess = false,
     if (values.some((value) => value === undefined)) return undefined;
     const parts = values.map((value, index) => asBytes(
       value as FunctionArgument,
-      expression.fields?.[index] || inferredType(expression.args?.[index]!),
+      expression.fields?.[index] || inferredType(expression.args?.[index]!) || packedFieldType(expression.args?.[index]),
       expression.args?.[index],
     ));
     return parts.every((part): part is Uint8Array => part !== undefined) ? concat(parts) : undefined;

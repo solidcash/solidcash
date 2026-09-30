@@ -305,6 +305,40 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toEqual(addressHash);
   });
 
+  it('infers packed Solidity address types through struct field reads published untyped', () => {
+    const addressHash = Uint8Array.from({ length: 20 }, (_unused, index) => (index * 7 + 5) % 256);
+    const lockingBytecode = Uint8Array.of(0x76, 0xa9, 0x14, ...addressHash, 0x88, 0xac);
+    const schema = {
+      ...artifact,
+      structs: [
+        { name: 'Roles', fields: [{ name: 'owner', type: 'address' }, { name: 'worker', type: 'address' }] },
+        { name: 'Job', fields: [{ name: 'state', type: 'uint8' }, { name: 'roles', type: 'Roles' }] },
+      ],
+      stateLayout: { ...artifact.stateLayout!, variables: [{ name: 'jobs', type: 'Job[]', nftIndex: 0, fieldIndex: 0 }] },
+    } as unknown as Artifact;
+    const state = { jobs: [{ state: 1n, roles: { owner: new Uint8Array(), worker: lockingBytecode } }] };
+    const first: ExternalCallExpression = { kind: 'literal', type: 'bigint', value: '0' };
+    const packedWorker = (roles: ExternalCallExpression): ExternalCallExpression => ({
+      kind: 'abiEncodePacked', fields: [''], args: [{ kind: 'field', name: 'worker', expression: roles }],
+    });
+    // A storage-pointer read types the entry and its `roles`; an index read types neither.
+    const pointer = packedWorker({
+      kind: 'field', name: 'roles', type: 'Roles',
+      expression: { kind: 'stateAccess', name: 'jobs', args: [first], type: 'Job' },
+    });
+    const index = packedWorker({
+      kind: 'field', name: 'roles', expression: { kind: 'arrayAccess', left: { kind: 'state', name: 'jobs' }, right: first },
+    });
+
+    expect(evaluator._evaluateExternalExpression(pointer, [], schema, state, [])).toEqual(addressHash);
+    expect(evaluator._evaluateExternalExpression(index, [], schema, state, [])).toEqual(addressHash);
+    // A native body packs an address whole, so the stored locking bytecode is kept.
+    const native = {
+      ...schema, compiler: { ...schema.compiler, options: { ...schema.compiler.options, solidityImportCompat: false } },
+    } as unknown as Artifact;
+    expect(evaluator._evaluateExternalExpression(index, [], native, state, [])).toEqual(lockingBytecode);
+  });
+
   it('packs typed Solidity integers at natural width in big-endian order', () => {
     const expression: ExternalCallExpression = {
       kind: 'abiEncodePacked', fields: ['uint16', 'int16'],

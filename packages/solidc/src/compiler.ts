@@ -11109,39 +11109,29 @@ function synthesizeMessageBusRoute(
               require(targetSlot > previousEventTarget);
               previousEventTarget = targetSlot;
               require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) == 1);
-              require(parent < invocationRows
-                && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
-              require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
-              require(subtreeEnd == parent);
             } else if (kind == 3) {
               require(targetSlot > previousValueTarget);
               previousValueTarget = targetSlot;
               require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) == 1);
-              require(parent < invocationRows
-                && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
-              require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
-              require(subtreeEnd == parent);
             } else if (kind == 4) {
               require(targetSlot > previousTokenTarget);
               previousTokenTarget = targetSlot;
               require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 3);
-              require(parent < invocationRows
-                && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
-              require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
-              require(subtreeEnd == parent);
             } else if (kind == 5) {
               require(targetSlot > previousDeploymentTarget);
               previousDeploymentTarget = targetSlot;
               require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 1);
-              require(parent < invocationRows
-                && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
-              require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
-              require(subtreeEnd == parent);
             } else {
               require(targetSlot > previousSidecarTarget);
               previousSidecarTarget = targetSlot;
               require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 2);
               require(parent == 65535 && depth == 0 && subtreeEnd == completion);
+            }
+            if (kind >= 2 && kind <= 5) {
+              require(parent < invocationRows
+                && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
+              require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
+              require(subtreeEnd == parent);
             }
           }
           cursor = cursor + 21;

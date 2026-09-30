@@ -2,6 +2,7 @@ import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions,
   encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { compileString, compileStringMulti } from 'solidc';
 import {
   blockhashOracleLockingBytecode, buildBlockhashCommitment, buildChunkCommitment, scriptToBytecode, sha256,
@@ -1411,6 +1412,10 @@ describe('messageBus.compose atomic transaction', () => {
     const hostileEvent = await composition.build();
     mutateAuthenticatedFrame(hostileEvent, '', 'messageEnvelope-event');
     expect(vmRejects(hostileEvent)).toBe(true);
+    const oversizedInputs = built.buildLibauthTransaction().inputs
+      .map((input, index) => ({ index, bytes: input.unlockingBytecode.length }))
+      .filter(({ bytes }) => bytes > ConsensusBch2026.maximumBytecodeLength);
+    expect(oversizedInputs, 'unlocking scripts must meet the BCH-2026 per-input byte limit').toEqual([]);
     await expect(composition.send()).resolves.toMatchObject({
       txid: expect.stringMatching(/^[0-9a-f]{64}$/),
     });

@@ -14809,8 +14809,12 @@ function compileResolvedAst(
               && typeMatches(field.type, expectedType);
           }
           if (expression.kind === 'binary') {
-            return ['+', '-', '*', '/', '%', '&', '|', '^', '==', '!=', '<', '<=', '>', '>=', '&&', '||']
+            const supported = ['+', '-', '*', '/', '%', '&', '|', '^', '==', '!=', '<', '<=', '>', '>=', '&&', '||']
               .includes(expression.operator ?? '')
+              || (expression.operator === '<<' && expression.type === 'bigint'
+                && expression.left?.type === 'bigint'
+                && /^(?:bigint|u?int(?:\d+)?)$/u.test(expression.right?.type ?? ''));
+            return supported
               && expression.left !== undefined && expression.right !== undefined
               && validate(expression.left) && validate(expression.right);
           }

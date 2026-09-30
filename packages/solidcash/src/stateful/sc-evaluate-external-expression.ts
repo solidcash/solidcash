@@ -414,6 +414,10 @@ executionCallerAddress?: FunctionArgument,
       if (expression.operator === '&') return a & b;
       if (expression.operator === '|') return a | b;
       if (expression.operator === '^') return a ^ b;
+      // A stored-element bigint shift is represented as a typed expression, not as an unchecked JS shift.
+      // Bound the shift count before allocation; the result remains subject to normal script-size checks.
+      if (expression.operator === '<<' && expression.type === 'bigint'
+        && expression.left.type === 'bigint' && b >= 0n && b <= 4_096n) return a << b;
       if (expression.operator === '<') return a < b;
       if (expression.operator === '<=') return a <= b;
       if (expression.operator === '>') return a > b;

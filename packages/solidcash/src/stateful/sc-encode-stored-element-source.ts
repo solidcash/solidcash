@@ -5,10 +5,12 @@
 import {
   decodePushdataValue,
   encodePushdataValue,
+  isFixedWidthType,
   type AbiFunction,
   type Artifact,
   type EntryAccessAbi,
   type ExternalCallExpression,
+  type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
@@ -173,8 +175,12 @@ function encodeStoredSource(
         && typeMatches(field.type, expectedType);
     }
     if (expression.kind === 'binary') {
-      return ['+', '-', '*', '/', '%', '&', '|', '^', '==', '!=', '<', '<=', '>', '>=', '&&', '||']
+      const supported = ['+', '-', '*', '/', '%', '&', '|', '^', '==', '!=', '<', '<=', '>', '>=', '&&', '||']
         .includes(expression.operator ?? '')
+        || (expression.operator === '<<' && expression.type === 'bigint'
+          && expression.left?.type === 'bigint'
+          && /^(?:bigint|u?int(?:\d+)?)$/u.test(expression.right?.type ?? ''));
+      return supported
         && expression.left !== undefined && expression.right !== undefined
         && validate(expression.left) && validate(expression.right);
     }
@@ -264,11 +270,11 @@ function encodeStoredSource(
   try {
     const encoded = encodeFunctionArgument(value, storedType, structs);
     if (!(encoded instanceof Uint8Array)) return undefined;
-    // A handler argument is an unframed stack item, but a variable-width array
-    // element is persisted with its own pushdata header. The compiler applies
-    // emitPushdataEncode before appending bytes/string elements to the array.
-    if (!wholeValue && (storedType === 'bytes' || storedType === 'string')) {
-      return encodePushdataValue(encoded, 'bytes');
+    // A handler argument is an unframed stack item. A variable-width array element is persisted with its
+    // pushdata header, including bigint's numeric OP_1..OP_16 shortcuts; the compiler applies
+    // emitPushdataEncode before appending it to the array.
+    if (!wholeValue && !isFixedWidthType(storedType)) {
+      return encodePushdataValue(value as StateValue, storedType, structs);
     }
     return encoded;
   } catch {

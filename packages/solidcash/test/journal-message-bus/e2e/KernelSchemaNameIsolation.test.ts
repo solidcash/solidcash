@@ -139,6 +139,43 @@ describe('kernel schema-name isolation', () => {
       .toEqual({ value: 7n, payload });
   }, 120_000);
 
+  it('evaluates a typed bigint left shift in a stored-element recipe', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(`contract ShiftedRecord {
+      mapping(int => bigint[]) records;
+      function append(int key) public {
+        records[key].push(bigint(4) << 160);
+        require(records[key].length > 0);
+      }
+    }`, { ...OPTIONS, messageBusHandlers: ['append'] });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'append'))
+      .toMatchObject({ eligible: true });
+    const handler = artifact.abi.find((candidate) => candidate.name === 'append')!;
+    const access = handler.entryAccesses![0];
+    expect(access.storedElementSource?.expression).toMatchObject({
+      kind: 'binary', operator: '<<', type: 'bigint',
+    });
+    const base = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+    const connected = StatefulContract.withCategory(
+      base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+    );
+    const evaluator = connected as unknown as {
+      _encodeStoredElementSource(
+        sourceAccess: EntryAccessAbi, elementType: string, args: unknown[], sourceHandler: AbiFunction,
+        sourceArtifact: Artifact, state?: Record<string, unknown>,
+      ): Uint8Array | undefined;
+    };
+    const encoded = evaluator._encodeStoredElementSource(access, 'bigint', [7n], handler, artifact);
+    expect(encoded).toBeDefined();
+    expect(decodePushdataValue(encoded!, 0, 'bigint').value).toBe(4n << 160n);
+    const builder = await connected.batch([
+      { function: 'append', args: [7n] },
+      { function: 'append', args: [7n] },
+    ]).build();
+    expect(vmAccepts(builder)).toBe(true);
+  }, 120_000);
+
   it('treats historical Marketplace identifiers exactly like an alpha-renamed chunkable write', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const variants = [

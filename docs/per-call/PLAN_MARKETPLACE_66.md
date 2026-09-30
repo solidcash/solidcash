@@ -2169,7 +2169,15 @@ Titles marked NEVER have not passed on any real compile to date.
   collection declared in the frame's layout and the per-turn operands derived — compiler code generation plus the
   ladder stream's `proxy/**` planning — so **the coordinator's decision on who takes it is what it waits for**, with
   both reproducers committed (`solidc/test/per-call/master/loop-upsert-segment.test.ts`,
-  `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`).
+  `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`). **Scoped 2026-09-30** by a read-only
+  investigation: the emitter's run-time-loop body addresses its per-turn record from the *direct* convention's
+  co-spent band (`emitSortedUpsertLoopBody`/`emitTrailingWriteInputBase`), while a per-call frame parks its records'
+  base, so the master reads another participant and its `OP_EQUALVERIFY` fails. Three commits would serve it, each
+  leaving the census at 0 refusals and the per-call suite green: the per-call layout's `entry` slot for this shape
+  plus the published fact; the frame-relative per-turn coordinate in the emitter (the paged-read arithmetic already
+  carries it); and the SDK planning one node per turn, mirroring its own read path. About 4-6 days compiler and 4-6
+  days SDK; the compiler-only loop-beside-a-call step is about 1-1.5 days and its proof is that
+  `master/loop-upsert-segment.test.ts`'s two refusals become an accept beside a one-segment-later refusal.
 - **Each publication shape has its machine verdict, and the loop shape's is an accept.** A body that writes nothing
   of its own must declare its own record kept, and the machine refuses the same record declared changed where the
   code never touches it (`solidcash/test/per-call/hostile/unwritten-record-change.test.ts`, whose `touch` entry is

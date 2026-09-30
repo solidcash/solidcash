@@ -102,6 +102,20 @@ lands it removes the claim line.
   Pinned reproducers:
   `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the fixture's own shape, the machine's refusals, and the
   segment control) and `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` (the shipped call path).
+- **What serving the open variant needs, scoped (2026-09-30, a read-only investigation).** The emitter's run-time-loop
+  body addresses its per-turn record as the *direct* convention's co-spent band (`input[activeInput + blockSize +
+  turn]`, `GenerateTargetTraversal.ts`'s `emitSortedUpsertLoopBody` / `emitTrailingWriteInputBase`), while a per-call
+  frame declares its records in a segment and parks their base (`recordInputIndexSlotName()`); so for this shape the
+  master reads another participant and its `OP_EQUALVERIFY` fails — the `Program failed an OP_VERIFY operation.`
+  recorded above. Three commits would serve it, each leaving the census at 0 refusals and the per-call suite green:
+  (1) the per-call layout gives the collection an `entry` slot for this shape and the artifact publishes the write
+  fact (`SymbolTableTraversal` skips an in-loop entry and `support.ts`'s `perCallWriteSteps` places only batch slots
+  today, both per-call-only to change); (2) the emitter takes the frame-relative per-turn coordinate the paged-read
+  arithmetic already carries (`perCallEntryOffset` plus `perCallPagingTurnAddend`) instead of the trailing band;
+  (3) the SDK's `entry-records.ts` plans one node per turn, mirroring the read path's `entryReadRecords` / `loopTurns`.
+  Compiler about 4-6 days, SDK about 4-6 days; the smallest visible step — the loop-beside-a-call varying key,
+  compiler only — is about 1-1.5 days and turns `master/loop-upsert-segment.test.ts`'s two refusals into an accept at
+  the write's segment beside a refusal one segment later.
 - **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder
   stream has taken the published facts. **Status 2026-09-30: two of the three shapes are done.** The census read back
   with this round's compiler shows seven contracts and **0 refusals**, `postThreadMessage` publishes

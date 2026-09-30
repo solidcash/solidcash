@@ -393,7 +393,7 @@ class ReferenceRun {
 
     this.checkCensus(category, chains);
     this.checkChains(category, chains);
-    this.checkValues(category, chains);
+    this.checkValues(chains);
     this.checkContractValue(category);
   }
 
@@ -414,7 +414,9 @@ class ReferenceRun {
       for (const send of block.sends) {
         if (sends.has(send)) this.reject('V7', 'TWO_SENDS_SHARE_AN_OUTPUT', send);
         sends.add(send);
-        net += outputByIndex(this.transaction, send)!.value;
+        const output = outputByIndex(this.transaction, send);
+        if (output === undefined) this.reject('V7', 'A_SEND_OUTPUT_IS_NOT_AN_OUTPUT', send);
+        net += output!.value;
       }
     }
     if (net < 0n) this.reject('V7', 'A_CONTRACT_LOSES_VALUE_ITS_FRAMES_DO_NOT_PAY', this.context.validatorInputIndex);
@@ -515,29 +517,17 @@ class ReferenceRun {
     }
   }
 
-  private checkValues(category: Uint8Array, chains: Map<string, { entry: RecordEntry; master: number }[]>): void {
-    const paidBy = new Map<number, bigint>();
-    for (const master of this.framesFor(category)) {
-      let total = 0n;
-      for (const send of this.master(master).sends) {
-        const output = outputByIndex(this.transaction, send);
-        if (output === undefined) this.reject('V7', 'A_SEND_OUTPUT_IS_NOT_AN_OUTPUT', send);
-        total += output!.value;
-      }
-      paidBy.set(master, total);
-    }
-
+  /** A record keeps at least its value: the contract's containers pay its frames' sends (spec 4b). */
+  private checkValues(chains: Map<string, { entry: RecordEntry; master: number }[]>): void {
     for (const [slot, chain] of chains) {
       if (!slot.startsWith('in:')) continue;
       const input = inputByIndex(this.transaction, Number(slot.slice(3)));
       if (input === undefined) continue;
-      for (const { entry, master } of chain) {
+      for (const { entry } of chain) {
         if (entry.out === INDEX_NONE) continue;
         const output = outputByIndex(this.transaction, entry.out);
         if (output === undefined) continue;
-        if (output.value + (paidBy.get(master) ?? 0n) < input.value) {
-          this.reject('V7', 'A_RECORD_DROPS_VALUE_IT_DID_NOT_SEND', output.index);
-        }
+        if (output.value < input.value) this.reject('V7', 'A_RECORD_DROPS_VALUE', output.index);
       }
     }
   }

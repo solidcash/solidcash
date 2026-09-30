@@ -311,6 +311,7 @@ listed under the table, and none of those is claimed anywhere else.
 | Part of a covered contract left unsettled | `validator/script.test.ts` (one case) |
 | A validator transcript or a covered witness block the shipped program cannot read | `validator/script.test.ts` (nine cases) and `validator-transcript.test.ts` (a block with a trailing byte or cut short) |
 | A validator output missing, not recreated, or carrying less value, or no master of its own category | `validator-recreation.test.ts` (missing, not recreated) and `validator/script.test.ts` (two cases) |
+| A record the validator settles written back lighter, even by exactly its frame's listed send (T39) | `validator/script.test.ts` (one case) |
 | A transcript listing masters that point elsewhere, are duplicated or are missing, and roots that are duplicated, missing or extra | `validator/script.test.ts` (twelve cases, the two-root composition accepted beside them) |
 | A forged call edge in either direction: callee, caller, frame kind, origin, value, sender, target, self, result, argument digest, an unreached master, or a master called twice | `validator/script.test.ts` (thirteen cases) |
 | A contract settled twice, or a read-only frame changing a record, emitting or paying an output | `validator/script.test.ts` (settled twice, paying) and `validator-settlement.test.ts` (changing a record, emitting) |

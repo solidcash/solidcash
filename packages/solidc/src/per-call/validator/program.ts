@@ -1955,11 +1955,11 @@ function emitRequireOutputIsDeclared(e: Emitter): void {
 }
 
 /**
- * V7's value floor: a record a frame writes keeps at least the value it came with, less what the frame pays out.
+ * V7's value floor: a record a frame writes keeps at least the value it came with.
  *
- * Entry `[.., X]`, exit the same. The sends a frame lists are summed once; then every entry that both found a record
- * and writes one must leave at least the record's own value, the frame's sends included. An entry whose indices name
- * no input or no output is left alone, since another rule owns those.
+ * Entry `[.., X]`, exit the same. The contract's containers pay its frames' sends (spec 4b), so every entry that both
+ * found a record and writes one must leave at least the record's own value. An entry whose indices name no input or
+ * no output is left alone, since another rule owns those.
  */
 function emitRequireRecordValues(e: Emitter): void {
   const O = Opcodes;
@@ -1982,10 +1982,9 @@ function emitRequireRecordValues(e: Emitter): void {
 }
 
 /**
- * One frame's records: the sends it pays out, then every record it writes.
+ * One frame's records: every record it writes keeps at least its value, since the contract's containers pay its sends.
  *
- * Entry `[.., rest, index]`, exit `[.., rest]`. The block is read twice, because the sends follow the segments and
- * the total is what the segment entries are weighed against.
+ * Entry `[.., rest, index]`, exit `[.., rest]`.
  */
 function emitCheckMasterRecordValues(e: Emitter): void {
   const O = Opcodes;
@@ -1999,18 +1998,12 @@ function emitCheckMasterRecordValues(e: Emitter): void {
   dropLengthPrefixed(e, 4);
   takeUnsignedCount(e, 2);
   loopCounted(e, dropCall);
-  // `[.., rest, afterCalls]`: the record indices are gathered, then the frame's sends are summed.
+  // `[.., rest, afterCalls]`: the record indices are gathered, and the block past them is not read.
   e.op(O.OP_0, O.OP_TOALTSTACK);
   takeUnsignedCount(e, 2);
   loopCounted(e, emitGatherSegmentIndices);
-  e.op(O.OP_0, O.OP_TOALTSTACK);
-  dropIndexList(e);
-  takeUnsignedCount(e, 2);
-  loopCounted(e, emitSumSendValue);
-  e.op(O.OP_DROP);
-  e.op(O.OP_FROMALTSTACK, O.OP_FROMALTSTACK);
-  e.op(O.OP_SWAP, O.OP_TOALTSTACK);
-  // `[.., rest, indices]`, with the frame's sends parked for the checks.
+  e.op(O.OP_DROP, O.OP_FROMALTSTACK);
+  // `[.., rest, indices]`.
   e.op(O.OP_DUP);
   e.op(O.OP_BEGIN);
   e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
@@ -2018,8 +2011,8 @@ function emitCheckMasterRecordValues(e: Emitter): void {
   e.op(O.OP_ENDIF);
   e.op(O.OP_SIZE);
   e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
-  // The walk's copy, the gathered list itself, and then the parked total.
-  e.op(O.OP_DROP, O.OP_DROP, O.OP_FROMALTSTACK, O.OP_DROP);
+  // The walk's copy and the gathered list itself.
+  e.op(O.OP_DROP, O.OP_DROP);
 }
 
 /** One listed send: its output's value added to the frame's running total, which lives on the alternate stack. */
@@ -2052,7 +2045,7 @@ function emitGatherEntryIndices(e: Emitter): void {
 }
 
 /**
- * One gathered entry: a record a frame writes keeps its value, the frame's sends included.
+ * One gathered entry: a record a frame writes keeps at least its value.
  *
  * Entry `[.., created, rest]`, exit `[.., created, rest]`. The first four bytes are the two indices; an index that
  * names no input or no output leaves the check alone, since another rule owns those — and so does an index the
@@ -2078,7 +2071,6 @@ function emitCheckGatheredIndices(e: Emitter): void {
   e.count(2).op(O.OP_PICK, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN);
   e.op(O.OP_BOOLAND, O.OP_BOOLAND, O.OP_IF);
   e.op(O.OP_DUP, O.OP_OUTPUTVALUE);
-  e.op(O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK, O.OP_ADD);
   e.op(O.OP_ROT);
   e.op(O.OP_UTXOVALUE);
   e.op(O.OP_GREATERTHANOREQUAL, O.OP_VERIFY);

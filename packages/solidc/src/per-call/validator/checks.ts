@@ -484,7 +484,7 @@ function checkSettlement(state: DerivationState, settled: SettledContract): void
   }
 
   checkCensus(state, category, eventOutputs);
-  checkRecordValues(state, category, groups);
+  checkRecordValues(state, groups);
   checkContractValue(state, category);
 }
 
@@ -578,35 +578,16 @@ function checkCensus(state: DerivationState, category: Uint8Array, eventOutputs:
   }
 }
 
-/** The value floor: a record keeps its value except for what a frame's listed sends pay out. */
-function checkRecordValues(
-  state: DerivationState,
-  category: Uint8Array,
-  groups: ReadonlyMap<string, ChainEntry[]>,
-): void {
-  const sendValueByMaster = new Map<number, bigint>();
-  for (const master of state.masterSet) {
-    if (!sameCategory(contextCategory(state, master), category)) continue;
-    let total = 0n;
-    for (const send of blockOf(state, master).sends) {
-      const output = outputAt(state.transaction, send);
-      if (output === undefined) check('V7', 'V7_SEND_OUTPUT_OUT_OF_RANGE', send);
-      total += output!.value;
-    }
-    sendValueByMaster.set(master, total);
-  }
-
+/** The value floor: a record keeps at least its value, since the contract's containers pay its frames' sends. */
+function checkRecordValues(state: DerivationState, groups: ReadonlyMap<string, ChainEntry[]>): void {
   for (const [key, chain] of groups) {
     if (!key.startsWith('in:')) continue;
     const input = inputAt(state.transaction, Number(key.slice(3)));
-    for (const { entry, master } of chain) {
+    for (const { entry } of chain) {
       if (entry.out === INDEX_NONE) continue;
       const output = outputAt(state.transaction, entry.out);
       if (output === undefined) continue;
-      const paid = sendValueByMaster.get(master) ?? 0n;
-      if (output.value + paid < input!.value) {
-        check('V7', 'V7_RECORD_VALUE_DECREASED', output.index);
-      }
+      if (output.value < input!.value) check('V7', 'V7_RECORD_VALUE_DECREASED', output.index);
     }
   }
 }

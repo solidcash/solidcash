@@ -3427,8 +3427,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (usesResult) this.popFromStack();
     }
     if (!usesResult) return;
-    // The record's `result` is the concatenated canonical pushes of the returned values, so it decodes exactly as
-    // the direct path decodes a return event's commitment.
+    // The record's `result` is the callee's own retval verbatim. A native boundary's is the concatenated canonical
+    // pushes of the returned values, so it decodes exactly as the direct path decodes a return event's commitment.
+    // A Solidity-compatible boundary's is an ABI tuple, and reading that as pushdata takes its first offset or
+    // zero-padding byte as OP_0, which turns a dynamic value into empty bytes and a returned `true` into false.
+    if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+      && isEvmExternalResultSchemaDecodable(returnTypes)) {
+      this.pushToStack('(callResult)');
+      this.emitEvmExternalResultDecode(returnTypes, locationData);
+      return;
+    }
     for (let field = 0; field < returnTypes.length; field += 1) {
       const isLast = field === returnTypes.length - 1;
       if (isLast) this.emitPushdataDecodeLastField(returnTypes[field]!, locationData);

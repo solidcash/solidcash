@@ -126,9 +126,8 @@ const MAPPING_SWEEP_SOURCE = 'pragma solidcash ^0.13.0;'
 /**
  * The plan's sweep with the treasury fixed at compile time.
  *
- * A user-entered master carries no run-time argument (pinned below), so the reachable spelling of the plan's
- * `sweep(t)` names the treasury in the source: the argument the self-call passes is still the mapping read
- * `this.bal[address(this)]`, which is the shape that had no block-layout slot.
+ * This is the same shape as the plan's `sweep(t)` with the treasury named in the source, so the frame's own
+ * argument plays no part and what the frame does with the callee's records is the only thing measured.
  */
 const LITERAL_SWEEP_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Tok {'
@@ -414,28 +413,39 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
     expect(refusal.message).toMatch(/master "tok-1" of Tok.sweep\(\) filled no witness at site 0/);
   });
 
-  it('refuses `sweep(t)` as a user-entered root: a user entry supplies no run-time argument', () => {
-    // `sweep(t)` takes a run-time argument. A user-entered master carries no call data (only a dispatcher selector
-    // is permitted), so the root frame's parameter is never supplied: the machine rejects the frame and the
-    // derivation stalls. This is why the reachable sweep above is parameterless.
+  it('serves `sweep(t)` as a user-entered root: the argument rides the dispatcher\'s call data', () => {
+    // `sweep(t)` takes a run-time argument, and a program that dispatches over several entries takes the user's call
+    // data as the selector followed by that argument's pushes: the frame's own parameter is bound from them, so the
+    // body's guard on the value holds. The control pushes another address, which the body's own require refuses, so
+    // the accepted frame is the argument being read rather than the guard being dropped.
     const source = 'pragma solidcash ^0.13.0;'
-      + ` contract Tok { function sweep(address t) { require(t == 0x${hexOf(TREASURY)}); } }`;
+      + ` contract Tok { function sweep(address t) { require(t == 0x${hexOf(TREASURY)}); }`
+      + ' function ping() { require(true); } }';
     const { artifacts, contracts } = compileAndDeploy(source, { Tok: TOK_LABEL });
-    const plan: CompositionDraftPlan = {
+    const plan = (arg: Uint8Array): CompositionDraftPlan => ({
       blocks: [{ contract: 'Tok', masters: ['tok-1'], state: [] }],
       userInputs: [{ id: 'user', index: 1 }],
-      masters: [master({
-        master: 'tok-1', contract: 'Tok', entry: 'sweep', program: contracts.Tok!.program,
-        facts: {
-          contract: 'Tok', functionName: 'sweep', kind: FrameKind.ROOT,
-          callerIsUser: true, originEqualsCaller: true, makesExternalCall: false, mastersOfContract: 1,
-        },
-        frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: contracts.Tok!.address, value: 0n },
-        enteredBy: 'user', origin: 'user',
-      })],
+      masters: [{
+        ...master({
+          master: 'tok-1', contract: 'Tok', entry: 'sweep', program: contracts.Tok!.program,
+          facts: {
+            contract: 'Tok', functionName: 'sweep', kind: FrameKind.ROOT,
+            callerIsUser: true, originEqualsCaller: true, makesExternalCall: false, mastersOfContract: 1,
+          },
+          frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: contracts.Tok!.address, value: 0n },
+          enteredBy: 'user', origin: 'user',
+          argumentPushes: [selectorOf(artifacts, 'Tok', 'sweep'), arg],
+        }),
+        dispatches: true,
+      }],
       inputs: { 'tok-1': { source: masterInput(contracts.Tok!) }, user: userInput() },
-    };
-    const refusal = refusalOf(() => settlePlan(plan, artifacts, 'Tok', 'sweep'));
+    });
+
+    const { outcome, rejected } = settlePlan(plan(TREASURY), artifacts, 'Tok', 'sweep');
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([entryName('Tok', 'sweep')]);
+    expect(rejected).toStrictEqual([]);
+
+    const refusal = refusalOf(() => settlePlan(plan(OWNER), artifacts, 'Tok', 'sweep'));
     expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
   });
 });

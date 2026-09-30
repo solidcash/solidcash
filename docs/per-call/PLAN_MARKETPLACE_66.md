@@ -1726,11 +1726,16 @@ risk. Take the slices in order, each with its own tests.
     (`toys/identity.test.ts`, 20 cases green; `master/subroutine-batch-segment.test.ts`, 2 cases green): the plan's
     exact spelling and its helper variant compile with no published refusals; the read held in a local and the same
     read passed as an argument publish the same entry access and the same layout slot in both conventions; the
-    caller that makes an external call is refused by name with its callee. **Still open, measured**: the sweep's own
-    settle stalls at the frame's segment close (`PER_CALL_DERIVATION_STALLED: master "tok-1" of Tok.sweep() filled
-    no witness at site 0 (close of segment 0)`), and the same stall holds with the read held in a local, so the
-    frame's declaration for a read-only node is what stops it rather than the call-argument spelling; the toy's
-    third case pins it, and Y7 therefore stays unticked.
+    caller that makes an external call is refused by name with its callee. **The plan's exact `sweep(t)` spelling
+    is enterable by a user**: a program that dispatches over several entries takes its call data as the selector
+    followed by the entry's argument pushes, so a ROOT frame binds `t` from them (`toys/identity.test.ts`, "serves
+    `sweep(t)` as a user-entered root", with a control that pushes another address and is refused by the body's own
+    require; the toy's earlier pin that a user entry supplies no run-time argument came from a plan whose master
+    carried neither a dispatcher nor pushes, and is corrected). **Still open, measured**: the sweep's own settle
+    stalls at the frame's segment close (`PER_CALL_DERIVATION_STALLED: master "tok-1" of Tok.sweep() filled no
+    witness at site 0 (close of segment 0)`), with the argument supplied through the dispatcher's call data and
+    with the read held in a local alike, so the frame's declaration for a read-only node is what stops it rather
+    than the call-argument spelling; the toy's third case pins it, and Y7 therefore stays unticked.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

@@ -976,8 +976,13 @@ risk. Take the slices in order, each with its own tests.
 - `split` and `merge` admin functions: not needed for the 66; deferred.
 
 **Stream G: acceptance tests.** They are written test-first against the spec, and fail until their streams land.
-- [ ] G1 Conformance suite (Track S0): the 21 reference contexts, EVM against per-call. Partial: nine of the 21
-  (S0).
+- [ ] G1 Conformance suite (Track S0): the 21 reference contexts, EVM against per-call. All 21 recorded: the
+  single-contract ones run and agree (`conformance/self-call-identity.test.ts`); the 11 cross-contract ones
+  (`conformance/cross-contract-identity.test.ts`) pin the EVM's answer beside the refusal each meets by name on the
+  plain call path: no callee frames planned (A to B, `tx.origin` across, re-entry, the value send), a raw call's
+  payload not a typed call (`staticcall`, the fallback call), a low-level `delegatecall` without the `calls[]`
+  checks, `new` without the `CREATE` checks (the child, the factory), and a hand-written assembly proxy refused at
+  compile (both proxy rows). Open until each is served; the proxy hop's side is probed in `ahead/` (PW2).
 - [ ] G2 One dedicated test per spec section 23 row, kept as a regression guard:
   - [ ] Row 1: Reentrancy guard kept in storage and crossed by re-entry (`U._status`, `UC._status`).
   - [ ] Row 2: A static call reads state its caller's caller wrote moments ago.
@@ -1633,10 +1638,9 @@ risk. Take the slices in order, each with its own tests.
   a round takes the next unticked item; the commit that lands it removes its line here.
   - **Parallel items beside the ladder** (handoff 2026-09-30, `HANDOFF_PARALLEL.md`): seven items off the ladder's
     critical path or ahead of it, each with its lane, the point it is done and what it must coordinate; claim one
-    here before starting. **Claimed by the parallel worker**: PW5 (G1's cross-contract rows, under its G1/S0 claim
-    below), PW1 step 1 (the revert-after-calls reproducer; step 2, the hook in the settle loop, only with the ladder
-    stream) and PW2 (walls ahead, in a new `test/per-call/ahead/`). **Claimed for this round (second worker)**:
-    PW4, PW6 and PW7, and PW3's compiler half — the write-segment publication in
+    here before starting. **Claimed by the parallel worker**: PW1 step 1 (the revert-after-calls reproducer; step 2,
+    the hook in the settle loop, only with the ladder stream) and PW2 (walls ahead, in a new `test/per-call/ahead/`).
+    **Claimed for this round (second worker)**: PW4, PW6 and PW7, and PW3's compiler half — the write-segment publication in
     `packages/solidc/src/per-call/master/support.ts`/`stop-sites.ts` plus the master tests that pin the three
     shapes. The `support.ts` split is taken as: the write-segment publication is this claim's, the self-call
     admission beside it stays with whoever holds it; every landing is by explicit paths, one commit per item, so an
@@ -1713,12 +1717,6 @@ risk. Take the slices in order, each with its own tests.
     reads the create sentinel and drops the proof-input comparison), but the composed `implementation-master` fails
     an `OP_VERIFY` before the body's insert runs — not the splice verification, which was ruled out by no-opping it.
     One agent is finding the failing invariant, on the SDK side if the placement is wrong.
-  - **Claimed by the parallel worker, from `148b793e5`:** G1 / S0, the conformance suite: the 21 reference contexts
-    of `probes/this-call-msg-sender/ref.sol`, run in `@ethereumjs/evm` and through the shipped per-call call path and
-    compared by role, in `solidcash/test/per-call/conformance/`. The single-contract rows (internal and self calls,
-    `try`, the origin checks) first; each cross-contract row is recorded as served or refused by name, with no work
-    on the hop's side. Files: the new conformance directory, and the subroutine operands and admission a row finds
-    missing (the generation pass, `support.ts` merged onto the implementer's working tree).
   - **Claimed by the second worker (this one), from `8734368b0`, landed `d88758b41`:** **a mapping access written
     *inside a call's argument* is not collected, so it takes no block-layout slot, and a call to a mapping writer
     inside the same contract cannot resolve** -- two compiler defects of the per-call path, measured through the

@@ -215,10 +215,11 @@ function nftIndexOf(commitment: string, layout: StateLayout): number | undefined
 /**
  * Classifies a category's live UTXOs into the pools and records a per-call deployment mints.
  *
- * A minting NFT is a master, a mutable NFT with an empty commitment is a validator, a mutable NFT whose commitment
- * parses as the layout's pushdata encoding is a record at that data-NFT index, and any other mutable NFT is a
- * collection node. Records come back in data-NFT order (the tag order a multi-NFT layout carries, otherwise by
- * outpoint), so index `i` is genuinely register `i`.
+ * A minting NFT is a master, a mutable NFT with an empty commitment is a validator, a mutable NFT at the data-NFT
+ * covenant whose commitment parses as the layout's pushdata encoding is a record at that data-NFT index, and any
+ * other mutable NFT is a collection node. A UTXO that carries no lock is judged by its commitment alone. Records
+ * come back in data-NFT order (the tag order a multi-NFT layout carries, otherwise by outpoint), so index `i` is
+ * genuinely register `i`.
  */
 export function classifyPerCallDeployment(
   utxos: readonly Utxo[],
@@ -231,6 +232,17 @@ export function classifyPerCallDeployment(
   const nodesByCollection = new Map<string, Utxo[]>();
   const tagged: Array<{ utxo: Utxo; nftIndex: number }> = [];
   const locksByCategory = new Map<string, ReadonlySet<string>>();
+  const recordLocksByCategory = new Map<string, string>();
+  /** Whether a UTXO sits where a record can: a chunk or node elsewhere may carry a commitment that parses as one. */
+  const atRecordLock = (categoryId: string | undefined, lockingBytecode: Uint8Array | undefined): boolean => {
+    if (categoryId === undefined || lockingBytecode === undefined) return true;
+    let lock = recordLocksByCategory.get(categoryId);
+    if (lock === undefined) {
+      lock = bytesToHex(stateRecordLockingBytecode(categoryId));
+      recordLocksByCategory.set(categoryId, lock);
+    }
+    return bytesToHex(lockingBytecode) === lock;
+  };
   const collectionLocksByCategory = new Map<string, ReadonlyMap<string, string>>();
   /** The collection name each of a category's entry covenant locks derives, keyed by the lock hex. */
   const collectionLocksFor = (categoryId: string): ReadonlyMap<string, string> => {
@@ -253,12 +265,12 @@ export function classifyPerCallDeployment(
       continue;
     }
     if (nft.capability !== 'mutable') continue;
-    const index = nftIndexOf(nft.commitment, layout);
+    const categoryId = utxo.token?.category;
+    const lockingBytecode = (utxo as { readonly lockingBytecode?: Uint8Array }).lockingBytecode;
+    const index = atRecordLock(categoryId, lockingBytecode) ? nftIndexOf(nft.commitment, layout) : undefined;
     if (index !== undefined) tagged.push({ utxo, nftIndex: index });
     else if (nft.commitment === '') validators.push(utxo);
     else {
-      const categoryId = utxo.token?.category;
-      const lockingBytecode = (utxo as { readonly lockingBytecode?: Uint8Array }).lockingBytecode;
       let locks = categoryId === undefined ? undefined : locksByCategory.get(categoryId);
       if (categoryId !== undefined && locks === undefined) {
         locks = chunkLocks(categoryId, layout);

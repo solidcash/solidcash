@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, sha256, utf8ToBin } from '@bitauth/libauth';
 import {
-  buildDataNftCovenantScript, buildPushdataCommitment, scriptToBytecode, type StateLayout,
+  buildDataNftCovenantScript, buildPushdataCommitment, parsePushdataCommitment, scriptToBytecode, type StateLayout,
 } from '@solidcash/utils';
 import type { Utxo } from '../../../src/interfaces.js';
 import type NetworkProvider from '../../../src/network/NetworkProvider.js';
+import { mappingValueChunkLock } from '../../../src/per-call/composer/mapping-plan.js';
 import {
   PerCallRecordError, classifyPerCallDeployment, readPerCallDeployment, readPerCallState,
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
@@ -16,9 +17,9 @@ import { scriptToLockingBytecode } from '../../../src/utils.js';
  *
  * A per-call genesis mints its records at the data-NFT covenant its category derives, but a reader reaches every
  * pool the same way: by enumerating the contract's category. A master is the category's minting NFT, a validator
- * is a mutable NFT with no commitment, and a record is a mutable NFT whose commitment decodes as the layout's
- * state encoding. These cases pin that classification, and the refusal when a provider cannot enumerate a category
- * at all — which is what tells the three kinds apart.
+ * is a mutable NFT with no commitment, and a record is a mutable NFT at the data-NFT covenant whose commitment
+ * decodes as the layout's state encoding. These cases pin that classification, and the refusal when a provider
+ * cannot enumerate a category at all, which is what tells the three kinds apart.
  */
 
 const LAYOUT: StateLayout = {
@@ -89,6 +90,36 @@ describe('classifying a per-call deployment by category', () => {
     ], multi);
 
     expect(set.records.map((entry) => entry.vout)).toStrictEqual([2, 9]);
+  });
+
+  it('takes a record only at the data-NFT covenant, not a value chunk whose commitment parses as one', () => {
+    const store: StateLayout = {
+      variables: [
+        { name: 'owner', type: 'address', nftIndex: 0, fieldIndex: 0 },
+        { name: 'judge', type: 'address', nftIndex: 0, fieldIndex: 1 },
+        { name: 'count', type: 'uint32', nftIndex: 0, fieldIndex: 2 },
+        { name: 'total', type: 'int256', nftIndex: 1, fieldIndex: 0 },
+      ],
+      dataNftCount: 2,
+      commitmentLimit: 128,
+    };
+    const key = (label: string): Uint8Array => sha256.hash(utf8ToBin(label));
+    // A long mapping value's chunk: its empty push, 32-byte push and empty push parse as record 0's fields.
+    const chunk = `000020${binToHex(utf8ToBin('a note long enough to be chunked'))}00`;
+    expect(() => parsePushdataCommitment(chunk, store, 0)).not.toThrow();
+    const at = (vout: number, lockingBytecode: Uint8Array, commitment: string): Utxo =>
+      ({ ...utxo(vout, nft(CATEGORY, 'mutable', commitment)), lockingBytecode });
+    const recordLock = stateRecordLockingBytecode(CATEGORY);
+    const owners = { owner: key('owner').slice(0, 20), judge: key('judge').slice(0, 20), count: 3n };
+
+    const set = classifyPerCallDeployment([
+      at(4, recordLock, buildPushdataCommitment(store, owners, 0)),
+      at(2, mappingValueChunkLock(hexToBin(CATEGORY), 'notes', { slot: key('notes 7'), root: key('root') }), chunk),
+      at(7, recordLock, buildPushdataCommitment(store, { total: 5n }, 1)),
+    ], store);
+
+    expect(set.records.map((entry) => entry.vout)).toStrictEqual([4, 7]);
+    expect(set.collectionNodes.map((entry) => entry.vout)).toStrictEqual([2]);
   });
 
   it('refuses when the provider cannot enumerate the category the records are found by', async () => {

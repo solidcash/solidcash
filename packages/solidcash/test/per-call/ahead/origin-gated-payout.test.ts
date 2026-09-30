@@ -391,22 +391,27 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS5): behind the escr
     expect(await coinLive(market, 'refund')).toBe(true);
   });
 
-  it('refuseArbitration stops at the root: its last store call is published as never reached', async () => {
+  it('refuseArbitration settles: the store call after the taken arm\'s own write keeps that arm\'s predicate', async () => {
     const market = await deployMarket(artifactsFor(false), ESCROW_ABOVE_BUYER);
 
-    // Owner: the compiler (`semantic/SymbolTableTraversal.ts`, the call-site condition). The store call inside
-    // `if (jobs[id].state == 1)` publishes that condition read after the arm's own `state = 0`, i.e. `0 == 1`, so
-    // the planner places three of the four calls the body makes and the root frame is refused.
+    // The last store call sits inside `if (jobs[id].state == 1)`, whose arm sets `state = 0` before it. Its condition
+    // is the predicate as it stands where the branch starts, the escrow call's own, not `0 == 1`, which dropped it
+    // from the plan (`call/branch-predicate-after-arm-write.test.ts`).
     const row = market.artifacts.Root!.abi.find((entry) => entry.name === 'refuseArbitration')!;
     expect((row.externalCalls ?? []).map((call) => call.condition?.kind ?? 'none'))
       .toStrictEqual(['none', 'none', 'binary', 'binary']);
-    expect(row.externalCalls![3]!.condition).toStrictEqual({
-      kind: 'binary', operator: '==',
-      left: { kind: 'literal', type: 'int256', value: '0' },
-      right: { kind: 'literal', type: 'bigint', value: '1' },
-    });
-    await expect(callFlow(market, 'refuseArbitration'))
-      .rejects.toThrow(/the implementation's "refuseArbitration" entry did not settle through the proxy/);
-    expect(await coinLive(market, 'refuseArbitration')).toBe(true);
+    expect(row.externalCalls![3]!.condition).toStrictEqual(row.externalCalls![2]!.condition);
+    const result = await callFlow(market, 'refuseArbitration');
+
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual([
+      'Store.markRefusal()', 'StoreProxy.__fallback()',
+      'Store.log()', 'StoreProxy.__fallback()',
+      'Registry.arbiterOf()', 'Token.transfer()', 'Escrow.refund()',
+      'Store.log()', 'StoreProxy.__fallback()',
+      'Root.refuseArbitration()', 'RootProxy.__fallback()',
+    ]);
   });
 });

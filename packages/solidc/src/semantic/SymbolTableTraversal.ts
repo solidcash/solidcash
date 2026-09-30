@@ -7914,23 +7914,23 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         return false;
       };
-      // Return statements which are guaranteed to execute before this call. This deliberately follows only the
-      // branch/loop arm which contains the call; earlier conditional statements remain opaque to the field-write
-      // resolver below. The result is metadata-only and never changes executable source order.
-      const dominatingStatements = (): StatementNode[] | undefined => {
+      // Return statements which are guaranteed to execute before `target` (this call by default). This deliberately
+      // follows only the branch/loop arm which contains the target; earlier conditional statements remain opaque to
+      // the field-write resolver below. The result is metadata-only and never changes executable source order.
+      const dominatingStatements = (target: Node = node): StatementNode[] | undefined => {
         if (!this.currentFunction?.body) return undefined;
         const prior: StatementNode[] = [];
         const visitBlock = (block: BlockNode): boolean => {
           for (const statement of block.statements ?? []) {
-            if (!containsNode(statement, node)) {
+            if (!containsNode(statement, target)) {
               prior.push(statement);
               continue;
             }
             if (statement instanceof BlockNode) return visitBlock(statement);
             if (statement instanceof UncheckedNode) return visitBlock(statement.block);
             if (statement instanceof BranchNode) {
-              if (containsNode(statement.ifBlock, node)) return visitBlock(statement.ifBlock);
-              if (statement.elseBlock && containsNode(statement.elseBlock, node)) {
+              if (containsNode(statement.ifBlock, target)) return visitBlock(statement.ifBlock);
+              if (statement.elseBlock && containsNode(statement.elseBlock, target)) {
                 return visitBlock(statement.elseBlock);
               }
             }
@@ -7938,9 +7938,9 @@ export default class SymbolTableTraversal extends AstTraversal {
               return visitBlock(statement.block);
             }
             if (statement instanceof TryCatchNode) {
-              if (containsNode(statement.tryBlock, node)) return visitBlock(statement.tryBlock);
+              if (containsNode(statement.tryBlock, target)) return visitBlock(statement.tryBlock);
               for (const clause of statement.catchClauses) {
-                if (containsNode(clause.block, node)) return visitBlock(clause.block);
+                if (containsNode(clause.block, target)) return visitBlock(clause.block);
               }
             }
             return true;
@@ -7949,7 +7949,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         };
         return visitBlock(this.currentFunction.body) ? prior : undefined;
       };
-      const priorStatements = dominatingStatements();
+      // Reassigned only while an enclosing branch predicate is serialized: every resolver below reads it, and a
+      // predicate is resolved against what dominates its own branch rather than this call.
+      let priorStatements = dominatingStatements();
       let unresolvedProducerAlias = false;
       const definitionDependsOnProducer = (
         definition: VariableDefinitionNode, seenDefinitions = new Set<VariableDefinitionNode>(),
@@ -8766,10 +8768,43 @@ export default class SymbolTableTraversal extends AstTraversal {
         : loweredConditions && loweredConditions.length >= node.sourceActivationConditions.length
           ? loweredConditions.slice(0, node.sourceActivationConditions.length)
           : node.sourceActivationConditions;
-      const serializedConditions = (sourceConditions ?? []).map(({ expression, negated }) => {
-        const serialized = serializeExpression(expression) ?? {
-          kind: 'missing', name: expression.constructor.name,
+      // The branch or ternary whose own predicate `expression` is, when it sits in this function's body.
+      const branchOwning = (expression: ExpressionNode): Node | undefined => {
+        const seen = new Set<Node>();
+        const visit = (value: Node): Node | undefined => {
+          if (seen.has(value)) return undefined;
+          seen.add(value);
+          if ((value instanceof BranchNode || value instanceof TernaryOpNode) && value.condition === expression) {
+            return value;
+          }
+          for (const [key, child] of Object.entries(value)) {
+            if ([
+              'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+              'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+            ].includes(key)) continue;
+            const children = Array.isArray(child) ? child : [child];
+            for (const item of children) {
+              const found = item instanceof Node ? visit(item) : undefined;
+              if (found) return found;
+            }
+          }
+          return undefined;
         };
+        return this.currentFunction?.body ? visit(this.currentFunction.body) : undefined;
+      };
+      const serializedConditions = (sourceConditions ?? []).map(({ expression, negated }) => {
+        // A predicate is evaluated where its branch starts, before any statement of the arm that leads to this call,
+        // so an arm's own write to a field the predicate reads must not be folded into it.
+        const owner = branchOwning(expression);
+        const atBranch = owner === undefined ? undefined : dominatingStatements(owner);
+        const atCall = priorStatements;
+        if (atBranch !== undefined) priorStatements = atBranch;
+        let serialized: ExternalCallExpression;
+        try {
+          serialized = serializeExpression(expression) ?? { kind: 'missing', name: expression.constructor.name };
+        } finally {
+          priorStatements = atCall;
+        }
         return negated
           ? { kind: 'unary', operator: '!', expression: serialized } as ExternalCallExpression
           : serialized;

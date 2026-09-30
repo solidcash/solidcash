@@ -266,6 +266,11 @@ lands it removes the claim line.
   `MarketplaceV1.postThreadMessage()` publishes `writeSegments: []` and `MarketplaceV1.refund()` publishes its batch
   and its run, which is the two publication halves of PW3 at the fixture; `MarketplaceV1.updateJobWhitelist()`
   publishes nothing, for the wall recorded in the plan's Deviations.
+- **PW4, PW6 and PW7 re-audited** (2026-09-30, a scratch copy of HEAD at `2de577884`): PW4 two files / 7
+  passed, PW6 ten files / 38 passed, the PW7 instrument 1 passed / 1 skipped behind `PW7_FULL`. One stale
+  detail was closed: the 4.5 wall-time row's transaction sizes are each 176 bytes below this revision's, so
+  the row now carries a dated re-measurement note. No guard, G2 tick, attack row or source changed.
+
 - Still held elsewhere: PW1, PW2 and PW5.
 
 ### PW9. A dispatched body's `requires` published where the invoked body's own pointers land

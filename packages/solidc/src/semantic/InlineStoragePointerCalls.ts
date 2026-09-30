@@ -48,6 +48,7 @@ import {
 import { NullaryOperator } from '../ast/Operator.js';
 import { StructType, MappingType } from '@solidcash/utils';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
+import { normalizeVoidInlineReturns } from './EarlyReturnTransformation.js';
 import { Modifier } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -655,6 +656,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private inlineCall(callee: FunctionDefinitionNode, args: Node[], stack: string[]): StatementNode[] {
     const n = this.counter++;
     const cloned = cloneNode(callee) as FunctionDefinitionNode;
+    normalizeVoidInlineReturns(cloned);
 
     const rename = new Map<string, string>();
     const subs = new Map<string, ExpressionNode>();

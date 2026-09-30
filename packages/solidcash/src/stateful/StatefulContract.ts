@@ -4693,10 +4693,11 @@ export function evaluateExternalCallAffineIterationDomain<T extends object>(
   },
   evaluate: (expression: T, bindings: ReadonlyMap<string, bigint>) => bigint | boolean | undefined,
 ): readonly number[] {
-  const ceiling = domain.maximumIterations;
-  if (!Number.isSafeInteger(ceiling) || ceiling < 0 || ceiling > MAX_EXTERNAL_CALL_ITERATIONS) {
-    throw new Error('External call iteration domain exceeds the SDK hard cap');
+  const compilerCeiling = domain.maximumIterations;
+  if (!Number.isSafeInteger(compilerCeiling) || compilerCeiling < 0) {
+    throw new Error('External call iteration domain has an invalid ceiling');
   }
+  const ceiling = Math.min(compilerCeiling, MAX_EXTERNAL_CALL_ITERATIONS);
   const empty = new Map<string, bigint>();
   const initial = evaluate(domain.initialValue, empty);
   if (typeof initial !== 'bigint') throw new Error('External call iteration domain has unresolved initial value');
@@ -4718,7 +4719,10 @@ export function evaluateExternalCallAffineIterationDomain<T extends object>(
     const active = evaluate(domain.continueCondition, new Map([[domain.counterName, counter]]));
     if (typeof active !== 'boolean') throw new Error('External call iteration domain has unresolved continue condition');
     if (!active) return Object.freeze(indices);
-    if (iteration === ceiling) throw new Error(`External call iteration domain exceeds its ${ceiling}-iteration ceiling`);
+    if (iteration === ceiling) {
+      if (compilerCeiling > ceiling) throw new Error('External call iteration domain exceeds the SDK hard cap');
+      throw new Error(`External call iteration domain exceeds its ${ceiling}-iteration ceiling`);
+    }
     indices.push(iteration);
     counter += step;
   }

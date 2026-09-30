@@ -197,6 +197,20 @@ describe('kernel delegate entry coordinates', () => {
     )).toThrow(/SDK hard cap/);
   });
 
+  it('accepts a zero-trip domain below the SDK cap despite a wider compiler ceiling', () => {
+    const initialValue = { kind: 'initial' };
+    const stepValue = { kind: 'step' };
+    const continueCondition = { kind: 'condition' };
+    expect(evaluateExternalCallAffineIterationDomain({
+      counterName: 'counter', initialValue, stepValue, continueCondition,
+      maximumIterations: 65_535,
+    }, (expression, bindings) => {
+      if (expression === initialValue) return 0n;
+      if (expression === stepValue) return 1n;
+      return bindings.get('counter')! < 0n;
+    })).toEqual([]);
+  });
+
   it('accepts exactly one authenticated iteration-domain result-consumer lane', () => {
     const producerCall = {
       callsiteId: 3, interfaceName: 'ISource', functionName: 'bound', requiredDataNftIndices: [],

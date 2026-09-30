@@ -350,3 +350,22 @@ export function blockEndsWithReturn(block: BlockNode): boolean {
 
   return false;
 }
+
+/** Keep a void helper's `return;` local when its body is spliced into another function. */
+export function normalizeVoidInlineReturns(fn: FunctionDefinitionNode): void {
+  fn.accept(new EarlyReturnTransformation());
+  const stripReturns = (block: BlockNode): void => {
+    const kept: StatementNode[] = [];
+    for (const statement of block.statements ?? []) {
+      if (statement instanceof ReturnNode) continue;
+      if (statement instanceof BranchNode) {
+        stripReturns(statement.ifBlock);
+        if (statement.elseBlock) stripReturns(statement.elseBlock);
+      } else if (statement instanceof BlockNode) stripReturns(statement);
+      else if (statement instanceof UncheckedNode) stripReturns(statement.block);
+      kept.push(statement);
+    }
+    block.statements = kept;
+  };
+  stripReturns(fn.body);
+}

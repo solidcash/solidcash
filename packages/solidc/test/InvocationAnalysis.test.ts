@@ -468,6 +468,29 @@ describe('Release 0 shared invocation analysis', () => {
     expect(JSON.stringify(call?.condition)).toContain('producerResult');
   });
 
+  it('keeps a void helper return inside its loop iteration', () => {
+    const artifact = compileString(`pragma solidity >=0.8.0;
+      interface ISink { function publish(uint256 value) external; }
+      contract InlinedLoopReturn() {
+        ISink sink;
+        uint256 total;
+        function boosted(uint256 n) private pure returns (uint256) { return n + 1; }
+        function optional(uint256 n) private {
+          if (n == 0) return;
+          total = total + n;
+          sink.publish(boosted(n));
+        }
+        function run() public {
+          for (uint256 i = 0; i < 3; i = i + 1) optional(i);
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+    });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'run')!;
+    expect(fn.externalCalls?.[0].iterationDomain).toMatchObject({ maximumIterations: 3 });
+  });
+
   it('resolves a state-array read in an early-return call guard', () => {
     const artifact = compileString(`pragma solidity >=0.8.0;
       interface ISink { function publish(uint256 value) external; }

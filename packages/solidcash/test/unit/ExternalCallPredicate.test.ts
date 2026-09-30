@@ -595,10 +595,45 @@ describe('conditional external-call topology', () => {
       resolveExternalArgs: (...args) => (
         evaluator._resolveExternalArgs as (...values: any[]) => FunctionArgument[] | undefined
       )(...args),
+      evaluateExternalExpression: (...args) => (
+        evaluator._evaluateExternalExpression as (...values: any[]) => FunctionArgument | undefined
+      )(...args),
     }, fn, [], artifact, undefined, undefined);
     expect(resolved.resolvedExternalCalls).toEqual([{
       externalContract: callee, functionName: 'ping', args: [],
     }]);
+  });
+
+  it('omits direct callees when every published affine loop has zero iterations', async () => {
+    const domain = {
+      counterName: 'i', maximumIterations: 65_535,
+      initialValue: { kind: 'literal', type: 'bigint', value: '0' },
+      stepValue: { kind: 'literal', type: 'bigint', value: '1' },
+      continueCondition: {
+        kind: 'binary', operator: '<',
+        left: { kind: 'identifier', name: 'i' },
+        right: { kind: 'unary', operator: '.length', expression: { kind: 'state', name: 'items' } },
+      },
+    } as const;
+    const fn = {
+      name: 'run', inputs: [], externalCalls: ['balanceOf', 'mint'].map((functionName, callsiteId) => ({
+        callsiteId, interfaceName: 'IToken', functionName, occurrence: 'loop',
+        requiredDataNftIndices: [], iterationDomain: domain,
+        argSources: [{ kind: 'expression', expression: { kind: 'identifier', name: 'unreached' } }],
+      })),
+    } as unknown as Artifact['abi'][number];
+    const resolved = await expandResolveCreateBuilderExternalCalls({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: () => { throw new Error('unreached callee lookup'); },
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: { items: [] } }),
+      resolveExternalArgs: () => { throw new Error('unreached arguments'); },
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+    }, fn, [], artifact, undefined, undefined);
+    expect(resolved.externalCalls).toEqual([]);
+    expect(resolved.resolvedExternalCalls).toEqual([]);
   });
 
   it('uses ABI-valid placeholders for inactive fixed route bands', () => {

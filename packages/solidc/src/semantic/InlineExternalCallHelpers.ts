@@ -33,7 +33,7 @@ import { AmbiguousInlineOverloadError } from '../Errors.js';
 import { AddressType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
-import EarlyReturnTransformation from './EarlyReturnTransformation.js';
+import { normalizeVoidInlineReturns } from './EarlyReturnTransformation.js';
 
 /**
  * Inlines internal calls to VOID helper functions that make external calls. An external call is a co-spend
@@ -447,21 +447,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     // Otherwise `accrue()`'s `if (elapsed == 0) return;` leaks into a uint-returning caller after inlining.
     const normalized = cloneNode(helper) as FunctionDefinitionNode;
     this.prependCallActivations(normalized.body, conditions);
-    normalized.accept(new EarlyReturnTransformation());
-    const stripReturns = (block: BlockNode): void => {
-      const kept: StatementNode[] = [];
-      for (const statement of block.statements ?? []) {
-        if (statement instanceof ReturnNode) continue;
-        if (statement instanceof BranchNode) {
-          stripReturns(statement.ifBlock);
-          if (statement.elseBlock) stripReturns(statement.elseBlock);
-        } else if (statement instanceof BlockNode) stripReturns(statement);
-        else if (statement instanceof UncheckedNode) stripReturns(statement.block);
-        kept.push(statement);
-      }
-      block.statements = kept;
-    };
-    stripReturns(normalized.body);
+    normalizeVoidInlineReturns(normalized);
     const body = normalized.body;
     this.walk(body, (node) => {
       if (node instanceof VariableDefinitionNode && !map.has(node.name)) {

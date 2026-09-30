@@ -179,14 +179,20 @@ export const resultArrayOutputOf = (
  */
 const loopCanExitEarly = (loop: WhileNode): boolean => {
   let found = false;
+  const seen = new Set<Node>();
+  const nonExecutable = new Set([
+    'location', 'definition', 'resolvedFunction', 'functionReference', 'symbolTable',
+    'referencedContract', 'stateVariable', 'collection', 'sourceCallNode', 'sourceActivationConditions',
+  ]);
   const walk = (value: unknown): void => {
-    if (found || !(value instanceof Node)) return;
+    if (found || !(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
     if (/^(ReturnNode|BreakNode|ContinueNode)$/.test(value.constructor.name)) {
       found = true;
       return;
     }
     for (const [key, child] of Object.entries(value)) {
-      if (key === 'location') continue;
+      if (nonExecutable.has(key)) continue;
       if (child instanceof Node) walk(child);
       else if (Array.isArray(child)) for (const item of child) walk(item);
     }

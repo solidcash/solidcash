@@ -237,6 +237,7 @@ const expandedExternal = await expandResolveCreateBuilderExternalCallsImpl(
     getExternalTargetEntriesByInterface: (interfaceName) =>
       host.inner.getExternalTargetEntriesByInterface(interfaceName),
     resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
+    evaluateExternalExpression: (...a: any[]) => host.callerContract._evaluateExternalExpression(...a),
     getExternalRegistryEntry: (interfaceName) => host.externalRegistry.get(interfaceName),
     getExternalDeploymentByAddressValue: (value) =>
       findDeploymentByAddressValue(host.inner.provider, value)?.contract,

@@ -2167,7 +2167,10 @@ Titles marked NEVER have not passed on any real compile to date.
   refusals, and the loop shape itself is served and accepted when its key is the frame's
   (`conformance/loop-upsert-settlement.test.ts`); **the varying-key variant is the open one**, and `HANDOFF_PARALLEL.md`'s PW3 item stays open for it. Serving it needs the
   collection declared in the frame's layout and the per-turn operands derived — compiler code generation plus the
-  ladder stream's `proxy/**` planning — so **the coordinator's decision on who takes it is what it waits for**, with
+  ladder stream's `proxy/**` planning. **The coordinator decided on 2026-09-30: the variant stays in PW3 and the
+  layout plus `proxy/**` work is authorized**, so the three-commit sequence above is the plan of record and lands as
+  one sequence with the census held at 0 refusals (a partial landing would move `blockSize` and what the shipped path
+  does with the entry without making it settle). The naming below is kept for the record:
   both reproducers committed (`solidc/test/per-call/master/loop-upsert-segment.test.ts`,
   `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`). **Scoped 2026-09-30** by a read-only
   investigation: the emitter's run-time-loop body addresses its per-turn record from the *direct* convention's

@@ -101,12 +101,27 @@ const LOOP_UPSERT_BETWEEN_CALLS_SOURCE = `pragma solidcash ^0.13.0;${PING}`
   + '   }'
   + ' }';
 
+// The same loop with no call anywhere in the body: this is the runtime-loop-upsert shape whose well-formed spend
+// the shipped call path settles and whose mutation it refuses
+// (`solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`: `:93-96` accepts, `:110-121` refuses the
+// record the entry wrote being changed). The body below is that guard's body, so the fact this file pins and the
+// machine pair that file pins are about one shape.
+const LOOP_UPSERT_ALONE_SOURCE = `pragma solidcash ^0.13.0;`
+  + ' contract Ledger {'
+  + '   mapping(address => uint) balances;'
+  + '   function move(address to, uint amount, int turns) {'
+  + '     for (int i = 0; i < turns; i = i + 1) { balances[to] = amount; }'
+  + '     require(turns > 0);'
+  + '   }'
+  + ' }';
+
 const callerOnly = compileStringMulti(CALLER_ONLY_SOURCE, { composition: 'per-call' }).Ledger!;
 const readerOnly = compileStringMulti(READER_ONLY_SOURCE, { composition: 'per-call' }).Ledger!;
 const mappingWithRun = compileStringMulti(MAPPING_WITH_RUN_SOURCE, { composition: 'per-call' }).Ledger!;
 const loopUpsertBesideCall = compileStringMulti(LOOP_UPSERT_BESIDE_CALL_SOURCE, { composition: 'per-call' }).Ledger!;
 const loopUpsertBetweenCalls = compileStringMulti(LOOP_UPSERT_BETWEEN_CALLS_SOURCE, { composition: 'per-call' })
   .Ledger!;
+const loopUpsertAlone = compileStringMulti(LOOP_UPSERT_ALONE_SOURCE, { composition: 'per-call' }).Ledger!;
 
 describe('the write facts an entry publishes', () => {
   it('publishes an empty write list for an entry that writes no record of its own', () => {
@@ -132,6 +147,16 @@ describe('the write facts an entry publishes', () => {
     expect(publishedWrites(loopUpsertBetweenCalls, 'Ledger', 'move')).toStrictEqual({
       single: 2,
       writes: [{ collection: 'balances', segment: 2 }],
+      refused: [],
+    });
+  });
+
+  it('publishes the segment a run-time loop upsert lands in, the shape the shipped path settles', () => {
+    // No call in the body, so the write lands in the segment the frame opens with; the machine pair for this body
+    // is the conformance guard's, which accepts the well-formed spend and refuses the mutated one.
+    expect(publishedWrites(loopUpsertAlone, 'Ledger', 'move')).toStrictEqual({
+      single: 0,
+      writes: [{ collection: 'balances', segment: 0 }],
       refused: [],
     });
   });

@@ -29,6 +29,11 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
  * counterpart - one mapping write beside the same call, which the per-call batch path does serve - is accepted with
  * its record in the segment the write lands in and refused with it in the last segment, so the segment the machine
  * reads for a mapping record is decided by the machine and not assumed here.
+ *
+ * The runtime-loop upsert whose *key the frame holds* is a different shape, and the machine accepts it: its
+ * well-formed spend is settled, with the record it wrote changed refused beside it, on the shipped path in
+ * `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` (`:93-96`, `:110-121`). This file's verdicts
+ * are about the varying key, whose collection the artifact does not publish an access for at all.
  */
 
 const CATEGORY_LEDGER = seededCategory('loop upsert segment ledger');

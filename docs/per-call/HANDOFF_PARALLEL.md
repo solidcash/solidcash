@@ -131,6 +131,15 @@ lands it removes the claim line.
   hop's callee-frame planning (PW1/PW2's lane) as well as the varying-key handling. The per-call lane consumes none
   of the artifact's `entryLoopWrites`, the field the in-loop access is published under; only
   `packages/solidcash/src/stateful/**` reads it.
+- **Decision (coordinator, 2026-09-30)**: the varying-key variant **stays in PW3**, and the collection's `entry` slot
+  in the per-call block layout plus the `packages/solidcash/src/per-call/proxy/**` planning are **authorized**. The
+  work is the three-commit sequence recorded above, executed in the order the scoping note gives
+  (`SymbolTableTraversal.ts`'s per-call layout push, `Artifact.ts`'s in-loop access filter, `perCallWriteSteps`'s
+  fact, then `GenerateTargetTraversal`'s frame-relative per-turn coordinate in `emitSortedUpsertLoopBody` /
+  `pushIdx` and the `runtimeLoopEntry` arm of `emitEntryInputIndex`, then the SDK's per-turn node planning in
+  `packages/solidcash/src/per-call/call/entry-records.ts`). No partial landing: adding the slot without the emission
+  moves `blockSize` for that body, and publishing the access without the SDK's per-turn planning changes what the
+  shipped path does with the entry, so the three land as one sequence with the fixture census held at 0 refusals.
 - **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder
   stream has taken the published facts. **Status 2026-09-30: two of the three shapes are done.** The census read back
   with this round's compiler shows seven contracts and **0 refusals**, `postThreadMessage` publishes

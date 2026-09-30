@@ -157,7 +157,9 @@ lands it removes the claim line.
   `entry "move" touches mapping "balances" as write outside a sorted batch, which a call does not plan`
   (`packages/solidcash/src/per-call/call/entry-records.ts:374`). So the compiler half alone converts a machine-level
   `OP_VERIFY` refusal into a named SDK refusal and moves that body's `blockSize`: it lands with the SDK half or not
-  at all. The edits are saved at `{SCRATCH}/compiler-half-attempt.diff` and the run at `{SCRATCH}/probe-varying.log`.
+  at all. The edits are committed as `docs/per-call/patches/pw3-varying-key-compiler-half.diff` (76 lines, three
+  files, `git apply --check` clean against `00455e017`, and it touches no SDK file, so it cannot collide with the
+  ladder stream's live edits), with the run that measured it at `{SCRATCH}/probe-varying.log`.
 - **What the SDK half is, and why it is the whole remainder.** The per-call lane has no run-time-loop record
   protocol at all: `grep -rn sortedUpsertLoopInfo packages/solidcash/src/per-call` is empty, and only
   `packages/solidcash/src/stateful/**` reads it (`StatefulContract.ts`, `KernelEntryJournal.ts` (1890 lines),
@@ -189,9 +191,19 @@ lands it removes the claim line.
 - **Decision (coordinator, 2026-09-30, on the measured compiler half)**: the remaining SDK protocol — the per-call
   composer's run-time-loop record planning — is **handed to the ladder stream**, which owns `per-call/proxy/**`,
   `per-call/read.ts` and the composer's records, and whose files carry live uncommitted edits in this tree. The
-  compiler half stays with this stream as a saved patch (`{SCRATCH}/compiler-half-attempt.diff`) and lands with that
-  work rather than before it, and PW3's item closes on that split: the three write-segment shapes are served with
-  their machine pairs, and the varying-key variant is not served here.
+  compiler half stays with this stream as a saved patch, now committed at
+  `docs/per-call/patches/pw3-varying-key-compiler-half.diff` (it applies cleanly to the tree the ladder stream is
+  editing and names no SDK file), and lands with that work rather than before it. **What the handoff gives the
+  taker**: the per-call layout's `entry` slot for the collection, the published in-loop access
+  (`entryAccesses` with `keyParams: ["arridx(id:workers,id:i)"]`), and the emitter's frame-relative per-turn
+  coordinate - as the patch - plus the measured statement that the shipped path then refuses by name at
+  `packages/solidcash/src/per-call/call/entry-records.ts:374`, which is the line the taker's planner replaces.
+  **What the taker still owes**: the per-turn node planning for a loop write (the artifact's
+  `sortedUpsertLoopInfo.varyingArrayParam` names the array and `valueScalarParam` the value) and the loop's per-turn
+  *outputs* named by their position in the segment's declared list rather than by a frame coordinate. **Acceptance
+  status**: the offer is recorded here and in the plan's Log; no commit from the ladder stream accepts it yet, and the
+  plan's verification status records that as pending rather than as agreed. PW3's item closes on that split: the three
+  write-segment shapes are served with their machine pairs, and the varying-key variant is not served here.
 - **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder
   stream has taken the published facts. **Status 2026-09-30: two of the three shapes are done.** The census read back
   with this round's compiler shows seven contracts and **0 refusals**, `postThreadMessage` publishes

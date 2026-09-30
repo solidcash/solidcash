@@ -22,41 +22,39 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 586 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 610 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
-| `packages/solidc/test/per-call/validator/` | `solidc` | 14 |
+| `packages/solidc/test/per-call/validator/` | `solidc` | 22 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 92 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 169 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 56 |
 | `packages/solidcash/test/per-call/reads/` | `solidcash` | 40 |
-| `packages/solidcash/test/per-call/reverts/` | `solidcash` | 4 |
+| `packages/solidcash/test/per-call/reverts/` | `solidcash` | 10 |
 | `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 140 |
-| `packages/solidcash/test/per-call/call/` | `solidcash` | 116 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 143 |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 144 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 11 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 103 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 93 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 39 |
-| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 9 |
+| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 9 (6 by default, 3 under `PER_CALL_FULL=1`) |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
-| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 75 |
+| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 82 |
 | `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2 |
 | `packages/solidcash/test/per-call/ahead/` | `solidcash` | 107, under `PER_CALL_AHEAD=1` |
-| `packages/testing/test/per-call/` | `@solidcash/testing` | 3 |
+| `packages/testing/test/per-call/` | `@solidcash/testing` | 10 |
 
-Total: 1736 checks (115 + 632 + 987 + 2), with four more cases that run under
+Total: 1878 checks (115 + 664 + 1089 + 10), with four more cases that run under
 `PER_CALL_FULL=1`: three in `primitives/many-masters.test.ts` (the nine-entry composition and its refusal, which
 `shapes/deep-arbitration.test.ts` covers by default, and the twenty-four-master composition, which takes about
 twenty-eight seconds to derive), and the shipped data contract's clock-stamped append
 (`call/proxy-proxied-callee-element-clock.test.ts`), which deploys the project's compiled `MarketplaceDataV1`
 behind its proxy and takes about three and a half minutes. The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 632 is the four rows above it (89 files; 19 to 21 s over `82276d325`),
-`solidcash` 987 (980 passed, seven skipped; 166 files; 125 to 139 s over `82276d325`, before `call/hop-trace` and
-its four cases joined, where the copies before the seventh prune took 280 to 308 s back to back) is the seventeen
-rows above it,
+`vitest.per-call.config.ts`: `solidc` 664 is the four rows above it (93 files),
+`solidcash` 1089 is the seventeen rows above it (191 files),
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -451,3 +449,5 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   composition whose own program and transcript approach the ten-thousand-byte limit on an unlocking bytecode needs
   the walk itself to read each covered master's unlocking bytecode once rather than once per check, and it does not
   yet.
+
+Every row above was re-measured with the package config at `225b23731`, one run per directory (the `ahead/` row stays at its own last measurement, since it runs only under `PER_CALL_AHEAD=1`).

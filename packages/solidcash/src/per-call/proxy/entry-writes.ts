@@ -122,6 +122,15 @@ export interface ReachWriteTarget {
 /** One collection an entry's own write touches, as a cross-reach planner reads it. */
 export interface ReachWrite {
   readonly collection: string;
+  /**
+   * True when the collection's value is dynamic, so its frames write versions of one value rather than one node.
+   *
+   * A dynamic value's node carries a length and a root, and each frame that writes it mints the chunks of its own
+   * version and states the view it continues from, so two reaches that append to one key chain through the same
+   * node instead of colliding over one output. A fixed-width value's node is instead recreated by each reach's own
+   * batch, and one transaction cannot carry two recreations of one output.
+   */
+  readonly chunkable: boolean;
   /** Every key the entry writes to this collection, in the batch's target order. */
   readonly targets: readonly ReachWriteTarget[];
   /** The participant id of every node this collection's write spends. */
@@ -1311,6 +1320,8 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
     ],
     reachWrites: batches.map((batch) => ({
       collection: batch.collection,
+      chunkable: (request.artifact.stateLayout?.collections ?? [])
+        .find((candidate) => candidate.name === batch.collection)?.chunkableValue === true,
       targets: batch.targets,
       spentIds: batch.spent.map((node) => node.id),
     })),

@@ -105,6 +105,29 @@ export function mappingNodeSlot(id: string): Uint8Array | undefined {
   return hex.length > 0 && hex.length % 2 === 0 && /^[0-9a-f]+$/.test(hex) ? hexToBin(hex) : undefined;
 }
 
+/** One key an entry's own write targets, with the node an insert splices through. */
+export interface ReachWriteTarget {
+  readonly collection: string;
+  /** The slot the write's key(s) hash to. */
+  readonly slot: Uint8Array;
+  /**
+   * The slot of the node an insert splices through, present only when the list did not hold the target.
+   *
+   * Two reaches whose targets land in one gap share this node: each writes it as the relinked predecessor of
+   * its own key, so a transaction one input recreates once cannot carry both relinks.
+   */
+  readonly predecessor?: Uint8Array;
+}
+
+/** One collection an entry's own write touches, as a cross-reach planner reads it. */
+export interface ReachWrite {
+  readonly collection: string;
+  /** Every key the entry writes to this collection, in the batch's target order. */
+  readonly targets: readonly ReachWriteTarget[];
+  /** The participant id of every node this collection's write spends. */
+  readonly spentIds: readonly string[];
+}
+
 /** One sorted batch an entry performs against the collection it starts from. */
 interface HopMappingBatch {
   readonly collection: string;
@@ -112,6 +135,8 @@ interface HopMappingBatch {
   readonly plan: MappingBatchPlan;
   /** The nodes the batch spends, in write order, each with the id the hop's block holds it under. */
   readonly spent: readonly { readonly slot: Uint8Array; readonly before: Uint8Array; readonly id: string }[];
+  /** Every key the batch writes, with the node an insert splices through. */
+  readonly targets: readonly ReachWriteTarget[];
   /** The slot of each value-dependent node, in learning order, whose end view the body computes. */
   readonly learningSlots: readonly Uint8Array[];
   /** The placeholder each value-dependent node's declaration starts from, in learning order. */
@@ -211,6 +236,13 @@ export interface HopEntryWrites {
   readonly signature?: string;
   /** The participant ids the proxy's block holds for the nodes the entry spends; a created run has none. */
   readonly participantIds: readonly string[];
+  /**
+   * Every collection the entry writes, with the keys it writes and the nodes it spends.
+   *
+   * A hop that reaches one contract several times plans each reach on its own, so this is what a cross-reach pass
+   * reads to tell two reaches that write one collection apart.
+   */
+  readonly reachWrites: readonly ReachWrite[];
   /** The placeholder each value-dependent record's declaration starts from, in learning order. */
   readonly learningCandidates: readonly Uint8Array[];
   /**
@@ -766,6 +798,14 @@ function planHopMappingBatch(
     }
   }
   const plan = createsHead ? withCreatedHead(planned) : planned;
+  // The key each write targets, and the node it splices through when the list did not hold it. The plan's groups
+  // are in write order, so each target reads its own group; a group the list did not hold names its predecessor
+  // first, whether that predecessor is a node the transaction spends or the head it creates.
+  const writeTargets = planned.groups.map((group): ReachWriteTarget => ({
+    collection: collection.name,
+    slot: group.slot,
+    ...(group.existed ? {} : { predecessor: group.records[0]!.slot }),
+  }));
   const headCommitment = headSentinelCommitment();
   const spent = plan.written.filter((node) => node.existed).map((node) => ({
     slot: node.slot,
@@ -780,6 +820,7 @@ function planHopMappingBatch(
     signature: collection.signature,
     plan,
     spent,
+    targets: writeTargets,
     learningSlots,
     learningCandidates,
     utxoBySlot,
@@ -1268,6 +1309,11 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
       ...batches.flatMap((batch) => batch.spent.map((node) => node.id)),
       ...(dynamic?.spent.map((chunk) => chunk.id) ?? []),
     ],
+    reachWrites: batches.map((batch) => ({
+      collection: batch.collection,
+      targets: batch.targets,
+      spentIds: batch.spent.map((node) => node.id),
+    })),
     learningCandidates: [
       ...batches.flatMap((batch) => batch.learningCandidates),
       ...(dynamic?.plan.written.chunks ?? []),

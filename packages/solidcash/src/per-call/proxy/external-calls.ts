@@ -77,7 +77,9 @@ import {
   entryRowOf, makeCallResolver, resolveCallTarget, resolvePublishedCall,
   type AbiEntryRow, type CallResolver, type HopCallInputs, type ResolvedCall,
 } from './call-resolution.js';
-import { hopEntryWrites, joinedNodeValue, type HopEntryWrites, type HopLiveDeployment } from './entry-writes.js';
+import {
+  hopEntryWrites, joinedNodeValue, type HopEntryWrites, type HopLiveDeployment, type ReachWriteTarget,
+} from './entry-writes.js';
 import { readEntryNode } from '../call/entry-records.js';
 import { PerCallProxyDeployError } from './errors.js';
 
@@ -1115,6 +1117,78 @@ async function placeProxiedCallee(
       kind: call.kind, callee: proxyMaster, target: call.target, value: 0n,
       argumentPushes: call.argumentPushes,
     });
+  }
+}
+
+/** One reach's writes to one collection, as the cross-reach check below reads them. */
+interface CollectionReach {
+  readonly functionName: string;
+  readonly targets: readonly ReachWriteTarget[];
+  readonly spentIds: readonly string[];
+}
+
+/**
+ * Refuses a hop whose sibling reaches of one contract write one collection in a way one transaction cannot carry.
+ *
+ * Each reach of a mapping-writing callee runs as a master of its own and is planned on its own, while the
+ * transaction writes each key once and recreates each spent node once. Two reaches that write one key each compute
+ * a value for that node's output, and one output cannot carry both; two reaches that insert into one gap each
+ * relink the same predecessor to their own key, and one spent input is recreated once. Either shape would derive a
+ * plan whose frames disagree about a shared output and so could not broadcast, so it is refused by name here
+ * rather than settled into a transaction the network rejects.
+ */
+export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): void {
+  const byCollection = new Map<string, {
+    readonly collection: string;
+    readonly reaches: CollectionReach[];
+  }>();
+  for (const callee of callees) {
+    const writes = callee.entryWrites;
+    if (writes === undefined) continue;
+    // A delegate frame writes through its caller's records, so its collection is the owner's.
+    const owner = callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!;
+    for (const write of writes.reachWrites) {
+      const key = `${bytesToHex(owner.category)}|${write.collection}`;
+      const group = byCollection.get(key) ?? { collection: write.collection, reaches: [] };
+      group.reaches.push({
+        functionName: callee.functionName,
+        targets: write.targets,
+        spentIds: write.spentIds,
+      });
+      byCollection.set(key, group);
+    }
+  }
+  for (const group of byCollection.values()) {
+    if (group.reaches.length < 2) continue;
+    const where = `the hop reaches the entry "${group.reaches[0]!.functionName}" `
+      + `${group.reaches.length} times`;
+    const clashes = (left: readonly string[], right: readonly string[]): string | undefined =>
+      left.find((candidate) => right.includes(candidate));
+    for (let left = 0; left < group.reaches.length; left += 1) {
+      for (let right = left + 1; right < group.reaches.length; right += 1) {
+        const first = group.reaches[left]!;
+        const second = group.reaches[right]!;
+        const sharedKey = first.targets.find((target) =>
+          second.targets.some((other) => bytesEqual(other.slot, target.slot)));
+        if (sharedKey !== undefined) {
+          throw new PerCallProxyDeployError(
+            `${where}, and ${group.reaches.filter((reach) => reach.targets.some((target) =>
+              bytesEqual(target.slot, sharedKey.slot))).length} of them write collection `
+            + `"${group.collection}" at the same key; the compiled entry writes one node per key, and one output `
+            + 'cannot carry the value each reach computed for it, so the reaches must write distinct keys',
+          );
+        }
+        const sharedNode = clashes(first.spentIds, second.spentIds);
+        if (sharedNode !== undefined) {
+          throw new PerCallProxyDeployError(
+            `${where}, and ${group.reaches.filter((reach) => reach.spentIds.includes(sharedNode)).length} of them `
+            + `insert into collection "${group.collection}" through the same node; the compiled entry relinks that `
+            + 'node to its own key, and one spent input is recreated once, so the reaches must splice through '
+            + 'distinct nodes',
+          );
+        }
+      }
+    }
   }
 }
 

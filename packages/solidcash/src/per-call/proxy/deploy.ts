@@ -72,6 +72,7 @@ import {
 import {
   deploymentStateValues,
   planHopExternalCalls,
+  requireSatisfiableReachWrites,
   type HopCallee,
   type HopCalleeRecord,
   type PerCallProxyExternal,
@@ -790,6 +791,10 @@ export async function deployPerCallProxy(
     selfAddress: proxyMaster.address,
     senderAddress: options.callerLockingBytecode,
   });
+  // Every reach's own write was planned on its own; the reaches are checked together here, before anything is
+  // settled, so a shape whose reaches cannot share one transaction is refused by name rather than derived into a
+  // transaction the network rejects.
+  requireSatisfiableReachWrites(externalPlan.callees);
   const settled = await settleHop({
     vm,
     proxyArtifact,
@@ -2557,6 +2562,10 @@ export async function callPerCallProxyEntry(
     selfAddress: proxyMaster.address,
     senderAddress: options.callerLockingBytecode,
   });
+  // Every reach's own write was planned on its own; the reaches are checked together here, before anything is
+  // settled, so a shape whose reaches cannot share one transaction is refused by name rather than derived into a
+  // transaction the network rejects.
+  requireSatisfiableReachWrites(externalPlan.callees);
   const settled = await settleHop({
     vm,
     proxyArtifact,

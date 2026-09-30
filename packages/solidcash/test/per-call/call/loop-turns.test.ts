@@ -22,9 +22,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * frame declares one node per derived turn where the emitted coordinate reads it.
  *
  * The emitted loop chains a turn's insert in the gap the predecessor it co-spent opened, so it reaches the node it
- * created only while each turn's key sits above the one before it: the caller's array has to ascend by slot value.
- * A slot compares as the little-endian VM number its bytes spell, which is also how the plan orders the chain, so an
- * array that descends is refused by name rather than planned into a frame the body cannot walk.
+ * created only while each turn's key sits above the one before it. A slot compares as the little-endian VM number
+ * its bytes spell, which is also how the plan orders the chain, so the derivation hands the frame its key array in
+ * that order whenever one value is stored under every key: the turns ascend by slot however the caller ordered the
+ * array, and the shipped path settles a descending array as readily as an ascending one.
  *
  * Nothing is re-implemented here: the artifact comes from the shipped compiler, the keys the derivation is checked
  * against are the ones the caller passed, and the shipped-path cases drive `callPerCallEntry` over a real deployment.
@@ -92,6 +93,8 @@ describe('the turns of a run-time-loop mapping write', () => {
     });
     // One turn per element, in the array's own order: the derivation walks the array the caller passed.
     expect(plan.turns.map((turn) => turn.turn)).toStrictEqual([0, 1, 2]);
+    expect(plan.turns.map((turn) => turn.source)).toStrictEqual([0, 1, 2]);
+    expect(plan.arrayOrder).toStrictEqual([0, 1, 2]);
     plan.turns.forEach((turn, index) => {
       expect(turn.keys).toHaveLength(1);
       expect(binToHex(turn.keys[0]!)).toBe(binToHex(WORKERS[index]!));
@@ -111,12 +114,37 @@ describe('the turns of a run-time-loop mapping write', () => {
     })).toThrow(/writes mapping "balances" in a run-time loop over "workers"/);
   });
 
-  it('refuses an array whose keys do not ascend, naming the turn that descends', () => {
+  it('orders the turns by slot, so a descending array is derived as the body walks it', () => {
     // The loop chains each insert through the node the turn before created, which the body reaches only while the
-    // keys ascend: a descending turn is refused where the turns are derived, not planned into a body it cannot walk.
-    expect(() => planCallLoopWrites({
+    // keys ascend. One value is stored under every key here (`uint amount`), so the array is handed to the frame in
+    // slot order: the turns ascend whatever order the caller passed, and each turn names the element it came from.
+    const plans = planCallLoopWrites({
       artifact, functionName: 'move', args: [[WORKERS[1]!, WORKERS[0]!], 42n], callerLockingBytecode: new Uint8Array(0),
-    })).toThrow(/at turn 1 of "workers" under a key that does not sit above the turn before it/);
+    });
+    const plan = plans![0]!;
+    expect(plan.turns.map((turn) => turn.turn)).toStrictEqual([0, 1]);
+    expect(plan.turns.map((turn) => turn.source)).toStrictEqual([1, 0]);
+    expect(plan.arrayOrder).toStrictEqual([1, 0]);
+    expect(plan.turns.map((turn) => binToHex(turn.keys[0]!)))
+      .toStrictEqual([binToHex(WORKERS[0]!), binToHex(WORKERS[1]!)]);
+  });
+
+  it('keeps the caller\'s order and refuses a descending array when the value comes per key', () => {
+    // A per-key value (`valueArray[i]`) is not the lane's to permute, so the array stays as the caller passed it and
+    // the body cannot walk a descending one: the derivation refuses it where the turns are derived.
+    const perKey = compileStringMulti('pragma solidcash ^0.13.0;'
+      + ' contract Ledger {'
+      + '   mapping(address => uint) balances;'
+      + '   function move(address[] workers, uint[] amounts) {'
+      + '     for (int i = 0; i < workers.length; i = i + 1) { balances[workers[i]] = amounts[i]; }'
+      + '     require(workers.length > 0);'
+      + '   }'
+      + '   function ping() { require(true); }'
+      + ' }', { composition: 'per-call' }).Ledger!;
+    expect(() => planCallLoopWrites({
+      artifact: perKey, functionName: 'move', args: [[WORKERS[1]!, WORKERS[0]!], [1n, 2n]],
+      callerLockingBytecode: new Uint8Array(0),
+    })).toThrow(/under a key that does not sit above the turn before it/);
   });
 
   it('settles three derived turns through the shipped call path, one node per element', async () => {
@@ -131,9 +159,14 @@ describe('the turns of a run-time-loop mapping write', () => {
     }).toStrictEqual({ accepted: true, objections: [] });
   }, 600_000);
 
-  it('refuses a descending array on the shipped call path, before any frame is planned', async () => {
-    await expect(callWorkers([WORKERS[1]!, WORKERS[0]!])).rejects.toThrow(
-      /writes mapping "balances" at turn 1 of "workers" under a key that does not sit above the turn before it/,
-    );
+  it('settles a descending array on the shipped call path, as one node per element', async () => {
+    const answered = await callWorkers([WORKERS[1]!, WORKERS[0]!]);
+    // The frame the path plans carries the array in slot order, so the two-element descending array settles exactly
+    // as the ascending one does: the machine's verdict on every participant.
+    expect({
+      accepted: answered.accepted,
+      objections: answered.verdicts.filter((verdict) => !verdict.accepted)
+        .map((verdict) => String(verdict.objection ?? 'refused')),
+    }).toStrictEqual({ accepted: true, objections: [] });
   }, 600_000);
 });

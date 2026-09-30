@@ -33,7 +33,10 @@ import {
   type AbiFunction,
   type Artifact,
 } from '@solidcash/utils';
-import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js';
+import {
+  encodeFunctionArgument, isSignatureTemplateArray,
+  type ConstructorArgument, type FunctionArgument, type SignatureTemplateArgument,
+} from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
@@ -210,7 +213,10 @@ function resolveKeys(
 
 /** One turn of a write loop the entry's own source runs: its index and the keys it writes under. */
 export interface CallLoopWriteTurn {
+  /** The position in the array the frame evaluates, which is the order the body walks the keys. */
   readonly turn: number;
+  /** The element's index in the array the caller handed the entry. */
+  readonly source: number;
   readonly keys: readonly Uint8Array[];
 }
 
@@ -223,6 +229,18 @@ export interface CallLoopWritePlan {
   readonly varyingArrayParam: string;
   /** The parameter the stored value comes from, or the empty string for a loop with no value. */
   readonly valueScalarParam: string;
+  /**
+   * True when every turn stores the same value, so the caller's key array is reordered into slot order.
+   *
+   * The artifact publishes such a value as a literal or a scalar parameter; a per-key value source (a value array,
+   * a runtime local or an accumulation) leaves this false and the array in the caller's own order.
+   */
+  readonly invariantValue: boolean;
+  /**
+   * The element each walk position reads, by its index in the caller's array: the permutation `orderLoopKeyArgs`
+   * hands the frame. It is the identity unless the keys are reordered into the slot order the body's chain walks.
+   */
+  readonly arrayOrder: readonly number[];
   /** The literal the loop stores under every key, when the artifact publishes one. */
   readonly valueBool?: boolean;
   readonly valueConst?: string;
@@ -285,13 +303,13 @@ export function planCallLoopWrites(
     const escaped = counter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(`id:${escaped}(?![\\w$])`, 'g');
     const labels = varying.access.keyParams.map((_param, index) => keyLabel(varying.access, index));
-    const turns = elements.map((_element, turn): CallLoopWriteTurn => ({
-      turn,
+    const derived = elements.map((_element, source): { source: number; keys: readonly Uint8Array[] } => ({
+      source,
       keys: labels.map((label): Uint8Array => {
-        const resolved = evalComputedKey(label.replace(pattern, `lit:${turn}`), args, visible, undefined, undefined);
+        const resolved = evalComputedKey(label.replace(pattern, `lit:${source}`), args, visible, undefined, undefined);
         if (resolved === undefined) {
           throw new PerCallCallRecordError(
-            `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${turn} of "${arrayName}" `
+            `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${source} of "${arrayName}" `
             + `under a key the frame's arguments do not determine (${label})`,
           );
         }
@@ -299,31 +317,106 @@ export function planCallLoopWrites(
       }),
     }));
     // The emitted body chains a turn's insert in the gap its pending predecessor opened, so it reaches the node it
-    // created only while each turn's key sits above the one before it. A turn below the pending takes the body's
-    // normal path and co-spends the predecessor of the chain the plan built, which is the array's own order only
-    // when that order ascends; a turn that repeats a slot is refused by the plan itself.
+    // created only while each turn's key sits above the one before it: the turn below the pending takes the body's
+    // normal path and co-spends the predecessor of the chain the plan built.
+    //
+    // One value stored under every key makes the write order unobservable, so the array is put in the slot order the
+    // body's chain walks and the turns follow it (`orderLoopKeyArgs` hands the frame that exact array). A loop whose
+    // value comes per key keeps the caller's order - its array is not this lane's to permute - and a key below the
+    // turn before it is refused by name, because the body cannot walk that array.
+    const invariantValue = info.valueBool !== undefined || info.valueConst !== undefined
+      || (info.valueScalarParam ?? '') !== '';
+    const ordered = invariantValue
+      ? [...derived].sort((left, right) => {
+        const leftSlot = bytesToSlotValue(keyToSlotMulti([...left.keys]));
+        const rightSlot = bytesToSlotValue(keyToSlotMulti([...right.keys]));
+        return leftSlot === rightSlot ? left.source - right.source : leftSlot < rightSlot ? -1 : 1;
+      })
+      : derived;
     let previous: bigint | undefined;
-    for (const turn of turns) {
-      const value = bytesToSlotValue(keyToSlotMulti([...turn.keys]));
+    for (const entry of ordered) {
+      const value = bytesToSlotValue(keyToSlotMulti([...entry.keys]));
       if (previous !== undefined && value < previous) {
         throw new PerCallCallRecordError(
-          `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${turn.turn} of `
-          + `"${arrayName}" under a key that does not sit above the turn before it, and the run-time loop inserts `
-          + 'through its predecessor only in ascending slot order',
+          `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${entry.source} of `
+          + `"${arrayName}" under a key that does not sit above the turn before it, and a loop whose value comes `
+          + 'per key keeps the caller\'s order, which the run-time loop can insert through only when it ascends',
         );
       }
       previous = value;
     }
+    const turns: CallLoopWriteTurn[] = ordered.map((entry, turn) => ({ ...entry, turn }));
     return {
       collection: info.collection,
       op: (info as { readonly op?: string }).op ?? 'set',
       varyingArrayParam: arrayName,
       valueScalarParam: info.valueScalarParam ?? '',
+      invariantValue,
+      arrayOrder: turns.map((turn) => turn.source),
       ...(info.valueBool === undefined ? {} : { valueBool: info.valueBool }),
       ...(info.valueConst === undefined ? {} : { valueConst: info.valueConst }),
       turns,
     };
   });
+}
+
+/**
+ * The arguments a per-call call must carry, with each run-time loop's key array in the order the body walks it.
+ *
+ * The plan declares the loop's per-turn nodes in the collection's slot order, and the emitted body builds its chain
+ * by linking each turn's node to the next turn's key. The two agree only while the keys arrive ascending, so an
+ * array that descends would plan a chain the body cannot walk: its first turn relinks the predecessor to the first
+ * key, and no later turn can put a lower key below that relink.
+ *
+ * The array is therefore reordered into slot order, the license the direct convention's insert loop takes for the
+ * same shape (`loadCreateBuilderSortedInsertLoops`: "Reorder the invariant-value key array itself so source-loop
+ * evaluation follows that same order"). It is semantics-preserving exactly where the artifact publishes the loop's
+ * value as one literal or one scalar parameter - every iteration stores the same value under its key, so the final
+ * mapping is the same whatever order the writes run in. A loop whose value comes per key (a value array, a runtime
+ * local or an accumulation) keeps the caller's order: its array is not this function's to permute.
+ *
+ * A shape `planCallLoopWrites` refuses is left exactly as the caller passed it, so the refusal is raised where the
+ * call plans its records rather than here.
+ */
+export function orderLoopKeyArgs(
+  request: KeyResolutionContext & { readonly artifact: Artifact },
+): readonly FunctionArgument[] {
+  const args = [...request.args];
+  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
+  if (fn === undefined) return args;
+  let plans: readonly CallLoopWritePlan[] | undefined;
+  try {
+    plans = planCallLoopWrites({ ...request, args });
+  } catch {
+    return args;
+  }
+  const visible = visibleInputs(fn);
+  for (const plan of plans ?? []) {
+    if (plan.arrayOrder.every((source, position) => source === position)) continue;
+    const arrayIndex = visible.findIndex((input) => input.name === plan.varyingArrayParam);
+    const elements = arrayIndex < 0 ? undefined : args[arrayIndex];
+    if (!Array.isArray(elements)) continue;
+    args[arrayIndex] = reorderedArguments(elements, plan.arrayOrder);
+  }
+  return args;
+}
+
+/**
+ * The same elements in `order`, which is a permutation of their positions.
+ *
+ * A permutation does not change what an element is, so the array is rebuilt at the argument family it was given:
+ * a list of signature templates stays one and a list of constructor values stays one. The two families are not
+ * interchangeable, so which one the array holds is read from the array itself rather than assumed, and nothing
+ * here converts between them.
+ */
+function reorderedArguments(
+  elements: readonly FunctionArgument[], order: readonly number[],
+): SignatureTemplateArgument | ConstructorArgument {
+  const reordered = order.map((source) => elements[source]!);
+  return isSignatureTemplateArray(reordered)
+    ? reordered
+    // Not every element is a signature template, so the array is the constructor-value family the builder gave.
+    : (reordered as ConstructorArgument[]);
 }
 
 /** The live mapping node one access names: the collection it belongs to and the UTXO carrying it. */

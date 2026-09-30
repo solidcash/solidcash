@@ -48,6 +48,17 @@ const VARYING_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function ping() { require(true); }'
   + ' }';
 
+/** The same loop storing a literal `true` under every key, whose value the artifact publishes as one boolean. */
+const BOOL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Ledger {'
+  + '   mapping(address => bool) allowlist;'
+  + '   function move(address[] workers) {'
+  + '     for (int i = 0; i < workers.length; i = i + 1) { allowlist[workers[i]] = true; }'
+  + '     require(workers.length > 0);'
+  + '   }'
+  + '   function ping() { require(true); }'
+  + ' }';
+
 /** A 32-byte outpoint hash whose bytes are not all the same, so a byte-order bug cannot hide in it. */
 function outpointHash(seed: number): string {
   const bytes = new Uint8Array(32);
@@ -92,18 +103,17 @@ const commitmentOf = (output: { readonly token?: { readonly nft?: { readonly com
 Uint8Array | undefined => output.token?.nft?.commitment;
 
 /**
- * The addresses a varying-key loop chains, lowest slot first.
+ * The addresses a varying-key loop chains, in slot order.
  *
- * The emitted loop reaches the node it created only while each turn's key sits above the one before it, so the
- * caller's array has to ascend by slot value. The order is taken from the shipped planner - the entry's own key
- * hash of the argument as it hands it over - rather than assumed from the address text.
+ * The order is taken from the shipped planner - the entry's own key hash of the argument as it hands it over -
+ * rather than assumed from the address text.
  */
-function ascendingKeys(count: number): string[] {
-  const artifact = compileStringMulti(VARYING_SOURCE, { composition: 'per-call' }).Ledger!;
+function ascendingKeys(count: number, source: string = VARYING_SOURCE, tail: readonly unknown[] = [42n]): string[] {
+  const artifact = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
   return Array.from({ length: 48 }, (_unused, seed) => binToHex(new Uint8Array(20).fill(seed * 5 + 1)))
     .map((address) => {
       const planned = planCallLoopWrites({
-        artifact, functionName: 'move', args: [[address], 42n], callerLockingBytecode: new Uint8Array(0),
+        artifact, functionName: 'move', args: [[address], ...tail], callerLockingBytecode: new Uint8Array(0),
       });
       return { address, slot: bytesToSlotValue(keyToSlotMulti([...planned![0]!.turns[0]!.keys])) };
     })
@@ -164,6 +174,32 @@ describe('a mapping upsert inside a run-time loop, through the shipped call path
     // Three elements in one gap chain through the node each turn before created, so the frame declares four records:
     // the rewritten predecessor and three created nodes, each read at the position the emitted coordinate names.
     const answered = await call(VARYING_SOURCE, 'move', [ascendingKeys(3), 42n]);
+    expect({ accepted: answered.accepted, objections: objectionsOf(answered) })
+      .toStrictEqual({ accepted: true, objections: '' });
+    expectMutatedRecordRefused(answered);
+  });
+
+  it('accepts a descending array, whose frame carries the keys in the order the body walks them', async () => {
+    // The entry stores one value under every key, so the array is handed to the frame in slot order however the
+    // caller ordered it: a two-element array that descends settles exactly as an ascending one does, and the record
+    // the loop wrote is refused once a byte of it is changed.
+    const answered = await call(VARYING_SOURCE, 'move', [ascendingKeys(2).reverse(), 42n]);
+    expect({ accepted: answered.accepted, objections: objectionsOf(answered) })
+      .toStrictEqual({ accepted: true, objections: '' });
+    expectMutatedRecordRefused(answered);
+    // Three elements descend too: the whole array is handed over in slot order, so the chain the body builds is the
+    // chain the plan declared, and the record is refused once a byte of it is changed.
+    const three = await call(VARYING_SOURCE, 'move', [ascendingKeys(3).reverse(), 42n]);
+    expect({ accepted: three.accepted, objections: objectionsOf(three) })
+      .toStrictEqual({ accepted: true, objections: '' });
+    expectMutatedRecordRefused(three);
+  });
+
+  it('accepts a descending array for the literal-bool body too, across three turns', async () => {
+    // The literal-bool body publishes its value as one boolean rather than a scalar parameter, and the same license
+    // applies: a three-element array that descends is handed to the frame in slot order, the machine accepts the
+    // spend, and the record it wrote is refused once a byte of it is changed.
+    const answered = await call(BOOL_SOURCE, 'move', [ascendingKeys(3, BOOL_SOURCE, []).reverse()]);
     expect({ accepted: answered.accepted, objections: objectionsOf(answered) })
       .toStrictEqual({ accepted: true, objections: '' });
     expectMutatedRecordRefused(answered);

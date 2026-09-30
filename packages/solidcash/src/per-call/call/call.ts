@@ -85,7 +85,7 @@ import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
 } from '../deploy/index.js';
-import { callEntryRecords, frameDataRecordIndices, type LaidCallEntryRecords } from './entry-records.js';
+import { callEntryRecords, frameDataRecordIndices, orderLoopKeyArgs, type LaidCallEntryRecords } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
 import { decodeReturnValues } from '../read/index.js';
 import {
@@ -474,6 +474,12 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       + 'argument',
     );
   }
+  // A run-time loop's key array is handed to the frame in the order the emitted body walks it, so a chain the plan
+  // declares in slot order is the chain the body builds: an array that descends would otherwise plan per-turn nodes
+  // the body cannot reach. The array is only reordered for a loop that stores one invariant value under every key.
+  const args = orderLoopKeyArgs({
+    artifact, functionName, args: options.args ?? [], callerLockingBytecode: options.callerLockingBytecode,
+  });
   // An entry that returns a value settles it against the frame's `retval`, exactly as a read does: the plan starts
   // the slot from a candidate the body's own return comparison fails against, and the derivation reads back the
   // blob the body computed. A void entry requires the slot empty, so nothing is learned for it.
@@ -543,7 +549,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   const mappingRecords = callEntryRecords({
     artifact,
     functionName,
-    args: options.args ?? [],
+    args,
     callerLockingBytecode: options.callerLockingBytecode,
     categoryId,
     nodesByCollection: deployment.nodesByCollection,
@@ -553,7 +559,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   // The fallback is reached by the call data of a value send, which no entry's selector names.
   const argumentPushes = entry.name === FALLBACK_ENTRY
     ? [VALUE_SEND_CALL_DATA]
-    : entryArgumentPushes(entry, options.args ?? [], structs, functionName);
+    : entryArgumentPushes(entry, args, structs, functionName);
   // The compute side-cars the entry's keccak256 and recovery calls read, one per call after the master.
   const sideCars = await entrySideCars({
     provider,
@@ -566,7 +572,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   // Each send pays a user's lock as a listed send, or a contract through a call into its `receive()`: the body
   // chooses by the lock, so each recipient is resolved from its recipe before the frame runs.
   const recipientContext: RecipientContext = {
-    args: options.args ?? [],
+    args,
     inputs: entry.inputs,
     structs,
     callerLock: options.callerLockingBytecode,

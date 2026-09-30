@@ -557,8 +557,9 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   now the order the digest is folded in, so a call with more than one argument is agreed on by the caller, the
   callee's body and the validator. The clauses landed over the call-site commits before it; this box is ticked by
   the commit that made the wire facts hold for any arity.
-- [ ] C8 spec R3 call forms:
-  - internal calls and `delegatecall` to own code, inline;
+- [x] C8 spec R3 call forms:
+  - internal calls and `delegatecall` to own code, inline. Landed: an entry another body calls by name is inlined
+    there (`69f2819ca`), and a `delegatecall` to the contract's own function runs as that internal call (`2cae466e2`);
   - `this.g()` inline with `msg.sender = self`, replacing the `AstBuilder.ts:7323` behaviour under per-call. Landed
     (`0e70219d6`): the caller hands the callee its own contract address as the callee's sender and address, so
     `msg.sender == address(this)` holds inside the self-called body and a caller-gated function reached that way is
@@ -568,8 +569,11 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
     the caller's own code holds — its frame `self` — so the record's `target` is bound to it as it is for any
     computed target, and the callee runs on a second master of the same contract with `msg.sender == address(this)`,
     the same identity the inline `this.g()` presents. A target that is another contract is refused at the caller.
-  - `STATIC` for `view` and `pure`;
-  - `try` must succeed (T22).
+    The SDK's call path does not plan that callee's frame yet, so the conformance suite pins its row.
+  - `STATIC` for `view` and `pure`. Landed (`1f43d4251`): a plain read of a `view` or `pure` method and a
+    `.staticcall` run a static frame, and an explicit `.call` a message frame, as on the EVM;
+  - `try` must succeed (T22, ticked): no witness selects a `catch` branch, and the conformance suite's `try this.g()`
+    row answers as the EVM's does.
 - [ ] C9 W3: events at their listed outputs; `sends[]` for P2PKH value sends; a value send to a contract as a `CALL`.
 - [x] C10 Stop-site metadata emitted (A5). The per-call compiler derives each entry's sites from the calls it
   already compiles at their call sites and the segments they split the execution into — one `call` site per external

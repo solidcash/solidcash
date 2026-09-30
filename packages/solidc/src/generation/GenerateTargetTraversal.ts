@@ -14934,6 +14934,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   isOpRoll(node: IdentifierNode): boolean {
     return this.graphRawPayloadEncodeDepth === 0
+      // A pooled collection helper returns its journal values at the common exit.
+      // An earlier read must keep the declared frame slot live even when the
+      // pre-lowering last-use marker still points at that read.
+      && !(this.currentFunction.collectionJournal
+        && (node.name.startsWith('__cj_') || node.name.startsWith('__dcj_')))
       && this.currentFunction.opRolls.get(node.name) === node && this.scopeDepth === 0;
   }
 

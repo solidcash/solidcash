@@ -116,6 +116,15 @@ lands it removes the claim line.
   Compiler about 4-6 days, SDK about 4-6 days; the smallest visible step — the loop-beside-a-call varying key,
   compiler only — is about 1-1.5 days and turns `master/loop-upsert-segment.test.ts`'s two refusals into an accept at
   the write's segment beside a refusal one segment later.
+  The measurement behind that plan, taken for all three varying-key variants (a loop beside a call, a loop whose body
+  makes the call, a loop with no call): each artifact publishes **no `entryAccesses`** (the artifact's own filter
+  drops an in-loop access), no `sortedBatchInfo`, and a `blockLayout` of `{blockSize: 1, slots: [master]}` — with
+  `sortedUpsertLoopInfo` present — while the same loop over a parameter key publishes `entryAccesses`, a
+  `conditional` entry slot, `sortedBatchInfo` and `writeSegment: 1`. Four things therefore have to change together
+  for the varying key: the artifact publishes the access, the layout gives it a slot, the emitter addresses the
+  turn's node from the frame's parked base instead of the direct convention's co-spent band, and the SDK plans one
+  node per turn. A write fact alone would state a segment that declares nothing, which is why this cannot be
+  published from the compiler half on its own.
 - **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder
   stream has taken the published facts. **Status 2026-09-30: two of the three shapes are done.** The census read back
   with this round's compiler shows seven contracts and **0 refusals**, `postThreadMessage` publishes

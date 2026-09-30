@@ -2178,6 +2178,12 @@ Titles marked NEVER have not passed on any real compile to date.
   carries it); and the SDK planning one node per turn, mirroring its own read path. About 4-6 days compiler and 4-6
   days SDK; the compiler-only loop-beside-a-call step is about 1-1.5 days and its proof is that
   `master/loop-upsert-segment.test.ts`'s two refusals become an accept beside a one-segment-later refusal.
+  **Measured, for all three varying-key variants** (a loop beside a call, a loop whose body makes the call, a loop
+  with no call): each publishes no `entryAccesses` at all (the artifact's own filter drops an in-loop access), no
+  `sortedBatchInfo`, and `{blockSize: 1, slots: [master]}` for its `blockLayout`, with only `sortedUpsertLoopInfo`
+  naming the collection — while the same loop over a parameter key publishes `entryAccesses`, a `conditional` entry
+  slot, `sortedBatchInfo` and `writeSegment: 1`. So the artifact, the layout, the emitter and the SDK would have to
+  change together, and a write fact published on its own would state a segment that declares nothing.
 - **Each publication shape has its machine verdict, and the loop shape's is an accept.** A body that writes nothing
   of its own must declare its own record kept, and the machine refuses the same record declared changed where the
   code never touches it (`solidcash/test/per-call/hostile/unwritten-record-change.test.ts`, whose `touch` entry is

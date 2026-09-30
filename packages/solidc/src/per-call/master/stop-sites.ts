@@ -61,8 +61,9 @@ export interface PublishedEntryStopSites {
    * One fact per write the entry makes, each naming the segment that write's records are declared in.
    *
    * The fact is published whenever every write's segment is fixed, so a body whose writes do not all land in one
-   * segment still tells a builder where each of them lands. Absent means a write's segment is not fixed, which the
-   * builder refuses by name rather than declaring its records in a guessed segment.
+   * segment still tells a builder where each of them lands. An empty list is an entry that writes no record of its
+   * own; absent means a write's segment is not fixed, which the builder refuses by name rather than declaring its
+   * records in a guessed segment.
    */
   readonly writeSegments?: readonly PublishedWriteSegment[];
   /** The sites in the order the driver reaches them, validated before publication. */
@@ -146,8 +147,9 @@ export function entryStopSites(
  * calls themselves. Each call carries its own `repeats` marker, so a fixed call beside a loop keeps a fixed site.
  * An entry that writes a record of its own — a data-NFT field, a dynamic value's record, or a verified mapping's
  * nodes — also publishes the segment that write is declared in, which a builder places the records in rather than
- * declaring them in every segment. A write whose segment the source does not fix publishes nothing, and so does an
- * entry whose writes do not all share one segment: each of that entry's writes then names its own segment instead.
+ * declaring them in every segment. An entry that writes none publishes an empty list, and one whose write's segment
+ * the source does not fix publishes nothing; a write set that does not share one segment publishes one fact per
+ * write instead.
  */
 export function publishPerCallStopSites(
   contractName: string,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BlockNode, BoolLiteralNode, BranchNode, ExpressionStatementNode, ExternalFunctionCallNode,
-  FunctionDefinitionNode, IdentifierNode, IntLiteralNode, MappingAssignNode, UncheckedNode,
+  FunctionDefinitionNode, IdentifierNode, IntLiteralNode, MappingAssignNode, UncheckedNode, WhileNode,
 } from '../../../src/ast/AST.js';
 import { perCallBatchWriteFollowsEveryCall, perCallBatchWriteSegment } from '../../../src/per-call/master/support.js';
 import { compileStringMulti } from '../../../src/compiler.js';
@@ -50,6 +50,17 @@ function bodyWithCallBeforeWrite(): FunctionDefinitionNode {
   return entry;
 }
 
+/** A body whose one derived mapping write runs inside a loop that makes no call of its own. */
+function bodyWithCallFreeLoop(): FunctionDefinitionNode {
+  const write = new MappingAssignNode('balances', [new IdentifierNode('to')], new IntLiteralNode(1n));
+  write.entrySlotIndex = 0;
+  const entry = new FunctionDefinitionNode('move', [], new BlockNode([
+    new WhileNode(new BoolLiteralNode(true), new BlockNode([write])),
+  ]));
+  entry.sortedBatchInfo = [{ collection: 'balances', slotIndices: [0] }];
+  return entry;
+}
+
 /** The same body with a call after the write, which the declared count does not account for. */
 function bodyWithCallAfterWrite(): FunctionDefinitionNode {
   const call = new ExpressionStatementNode(
@@ -69,6 +80,12 @@ describe('the segment a derived mapping write lands in', () => {
 
   it('leaves the count open when a branch that reaches a call decides it', () => {
     expect(perCallBatchWriteSegment(bodyWithCallBeforeWrite())).toBeUndefined();
+  });
+
+  it('places a write inside a loop whose own body reaches no call', () => {
+    // A call-free loop leaves the call count where it was, so every turn of the write lands in the segment the code
+    // before the loop runs in. A loop that reaches a call decides the count at run time and places nothing.
+    expect(perCallBatchWriteSegment(bodyWithCallFreeLoop())).toBe(0);
   });
 });
 

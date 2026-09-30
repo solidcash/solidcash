@@ -711,6 +711,27 @@ function joinCallRanges(left: CallRange, right: CallRange): CallRange {
 }
 
 /**
+ * The blocks a loop or switch runs when its own body reaches no call, or undefined when it reaches one.
+ *
+ * A loop or switch whose body makes no external call leaves the call count where it was, so a write inside it lands
+ * in the segment the code before it runs in and the walk can place it. A construct whose body reaches a call
+ * decides the count at run time, which no write inside it can be placed by. A loop's body is one block; a switch's
+ * arms and its default each are their own.
+ */
+function callFreeNestedBlocks(statement: Node): readonly BlockNode[] | undefined {
+  if (reachesExternalCall(statement)) return undefined;
+  if (statement instanceof SwitchNode) {
+    return [
+      ...statement.cases.map((arm) => arm.body),
+      ...(statement.defaultCase === undefined ? [] : [statement.defaultCase]),
+    ];
+  }
+  if (statement instanceof WhileNode || statement instanceof DoWhileNode) return [statement.block];
+  if (statement instanceof CollectionIterationNode) return [statement.body];
+  return undefined;
+}
+
+/**
  * How many external calls a body makes before its derivable batch write, or undefined when the source does not fix
  * that number.
  *
@@ -755,8 +776,12 @@ export function perCallBatchWriteSegment(entry: FunctionDefinitionNode): number 
     if (statement instanceof BlockNode) return walkBlock(statement, incoming);
     if (statement instanceof SwitchNode || statement instanceof CollectionIterationNode
       || statement instanceof WhileNode || statement instanceof DoWhileNode) {
-      // A loop, switch or iteration makes a number of calls its own bound decides; a call-free one makes none.
-      return reachesExternalCall(statement) ? undefined : incoming;
+      // A loop, switch or iteration makes a number of calls its own bound decides; a call-free one makes none, and a
+      // write inside it lands in the segment the code before it runs in, so the walk descends into it.
+      const nested = callFreeNestedBlocks(statement);
+      if (nested === undefined) return undefined;
+      for (const block of nested) walkBlock(block, incoming);
+      return incoming;
     }
     if (statement instanceof TryCatchNode) {
       // A catch block is not an executable path, matching the invocation walk.
@@ -915,8 +940,12 @@ function perCallWriteSteps(
     if (statement instanceof BlockNode) return walkBlock(statement, incoming);
     if (statement instanceof SwitchNode || statement instanceof CollectionIterationNode
       || statement instanceof WhileNode || statement instanceof DoWhileNode) {
-      // A loop, switch or iteration makes a number of calls its own bound decides; a call-free one makes none.
-      return reachesExternalCall(statement) ? undefined : incoming;
+      // A loop, switch or iteration makes a number of calls its own bound decides; a call-free one makes none, and a
+      // write inside it lands in the segment the code before it runs in, so the walk descends into it.
+      const nested = callFreeNestedBlocks(statement);
+      if (nested === undefined) return undefined;
+      for (const block of nested) walkBlock(block, incoming);
+      return incoming;
     }
     if (statement instanceof TryCatchNode) {
       // A catch block is not an executable path, matching the invocation walk.
@@ -949,15 +978,38 @@ export interface PerCallWriteSegmentFact {
 }
 
 /**
- * The segment each of an entry's own writes is declared in, or undefined when any of them is unfixed.
+ * The segment each of an entry's own writes is declared in: an empty list for a body that makes none, undefined when
+ * any of the writes it makes is unfixed.
  *
  * Code generation places each write in its own segment: a state write lands where its own path's calls put it, the
  * batch walk reads the one segment its own calls name, and the run of chunk records a dynamic write grows is pinned
  * by the epilogue in the last segment. A builder places each write's records by the same facts, so a body whose
  * writes do not all share one segment is served rather than refused. A write the source does not locate — one
  * behind a call the source does not fix, or inside a loop the walk cannot count — leaves the whole entry unstated,
- * which is what the builder refuses by name.
+ * which is what the builder refuses by name. A body that writes nothing of its own publishes an empty list rather
+ * than no fact at all, so a builder tells it from a body whose write's segment is unstated.
  */
+/**
+ * True when the body's own source writes a record of its frame's state, at any depth.
+ *
+ * A body that writes nothing of its own publishes an empty write list, which tells a builder that the entry rewrites
+ * nothing rather than that its write's segment is unstated. The walk covers every construct a write can sit in — a
+ * loop's body, a switch's case, a branch's arm — and the two writes its statement walk cannot reach: the
+ * verified-mapping batch the frame plans, and the upsert a runtime loop performs.
+ */
+function writesOwnRecord(entry: FunctionDefinitionNode): boolean {
+  if ((entry.sortedBatchInfo?.length ?? 0) > 0 || (entry.sortedUpsertLoopInfo?.length ?? 0) > 0) return true;
+  let reached = false;
+  walkInvocationAst(entry.body, (node) => {
+    if (reached) return;
+    reached = node instanceof MappingAssignNode || node instanceof MappingDeleteNode
+      || node instanceof StateAssignNode || node instanceof StateArrayPushNode
+      || node instanceof StateArrayPopNode || node instanceof StateArrayAssignNode
+      || node instanceof StateArrayDeleteNode;
+  });
+  return reached;
+}
+
 export function perCallWriteSegments(
   entry: FunctionDefinitionNode,
 ): readonly PerCallWriteSegmentFact[] | undefined {
@@ -994,7 +1046,7 @@ export function perCallWriteSegments(
   for (const variable of records.variables) {
     if (!admit(`dynamic:${variable}`, { variable, segment: 'last' })) return undefined;
   }
-  return facts.length === 0 ? undefined : facts;
+  return facts.length > 0 ? facts : (writesOwnRecord(entry) ? undefined : []);
 }
 
 /** The identity one published write is keyed by, as `perCallWriteSegments` builds it. */
@@ -1125,7 +1177,8 @@ export interface PerCallEntryCallSites {
    *
    * A body whose writes do not all land in one segment publishes no single `writeSegment`, but each of its writes
    * still names its own segment here, which is what lets a builder place each write's records in the segment code
-   * generation places them in. Absent means a write's segment is not fixed, which the builder refuses by name.
+   * generation places them in. An empty list is a body that writes no record of its own, and absent means a write's
+   * segment is not fixed, which the builder refuses by name.
    */
   readonly writeSegments?: readonly PerCallWriteSegmentFact[];
 }

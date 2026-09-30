@@ -74,6 +74,7 @@ beforeAll(() => {
   signer = splittableSigner();
   guard = compileStringMulti('pragma solidcash ^0.13.0;'
     + ' error InvalidSignature();'
+    + ' error InvalidSignatureLength(int length);'
     + ' contract Guard {'
     + '   int public counter;'
     + '   function bump(bytes prefix, bytes left, int v, bytes32 r, bytes32 s) {'
@@ -82,6 +83,8 @@ beforeAll(() => {
     + '     this.counter = this.counter + 1;'
     + '   }'
     + '   function take(bytes32 h, bytes signature) {'
+    + '     int length = signature.length;'
+    + '     if (length != 65) { revert InvalidSignatureLength(length); }'
     + '     bytes32 r = bytes32(signature.slice(0, 32));'
     + '     bytes32 s = bytes32(signature.slice(32, 64));'
     + '     int v = int(signature.slice(64, 65));'
@@ -221,6 +224,28 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
       .toStrictEqual([false, true, true]);
     expect(refused.broadcast).toBeUndefined();
   }, 120_000);
+
+  it('refuses a signature of another length by name and length, as OZ\'s recover does: "0x" and 20 bytes', async () => {
+    for (const signature of [new Uint8Array(0), new Uint8Array(20).fill(7)]) {
+      const deployed = await deploy();
+      const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 300_000n };
+      await deployed.provider.addUtxo(binToHex(deployed.callerLock), callerUtxo);
+      const refused = await callPerCallEntry({
+        provider: deployed.provider,
+        artifact: guard,
+        categoryId: deployed.categoryId,
+        functionName: 'take',
+        args: [DIGEST, signature],
+        callerUtxo,
+        callerLockingBytecode: deployed.callerLock,
+        funder: deployed.funder,
+        vm: compositionMachine(),
+      });
+      expect(refused.refusal?.innermost?.reason.error?.name).toBe('InvalidSignatureLength');
+      expect(refused.refusal?.innermost?.reason.arguments).toStrictEqual([BigInt(signature.length)]);
+      expect(refused.broadcast).toBeUndefined();
+    }
+  }, 240_000);
 
   it('refuses by name a call on a network whose side-car pool is short', async () => {
     const deployed = await deploy();

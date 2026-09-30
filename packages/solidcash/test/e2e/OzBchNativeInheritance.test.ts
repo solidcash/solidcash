@@ -1,15 +1,17 @@
 import {
   beforeAll, describe, expect, it,
 } from 'vitest';
+import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { compileFile, compileFileSplit } from 'solidc';
 import { asmToScript, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../src/interfaces.js';
 import {
-  Contract, SignatureTemplate, Signer, SplitContractBundle, StatefulContract,
+  Contract, encodeEntryCommitment, SignatureTemplate, Signer, slotValueToBytes,
+  SplitContractBundle, StatefulContract,
 } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
-import { getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
+import { getEntryNftAddress, getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
 import {
   aliceAddress, alicePriv, bobPriv,
 } from '../fixture/vars.js';
@@ -102,7 +104,7 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     expect(bearerBalance).toBe(2n);
   });
 
-  it('wraps on the root and withdraws through a split facet within 9 KB shards', async () => {
+  it('wraps on the root, withdraws and inserts a transfer balance through split facets within 9 KB shards', async () => {
     const split = compileFileSplit(source, {
       solidityImportCompat: true, messageBus: false, maxShardBytes: 9_000,
       suppressWarnings: true,
@@ -164,5 +166,54 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
       .filter((utxo) => utxo.token?.category === category)
       .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n);
     expect(withdrawn).toBe(2n);
+
+    await provider.addUtxo(bob.getAddress(), {
+      txid: 'b4'.repeat(32), vout: 0, satoshis: 500_000n,
+    });
+    const aliceLedger = addressToLockScript(aliceAddress);
+    await deployed.call.transfer(aliceLedger, 1n).send();
+    expect(await deployed.root.state._balances(addressToLockScript(bob.getAddress()))).toBe(2n);
+    expect(await deployed.root.state._balances(aliceLedger)).toBe(1n);
+    expect((await deployed.root.getState())._totalSupply).toBe(3n);
+
+    // The root excludes only this facet-censused collection from its mutable-NFT population equation.
+    // The facet must still reject a forged extra node at that address, while the root must reject one at
+    // any unrelated address. Both transactions are raw so no SDK finalization can quietly remove the attack.
+    const forgedEntry = await deployed.call.transfer(aliceLedger, 1n).build();
+    const entryFunder = await provider.addUtxo(bob.getAddress(), {
+      txid: 'b5'.repeat(32), vout: 0, satoshis: 500_000n,
+    });
+    forgedEntry.addInput(entryFunder, new SignatureTemplate(bobPriv).unlockP2PKH());
+    forgedEntry.addOutput({
+      to: getEntryNftAddress(deployed.root.inner, category, '_balances'),
+      amount: 1_200n,
+      token: {
+        category, amount: 0n,
+        nft: {
+          capability: 'mutable',
+          commitment: binToHex(encodeEntryCommitment(
+            new Uint8Array(32).fill(0x77), slotValueToBytes(0n), Uint8Array.of(99),
+          )),
+        },
+      },
+    });
+    const forgedOutcome = await provider.sendRawTransaction(
+      binToHex(encodeTransaction(forgedEntry.buildLibauthTransaction())),
+    ).then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    expectScriptRejection(forgedOutcome, 2);
+
+    const unclaimedMutable = await deployed.call.transfer(aliceLedger, 1n).build();
+    const otherFunder = await provider.addUtxo(bob.getAddress(), {
+      txid: 'b6'.repeat(32), vout: 0, satoshis: 500_000n,
+    });
+    unclaimedMutable.addInput(otherFunder, new SignatureTemplate(bobPriv).unlockP2PKH());
+    unclaimedMutable.addOutput({
+      to: addressToLockScript(bob.getAddress()), amount: 1_200n,
+      token: { category, amount: 0n, nft: { capability: 'mutable', commitment: 'ff' } },
+    });
+    const unclaimedOutcome = await provider.sendRawTransaction(
+      binToHex(encodeTransaction(unclaimedMutable.buildLibauthTransaction())),
+    ).then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    expectScriptRejection(unclaimedOutcome, 0);
   }, 300_000);
 });

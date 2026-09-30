@@ -144,6 +144,7 @@ import PromoteConstructorExternalReads from './semantic/PromoteConstructorExtern
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
+import PruneInlinedConstantBranches from './semantic/PruneInlinedConstantBranches.js';
 import LowerSelfLowLevelCalls from './semantic/LowerSelfLowLevelCalls.js';
 import LowerSelfCallMsgData from './semantic/LowerSelfCallMsgData.js';
 import LowerInternalMsgDataContext from './semantic/LowerInternalMsgDataContext.js';
@@ -13999,6 +14000,12 @@ function compileResolvedAst(
       inlineDelegateStateHelpers,
     )) as Ast;
   }
+  // Physical-slot discovery must see only reachable writes in a helper expanded with a literal argument (for
+  // example a generic mint/burn helper called with a zero endpoint). Keep this before SymbolTableTraversal,
+  // which allocates entry/data slots from the body it receives.
+  if (hasInternalHelpers || hasInternallyCalledPublicEntry) {
+    ast = ast.accept(new PruneInlinedConstantBranches()) as Ast;
+  }
   // A function returning a REASSIGNED `mapping storage` pointer (`returns (mapping storage r){ r=a; r=b; }`) is
   // resolved by straight-line dataflow into its side effects + the mapping it finally aliases, and inlined at call
   // sites - producing bare `mapping storage m = <mapping>` aliases the next pass handles.
@@ -16930,6 +16937,7 @@ function compileStringSplitUnchecked(
   const rootAst = probe;
   const routeByName = new Map<string, {
     facet: string; link: string; delegateEventOffsets?: number[];
+    censusedCollectionSignatures?: string[];
   }>();
   for (const facet of facetRecords) for (const plan of facet.plans) {
     const handler = (facet.artifact.abi as readonly AbiFunction[]).find((fn) => fn.name === plan.name);
@@ -16938,10 +16946,23 @@ function compileStringSplitUnchecked(
       .filter((slot) => slot.kind === 'dataNft').map((slot) => slot.offset);
     const delegateEventOffsets = (layout?.slots ?? []).filter((slot) => slot.kind === 'event')
       .map((slot) => slot.offset - dataOffsets.filter((offset) => offset < slot.offset).length);
+    // A sorted batch emits both exact collection-address input and output scans in the facet. The root may
+    // leave only these collections out of its global mutable-NFT equality; the facet settles their count.
+    const censusedCollectionSignatures = [...new Set((handler?.sortedBatchInfo ?? [])
+      .map((batch) => {
+        const signature = facet.artifact.stateLayout?.collections?.find(
+          (collection) => collection.name === batch.collection,
+        )?.signature;
+        if (signature === undefined) {
+          throw new Error(`Missing split-delegate collection signature for '${batch.collection}'`);
+        }
+        return signature;
+      }))];
     routeByName.set(plan.name, {
       facet: facet.name,
       link: facet.link,
       ...(delegateEventOffsets.length > 0 && { delegateEventOffsets }),
+      ...(censusedCollectionSignatures.length > 0 && { censusedCollectionSignatures }),
     });
   }
   prepareSplitRoot(rootAst.contract, routeByName);
@@ -17371,7 +17392,7 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
 }
 
 function prepareSplitRoot(contract: ContractNode, routes: Map<string, {
-  facet: string; link: string; delegateEventOffsets?: number[];
+  facet: string; link: string; delegateEventOffsets?: number[]; censusedCollectionSignatures?: string[];
 }>): void {
   // Once moved entry bodies become forwarders, helpers reachable only from those entries belong exclusively to
   // facets. Leaving their OP_INVOKE bodies in the root defeats splitting and can keep an otherwise valid root over
@@ -17393,6 +17414,7 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, {
   for (const fn of contract.functions) {
     const route = routes.get(fn.name); if (!route) continue;
     fn.splitDelegateEventOffsets = route.delegateEventOffsets;
+    fn.splitDelegateCensusedCollectionSignatures = route.censusedCollectionSignatures;
     const wasReadOnly = fn.modifiers.includes(FunctionModifier.VIEW)
       || fn.modifiers.includes(FunctionModifier.PURE);
     // A split delegate implementation is flattened into a directly state-holding root by deployProxy. Its root

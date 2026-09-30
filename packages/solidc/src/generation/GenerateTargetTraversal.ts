@@ -23928,6 +23928,71 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
         bin(Op.OP_ENDIF);
         bin(Op.OP_ENDIF);
+      } else if (batch.linear && targets.length === 2) {
+        // For two fixed targets, the two authenticated slot hashes themselves define the complete sorted row
+        // order. The rank permutation and packed row witness used by larger batches add no information here.
+        // Compare the same BIN2NUM ordering as the general linear verifier, including its signed boundary.
+        const first = targets[0];
+        const second = targets[1];
+        const targetSlot = (slot: number, extra = 0): void =>
+          arg(`__internal__vmapBatchSlot_${slot}`, extra);
+        const directProofField = (slot: number, field: 'slot' | 'next' | 'value', extra = 0): void => {
+          commitmentField(() => { proofIndex(slot, extra); bin(Op.OP_UTXOTOKENCOMMITMENT); }, field);
+        };
+        const isBefore = (left: number, right: number, extra = 0): void => {
+          targetSlot(left, extra); bin(Op.OP_BIN2NUM);
+          targetSlot(right, extra + 1); bin(Op.OP_BIN2NUM);
+          bin(Op.OP_LESSTHAN);
+        };
+
+        targetSlot(first); bin(Op.OP_BIN2NUM);
+        targetSlot(second, 1); bin(Op.OP_BIN2NUM);
+        bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_VERIFY);
+
+        for (const [slot, other] of [[first, second], [second, first]]) {
+          // The earlier target points to the later one iff it lies in this proof's old gap. The later target
+          // retains its old successor. This is the two-row form of the general min(nextTarget, oldNext) check.
+          isBefore(slot, other); bin(Op.OP_IF);
+          targetSlot(other);
+          directProofField(slot, 'next', 1);
+          bin(Op.OP_2DUP);
+          bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_TOALTSTACK);
+          bin(Op.OP_BIN2NUM); bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM); bin(Op.OP_SWAP);
+          bin(Op.OP_LESSTHANOREQUAL);
+          bin(Op.OP_FROMALTSTACK); bin(Op.OP_BOOLOR);
+          bin(Op.OP_IF); bin(Op.OP_DROP); bin(Op.OP_ELSE); bin(Op.OP_NIP); bin(Op.OP_ENDIF);
+          bin(Op.OP_ELSE); directProofField(slot, 'next'); bin(Op.OP_ENDIF);
+          arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
+
+          directProofField(slot, 'slot'); targetSlot(slot, 1); bin(Op.OP_EQUAL);
+          bin(Op.OP_IF);
+          // UPDATE: the target itself is the authenticated proof input, so no predecessor is recreated.
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
+          bin(Op.OP_ELSE);
+          // INSERT: only the first target in a shared gap recreates its old predecessor. A later target in
+          // that gap is already linked by the preceding target output.
+          isBefore(slot, other); bin(Op.OP_IF); bin(Op.OP_1);
+          bin(Op.OP_ELSE);
+          targetSlot(other); bin(Op.OP_BIN2NUM);
+          directProofField(slot, 'slot', 1); bin(Op.OP_BIN2NUM); bin(Op.OP_LESSTHAN);
+          bin(Op.OP_ENDIF);
+          bin(Op.OP_IF);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_0);
+          bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_VERIFY);
+          bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
+          proofIndex(slot, 2); bin(Op.OP_UTXOBYTECODE); bin(Op.OP_EQUALVERIFY); bin(Op.OP_DROP);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCATEGORY);
+          bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
+          this.emit(new Uint8Array([1]), loc); bin(Op.OP_EQUALVERIFY);
+          this.emitVerifyCatBaseEqMaster(loc);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
+          directProofField(slot, 'slot', 1); targetSlot(slot, 2); bin(Op.OP_CAT);
+          directProofField(slot, 'value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
+          bin(Op.OP_ELSE);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
+          bin(Op.OP_ENDIF);
+          bin(Op.OP_ENDIF);
+        }
       } else if (batch.linear) {
         const rowsName = `__internal__vmapBatchRows_${batch.collection}`;
         const rankName = (slot: number): string => `__internal__vmapBatchRank_${slot}`;
@@ -35212,6 +35277,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: FunctionDefinitionNode, allowUpgradeDataNftGrowth = false,
   ): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
+    const delegatedCollectionHashes = (node.splitDelegateCensusedCollectionSignatures ?? [])
+      .map((signature) => computeCollectionHash(signature));
+    const emitExcludeDelegatedCollections = (isOutput: boolean): void => {
+      // Stack: [.., input/output index, own-category-mutable match]. A split facet's sorted-batch verifier
+      // counts *all* inputs and outputs at each listed collection address and pins the expected topology.
+      // Exclude precisely that address family from this root count, not the entire mutable category: unrelated
+      // data, entry and chunk NFTs still have to balance one-to-one here.
+      for (const collectionHash of delegatedCollectionHashes) {
+        this.emit(Op.OP_OVER, loc); // copy the index below the current match
+        this.emit(isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE, loc);
+        this.emitMasterInputIndex(loc);
+        this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+        this.emitTakeFirst32(loc);
+        this.emitSortedEntryAddress(collectionHash, loc);
+        this.stack[0] = isOutput ? '(loop_j)' : '(loop_i)';
+        this.emit(Op.OP_EQUAL, loc);
+        this.emit(Op.OP_NOT, loc);
+        this.emit(Op.OP_BOOLAND, loc);
+      }
+    };
 
     // Build this contract's category ++ mutable(0x01) capability from the master's category+minting(0x02).
     this.emitMasterInputIndex(loc);
@@ -35237,6 +35322,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(3n), loc);           // pick this_cat_mutable (catcap=0, i=1, bal=2, this=3)
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUAL, loc);
+    emitExcludeDelegatedCollections(false);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_SWAP, loc);              // [.., bal, i] -> [.., i, bal]
     this.emit(Op.OP_1ADD, loc);              // bal++
@@ -35269,6 +35355,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(3n), loc);             // pick this_cat_mutable (catcap=0, j=1, bal=2, this=3)
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUAL, loc);
+    emitExcludeDelegatedCollections(true);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_SWAP, loc);              // [.., bal, j] -> [.., j, bal]
     this.emit(Op.OP_1SUB, loc);              // bal--

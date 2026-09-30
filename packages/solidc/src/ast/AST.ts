@@ -907,6 +907,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Physical implementation-relative event offsets published by the selected split facet. Delegate-only data
    * NFT slots are already removed, so the root's immutable-event pin and the facet covenant name one output. */
   splitDelegateEventOffsets?: number[];
+  /** Exact signatures of collections whose split facet authenticates complete input and output cardinality.
+   * The root excludes only these addresses from its otherwise-strict mutable-NFT conservation. */
+  splitDelegateCensusedCollectionSignatures?: string[];
   /** Block-local delegate covenants reserved by an message-bus batch graph clone/route. */
   graphDelegateSlotCount?: number;
   isFallback: boolean = false;

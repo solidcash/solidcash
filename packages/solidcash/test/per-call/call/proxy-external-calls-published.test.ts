@@ -1,14 +1,16 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { binToHex, hexToBin } from '@bitauth/libauth';
-import { bytesToHex, buildPushdataCommitment, type Artifact } from '@solidcash/utils';
+import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { bytesToHex, buildPushdataCommitment, sha256, type Artifact } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { registerDeployment } from '../../../src/stateful/deployment-registry.js';
 import { deployMaster, stateRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { planHopExternalCalls } from '../../../src/per-call/proxy/external-calls.js';
+import { planHopExternalCalls, type PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { readPublishedStopSites } from '../../../src/per-call/composer/index.js';
+import type { FunctionArgument } from '../../../src/Argument.js';
 
 /**
  * The planner against the artifacts the compiler actually shipped.
@@ -217,4 +219,146 @@ describePublished('the planner against the shipped published facts', () => {
 it.runIf(!hasArtifacts)('skips the shipped published-facts suite: no compiled artifacts directory', () => {
   // A clear signal rather than a silent pass when the repository's compiled output is not present.
   expect(hasArtifacts).toBe(false);
+});
+
+/** Every shipped artifact in the compiled output directory. */
+function shippedArtifacts(): readonly Artifact[] {
+  return readdirSync(ARTIFACTS_DIR).filter((name) => name.endsWith('.json'))
+    .map((name) => loadArtifact(name));
+}
+
+/** A non-zero, non-palindromic byte string of `width` bytes, so a byte-order mistake cannot hide. */
+function oddBytes(width: number): Uint8Array {
+  return Uint8Array.from({ length: width }, (_unused, index) => ((index * 37) + 11) & 0xff);
+}
+
+/** A value of `type` a call or a state field is given so every published condition can hold. */
+function syntheticValue(type: string): FunctionArgument {
+  const array = type.match(/^(.*)\[(?:\d*)\]$/);
+  if (array !== null) return [syntheticValue(array[1]!)];
+  if (type === 'bool') return true;
+  if (type === 'string') return 'text';
+  if (type === 'address' || type.startsWith('address')) return oddBytes(35);
+  const bytes = type.match(/^bytes(\d+)$/);
+  if (bytes !== null) return oddBytes(Number(bytes[1]));
+  if (type === 'bytes') return oddBytes(20);
+  return 1n;
+}
+
+/** The artifact an interface names: by its own contract name, else by the methods a site calls through it. */
+function artifactForInterface(
+  interfaceName: string, methods: readonly string[], artifacts: readonly Artifact[],
+): Artifact {
+  const bare = interfaceName.replace(/^I/, '');
+  const byName = artifacts.find((candidate) =>
+    candidate.contractName === interfaceName || candidate.contractName === bare);
+  if (byName !== undefined) return byName;
+  const covering = artifacts.filter((candidate) =>
+    methods.every((method) => candidate.abi.some((entry) => entry.name === method)));
+  const named = covering.find((candidate) => candidate.contractName.toLowerCase() === bare.toLowerCase());
+  const chosen = named ?? covering[0];
+  if (chosen === undefined) {
+    throw new Error(`no shipped artifact publishes the methods reached through ${interfaceName}`);
+  }
+  return chosen;
+}
+
+/** A 32-byte category that is neither constant nor palindromic, taken from its label. */
+function categoryOf(label: string): string {
+  return bytesToHex(sha256(utf8ToBin(label)));
+}
+
+/** A live deployment of `artifact`: `masterCount` masters and one record per data NFT. */
+async function seedArtifact(
+  network: MockNetworkProvider, artifact: Artifact, categoryId: string, masterCount: number,
+): Promise<void> {
+  const category = hexToBin(categoryId);
+  const layout = artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
+  const master = deployMaster(artifact, category, VALIDATOR_PROGRAM).address;
+  for (let slot = 0; slot < masterCount; slot += 1) {
+    await network.addUtxo(binToHex(master), {
+      txid: `${categoryId.slice(0, 62)}${(0xf0 - slot).toString(16).padStart(2, '0')}`, vout: slot,
+      satoshis: 500_000n,
+      token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+    });
+  }
+  for (let nftIndex = 0; nftIndex < layout.dataNftCount; nftIndex += 1) {
+    await network.addUtxo(binToHex(stateRecordLockingBytecode(categoryId)), {
+      txid: `${categoryId.slice(0, 62)}${(nftIndex + 1).toString(16).padStart(2, '0')}`,
+      vout: nftIndex, satoshis: 1200n,
+      token: { category: categoryId, amount: 0n,
+        nft: { capability: 'mutable', commitment: buildPushdataCommitment(layout, {}, nftIndex) } },
+    });
+  }
+}
+
+describePublished('the plan against the shipped published call table', () => {
+  it('states one call per published site the caller\'s own facts reach', async () => {
+    const shipped = shippedArtifacts();
+    // The shipped entry with the most published call sites; the artifact whose table states it is the caller.
+    const candidates = shipped.flatMap((artifact) => readPublishedStopSites(artifact).entries
+      .map((entry) => ({ artifact, entry })));
+    const target = candidates.reduce((best, candidate) =>
+      candidate.entry.calls.length > best.entry.calls.length ? candidate : best);
+    const published = target.entry.calls;
+    const functionName = published.length === 0 ? '' : target.entry.functionName
+      .slice(target.artifact.contractName.length + 1, -2);
+    expect(published.length).toBeGreaterThan(0);
+
+    // One live deployment per shipped artifact, so every callee a site reaches has masters and records to run on.
+    const network = new MockNetworkProvider();
+    const categoryById = new Map<string, string>();
+    const externals: Record<string, PerCallProxyExternal> = {};
+    for (const artifact of shipped) {
+      const categoryId = categoryOf(artifact.contractName);
+      categoryById.set(artifact.contractName, categoryId);
+      await seedArtifact(network, artifact, categoryId, published.length + 1);
+    }
+    // The artifacts the published interfaces name, keyed by the interface each site calls through.
+    const methodsByInterface = new Map<string, string[]>();
+    for (const call of published) {
+      methodsByInterface.set(call.interfaceName,
+        [...methodsByInterface.get(call.interfaceName) ?? [], call.functionName]);
+    }
+    for (const [interfaceName, methods] of methodsByInterface) {
+      const artifact = artifactForInterface(interfaceName, methods, shipped);
+      externals[interfaceName] = { artifact, categoryId: categoryById.get(artifact.contractName)! };
+    }
+
+    // Facts that make every published condition hold and every loop visit at least once: a non-zero address, a
+    // non-empty array, a non-zero integer. The state an address field holds is a non-zero lock, so a state-held
+    // target resolves.
+    const row = target.artifact.abi.find((entry) => entry.name === functionName)!;
+    const args = row.inputs.map((input) => syntheticValue(input.type));
+    const stateValues: Record<string, unknown> = {};
+    for (const variable of target.artifact.stateLayout?.variables ?? []) {
+      stateValues[variable.name] = syntheticValue(variable.type);
+    }
+
+    const plan = await planHopExternalCalls({
+      provider: network,
+      artifact: target.artifact,
+      functionName,
+      args,
+      externals,
+      stateValues,
+      selfAddress: oddBytes(35),
+      senderAddress: oddBytes(25),
+      validatorProgram: VALIDATOR_PROGRAM,
+    });
+
+    const calleeOf = (master: string): { readonly contract: string; readonly entry: string } => {
+      const callee = plan.callees.find((candidate) => candidate.master === master);
+      if (callee === undefined) throw new Error(`the plan states no callee frame for ${master}`);
+      return { contract: callee.contract, entry: callee.entry };
+    };
+    const stated = plan.calls.map((call) => calleeOf(call.callee));
+
+    // The plan's calls are the published calls, one-to-one and in the same interface/method order.
+    expect(plan.calls).toHaveLength(published.length);
+    expect(stated.map((call) => call.entry)).toStrictEqual(published.map((call) => call.functionName));
+    expect(stated.map((call) => call.contract)).toStrictEqual(published.map((call) =>
+      externals[call.interfaceName]!.artifact.contractName));
+    expect(plan.callBases).toHaveLength(published.length);
+  });
 });

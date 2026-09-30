@@ -54,6 +54,7 @@ import {
   type ArgSource,
   type Artifact,
   type ExternalCallAbi,
+  type ExternalCallExpression,
   type FrameKindValue,
   type StateLayout,
   type StateValue,
@@ -217,6 +218,73 @@ function refusedEntryReason(artifact: Artifact, functionName: string): string | 
   return listed.find((entry) => entry.functionName === identity)?.reason;
 }
 
+/** The live state an entry's own body rewrites, as its published write segments name it. */
+interface HopWrittenState {
+  /** The data records the entry's body rewrites. */
+  readonly records: ReadonlySet<number>;
+  /** The dynamic variables the entry's body appends to. */
+  readonly variables: ReadonlySet<string>;
+}
+
+/**
+ * The records and named variables an entry's own body rewrites, read from its published write segments.
+ *
+ * The segment a body's own write lands in is published per entry, as either the data record it rewrites or the
+ * name of a dynamic variable it appends to. An entry that publishes no write rewrites nothing, and its incoming
+ * state is what its body sees.
+ */
+function entryWrittenState(artifact: Artifact, functionName: string): HopWrittenState {
+  const entry = readPublishedStopSites(artifact).entries
+    .find((candidate) => candidate.functionName === `${artifact.contractName}.${functionName}()`);
+  const writes = (entry as { readonly writeSegments?: readonly {
+    readonly record?: number;
+    readonly variable?: string;
+  }[] } | undefined)?.writeSegments ?? [];
+  const records = new Set<number>();
+  const variables = new Set<string>();
+  for (const write of writes) {
+    if (write.record !== undefined) records.add(write.record);
+    if (write.variable !== undefined) variables.add(write.variable);
+  }
+  return { records, variables };
+}
+
+/** Every state variable a published condition reads, at any nesting depth. */
+function conditionStateNames(condition: ExternalCallExpression): readonly string[] {
+  const names: string[] = [];
+  const visit = (value: unknown): void => {
+    if (value === null || typeof value !== 'object') return;
+    const node = value as { readonly kind?: string; readonly name?: string };
+    if (node.kind === 'state' && typeof node.name === 'string') names.push(node.name);
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      if (Array.isArray(child)) child.forEach(visit);
+      else visit(child);
+    }
+  };
+  visit(condition);
+  return names;
+}
+
+/**
+ * True when a condition reads state the entry's own body rewrites.
+ *
+ * The planner evaluates a condition against the state the caller holds when its frame starts, but an earlier
+ * statement in the same frame can rewrite that state before the guarded call is reached. A record the entry's
+ * body rewrites carries the field the condition reads, so the incoming value does not fix the condition.
+ */
+function conditionReadsWrittenState(
+  condition: ExternalCallExpression, artifact: Artifact, writtenState: HopWrittenState,
+): boolean {
+  const layout = artifact.stateLayout;
+  if (layout === undefined) return false;
+  for (const name of conditionStateNames(condition)) {
+    if (writtenState.variables.has(name)) return true;
+    const variable = layout.variables.find((candidate) => candidate.name === name);
+    if (variable !== undefined && writtenState.records.has(variable.nftIndex)) return true;
+  }
+  return false;
+}
+
 /**
  * How many records one published site fills.
  *
@@ -230,13 +298,17 @@ function refusedEntryReason(artifact: Artifact, functionName: string): string | 
  * A `conditional` site fills its record only when the condition the artifact publishes holds against the caller's
  * own facts: the arm a condition the caller's facts fix does not take reaches no call, so the site places nothing.
  * A site the artifact publishes no condition for still fills one, and so does one whose condition the caller's own
- * facts do not fix: the plan states the record and the execution is what skips it.
+ * facts do not fix: the plan states the record and the execution is what skips it. A condition whose state the
+ * entry's own body rewrites is not fixed by the incoming facts either: an earlier statement in the same frame can
+ * make it hold, so the plan states the record rather than dropping a call the body takes.
  */
 function occurrenceCountOf(
   row: ExternalCallAbi, args: readonly FunctionArgument[], resolver: CallResolver, where: string,
+  artifact: Artifact, writtenState: HopWrittenState,
 ): number {
   if ((row.occurrence ?? 'once') !== 'loop') {
     if (row.condition === undefined || row.condition === null) return 1;
+    if (conditionReadsWrittenState(row.condition, artifact, writtenState)) return 1;
     return resolver.evaluate(row.condition, 0) === false ? 0 : 1;
   }
   const domain = row.iterationDomain;
@@ -504,6 +576,7 @@ async function planEntryCalls(
   if (published === undefined || published.calls.length === 0) return { calls: [], callBases: [] };
   const routing = routingOf(caller.artifact, caller.functionName);
   const resolver = makeCallResolver(caller);
+  const writtenState = entryWrittenState(caller.artifact, caller.functionName);
 
   // Pass one: resolve every site of this entry from the caller's own facts, so the plan is refused for its own
   // shape before any live record is read.
@@ -517,7 +590,9 @@ async function planEntryCalls(
       );
     }
     const where = `the call to "${row.interfaceName}.${row.functionName}"`;
-    const count = occurrenceCountOf(row, caller.args, resolver, where);
+    const count = occurrenceCountOf(
+      row, caller.args, resolver, where, caller.artifact, writtenState,
+    );
     // A site the caller's own facts give no visits fills no record: it reaches no callee, so nothing is placed
     // for it and its target and arguments need not resolve.
     if (count === 0) return undefined;

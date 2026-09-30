@@ -108,7 +108,23 @@ lands it removes the claim line.
   segment the call opened (one call: segment 1; it is the criterion's loop-upsert-beside-a-call shape with a
   machine accept and a refused mutation). So a loop upsert is served for a fixed record and open for a chain node
   once a call shares the body.
-  **Open** (the coordinator's decision below keeps it in PW3): the fixture's `updateJobWhitelist`, whose key is an
+  **Served for one and two turns, open from the third (2026-09-30, `18bd5bda5`)**: the varying-key shape now settles
+  through the shipped deploy and call path - `conformance/loop-upsert-settlement.test.ts` drives a loop upsert whose
+  key is an element of the caller's array, the machine accepts the well-formed spend, and one byte of a record the
+  loop wrote changed is refused; `call/loop-turns.test.ts` settles a two-element array the same way, one node per
+  derived turn. Five causes were found and fixed: the declared ordinal's base and the sign of its `add` (it must be
+  `-(perCallEntryOffset(slot))` with the counter subtracted, not `-(perCallRecordsBeforeGroups() + 1)`); the four
+  out-side `emitVerifySortedValueOutput` calls in the loop body not passing `topIsDeclaredOrdinal`, so a negative
+  ordinal went into the coordinate walk; the pending-flush mints (`emitSortedFlushPendingNormal`,
+  `emitSortedFlushPendingRepoint`) still using the direct convention's trailing band; the segment-close kept check
+  not exempting the loop's own records; and the plan declaring a shared predecessor once per insert where the body
+  mints each node once and chains through the previous turn's node (`plan.written`). **The wall that remains is the
+  third chained insert**: three-element arrays fail for both bodies (the literal one with the body's own
+  `OP_VERIFY`, the parameter one in the derivation), and the two-element pins say so in their comments. The
+  entry still publishes no write-segment fact, which is now stated as by design at
+  `solidc/test/per-call/master/write-segments-publication.test.ts:142`.
+  The paragraphs below record the state before that landing:
+  the fixture's `updateJobWhitelist`, whose key is an
   **element of a caller-supplied array**, so a different node per turn. It is not a verified batch at all — the entry's
   block layout reserves no `entry` slot for the collection — so no segment declares its records and no write fact can
   state them; the machine refuses the well-formed spend wherever its node record is declared (segment 0, the last

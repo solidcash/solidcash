@@ -293,6 +293,7 @@ import {
   derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, perCallBatchWriteFollowsEveryCall,
   perCallBatchWriteSegment,
   callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER, isOwnAddress, isProxyFallbackContract,
+  ORIGIN_FRAME_SLOT, SENDER_FRAME_SLOT,
 } from '../per-call/master/support.js';
 import {
   BATCH_DERIVATION_SLOT_ORDER, BATCH_EXTRA_RECORDS_SLOT, batchDerivationSlotName, buildBatchTargetsDerivationScript,
@@ -3709,7 +3710,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const slot = slots[index]!;
       return targetKeys.map((key, keyIndex) => {
         const name = key.expression !== undefined ? pushedName(slot, keyIndex)
-          : key.frameSlot !== undefined ? key.frameSlot : key.paramName;
+          : key.frameSlot !== undefined ? this.frameValueSlotName(key.frameSlot) : key.paramName;
         const keyDepth = name === undefined ? -1 : this.getStackIndex(name, true);
         if (keyDepth < 0) {
           throw new SolidcDiagnosticError(
@@ -38645,8 +38646,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., lockingBytecode]  (the P2PKH address of the origin)
    */
   private emitTxOrigin(locationData: SingleLocationData): void {
-    const originSlot = this.stack.includes('__internal__frameOrigin') ? '__internal__frameOrigin'
-      : this.stack.includes(PER_CALL_ORIGIN_CONTEXT) ? PER_CALL_ORIGIN_CONTEXT : undefined;
+    const originSlot = this.txOriginSlotName();
     if (originSlot !== undefined) {
       this.emit(encodeInt(BigInt(this.getStackIndex(originSlot))), locationData);
       this.emit(Op.OP_PICK, locationData);
@@ -38941,14 +38941,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, locationData);
   }
 
+  /**
+   * The stack item this body's `msg.sender` reads, or undefined when its frame carries none.
+   *
+   * An entry body reads the frame slot the head leaves. A subroutine is not the head's frame: its caller pushes the
+   * value as a context item, which is the contract's own address for a `this.` call and the caller's sender for an
+   * internal one. The same item is what a derivation of the body's own mapping keys has to read.
+   */
+  private msgSenderSlotName(): string | undefined {
+    if (this.stack.includes(SENDER_FRAME_SLOT)) return SENDER_FRAME_SLOT;
+    return this.stack.includes('__internal__handlerMsgSender') ? '__internal__handlerMsgSender' : undefined;
+  }
+
+  /** The stack item this body's `tx.origin` reads, or undefined when its frame carries none. */
+  private txOriginSlotName(): string | undefined {
+    if (this.stack.includes(ORIGIN_FRAME_SLOT)) return ORIGIN_FRAME_SLOT;
+    return this.stack.includes(PER_CALL_ORIGIN_CONTEXT) ? PER_CALL_ORIGIN_CONTEXT : undefined;
+  }
+
+  /**
+   * The stack item a mapping key's frame value reads under in this body.
+   *
+   * A key the source writes as `msg.sender` or `tx.origin` is a frame value the head leaves tracked. A subroutine
+   * runs on its caller's frame, which holds the caller's contexts instead, so the derived slot has to hash the same
+   * item the body's own read of that value picks.
+   */
+  private frameValueSlotName(frameSlot: string): string | undefined {
+    if (frameSlot === SENDER_FRAME_SLOT) return this.msgSenderSlotName();
+    if (frameSlot === ORIGIN_FRAME_SLOT) return this.txOriginSlotName();
+    return frameSlot;
+  }
+
   private emitMsgSender(locationData: SingleLocationData): void {
-    if (this.stack.includes('__internal__frameSender')) {
-      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__frameSender'))), locationData);
-      this.emit(Op.OP_PICK, locationData);
-      return;
-    }
-    if (this.stack.includes('__internal__handlerMsgSender')) {
-      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSender'))), locationData);
+    const senderSlot = this.msgSenderSlotName();
+    if (senderSlot !== undefined) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(senderSlot))), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
     }

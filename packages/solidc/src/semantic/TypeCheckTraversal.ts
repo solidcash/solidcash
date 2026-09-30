@@ -173,6 +173,12 @@ import { analyzeAssemblyStack, getStackEffect } from '../asmStackEffects.js';
 import { ImportedLocations } from './ImportedLocations.js';
 import { generatedOriginOf } from '../ast/Location.js';
 
+/**
+ * A sorted-batch operand of a per-call master's own frame: the masked slot, the proof index, the successor, the
+ * predecessor's output, the linear rank and rows, and the created-record count.
+ */
+const PER_CALL_DERIVED_BATCH_PARAMETER = /^__internal__vmapBatch/;
+
 export default class TypeCheckTraversal extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
   // The contract whose members are currently being checked. Overloaded emits select their definition here, so the
@@ -192,9 +198,32 @@ export default class TypeCheckTraversal extends AstTraversal {
     private solidityImportCompat: boolean = true,
     private strictSolidityValidation: boolean = false,
     rootFileId?: string,
+    /**
+     * True when the compile emits a per-call master, whose frame derives some operands every call site therefore
+     * leaves out of its argument list.
+     */
+    private perCallComposition: boolean = false,
   ) {
     super();
     this.rootFileId = rootFileId ?? '';
+  }
+
+  /**
+   * The parameter types a call site supplies, which under the per-call convention is the callee's declared
+   * interface.
+   *
+   * A body that writes a sorted mapping carries the sorted-batch operands, which the direct convention receives
+   * from its SDK. A per-call master derives each operand from its own witness block instead
+   * (`per-call/master/support.ts`, `derivableBatchWitnessNames`), so the operand is not part of the frame a call
+   * pushes: neither the source nor a generated route writes it, and the call resolves against the parameters left
+   * over. A shape whose operands the master cannot derive is refused by name where the master is assessed.
+   */
+  private callSiteParameterTypes(fn: FunctionDefinitionNode): Type[] {
+    return fn.parameters
+      .filter((parameter) => parameter.name !== '__internal__msgSenderCategory'
+        && parameter.name !== '__internal__msgSenderAnchorIdx'
+        && !(this.perCallComposition && PER_CALL_DERIVED_BATCH_PARAMETER.test(parameter.name)))
+      .map((parameter) => parameter.type);
   }
 
   private rootFileId: string;
@@ -1813,9 +1842,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.parameters.splice(senderParamIndex, 1);
       }
       this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
-      const resolvedParamTypes = node.resolvedFunction.parameters
-        .filter((p) => p.name !== '__internal__msgSenderCategory'
-          && p.name !== '__internal__msgSenderAnchorIdx').map((p) => p.type);
+      const resolvedParamTypes = this.callSiteParameterTypes(node.resolvedFunction);
       stripGeneratedLogicalSenderArgument(
         node, resolvedParamTypes,
         this.currentFunction.messageBusRoute === true || this.currentFunction.graphEmissionHandler === true
@@ -1842,9 +1869,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.parameters.splice(senderParamIndex, 1);
       }
       this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
-      const resolvedParamTypes = node.resolvedFunction.parameters
-        .filter((p) => p.name !== '__internal__msgSenderCategory'
-          && p.name !== '__internal__msgSenderAnchorIdx').map((p) => p.type);
+      const resolvedParamTypes = this.callSiteParameterTypes(node.resolvedFunction);
       stripGeneratedLogicalSenderArgument(
         node, resolvedParamTypes,
         this.currentFunction.messageBusRoute === true || this.currentFunction.graphEmissionHandler === true

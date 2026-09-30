@@ -1,4 +1,8 @@
 import { FrameKind, buildPushdataCommitment, bytesToHex, type RecordEntry } from '@solidcash/utils';
+import { buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue } from '@solidcash/utils';
+import { encodeDataPush } from '@bitauth/libauth';
+import { scriptToLockingBytecode } from '../../../src/utils.js';
+import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
@@ -8,6 +12,83 @@ import {
   selectorOf, token, userInput, validatorFor, type DeployedContract,
 } from '../shapes/harness.js';
 import type { CompositionDraftPlan } from '../../../src/per-call/composer/index.js';
+import {
+  layOutMappingBatch, planMappingBatch, type MappingNodePlacement,
+} from '../../../src/per-call/composer/index.js';
+
+/** The empty successor a single-node list carries. */
+const ZERO_SLOT = new Uint8Array(32);
+
+/** One node of a sorted mapping, carrying an integer as its value tail. */
+function nodeCommitment(slot: Uint8Array, value: bigint): Uint8Array {
+  return encodeEntryCommitment(slot, ZERO_SLOT, encodeIntegerValue(value));
+}
+
+/**
+ * What the shipped path does with the literal sweep, given the plan the callee's own batch names.
+ *
+ * The callee's body derives its two record groups from the frame's first segment, in its own slot order, and the
+ * transaction spends and recreates the two nodes the writes touch. The caller's own read is what the layout has to
+ * reconcile with that list; this returns whichever the shipped path reports - a refusal by name, or the machine's
+ * verdicts - so the case can pin it.
+ */
+function sweepOutcome(): { readonly code?: string; readonly message: string; readonly rejected: readonly string[] } {
+  const { artifacts, contracts } = compileAndDeploy(LITERAL_SWEEP_SOURCE, { Tok: TOK_LABEL });
+  const tok = contracts.Tok!;
+  const signature = artifacts.Tok!.stateLayout!.collections![0]!.signature;
+  const entryLock = scriptToLockingBytecode(
+    buildEntryNftCovenantScript(tok.category, computeCollectionHash(signature)), 'p2sh32',
+  );
+  const selfSlot = keyToSlotMulti([tok.address]);
+  const treasurySlot = keyToSlotMulti([TREASURY]);
+  // The callee's slot order: `to` first, then `msg.sender`, which is the address the self-call hands it.
+  const batch = planMappingBatch({
+    writes: [{ keys: [TREASURY], value: 1100n }, { keys: [tok.address], value: 0n }],
+    inventory: [nodeCommitment(treasurySlot, 1000n), nodeCommitment(selfSlot, 100n)],
+    encodeValue: encodeIntegerValue,
+  });
+  const placements = new Map<string, MappingNodePlacement>([
+    [bytesToHex(treasurySlot), { in: 1, out: 1 }],
+    [bytesToHex(selfSlot), { in: 2, out: 2 }],
+  ]);
+  const entries = layOutMappingBatch(batch, { placementOf: (slot) => placements.get(bytesToHex(slot)) });
+  const nodeSource = (commitment: Uint8Array) => ({
+    lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token(tok.category, 'mutable', commitment),
+  });
+  const plan: CompositionDraftPlan = {
+    blocks: [{ contract: 'Tok', masters: ['tok-1'], state: ['treasuryNode', 'selfNode'] }],
+    userInputs: [{ id: 'user', index: 3 }],
+    masters: [master({
+      master: 'tok-1', contract: 'Tok', entry: 'sweep', program: tok.program,
+      facts: {
+        contract: 'Tok', functionName: 'sweep', kind: FrameKind.ROOT,
+        callerIsUser: true, originEqualsCaller: true, makesExternalCall: false, mastersOfContract: 1,
+      },
+      frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: tok.address, value: 0n },
+      enteredBy: 'user', origin: 'user',
+      segments: [entries],
+    })],
+    inputs: {
+      'tok-1': { source: masterInput(tok) },
+      treasuryNode: {
+        source: nodeSource(batch.written[0]!.before), output: nodeSource(batch.written[0]!.after),
+        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+      },
+      selfNode: {
+        source: nodeSource(batch.written[1]!.before), output: nodeSource(batch.written[1]!.after),
+        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+      },
+      user: userInput(),
+    },
+  };
+  try {
+    const { rejected } = settlePlan(plan, artifacts, 'Tok', 'sweep');
+    return { message: 'settled', rejected };
+  } catch (error) {
+    const refusal = error as { code?: string; message: string };
+    return { ...(refusal.code === undefined ? {} : { code: refusal.code }), message: refusal.message, rejected: [] };
+  }
+}
 
 /**
  * The identity toy: what `msg.sender`, `address(this)` and `tx.origin` are inside an internal self-call.
@@ -40,6 +121,42 @@ const MAPPING_SWEEP_SOURCE = 'pragma solidcash ^0.13.0;'
   + '     require(true);'
   + '   }'
   + '   function sweep(address t) { this.transfer(t, this.bal[address(this)]); require(true); }'
+  + ' }';
+
+/**
+ * The plan's sweep with the treasury fixed at compile time.
+ *
+ * A user-entered master carries no run-time argument (pinned below), so the reachable spelling of the plan's
+ * `sweep(t)` names the treasury in the source: the argument the self-call passes is still the mapping read
+ * `this.bal[address(this)]`, which is the shape that had no block-layout slot.
+ */
+const LITERAL_SWEEP_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Tok {'
+  + '   mapping(address => int) bal;'
+  + '   function transfer(address to, int amount) {'
+  + '     this.bal[msg.sender] = this.bal[msg.sender] - amount;'
+  + '     this.bal[to] = this.bal[to] + amount;'
+  + '     require(true);'
+  + '   }'
+  + `   function sweep() { this.transfer(0x${hexOf(TREASURY)}, this.bal[address(this)]); require(true); }`
+  + ' }';
+
+/**
+ * A self-call whose only mapping access is the read the caller passes as its argument.
+ *
+ * The callee reads its own `msg.sender`, so the call stays a call rather than being inlined, and the read stays an
+ * argument of a call statement: the shape whose entry access the block layout used to omit. The callee also writes
+ * a scalar, which gives the segment a computed record of its own beside the node the read declares.
+ */
+const READ_THROUGH_SELF_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Tok {'
+  + '   mapping(address => int) bal;'
+  + '   int seen;'
+  + '   function onlySelfRecord(int x) {'
+  + '     if (msg.sender == address(this)) { this.seen = x; }'
+  + '     require(true);'
+  + '   }'
+  + `   function readThrough() { this.onlySelfRecord(this.bal[0x${hexOf(TOK_ADDRESS)}]); require(true); }`
   + ' }';
 
 /**
@@ -205,20 +322,49 @@ function settlePlan(
 }
 
 describe('sweep: the internal transfer debits the contract, as the EVM does', () => {
-  it('is refused by the compiler in the plan\'s exact shape: the self-called transfer writes a mapping', () => {
-    // The mapping read/write adds hidden context parameters to `transfer`, so `this.transfer(t, amount)` cannot be
-    // resolved with the source's two arguments. The plan's expectation (the transfer debits the contract) therefore
-    // cannot be reached through the self-call at all; the scalar shape below is the reachable statement of it.
-    const refusal = compileRefusal(MAPPING_SWEEP_SOURCE);
-    expect(refusal.message).toMatch(/Found parameters .* call to function 'transfer'/);
+  it('resolves the plan\'s exact shape at compile: the self-call takes the callee\'s declared parameters', () => {
+    // The self-called body writes a sorted mapping, which carries the sorted-batch operands the direct convention
+    // receives from its SDK. A per-call master derives each operand from its own witness block, so the call site
+    // passes only the declared parameters and the call resolves: the exact `sweep(t)` spelling the plan names
+    // compiles, with or without an internal helper declared beside it.
+    const withHelper = MAPPING_SWEEP_SOURCE.replace(/ }$/, ' function h(int x) private returns (int) { return x + 1; } }');
+    for (const source of [MAPPING_SWEEP_SOURCE, withHelper]) {
+      const artifacts = compileStringMulti(source, { composition: 'per-call' }) as
+        Record<string, { bytecode?: string }>;
+      expect(publishedRefusals(artifacts)).toStrictEqual([]);
+      expect(artifacts.Tok!.bytecode!.length).toBeGreaterThan(0);
+    }
   });
 
-  it('is refused in the same shape when the contract also declares an internal helper', () => {
-    // A helper runs the inliner that moves a called body into its caller, and it used to take this self-call too,
-    // so the transfer read the caller's `msg.sender`: the sweep settled with the caller's balance debited. The
-    // inliner now keeps a self-call whose callee reads its own message, so the shape stays refused.
-    const withHelper = MAPPING_SWEEP_SOURCE.replace(/ }$/, ' function h(int x) private returns (int) { return x + 1; } }');
-    expect(compileRefusal(withHelper).message).toMatch(/Found parameters .* call to function 'transfer'/);
+  it('gives the read a block-layout slot: the published access and the frame\'s layout carry the call argument', () => {
+    // The argument is `this.bal[<address>]`, a read the caller's own code performs before the self-call. A call
+    // statement holds its call in a field the entry-access walk did not descend into, so the read entered no entry
+    // access and no block layout allocated it a slot: the per-call master and the direct path both refused the
+    // whole contract with `The verified-mapping read on 'bal' in 'readThrough' has no allocated entry slot`. The
+    // read is now collected like any other access of the body, so the published ABI names it, the layout gives it a
+    // slot, and the frame reads the node a plan declares for it.
+    for (const composition of ['per-call', 'direct'] as const) {
+      const artifacts = compileStringMulti(READ_THROUGH_SELF_SOURCE, { composition }) as
+        Record<string, {
+          bytecode?: string;
+          abi: { name: string; entryAccesses?: readonly { slotIndex: number; collection: string }[] }[];
+        }>;
+      const row = artifacts.Tok!.abi.find((abi) => abi.name === 'readThrough')!;
+      expect(row.entryAccesses!.map((access) => [access.collection, access.slotIndex >= 0]))
+        .toStrictEqual([['bal', true]]);
+      expect(artifacts.Tok!.bytecode!.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('cannot yet lay the sweep out: the frame the callee writes in declares records its own layout omits', () => {
+    // The mapping sweep compiles, and the frame accepts up to the record the read resolves: the caller's published
+    // accesses name the read, and the callee's batch derives its two groups from the same segment, so the shipped
+    // layout has no declaration that satisfies both (the frame fails an OP_VERIFY before the segment close, and the
+    // derivation reads it as a stall). Serving it means attributing a self-called body's accesses to the frame that
+    // runs it and sizing the derivation's leading records from that frame.
+    const refusal = sweepOutcome();
+    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.message).toMatch(/master "tok-1" of Tok\.sweep\(\) filled no witness at site 0 /);
   });
 
   it('accepts the contract-debited commitment: the self-call debits the contract, as the EVM does', () => {

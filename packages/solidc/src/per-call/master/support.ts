@@ -1362,6 +1362,23 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     const shape = unsupportedReturnShape(entry);
     if (shape !== undefined) refuseBody(entry, shape);
   }
+  // A body the master serves as a subroutine derives its own sorted-batch operands from the segment its own code's
+  // calls name, and a call closes the segment the code before it runs in. A self-call is a subroutine rather than a
+  // record, so it closes no segment: the body's count is right exactly while the frame that invokes it has made no
+  // external call. A caller that makes one lands the write in a later segment than the derivation reads, so the
+  // body is refused by the name of the call rather than composed into a frame that cannot settle.
+  for (const [caller, names] of invokes) {
+    const callerBody = entryPoints.find((entry) => entry.name === caller);
+    if (callerBody === undefined || refusals.has(caller) || !reachesExternalCall(callerBody.body)) continue;
+    for (const name of names) {
+      const fn = entryPoints.find((entry) => entry.name === name);
+      if (fn === undefined || refusals.has(name)) continue;
+      if (derivableBatchWitnessNames(fn, constants) === undefined) continue;
+      refuseBody(fn, `the body derives a verified-mapping write and is invoked by '${caller}', which makes an `
+        + 'external call: a subroutine reads the segment its own code names, and the caller\'s calls put the write '
+        + 'in a later one');
+    }
+  }
   // An entry that reaches a body the master cannot serve is refused itself: the body it would run is a refusal, so
   // the entry could never settle. The reach is what makes this a closure rather than a list.
   const refusedClosure = closeRefusalsOverInvocations(invokes, refusals);

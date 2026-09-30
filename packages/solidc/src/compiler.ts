@@ -3084,7 +3084,9 @@ function compileDetachedMessageBusVerifierUncached(
   );
   ast = ast.accept(new ValidateDataLocations(false)) as Ast;
   ast = ast.accept(new SymbolTableTraversal({ ...compilerOptions, messageBus: false })) as Ast;
-  ast = ast.accept(new TypeCheckTraversal(true, false, compilerOptions.rootFileId)) as Ast;
+  ast = ast.accept(new TypeCheckTraversal(
+    true, false, compilerOptions.rootFileId, compilerOptions.composition === 'per-call',
+  )) as Ast;
   ast = ast.accept(new EnsureFinalRequireTraversal(false, true)) as Ast;
   const traversal = new GenerateTargetTraversal({
     ...compilerOptions,
@@ -12475,6 +12477,7 @@ function compileResolvedAst(
         ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
         ast = ast.accept(new TypeCheckTraversal(
           true, mergedCompilerOptions.solidityImportCompat ?? false, mergedCompilerOptions.rootFileId,
+          mergedCompilerOptions.composition === 'per-call',
         )) as Ast;
       }
       // Emit a minimal ABI-only declaration artifact (like solc: ABI + empty bytecode) instead of erroring.
@@ -13952,6 +13955,7 @@ function compileResolvedAst(
   const typeCheckStarted = Date.now();
   ast = ast.accept(new TypeCheckTraversal(
     true, mergedCompilerOptions.solidityImportCompat ?? false, mergedCompilerOptions.rootFileId,
+    mergedCompilerOptions.composition === 'per-call',
   )) as Ast;
   profileLog('resolved:typecheck', typeCheckStarted, { contract: contractName });
   const finalRequireStarted = Date.now();
@@ -16998,6 +17002,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
     singleAst = singleAst.accept(new TypeCheckTraversal(
       true, compilerOptions.solidityImportCompat ?? false, compilerOptions.rootFileId,
+      compilerOptions.composition === 'per-call',
     )) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(
       compilerOptions.enforceFinalRequire, compilerOptions.allowUnsafeOperations,

@@ -6186,6 +6186,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       return; // MappingDeleteNode has no children to recurse into
     }
 
+    // A call statement holds its call as `call`, a field the walk did not descend into, so a mapping access
+    // written only as an argument of such a statement (`this.g(m[k])`) entered no entry access and the block
+    // layout allocated it no slot (codegen then refused the read as unallocated). Descend so the read is
+    // collected like any other access of the body.
+    if ('call' in node && (node as any).call instanceof Node) {
+      this.collectEntryAccesses((node as any).call, map);
+    }
     // Generic recursion into child nodes
     if ('statements' in node && Array.isArray((node as any).statements)) {
       for (const stmt of (node as any).statements) {
@@ -6326,6 +6333,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       return;
     }
 
+    // A call statement's own call (mirrors collectEntryAccesses): an argument that reads a mapping entry is an
+    // access like any other, so it takes a block-layout slot.
+    if ('call' in node && (node as any).call instanceof Node) {
+      this.assignEntrySlotIndices((node as any).call, map);
+    }
     // Generic recursion (same as collectEntryAccesses)
     if ('statements' in node && Array.isArray((node as any).statements)) {
       for (const stmt of (node as any).statements) {

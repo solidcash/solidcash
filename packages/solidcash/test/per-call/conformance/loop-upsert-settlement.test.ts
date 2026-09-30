@@ -90,7 +90,9 @@ const commitmentOf = (output: { readonly token?: { readonly nft?: { readonly com
 Uint8Array | undefined => output.token?.nft?.commitment;
 
 describe('a mapping upsert inside a run-time loop, through the shipped call path', () => {
-  it('accepts the loop upsert whose key the frame holds, and refuses the record it wrote being changed', async () => {
+  it('the machine accepts the run-time-loop upsert, and refuses the record it wrote being changed', async () => {
+    // The machine is the BCH-2026 VM: `accepted` is true only when every participant's verdict is accepted, so this
+    // assertion is the machine's verdict on the well-formed spend of a mapping upsert that runs inside a loop.
     const answered = await call(FIXED_SOURCE, 'move', [KEY, 42n, 2n]);
     expect({ accepted: answered.accepted, objections: objectionsOf(answered) })
       .toStrictEqual({ accepted: true, objections: '' });
@@ -121,7 +123,7 @@ describe('a mapping upsert inside a run-time loop, through the shipped call path
     expect(vm.stateSuccess(state)).not.toBe(true);
   });
 
-  it('refuses the loop upsert whose key varies per turn, on the frame the shipped path planned itself', async () => {
+  it('the machine refuses the loop upsert whose key varies per turn, on the frame the shipped path planned', async () => {
     const answered = await call(VARYING_SOURCE, 'move', [[KEY], 42n]);
     expect(answered.accepted).toBe(false);
     expect(objectionsOf(answered)).toMatch(

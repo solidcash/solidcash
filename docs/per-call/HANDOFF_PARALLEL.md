@@ -86,13 +86,24 @@ lands it removes the claim line.
   (`MarketplaceV1.postThreadMessage` does now), a batch write beside a dynamic run in another segment publishes
   **both** (`MarketplaceV1.refund`), and a runtime-loop upsert *beside* a call — a loop whose own body makes none,
   or whose write the lowering settles after the calls — publishes **the segment its write lands in** (one call puts
-  it at segment 1, two at segment 2), which the machine's own segment control accepts at that segment and refuses one
-  segment later (`solidc/test/per-call/master/loop-upsert-segment.test.ts`). **That loop shape is served end to end
-  when the key is the frame's**: `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` drives it
+  it at segment 1, two at segment 2). Where a mapping record belongs is fixed by the machine's own control rather
+  than by that suite: a non-loop record declared at the segment the write lands in is accepted and the same
+  declaration one segment later is refused (`solidc/test/per-call/master/loop-upsert-segment.test.ts`), and the loop
+  body itself settles there for a fixed record (next paragraph). **That loop shape is served end to end
+  when the key is the frame's and the entry's body makes no call**:
+  `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` drives it
   through the shipped deploy and call path, the machine accepts the spend, and the same case then changes one byte of
   the record the entry wrote and the machine refuses it.
-  **Open, pending the coordinator's decision**: the fixture's `updateJobWhitelist`, whose key is an **element of a
-  caller-supplied array**, so a different node per turn. It is not a verified batch at all — the entry's
+  **With a call beside the loop the mapping node is a second, independent wall, measured through the shipped proxy
+  path** (`solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts`): its frame is refused with `Program
+  failed an OP_VERIFY operation.` inside the upsert body in both source orders (loop then call, and call then loop),
+  while the **entry's own record** upserted in a run-time loop beside a call settles — that file's machine pair
+  accepts the well-formed spend and refuses the same spend with one byte of the record the loop wrote changed, at the
+  segment the call opened (one call: segment 1; it is the criterion's loop-upsert-beside-a-call shape with a
+  machine accept and a refused mutation). So a loop upsert is served for a fixed record and open for a chain node
+  once a call shares the body.
+  **Open** (the coordinator's decision below keeps it in PW3): the fixture's `updateJobWhitelist`, whose key is an
+  **element of a caller-supplied array**, so a different node per turn. It is not a verified batch at all — the entry's
   block layout reserves no `entry` slot for the collection — so no segment declares its records and no write fact can
   state them; the machine refuses the well-formed spend wherever its node record is declared (segment 0, the last
   segment, both, and an insert: `Program failed an OP_VERIFY operation.`), and it refuses it on the frame the shipped
@@ -237,8 +248,7 @@ lands it removes the claim line.
   it plans itself (`conformance/loop-upsert-settlement.test.ts`), while the same mapping written once from a
   parameter settles there. The reproducers are `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the
   fixture's own shape, the machine's refusals, and its segment control) and that conformance guard. **PW3 stays
-  open for this shape** until the coordinator decides who takes it (`HANDOFF_PARALLEL.md`'s PW3 item waits on that
-  decision).
+  open for this shape** under the coordinator's 2026-09-30 decision that it stays in PW3 (recorded above).
 - **PW4 - landed** (`a723cdfba`, `cfecf35b7`). The attack table cites `hostile/delegate-callee-mutation.test.ts`: the
   faithful forwarded hop is accepted, and a callee that is a second deployed contract's master is refused
   `V5_DELEGATE_TARGET_MISMATCH` off chain and by the facet's edge rule on chain.

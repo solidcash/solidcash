@@ -79,6 +79,9 @@ const MAPPING_WITH_RUN_SOURCE = LEDGER('', `balances[to] = amount; ${CALL} this.
 // A mapping write inside a loop whose own body makes no call, with the entry's call beside the loop. The lowering
 // settles a runtime loop's write at the body's end, so the write lands in the segment the last call opened rather
 // than in the one the loop's first turn ran in - which is the fact a builder declares the batch's records in.
+// The machine's verdict on this shape is `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts`: the
+// same shape's fixed record settles there (accepted, and refused once a byte of it is changed) while this chain node
+// is still refused inside the upsert body, which is the wall that file pins beside the accept.
 const LOOP_UPSERT_BESIDE_CALL_SOURCE = `pragma solidcash ^0.13.0;${PING}`
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'

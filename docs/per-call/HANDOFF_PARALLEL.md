@@ -599,8 +599,8 @@ lands it removes the claim line.
   **`sortedUpsertLoops` is empty** for the entry, so the hop's batch planner has nothing to plan and refuses.
   `stateLayout.collections` has the collection as `sorted: true` with key types `["uint256","address"]`.
 - **Why it is PW3's**: it is the same nested-key, varying-element write shape as `updateJobWhitelist`, and the
-  reason it is not served is the machine's own refusal of every declaration tried for that shape (recorded in PW3's
-  status), not the planner's choice. Whoever publishes and serves the varying-key loop row serves both entries —
+  reason it was not served was the machine's own refusal of every declaration tried for that shape (PW3's status at
+  that revision; the current status is ledger row D5 in `docs/per-call/DECISIONS.md`), not the planner's choice. Whoever publishes and serves the varying-key loop row serves both entries —
   this one is the fixture's own acceptance title (`post job 1`), so it is worth measuring against it directly:
   `cd /Code/cashscript/.worktrees/per-call && node --max-old-space-size=8192 packages/testing/dist/cli.js compile
   --jobs 4` then `yarn vitest run --config vitest.marketplace.config.ts --no-file-parallelism -t 'post job 1'`

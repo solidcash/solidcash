@@ -21,7 +21,10 @@ const read = (name: string): string => readFileSync(new URL(name, DOCS), 'utf8')
 const LEDGER = 'DECISIONS.md';
 const CHECKED = ['HANDOFF_PARALLEL.md', 'PLAN_MARKETPLACE_66.md'];
 /** Status phrasings the ledger superseded; a line naming PW3 may not carry one outside a pointer. */
-const SUPERSEDED = ['stays unticked', 'stays in PW3', 'keeps it in PW3', 'outside PW3', 'stays open for this shape'];
+const SUPERSEDED = [
+  'stays unticked', 'stays in PW3', 'keeps it in PW3', 'outside PW3', 'stays open for this shape', 'stays open for it',
+  'is the open one', 'second open variant',
+];
 
 interface LedgerRow {
   readonly id: string;

@@ -2319,7 +2319,8 @@ its authorization are the live rows of `DECISIONS.md`, which every other per-cal
   compiler-side wall (the run-time-loop upsert body does not settle), not something a write fact can state: no
   segment declares its records. Compiler-half shapes PW3 lists are published and pinned, the census shows no
   refusals, and the loop shape itself is served and accepted when its key is the frame's and the body makes no call
-  (`conformance/loop-upsert-settlement.test.ts`); **the varying-key variant is the open one**, and `HANDOFF_PARALLEL.md`'s PW3 item stays open for it. Serving it needs the
+  (`conformance/loop-upsert-settlement.test.ts`); **at that revision the varying-key variant was the open one** (ledger
+  row D2, since SUPERSEDED-by D5 - `docs/per-call/DECISIONS.md` carries the current status). Serving it needed the
   collection declared in the frame's layout and the per-turn operands derived — compiler code generation plus the
   ladder stream's `proxy/**` planning. (The first two steps of that sequence were written, measured and reverted the
   same day: with the per-call `entry` slot published and the emitter addressing the frame's base, the master's
@@ -2399,7 +2400,8 @@ its authorization are the live rows of `DECISIONS.md`, which every other per-cal
   same shape — a collection the artifact does publish a verified batch for, keyed by a parameter, which is the served
   variant when the body makes no call — is refused in both source orders with `Program failed an OP_VERIFY
   operation.` inside the upsert body, pinned beside the accept in that same file: a chain node's per-turn operands
-  are not the fixed record the loop's own code addresses. That is PW3's second open variant, beside the varying key.
+  are not the fixed record the loop's own code addresses. That was PW3's other open shape at that revision (ledger row
+  D2, SUPERSEDED-by D5; `docs/per-call/DECISIONS.md` carries the current status).
 - **The varying-key compiler half was written and measured; the SDK half is the whole remainder (2026-09-30).** Three
   per-call-only edits (28 lines: the layout's `entry` slot for an in-loop access, the artifact's in-loop access
   publication, and the frame-relative per-turn coordinate in `emitSortedUpsertLoopBody`/`pushIdx` and the

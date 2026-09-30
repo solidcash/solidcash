@@ -260,8 +260,9 @@ const FACET_CHECKS: readonly (readonly CheckEmitter[])[] = [
  *    A DELEGATE call's target is the address of the callee master's own category, so the callee's code is the
  *    implementation the caller's record named. Every covered master that is not a root is named by exactly one call;
  * 4. order on `[M]`: walking from the roots reaches every covered master, and no master is entered twice;
- * 5. read-only frames on `[M]`: a read-only frame leaves every record unchanged, emits nothing, sends nothing and
- *    calls only read-only frames;
+ * 5. read-only frames on `[M]`: a frame in a read-only subtree leaves every record unchanged, emits nothing, sends
+ *    nothing and calls only read-only or delegate frames, a delegate frame reached from a read-only one being in the
+ *    subtree and checked too;
  * 6. settles on `[M]`: no category is settled twice, every category the covered masters need settled — one that
  *    two of them share, or that a delegate or internal frame runs on — is one the transcript settles, and every
  *    category the transcript settles is one they need;
@@ -1178,10 +1179,12 @@ function requireReachedMasters(e: Emitter): void {
 }
 
 /**
- * A read-only frame leaves its records unchanged, emits nothing, sends nothing and calls only read-only frames.
+ * A frame in a read-only subtree leaves its records unchanged, emits nothing, sends nothing and calls only read-only
+ * or delegate frames.
  *
- * Entry `[M]`, exit `[M]`. A frame a read-only caller names is itself read-only, so checking every read-only frame
- * covers the frames beneath it.
+ * Entry `[M]`, exit `[M]`. A frame a read-only caller names is itself read-only, and a delegate frame a read-only
+ * caller names runs on the caller's records and is held to the same rule; {@link emitReadOnlySubtree} is what decides
+ * which frames those are, so checking every frame in the subtree covers the frames beneath it.
  */
 function emitReadOnlyFrames(e: Emitter): void {
   const O = Opcodes;
@@ -1205,7 +1208,7 @@ function emitReadOnlyFrames(e: Emitter): void {
   e.op(O.OP_DROP, O.OP_DROP);
 }
 
-/** Entry `[index]`, exit `[index]`. A frame that is not read-only is left alone. */
+/** Entry `[index]`, exit `[index]`. A frame outside a read-only subtree is left alone. */
 function emitStaticMaster(e: Emitter): void {
   const O = Opcodes;
   e.op(O.OP_DUP, O.OP_INPUTBYTECODE);
@@ -1215,9 +1218,12 @@ function emitStaticMaster(e: Emitter): void {
   e.script(takeFixedWidthField(1));
   e.op(O.OP_SWAP);
   e.unsignedByteOnTop();
-  e.op(O.OP_DUP);
-  e.count(FrameKind.STATIC).op(O.OP_NUMEQUAL, O.OP_IF);
   e.op(O.OP_DROP);
+  // Which frame the rule holds is whether the frame is in a read-only subtree, not whether its own kind is
+  // read-only: a delegate frame reached from a read-only frame is in that subtree and is checked here too.
+  e.count(1).op(O.OP_PICK);
+  emitReadOnlySubtree(e);
+  e.op(O.OP_IF);
   dropFront(e, 6);
   dropLengthPrefixed(e, 2);
   dropLengthPrefixed(e, 2);
@@ -1235,7 +1241,38 @@ function emitStaticMaster(e: Emitter): void {
   dropValueList(e);
   e.op(O.OP_SIZE);
   e.count(0).op(O.OP_NUMEQUALVERIFY, O.OP_DROP);
-  e.op(O.OP_ELSE, O.OP_DROP, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+}
+
+/**
+ * Whether a frame is in a read-only subtree.
+ *
+ * Entry `[index]`, exit `[flag]`. A frame is in a read-only subtree when it is read-only itself, or when it is a
+ * delegate frame whose caller is: a delegate call runs the callee against its caller's records, so a read-only frame
+ * that delegates into one reaches a frame that must be held to the same rule, and the frames below it too. Walking
+ * the caller chain up through delegate frames to the first ancestor that is not one answers which case holds: that
+ * ancestor being read-only is exactly the frame being in the subtree. The chain terminates because the caller graph
+ * is the tree the order rule already verified.
+ */
+function emitReadOnlySubtree(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_DUP);
+  emitIndexHead(e);
+  e.op(O.OP_DROP);
+  e.op(O.OP_ROT, O.OP_DROP);
+  // `[kind, caller]`: stop at the first ancestor that is not a delegate frame, else step up to its caller.
+  e.op(O.OP_OVER);
+  e.count(FrameKind.DELEGATE).op(O.OP_NUMEQUAL, O.OP_NOT);
+  e.op(O.OP_IF);
+  e.op(O.OP_DROP);
+  e.op(O.OP_1);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_NIP);
+  e.op(O.OP_0);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_UNTIL);
+  e.count(FrameKind.STATIC).op(O.OP_NUMEQUAL);
 }
 
 /** Entry `[rest]`, exit `[rest]` after the calls. Each call is read-only and carries no value. */
@@ -1247,7 +1284,13 @@ function requireStaticCalls(e: Emitter): void {
   e.script(takeFixedWidthField(1));
   e.op(O.OP_SWAP);
   e.unsignedByteOnTop();
-  e.count(FrameKind.STATIC).op(O.OP_NUMEQUALVERIFY);
+  // A read-only frame may delegate into a read-only entry, so the call's kind must be STATIC or DELEGATE and nothing
+  // else. The delegate frame carries no state change of its own, and the sweep over the read-only subtree holds its
+  // records, events, sends and calls to the same rule.
+  e.op(O.OP_DUP);
+  e.count(FrameKind.STATIC).op(O.OP_NUMEQUAL);
+  e.op(O.OP_SWAP);
+  e.count(FrameKind.DELEGATE).op(O.OP_NUMEQUAL, O.OP_BOOLOR, O.OP_VERIFY);
   dropLengthPrefixed(e, 2);
   e.script(takeFixedWidthField(8));
   e.op(O.OP_SWAP);

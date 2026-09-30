@@ -669,7 +669,13 @@ export function checkV10(state: DerivationState): void {
     if (block.sends.length > 0) check('V10', 'V10_STATIC_SEND', master);
     for (const call of block.calls) {
       if (call.value !== 0n) check('V10', 'V10_STATIC_VALUE_CALL', master);
-      if (call.kind !== FrameKind.STATIC) check('V10', 'V10_STATIC_NON_STATIC_CALL', master);
+      // A delegate call is not itself a state change: it runs the callee's code against this frame's records, and
+      // the walk above reaches that callee and holds its own records, events, sends and calls to this same rule. So
+      // a read-only frame may reach a read-only entry through a proxy by delegating into it, and the delegate frame
+      // keeps the property because it is itself in the checked subtree.
+      if (call.kind !== FrameKind.STATIC && call.kind !== FrameKind.DELEGATE) {
+        check('V10', 'V10_STATIC_NON_STATIC_CALL', master);
+      }
     }
   }
 }

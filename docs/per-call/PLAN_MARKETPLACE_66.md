@@ -1709,13 +1709,16 @@ risk. Take the slices in order, each with its own tests.
   - **Parallel items beside the ladder** (handoff 2026-09-30, `HANDOFF_PARALLEL.md`): seven items off the ladder's
     critical path or ahead of it, each with its lane, the point it is done and what it must coordinate; claim one
     here before starting. **Claimed by the parallel worker**: a patch, not a landing, for the hop dropping a callee's
-    key read beside its batch (`docs/per-call/patches/`, for the ladder stream to take). **Landed by the parallel
-    worker**: PW5, PW1 step 1 with the reporter half of step 2, PW9 (log row "a call in the right operand of && or
-    ||"), PW2 (log rows "walls ahead", "walls ahead, second pass" and "walls ahead, the job updates", and the
-    scoreboard's "Walls ahead" table), a probe of a call argument read from the entry's own write (log row "walls
-    ahead: a call argument read from the entry's own write"), the per-call clock on the mock (log row "the mock
-    chain's day moves a per-call contract's block.timestamp register"), and the packed-address check (log row "an
-    untyped struct-field address packed into a call argument"); the settle-loop half of PW1 is the ladder stream's.
+    key read beside its batch (`docs/per-call/patches/`, for the ladder stream to take); a patch, not a landing, for
+    the hop laying a read-only entry's dynamic records (`hopEntryWrites` lays runs from `dynamicWrites` only; #47,
+    #30); and an untyped integer packed into a call argument under `solidityImportCompat`
+    (`stateful/sc-evaluate-external-expression.ts`). **Landed by the parallel worker**: PW5, PW1 step 1 with the
+    reporter half of step 2, PW9 (log row "a call in the right operand of && or ||"), PW2 (log rows "walls ahead",
+    "walls ahead, second pass" and "walls ahead, the job updates", and the scoreboard's "Walls ahead" table), a probe
+    of a call argument read from the entry's own write (log row "walls ahead: a call argument read from the entry's
+    own write"), the per-call clock on the mock (log row "the mock chain's day moves a per-call contract's
+    block.timestamp register"), and the packed-address check (log row "an untyped struct-field address packed into a
+    call argument"); the settle-loop half of PW1 is the ladder stream's.
     **Landed by the second worker, 2026-09-30**: PW3's compiler half (`c3cf75d69`: an entry that writes nothing
     of its own publishes an empty write list, a write inside a loop whose own body reaches no call is placed, and a
     runtime-loop upsert beside a call publishes the segment its write lands in, with a machine accept and a refused

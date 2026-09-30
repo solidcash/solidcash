@@ -1,6 +1,7 @@
 import { AddressType } from '@solidcash/utils';
 import {
   AssignNode,
+  AssemblyStatementNode,
   BinaryOpNode,
   BlockNode,
   BoolLiteralNode,
@@ -23,6 +24,13 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 class BindingSurvey extends AstTraversal {
   readonly definitions = new Map<string, VariableDefinitionNode[]>();
   readonly writes = new Set<string>();
+  hasAssembly = false;
+
+  visitAssemblyStatement(node: AssemblyStatementNode): Node {
+    // Yul assignments may change a Solidity local without producing an AssignNode.
+    this.hasAssembly = true;
+    return super.visitAssemblyStatement(node);
+  }
 
   visitVariableDefinition(node: VariableDefinitionNode): Node {
     const definitions = this.definitions.get(node.name) ?? [];
@@ -53,10 +61,15 @@ class BindingSurvey extends AstTraversal {
  * Prune branches made static by the ordinary helper-inlining passes. Inlining deliberately binds value parameters
  * once so their arguments are evaluated once; a literal binding such as `_mint`'s `address(0)` subsequently makes
  * one arm of `_update` impossible. Removing that arm before physical-slot discovery avoids allocating impossible
- * state and collection writes. This pass never substitutes a runtime value or drops a binding/evaluation.
+ * state and collection writes. It also carries a nonzero-address fact into the false arm of a pure equality
+ * guard, including an inlined continuation nested under that arm. It never substitutes a runtime value or drops
+ * a binding/evaluation.
  */
 export default class PruneInlinedConstantBranches extends AstTraversal {
   private constants = new Map<string, string>();
+  private aliases = new Map<string, string>();
+  private immutableBindings = new Set<string>();
+  private nonZero = new Set<string>();
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const survey = new BindingSurvey();
@@ -66,6 +79,17 @@ export default class PruneInlinedConstantBranches extends AstTraversal {
       // Restrict this pre-typecheck rewrite to the pass-owned, uniquely named value bindings. Source locals are
       // still checked in all branches, even when a user wrote an obvious constant condition.
       (this.isInlinedBinding(name) && definitions.length === 1 && !survey.writes.has(name)));
+    const immutableLocals = [...survey.definitions.entries()].filter(([name, definitions]) =>
+      definitions.length === 1 && !survey.writes.has(name));
+    this.immutableBindings = new Set(survey.hasAssembly ? [] : [
+      ...immutableLocals.map(([name]) => name),
+      ...node.parameters.filter((parameter) => !survey.definitions.has(parameter.name)
+        && !survey.writes.has(parameter.name)).map((parameter) => parameter.name),
+    ]);
+    this.aliases = new Map(immutableLocals.flatMap(([name, [definition]]) =>
+      definition.expression instanceof IdentifierNode && this.immutableBindings.has(definition.expression.name)
+        ? [[name, definition.expression.name] as const] : []));
+    this.nonZero = new Set();
     for (let iteration = 0; iteration < candidates.length; iteration += 1) {
       let changed = false;
       for (const [name, [definition]] of candidates) {
@@ -79,17 +103,64 @@ export default class PruneInlinedConstantBranches extends AstTraversal {
     }
     const result = super.visitFunctionDefinition(node);
     this.constants = new Map();
+    this.aliases = new Map();
+    this.immutableBindings = new Set();
+    this.nonZero = new Set();
     return result;
   }
 
   visitBranch(node: BranchNode): Node {
-    if (!this.usesInlinedConstant(node.condition)) return super.visitBranch(node);
-    const selected = this.truth(node.condition);
-    if (selected === undefined) return super.visitBranch(node);
+    const selected = this.nonZeroTruth(node.condition)
+      ?? (this.usesInlinedConstant(node.condition) ? this.truth(node.condition) : undefined);
+    if (selected === undefined) {
+      const before = new Set(this.nonZero);
+      node.condition = this.visit(node.condition);
+      node.ifBlock = this.visit(node.ifBlock) as BlockNode;
+      this.nonZero = new Set(before);
+      // An inlined continuation is commonly placed in the else arm of a terminating guard. Even when the
+      // first arm does not terminate, `x == address(0)` being false proves x nonzero throughout this arm.
+      const comparison = this.nonZeroComparison(node.condition);
+      if (comparison?.equalsZero) this.nonZero.add(comparison.key);
+      node.elseBlock = this.visitOptional(node.elseBlock) as BlockNode | undefined;
+      this.nonZero = before;
+      return node;
+    }
     // Preserve the selected block's lexical scope and all of its statements. The condition is built only from
-    // literal/cast/immutable-identifier expressions, so evaluating it had no runtime effects to preserve.
+    // literal/cast/immutable-identifier expressions, or a pure comparison of a proven-nonzero immutable address.
     const block = selected ? node.ifBlock : (node.elseBlock ?? new BlockNode([]));
     return this.visit(block);
+  }
+
+  /** Immutable aliases may carry a proven nonzero address across an inlined call. */
+  private canonicalAlias(name: string): string {
+    const seen = new Set<string>();
+    let current = name;
+    while (this.aliases.has(current) && !seen.has(current)) {
+      seen.add(current);
+      current = this.aliases.get(current)!;
+    }
+    return current;
+  }
+
+  private zeroAddressOperand(expression: ExpressionNode): string | undefined {
+    if (!(expression instanceof IdentifierNode) || !this.immutableBindings.has(expression.name)) return undefined;
+    return this.canonicalAlias(expression.name);
+  }
+
+  private nonZeroComparison(expression: ExpressionNode): { key: string; equalsZero: boolean } | undefined {
+    if (!(expression instanceof BinaryOpNode)
+      || (expression.operator !== BinaryOperator.EQ && expression.operator !== BinaryOperator.NE)) return undefined;
+    const left = this.zeroAddressOperand(expression.left);
+    const right = this.zeroAddressOperand(expression.right);
+    const key = this.constant(expression.left)?.startsWith('address-zero:') ? right
+      : this.constant(expression.right)?.startsWith('address-zero:') ? left : undefined;
+    return key === undefined ? undefined : { key, equalsZero: expression.operator === BinaryOperator.EQ };
+  }
+
+  private nonZeroTruth(expression: ExpressionNode): boolean | undefined {
+    const comparison = this.nonZeroComparison(expression);
+    if (comparison === undefined || !this.nonZero.has(comparison.key)) return undefined;
+    return !comparison.equalsZero;
   }
 
   private isInlinedBinding(name: string): boolean {

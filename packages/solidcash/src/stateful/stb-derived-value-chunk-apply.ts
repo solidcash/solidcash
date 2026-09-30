@@ -156,7 +156,18 @@ export function applyDerivedValueChunks(
         nft: { capability: 'mutable' as const, commitment: chunk.commitment },
       },
     };
-    next.amount = BigInt(Math.max(1200, calculateDust(next)));
+    // A derived continuation may replace an incoming value chunk at the same
+    // balanced coordinate. Its covenant requires the satoshi value to be
+    // preserved even when the digest changes its locking bytecode.
+    const predecessor = host.allInputs[outputIndex];
+    const predecessorIsValueChunk = chunk.semanticKind !== 'entryPin'
+      && derivedValueChunkIndex !== undefined
+      && predecessor?.token?.nft?.capability === 'mutable'
+      && predecessor.token.category.toLowerCase() === next.token.category.toLowerCase()
+      && valueChunkIndexFromCommitment(predecessor.token.nft.commitment) !== undefined;
+    next.amount = predecessorIsValueChunk
+      ? predecessor.satoshis
+      : BigInt(Math.max(1200, calculateDust(next)));
     const existingLock = existing?.to instanceof Uint8Array
       ? existing.to
       : existing?.to !== undefined ? addressToLockScript(existing.to) : undefined;

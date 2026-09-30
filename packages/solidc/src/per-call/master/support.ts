@@ -78,7 +78,7 @@ import {
   VariableDefinitionNode,
   WhileNode,
 } from '../../ast/AST.js';
-import { NullaryOperator, UnaryOperator } from '../../ast/Operator.js';
+import { BinaryOperator, NullaryOperator, UnaryOperator } from '../../ast/Operator.js';
 import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
 import { countTransfersMinMax } from '../../semantic/branchOps.js';
 import type { MasterCallSite, MasterTailShape, SiteArgument } from './frame-tail.js';
@@ -1902,11 +1902,40 @@ export function callsRepeat(block: BlockNode | undefined): boolean {
  * leaves the count to the arm that runs. Both leave the record positions to the execution, so the body carries how
  * many calls it has made rather than addressing records by a fixed position; a body whose paths all make the same
  * number keeps the fixed positions the head checks, so its emitted bytes are unchanged. A loop or a branch that
- * reaches no call does not change the count.
+ * reaches no call does not change the count. A call in an operand the code evaluates only on some paths - the right
+ * operand of `&&` or `||`, or an arm of a conditional expression - is skipped when the rest decides the value, so it
+ * varies the count as a branch arm does.
  */
 export function callsVaryOnPaths(block: BlockNode | undefined): boolean {
   const range = callCountRange(block);
-  return range === undefined || range.least !== range.most;
+  return range === undefined || range.least !== range.most || reachesLazilyEvaluatedCall(block);
+}
+
+/** True when a call sits in the right operand of `&&` or `||`, or in an arm of a conditional expression. */
+function reachesLazilyEvaluatedCall(block: BlockNode | undefined): boolean {
+  let reaches = false;
+  walkInvocationAst(block, (node) => {
+    if (reaches) return;
+    if (node instanceof BinaryOpNode
+      && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR)) {
+      reaches = reachesCallRecord(node.right);
+    } else if (node instanceof TernaryOpNode) {
+      reaches = reachesCallRecord(node.ifTrue) || reachesCallRecord(node.ifFalse);
+    }
+  });
+  return reaches;
+}
+
+/** True when a node reaches a call that binds a witness record, the kinds `callsIn` counts. */
+function reachesCallRecord(value: unknown): boolean {
+  let reaches = false;
+  walkInvocationAst(value, (node) => {
+    if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallStatementNode
+      || node instanceof LowLevelCallNode) {
+      reaches = true;
+    }
+  });
+  return reaches;
 }
 
 /** The fewest and most calls a block makes on any one path, or undefined when a construct leaves the count open. */

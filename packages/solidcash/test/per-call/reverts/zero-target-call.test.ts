@@ -129,7 +129,8 @@ describe('an entry whose guarded call names the zero address', () => {
     const funded = await deployedWithCallerCoin(network);
 
     // The entry's own frame refuses before the call is reached, so the implementation frame is named with its source
-    // line rather than the hop refusing a target that names no contract.
+    // line and its own message rather than the hop refusing a target that names no contract. The `&&` skips the
+    // call, so the frame declares no record and the body reaches its `require` rather than a call-count check.
     await expect(callPerCallProxyEntry({
       provider: network,
       implementationArtifact: impl,
@@ -145,7 +146,7 @@ describe('an entry whose guarded call names the zero address', () => {
       vm: compositionMachine(),
     })).rejects.toThrow(
       new RegExp('the implementation\'s "hold" entry did not settle through the proxy: frame '
-        + '"implementation-master" of Impl\\.hold\\(\\) at line \\d+'),
+        + '"implementation-master" of Impl\\.hold\\(\\) at line \\d+: invalid token \\(Program failed an OP_VERIFY'),
     );
 
     // Nothing was broadcast, so the caller's coin is still live.

@@ -2072,6 +2072,26 @@ Titles marked NEVER have not passed on any real compile to date.
   sides in one place: the served loop upsert accepted with its mutation refused, and the varying-key loop upsert
   refused with its reason.
 
+- **The acceptance matrix, taken at HEAD `a6bd72a2f` (2026-09-30).** Every criterion-1 shape's accept and refusal,
+  with the line the assertion sits on and whether the verdict is the machine's (a VM evaluation) or compile-level
+  (`{SCRATCH}/criterion1-matrix.md` and `matrix-*.log`; each run exit 0):
+
+| Shape | Accept | Refuse | Verdict kind |
+| --- | --- | --- | --- |
+| 1. writes nothing of its own | `hostile/unwritten-record-change.test.ts:127`, `:129` | `:134`, refused at `:136` (`PER_CALL_DERIVATION_STALLED`) | accept is the composition machine's; the mutation is refused by the derivation, before any `vm.evaluate` |
+| 2. loop upsert beside a call | `conformance/loop-upsert-beside-call.test.ts:217`, `:220-221` | `:238`, the refusing participant named at `:272` | both the machine's, on the shipped proxy path |
+| 3. batch beside a dynamic run | `master/insert-beside-append.test.ts:367`, `:368` (with `:371`/`:375`/`:379`) | `:393`, `:399`, `:404` | both the machine's, at master level (`compileString` + `deployMaster` + a test-authored `WitnessBlock`); the shipped hop keeps a named refusal for the body family (`call/write-segments-settlement.test.ts:255`) |
+| 4. loop upsert whose key the frame holds | `conformance/loop-upsert-settlement.test.ts:94`, `:98-99`; `master/write-shape-publication.test.ts:232`, `:250-253`; `master/loop-upsert-segment.test.ts:444`, `:464-468` | `conformance/loop-upsert-settlement.test.ts:124`; `master/write-shape-publication.test.ts:271-273`; `master/loop-upsert-segment.test.ts:489-491` | all three pairs are the machine's, on the shipped deploy and call path |
+
+  Four facts the matrix also fixes, which a reader should not have to re-derive: the publication pins (empty list,
+  the loop's segment, one fact per write) are compile-level by design, so the verdict they are read for is taken in
+  the files the table names; shape 1's mutation is refused by the derivation rather than by the VM, which is the
+  shipped behaviour for that shape and is stated here rather than implied; shape 3's machine pair is at master level
+  and the shipped hop refuses that body by name, so the shape's "well-formed spend accepted" is a master-input
+  verdict; and `loop-upsert-beside-call.test.ts:212-213` claims the loop-before-call body is machine-accepted
+  "below" while only the call-then-loop body is driven through the hop, which is a comment to tighten rather than a
+  verdict claimed in error.
+
 ## 7. Log (append-only; newest last)
 
 | Date | Commit | Worktree | Harness | Result | Notes |
@@ -2238,7 +2258,11 @@ Titles marked NEVER have not passed on any real compile to date.
   `updateJobWhitelist` sits behind the hop's callee-frame planning as well as the varying key.
 - **PW3 was not narrowed: the varying-key shape is open under a coordinator decision, and the box is unticked
   (reconciled 2026-09-30 in `c612e351b`).** One round's handoff wording put the fixture's `updateJobWhitelist` shape
-  "outside PW3's done-when from here on". That was withdrawn in `c612e351b`: `HANDOFF_PARALLEL.md`'s PW3 item states
+  "outside PW3's done-when from here on". That sentence was added by `87b092627` and withdrawn by `c612e351b`
+  (`git log -S "outside PW3" -- docs/per-call/HANDOFF_PARALLEL.md`), and the item's Done-when line itself was never
+  changed: it is byte-identical at `1ec400927` and at HEAD ("the three refusals are gone from the published census,
+  the master tests pass, and the ladder stream has taken the published facts"), with only a status sentence appended.
+  `HANDOFF_PARALLEL.md`'s PW3 item states
   the shape **stays in PW3** under the coordinator's 2026-09-30 decision that it stays in this lane and is implemented
   here in steps, and the item's box stays unticked until the fixture shape settles. Nothing in PW3 is recorded as
   landed for it - only the compiler half of the varying key (`aecdbf5ef`) and the pinned reproducers. The same commit

@@ -435,7 +435,13 @@ lands it removes the claim line.
   fixture's own shape, the machine's refusals, and its segment control) and that conformance guard. **PW3 stays
   open for this shape** under the coordinator's 2026-09-30 decision that it stays in PW3 (recorded above); the item's
   box is unticked until the fixture shape settles, and an earlier round's wording that put the shape "outside PW3's
-  done-when" was withdrawn in `c612e351b`.
+  done-when" was withdrawn in `c612e351b`. **That wording was never the item's Done-when**: the Done-when line is
+  byte-identical at `1ec400927` and at HEAD ("the three refusals are gone from the published census, the master tests
+  pass, and the ladder stream has taken the published facts"), with only a status sentence appended below it
+  (`git show 1ec400927:docs/per-call/HANDOFF_PARALLEL.md | grep -n -A2 'Done when'`), so PW3's requirement was
+  narrowed and restored inside one round and a citation of the interval reads a revision that is not on the branch
+  (`git log -S "outside PW3" -- docs/per-call/HANDOFF_PARALLEL.md` names `87b092627` adding it and `c612e351b`
+  removing it).
   **The served loop-upsert shape's machine accept, and where it is pinned** (the criterion that asks each published
   shape for `well-formed spend accepted, mutated spend refused`): the accept is
   `solidc/test/per-call/master/loop-upsert-segment.test.ts`'s third describe, `the run-time-loop upsert the shipped

@@ -160,7 +160,9 @@ lands it removes the claim line.
   artifact then publishes `blockLayout {blockSize: 2, slots: [master, {kind: 'entry', conditional: true}]}` and
   `entryAccesses [{slotIndex: 0, collection: "balances", keyParams: ["arridx(id:workers,id:i)"], operations:
   ["write"]}]` with no write fact, and the shipped path refuses **by name, before the machine is asked**:
-  `entry "move" touches mapping "balances" as write outside a sorted batch, which a call does not plan`
+  `entry "move" writes mapping "balances" at 1 turn(s) of "workers", a run-time loop whose per-turn records a
+  call does not declare yet` (the turn count is the array's own, derived from the artifact's
+  `sortedUpsertLoopInfo`)
   (`packages/solidcash/src/per-call/call/entry-records.ts:374`). So the compiler half alone converts a machine-level
   `OP_VERIFY` refusal into a named SDK refusal and moves that body's `blockSize`: it lands with the SDK half or not
   at all. The edits are committed as `docs/per-call/patches/pw3-varying-key-compiler-half.diff` (76 lines, three
@@ -225,6 +227,19 @@ lands it removes the claim line.
   per-turn **outputs** by their position in the segment's declared list - the mechanism the batch path already
   reaches through `emitDeclaredGroupRecordOrdinal` / `batchTargetOrdinal` - since a per-call frame's created records
   sit in the transaction's trailing outputs rather than at a frame coordinate.
+- **SDK half, piece 1 landed**: the per-call lane derives the turns of a run-time-loop mapping write from the
+  artifact's own facts. `planCallLoopWrites` (`packages/solidcash/src/per-call/call/entry-records.ts`) reads each
+  `sortedUpsertLoopInfo` entry - the collection, `varyingArrayParam`, `valueScalarParam`, the operation - finds the
+  access whose key names that array, takes the counter from the key label's own operands, and resolves one key per
+  element of the array the caller handed the entry, substituting the turn for the counter exactly as the read path's
+  `pagedKeyAt` does. The shipped call path consumes it: its refusal now names what the shape needs
+  (`entry "move" writes mapping "balances" at N turn(s) of "workers", a run-time loop whose per-turn records a call
+  does not declare yet`) in place of the generic "outside a sorted batch". Pinned by
+  `solidcash/test/per-call/call/loop-turns.test.ts`, whose four cases drive the shipped compiler, the shipped planner
+  and `callPerCallEntry` over a real deployment: one turn per element with each element's own key, a single-element
+  array, an array the frame does not carry (refused by name), and the shipped refusal naming three turns for three
+  elements. **Pieces 2 and 3 remain** - declaring the turns' records where the emitted coordinate looks for them, and
+  naming the loop's per-turn outputs by their position in the segment's declared list.
 - **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder
   stream has taken the published facts. **Status 2026-09-30: two of the three shapes are done.** The census read back
   with this round's compiler shows seven contracts and **0 refusals**, `postThreadMessage` publishes

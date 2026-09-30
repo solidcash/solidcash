@@ -130,7 +130,8 @@ describe('a mapping upsert inside a run-time loop, through the shipped call path
     // `solidc/test/per-call/master/loop-upsert-segment.test.ts` shows the machine reading as the no-record sentinel
     // when it is handed such a frame. This named refusal is the seam the per-turn planning replaces.
     await expect(call(VARYING_SOURCE, 'move', [[KEY], 42n])).rejects.toThrow(
-      /entry "move" touches mapping "balances" as write outside a sorted batch, which a call does not plan/,
+      // The turn count is the array's own, which is what the per-call lane derives before planning records.
+      /writes mapping "balances" at 1 turn\(s\) of "workers", a run-time loop whose per-turn records a call does not declare yet/,
     );
   });
 });

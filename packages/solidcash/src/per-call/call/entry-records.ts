@@ -197,6 +197,103 @@ function resolveKeys(
   });
 }
 
+/** One turn of a write loop the entry's own source runs: its index and the keys it writes under. */
+export interface CallLoopWriteTurn {
+  readonly turn: number;
+  readonly keys: readonly Uint8Array[];
+}
+
+/** One run-time loop in which the entry's source writes a collection, with the turns its own arguments fix. */
+export interface CallLoopWritePlan {
+  readonly collection: string;
+  /** The write the loop performs, as the artifact publishes it: `set` for an assignment, `delete` for a removal. */
+  readonly op: string;
+  /** The array parameter whose elements the loop walks, one turn per element. */
+  readonly varyingArrayParam: string;
+  /** The parameter the stored value comes from, or the empty string for a loop with no value. */
+  readonly valueScalarParam: string;
+  readonly turns: readonly CallLoopWriteTurn[];
+}
+
+/** One key of an access, as the label the artifact publishes for it. */
+function keyLabel(access: NonNullable<AbiFunction['entryAccesses']>[number], index: number): string {
+  return access.keySources?.[index]?.expressionLabel ?? access.keyParams[index]!;
+}
+
+/**
+ * The run-time loops the entry's own source writes a collection in, with each turn's keys resolved.
+ *
+ * `sortedUpsertLoopInfo` is the artifact's own statement of the shape: the collection, the array whose elements the
+ * loop walks (`varyingArrayParam`), the parameter the value comes from (`valueScalarParam`) and the operation. The
+ * loop's accesses name each key as a label whose operands include the loop's counter, so a turn's key is that label
+ * with the counter replaced by the turn's index - the same substitution the read path's paged planning makes
+ * (`pagedKeyAt` in `read.ts`) - and the turns are the array's own length, since the loop the artifact publishes runs
+ * over that array. A loop whose array the frame's arguments do not carry as an array, or whose key names no counter
+ * to walk it with, is refused by name rather than guessed at.
+ */
+export function planCallLoopWrites(
+  request: KeyResolutionContext & { readonly artifact: Artifact },
+): readonly CallLoopWritePlan[] | undefined {
+  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
+  const infos = fn?.sortedUpsertLoopInfo ?? [];
+  if (fn === undefined || infos.length === 0) return undefined;
+  const visible = visibleInputs(fn);
+  const args = [...request.args];
+  return infos.map((info): CallLoopWritePlan => {
+    const arrayName = info.varyingArrayParam;
+    const accesses = (fn.entryAccesses ?? []).filter((access) => access.collection === info.collection);
+    const marked = accesses.flatMap((access) => access.keyParams.map((_param, index) => ({
+      access, label: keyLabel(access, index),
+    }))).filter((key) => key.label.includes(`id:${arrayName}`));
+    const varying = marked.find((key) => key.label.includes(`arridx(id:${arrayName},`));
+    if (varying === undefined) {
+      throw new PerCallCallRecordError(
+        `entry "${request.functionName}" writes mapping "${info.collection}" in a run-time loop over "${arrayName}", `
+        + 'whose key the artifact does not publish as an element of that array',
+      );
+    }
+    const operands = [...varying.label.matchAll(/id:([A-Za-z_$][\w$]*)/g)].map((match) => match[1]!);
+    const counter = operands.find((name) => name !== arrayName);
+    if (counter === undefined) {
+      throw new PerCallCallRecordError(
+        `entry "${request.functionName}" writes mapping "${info.collection}" in a run-time loop whose key names no `
+        + 'counter to walk it with',
+      );
+    }
+    const arrayIndex = visible.findIndex((input) => input.name === arrayName);
+    const elements = arrayIndex < 0 ? undefined : args[arrayIndex];
+    if (!Array.isArray(elements)) {
+      throw new PerCallCallRecordError(
+        `entry "${request.functionName}" writes mapping "${info.collection}" in a run-time loop over "${arrayName}", `
+        + "which the frame's arguments do not carry as an array",
+      );
+    }
+    const escaped = counter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`id:${escaped}(?![\\w$])`, 'g');
+    const labels = varying.access.keyParams.map((_param, index) => keyLabel(varying.access, index));
+    const turns = elements.map((_element, turn): CallLoopWriteTurn => ({
+      turn,
+      keys: labels.map((label): Uint8Array => {
+        const resolved = evalComputedKey(label.replace(pattern, `lit:${turn}`), args, visible, undefined, undefined);
+        if (resolved === undefined) {
+          throw new PerCallCallRecordError(
+            `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${turn} of "${arrayName}" `
+            + `under a key the frame's arguments do not determine (${label})`,
+          );
+        }
+        return resolved;
+      }),
+    }));
+    return {
+      collection: info.collection,
+      op: (info as { readonly op?: string }).op ?? 'set',
+      varyingArrayParam: arrayName,
+      valueScalarParam: info.valueScalarParam ?? '',
+      turns,
+    };
+  });
+}
+
 /** The live mapping node one access names: the collection it belongs to and the UTXO carrying it. */
 export interface ReadEntryNode {
   readonly collection: string;
@@ -371,6 +468,16 @@ function planReadNodes(request: CallEntryRecordsRequest, fn: AbiFunction): reado
     .filter((access) => access.slotIndex === undefined || !batched.has(access.slotIndex));
   const written = reads.find((access) => access.operations.some((operation) => operation !== 'read'));
   if (written !== undefined) {
+    // A write the artifact publishes as a run-time loop over an array has its turns derived here, so the refusal
+    // names what that shape needs - how many turns of which array - rather than only what this plan cannot do.
+    const loop = planCallLoopWrites(request)
+      ?.find((candidate) => candidate.collection === written.collection);
+    if (loop !== undefined) {
+      throw new PerCallCallRecordError(
+        `entry "${request.functionName}" writes mapping "${written.collection}" at ${loop.turns.length} turn(s) of `
+        + `"${loop.varyingArrayParam}", a run-time loop whose per-turn records a call does not declare yet`,
+      );
+    }
     throw new PerCallCallRecordError(
       `entry "${request.functionName}" touches mapping "${written.collection}" as ${written.operations.join('/')} `
       + 'outside a sorted batch, which a call does not plan',

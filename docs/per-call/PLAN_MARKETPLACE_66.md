@@ -2044,6 +2044,19 @@ Titles marked NEVER have not passed on any real compile to date.
 ---
 
 
+- **Where the machine verdicts for the loop-upsert shape live, said revision-explicitly (2026-09-30).** Criterion 1
+  asks each published shape to carry a machine verdict, and they do.
+  `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts:94` is `the machine accepts the run-time-loop
+  upsert, and refuses the record it wrote being changed`: `{ accepted: true, objections: '' }` at `:99` for the
+  well-formed spend, and the same spend with one byte of the written record changed refused at `:124`. The same shape
+  beside a call is `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts:217` (accept at `:221`, the
+  mutation refused at `:238`, the refusing participant named at `:272`). A citation of
+  `loop-upsert-settlement.test.ts:86-97` - an accept at `:86` beside a refusal at `:91` - reads the revision before
+  `fddae17aa`, where that file's accept case had not yet been rewritten to the body the shipped path settles. The
+  publication pin (`solidc/test/per-call/master/write-shape-publication.test.ts`) drives no machine by design and now
+  names those cases at its head, as does the compiler's varying-key harness
+  (`solidc/test/per-call/master/loop-upsert-segment.test.ts`).
+
 ## 7. Log (append-only; newest last)
 
 | Date | Commit | Worktree | Harness | Result | Notes |

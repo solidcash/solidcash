@@ -140,8 +140,11 @@ describe('the segment each write of a per-call entry lands in, as an artifact pu
   });
 
   it('publishes nothing for a batch write whose target varies per turn of a loop that calls', () => {
-    // The target is the loop's own element, so the batch is not one write the walk places: no fact states where
-    // its records land, and a builder refuses the entry by name instead of guessing a segment.
+    // The target is the loop's own element, so the batch is not one write the walk places: no fact states where its
+    // records land, and a builder refuses the entry by name instead of guessing a segment. The shape stays unstated
+    // for a deeper reason, which `loop-upsert-segment.test.ts` pins: the entry's block layout reserves no entry slot
+    // for the mapping (the upsert is carried by the run-time-loop machinery rather than by a verified batch), and
+    // the machine refuses the well-formed spend for the entry wherever its node record is declared.
     expect(publishedWrites(varyingLoop, 'Ledger', 'move')).toStrictEqual({});
   });
 });

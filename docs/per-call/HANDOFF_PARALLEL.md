@@ -168,5 +168,9 @@ lands it removes the claim line.
 - **PW7 - landed** (`12c24e2d9`). The 4.5 rows carry measured numbers (VM evaluations, per-master runs, derive and
   build walls, the twenty-four-master shape, and the chunk outputs per append) and the first title is profiled:
   455.1 s, of which 452.9 s is the fixture deployment.
-- Still held elsewhere: PW1, PW2 and PW5. The fixture census could not be re-read after PW3 because the ladder's own
-  run held `.marketplace`.
+- **The fixture census was read back** with this round's compiler (`node --max-old-space-size=8192
+  packages/testing/dist/cli.js compile --jobs 4`): 9 sources, 7 artifacts, **0 refusals** in all seven contracts.
+  `MarketplaceV1.postThreadMessage()` publishes `writeSegments: []` and `MarketplaceV1.refund()` publishes its batch
+  and its run, which is the two publication halves of PW3 at the fixture; `MarketplaceV1.updateJobWhitelist()`
+  publishes nothing, for the wall recorded in the plan's Deviations.
+- Still held elsewhere: PW1, PW2 and PW5.

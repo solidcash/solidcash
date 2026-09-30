@@ -62,6 +62,26 @@ const PLAIN_SOURCE = `pragma solidcash ^0.13.0;${OTHER}`
   + `   function move(address[] workers, uint amount) { ${CALL} }`
   + ' }';
 
+/**
+ * The shape the fixture's own entry has: the loop body both upserts the mapping and makes its call, so one turn
+ * writes and calls before the next turn writes again.
+ *
+ * This is the shape the handoff names for the entry whose writes the artifact states for no segment: the mapping is
+ * not a verified batch here (the block layout reserves no entry slot for it), and the upsert is carried by the
+ * run-time-loop machinery instead. The case below pins what the shipped compiler and the shipped machine do with
+ * it, so the shape's wall is a recorded reproducer rather than a claim.
+ */
+const LOOP_CALL_INSIDE_SOURCE = `pragma solidcash ^0.13.0;${OTHER}
+ contract Ledger {
+   mapping(address => uint) balances;
+   function move(address[] workers, uint amount) {
+     for (int i = 0; i < workers.length; i = i + 1) {
+       balances[workers[i]] = amount;
+       ${CALL}
+     }
+   }
+ }`;
+
 /** The control: the head's non-loop counterpart, one mapping write beside the same call. */
 const BATCH_SOURCE = `pragma solidcash ^0.13.0;${OTHER}`
   + ' contract Ledger {'
@@ -72,6 +92,7 @@ const BATCH_SOURCE = `pragma solidcash ^0.13.0;${OTHER}`
   + '   }'
   + ' }';
 
+const insideArtifacts = compileStringMulti(LOOP_CALL_INSIDE_SOURCE, { composition: 'per-call' });
 const loopArtifacts = compileStringMulti(LOOP_SOURCE, { composition: 'per-call' });
 const plainArtifacts = compileStringMulti(PLAIN_SOURCE, { composition: 'per-call' });
 const batchArtifacts = compileStringMulti(BATCH_SOURCE, { composition: 'per-call' });
@@ -88,6 +109,8 @@ function fill(artifact: { readonly bytecode: string; readonly composition?: unkn
   });
 }
 
+const insideProgram = fill(insideArtifacts.Ledger!, CATEGORY_LEDGER, ADDRESS_LEDGER);
+const insideLock = encodeLockingBytecodeP2sh32(hash256(insideProgram));
 const loopProgram = fill(ledger, CATEGORY_LEDGER, ADDRESS_LEDGER);
 const plainProgram = fill(plainArtifacts.Ledger!, CATEGORY_LEDGER, ADDRESS_LEDGER);
 const batchProgram = fill(batchArtifacts.Ledger!, CATEGORY_LEDGER, ADDRESS_LEDGER);
@@ -297,6 +320,30 @@ describe('a per-call master whose entry upserts a mapping in a run-time loop bes
  * The machine accepts the declaration there and refuses the same declaration one segment later, which is what fixes
  * the segment the machine reads for a mapping node record rather than leaving it to this suite.
  */
+describe('the fixture\'s own shape: the loop body both upserts the mapping and makes the call', () => {
+  it('serves the body, publishes no write fact and reserves no entry slot for the mapping', () => {
+    expect(insideArtifacts.Ledger!.composition?.refusedEntries).toBeUndefined();
+    const entry = insideArtifacts.Ledger!.composition!.stopSites.entries.find(
+      (candidate) => candidate.functionName === 'Ledger.move()',
+    )!;
+    // A varying key is not one write the walk places, and the mapping has no entry slot in the layout, so no
+    // segment states where its records are declared: the entry publishes nothing rather than a guessed segment.
+    expect(entry.writeSegment).toBeUndefined();
+    expect(entry.writeSegments).toBeUndefined();
+    expect(insideArtifacts.Ledger!.abi.find((candidate) => candidate.name === 'move')!.blockLayout)
+      .toStrictEqual({ blockSize: 1, slots: [{ kind: 'master', offset: 0 }] });
+  });
+
+  it('refuses the well-formed spend wherever the node record is declared', () => {
+    // The same head with the loop removed is accepted above, and the same head with a parameter key settles under
+    // the machine's own segment control below, so what refuses these two declarations is the upsert's own code.
+    for (const segment of [0, 1] as const) {
+      expect({ segment, ...verdict(build(insideProgram, insideLock, WORKERS, [NODE_RECORD], segment)) })
+        .toStrictEqual({ segment, accepted: false, objection: 'Program failed an OP_VERIFY operation.' });
+    }
+  });
+});
+
 describe('the same head with one mapping write beside the same call, the machine\'s segment control', () => {
   it('accepts the write whose record is declared in the segment the write lands in', () => {
     const outcome = verdict(build(batchProgram, batchLock, WORKER, [NODE_RECORD], WRITE_SEGMENT));

@@ -17,9 +17,11 @@ const numByte = (n: number): Uint8Array => Uint8Array.from([n]);
  * Build the A and B recovery side-cars for one call. `chunkA` is the split point (how many ladder steps A runs); the
  * caller VM-probes it via `ecrecoverSidecarCosts`. Returns the two input unlockers, the two recreation outputs (A
  * commits the checkpoint, B the compressed pubkey), and the recovered key. `salt` brands the pair to the contract.
+ * `padPrefix` opens A's pad, which the covenant only drops: a per-call body reads a proof there.
  */
 export function buildEcrecoverComputeSidecars(
   wit: EcrecoverWitness, chunkA: number, salt: Uint8Array, sidecarA: Utxo, sidecarB: Utxo,
+  padPrefix?: Uint8Array,
 ): { unlockerA: Unlocker; recreateA: Output; unlockerB: Unlocker; recreateB: Output; compressedQ: Uint8Array } {
   const redeemA = buildEcrecoverComputeRedeem(salt, 'A'), redeemB = buildEcrecoverComputeRedeem(salt, 'B');
   const lockA = ecrecoverComputeLockingBytecode(salt, 'A'), lockB = ecrecoverComputeLockingBytecode(salt, 'B');
@@ -42,6 +44,7 @@ export function buildEcrecoverComputeSidecars(
   // 10000 or OP_INPUTBYTECODE (the contract reading the side-car) overflows the 10000-byte stack-item limit.
   const padTo = (witBytes: number): Uint8Array => new Uint8Array(Math.max(0, 9950 - witBytes));
   const padA = padTo(wit.argBlob.length + shared.length + aBlob.length + redeemA.length);
+  if (padPrefix !== undefined) padA.set(padPrefix);
   const padB = padTo(wit.argBlob.length + shared.length + Cblob.length + wit.zinv.length + redeemB.length);
   const unlockA: Unlocker = {
     generateUnlockingBytecode: () => Uint8Array.from([

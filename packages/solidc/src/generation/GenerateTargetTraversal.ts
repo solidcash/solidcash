@@ -337,6 +337,7 @@ const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 
 /** The secp256k1 group order; the EVM's `ecrecover` refuses an `r` or `s` outside [1, n). */
 const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+const SECP256K1_PRIME = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
 
 /**
  * Diagnostic switch for compute/participant block-base resolution. A block base is addressed by a stack index,
@@ -12049,6 +12050,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A per-call body answers the EVM's zero address for a recovery its precompile refuses, without reading the
     // pair: the pair the composer co-spends there is one the body never binds.
     const zeroOnRefusal = this.perCallMaster;
+    // An `r` in range that no curve point has is refused by the precompile too; side-car A's pad proves it.
+    const offCurveProof = zeroOnRefusal && !loop;
     if (zeroOnRefusal) {
       this.emitRecoveryAccepted(loc);
       this.emit(Op.OP_IF, loc);
@@ -12079,7 +12082,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUALVERIFY, loc);                            // B integrity
     } else {
       slotIdx('A'); this.emit(Op.OP_INPUTBYTECODE, loc);                 // [argBlob, U_A]
-      this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // [argBlob, restA] (drop pad)
+      if (offCurveProof) {
+        // An honest pad is zeros; one whose first word is not stands for the proof, answered after the projection.
+        this.emitGenericPushdataDecode(raw, loc);                        // [argBlob, pad, restA]
+        this.emit(Op.OP_OVER, loc); this.emitTakeFirst32(loc);
+        this.emit(hexToBin('00'), loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_BIN2NUM, loc);
+        this.emit(Op.OP_0NOTEQUAL, loc);
+        this.emit(Op.OP_NOTIF, loc);
+        this.emit(Op.OP_NIP, loc);                                       // [argBlob, restA] (drop pad)
+      } else {
+        this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // [argBlob, restA] (drop pad)
+      }
       this.emitGenericPushdataDecode(raw, loc);                          // [argBlob, argBlob_A, rest2]
       this.emit(Op.OP_TOALTSTACK, loc);                                  // [argBlob, argBlob_A]
       this.emit(Op.OP_EQUALVERIFY, loc);                                 // bind argBlob_A == argBlob
@@ -12182,6 +12195,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(encodeInt(12n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [R[12:32] = addr20]
     }
+    if (offCurveProof) {
+      // [argBlob, pad, restA]: the pad's first word proves `r` has no point, and the body answers the zero address.
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emitOffCurveProof(loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
     if (zeroOnRefusal) {
       // [hash, v, r, s] -> the zero address, empty as `address(0)` is.
       this.emit(Op.OP_ELSE, loc);
@@ -12216,6 +12237,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(1n), loc); this.emit(encodeInt(SECP256K1_ORDER), loc); this.emit(Op.OP_WITHIN, loc);
       this.emit(Op.OP_BOOLAND, loc);
     }
+  }
+
+  /**
+   * Requires the pad's first word w to prove that no curve point has `r` as its x-coordinate: with a = r^3 + 7 mod p,
+   * w^2 = p - a mod p has a root only when a has none, since -1 is no square mod p. Stack: [argBlob, pad] -> [].
+   */
+  private emitOffCurveProof(loc: SingleLocationData): void {
+    const unsigned = (): void => {
+      this.emit(hexToBin('00'), loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_BIN2NUM, loc);
+    };
+    this.emit(encodeInt(SECP256K1_PRIME), loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);                                // [argBlob, pad, p, argBlob]
+    this.emit(encodeInt(33n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emitTakeFirst32(loc); unsigned();                                                    // [.., p, r]
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_MUL, loc); this.emit(Op.OP_MUL, loc);
+    this.emit(encodeInt(7n), loc); this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_MOD, loc);                                    // [.., p, a]
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_SUB, loc);       // [.., p, p - a]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emitTakeFirst32(loc); unsigned();                                                    // [.., p, p - a, w]
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_MUL, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_MOD, loc);    // [.., p, p - a, w^2]
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
   }
 
   visitFunctionCall(node: FunctionCallNode): Node {

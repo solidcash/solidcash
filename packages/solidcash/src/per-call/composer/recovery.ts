@@ -13,7 +13,8 @@
  * states works. Scalars the body computes are learned from the body's own bind: the pair is built over placeholder
  * scalars and rebuilt over the ones the body binds. For scalars the EVM's precompile refuses by range (a `v`
  * outside 27/28, an `r` or `s` outside [1, n)) the body answers the zero address without reading its pair, so a
- * placeholder pair holds the place.
+ * placeholder pair holds the place. So it does for an `r` no curve point has as its x-coordinate, where the
+ * placeholder's A pad opens with the proof the body checks instead.
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth';
@@ -31,6 +32,9 @@ import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverS
   from '../../ecrecover/ecrecoverComputeSidecar.js';
 import { buildKeccakComputeSidecar } from '../../keccak/keccakComputeSidecar.js';
 import type { DraftComputedWitness, DraftInput, DraftSettledInput, DraftSourceOutput } from './draft.js';
+
+/** secp256k1's field prime. */
+const FIELD_PRIME = 2n ** 256n - 2n ** 32n - 977n;
 
 /** The value each side-car UTXO carries; the covenants' self-preservation only reads the lock and the token. */
 const SIDE_CAR_VALUE = 100_000n;
@@ -159,11 +163,12 @@ function recoverySideCarsOver(
   scalars: RecoveryScalars,
   salt: Uint8Array,
   placed: { readonly a: PlacedSideCar; readonly b: PlacedSideCar; readonly k: PlacedSideCar | undefined },
+  padPrefix?: Uint8Array,
 ): Record<string, DraftSettledInput> {
   const witness = computeEcrecoverWitness(scalars.hash, scalars.v, scalars.r, scalars.s);
   const chunkA = probeEcrecoverSplit(witness, salt, placed.a.utxo, placed.b.utxo);
   const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(
-    witness, chunkA, salt, placed.a.utxo, placed.b.utxo,
+    witness, chunkA, salt, placed.a.utxo, placed.b.utxo, padPrefix,
   );
   const settled: Record<string, DraftSettledInput> = {
     [placed.a.id]: { unlockingBytecode: unlockingOf(unlockerA), output: sideCarRecreation(recreateA) },
@@ -190,17 +195,48 @@ function recoveryScalarsOf(blob: Uint8Array): RecoveryScalars {
   return { hash: blob.slice(0, 32), v: blob[32]!, r: blob.slice(33, 65), s: blob.slice(65) };
 }
 
-/**
- * Whether a body recovers from these scalars, as it tests them: `v` 27 or 28, and `r` and `s`, read as unsigned
- * little-endian words, in [1, n). For any others it answers the zero address without reading its pair.
- */
-function bodyRecovers(scalars: RecoveryScalars): boolean {
-  const inRange = (word: Uint8Array): boolean => {
-    let value = 0n;
-    for (let index = word.length - 1; index >= 0; index -= 1) value = (value << 8n) | BigInt(word[index]!);
+/** A little-endian word read as an unsigned number, the way the recovery builtin reads its scalars. */
+function unsignedOf(word: Uint8Array): bigint {
+  let value = 0n;
+  for (let index = word.length - 1; index >= 0; index -= 1) value = (value << 8n) | BigInt(word[index]!);
+  return value;
+}
+
+/** `base` to the power `exponent`, modulo `modulus`. */
+function powMod(base: bigint, exponent: bigint, modulus: bigint): bigint {
+  let result = 1n;
+  for (let b = base % modulus, e = exponent; e > 0n; b = (b * b) % modulus, e >>= 1n) {
+    if ((e & 1n) === 1n) result = (result * b) % modulus;
+  }
+  return result;
+}
+
+/** Whether the precompile's range rules admit these scalars: `v` 27 or 28, and `r` and `s` in [1, n). */
+function inRange(scalars: RecoveryScalars): boolean {
+  const scalar = (word: Uint8Array): boolean => {
+    const value = unsignedOf(word);
     return value >= 1n && value < secp256k1.CURVE.n;
   };
-  return (scalars.v === 27 || scalars.v === 28) && inRange(scalars.r) && inRange(scalars.s);
+  return (scalars.v === 27 || scalars.v === 28) && scalar(scalars.r) && scalar(scalars.s);
+}
+
+/**
+ * The proof that no curve point has `r` as its x-coordinate, or undefined when one does: w with w^2 = -(r^3 + 7)
+ * mod p, which has a root only when r^3 + 7 has none, since -1 is no square mod p.
+ */
+function offCurveProof(r: Uint8Array): Uint8Array | undefined {
+  const x = unsignedOf(r);
+  const a = (x * x * x + 7n) % FIELD_PRIME;
+  if (powMod(a, (FIELD_PRIME - 1n) / 2n, FIELD_PRIME) === 1n) return undefined;
+  return littleEndianWord(powMod(FIELD_PRIME - a, (FIELD_PRIME + 1n) / 4n, FIELD_PRIME));
+}
+
+/**
+ * Whether a body recovers from these scalars, as it tests them: in range, and `r` a curve point's x-coordinate. For
+ * any others it answers the zero address without binding its pair.
+ */
+function bodyRecovers(scalars: RecoveryScalars): boolean {
+  return inRange(scalars) && offCurveProof(scalars.r) === undefined;
 }
 
 /** A 32-byte little-endian word, the form the recovery builtin reads its scalars in. */
@@ -280,17 +316,27 @@ export function buildRecoverySideCars(
       sources[placed.k.id] = sideCarSource(keccakComputeLockingBytecode(salt, true), placed.k.utxo);
       utxos[placed.k.id] = placed.k.utxo;
     }
-    const over = (scalars: RecoveryScalars): Record<string, DraftSettledInput> =>
-      recoverySideCarsOver(scalars, salt, placed);
+    const over = (scalars: RecoveryScalars, padPrefix?: Uint8Array): Record<string, DraftSettledInput> =>
+      recoverySideCarsOver(scalars, salt, placed, padPrefix);
+    // The pair a body does not bind holds its place, its A pad proving an off-curve `r` when that is why.
+    const unbound = (scalars: RecoveryScalars, tag: string): Record<string, DraftSettledInput> => {
+      const proof = inRange(scalars) ? offCurveProof(scalars.r) : undefined;
+      return placeholderRecovery(tag, (drawn) => over(drawn, proof)).settled;
+    };
     let settled: Record<string, DraftSettledInput>;
     if ('computed' in call) {
       const placeholder = placeholderRecovery(`${master}/recovery-${index}`, over);
       computedWitnesses.push({
-        master, placeholder: placeholder.argument, settle: (value) => over(recoveryScalarsOf(value)),
+        master,
+        placeholder: placeholder.argument,
+        settle: (value) => {
+          const scalars = recoveryScalarsOf(value);
+          return bodyRecovers(scalars) ? over(scalars) : unbound(scalars, `${master}/recovery-${index}/settled`);
+        },
       });
       settled = placeholder.settled;
     } else if (!bodyRecovers(call)) {
-      settled = placeholderRecovery(`${master}/recovery-${index}`, over).settled;
+      settled = unbound(call, `${master}/recovery-${index}`);
     } else {
       settled = over(call);
     }

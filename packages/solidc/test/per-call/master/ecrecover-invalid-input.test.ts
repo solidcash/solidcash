@@ -39,7 +39,9 @@ import { publishedRefusals } from './refused-entry.js';
  * from the arguments the precompile refuses (a `v` outside 27/28 fails the checkpoint covenant's parity binding, an
  * `r` of 0 has no square root), so the per-call body tests them itself: for a `v` outside 27/28, or an `r` or `s`
  * outside [1, n), it answers the zero address, empty as `address(0)` is, without reading the pair the composer
- * co-spends there. An `r` in range but off the curve is still open: the body binds a pair, and none recovers.
+ * co-spends there. An `r` in range but off the curve has no pair either: side-car A's pad then opens with w, whose
+ * square is -(r^3 + 7) mod p, which the body checks before it answers the zero address. A recovery at infinity is
+ * still open.
  *
  * The direct-convention control compiles the same valid source, where the call is served and marked as recovery
  * compute - so what the per-call cases below show is the per-call convention's own behaviour.
@@ -303,9 +305,11 @@ function recoveryPair(witness: EcrecoverWitness): { readonly a: SideCar; readonl
 }
 
 /** Builds the A/B recovery pair for a witness at the given split, without probing viability. */
-function pairAt(witness: EcrecoverWitness, chunkA: number): { readonly a: SideCar; readonly b: SideCar } {
+function pairAt(
+  witness: EcrecoverWitness, chunkA: number, padPrefix?: Uint8Array,
+): { readonly a: SideCar; readonly b: SideCar } {
   const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(
-    witness, chunkA, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never,
+    witness, chunkA, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never, padPrefix,
   );
   return {
     a: {
@@ -505,8 +509,8 @@ describe('the EVM invalid-input rule on the per-call path', () => {
       .toStrictEqual({ [MASTER_INDEX]: true });
   });
 
-  it('has no pair for an r in range but off the curve, which the body still binds', () => {
-    // The open failure path: no y has y^2 = r^3 + 7, so no pair recovers, and the range check sends the body to one.
+  it('answers the zero address for an r in range but off the curve, which side-car A\'s pad proves', () => {
+    // No y has y^2 = r^3 + 7, so no pair recovers; w with w^2 = -(r^3 + 7) mod p proves it, -1 being no square.
     let x = 1n;
     const offCurve = (): boolean => {
       try {
@@ -517,9 +521,31 @@ describe('the EVM invalid-input rule on the per-call path', () => {
       }
     };
     while (!offCurve()) x += 1n;
+    const prime = 2n ** 256n - 2n ** 32n - 977n;
+    const power = (base: bigint, exponent: bigint): bigint => {
+      let result = 1n;
+      for (let b = base % prime, e = exponent; e > 0n; b = (b * b) % prime, e >>= 1n) {
+        if ((e & 1n) === 1n) result = (result * b) % prime;
+      }
+      return result;
+    };
+    const w = power(prime - ((x ** 3n + 7n) % prime), (prime + 1n) / 4n);
+    const chunkA = probeEcrecoverSplit(
+      signer.witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never,
+    );
+    const proven = pairAt(signer.witness, chunkA, leWord(w));
+    const program = zeroProgram({ ...signer, v: 27, r: leWord(x) });
+    expect(verdicts(buildSpend(program, [proven.a, proven.b]), [MASTER_INDEX, A_INDEX, B_INDEX])).toStrictEqual({
+      [MASTER_INDEX]: true, [A_INDEX]: true, [B_INDEX]: true,
+    });
+    // Without the proof the body binds the pair, which recovers other arguments; a w that does not square to
+    // -(r^3 + 7) is refused, and so is a proof beside an r a point has, where the recovery is the signer's.
     const { a, b } = signerPairOnce();
-    const spend = buildSpend(zeroProgram({ ...signer, v: 27, r: leWord(x) }), [a, b]);
-    expect(verdicts(spend, [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: false });
+    expect(verdicts(buildSpend(program, [a, b]), [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: false });
+    const wrong = pairAt(signer.witness, chunkA, leWord(w + 1n));
+    expect(verdicts(buildSpend(program, [wrong.a, wrong.b]), [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: false });
+    expect(verdicts(buildSpend(zeroProgram(signer), [proven.a, proven.b]), [MASTER_INDEX]))
+      .toStrictEqual({ [MASTER_INDEX]: false });
   });
 
   it('has no pair for a recovery id outside 27/28: the checkpoint covenant refuses it', () => {

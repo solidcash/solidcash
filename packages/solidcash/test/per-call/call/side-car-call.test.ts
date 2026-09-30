@@ -186,6 +186,42 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
     expect(refused.broadcast).toBeUndefined();
   }, 120_000);
 
+  it('answers the zero address for a signature whose r no curve point has, so the body reaches its own revert', async () => {
+    // The body binds the placeholder, and the pair it learns it should bind is rebuilt as one whose A pad proves `r`
+    // off the curve, which the body checks before answering the zero address.
+    const word = (value: bigint): Uint8Array =>
+      Uint8Array.from({ length: 32 }, (_, index) => Number((value >> BigInt(8 * index)) & 0xffn));
+    let x = 1n;
+    const onCurve = (): boolean => {
+      try {
+        computeEcrecoverWitness(DIGEST, 27, word(x), signer.s);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    while (onCurve()) x += 1n;
+    const deployed = await deploy();
+    const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 300_000n };
+    await deployed.provider.addUtxo(binToHex(deployed.callerLock), callerUtxo);
+    const refused = await callPerCallEntry({
+      provider: deployed.provider,
+      artifact: guard,
+      categoryId: deployed.categoryId,
+      functionName: 'take',
+      args: [DIGEST, Uint8Array.from([...word(x), ...signer.s, 27])],
+      callerUtxo,
+      callerLockingBytecode: deployed.callerLock,
+      funder: deployed.funder,
+      vm: compositionMachine(),
+    });
+    expect(refused.refusal?.innermost?.reason.error?.name).toBe('InvalidSignature');
+    const accepted = new Map(refused.verdicts.map((verdict) => [verdict.id, verdict.accepted]));
+    expect([accepted.get('master'), accepted.get('master/recovery-A0'), accepted.get('master/recovery-B0')])
+      .toStrictEqual([false, true, true]);
+    expect(refused.broadcast).toBeUndefined();
+  }, 120_000);
+
   it('refuses by name a call on a network whose side-car pool is short', async () => {
     const deployed = await deploy();
     // A provider that cannot mint stand-ins, as a real network cannot.

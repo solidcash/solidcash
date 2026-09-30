@@ -1,6 +1,6 @@
 import { binToHex, bigIntToVmNumber, hexToBin, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
-  sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, VALUE_CHUNK_MAX_COUNT,
+  computeCollectionHash, sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, VALUE_CHUNK_MAX_COUNT,
   type Artifact, type EntryAccessAbi,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
@@ -11,6 +11,7 @@ import {
 } from '../../src/stateful/StatefulContract.js';
 import { encodeEntryCommitment } from '../../src/stateful/SortedList.js';
 import { resolveMaterializedPredOutUpdates } from '../../src/stateful/stb-materialized-predout-reconcile.js';
+import { reassertNestedEmitEvents } from '../../src/stateful/stb-nested-emit-events.js';
 import { writerBatchPlanMatchesPhysicalCarrier } from '../../src/stateful/writer-event-delegate-layout.js';
 import {
   assignPhysicalReturnIndices,
@@ -4036,6 +4037,56 @@ describe('assignPhysicalReturnIndices', () => {
       },
     }, { consumedMutableOk: true })).toBe(true);
     expect(siblingOutputs[1]?.token?.nft?.commitment).toBe(legacyShapedCommitment);
+  });
+
+  it('does not detach JobEvent-shaped receipts from an exact generic writer event', () => {
+    const ownerCategory = 'ab'.repeat(32);
+    const signature = 'notices:mapping(int => Notice[])';
+    const eventSignature = 'NoticeAppended(int,bytes)';
+    const eventLock = hexToBin(`aa20${'11'.repeat(32)}87`);
+    const legacyShapedCommitment = '005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000';
+    const layout = {
+      blockSize: 3,
+      slots: [{ kind: 'master', offset: 0 }, { kind: 'entry', offset: 1, slotIndex: 0 },
+        { kind: 'event', offset: 2, slotIndex: 0 }],
+    };
+    const abiFunction = { name: 'appendNotice', inputs: [], outputs: [], blockLayout: layout };
+    const writer = {
+      categoryId: ownerCategory,
+      functionName: 'appendNotice',
+      blockLayout: layout,
+      compilerRoute: { abiFunction, eventSignaturesBySlot: [eventSignature] },
+      eventOutputs: [{ eventSignature, commitment: '01aa', lockingBytecode: eventLock }],
+      valueChunkWrites: [{
+        categoryId: ownerCategory, collection: 'notices', collectionSignature: signature,
+        collectionHash: binToHex(computeCollectionHash(signature)), keySlot: '07'.repeat(32),
+        entryAccessSlot: 0, routeSlot: 0, operation: 'insert', outputBase: 3, outputCount: 1,
+      }],
+    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
+    const detachedEventReceipts: Array<{ eventSignature: string; commitment: string }> = [];
+    const host = {
+      externalCallUtxoGroups: [writer], lowLevelCallUtxoGroups: [],
+      messageBusConvention: 'kernel-row-loop', composedParticipant: true,
+      allInputs: [], detachedEventReceipts, builderOptions: { provider: {} },
+      getExternalCallMasterInputIndex: () => 0, getLowLevelCallMasterInputIndex: () => -1,
+      findMintingInputIndex: () => -1, ensureDistinctJobEventNfts: () => {},
+    } as unknown as Parameters<typeof reassertNestedEmitEvents>[0];
+    const outputs = [
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: eventLock, amount: 1200n, token: {
+        category: ownerCategory, amount: 0n,
+        nft: { capability: 'none', commitment: legacyShapedCommitment },
+      } },
+    ];
+    const builder = { outputs } as unknown as Parameters<typeof reassertNestedEmitEvents>[1];
+
+    reassertNestedEmitEvents(host, builder);
+
+    expect(builder.outputs[2]?.token?.nft?.commitment).toBe('01aa');
+    expect(builder.outputs[3]?.token?.nft?.commitment).toBe(legacyShapedCommitment);
+    expect(detachedEventReceipts).toEqual([]);
   });
 
   it('ranks return observations by authentication, not commitment byte length', () => {

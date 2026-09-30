@@ -229,9 +229,9 @@ export function reassertNestedEmitEvents(
   const eventCommitment = constructedCommit ?? derived?.commitment;
   if (!legacyEventFallback && !eventCommitment) return;
   const persistEmit = shouldRematerializePersistUpdateForHost(host);
-  // Preserve distinct JobEvent commitments that will leave the covenant dest so
-  // multi-emit publishes (Created then WhitelistedWorkerAdded) still decode.
-  if (emitSignature && categoryId) {
+  // Only descriptor-free legacy plans infer detached receipts from the historical JobEvent wire.
+  // An exact compiler-described event owns its own receipt; similarly-shaped sibling NFT commitments do not.
+  if (legacyEventFallback && emitSignature && categoryId) {
     const nextCommit = (eventCommitment ?? '').toLowerCase();
     const detachCommit = (commit: string): void => {
       if (!isJobEventEmitCommitment(commit)) return;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileFile, compileFileSplit } from 'solidc';
+import { compileFile, compileFileSplit, compileString } from 'solidc';
 import { hexToBin } from '@bitauth/libauth';
 import {
   asmToScript, bytecodeToScript, decodeInt, Op, scriptToBytecode,
@@ -100,6 +100,13 @@ describe('MinimalNativeToken bytecode budget', () => {
     const readInvokes = body.filter((opcode, index) => opcode === Op.OP_INVOKE
       && body[index - 1] instanceof Uint8Array && decodeInt(body[index - 1] as Uint8Array) === -18n);
     expect(readInvokes.length).toBeGreaterThanOrEqual(1);
+    const delegate = compileString(
+      'library ReadFacet { mapping(bytes20=>uint256) balances;'
+      + ' function f(bytes20 a, bytes20 b, bytes20 c) public {'
+      + ' require(this.balances[a] == this.balances[b] || this.balances[c] == 0); } }',
+      { brandLibrary: true, messageBus: false },
+    );
+    expect(delegate.debug.invokeDebug?.['-18']?.name).not.toBe('compiler helper -18');
 
     const provider = createTestProvider();
     const alice = new Signer(alicePriv, provider);

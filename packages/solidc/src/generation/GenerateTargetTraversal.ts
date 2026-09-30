@@ -21441,8 +21441,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_ENDIF, loc);
     }
+    // OP_INVOKE gives a delegate/aggregate route its own introspection frame. An absolute entry input index
+    // authenticated in the caller's frame must not be reinterpreted inside this compact helper.
     if ((valueType instanceof IntType || valueType === PrimitiveType.BIGINT)
-      && !routeBatch && runtimeAliasPriors.length === 0) {
+      && !this.currentFunctionIsDelegate && !this.usesProxyStateBlockBase()
+      && !this.isCompilerMessageBusRoute() && !routeBatch && runtimeAliasPriors.length === 0) {
       this.emitSortedIntReadProof(loc);
       this.pushToStack('(value)');
       return node;

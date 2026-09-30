@@ -75,14 +75,15 @@ if (preparedAtomicNodes?.length) {
     callerSets.set(owner, callers);
   }
   const requiresAtomicPromotion = [...ownerInvocationCounts.values()].some((count) => count > 1);
-  const allRoutesEligible = orderedNodes.length === preparedAtomicNodes.filter((node) => node.active).length
-    && orderedNodes.every((node) => {
-      const artifact = node.executionArtifact ?? node.contract.inner.artifact;
-      if (node.selector === undefined) return false;
-      const selector = node.selector.toLowerCase();
-      return artifact.messageBus?.handlers.some((handler: any) =>
-        handler.selector.toLowerCase() === selector && handler.eligible) === true;
-    });
+  const unrouteableNodes = orderedNodes.flatMap((node) => {
+    const artifact = node.executionArtifact ?? node.contract.inner.artifact;
+    if (node.selector === undefined) return [node];
+    const selector = node.selector.toLowerCase();
+    return artifact.messageBus?.handlers.some((handler: any) =>
+      handler.selector.toLowerCase() === selector && handler.eligible) === true ? [] : [node];
+  });
+  const completeGraph = orderedNodes.length === preparedAtomicNodes.filter((node) => node.active).length;
+  const allRoutesEligible = completeGraph && unrouteableNodes.length === 0;
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ATOMIC_PROMOTION === '1') {
     console.error('atomic-promotion', JSON.stringify({
@@ -110,6 +111,20 @@ if (preparedAtomicNodes?.length) {
       callerSets: [...callerSets].map(([owner, callers]) => [owner, [...callers]]),
       ownerInvocationCounts: [...ownerInvocationCounts],
     }));
+  }
+  if (requiresAtomicPromotion && !allRoutesEligible) {
+    if (!completeGraph) {
+      throw new Error('messageBus: repeated-owner calls require an acyclic, complete prepared graph');
+    }
+    const directOnly = unrouteableNodes.map((node) => {
+      const artifact = node.executionArtifact ?? node.contract.inner.artifact;
+      return `${artifact.contractName}.${node.functionName}`;
+    });
+    throw new Error(
+      'messageBus: repeated-owner calls require atomic composition, but the prepared graph contains '
+      + `direct-only participant${directOnly.length === 1 ? '' : 's'}: ${directOnly.join(', ')}. `
+      + 'Mixed direct/kernel participant composition is not yet supported.',
+    );
   }
   if (requiresAtomicPromotion && allRoutesEligible) {
     // A participant's route materializes one continuation lane per storage resource, and the compiled program

@@ -11098,7 +11098,7 @@ function synthesizeMessageBusRoute(
             require(int(bytes.concat(callManifest.slice(cursor + 3, cursor + 5), hex"00"))
               == targetOffset);
             require(callManifest.slice(cursor + 10, cursor + 14) == hex"00000000");
-            require(completion == int(bytes.concat(callManifest.slice(cursor + 3, cursor + 5), hex"00")));
+            require(completion == targetOffset);
             if (kind == 1) {
               require(eventsStarted == 0 && targetSlot > previousResourceTarget);
               previousResourceTarget = targetSlot;

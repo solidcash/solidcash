@@ -44,6 +44,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | 75 |
 | `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2 |
+| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 64, under `PER_CALL_AHEAD=1` |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 3 |
 
 Total: 1736 checks (115 + 632 + 987 + 2), with four more cases that run under
@@ -57,6 +58,7 @@ behind its proxy and takes about three and a half minutes. The package totals ar
 its four cases joined, where the copies before the seventh prune took 280 to 308 s back to back) is the seventeen
 rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
+The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.
@@ -302,11 +304,20 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   `dynamic-argument-rows.test.ts` (12), `balance-rows.test.ts` (10), `low-level-return-rows.test.ts` (11) and
   `custom-error-rows.test.ts` (6). Beside them `loop-upsert-settlement.test.ts` pins the wall a run-time-loop
   mapping upsert meets on the shipped call path (the machine refuses the frame the path planned itself, while the
-  same mapping written once from a parameter settles).
+  same mapping written once from a parameter settles). The eleven cross-contract rows are
+  `cross-contract-identity.test.ts`, each the EVM's answer beside the refusal the per-call path meets by name.
 - **`solidcash/test/per-call/pw7-measure.test.ts`** - a measurement instrument rather than a regression guard: it
   drives the shipped composer and derivation on Y2, Y6 and the vault graph, counts the machine's own evaluations
   per master, and prints a JSON summary to `PW7_OUT` (default `/tmp/pw7-measure.json`). The twenty-four-master case
   runs only under `PW7_FULL=1`. The plan's 4.5 rows carry the numbers it produces.
+- **`solidcash/test/per-call/ahead/`** - walls ahead: neutral replicas of the later groups' flow shapes, deployed
+  behind generated proxies and driven through `callPerCallProxyEntry`, each pinned where it stands and, with its
+  first wall stepped around, at the next; the scoreboard's "Walls ahead" table in the plan names each wall and its
+  owner. `fan-in.test.ts` (MS3), `reentry-payout.test.ts` (MS4), `origin-gated-payout.test.ts` (MS5),
+  `time-gated-challenge.test.ts` (MS6), `deep-arbitration.test.ts` (MS7), `revert-after-calls.test.ts` (MS10),
+  `job-threads-and-refusals.test.ts` (L4: posting, thread messages, allowlists and refusals) and
+  `block-oracle-beside-array.test.ts` (records an entry does not name, and a `view` read of a proxied store). The
+  directory runs only under `PER_CALL_AHEAD=1`.
 
 ## Which refusals cover which attack
 

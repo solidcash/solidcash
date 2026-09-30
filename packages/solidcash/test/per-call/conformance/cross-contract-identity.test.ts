@@ -6,7 +6,7 @@ import { validatorAddress } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -17,10 +17,11 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * S0's cross-contract rows (spec R3, plan D7): the reference contexts of
  * `docs/per-call/probes/this-call-msg-sender/ref.sol` that cross a contract boundary, the EVM against the per-call
  * path. Each row deploys the contracts it names in order, on the EVM from an EOA and per-call through the shipped
- * deployment, then calls one entry. An answer is compared by role: the user who entered, or the name a contract was
- * deployed as. A row the per-call path does not serve yet is pinned with the refusal it meets, by name, beside the
- * EVM's answer. The per-call side enters through the plain call path, which plans no callee frames; the proxy hop,
- * which does, is probed for the marketplace's shapes in `ahead/`.
+ * deployment, then calls one entry; per-call, rows whose leading contracts compile the same share those deployments,
+ * each rewinding the chain to them before it deploys its last. An answer is compared by role: the user who entered,
+ * or the name a contract was deployed as. A row the per-call path does not serve yet is pinned with the refusal it
+ * meets, by name, beside the EVM's answer. The per-call side enters through the plain call path, which plans no
+ * callee frames; the proxy hop, which does, is probed for the marketplace's shapes in `ahead/`.
  */
 
 type Role = string | boolean | bigint;
@@ -190,6 +191,75 @@ async function evmAnswer(row: Row): Promise<Answer> {
   return roles.length === 1 ? roles[0]! : roles;
 }
 
+type ArtifactMap = ReturnType<typeof compileStringMulti>;
+
+/** A chain a row's contracts are deployed on: each deployed contract's address and category, by name. */
+interface Chain {
+  readonly provider: MockNetworkProvider;
+  readonly funder: Contract;
+  readonly addresses: Map<string, Uint8Array>;
+  readonly categories: Map<string, string>;
+}
+
+/** Deploys one of a row's contracts from the funding coin its position names, or answers the refusal it met. */
+async function deployAt(
+  chain: Chain, artifacts: ArtifactMap, deployment: Deployment, index: number, validatorProgram: Uint8Array,
+): Promise<string | undefined> {
+  const fundingUtxo = { txid: `${'33'.repeat(31)}${(0xc0 + index).toString(16)}`, vout: 0, satoshis: 500_000n };
+  await chain.provider.addUtxo(chain.funder.address, fundingUtxo);
+  try {
+    const deployed = await deployStatefulContract(artifacts[deployment.name]!,
+      (deployment.args ?? []).map((name) => chain.addresses.get(name)!), {
+        provider: chain.provider, fundingUtxo, changeAddress: chain.funder.address,
+        funder: chain.funder.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      });
+    chain.addresses.set(deployment.name, validatorAddress(hexToBin(deployed.categoryId), validatorProgram));
+    chain.categories.set(deployment.name, deployed.categoryId);
+    return undefined;
+  } catch (error) {
+    return `deploy ${deployment.name}: ${(error as Error).message}`;
+  }
+}
+
+/** An artifact as a key, less the unit's source text and compile time it records, which are not what deploys. */
+const deployedAs = (artifact: ArtifactMap[string]): string =>
+  JSON.stringify({ ...artifact, source: undefined, updatedAt: undefined },
+    (_key, value: unknown) => (typeof value === 'bigint' ? value.toString() : value));
+
+type Leading = (Chain & { readonly snapshot: SnapshotRestorer }) | { readonly refusal: string };
+const leadingRuns = new Map<string, Promise<Leading>>();
+
+/**
+ * The chain with every deployment before the row's last done. Rows whose leading contracts compile the same share
+ * it, and each rewinds it before deploying its own last contract, so none reads another's broadcast.
+ */
+async function leadingChain(row: Row, artifacts: ArtifactMap, validatorProgram: Uint8Array): Promise<Leading> {
+  const leading = row.deployments.slice(0, -1);
+  const key = JSON.stringify(leading.map((deployment) =>
+    [deployment.name, deployment.args ?? [], deployedAs(artifacts[deployment.name]!)]));
+  let run = leadingRuns.get(key);
+  if (run === undefined) {
+    run = (async (): Promise<Leading> => {
+      const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+      const chain: Chain = {
+        provider, funder: new Contract(p2pkhArtifact, [alicePkh], { provider }),
+        addresses: new Map(), categories: new Map(),
+      };
+      await fundShippedFacets(provider);
+      for (const [index, deployment] of leading.entries()) {
+        const refusal = await deployAt(chain, artifacts, deployment, index, validatorProgram);
+        if (refusal !== undefined) return { refusal };
+      }
+      return { ...chain, snapshot: await provider.takeSnapshot() };
+    })();
+    leadingRuns.set(key, run);
+  }
+  const shared = await run;
+  if ('refusal' in shared) return shared;
+  await shared.snapshot.restore();
+  return shared;
+}
+
 /** The row's answer on the per-call path, by role, or the refusal it meets. */
 async function perCallAnswer(row: Row): Promise<{ readonly role?: Answer; readonly refusal?: string }> {
   let artifacts;
@@ -203,26 +273,16 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Answer; readon
   if (refused !== undefined) return { refusal: `${refused.functionName}: ${refused.reason}` };
   const { perCallValidator } = await import('solidc');
   const validatorProgram = perCallValidator.buildValidatorProgram();
-  const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-  const signature = new SignatureTemplate(alicePriv);
-  const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  await fundShippedFacets(provider);
-  const addresses = new Map<string, Uint8Array>();
-  const externals: Record<string, { artifact: typeof target; categoryId: string }> = {};
-  for (const [index, deployment] of row.deployments.entries()) {
-    const fundingUtxo = { txid: `${'33'.repeat(31)}${(0xc0 + index).toString(16)}`, vout: 0, satoshis: 500_000n };
-    await provider.addUtxo(funder.address, fundingUtxo);
-    try {
-      const deployed = await deployStatefulContract(artifacts[deployment.name]!,
-        (deployment.args ?? []).map((name) => addresses.get(name)!), {
-          provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
-        });
-      addresses.set(deployment.name, validatorAddress(hexToBin(deployed.categoryId), validatorProgram));
-      externals[deployment.name] = { artifact: artifacts[deployment.name]!, categoryId: deployed.categoryId };
-    } catch (error) {
-      return { refusal: `deploy ${deployment.name}: ${(error as Error).message}` };
-    }
-  }
+  const leading = await leadingChain(row, artifacts, validatorProgram);
+  if ('refusal' in leading) return leading;
+  const chain: Chain = { ...leading, addresses: new Map(leading.addresses), categories: new Map(leading.categories) };
+  const last = row.deployments.length - 1;
+  const refusal = await deployAt(chain, artifacts, row.deployments[last]!, last, validatorProgram);
+  if (refusal !== undefined) return { refusal };
+  const { provider, addresses } = chain;
+  // Each deployed contract as the call path takes it: this row's own artifact, at the category it was deployed at.
+  const externals = Object.fromEntries([...chain.categories]
+    .map(([name, categoryId]) => [name, { artifact: artifacts[name]!, categoryId }]));
   const user = encodeLockingBytecodeP2pkh(alicePkh);
   const callerUtxo = { txid: `${'45'.repeat(31)}ba`, vout: 0, satoshis: 300_000n };
   await provider.addUtxo(binToHex(user), callerUtxo);
@@ -231,7 +291,7 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Answer; readon
     answered = await callPerCallEntry({
       provider, artifact: target, categoryId: externals[row.target]!.categoryId, functionName: row.entry,
       args: (row.args ?? []).map((name) => addresses.get(name)!), callerUtxo, callerLockingBytecode: user,
-      funder: signature.unlockP2PKH(), vm: compositionMachine(), externals,
+      funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(), externals,
       ...(row.value === undefined ? {} : { value: row.value }),
     });
   } catch (error) {

@@ -4,7 +4,7 @@ import { type Artifact } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -29,11 +29,13 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * cross-contract spelling that is refused.)
  */
 
+/** A deployment, and the chain as it stood when it was done. */
 interface Deployed {
   readonly provider: MockNetworkProvider;
   readonly categoryId: string;
   readonly callerLock: Uint8Array;
   readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
+  readonly snapshot: SnapshotRestorer;
 }
 
 let nonce = 0;
@@ -55,8 +57,18 @@ async function deployedFor(artifact: Artifact): Promise<Deployed> {
   });
   return {
     provider, categoryId: deployment.categoryId, callerLock: encodeLockingBytecodeP2pkh(alicePkh),
-    funder: signature.unlockP2PKH(),
+    funder: signature.unlockP2PKH(), snapshot: await provider.takeSnapshot(),
   };
+}
+
+let selfRun: Promise<Deployed> | undefined;
+
+/** The self-target ledger's one deployment, which both of its cases enter, each rewinding the chain to it first. */
+async function selfDeployed(ledger: Artifact): Promise<Deployed> {
+  selfRun ??= deployedFor(ledger);
+  const deployed = await selfRun;
+  await deployed.snapshot.restore();
+  return deployed;
 }
 
 /** Enters an entry with a fresh caller coin and returns the shipped result, or the refusal text the path raised. */
@@ -132,7 +144,7 @@ describe('spec section 23 row 6: custom errors raised in a callee and re-raised'
   it('serves the custom error: its name and the values it was raised with come back through the decoder', async () => {
     const ledger = compileStringMulti(SELF_SOURCE, { composition: 'per-call', solidityImportCompat: true }).Ledger!;
     expect((ledger.composition as { refusedEntries?: unknown } | undefined)?.refusedEntries).toBeUndefined();
-    const deployed = await deployedFor(ledger);
+    const deployed = await selfDeployed(ledger);
     const result = await enter(deployed, ledger, 'pull', [FROM, TO, 50n]);
     expect(result.accepted).toBe(false);
     const error = result.refusal?.innermost?.reason.error;
@@ -149,7 +161,7 @@ describe('spec section 23 row 6: custom errors raised in a callee and re-raised'
 
   it('serves the call the callee admits: the bool it returned is decoded and the entry runs through', async () => {
     const ledger = compileStringMulti(SELF_SOURCE, { composition: 'per-call', solidityImportCompat: true }).Ledger!;
-    const deployed = await deployedFor(ledger);
+    const deployed = await selfDeployed(ledger);
     const result = await enter(deployed, ledger, 'pull', [FROM, TO, 5n]);
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.value).toBe(2n);

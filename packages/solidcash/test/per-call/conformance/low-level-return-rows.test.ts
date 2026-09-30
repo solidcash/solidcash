@@ -4,7 +4,7 @@ import { type Artifact } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -26,11 +26,13 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * through, a false answer reaches the caller's own revert.
  */
 
+/** A deployment, and the chain as it stood when it was done. */
 interface Deployed {
   readonly provider: MockNetworkProvider;
   readonly categoryId: string;
   readonly callerLock: Uint8Array;
   readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
+  readonly snapshot: SnapshotRestorer;
 }
 
 let nonce = 0;
@@ -52,8 +54,18 @@ async function deployedFor(artifact: Artifact): Promise<Deployed> {
   });
   return {
     provider, categoryId: deployment.categoryId, callerLock: encodeLockingBytecodeP2pkh(alicePkh),
-    funder: signature.unlockP2PKH(),
+    funder: signature.unlockP2PKH(), snapshot: await provider.takeSnapshot(),
   };
+}
+
+let selfRun: Promise<Deployed> | undefined;
+
+/** The self-target ledger's one deployment, which both of its cases enter, each rewinding the chain to it first. */
+async function selfDeployed(ledger: Artifact): Promise<Deployed> {
+  selfRun ??= deployedFor(ledger);
+  const deployed = await selfRun;
+  await deployed.snapshot.restore();
+  return deployed;
 }
 
 /** Enters an entry with a fresh caller coin and returns either the answer or the refusal the path raised. */
@@ -128,7 +140,7 @@ describe('spec section 23 row 11: low-level call, bool return decoding, revert r
   it('serves a true answer: the entry decodes the bool and runs through', async () => {
     const ledger = compileStringMulti(SELF_SOURCE, { composition: 'per-call', solidityImportCompat: true }).Ledger!;
     expect((ledger.composition as { refusedEntries?: unknown } | undefined)?.refusedEntries).toBeUndefined();
-    const deployed = await deployedFor(ledger);
+    const deployed = await selfDeployed(ledger);
     const entered = await enter(deployed, ledger, 'move', [TO, 5n]);
     // The callee bumped `calls`, the caller decoded the true it returned and bumped it again.
     expect(entered.refusal).toBeUndefined();
@@ -137,7 +149,7 @@ describe('spec section 23 row 11: low-level call, bool return decoding, revert r
 
   it('serves a false answer as the caller\'s own revert, the bool the low-level call decoded', async () => {
     const ledger = compileStringMulti(SELF_SOURCE, { composition: 'per-call', solidityImportCompat: true }).Ledger!;
-    const deployed = await deployedFor(ledger);
+    const deployed = await selfDeployed(ledger);
     const entered = await enter(deployed, ledger, 'move', [TO, 0n]);
     // The callee returned false, so the caller's own `require(abi.decode(data, (bool)))` refuses.
     expect(entered.answer).toBeUndefined();

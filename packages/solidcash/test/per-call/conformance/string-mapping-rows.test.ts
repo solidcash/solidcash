@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { bytesToHex, encodeChunkableValueTail } from '@solidcash/utils';
+import { bytesToHex, encodeChunkableValueTail, type Artifact } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
@@ -61,21 +61,37 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
     + '   function remove(string memory k) public { delete this.notes[k]; require(bytes(k).length != 0); }'
     + ' }';
 
-  /** A direct caller coin and a funder for the write the shipped call path is asked to plan. */
+  /** The direct deployment both refusals enter, and the chain as it stood when it was done. */
+  interface DirectDeployment {
+    readonly provider: MockNetworkProvider;
+    readonly artifact: Artifact;
+    readonly categoryId: string;
+    readonly snapshot: SnapshotRestorer;
+  }
+  let directRun: Promise<DirectDeployment> | undefined;
+
+  /** A direct caller coin and a funder for the write the shipped call path is asked to plan, from one deployment. */
   async function direct(): Promise<{
     readonly write: (entry: string, args: readonly string[]) => ReturnType<typeof callPerCallEntry>;
   }> {
-    const artifact = compileStringMulti(DIRECT_SOURCE, { composition: 'per-call', solidityImportCompat: true })
-      .Ledger!;
-    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    directRun ??= (async (): Promise<DirectDeployment> => {
+      const artifact = compileStringMulti(DIRECT_SOURCE, { composition: 'per-call', solidityImportCompat: true })
+        .Ledger!;
+      const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+      const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
+      const fundingUtxo = { txid: outpointHash(0x30), vout: 0, satoshis: 500_000n };
+      await provider.addUtxo(funder.address, fundingUtxo);
+      await fundShippedFacets(provider);
+      const deployment = await deployStatefulContract(artifact, [], {
+        provider, fundingUtxo, funder: funder.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        changeAddress: funder.address,
+      });
+      return { provider, artifact, categoryId: deployment.categoryId, snapshot: await provider.takeSnapshot() };
+    })();
+    const { provider, artifact, categoryId, snapshot } = await directRun;
+    // Each case starts from the chain the deployment left, so neither reads the other's broadcast.
+    await snapshot.restore();
     const signature = new SignatureTemplate(alicePriv);
-    const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: outpointHash(0x30), vout: 0, satoshis: 500_000n };
-    await provider.addUtxo(funder.address, fundingUtxo);
-    await fundShippedFacets(provider);
-    const deployment = await deployStatefulContract(artifact, [], {
-      provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
-    });
     const user = encodeLockingBytecodeP2pkh(alicePkh);
     let seeded = 0;
     return {
@@ -84,7 +100,7 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
         const callerUtxo = { txid: outpointHash(0x50 + seeded), vout: 0, satoshis: 200_000n };
         await provider.addUtxo(binToHex(user), callerUtxo);
         return callPerCallEntry({
-          provider, artifact, categoryId: deployment.categoryId, functionName: entry, args: args as never,
+          provider, artifact, categoryId, functionName: entry, args: args as never,
           callerUtxo, callerLockingBytecode: user, funder: signature.unlockP2PKH(), vm: compositionMachine(),
         });
       },

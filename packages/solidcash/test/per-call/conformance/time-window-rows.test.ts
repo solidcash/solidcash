@@ -13,7 +13,7 @@ import {
   deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../../../src/per-call/deploy/index.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
 import { participant, type CompositionDraftPlan, type DraftMaster } from '../../../src/per-call/composer/index.js';
@@ -204,26 +204,39 @@ describe('spec section 23 row 16: a 24-hour window and the challenge period', ()
 });
 
 describe('spec section 23 row 16: the clock the shipped call path states', () => {
-  /** Deploys the board through the shipped deployment and funds a caller's coin. */
-  async function deployCallPath(): Promise<{
+  /** The board's deployment with a caller's coin funded, and the chain as it stood when both were placed. */
+  interface CallPath {
     readonly provider: MockNetworkProvider;
     readonly categoryId: string;
     readonly callerLock: Uint8Array;
     readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
     readonly callerUtxo: { txid: string; vout: number; satoshis: bigint };
-  }> {
-    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const signature = new SignatureTemplate(alicePriv);
-    const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: 'b2'.repeat(32), vout: 0, satoshis: 500_000n };
-    await provider.addUtxo(funder.address, fundingUtxo);
-    const deployment = await deployStatefulContract(artifact, [], {
-      provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
-    });
-    const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
-    const callerUtxo = { txid: 'c3'.repeat(32), vout: 0, satoshis: 300_000n };
-    await provider.addUtxo(binToHex(callerLock), callerUtxo);
-    return { provider, categoryId: deployment.categoryId, callerLock, funder: signature.unlockP2PKH(), callerUtxo };
+    readonly snapshot: SnapshotRestorer;
+  }
+  let callPathRun: Promise<CallPath> | undefined;
+
+  /** Deploys the board through the shipped deployment once; each case rewinds the chain to it first. */
+  async function deployCallPath(): Promise<CallPath> {
+    callPathRun ??= (async (): Promise<CallPath> => {
+      const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+      const signature = new SignatureTemplate(alicePriv);
+      const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
+      const fundingUtxo = { txid: 'b2'.repeat(32), vout: 0, satoshis: 500_000n };
+      await provider.addUtxo(funder.address, fundingUtxo);
+      const deployment = await deployStatefulContract(artifact, [], {
+        provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
+      });
+      const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
+      const callerUtxo = { txid: 'c3'.repeat(32), vout: 0, satoshis: 300_000n };
+      await provider.addUtxo(binToHex(callerLock), callerUtxo);
+      return {
+        provider, categoryId: deployment.categoryId, callerLock, funder: signature.unlockP2PKH(), callerUtxo,
+        snapshot: await provider.takeSnapshot(),
+      };
+    })();
+    const board = await callPathRun;
+    await board.snapshot.restore();
+    return board;
   }
 
   /** The shipped call path's options for one entry of the deployed board. */

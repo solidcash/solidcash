@@ -186,18 +186,24 @@ lands it removes the claim line.
   without re-implementing that plan. No partial landing: adding the slot without the emission
   moves `blockSize` for that body, and publishing the access without the SDK's per-turn planning changes what the
   shipped path does with the entry, so the three land as one sequence with the fixture census held at 0 refusals.
+- **Decision (coordinator, 2026-09-30, on the measured compiler half)**: the remaining SDK protocol — the per-call
+  composer's run-time-loop record planning — is **handed to the ladder stream**, which owns `per-call/proxy/**`,
+  `per-call/read.ts` and the composer's records, and whose files carry live uncommitted edits in this tree. The
+  compiler half stays with this stream as a saved patch (`{SCRATCH}/compiler-half-attempt.diff`) and lands with that
+  work rather than before it, and PW3's item closes on that split: the three write-segment shapes are served with
+  their machine pairs, and the varying-key variant is not served here.
 - **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder
   stream has taken the published facts. **Status 2026-09-30: two of the three shapes are done.** The census read back
   with this round's compiler shows seven contracts and **0 refusals**, `postThreadMessage` publishes
   `writeSegments: []` and `refund` its batch and its run, the master tests pass, and the facts are in the ladder
-  stream's hands. **The third shape is open, not done**: the fixture's `updateJobWhitelist` writes a **different node
-  per turn** — its key is an element of a caller-supplied array — and that variant still publishes no write fact. The
-  entry's block layout reserves no `entry` slot for the collection, so nothing declares those records, and the machine
-  refuses the well-formed spend on the frame the shipped call path plans itself
-  (`conformance/loop-upsert-settlement.test.ts`), while the same loop over a key the frame holds settles on that
-  path. Serving it needs the collection declared in the frame's layout and the per-turn operands derived, which
-  is compiler code generation plus the ladder stream's `proxy/**` planning — **the coordinator's decision on who
-  takes it is what this item now waits for**. Reproducers: `solidc/test/per-call/master/loop-upsert-segment.test.ts`
+  stream's hands. **The third shape is the varying key, and its SDK half is handed to the ladder stream** (the
+  coordinator's 2026-09-30 decision below): the fixture's `updateJobWhitelist` writes a **different node per turn** —
+  its key is an element of a caller-supplied array — and that variant publishes no write fact. The entry's block
+  layout reserves no `entry` slot for the collection, so nothing declares those records, and the machine refuses the
+  well-formed spend on the frame the shipped call path plans itself (`conformance/loop-upsert-settlement.test.ts`),
+  while the same loop over a key the frame holds settles on that path. Serving it needs the collection declared in
+  the frame's layout and the per-turn operands derived: the first is written and measured (the compiler-half bullet
+  above), the second is the per-call composer's run-time-loop record protocol, which is the ladder stream's code. Reproducers: `solidc/test/per-call/master/loop-upsert-segment.test.ts`
   (the fixture's own shape, the machine's refusals, the segment control) and
   `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` (the shipped call path).
 - **Size**: 1-2 days. **Coordination**: high (the ladder stream wrote this code; the second worker edits

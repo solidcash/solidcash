@@ -38,6 +38,7 @@ import {
   dynamicLenKey,
   joinChunks,
   joinValueChunks,
+  parseArrayTypeString,
   parseChunkCommitment,
   parsePushdataCommitment,
   parseValueChunkCommitment,
@@ -1054,14 +1055,8 @@ export function decodeReturnValues(
  * that happens to read the collection and declare the same arity.
  */
 function mappingValueStruct(entry: ReadEntry, artifact: Artifact): StructDefinitionInfo | undefined {
-  if (entry.accesses.length !== 1) return undefined;
-  const access = entry.accesses[0]!;
-  if (access.collection !== entry.name || access.operations.some((operation) => operation !== 'read')) {
-    return undefined;
-  }
-  const collection = (artifact.stateLayout?.collections ?? [])
-    .find((candidate) => candidate.name === access.collection);
-  const struct = structDefinitionsOf(artifact)?.find((candidate) => candidate.name === collection?.valueType);
+  if (entry.accesses[0]?.collection !== entry.name) return undefined;
+  const struct = readCollectionStruct(entry, artifact);
   if (struct === undefined) return undefined;
   const declared = entry.outputs.map((output) => output.type);
   const fields = struct.fields.map((field) => field.type);
@@ -1071,20 +1066,59 @@ function mappingValueStruct(entry: ReadEntry, artifact: Artifact): StructDefinit
 }
 
 /**
+ * The struct the single collection an entry reads holds, when the entry only reads it.
+ *
+ * An entry that names one collection and reads it is one whose record the collection's own value type describes;
+ * an entry that also writes, or that reads a second collection, is not.
+ */
+function readCollectionStruct(entry: ReadEntry, artifact: Artifact): StructDefinitionInfo | undefined {
+  if (entry.accesses.length !== 1) return undefined;
+  const access = entry.accesses[0]!;
+  if (access.operations.some((operation) => operation !== 'read')) return undefined;
+  const collection = (artifact.stateLayout?.collections ?? [])
+    .find((candidate) => candidate.name === access.collection);
+  return structDefinitionsOf(artifact)?.find((candidate) => candidate.name === collection?.valueType);
+}
+
+/**
+ * The struct a paged getter's records are assembled from, when the read's entry is one.
+ *
+ * A getter that walks a struct-valued mapping by its own arguments and a loop counter reads `cells[id + i]` and
+ * returns the records as one array output, so the read hands back one named record per turn. The entry's single
+ * read access names the collection and the collection's value type names the struct, which is what makes this the
+ * getter's own record rather than an entry that happens to read the collection and return an array of that shape.
+ */
+function pagedValueStruct(entry: ReadEntry, artifact: Artifact): StructDefinitionInfo | undefined {
+  if (entry.outputs.length !== 1) return undefined;
+  const struct = readCollectionStruct(entry, artifact);
+  if (struct === undefined) return undefined;
+  return parseArrayTypeString(entry.outputs[0]!.type)?.elementType === struct.name ? struct : undefined;
+}
+
+/**
  * The values a read's entry returned.
  *
  * A struct-valued mapping getter records its fields as separate outputs; the read reassembles the named record from
- * them, so the value the caller asked for is the struct the getter names rather than its first field.
+ * them, so the value the caller asked for is the struct the getter names rather than its first field. A paged
+ * getter records one record per turn as a single array output, and each element carries the same accessor boundary.
  */
 function decodeEntryValues(entry: ReadEntry, artifact: Artifact, retval: Uint8Array): readonly StateValue[] {
   const decoded = decodeReturnValues(
     retval, entry.outputs, structDefinitionsOf(artifact), entry.resultEncoding, artifact.enums,
   );
   const struct = mappingValueStruct(entry, artifact);
-  if (struct === undefined || decoded.length !== struct.fields.length) return decoded;
-  const record: Record<string, StateValue> = {};
-  struct.fields.forEach((field, index) => { record[field.name] = decoded[index]!; });
-  return [attachDecodedAccessors(record)];
+  if (struct !== undefined && decoded.length === struct.fields.length) {
+    const record: Record<string, StateValue> = {};
+    struct.fields.forEach((field, index) => { record[field.name] = decoded[index]!; });
+    return [attachDecodedAccessors(record)];
+  }
+  const paged = pagedValueStruct(entry, artifact);
+  if (paged !== undefined && decoded.length === 1 && Array.isArray(decoded[0])) {
+    // Every turn's record sits in the one output the getter declared, so the accessor boundary is attached to the
+    // array and, through it, to each record in the order the turns walk.
+    return [attachDecodedAccessors(decoded[0]!)];
+  }
+  return decoded;
 }
 
 /** The argument pushes a frame's unlocking bytecode carries, in the order a callee's body reads them. */

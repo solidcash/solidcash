@@ -1786,7 +1786,7 @@ Titles marked NEVER have not passed on any real compile to date.
 - [ ] #21 job posting > post job with arbitrator same as creator (reverts after calls)
 - [ ] #22 job posting > post job with invalid token (reverts after calls)
 - [ ] #23 job posting > post job with invalid amount (reverts inside the 3rd FakeToken call)
-- [ ] #24 job posting > post job with invalid deadline (client-side rejection)
+- [x] #24 job posting > post job with invalid deadline (client-side rejection)
 - [ ] #25 job posting > post job with invalid title
 - [ ] #26 job posting > post job with invalid delivery method (reverts after calls)
 - [ ] #27 job posting > post job from unregistered user (reverts after calls)

@@ -1104,6 +1104,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly KERNEL_JOURNAL_RECORD_SELECT_SUBROUTINE_ID = -15n;
   private static readonly KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID = -16n;
   private static readonly WIDE_PUSHDATA_DECODE_SUBROUTINE_ID = -17n;
+  private static readonly SORTED_INT_READ_SUBROUTINE_ID = -18n;
   /**
    * Captured subroutines that keep being extracted even when outlining could reach them - which is all of
    * them. DO NOT DEFER THESE TO OUTLINING; the experiment has been run, per subroutine, and it does not hold.
@@ -1121,9 +1122,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *     in tests, which the corpus does not contain.
    *
    * A structural helper is a different case and IS deferred: see `capturedSubroutineIsProfitable`.
+   * The explicit-frame integer read (-18) saves 253 B on MinimalNativeToken and its present/absent paths are
+   * exercised by a VM-verified allowance spend; unlike the raw sorted-output verifier it reads no caller locals.
    */
   private static readonly EXTRACT_EVEN_IF_OUTLINABLE: readonly bigint[] = [
-    -1n, -2n, -3n, -4n, -5n, -6n, -7n, -8n, -9n, -10n, -11n, -12n, -13n, -14n, -15n, -16n,
+    -1n, -2n, -3n, -4n, -5n, -6n, -7n, -8n, -9n, -10n, -11n, -12n, -13n, -14n, -15n, -16n, -18n,
   ];
 
   private static readonly ALL_SUBROUTINE_IDS = [
@@ -1144,6 +1147,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORD_SELECT_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.WIDE_PUSHDATA_DECODE_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.SORTED_INT_READ_SUBROUTINE_ID,
   ];
 
   private allocateCompactHelperId(): bigint {
@@ -3186,6 +3190,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         id: SORTABS,
         span: this.defineCapturedSubroutine(SORTABS, emitSortabs, loc),
       });
+    }
+    const SORTREAD = GenerateTargetTraversalWithLocation.SORTED_INT_READ_SUBROUTINE_ID;
+    const emitSortread = (t: GenerateTargetTraversalWithLocation): void => t.emitSortedIntReadProofInline(loc);
+    if (this.capturedSubroutineIsProfitable(SORTREAD, count(SORTREAD), emitSortread)) {
+      spans.push({ id: SORTREAD, span: this.defineCapturedSubroutine(SORTREAD, emitSortread, loc) });
     }
     for (const [hashHex, id] of this.sortedEntryAddressIds) {
       const collectionHash = hexToBin(hashHex);
@@ -21194,6 +21203,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /**
+   * Explicit three-item ABI: [H(key), authenticated collection address, entry input index] -> [integer value].
+   * Supplying every operand explicitly lets direct scalar reads share their proof without selecting any
+   * caller-local stack item from inside the helper. The absent arm still proves the predecessor bracket.
+   */
+  private emitSortedIntReadProofInline(loc: SingleLocationData): void {
+    this.emit(Op.OP_2DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_2OVER, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emitSortedAbsenceBracketInline(loc);
+    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  private emitSortedIntReadProof(loc: SingleLocationData): void {
+    const id = GenerateTargetTraversalWithLocation.SORTED_INT_READ_SUBROUTINE_ID;
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), loc);
+      this.emit(Op.OP_INVOKE, loc);
+    } else this.emitSortedIntReadProofInline(loc);
+  }
+
   /** Normalize a typed Solidity mapping key without changing its stack depth. */
   private emitMappingKeyIdentity(type: Type | undefined, loc: SingleLocationData): void {
     while (type instanceof ValueType) type = type.underlyingType;
@@ -21396,6 +21440,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitEntryInputIndex(prior, loc, 2);
       this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_ENDIF, loc);
+    }
+    if ((valueType instanceof IntType || valueType === PrimitiveType.BIGINT)
+      && !routeBatch && runtimeAliasPriors.length === 0) {
+      this.emitSortedIntReadProof(loc);
+      this.pushToStack('(value)');
+      return node;
     }
     this.emit(Op.OP_2DUP, loc);                       // [Hk32, entryAddr, idx, entryAddr, idx]
     this.emit(Op.OP_UTXOBYTECODE, loc);               // [Hk32, entryAddr, idx, entryAddr, inbc]

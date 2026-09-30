@@ -13,7 +13,7 @@ import { publishedRefusals } from './refused-entry.js';
  * that cannot settle, and leaves the call-free caller composed.
  */
 
-const SOURCE = (call: 'none' | 'before' | 'after'): string => 'pragma solidcash ^0.13.0;'
+const SOURCE = (call: 'none' | 'before' | 'after' | 'conditionalBefore'): string => 'pragma solidcash ^0.13.0;'
   + ' interface IOther { function ping(); }'
   + ' contract Other { function ping() { require(true); } }'
   + ' contract Ledger {'
@@ -23,9 +23,9 @@ const SOURCE = (call: 'none' | 'before' | 'after'): string => 'pragma solidcash 
   + '     this.bal[to] = this.bal[to] + amount;'
   + '     require(true);'
   + '   }'
-  + '   function sweep() {'
+  + `   function sweep(${call === 'conditionalBefore' ? 'bool c' : ''}) {`
   + `     ${call === 'before' ? 'IOther(0x7676a914111111111111111111111111111111111111111188ac).ping.call();' : ''}`
-  + ''
+  + `     ${call === 'conditionalBefore' ? 'if (c) { IOther(0x7676a914111111111111111111111111111111111111111188ac).ping.call(); }' : ''}`
   + '     this.transfer(0x7676a914222222222222222222222222222222222222222288ac, 5);'
   + `     ${call === 'after' ? 'IOther(0x7676a914111111111111111111111111111111111111111188ac).ping.call();' : ''}`
   + '     require(true); }'
@@ -42,6 +42,18 @@ describe('a self-called body that writes a sorted mapping', () => {
     // admission refuses only a call the caller has already made.
     const artifacts = compileStringMulti(SOURCE('after'), { composition: 'per-call' });
     expect(publishedRefusals(artifacts)).toStrictEqual([]);
+  });
+
+  it('is refused when only some paths have called before the invocation', () => {
+    // The call stands on one arm of a branch, so the execution that takes that arm reaches the invocation in the
+    // segment after it while an execution that does not stays in the first one: the write lands in a later segment
+    // than the derivation reads on that path, and a body composed for both would be wrong on one of them.
+    const refusals = publishedRefusals(compileStringMulti(SOURCE('conditionalBefore'), { composition: 'per-call' }));
+    expect(refusals.map((refused) => refused.functionName).sort())
+      .toStrictEqual(['Ledger.sweep()', 'Ledger.transfer()']);
+    expect(refusals.find((refused) => refused.functionName === 'Ledger.transfer()')!.reason)
+      .toBe('the body derives a verified-mapping write and is invoked by \'sweep\' after an external call: a '
+        + 'subroutine reads the segment its own code names, and the caller\'s call puts the write in a later one');
   });
 
   it('is refused by name, with its caller, when the caller calls before invoking it', () => {

@@ -1485,8 +1485,9 @@ interface RefusedBody {
  * A subroutine derives its sorted-batch operands from the segment its own code's call count names, which is the
  * segment the invocation runs in. A call the caller has already made closes that segment, so the write lands in a
  * later one; a call the caller makes after the invocation leaves the write where the invocation ran, which is why
- * only the calls that precede the site decide it. The walk joins a branch's arms and treats a loop or switch that
- * reaches a call as an open count, the same way the write's own segment is walked.
+ * only the calls that precede the site decide it. A call only some paths take still counts: the execution that took
+ * that arm reaches the invocation in the later segment. The walk joins a branch's arms and treats a loop or switch
+ * that reaches a call as an open count, the same way the write's own segment is walked.
  */
 function invokeFollowsCall(entry: FunctionDefinitionNode, callees: ReadonlySet<string>): boolean {
   let found = false;
@@ -1501,8 +1502,10 @@ function invokeFollowsCall(entry: FunctionDefinitionNode, callees: ReadonlySet<s
   const walkStatement = (statement: Node, incoming: CallRange): CallRange => {
     if (statement instanceof FunctionCallStatementNode) {
       const callee = statement.call.resolvedFunction?.name;
+      // Any path that could have made a call already moves the write, so a call that only some paths take refuses
+      // the body too: the range is joined over a branch's arms, and `most` is what some path reached.
       if (callee !== undefined && callees.has(callee)
-        && (incoming === undefined || incoming.least >= 1)) {
+        && (incoming === undefined || incoming.most >= 1)) {
         found = true;
       }
       return advanceCallRange(incoming, statement);

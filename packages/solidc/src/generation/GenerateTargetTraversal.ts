@@ -29395,7 +29395,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // 3. co-spend INPUT[master+blockSize+iterCounter]: bytecode==addr, mutable + base==master, read [coSlot,coNext,coValue].
       pushIdx(this.sortedUpsertLoopCounterName, 0, 0); // [.., nodeIdx]
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
-      this.emit(encodeInt(BigInt(addrIdx() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+      if (this.readsRecordsFromFrame) {
+        // A per-call frame names the entry address by its stable bottom ordinal: `pushIdx` leaves a number of
+        // untracked operands that depends on how the frame resolves the turn's index, so the fixed top-relative depth
+        // the direct convention uses picks a neighbouring value whenever that count differs from the one the site was
+        // written for. The direct convention keeps its own form, and with it its byte identity.
+        this.emitPickTrackedFromBottom(this.sortedUpsertLoopAddrName, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);
+      } else {
+        this.emit(encodeInt(BigInt(addrIdx() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+      }
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
       this.emit(Op.OP_DUP, loc); this.emitDropFirst32(loc);
       this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);

@@ -26,16 +26,27 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * operation.)` - while the same entry with the mapping write removed settles and broadcasts. The two runs differ
  * in nothing else, so the mapping target it adds is what the hop lays short.
  *
- * Where it refuses, measured: the frame's program is the routed entry body (2323 instructions, `ip` indexes it),
- * the failing instruction sits in the `ip` 935..1612 stretch the published source map leaves bare, and the nearest
- * mapped positions on either side are the mapping write's own statement (`this.allowlists[id][who[i]] = true;`)
- * and a loop counter - so the refusal is inside the code generated for that statement, not in the entry's
- * prologue. The instruction itself is an input pin: `OP_DUP OP_UTXOBYTECODE OP_10 OP_PICK OP_EQUALVERIFY`,
- * followed by `OP_DUP OP_UTXOTOKENCATEGORY`, i.e. a check that both the locking bytecode and the category of an
- * input equal values the frame holds. The hop's shipped witness block declares no calls and one segment of five
- * records - `[[3, 3], [65535, 5], [65535, 6], [65535, 7], [65535, 8]]`, the frame's own state record at input and
- * output 3 and four records created in the transaction at outputs 5..8 - so the input the body pins one of those
- * values against is one it expects to carry a covenant the transaction does not hold there.
+ * Where it refuses, measured: the frame's program is the routed entry body (2325 instructions, `ip` indexes it),
+ * and the failing instruction is the input pin the loop's per-turn step emits to close substitution:
+ * `OP_DUP OP_UTXOBYTECODE` then the entry address, then `OP_EQUALVERIFY`, followed by `OP_DUP OP_UTXOTOKENCATEGORY`,
+ * i.e. a check that both the locking bytecode and the category of an input equal values the frame holds. The pin's
+ * expected address now comes from the tracked entry address by its stable bottom ordinal (as the sorted-iteration
+ * entry commitment does); before that it was a hand-counted top-relative pick, and the value it reached was not
+ * that address at all.
+ *
+ * What the pin compares, measured: the hop's plan for this entry declares its own state record at input and output
+ * 3 and four records the transaction creates at outputs 5..8 - `[[3, 3], [65535, 5], [65535, 6], [65535, 7],
+ * [65535, 8]]` - and nothing that holds a node of the written collection. The body names its turn's node at the
+ * frame's declared record-input base plus the slot's own offset, which resolves to input 4, the index the plan gave
+ * the implementation master itself; the address it pins is the collection's entry covenant under the category the
+ * running covenant carries (`aa2028d7...` in the run that measured this), while input 4 holds that master
+ * (`aa20ba57...`). So the refusal is the plan declaring no input where the body's loop reads its turn's node - the
+ * collection this deployment holds no node of, which the hop serves for a batch write by minting the empty head and
+ * has no such arm for in a run-time loop.
+ *
+ * The same write over a collection the deployment already holds a node of passes that pin: the initializer writes
+ * one key, the plan declares the node as a spent record right after the frame's own (`[[3, 3], [4, 4], ...]`), and
+ * the body fails later, at instruction 1721 of its own routed body, which is the next wall on this path.
  *
  * Ruled out while narrowing it: the shared-span outliner (the refusal is identical under
  * `SOLIDCASH_NO_OUTLINE=1`), a key the plan cannot resolve (resolving against the live state, and against the
@@ -45,13 +56,13 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * The class this belongs to is the fixture's `publishJobPost`, which appends to its job array, reads the index it
  * produced, and writes its allowlist mapping from inside `_updateJobWhitelist`.
  */
-const SHAPE = (mappingWrite: string): string => 'pragma solidcash ^0.13.0;'
+const SHAPE = (mappingWrite: string, initialize = 'require(true);'): string => 'pragma solidcash ^0.13.0;'
   + ' contract Impl {'
   + '   struct Post { string title; uint amount; address who; string note; }'
   + '   address public implementation;'
   + '   Post[] public posts;'
   + '   mapping(uint256 => mapping(address => bool)) public allowlists;'
-  + '   function initialize() { require(true); }'
+  + `   function initialize() { ${initialize} }`
   + '   function setAllowed(uint id, address[] who) internal {'
   + '     for (uint i = 0; i < who.length; i = i + 1) { this.allowlists[id][who[i]] = true; }'
   + '   }'
@@ -68,6 +79,13 @@ const SHAPE = (mappingWrite: string): string => 'pragma solidcash ^0.13.0;'
 
 const KEYED_BY_THE_PUSH = SHAPE('setAllowed(id, allowed);');
 const WITHOUT_THE_WRITE = SHAPE('require(allowed.length >= 0);');
+/**
+ * The same entry, over a collection the deployment already holds a node of.
+ *
+ * The deployment's own entry writes one key of the mapping, which is what puts a node of it in the state the hop
+ * plans against. The loop's first turn then splices over a node the transaction spends rather than one it creates.
+ */
+const OVER_AN_EXISTING_NODE = SHAPE('setAllowed(id, allowed);', 'this.allowlists[0][msg.sender] = true;');
 
 /**
  * Each case funds from its own outpoints.
@@ -166,8 +184,16 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a mapping write keyed
   it('refuses the entry that keys the mapping write by the push', async () => {
     const outcome = await appendThroughTheProxy(KEYED_BY_THE_PUSH, '9');
     expect(outcome.accepted).toBe(false);
-    // The declaration the hop laid is short of the record the body's own ordinal names, so the read fails on an
-    // `OP_VERIFY` the source map attributes to no line.
+    // The plan declares no input holding a node of the collection, so the loop's own pin of its turn's node fails.
+    expect(outcome.objection).toMatch(/did not settle through the proxy: frame "implementation-master" of /);
+    expect(outcome.objection).toMatch(/no source message \(Program failed an OP_VERIFY operation\.\)/);
+  }, 300_000);
+
+  it('gets past that pin when the collection already holds a node, and refuses later', async () => {
+    const outcome = await appendThroughTheProxy(OVER_AN_EXISTING_NODE, '5');
+    // The plan declares the node where the loop reads it, and the refusal moves past the pin to the next check the
+    // body makes on this path.
+    expect(outcome.accepted).toBe(false);
     expect(outcome.objection).toMatch(/did not settle through the proxy: frame "implementation-master" of /);
     expect(outcome.objection).toMatch(/no source message \(Program failed an OP_VERIFY operation\.\)/);
   }, 300_000);

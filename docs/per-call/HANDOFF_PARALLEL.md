@@ -81,8 +81,28 @@ lands it removes the claim line.
   list; a loop upsert beside a call its segment range; a batch and a run their own segments), each with a master test
   in `solidc/test/per-call/master` that the body verifies the write at that segment (accept and refuse). The SDK side
   (`proxy/entry-writes.ts`) stays with the ladder stream unless it hands it over.
-- **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder
-  stream has taken the published facts.
+- **Landed, and where the split falls (2026-09-30, `c3cf75d69`)**: the two shapes the compiler can state are
+  published. An entry that writes no record of its own publishes an **empty list**
+  (`MarketplaceV1.postThreadMessage` does now), a batch write beside a dynamic run in another segment publishes
+  **both** (`MarketplaceV1.refund`), and a runtime-loop upsert *beside* a call — a loop whose own body makes none,
+  or whose write the lowering settles after the calls — publishes **the segment its write lands in** (one call puts
+  it at segment 1, two at segment 2), which the machine's own segment control accepts at that segment and refuses one
+  segment later (`solidc/test/per-call/master/loop-upsert-segment.test.ts`).
+  **Handed to the ladder stream, and outside PW3's done-when from here on**: the fixture's `updateJobWhitelist`, a
+  *varying-key* upsert whose loop body also makes the entry's call. It is not a verified batch at all — the entry's
+  block layout reserves no `entry` slot for the collection — so no segment declares its records and no write fact can
+  state them; the machine refuses the well-formed spend wherever its node record is declared (segment 0, the last
+  segment, both, and an insert: `Program failed an OP_VERIFY operation.`), and it refuses it on the frame the shipped
+  call path plans **itself** (`conformance/loop-upsert-settlement.test.ts`), while the same mapping written once from
+  a parameter settles on that path. The wall is the emitted run-time-loop upsert body — the journal machinery this
+  stream's `proxy/**` lane runs on, not a write fact. Pinned reproducers:
+  `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the fixture's own shape, the machine's refusals, and the
+  segment control) and `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` (the shipped call path).
+- **Done when**: the refusals the publication shapes carried are gone from the published census (read back
+  2026-09-30 with this round's compiler: seven contracts, **0 refusals**, `postThreadMessage` publishing
+  `writeSegments: []` and `refund` its batch and its run), the master tests pass, and the ladder stream has taken the
+  published facts. The varying-key call-in-loop upsert is the ladder stream's from here, with its reproducers named
+  above; it is not part of this done-when.
 - **Size**: 1-2 days. **Coordination**: high (the ladder stream wrote this code; the second worker edits
   `support.ts`); agree the split before starting.
 
@@ -155,16 +175,19 @@ lands it removes the claim line.
   **Handed over rather than served**: a *varying-key* loop upsert - the fixture's `updateJobWhitelist` - is not a
   verified batch (its collection has no `entry` slot in the block layout), and the machine refuses every witness
   declaration for it, including both segments and an insert, with `Program failed an OP_VERIFY operation.` inside
-  the upsert body's own emitted code, before any record is read. The reproducer is
-  `packages/solidc/test/per-call/master/loop-upsert-segment.test.ts`, which also pins that the same head with the
-  loop removed is accepted.
+  the upsert body's own emitted code, before any record is read - and the shipped call path refuses it on the frame
+  it plans itself (`conformance/loop-upsert-settlement.test.ts`), while the same mapping written once from a
+  parameter settles there. The reproducers are `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the
+  fixture's own shape, the machine's refusals, and its segment control) and that conformance guard. **The shape
+  leaves PW3 and is this stream's**; PW3's done-when is narrowed to the publication shapes and the census.
 - **PW4 - landed** (`a723cdfba`, `cfecf35b7`). The attack table cites `hostile/delegate-callee-mutation.test.ts`: the
   faithful forwarded hop is accepted, and a callee that is a second deployed contract's master is refused
   `V5_DELEGATE_TARGET_MISMATCH` off chain and by the facet's edge rule on chain.
 - **PW6 - landed** (`59fc8077d`, `3d728a8f4`, `2ad01fb71`, `5b852ceff`). Rows 19, 24, 14, 16, 12, 10, 11 and 6 are
-  served with their observables (24 through the proxy path, refused on the direct path by name); row 13 is pinned as
-  refused, because the call entry point plans no callee frames, with a root-frame control of the same size served
-  beside it. G2 is ticked for the served rows.
+  served with their observables (24 through the proxy path, refused on the direct path by name); row 13 is served by
+  the shipped composer and derivation (`edges/events-across-frames.test.ts` settles a callee's payload above 128
+  bytes), with what the call entry point does to the same nesting pinned beside it and a root-frame control of the
+  same size served there. G2 is ticked for all nine rows.
 - **PW7 - landed** (`12c24e2d9`). The 4.5 rows carry measured numbers (VM evaluations, per-master runs, derive and
   build walls, the twenty-four-master shape, and the chunk outputs per append) and the first title is profiled:
   455.1 s, of which 452.9 s is the fixture deployment.

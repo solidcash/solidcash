@@ -320,6 +320,12 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         || (fn.inheritedFrom && !fn.graphEmissionHandler && !fn.forceCollectionJournalPool)
         || constructorCalls.has(fn.name)
         || (nameCounts.get(fn.name) ?? 0) > 1) continue;
+      // An ordinary journal helper must own its complete collection footprint. If it calls a separate
+      // collection-touching helper, the later inline pass can pull that helper's physical accesses into this
+      // OP_INVOKE body, adding direct-route resource witnesses after the call sites were journal-rewritten.
+      // Compiler-owned pooled route clones have their own transitive resource accounting below.
+      if (!fn.graphEmissionHandler && !fn.forceCollectionJournalPool
+        && [...callees(fn)].some((callee) => callee !== fn && touchesCollection(callee))) continue;
       // X118. An event emitted inside a value-threaded OP_INVOKE handler is dropped at the subroutine exit, so
       // code generation refuses this shape outright. It compiles on the pre-existing inline path, so do not
       // select it: the journal is an optimisation, and taking it here costs the whole contract.

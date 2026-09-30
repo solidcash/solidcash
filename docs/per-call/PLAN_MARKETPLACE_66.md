@@ -2054,9 +2054,12 @@ Titles marked NEVER have not passed on any real compile to date.
   mutation refused at `:238`, the refusing participant named at `:272`). A citation of
   `loop-upsert-settlement.test.ts:86-97` - an accept at `:86` beside a refusal at `:91` - reads the revision before
   `fddae17aa`, where that file's accept case had not yet been rewritten to the body the shipped path settles. The
-  publication pin (`solidc/test/per-call/master/write-shape-publication.test.ts`) drives no machine by design and now
-  names those cases at its head, as does the compiler's varying-key harness
-  (`solidc/test/per-call/master/loop-upsert-segment.test.ts`).
+  **The publication pin now carries the verdict itself**: `solidc/test/per-call/master/write-shape-publication.test.ts`
+  has a second describe whose case deploys the very body its fourth case publishes and calls it through the shipped
+  call path (relative SDK imports, as its sibling harness already uses), asserting the machine accepts the well-formed
+  spend and refuses the same spend with one byte of the written record changed - so the file that pins the shape's
+  publication also carries its accept and its refused mutation. The compiler's varying-key harness
+  (`solidc/test/per-call/master/loop-upsert-segment.test.ts`) names the same cases at its head.
 
 ## 7. Log (append-only; newest last)
 

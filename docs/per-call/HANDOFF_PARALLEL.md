@@ -118,9 +118,16 @@ lands it removes the claim line.
   ordinal went into the coordinate walk; the pending-flush mints (`emitSortedFlushPendingNormal`,
   `emitSortedFlushPendingRepoint`) still using the direct convention's trailing band; the segment-close kept check
   not exempting the loop's own records; and the plan declaring a shared predecessor once per insert where the body
-  mints each node once and chains through the previous turn's node (`plan.written`). **The wall that remains is the
-  third chained insert**: three-element arrays fail for both bodies (the literal one with the body's own
-  `OP_VERIFY`, the parameter one in the derivation), and the two-element pins say so in their comments. The
+  mints each node once and chains through the previous turn's node (`plan.written`). **The wall that remained was
+  mis-attributed, and is not a turn count** (`e2c583612`): with keys whose slot values ascend in the caller's array
+  order, three and four turns settle for both bodies (`call/loop-turns.test.ts` drives a three-element array to a
+  machine accept; `conformance/loop-upsert-settlement.test.ts` has a three-element varying-key accept with its
+  refused mutation). What the emitted loop cannot do is a **descending arrival**: the plan builds the gap's chain in
+  slot order while the body chains in array order, so a key below the pending turn co-spends a predecessor the plan
+  never declared (measured operands at the loop's `OP_EQUALVERIFY`, `key(5) → key(1)` computed against
+  `key(5) → key(6)` declared). That is refused **by name** now - `... at turn N of "workers" under a key that does
+  not sit above the turn before it ...` - and serving it needs the pending-defer machinery to accept a turn that
+  arrives below the pending node. The
   entry still publishes no write-segment fact, which is now stated as by design at
   `solidc/test/per-call/master/write-segments-publication.test.ts:142`.
   The paragraphs below record the state before that landing:

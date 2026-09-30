@@ -209,7 +209,8 @@ describe('a run-time loop upsert beside a call, through the shipped proxy path',
     expect(publishedWrites(compileStringMulti(CALL_THEN_LOOP_SOURCE, { composition: 'per-call' }).Impl!, 'move'))
       .toStrictEqual({ writeSegment: 1, writeSegments: [{ record: 0, segment: 1 }] });
     // A write the loop carries lands in the segment the code before the loop runs in, so the same body with the
-    // loop first names the segment the frame opens with - and the machine accepts that spend too (below).
+    // loop first names the segment the frame opens with. That body is published here; the machine pair below is
+    // taken on the call-then-loop body, which is the one the hop is driven for.
     expect(publishedWrites(compileStringMulti(LOOP_THEN_CALL_SOURCE, { composition: 'per-call' }).Impl!, 'move'))
       .toStrictEqual({ writeSegment: 0, writeSegments: [{ record: 0, segment: 0 }] });
   });

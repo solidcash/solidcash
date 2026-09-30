@@ -505,7 +505,9 @@ describe('two contracts deployed behind the built-in proxy', () => {
       });
     };
 
-    const deployment = await deployPair({ impl: '11'.repeat(32), proxy: '22'.repeat(32), caller: '33'.repeat(32) });
+    const deployment = await deployPair({
+      impl: '11'.repeat(31) + 'ee', proxy: '22'.repeat(31) + 'dd', caller: '33'.repeat(31) + 'cc',
+    });
 
     // Three broadcast transactions: both geneses and the initialize hop, all on the mock chain.
     const txids = new Set([
@@ -621,9 +623,9 @@ describe('the refusals the shape meets', () => {
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyArtifact: mismatched.Other!,
-      implementationDeploy: { fundingUtxo: { txid: '11'.repeat(32), vout: 0, satoshis: 500_000n },
+      implementationDeploy: { fundingUtxo: { txid: '11'.repeat(31) + 'ee', vout: 0, satoshis: 500_000n },
         funder: deployer.unlock.spend(alicePub, signature), changeAddress: deployer.address },
-      proxyDeploy: { fundingUtxo: { txid: '22'.repeat(32), vout: 0, satoshis: 500_000n },
+      proxyDeploy: { fundingUtxo: { txid: '22'.repeat(31) + 'dd', vout: 0, satoshis: 500_000n },
         funder: deployer.unlock.spend(alicePub, signature), changeAddress: deployer.address },
       initialize: { functionName: 'initialize', args: [new Uint8Array(25).fill(0x22)] },
       callerLockingBytecode: new Uint8Array(25).fill(0x22),

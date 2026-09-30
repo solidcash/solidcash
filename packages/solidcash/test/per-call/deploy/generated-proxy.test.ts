@@ -25,8 +25,8 @@ import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
  * hand-written one.
  */
 
-const IMPL_CATEGORY = '11'.repeat(32);
-const PROXY_CATEGORY = '22'.repeat(32);
+const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 
 // The implementation declares the field the fallback forwards to, beside the state its entry writes: the
 // implementation's write rebuilds the record from its own declaration, so the address has to be one of its fields

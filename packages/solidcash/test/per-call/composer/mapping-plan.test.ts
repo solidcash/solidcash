@@ -29,7 +29,7 @@ const entryUtxo = (txid: string, commitment: Uint8Array): Utxo => ({
   txid,
   vout: 0,
   satoshis: 1500n,
-  token: { category: '11'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: binToHex(commitment) } },
+  token: { category: '11'.repeat(31) + 'ee', amount: 0n, nft: { capability: 'mutable', commitment: binToHex(commitment) } },
 });
 
 const ZERO_SLOT = new Uint8Array(32);
@@ -62,7 +62,7 @@ function twoNodeList(): {
   const { lower, upper } = twoKeys();
   const headCommitment = encodeEntryCommitment(ZERO_SLOT, upper.slot, EMPTY_TAIL);
   const upperCommitment = encodeEntryCommitment(upper.slot, ZERO_SLOT, value(100n));
-  const utxos = [entryUtxo('00'.repeat(32), headCommitment), entryUtxo('aa'.repeat(32), upperCommitment)];
+  const utxos = [entryUtxo('00'.repeat(31) + 'ff', headCommitment), entryUtxo('aa'.repeat(31) + '55', upperCommitment)];
   return {
     lower,
     upper,
@@ -119,9 +119,9 @@ describe('planning a mapping write against the state the transaction spends', ()
     const lowerNode = encodeEntryCommitment(lower.slot, upper.slot, value(50n));
     const upperNode = encodeEntryCommitment(upper.slot, ZERO_SLOT, value(100n));
     const utxos = [
-      entryUtxo('00'.repeat(32), headToLower),
-      entryUtxo('bb'.repeat(32), lowerNode),
-      entryUtxo('cc'.repeat(32), upperNode),
+      entryUtxo('00'.repeat(31) + 'ff', headToLower),
+      entryUtxo('bb'.repeat(31) + '44', lowerNode),
+      entryUtxo('cc'.repeat(31) + '33', upperNode),
     ];
     const threeNode = SortedList.fromUtxos(utxos);
     const threeInventory = utxos.map((utxo) => hexToBin(utxo.token!.nft!.commitment));
@@ -233,8 +233,11 @@ describe('laying the plans out as the record entries each segment declares', () 
     const created = insertPlan.written.find((node) => !node.existed)!;
     // The list one insert leaves: HEAD relinked to the new node, which points at the successor it displaced.
     const afterInsert = new SortedList([
-      { slot: ZERO_SLOT, nextKey: lower.slot, value: EMPTY_TAIL, utxo: entryUtxo('00'.repeat(32), insertPlan.written[0]!.after) },
-      { slot: lower.slot, nextKey: upper.slot, value: value(300n), utxo: entryUtxo('dd'.repeat(32), created.after) },
+      {
+        slot: ZERO_SLOT, nextKey: lower.slot, value: EMPTY_TAIL,
+        utxo: entryUtxo('00'.repeat(31) + 'ff', insertPlan.written[0]!.after),
+      },
+      { slot: lower.slot, nextKey: upper.slot, value: value(300n), utxo: entryUtxo('dd'.repeat(31) + '22', created.after) },
     ]);
     const expectedUpdate = afterInsert.planUpdate(lower.slot, value(400n));
     const updatePlan = planMappingWrite({

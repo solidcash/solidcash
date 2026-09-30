@@ -209,14 +209,14 @@ function sendFor(
 
 describe('a queue of sends whose compositions share resources', () => {
   it('serializes two sends launched from the same live master so the second spends the first\'s output', async () => {
-    const f = await fixture({ Alpha: 'a1'.repeat(32) }, ['b1'.repeat(32), 'b2'.repeat(32)]);
+    const f = await fixture({ Alpha: 'a1'.repeat(31) + '5e' }, ['b1'.repeat(31) + '4e', 'b2'.repeat(31) + '4d']);
     const contract = f.contracts.Alpha!;
     const registered = await liveMaster(f.provider, contract);
     const queue = new CompositionQueue();
 
     // Enqueued before the first is awaited: the second must not be built from the same master outpoint.
-    const first = queue.enqueue(sendFor(f, 'Alpha', MASTER_A, 'b1'.repeat(32)));
-    const second = queue.enqueue(sendFor(f, 'Alpha', MASTER_A, 'b2'.repeat(32)));
+    const first = queue.enqueue(sendFor(f, 'Alpha', MASTER_A, 'b1'.repeat(31) + '4e'));
+    const second = queue.enqueue(sendFor(f, 'Alpha', MASTER_A, 'b2'.repeat(31) + '4d'));
     const [one, two] = await Promise.all([first, second]);
 
     // The first spent the registered master; the second spent the output the first created for it.
@@ -239,11 +239,14 @@ describe('a queue of sends whose compositions share resources', () => {
   });
 
   it('lets two sends with disjoint resources both complete', async () => {
-    const f = await fixture({ Alpha: 'a2'.repeat(32), Beta: 'a3'.repeat(32) }, ['b3'.repeat(32), 'b4'.repeat(32)]);
+    const f = await fixture(
+      { Alpha: 'a2'.repeat(31) + '5d', Beta: 'a3'.repeat(31) + '5c' },
+      ['b3'.repeat(31) + '4c', 'b4'.repeat(31) + '4b'],
+    );
     const queue = new CompositionQueue();
 
-    const alpha = queue.enqueue(sendFor(f, 'Alpha', MASTER_A, 'b3'.repeat(32)));
-    const beta = queue.enqueue(sendFor(f, 'Beta', MASTER_B, 'b4'.repeat(32)));
+    const alpha = queue.enqueue(sendFor(f, 'Alpha', MASTER_A, 'b3'.repeat(31) + '4c'));
+    const beta = queue.enqueue(sendFor(f, 'Beta', MASTER_B, 'b4'.repeat(31) + '4b'));
     const [one, two] = await Promise.all([alpha, beta]);
 
     expect(one.txid).not.toBe(two.txid);
@@ -256,7 +259,10 @@ describe('a queue of sends whose compositions share resources', () => {
   });
 
   it('keeps a failed send from blocking a disjoint one or its own overlap successor', async () => {
-    const f = await fixture({ Alpha: 'a4'.repeat(32), Beta: 'a5'.repeat(32) }, ['b5'.repeat(32), 'b6'.repeat(32)]);
+    const f = await fixture(
+      { Alpha: 'a4'.repeat(31) + '5b', Beta: 'a5'.repeat(31) + '5a' },
+      ['b5'.repeat(31) + '4a', 'b6'.repeat(31) + '49'],
+    );
     const contract = f.contracts.Alpha!;
     const registered = await liveMaster(f.provider, contract);
     const queue = new CompositionQueue();
@@ -268,8 +274,8 @@ describe('a queue of sends whose compositions share resources', () => {
       run: async () => { throw new Error('broadcast refused'); },
     };
     const refused = queue.enqueue(failing);
-    const successor = queue.enqueue(sendFor(f, 'Alpha', MASTER_A, 'b5'.repeat(32)));
-    const disjoint = queue.enqueue(sendFor(f, 'Beta', MASTER_B, 'b6'.repeat(32)));
+    const successor = queue.enqueue(sendFor(f, 'Alpha', MASTER_A, 'b5'.repeat(31) + '4a'));
+    const disjoint = queue.enqueue(sendFor(f, 'Beta', MASTER_B, 'b6'.repeat(31) + '49'));
 
     const outcomes = await Promise.allSettled([refused, successor, disjoint]);
     expect(outcomes[0]!.status).toBe('rejected');

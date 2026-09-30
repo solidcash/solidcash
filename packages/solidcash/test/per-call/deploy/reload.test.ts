@@ -76,7 +76,7 @@ describe('a reload point over the mock chain and the look-ahead it funds', () =>
     expect(isReservedGenesisOutpoint(extra)).toBe(true);
     expect(pools.takeMaster('Child')).toBe('child-1');
     expect(pools.takeValidator('Child')).toBe('validator-1');
-    await provider.addUtxo(signer.getAddress(), { txid: 'f'.repeat(64), vout: 0, satoshis: 1_000_000n });
+    await provider.addUtxo(signer.getAddress(), { txid: 'f'.repeat(63) + '0', vout: 0, satoshis: 1_000_000n });
     const beforeReload = await signer.getUtxos();
 
     // The control: with the work the reload will undo still in place, the only coin free to fund a genesis is the
@@ -99,7 +99,7 @@ describe('a reload point over the mock chain and the look-ahead it funds', () =>
     // is back.
     const afterReload = await signer.getUtxos();
     expect(afterReload.map(keyOf).sort()).toStrictEqual(beforeReload
-      .filter((utxo) => utxo.txid !== 'f'.repeat(64)).map(keyOf).sort());
+      .filter((utxo) => utxo.txid !== ('f'.repeat(63) + '0')).map(keyOf).sort());
   });
 
   it('restores the same point twice, so a fixture can reload it as often as it likes', async () => {

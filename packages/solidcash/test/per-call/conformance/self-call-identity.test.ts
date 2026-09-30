@@ -259,7 +259,7 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signature = new SignatureTemplate(alicePriv);
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const fundingUtxo = { txid: '33'.repeat(32), vout: 0, satoshis: 500_000n };
+  const fundingUtxo = { txid: '33'.repeat(31) + 'cc', vout: 0, satoshis: 500_000n };
   await provider.addUtxo(funder.address, fundingUtxo);
   await fundShippedFacets(provider);
   const deployment = await deployStatefulContract(artifact, [], {
@@ -275,10 +275,10 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly
       ...(value === undefined ? {} : { value }),
     });
   };
-  const self = await call('self', '44'.repeat(32));
+  const self = await call('self', '44'.repeat(31) + 'bb');
   let answered;
   try {
-    answered = await call(row.entry, '45'.repeat(32), row.value);
+    answered = await call(row.entry, '45'.repeat(31) + 'ba', row.value);
   } catch (error) {
     return { refusal: String((error as Error).message) };
   }

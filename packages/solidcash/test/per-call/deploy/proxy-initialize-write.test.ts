@@ -33,8 +33,8 @@ import {
  * is what the second call trips, so the record a second call is offered is the one the first call left.
  */
 
-const IMPL_CATEGORY = '11'.repeat(32);
-const PROXY_CATEGORY = '22'.repeat(32);
+const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 
 const SHARED_STATE = ' address public implementation;'
   + ' uint public initialized;'

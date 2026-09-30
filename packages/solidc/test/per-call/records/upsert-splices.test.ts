@@ -18,10 +18,10 @@ const NEW_KEY = utf8ToBin('balances-new');
 function seed(): { list: SortedList; slots: Uint8Array[] } {
   const slots = KEYS.map((key) => keyToSlot(key)).sort((a, b) => (valueOf(a) < valueOf(b) ? -1 : 1));
   const list = SortedList.fromUtxos([
-    headUtxo('00'.repeat(32), slots[0]),
-    entryUtxo('01'.repeat(32), entryCommitment(slots[0], slots[1], new Uint8Array([0x01]))),
-    entryUtxo('02'.repeat(32), entryCommitment(slots[1], slots[2], new Uint8Array([0x02]))),
-    entryUtxo('03'.repeat(32), entryCommitment(slots[2], ZERO_SLOT, new Uint8Array([0x03]))),
+    headUtxo('00'.repeat(31) + 'ff', slots[0]),
+    entryUtxo('01'.repeat(31) + 'fe', entryCommitment(slots[0], slots[1], new Uint8Array([0x01]))),
+    entryUtxo('02'.repeat(31) + 'fd', entryCommitment(slots[1], slots[2], new Uint8Array([0x02]))),
+    entryUtxo('03'.repeat(31) + 'fc', entryCommitment(slots[2], ZERO_SLOT, new Uint8Array([0x03]))),
   ]);
   return { list, slots };
 }

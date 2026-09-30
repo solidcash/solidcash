@@ -195,7 +195,7 @@ describe('the admission is a property of the body that makes the call', () => {
 const CATEGORY = seededCategory('per-call ecrecover recovery');
 const CONTRACT_ADDRESS = validatorAddress(CATEGORY, REAL_VALIDATOR_PROGRAM);
 const TEMPLATE_HASH = sha256(REAL_VALIDATOR_PROGRAM);
-const SIDECAR_CAT = hexToBin('ee'.repeat(32));
+const SIDECAR_CAT = hexToBin('ee'.repeat(31) + '11');
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 
 /** Master input indices: the master, its A/B pair (and keccak K), then the user. */
@@ -227,8 +227,8 @@ const token = (
 /** A dummy side-car UTXO for building and probing a pair (only its index and token matter to the covenants). */
 const dummySideCar = (odd: boolean): { txid: string; vout: number; satoshis: bigint; token: unknown } =>
   ({
-    txid: (odd ? 'bb' : 'aa').repeat(32), vout: 1, satoshis: 100_000n,
-    token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+    txid: (odd ? 'bb'.repeat(31) + '44' : 'aa'.repeat(31) + '55'), vout: 1, satoshis: 100_000n,
+    token: { category: 'ee'.repeat(31) + '11', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
   });
 
 const leBytes = (hex: string): Uint8Array => hexToBin(hex.replace(/^0x/, '')).slice().reverse();
@@ -496,7 +496,7 @@ describe('the EVM invalid-input rule on the per-call path', () => {
   });
 
   it('answers address(0) through the bare name in P2PKH mode, as a Solidity port compares it', () => {
-    const word = `bytes32(0x${'11'.repeat(32)})`;
+    const word = `bytes32(0x${'11'.repeat(31) + 'ee'})`;
     const artifacts = compilePerCall('pragma solidity ^0.8.0;'
       + ' contract Auth {'
       + '   function check() public pure {'

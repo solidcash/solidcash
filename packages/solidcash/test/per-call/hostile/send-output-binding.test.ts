@@ -36,8 +36,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * case is the field under test.
  */
 
-const CATEGORY_HEX = '5a'.repeat(32);
-const CALLER_TXID = '5b'.repeat(32);
+const CATEGORY_HEX = '5a'.repeat(31) + 'a5';
+const CALLER_TXID = '5b'.repeat(31) + 'a4';
 const AMOUNT = 15_000n;
 const DEPOSIT = 20_000n;
 const MASTER_ID = 'master';

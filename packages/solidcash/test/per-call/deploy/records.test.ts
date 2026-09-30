@@ -27,11 +27,11 @@ const LAYOUT: StateLayout = {
   commitmentLimit: 128,
 };
 
-const CATEGORY = '33'.repeat(32);
+const CATEGORY = '33'.repeat(31) + 'cc';
 const RECORD_COMMITMENT = buildPushdataCommitment(LAYOUT, { implementation: new Uint8Array(35).fill(0xab) }, 0);
 
 const utxo = (vout: number, token?: Utxo['token']): Utxo =>
-  ({ txid: 'aa'.repeat(32), vout, satoshis: 1200n, ...(token === undefined ? {} : { token }) });
+  ({ txid: 'aa'.repeat(31) + '55', vout, satoshis: 1200n, ...(token === undefined ? {} : { token }) });
 const nft = (
   category: string, capability: 'none' | 'mutable' | 'minting', commitment: string,
 ): NonNullable<Utxo['token']> => ({ category, amount: 0n, nft: { capability, commitment } });

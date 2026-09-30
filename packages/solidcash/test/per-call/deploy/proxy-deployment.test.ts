@@ -63,8 +63,8 @@ async function deployFresh(): Promise<{
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signature = new SignatureTemplate(alicePriv);
   const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const implFunding = { txid: '11'.repeat(32), vout: 0, satoshis: 500_000n };
-  const proxyFunding = { txid: '22'.repeat(32), vout: 0, satoshis: 500_000n };
+  const implFunding = { txid: '11'.repeat(31) + 'ee', vout: 0, satoshis: 500_000n };
+  const proxyFunding = { txid: '22'.repeat(31) + 'dd', vout: 0, satoshis: 500_000n };
   await provider.addUtxo(funding.address, implFunding);
   await provider.addUtxo(funding.address, proxyFunding);
   // The hop broadcasts, so each composition's facet input needs a live UTXO at the facet's lock.

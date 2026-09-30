@@ -26,10 +26,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * through the in-place write.
  */
 
-const IMPL_CATEGORY = '11'.repeat(32);
-const PROXY_CATEGORY = '22'.repeat(32);
-const CALLER_TXID = '33'.repeat(32);
-const SECOND_CALLER_TXID = '44'.repeat(32);
+const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
+const CALLER_TXID = '33'.repeat(31) + 'cc';
+const SECOND_CALLER_TXID = '44'.repeat(31) + 'bb';
 
 /** The body whose delete sits inside a branch: the compiler publishes it as a conditional soft-delete slot. */
 const GUARDED_SOURCE = 'pragma solidcash ^0.13.0;'

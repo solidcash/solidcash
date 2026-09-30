@@ -57,8 +57,8 @@ const leBytes = (hex: string): Uint8Array => hexToBin(hex.replace(/^0x/, '')).sl
 
 /** A dummy side-car UTXO, used only to probe whether a signature has a valid two-covenant split. */
 const dummyUtxo = (odd: boolean): never => ({
-  txid: (odd ? 'bb' : 'aa').repeat(32), vout: 1, satoshis: 100_000n,
-  token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+  txid: (odd ? 'bb'.repeat(31) + '44' : 'aa'.repeat(31) + '55'), vout: 1, satoshis: 100_000n,
+  token: { category: 'ee'.repeat(31) + '11', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
 }) as never;
 
 /**

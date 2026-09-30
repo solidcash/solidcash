@@ -22,9 +22,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * it. These tests drive that on the mock network and read the entry's state back through the shipped decoder.
  */
 
-const IMPL_CATEGORY = '11'.repeat(32);
-const PROXY_CATEGORY = '22'.repeat(32);
-const CALLER_TXID = '33'.repeat(32);
+const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
+const CALLER_TXID = '33'.repeat(31) + 'cc';
 
 const SHARED_STATE = ' address public implementation;'
   + ' uint public initialized;'

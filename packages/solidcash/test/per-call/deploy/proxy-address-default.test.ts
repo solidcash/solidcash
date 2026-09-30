@@ -23,9 +23,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * and the transaction settles through the BCH-2026 machine.
  */
 
-const IMPL_CATEGORY = '11'.repeat(32);
-const PROXY_CATEGORY = '22'.repeat(32);
-const CALLER_TXID = '33'.repeat(32);
+const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
+const CALLER_TXID = '33'.repeat(31) + 'cc';
 
 /** An append of the element type's default, whose address field is `address(0)`. */
 const DEFAULT_SOURCE = 'pragma solidcash ^0.13.0;'

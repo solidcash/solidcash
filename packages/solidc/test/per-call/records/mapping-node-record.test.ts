@@ -59,8 +59,8 @@ describe('section 20 mapping node record', () => {
     const [first, second] = [slotA, slotB].sort((a, b) => (valueOf(a) < valueOf(b) ? -1 : 1));
     const list = SortedList.fromUtxos([
       headUtxo(),
-      entryUtxo('aa'.repeat(32), entryCommitment(first, second, new Uint8Array([0x09]))),
-      entryUtxo('bb'.repeat(32), entryCommitment(second, ZERO_SLOT, new Uint8Array([0x0a]))),
+      entryUtxo('aa'.repeat(31) + '55', entryCommitment(first, second, new Uint8Array([0x09]))),
+      entryUtxo('bb'.repeat(31) + '44', entryCommitment(second, ZERO_SLOT, new Uint8Array([0x0a]))),
     ]);
 
     const plan = list.planMembership(second);
@@ -96,7 +96,9 @@ describe('section 20 mapping node record', () => {
 
   it('a node without a HEAD sentinel has no bracketing predecessor and is refused', () => {
     // verified-mappings.md 2.2/4: the list is anchored at HEAD; without it the first gap has no low bound.
-    const orphaned = SortedList.fromUtxos([entryUtxo('cc'.repeat(32), entryCommitment(slotValueToBytes(5n), ZERO_SLOT))]);
+    const orphaned = SortedList.fromUtxos([
+      entryUtxo('cc'.repeat(31) + '33', entryCommitment(slotValueToBytes(5n), ZERO_SLOT)),
+    ]);
     expect(() => orphaned.predecessorOf(slotValueToBytes(1n))).toThrow(/HEAD/);
     expect(() => orphaned.planNonMembership(slotValueToBytes(1n))).toThrow();
   });

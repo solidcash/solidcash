@@ -41,7 +41,7 @@ function publishedWrites(
 }
 
 const PING = 'interface IOther { function ping(); } contract Other { function ping() { require(true); } }';
-const OTHER = '0x' + '11'.repeat(32);
+const OTHER = '0x' + '11'.repeat(31) + 'ee';
 
 /** A ledger whose entries move a mapping entry, grow a dynamic array, and call another contract. */
 const LEDGER = (body: string): string => `pragma solidcash ^0.13.0;${PING}`

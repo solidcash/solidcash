@@ -23,8 +23,8 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * asserts that: it compiles, and the same hop settles through the same shipped path.
  */
 
-const IMPL_CATEGORY = '31'.repeat(32);
-const PROXY_CATEGORY = '42'.repeat(32);
+const IMPL_CATEGORY = '31'.repeat(31) + 'ce';
+const PROXY_CATEGORY = '42'.repeat(31) + 'bd';
 
 // The refused shape: the payload is opaque, so the call names no method the convention could compile as a typed
 // call, and the body keeps its own low-level refusal.
@@ -153,7 +153,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
       implementationCategoryId: IMPL_CATEGORY,
       functionName: 'initialize',
       args: [deployerLock],
-      callerUtxo: { txid: '55'.repeat(32), vout: 0, satoshis: 100_000n },
+      callerUtxo: { txid: '55'.repeat(31) + 'aa', vout: 0, satoshis: 100_000n },
       callerLockingBytecode: deployerLock,
       funder,
     });

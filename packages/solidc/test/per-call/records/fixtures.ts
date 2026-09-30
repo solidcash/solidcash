@@ -10,7 +10,7 @@ import { sha256 } from '@bitauth/libauth';
 import type { Utxo } from '../../../../solidcash/src/interfaces.js';
 import { SortedList } from '../../../../solidcash/src/stateful/SortedList.js';
 
-export const CATEGORY = '11'.repeat(32);
+export const CATEGORY = '11'.repeat(31) + 'ee';
 export const SLOT_BYTES = 32;
 export const ZERO_SLOT = new Uint8Array(SLOT_BYTES);
 
@@ -58,7 +58,7 @@ export function entryUtxo(txid: string, commitment: Uint8Array, vout = 0): Utxo 
 }
 
 /** The genesis HEAD record: slot 0, `next` (0 for the empty map), 64-byte empty-value pad (SPEC:1460). */
-export function headUtxo(txid = '00'.repeat(32), next: Uint8Array = ZERO_SLOT): Utxo {
+export function headUtxo(txid = '00'.repeat(31) + 'ff', next: Uint8Array = ZERO_SLOT): Utxo {
   return entryUtxo(txid, concatBytes(new Uint8Array(SLOT_BYTES), next, new Uint8Array(64)));
 }
 

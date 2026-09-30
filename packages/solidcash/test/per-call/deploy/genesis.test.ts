@@ -142,7 +142,7 @@ describe('a per-call genesis derived by running the constructor frame', () => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
     const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: '11'.repeat(32), vout: 0, satoshis: 500_000n };
+    const fundingUtxo = { txid: '11'.repeat(31) + 'ee', vout: 0, satoshis: 500_000n };
     await provider.addUtxo(funding.address, fundingUtxo);
 
     const { contract, categoryId } = await StatefulContract.deploy(artifact, [5n], {
@@ -237,7 +237,7 @@ describe('a per-call genesis whose constructor emits an event', () => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
     const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: '22'.repeat(32), vout: 0, satoshis: 500_000n };
+    const fundingUtxo = { txid: '22'.repeat(31) + 'dd', vout: 0, satoshis: 500_000n };
     await provider.addUtxo(funding.address, fundingUtxo);
 
     const { tx } = await StatefulContract.deploy(emittingArtifact, [5n], {
@@ -568,7 +568,7 @@ describe('a per-call genesis whose constructor writes one mapping as a sorted ba
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
     const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: '13'.repeat(32), vout: 0, satoshis: 500_000n };
+    const fundingUtxo = { txid: '13'.repeat(31) + 'ec', vout: 0, satoshis: 500_000n };
     await provider.addUtxo(funding.address, fundingUtxo);
 
     const { categoryId } = await StatefulContract.deploy(
@@ -758,7 +758,7 @@ describe('a per-call genesis whose constructor writes a dynamic value', () => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
     const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: '24'.repeat(32), vout: 0, satoshis: 500_000n };
+    const fundingUtxo = { txid: '24'.repeat(31) + 'db', vout: 0, satoshis: 500_000n };
     await provider.addUtxo(funding.address, fundingUtxo);
 
     const { tx } = await StatefulContract.deploy(dynamicArtifact, ['hello'], {

@@ -41,10 +41,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * record is read back through the shipped pushdata decoder.
  */
 
-const IMPL_CATEGORY = '11'.repeat(32);
-const PROXY_CATEGORY = '22'.repeat(32);
-const CALLER_TXID = '33'.repeat(32);
-const SECOND_CALLER_TXID = '44'.repeat(32);
+const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
+const CALLER_TXID = '33'.repeat(31) + 'cc';
+const SECOND_CALLER_TXID = '44'.repeat(31) + 'bb';
 
 /** The append the deployment's initialize makes (one element, the frame's own sender), made again by a later call. */
 const APPEND_CALL_SOURCE = 'pragma solidcash ^0.13.0;'

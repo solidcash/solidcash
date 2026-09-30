@@ -36,7 +36,7 @@ function emittedProgram(artifact: { readonly bytecode: string }): string {
 
 const PING = 'interface IOther { function ping(); }'
   + ' contract Other { function ping() { require(true); } }';
-const OTHER = '0x' + '11'.repeat(32);
+const OTHER = '0x' + '11'.repeat(31) + 'ee';
 
 /** The write precedes the entry's only call, so it lands in the segment the frame opens with. */
 const WRITE_FIRST_SOURCE = `pragma solidcash ^0.13.0;${PING}`

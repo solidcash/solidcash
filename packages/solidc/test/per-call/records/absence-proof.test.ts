@@ -58,7 +58,7 @@ describe('section 20 absence proof', () => {
     const absentKeys = KEYS.slice(32);
     const sorted = presentKeys.map((key) => keyToSlot(key)).sort((a, b) => (valueOf(a) < valueOf(b) ? -1 : 1));
     const list = SortedList.fromUtxos([
-      headUtxo('ff'.repeat(32), sorted[0]),
+      headUtxo('ff'.repeat(31) + '00', sorted[0]),
       ...sorted.map((slot, i) => entryUtxo(
         (i + 1).toString(16).padStart(64, '0'), entryCommitment(slot, sorted[i + 1] ?? ZERO_SLOT),
       )),
@@ -105,7 +105,7 @@ describe('section 20 absence proof', () => {
     const slot = keyToSlot(utf8ToBin('absent-key'));
     const sortedSlots = KEYS.map((key) => keyToSlot(key)).sort((a, b) => (valueOf(a) < valueOf(b) ? -1 : 1));
     const list = SortedList.fromUtxos([
-      headUtxo('ff'.repeat(32), sortedSlots[0]),
+      headUtxo('ff'.repeat(31) + '00', sortedSlots[0]),
       ...sortedSlots.map((s, i) => entryUtxo(
         (i + 1).toString(16).padStart(64, '0'), entryCommitment(s, sortedSlots[i + 1] ?? ZERO_SLOT),
       )),
@@ -140,8 +140,8 @@ describe('section 20 absence proof', () => {
     const second = keyToSlot(utf8ToBin('holder-1'));
     const low = valueOf(first) < valueOf(second) ? first : second;
     const list = SortedList.fromUtxos([
-      headUtxo('ff'.repeat(32), low),
-      entryUtxo('aa'.repeat(32), entryCommitment(low, ZERO_SLOT)),
+      headUtxo('ff'.repeat(31) + '00', low),
+      entryUtxo('aa'.repeat(31) + '55', entryCommitment(low, ZERO_SLOT)),
     ]);
     const plan = list.planNonMembership(slotBytes(1n)); // 0 < 1 < low, so the only bracket is HEAD
     expect(plan.predecessor.slot).toEqual(ZERO_SLOT);

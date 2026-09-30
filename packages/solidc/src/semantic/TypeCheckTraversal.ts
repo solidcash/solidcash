@@ -164,6 +164,7 @@ import {
   UnsupportedAbiV1TypeError,
   AbiEncodeEmptyError,
   UndefinedReferenceError,
+  StructFieldExternalCallError,
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
@@ -2795,6 +2796,11 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.type = node.left.type;
         return node;
       case BinaryOperator.SPLIT:
+        // A contract/interface receiver's `split` is its own method. The AstBuilder builds that call wherever it
+        // knows the receiver's type; any other such receiver would silently split the target's bytes instead.
+        if (node.left.type instanceof AddressType && node.left.type.interfaceName) {
+          throw new StructFieldExternalCallError(node, node.left.type.interfaceName, 'split');
+        }
         expectAnyOfTypes(node, node.left.type, [new BytesType(), PrimitiveType.STRING]);
         expectInt(node, node.right.type);
         node.type = inferTupleType(node);

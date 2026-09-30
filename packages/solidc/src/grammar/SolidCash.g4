@@ -7,13 +7,37 @@ dotOpBoundary(): boolean {
   const c = this._input.LA(1);
   return !((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95);
 }
-// The `.split` op is always a call `x.split(y)`, so it only wins over a member named `split`
-// (`escrow.split[i]`, `s.split = ..`) when the next non-space char is `(`. Skips whitespace before '('.
+// The `.split` op is always a one-argument call `x.split(y)`, so it only wins over a member named `split`
+// (`escrow.split[i]`, `s.split = ..`, an interface's `split(to, amount)`, `split()` or `split({..})`) when the next
+// non-space char is `(` and the list it opens holds one positional argument. Skips whitespace before '(', and
+// comments, strings and nested brackets inside the list.
 splitOpBoundary(): boolean {
   let i = 1;
   let c = this._input.LA(i);
   while (c === 32 || c === 9 || c === 13 || c === 10 || c === 12) { i++; c = this._input.LA(i); }
-  return c === 40;
+  if (c !== 40) return false;
+  let depth = 0;
+  let empty = true;
+  for (i++; (c = this._input.LA(i)) !== -1; i++) {
+    if (c === 32 || c === 9 || c === 13 || c === 10 || c === 12) continue;
+    if (c === 47 && this._input.LA(i + 1) === 47) {
+      while (this._input.LA(i + 1) !== 10 && this._input.LA(i + 1) !== -1) i++;
+      continue;
+    }
+    if (c === 47 && this._input.LA(i + 1) === 42) {
+      for (i += 2; this._input.LA(i) !== -1 && !(this._input.LA(i) === 42 && this._input.LA(i + 1) === 47);) i++;
+      i++;
+      continue;
+    }
+    if (depth === 0 && (c === 41 || c === 44 || (empty && c === 123))) return c === 41 && !empty;
+    empty = false;
+    if (c === 34 || c === 39) {
+      const quote = c;
+      for (i++; (c = this._input.LA(i)) !== quote && c !== -1 && c !== 10; i++) if (c === 92) i++;
+    } else if (c === 40 || c === 91 || c === 123) depth++;
+    else if (c === 41 || c === 93 || c === 125) depth--;
+  }
+  return true;
 }
 }
 

@@ -7,6 +7,8 @@ import {
 import { BinaryOperator } from '../src/ast/Operator.js';
 import { resultArrayOutputOf } from '../src/artifact/Artifact.js';
 import { Symbol } from '../src/ast/SymbolTable.js';
+import { StructFieldExternalCallError } from '../src/Errors.js';
+import { compileStringMulti } from '../src/compiler.js';
 import { hasEffectiveCallValue } from '../src/semantic/branchOps.js';
 import { compileString } from './direct-compile.js';
 import { compileString as compileMessageBus } from '../dist/compiler.js';
@@ -1026,5 +1028,74 @@ describe('external call on a state-rooted access-chain target (ss[i].f.m(), ms[k
     expect(() => compileString(
       `${IF}struct S { IFoo target; } contract C { S[] ss; function f() public returns (uint) { uint i = 0; return ss[i].target.m(); } }`, opts,
     )).not.toThrow();
+  });
+});
+
+// `split` is also the bytes/string built-in, so the receiver's type decides: on a contract or interface it is that
+// type's own method, while a bytes receiver in the same contract keeps the built-in.
+describe('an interface method named split is called as the interface method', () => {
+  const IFACE = 'interface IScale { function split(address to, int amount) external returns (int); }';
+  const NATIVE = `pragma solidcash ^0.13.0;
+    ${IFACE}
+    contract Payer(address target) {
+      function pay(address to, int amount) { int scaled = IScale(target).split(to, amount); require(scaled > 0); }
+      function head(bytes data) { bytes2 first = data.split(2)[0]; require(first == 0x1234); }
+    }`;
+  const SOLIDITY = `pragma solidity ^0.8.0;
+    ${IFACE}
+    contract Payer {
+      address target;
+      constructor(address target_) { target = target_; }
+      function pay(address to, int amount) public returns (int) { return IScale(target).split(to, amount); }
+      function head(bytes memory data) public pure returns (bytes2) { return data.split(2)[0]; }
+    }`;
+  const callsOf = (artifact: ReturnType<typeof compileString>, name: string): string[] => (artifact.abi
+    .find((entry) => entry.name === name)?.externalCalls ?? []).map((call) => `${call.interfaceName}.${call.functionName}`);
+
+  it.each([
+    ['native', NATIVE, {}],
+    ['Solidity-compatible', SOLIDITY, { solidityImportCompat: true }],
+  ])('calls IScale.split from the %s spelling and keeps the bytes built-in', (_spelling, source, options) => {
+    const artifact = compileString(source, options);
+    expect(callsOf(artifact, 'pay')).toEqual(['IScale.split']);
+    expect(callsOf(artifact, 'head')).toEqual([]);
+  });
+
+  it('calls a one-argument split through a cast, a typed name and a bare statement', () => {
+    for (const body of [
+      'int r = IScale(target).split(amount); require(r > 0);',
+      'IScale scale = IScale(target); int r = scale.split(amount); require(r > 0);',
+      'IScale(target).split(amount); require(amount > 0);',
+    ]) {
+      const artifact = compileString(`pragma solidcash ^0.13.0;
+        interface IScale { function split(int amount) external returns (int); }
+        contract Payer(address target) { function pay(int amount) { ${body} } }`);
+      expect(callsOf(artifact, 'pay')).toEqual(['IScale.split']);
+    }
+  });
+
+  it('calls a declared split through this rather than splitting the active bytecode', () => {
+    expect(compileString(`pragma solidcash ^0.13.0;
+      contract Scale {
+        function split(int amount) public returns (int) { return amount + 1; }
+        function check(int amount) { require(this.split(amount) == amount + 1); }
+      }`).contractName).toBe('Scale');
+  });
+
+  it('refuses a split on a computed contract receiver rather than splitting its bytes', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0;
+      interface IScale { function split(uint amount) external returns (uint); }
+      contract Payer { IScale[] scales; function pay(uint i, uint amount) public { scales[i].split(amount); } }`,
+    { solidityImportCompat: true })).toThrow(StructFieldExternalCallError);
+  });
+
+  it('serves the entry under the per-call convention, publishing the call site as IScale.split', () => {
+    const composition = compileStringMulti(NATIVE, { composition: 'per-call' }).Payer!.composition as {
+      refusedEntries?: unknown[];
+      stopSites?: { entries: { functionName: string; calls: { interfaceName: string; functionName: string }[] }[] };
+    };
+    expect(composition.refusedEntries).toBeUndefined();
+    const pay = composition.stopSites!.entries.find((entry) => entry.functionName === 'Payer.pay()')!;
+    expect(pay.calls.map((call) => `${call.interfaceName}.${call.functionName}`)).toEqual(['IScale.split']);
   });
 });

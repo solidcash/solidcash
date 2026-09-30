@@ -138,7 +138,6 @@ import type {
   TimeOpStatementContext,
   ArrayContext,
   UnaryOpContext,
-  BinaryOpContext,
   LiteralExpressionContext,
   RequireStatementContext,
   PragmaDirectiveContext,
@@ -229,7 +228,7 @@ import {
   IdentifierContext, PostfixOpContext, PrefixOpContext, ThisExprContext,
   FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext, LegacyCallOptionCallContext,
   FunctionTypeContext, StructDefinitionContext, GroupedExpressionContext,
-  ConstructedExpressionContext,
+  ConstructedExpressionContext, BinaryOpContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location, withSourceFile } from './Location.js';
@@ -385,6 +384,8 @@ export default class AstBuilder
   // storage-pointer library helpers are inlined and removed.
   private stateSimpleTypeKeys: Map<string, string> = new Map();
   private stateInterfaceReceivers: Set<string> = new Set();
+  // Contract-level params of a contract/interface type (`contract C(IScale scale)`), in scope in every body.
+  private contractInterfaceParams: Set<string> = new Set();
   // Contract-level param names (`contract C(int x)`), so a constructor with a parent invocation drops only the
   // params that MIRROR contract params (native pattern), keeping its own declared params (Solidity pattern).
   private contractParamNames: Set<string> = new Set();
@@ -1757,6 +1758,9 @@ export default class AstBuilder
         this.stateInterfaceReceivers.add(stateVariable.name);
       }
     }
+    this.contractInterfaceParams = new Set(parameters
+      .filter((p) => p.type instanceof AddressType && p.type.interfaceName)
+      .map((p) => p.name));
     // Unbounded `bytes` state vars support `.push(b)` / `.pop()` (Solidity dynamic byte array). These desugar
     // to a whole-value concat / slice reassignment (a bytes blob has no per-element prefix), reusing the tested
     // bytes concat + split codegen rather than the length-prefixed array-element path.
@@ -4702,13 +4706,44 @@ export default class AstBuilder
     return node;
   }
 
-  visitBinaryOp(ctx: BinaryOpContext): BinaryOpNode {
+  visitBinaryOp(ctx: BinaryOpContext): ExpressionNode {
     const left = this.visit(ctx._left);
     const operator = ctx._op.text as BinaryOperator;
     const right = this.visit(ctx._right);
+    if (operator === BinaryOperator.SPLIT) {
+      const call = this.buildContractSplitCall(ctx, left, right);
+      if (call) return call;
+    }
     const binaryOp = sourceBinaryOp(left, operator, right);
     binaryOp.location = Location.fromCtx(ctx);
     return binaryOp;
+  }
+
+  // The receiver's type decides `recv.split(x)`: on a receiver known here to be contract/interface-typed (a cast
+  // `I(a)`, `this.v`, a name declared with that type, or `this` in a contract declaring `split`) it is that type's own
+  // method, built as the member call any other method name gets; otherwise it is the bytes/string built-in.
+  private buildContractSplitCall(
+    ctx: BinaryOpContext, receiver: ExpressionNode, argument: ExpressionNode,
+  ): ExpressionNode | undefined {
+    if (ctx._left.getText() === 'this') {
+      if (!this.currentContractFunctionNames.has('split')) return undefined;
+      return this.buildMethodCall(ctx, receiver, 'split', [argument], undefined, true);
+    }
+    const contractCast = receiver instanceof FunctionCallNode && receiver.parameters.length === 1
+      && this.contractInterfaceNames.has(receiver.identifier.name);
+    if (contractCast || (receiver instanceof StateAccessNode && this.stateInterfaceReceivers.has(receiver.name))) {
+      return this.buildMethodCall(ctx, receiver, 'split', [argument], undefined, false);
+    }
+    if (!(receiver instanceof IdentifierNode)) return undefined;
+    const local = this.localSimpleTypeKeys.has(receiver.name) || this.localStructTypes.has(receiver.name);
+    const contractTyped = local ? this.localInterfaceReceivers.has(receiver.name)
+      : this.contractInterfaceParams.has(receiver.name) || this.stateInterfaceReceivers.has(receiver.name);
+    if (!contractTyped) return undefined;
+    const identifier = new IdentifierNode(`${receiver.name}.split`);
+    identifier.location = receiver.location;
+    const call = new FunctionCallNode(identifier, [argument]);
+    call.location = Location.fromCtx(ctx);
+    return call;
   }
 
   visitTernaryOp(ctx: TernaryOpContext): TernaryOpNode {
@@ -7993,12 +8028,13 @@ export default class AstBuilder
   }
 
   // Record a receiver's using-for type key (and, for an interface/named-contract receiver, its interface-receiver
-  // flag) so `x.method(args)` under `using L for T` resolves.
+  // flag; both follow the name's latest declaration) so `x.method(args)` under `using L for T` resolves.
   private recordUsingForReceiver(name: string, type: Type): void {
     const k = this.usingForTypeKey(type);
     if (!k) return;
     this.localSimpleTypeKeys.set(name, k);
     if (type instanceof AddressType && type.interfaceName) this.localInterfaceReceivers.add(name);
+    else this.localInterfaceReceivers.delete(name);
   }
 
   // The library bound to a simple-typed (non-struct/array/mapping) receiver's type key. An INTERFACE-typed receiver
@@ -9109,8 +9145,16 @@ export default class AstBuilder
       || lhsCtx instanceof MethodCallNamedContext) {
       return this.buildCallStatement(lhsCtx);
     }
-    // Otherwise a bare expression, computed and dropped: a pure value or a side-effect-free access.
+    // Otherwise a bare expression, computed and dropped: a pure value or a side-effect-free access. A contract-typed
+    // `recv.split(x);` was built as its method call (buildContractSplitCall), so it is that call's statement.
     const expression = this.visit(lhsCtx) as ExpressionNode;
+    if (lhsCtx instanceof BinaryOpContext
+      && (expression instanceof FunctionCallNode || expression instanceof MethodCallNode)) {
+      const call = expression instanceof FunctionCallNode
+        ? new FunctionCallStatementNode(expression) : new MethodCallStatementNode(expression);
+      call.location = Location.fromCtx(lhsCtx);
+      return call;
+    }
     const node = new ExpressionStatementNode(expression);
     node.location = Location.fromCtx(ctx);
     return node;

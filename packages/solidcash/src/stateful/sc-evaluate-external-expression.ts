@@ -584,6 +584,11 @@ executionCallerAddress?: FunctionArgument,
               invalid = true;
               return { returned: false };
             }
+          } else if (statement.kind === 'require' && statement.condition) {
+            if (evaluateWith(statement.condition) !== true) {
+              invalid = true;
+              return { returned: false };
+            }
           } else if (statement.kind === 'block' && statement.statements) {
             const result = execute(statement.statements);
             if (result.returned || invalid) return result;

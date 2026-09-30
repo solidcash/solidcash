@@ -1196,7 +1196,8 @@ export interface AffineRecursiveFrameV1Abi {
 }
 
 export interface ExternalCallStatement {
-  kind: 'variable' | 'assign' | 'arrayAssign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
+  kind: 'variable' | 'assign' | 'arrayAssign' | 'while' | 'branch' | 'return' | 'expression' | 'block'
+  | 'require';
   name?: string;
   type?: string;
   index?: ExternalCallExpression;

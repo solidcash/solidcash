@@ -349,6 +349,42 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toEqual(Uint8Array.of(1, 2, 0x44, 0x56));
   });
 
+  it('evaluates guarded pure-library arguments and rejects a failed guard', () => {
+    const helperArtifact = compileString(`pragma solidity >=0.8.0;
+      library Checked {
+        function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+          require(b <= a);
+          return a - b;
+        }
+        function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+          if (a == 0) return 0;
+          uint256 product = a * b;
+          require(product / a == b);
+          return product;
+        }
+      }
+      interface ISink { function publish(uint256 value) external; }
+      contract GuardedArgument(address sink) {
+        using Checked for uint256;
+        function run(uint256 a, uint256 b) public {
+          ISink(sink).publish(a.sub(b).mul(2));
+          require(true);
+        }
+      }`, { solidityImportCompat: true, forceStateful: true });
+    const expression = helperArtifact.abi.find((candidate) => candidate.name === 'run')
+      ?.externalCalls?.[0].argSources?.[0].expression;
+    expect(expression).toBeDefined();
+    const helperEvaluator = new StatefulContract(
+      '00'.repeat(32), helperArtifact, createTestProvider(), { constructorArgs: [new Uint8Array()] },
+    ) as unknown as PredicateEvaluator;
+    expect(helperEvaluator._evaluateExternalExpression(
+      expression!, [10n, 3n], helperArtifact, undefined, [{ type: 'uint256' }, { type: 'uint256' }],
+    )).toBe(14n);
+    expect(helperEvaluator._evaluateExternalExpression(
+      expression!, [3n, 10n], helperArtifact, undefined, [{ type: 'uint256' }, { type: 'uint256' }],
+    )).toBeUndefined();
+  });
+
   it('evaluates fixed-array element assignments in a compiler-published pure helper', () => {
     const helperArtifact = compileString(`
       pragma solidity >=0.8.0;

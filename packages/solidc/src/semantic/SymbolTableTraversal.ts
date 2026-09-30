@@ -8827,7 +8827,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         if (expression instanceof FunctionCallNode) {
           const values = serializeArgs(expression.parameters);
-          const helper = expression.resolvedFunction;
+          // Some inlined library-call clones retain their qualified name and exact arity but lose the
+          // resolvedFunction back-reference. Rebind only a unique declaration; ambiguous overloads keep
+          // their existing unsupported metadata instead of guessing a program body.
+          const helper = expression.resolvedFunction ?? (() => {
+            const matches = (this.functionDefinitions.get(expression.identifier.name) ?? [])
+              .filter((candidate) => candidate.parameters.length === expression.parameters.length);
+            return matches.length === 1 ? matches[0] : undefined;
+          })();
           const declaredStruct = helper === undefined
             ? this.structMap.get(expression.identifier.name) : undefined;
           const declaredStructType = declaredStruct?.fields.length === expression.parameters.length
@@ -8891,6 +8898,12 @@ export default class SymbolTableTraversal extends AstTraversal {
                   const value = serializeExpression(statement.expression);
                   if (!value) return undefined;
                   serialized.push({ kind: 'expression', expression: value });
+                } else if (statement instanceof RequireNode) {
+                  // Pure helpers can guard arithmetic before returning. Publish the condition so the SDK
+                  // rejects an invalid argument path instead of silently evaluating past the guard.
+                  const condition = serializeExpression(statement.expression);
+                  if (!condition) return undefined;
+                  serialized.push({ kind: 'require', condition });
                 } else if (statement instanceof BlockNode) {
                   const body = serializeBlock(statement);
                   if (!body) return undefined;

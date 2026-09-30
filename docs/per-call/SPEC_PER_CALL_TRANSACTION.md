@@ -854,10 +854,9 @@ Conversely, every covered master that is not a root appears in exactly one calle
   the index must be one a segment's declaration writes (or a recreated `catX` validator's), a capability byte of
   minting means recreated in place, and a bare 32-byte value is an immutable NFT under S2's exclusion of fungible
   amounts, so its index must be one a frame in X's context lists as an event;
-- **values** as in S4: every record keeps its value less the sends of the frame that writes it, no two frames in
-  X's context list the same send, and `growth(X) >= in(X) - out(X)` (4b), where `in(X)` is the value of the frames
-  in X's context that are not `DELEGATE` or `INTERNAL`, and `out(X)` is the value of their call records and their
-  listed sends.
+- **values** as in S4: every record keeps at least its value, no two frames in X's context list the same send, and
+  `growth(X) >= in(X) - out(X)` (4b), where `in(X)` is the value of the frames in X's context that are not
+  `DELEGATE` or `INTERNAL`, and `out(X)` is the value of their call records and their listed sends.
 
 **V8.** A contract is in `M.settles` if one of its masters is covered and it has another master anywhere in the
 transaction, or if a covered `DELEGATE` or `INTERNAL` frame runs on its records. Otherwise it is not, and its single
@@ -885,8 +884,8 @@ State UTXOs run `STATE_CODE` at `stateX` (section 3.3).
 **D1.** A master of X is in the transaction. Rules S3 and V7/V8 then guarantee that the record is settled exactly
 once.
 
-**D2.** The record's output, unless the settlement deletes the record, keeps at least the input's value, except for
-listed sends paid from it (S4).
+**D2.** The record's output, unless the settlement deletes the record, keeps at least the input's value: a contract
+pays its listed sends from its containers (S4, 4b), never from a record.
 
 ---
 
@@ -1108,8 +1107,8 @@ A failing `require` that is not at a designated site is a real revert; the SDK r
 - **Value chunks and dynamic `bytes`/`string`/arrays:** chunk records, handled the same way.
 - **Transfers.**
   - A BCH transfer to a user is an effect, like an event: the executing master lists it and checks the output. The
-    settler checks that listed sends are paid exactly and that the paying record keeps the rest (S4); conservation
-    beyond that is open point 10. v1 pays it from the contract's state UTXO value.
+    settler checks that listed sends are paid exactly and that the contract's containers pay them, every record
+    keeping its value (S4, 4b).
   - A transfer to a contract is a `CALL` into its `receive()` or `fallback()` (section 4a).
   - Unicrow sends value with `call{value: ...}` (`Unicrow.sol:262`, `:370`).
   - The marketplace's FakeToken is a mapping-based ERC-20, so its transfers are record writes.

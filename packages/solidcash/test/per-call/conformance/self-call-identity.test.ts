@@ -1,7 +1,8 @@
 import { createRequire } from 'module';
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { Interface } from 'ethers';
+import { Interface, id } from 'ethers';
+import { computeFunctionSelectorHex } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
@@ -21,10 +22,12 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * convention with Solidity compatibility, deploys it and calls it through the shipped call path, entered by a user's
  * coin. Each answer is compared by role: the user who entered, or the contract itself (what its `self()` answers).
  * Every row's entry writes, so the per-call answer comes from a frame the user's coin enters. A row the per-call
- * path does not serve yet is pinned with the refusal it meets, beside the answer the EVM gives.
+ * path does not serve yet is pinned with the refusal it meets, beside the answer the EVM gives. A selector is
+ * compared by the function it selects: the EVM hashes a signature with keccak256, and the per-call dispatcher with
+ * SHA-256.
  */
 
-type Role = 'EOA' | 'A' | boolean | bigint;
+type Role = 'EOA' | 'A' | boolean | bigint | `${string}()`;
 
 const IA = 'interface IA { function whoExt() external view returns (address); }';
 const WHO = 'function whoExt() external view returns (address) { return msg.sender; }';
@@ -124,6 +127,52 @@ const VALUE_ROWS: readonly Row[] = [
   },
 ];
 
+/** Rows beyond the reference file: `msg.sig`, which an internal call keeps and a self-call replaces. */
+const SIG_ROWS: readonly Row[] = [
+  {
+    label: 'msg.sig at the top', entry: 'sigDirect', evm: 'sigDirect()',
+    members: 'function sigDirect() external returns (bytes4) { marker += 1; return msg.sig; }',
+  },
+  {
+    label: 'msg.sig inside this.g()', entry: 'sigViaThis', evm: 'sigExt()',
+    members: 'function sigExt() external pure returns (bytes4) { return msg.sig; }'
+      + ' function sigViaThis() external returns (bytes4) { marker += 1; return this.sigExt(); }',
+  },
+  {
+    label: 'msg.sig read in an internal helper', entry: 'sigViaHelper', evm: 'sigViaHelper()',
+    members: 'function _sig() internal pure returns (bytes4) { return msg.sig; }'
+      + ' function sigViaHelper() external returns (bytes4) { marker += 1; return _sig(); }',
+  },
+  {
+    label: 'msg.sig inside a public function called internally', entry: 'sigViaPublic', evm: 'sigViaPublic()',
+    members: 'function sigPub() public pure returns (bytes4) { return msg.sig; }'
+      + ' function sigViaPublic() external returns (bytes4) { marker += 1; return sigPub(); }',
+  },
+  {
+    label: 'msg.sig in the helper of a public function called internally', entry: 'sigViaPublicHelper',
+    evm: 'sigViaPublicHelper()',
+    members: 'function _sig() internal pure returns (bytes4) { return msg.sig; }'
+      + ' function sigPub() public pure returns (bytes4) { return _sig(); }'
+      + ' function sigViaPublicHelper() external returns (bytes4) { marker += 1; return sigPub(); }',
+  },
+  {
+    label: 'msg.sig in the helper of this.g()', entry: 'sigViaThisHelper', evm: 'sigExt()',
+    members: 'function _sig() internal pure returns (bytes4) { return msg.sig; }'
+      + ' function sigExt() external pure returns (bytes4) { return _sig(); }'
+      + ' function sigViaThisHelper() external returns (bytes4) { marker += 1; return this.sigExt(); }',
+  },
+  {
+    label: 'msg.sig inside this.g() that writes state', entry: 'sigViaThisWriter', evm: 'sigWriter()',
+    members: 'function sigWriter() external returns (bytes4) { marker += 1; return msg.sig; }'
+      + ' function sigViaThisWriter() external returns (bytes4) { marker += 1; return this.sigWriter(); }',
+  },
+];
+
+/** The row's function whose selector, in the given hash, is the 4-byte answer, or the answer itself. */
+const selected = (row: Row, answer: string, selectorOf: (signature: string) => string): Role =>
+  [...row.members.matchAll(/function (\w+)\(\)/g)].map((match) => `${match[1]!}()` as const)
+    .find((signature) => selectorOf(signature) === answer) ?? answer as never;
+
 const sourceOf = (row: Row): string =>
   `pragma solidity ^0.8.0; ${IA} contract A { uint256 public marker; ${row.members} ${SELF} }`;
 
@@ -152,6 +201,9 @@ async function evmAnswer(row: Row): Promise<Role> {
   });
   const [answer] = iface.decodeFunctionResult(row.entry, `0x${binToHex(called.execResult.returnValue)}`);
   if (typeof answer === 'boolean' || typeof answer === 'bigint') return answer;
+  if (String(answer).length === 10) {
+    return selected(row, String(answer).slice(2).toLowerCase(), (signature) => id(signature).slice(2, 10));
+  }
   const address = String(answer).toLowerCase();
   return address === eoa.toString() ? 'EOA' : address === contract.toString() ? 'A' : address as never;
 }
@@ -199,12 +251,14 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly
   const hexOf = (value: unknown): string => (value instanceof Uint8Array ? binToHex(value) : String(value));
   const [answer] = answered.values;
   if (typeof answer === 'boolean' || typeof answer === 'bigint') return { role: answer };
+  const bare = hexOf(answer).replace(/^0x/, '');
+  if (bare.length === 8) return { role: selected(row, bare, computeFunctionSelectorHex) };
   const address = hexOf(answer);
   return { role: address === binToHex(alicePkh) ? 'EOA' : address === hexOf(self.values[0]) ? 'A' : address as never };
 }
 
 describe('S0: the single-contract reference rows, the EVM against the per-call path', () => {
-  for (const row of [...ROWS, ...ORIGIN_ROWS, ...VALUE_ROWS]) {
+  for (const row of [...ROWS, ...ORIGIN_ROWS, ...VALUE_ROWS, ...SIG_ROWS]) {
     it(`${row.label}: the EVM answers ${String(row.evm)}${row.refusal === undefined ? ', and so does per-call' : ''}`,
       async () => {
         expect(await evmAnswer(row)).toBe(row.evm);

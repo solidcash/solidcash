@@ -601,6 +601,8 @@ const PER_CALL_SELF_CONTEXT = '__internal__handlerSelf';
 const PER_CALL_ORIGIN_CONTEXT = '__internal__handlerOrigin';
 /** The hidden operand a per-call subroutine that reads `msg.value` receives it through. */
 const PER_CALL_VALUE_CONTEXT = '__internal__handlerValue';
+/** The hidden operand a per-call subroutine that reads `msg.sig` receives it through. */
+const PER_CALL_SELECTOR_CONTEXT = '__internal__handlerSelector';
 
 /** True when a body reads the contract's own locking bytecode, `address(this)`. */
 function functionReadsOwnAddress(fn: FunctionDefinitionNode): boolean {
@@ -627,6 +629,15 @@ function functionReadsValue(fn: FunctionDefinitionNode): boolean {
   let found = false;
   walkInvocationAst(fn.body, (node) => {
     if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_VALUE) found = true;
+  });
+  return found;
+}
+
+/** True when a body reads `msg.sig`. */
+function functionReadsSelector(fn: FunctionDefinitionNode): boolean {
+  let found = false;
+  walkInvocationAst(fn.body, (node) => {
+    if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_SIG) found = true;
   });
   return found;
 }
@@ -1083,6 +1094,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private perCallSelfContextCarriers?: Set<string>;
   private perCallOriginCarriers?: Set<string>;
   private perCallValueCarriers?: Set<string>;
+  private perCallSelectorCarriers?: Set<string>;
   /**
    * Which segment of its execution the body being emitted is in, counted by the external calls already emitted.
    *
@@ -7505,7 +7517,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // A per-call subroutine that reaches the contract's own address receives it as a hidden operand, placed
     // above the caller's other hidden contexts because the caller pushes it last (see visitUserFunctionCall).
-    // The origin sits above even that: the caller pushes it right after the address, and the value after the origin.
+    // The origin sits above even that: the caller pushes it right after the address, the value after the origin,
+    // and the selector after the value.
+    if (this.isDefineSubTraversal && this.perCallMaster && this.perCallSelectorCarrierNames().has(node.name)) {
+      this.pushToStack(PER_CALL_SELECTOR_CONTEXT, true);
+    }
     if (this.isDefineSubTraversal && this.perCallMaster && this.perCallValueCarrierNames().has(node.name)) {
       this.pushToStack(PER_CALL_VALUE_CONTEXT, true);
     }
@@ -13104,6 +13120,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (node.fromThisCall) this.emit(encodeInt(0n), contextLoc);
       else this.emitMsgValue(contextLoc);
       this.pushToStack(`(__handler_value_${targetFunc.functionId})`);
+      hiddenContextCount += 1;
+    }
+    if (this.perCallMaster && this.perCallSelectorCarrierNames().has(targetFunc.name)) {
+      // An internal call keeps the caller's selector; a self-call is a message call to the callee's own.
+      const contextLoc = { location: node.location, positionHint: PositionHint.START };
+      if (node.fromThisCall && targetFunc.functionSelector) this.emit(targetFunc.functionSelector, contextLoc);
+      else this.emitMsgSig(contextLoc);
+      this.pushToStack(`(__handler_selector_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
     if (targetFunc.graphEmissionHandler && !targetFunc.graphRuntimeEmissionHandler) {
@@ -38512,6 +38536,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return this.perCallValueCarriers;
   }
 
+  /** The functions that read `msg.sig`, directly or through a function they call. */
+  private perCallSelectorCarrierNames(): Set<string> {
+    this.perCallSelectorCarriers ??= this.perCallCarrierNames(functionReadsSelector);
+    return this.perCallSelectorCarriers;
+  }
+
   /** The functions that reach a seed, directly or through the functions they call. */
   private perCallCarrierNames(seeded: (fn: FunctionDefinitionNode) => boolean): Set<string> {
     const byName = new Map<string, FunctionDefinitionNode>();
@@ -38722,8 +38752,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * This is a compile-time constant: zero runtime cost.
    */
   private emitMsgSig(locationData: SingleLocationData): void {
-    if (this.stack.includes('__internal__handlerMsgSig')) {
-      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSig'))), locationData);
+    const selectorSlot = this.stack.includes(PER_CALL_SELECTOR_CONTEXT) ? PER_CALL_SELECTOR_CONTEXT
+      : this.stack.includes('__internal__handlerMsgSig') ? '__internal__handlerMsgSig' : undefined;
+    if (selectorSlot !== undefined) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(selectorSlot))), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
     }

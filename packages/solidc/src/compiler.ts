@@ -13294,7 +13294,9 @@ function compileResolvedAst(
   // Internal/private msg.data readers receive the originating entry calldata through a compiler-only parameter.
   if (needsMsgDataContext) ast = ast.accept(new LowerInternalMsgDataContext()) as Ast;
   // msg.sig retains the originating public/external selector across internal/private OP_INVOKE calls.
-  if (needsMsgSigContext) ast = ast.accept(new LowerInternalMsgSigContext()) as Ast;
+  if (needsMsgSigContext) {
+    ast = ast.accept(new LowerInternalMsgSigContext(mergedCompilerOptions.composition === 'per-call')) as Ast;
+  }
 
   // `(new C()).m(args)` -> `C __newcall_N = new C(); __newcall_N.m(args)`, so the deploy-then-call fold
   // machinery (which tracks named deploy locals) applies to inline deploy receivers too.

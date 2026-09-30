@@ -42,13 +42,13 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 39 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 10 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
-| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 14 |
+| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 21 |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 3 |
 
-Total: 1758 checks (115 + 624 + 1016 + 3), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1765 checks (115 + 624 + 1023 + 3), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
 `vitest.per-call.config.ts`, measured at `520a21d9c`: `solidc` 624 is the four rows above it (84 files, 22.3 s warm),
-`solidcash` 1016 (1013 passed, three skipped; 164 files, 137.7 s warm) is the
+`solidcash` 1023 (1020 passed, three skipped; 164 files, 137.7 s warm) is the
 seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -285,8 +285,9 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   each row its own contract: compiled with solc and run in `@ethereumjs/evm`, and compiled per-call with Solidity
   compatibility and called through the shipped call path by a user's coin, the answers compared by role (the user
   who entered, or the contract). A row the per-call path does not serve yet is pinned with its refusal beside the
-  EVM's answer. The nine single-contract rows so far, and five beyond the file where `tx.origin` or `msg.value` is
-  read (`self-call-identity.test.ts`).
+  EVM's answer. The nine single-contract rows so far, and twelve beyond the file where `tx.origin`, `msg.value` or
+  `msg.sig` is read (`self-call-identity.test.ts`); a selector is compared by the function it selects, since the EVM
+  hashes a signature with keccak256 and the per-call dispatcher with SHA-256.
 
 ## Which refusals cover which attack
 

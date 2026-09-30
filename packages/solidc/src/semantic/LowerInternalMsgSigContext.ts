@@ -20,6 +20,14 @@ const CONTEXT = '__internal__msgSig';
  * Overloaded pre-semantic targets remain untouched rather than being guessed by name.
  */
 export default class LowerInternalMsgSigContext extends AstTraversal {
+  /**
+   * @param forwardsCallerSelector an entry passes its own msg.sig rather than its selector, so its per-call
+   * subroutine, reached by an internal call, passes on the selector its caller gave it.
+   */
+  constructor(private readonly forwardsCallerSelector = false) {
+    super();
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
@@ -79,7 +87,8 @@ export default class LowerInternalMsgSigContext extends AstTraversal {
     if (!node) return;
     if (node instanceof FunctionCallNode && tainted.has(node.identifier.name)
       && unique.has(node.identifier.name)) {
-      const value = tainted.has(caller.name) ? new IdentifierNode(CONTEXT) : this.selector(caller, node);
+      const value = tainted.has(caller.name) ? new IdentifierNode(CONTEXT)
+        : this.forwardsCallerSelector ? new NullaryOpNode(NullaryOperator.MSG_SIG) : this.selector(caller, node);
       value.location = node.location;
       node.parameters.push(value);
     }

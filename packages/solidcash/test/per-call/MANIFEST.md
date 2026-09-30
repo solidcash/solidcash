@@ -29,26 +29,26 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 97 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 170 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
-| `packages/solidcash/test/per-call/reads/` | `solidcash` | 40 |
+| `packages/solidcash/test/per-call/reads/` | `solidcash` | 42 |
 | `packages/solidcash/test/per-call/reverts/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 146 |
-| `packages/solidcash/test/per-call/call/` | `solidcash` | 96 |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 98 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 113 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 108 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 39 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 10 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
-| `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
+| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 9 |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 3 |
 
-Total: 1736 checks (115 + 621 + 997 + 3), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1749 checks (115 + 621 + 1010 + 3), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
 `vitest.per-call.config.ts`, measured at `520a21d9c`: `solidc` 621 is the four rows above it (83 files, 22.3 s warm),
-`solidcash` 997 (994 passed, three skipped; 161 files, 137.7 s warm) is the
+`solidcash` 1010 (1007 passed, three skipped; 163 files, 137.7 s warm) is the
 seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -281,6 +281,11 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   the one locktime the plan fixed before any derivation ran, the payment's own block is refused by the machine under
   the name of the check, a plan whose locktime is already too early stalls the derivation, a final sequence disables
   the gate, and a genesis whose constructor gates on time is refused by the constructor probe.
+- **`solidcash/test/per-call/conformance/`** - the reference contexts of `probes/this-call-msg-sender/ref.sol` (S0),
+  each row its own contract: compiled with solc and run in `@ethereumjs/evm`, and compiled per-call with Solidity
+  compatibility and called through the shipped call path by a user's coin, the answers compared by role (the user
+  who entered, or the contract). A row the per-call path does not serve yet is pinned with its refusal beside the
+  EVM's answer. The nine single-contract rows so far (`self-call-identity.test.ts`).
 
 ## Which refusals cover which attack
 

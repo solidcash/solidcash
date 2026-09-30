@@ -61,6 +61,7 @@ import {
   validatorRedeemScript,
   type Artifact,
   type ChildDeploymentValueRecipe,
+  type ExternalResultEncoding,
   type FixedBchTransferAbi,
   type StateValue,
   type StructDefinitionInfo,
@@ -307,6 +308,8 @@ interface CallEntry {
   readonly selector: string;
   readonly inputs: readonly { readonly name: string; readonly type: string }[];
   readonly outputs: readonly { readonly type: string }[];
+  /** How the entry encodes its returns: Solidity ABI words for a Solidity-compatible entry. */
+  readonly resultEncoding?: ExternalResultEncoding;
   /** The events the entry emits, which its frame declares one output per, in emit order. */
   readonly emits: readonly { readonly eventSignature: string; readonly emitIndex: number }[];
   /** True when the entry is payable, so a call to it may carry value. */
@@ -356,6 +359,7 @@ function requireEntry(artifact: Artifact, functionName: string): CallEntry {
   }
   return {
     name: entry.name, selector: entry.selector, inputs: entry.inputs, outputs: entry.outputs ?? [],
+    ...(entry.resultEncoding === undefined ? {} : { resultEncoding: entry.resultEncoding }),
     emits: entry.emits ?? [], payable: (entry.modifiers ?? []).includes('payable'),
     sends: entry.transferCount ?? 0,
     transfers: [...(entry.transfers ?? [])].sort((left, right) => left.transferIndex - right.transferIndex),
@@ -1381,7 +1385,8 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   // The entry's own answer is the bytes the derived call records in the frame's `retval`, decoded through the same
   // shipped decoder the read path uses. A call the entry refused never reached its return, so no value was recorded.
   const retval = learnedRetval ?? new Uint8Array(0);
-  const values = learnedRetval === undefined ? [] : decodeReturnValues(retval, entry.outputs, structs);
+  const values = learnedRetval === undefined
+    ? [] : decodeReturnValues(retval, entry.outputs, structs, entry.resultEncoding, artifact.enums);
 
   // A record the entry does not declare is not spent, so it holds what it held.
   const writtenCommitments = records.map((record) => {

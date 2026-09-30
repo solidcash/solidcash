@@ -24,10 +24,23 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * Pinned where HEAD stands: with the mapping write in place the hop refuses -
  * `frame "implementation-master" of Impl.append() at line 1: no source message (Program failed an OP_VERIFY
  * operation.)` - while the same entry with the mapping write removed settles and broadcasts. The two runs differ
- * in nothing else, so the mapping target it adds is what the hop lays short. Ruled out while narrowing it: the
- * shared-span outliner (the refusal is identical with `SOLIDCASH_NO_OUTLINE=1`), a key the plan cannot resolve
- * (resolution against the live state, and against the length the frame's own write produces, refuse the same way),
- * and an insert accounted as an update (seeding the key it writes changes nothing).
+ * in nothing else, so the mapping target it adds is what the hop lays short.
+ *
+ * Where it refuses, measured: the frame's program is the routed entry body (2323 instructions, `ip` indexes it),
+ * the failing instruction sits in the `ip` 935..1612 stretch the published source map leaves bare, and the nearest
+ * mapped positions on either side are the mapping write's own statement (`this.allowlists[id][who[i]] = true;`)
+ * and a loop counter - so the refusal is inside the code generated for that statement, not in the entry's
+ * prologue. The instruction itself is an input pin: `OP_DUP OP_UTXOBYTECODE OP_10 OP_PICK OP_EQUALVERIFY`,
+ * followed by `OP_DUP OP_UTXOTOKENCATEGORY`, i.e. a check that both the locking bytecode and the category of an
+ * input equal values the frame holds. The hop's shipped witness block declares no calls and one segment of five
+ * records - `[[3, 3], [65535, 5], [65535, 6], [65535, 7], [65535, 8]]`, the frame's own state record at input and
+ * output 3 and four records created in the transaction at outputs 5..8 - so the input the body pins one of those
+ * values against is one it expects to carry a covenant the transaction does not hold there.
+ *
+ * Ruled out while narrowing it: the shared-span outliner (the refusal is identical under
+ * `SOLIDCASH_NO_OUTLINE=1`), a key the plan cannot resolve (resolving against the live state, and against the
+ * length the frame's own write produces through the `stateLengthDeltas` the direct path passes, refuse the same
+ * way), and an insert accounted as an update (seeding the key it writes changes nothing).
  *
  * The class this belongs to is the fixture's `publishJobPost`, which appends to its job array, reads the index it
  * produced, and writes its allowlist mapping from inside `_updateJobWhitelist`.

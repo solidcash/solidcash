@@ -1738,6 +1738,23 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // The events the delegate frame lists sit in the trailing region, which starts past the participants. The
   // assembly allocates them there and refuses a plan that names any other index.
   const eventIndices = options.eventOutputs.map((_output, position) => layout.participantCount + position);
+  const maximumCommitmentBytes = options.maximumCommitmentBytes ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
+  // The trailing region is allocated in the assembler's own order: every frame's events first, the root's before
+  // any callee's, then the created records in the order the frames' segments declare them. Each frame that emits
+  // lists one output per event whatever else it writes, because the frame's own head walks them. Because every
+  // event sits ahead of the created region, the cursor the callee events leave is the base the created records
+  // start at, so a frame that both writes a record and reaches an emitting callee cannot collide with it.
+  let trailingCursor = layout.participantCount + options.eventOutputs.length;
+  const calleeEventPlan = callees.map((callee) => {
+    const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner];
+    const category = (owner ?? callee).category;
+    const eventCommitments = options.calleeEventCommitments?.get(callee.master)
+      ?? hopEventSentinels(callee.artifact, callee.entry, category, maximumCommitmentBytes);
+    const eventOutputs = hopEventOutputs(callee.artifact, callee.entry, category, eventCommitments);
+    const base = trailingCursor;
+    trailingCursor += eventOutputs.length;
+    return { category, eventOutputs, eventIndices: eventOutputs.map((_output, position) => base + position) };
+  });
   const recordIndices = recordIds.map((id) => participant(layout, id).index);
   // Every record kept where the proxy read it before the call, and left where the entry's write leaves it. The
   // delegate frame's segment chains each record's kept view to its written one, and the proxy's own later segment
@@ -1798,7 +1815,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   );
   // The records the entry's own body writes follow the state records its frame declares, which is the ordinal the
   // body's group walk reads them at. A created node is a trailing output past the events.
-  const createdBase = layout.participantCount + options.eventOutputs.length;
+  const createdBase = trailingCursor;
   const laidWrites = options.entryWrites?.lay({
     indexOf: (id) => participant(layout, id).index,
     proxyMasterIndex,
@@ -1921,21 +1938,6 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   for (const [key, group] of mastersOfCategory) {
     if (group.count > 1) settle(group.category, spentRecordsOf(key));
   }
-  // The trailing region is allocated in the assembler's own order: every frame's events first, the root's before
-  // any callee's, then the created records in the order the frames' segments declare them. Each frame that emits
-  // lists one output per event whatever else it writes, because the frame's own head walks them.
-  let trailingCursor = layout.participantCount + options.eventOutputs.length;
-  const maximumCommitmentBytes = options.maximumCommitmentBytes ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
-  const calleeEventPlan = callees.map((callee) => {
-    const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner];
-    const category = (owner ?? callee).category;
-    const eventCommitments = options.calleeEventCommitments?.get(callee.master)
-      ?? hopEventSentinels(callee.artifact, callee.entry, category, maximumCommitmentBytes);
-    const eventOutputs = hopEventOutputs(callee.artifact, callee.entry, category, eventCommitments);
-    const base = trailingCursor;
-    trailingCursor += eventOutputs.length;
-    return { category, eventOutputs, eventIndices: eventOutputs.map((_output, position) => base + position) };
-  });
   // The root entry's own created records come first in the created region, which the segments declare in master
   // order, so the callees' records follow them.
   trailingCursor += laidWrites?.trailingOutputs.length ?? 0;
@@ -2085,7 +2087,6 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       redeemScript: callee.deployed.script,
     };
   });
-
   const proxyMasterAmount = options.proxyMasterAmount;
   const implementationMasterAmount = options.implementationMasterAmount;
   const proxyRecordAmount = options.validatorAmount;

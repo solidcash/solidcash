@@ -349,3 +349,22 @@ lands it removes the claim line.
   and its run, which is the two publication halves of PW3 at the fixture; `MarketplaceV1.updateJobWhitelist()`
   publishes nothing, for the wall recorded in the plan's Deviations.
 - Still held elsewhere: PW1, PW2 and PW5.
+
+### PW9. A dispatched body's `requires` published where the invoked body's own pointers land
+
+- **Why**: after PW8 the revert-shaped titles stop reporting `no source message` and start reporting the contract's
+  own reason, except where the failing `require` sits in a **call-making** body. Measured on a neutral replica: the
+  machine reports the failing instruction relative to the invoked subroutine (`ip = 4`), while the compiler publishes
+  that selector's `debug.functionDebug[selector].requires` in **program** coordinates (`ip = 589`), and
+  `artifact.debug.requires` is empty; `frameRevertReason` (`packages/solidcash/src/per-call/composer/refusal.ts:222`)
+  looks both up, misses, and falls back to `no source message`. The same entry with its call removed recovers its
+  message, so the gap is the coordinate space, not the reason.
+- **Do**: publish a call-making (subroutine-invoked) body's `requires` and source map in the coordinates the machine
+  reports for it, or publish the base the reporter must subtract; then a revert inside such a body names its own
+  message. Reproducers already exist: `packages/solidcash/test/per-call/reverts/zero-target-call.test.ts` and
+  `packages/solidcash/test/per-call/reverts/chunk-array-range-read.test.ts` (both currently assert the frame and the
+  line, and say the message is not surfaced).
+- **Done when**: those two tests assert the entry's own message and the fixture's `post job with invalid token`,
+  `post job from unregistered user` and the other revert titles report their source text.
+- **Size**: half a day to a day. **Coordination**: `refusal.ts` is the ladder stream's; the publication is the
+  compiler's. Confirm before editing `refusal.ts`.

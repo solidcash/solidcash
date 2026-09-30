@@ -246,6 +246,17 @@ lands it removes the claim line.
   read path's own convention and the reason a frame that declares only the node at the base reads the neighbouring
   participant. So piece 2's declaration is `[one record at the base, turn 0's node, turn 1's node, ...]` with the
   loop's transition views - the shape of the list is settled; what the records carry is not.
+- **Piece 2 attempted: the turns' records were planned as a batch, and the derivation names why that is not the
+  loop's protocol (2026-09-30).** The wiring that reaches the derivation is settled and reproducible: derive the loop
+  plan (piece 1), filter the loop's collection out of `planReadNodes`' accesses **and** its `slotIndex` out of the
+  layout's slots (without the second filter the label `arridx(id:workers,id:i)` fails to resolve a second time), and
+  hand the turns to the batch planner as its writes. With that wiring the shipped call path gets past planning and is
+  refused by the **derivation** with `the call's write to mapping "balances" did not hand back every node it
+  rewrites, so the frame cannot declare their commitments` (`{SCRATCH}/loop-declaration-probe.log`). So a batch-shaped
+  declaration - each node written once, in its final form - is not what the run-time loop's body closes with: its
+  close hands back its journal's stream, and the per-turn records have to carry *that* transition view. The wiring
+  was reverted rather than landed, because it replaces a named refusal with a derivation stall and settles nothing;
+  the next attempt starts from it rather than from zero.
 - **SDK half, piece 1 landed**: the per-call lane derives the turns of a run-time-loop mapping write from the
   artifact's own facts. `planCallLoopWrites` (`packages/solidcash/src/per-call/call/entry-records.ts`) reads each
   `sortedUpsertLoopInfo` entry - the collection, `varyingArrayParam`, `valueScalarParam`, the operation - finds the

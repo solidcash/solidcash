@@ -11,6 +11,8 @@ export const ATOMIC_MESSAGE_BUS_DOMAIN_V2 = '4c33425553320000';
 export const ATOMIC_MESSAGE_BUS_DOMAIN_V3 = '4c33425553330000';
 /** Transaction-signature provenance domain: ASCII `L3BUS4\0\0`. */
 export const ATOMIC_MESSAGE_BUS_DOMAIN_V4 = '4c33425553340000';
+/** Mixed routed/direct participant authority domain: ASCII `L3BUS5\0\0`. */
+export const ATOMIC_MESSAGE_BUS_DOMAIN_V5 = '4c33425553350000';
 export { ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS };
 
 /** Atomic envelopes must use Bitcoin Script OP_PUSHDATA2 in every verifier unlocking bytecode. */
@@ -70,6 +72,8 @@ export interface AtomicParticipantLifecycle {
 }
 
 export interface AtomicParticipant {
+  /** V5 authority. An opaque direct participant has no route verifier; its own inputs execute normally. */
+  authority?: 'routed' | 'direct';
   /** Covenant identity consumed by this participant. */
   lockingBytecode: string;
   /**
@@ -125,10 +129,31 @@ export interface AtomicRow {
 
 export interface AtomicMessageBusCallManifest {
   /** V2 authenticates outputs, V3 lifecycle geometry, and V4 transaction-signature provenance. */
-  version?: 1 | 2 | 3 | 4;
+  version?: 1 | 2 | 3 | 4 | 5;
   participants: readonly AtomicParticipant[];
   rows: readonly AtomicRow[];
 }
+
+/** V5 direct owners can contribute one void call, but cannot claim routed effects or signature provenance. */
+const assertOpaqueDirectRows = (
+  participants: readonly AtomicParticipant[], rows: readonly AtomicRow[],
+): void => {
+  for (const [participant, entry] of participants.entries()) {
+    if (entry.authority !== 'direct') continue;
+    const owned = rows.flatMap((row, index) => row.kind === 0 && row.consumer === participant ? [index] : []);
+    const invocation = rows[owned[0]];
+    if (owned.length !== 1 || invocation === undefined
+      || invocation.resultHex.length !== 0 || invocation.effectHex.length !== 0
+      || (invocation.transactionSignatureFrameHex?.length ?? 0) !== 0
+      || invocation.parent === 0xffff
+      || participants[invocation.owner]?.authority === 'direct'
+      || invocation.targetOffset !== 0
+      || rows.some((row, index) => index !== owned[0] && (row.parent === owned[0]
+        || (row.kind !== 0 && (row.owner === participant || row.consumer === participant))))) {
+      throw new Error(`messageBus: direct participant ${participant} exceeds opaque V5 row authority`);
+    }
+  }
+};
 
 const checkedHex = (value: string, bytes: number | undefined, field: string): Uint8Array => {
   if (!/^(?:[0-9a-fA-F]{2})*$/.test(value)) throw new Error(`messageBus: ${field} is not byte-aligned hex`);
@@ -176,7 +201,17 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
     && participant.outputLockingBytecode.toLowerCase() !== participant.lockingBytecode.toLowerCase());
   const requiresV3 = participants.some((participant) => participant.lifecycle !== undefined);
   const requiresV4 = rows.some((row) => (row.transactionSignatureFrameHex?.length ?? 0) > 0);
-  const version = callManifest.version ?? (requiresV4 ? 4 : requiresV3 ? 3 : requiresV2 ? 2 : 1);
+  const requiresV5 = participants.some((participant) => participant.authority === 'direct');
+  const version = callManifest.version ?? (requiresV5 ? 5 : requiresV4 ? 4 : requiresV3 ? 3 : requiresV2 ? 2 : 1);
+  if (requiresV5 && version !== 5) {
+    throw new Error('messageBus: direct participant authority requires atomic V5');
+  }
+  if (version === 5 && !requiresV5) {
+    throw new Error('messageBus: atomic V5 requires a direct participant');
+  }
+  if (participants[0]?.authority === 'direct' || participants.every((participant) => participant.authority === 'direct')) {
+    throw new Error('messageBus: atomic root and at least one participant must be routed');
+  }
   if (version === 1 && requiresV2) {
     throw new Error('messageBus: atomic V1 cannot authenticate a distinct participant output locking bytecode');
   }
@@ -211,6 +246,7 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
       `messageBus: callManifest row count ${rows.length} exceeds ${ATOMIC_MESSAGE_BUS_MAX_ROWS} (${breakdown})`,
     );
   }
+  if (version === 5) assertOpaqueDirectRows(participants, rows);
   const participantParts = participants.map((participant, index) => {
     const lifecycle = participant.lifecycle;
     if (version >= 3 && participant.outputLockingBytecode === undefined) {
@@ -259,6 +295,13 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
       || participant.actualSize > participant.maximumSize) {
       throw new Error(`messageBus: participant ${index} has a non-canonical variable span`);
     }
+    if (participant.authority === 'direct' && (lifecycle !== undefined
+      || participant.fixedSize !== participant.actualSize
+      || participant.actualSize !== participant.maximumSize
+      || participant.trailingUsed !== 0 || participant.returnOffset !== 0xffff
+      || participant.outputLockingBytecode?.toLowerCase() !== participant.lockingBytecode.toLowerCase())) {
+      throw new Error(`messageBus: direct participant ${index} must have one fixed preserving block`);
+    }
     const lbc = checkedHex(participant.lockingBytecode, undefined, `participant ${index} locking bytecode`);
     if (lbc.length === 0) throw new Error(`messageBus: participant ${index} locking bytecode is empty`);
     const outputLbc = checkedHex(
@@ -288,6 +331,7 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
             : lifecycle.kind === 'merge' ? 2 : 3, 1, 'lifecycle mode'),
         uint(lifecycle?.count ?? 0, 2, 'lifecycle count'),
       ] : []),
+      ...(version >= 5 ? [uint(participant.authority === 'direct' ? 1 : 0, 1, 'participant authority')] : []),
     );
   });
   const rowParts = rows.map((row, index) => {
@@ -318,11 +362,12 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
       uint(row.depth, 1, 'row depth'), uint(row.subtreeEnd, 2, 'row subtree end'),
       frame(subject, 'row subject'), frame(args, 'row arguments'),
       frame(result, 'row result'), frame(effect, 'row effect'),
-      ...(version === 4 ? [frame(signatureFrame, 'row transaction signature frame')] : []),
+      ...(version >= 4 ? [frame(signatureFrame, 'row transaction signature frame')] : []),
     );
   });
   const body = concat(
-    hexToBin(version === 4 ? ATOMIC_MESSAGE_BUS_DOMAIN_V4 : version === 3 ? ATOMIC_MESSAGE_BUS_DOMAIN_V3
+    hexToBin(version === 5 ? ATOMIC_MESSAGE_BUS_DOMAIN_V5
+      : version === 4 ? ATOMIC_MESSAGE_BUS_DOMAIN_V4 : version === 3 ? ATOMIC_MESSAGE_BUS_DOMAIN_V3
       : version === 2 ? ATOMIC_MESSAGE_BUS_DOMAIN_V2 : ATOMIC_MESSAGE_BUS_DOMAIN),
     uint(participants.length, 1, 'participant count'), ...participantParts,
     uint(rows.length, 2, 'row count'), ...rowParts,
@@ -336,7 +381,8 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
   const version = domain === ATOMIC_MESSAGE_BUS_DOMAIN ? 1
     : domain === ATOMIC_MESSAGE_BUS_DOMAIN_V2 ? 2
       : domain === ATOMIC_MESSAGE_BUS_DOMAIN_V3 ? 3
-        : domain === ATOMIC_MESSAGE_BUS_DOMAIN_V4 ? 4 : undefined;
+        : domain === ATOMIC_MESSAGE_BUS_DOMAIN_V4 ? 4
+          : domain === ATOMIC_MESSAGE_BUS_DOMAIN_V5 ? 5 : undefined;
   if (version === undefined) {
     throw new Error('messageBus: invalid atomic callManifest domain');
   }
@@ -360,6 +406,10 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
     const returnOffset = reader.uint(2, `participant ${index}.returnOffset`);
     const lifecycleMode = version >= 3 ? reader.uint(1, `participant ${index}.lifecycleMode`) : 0;
     const lifecycleCount = version >= 3 ? reader.uint(2, `participant ${index}.lifecycleCount`) : 0;
+    const authorityByte = version >= 5 ? reader.uint(1, `participant ${index}.authority`) : 0;
+    if (authorityByte > 1 || (authorityByte === 1 && lifecycleMode !== 0)) {
+      throw new Error(`messageBus: participant ${index} has invalid direct authority`);
+    }
     if (lifecycleMode > 3 || (lifecycleMode === 0) !== (lifecycleCount === 0)
       || (lifecycleMode === 3 && lifecycleCount !== 1)) {
       throw new Error(`messageBus: participant ${index} has non-canonical lifecycle geometry`);
@@ -390,12 +440,22 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
     if (returnOffset !== 0xffff && returnOffset >= fixedSize) {
       throw new Error(`messageBus: participant ${index} has an out-of-block return output`);
     }
+    if (authorityByte === 1 && (fixedSize !== actualSize || actualSize !== maximumSize
+      || trailingUsed !== 0 || returnOffset !== 0xffff
+      || outputLockingBytecode?.toLowerCase() !== lockingBytecode.toLowerCase())) {
+      throw new Error(`messageBus: direct participant ${index} has non-canonical fixed geometry`);
+    }
     participants.push({
       fixedSize, actualSize, maximumSize, lockingBytecode, stateCategory,
       trailingUsed, returnOffset,
       ...(version >= 2 && { outputLockingBytecode }),
       ...(lifecycle && { lifecycle }),
+      ...(authorityByte === 1 && { authority: 'direct' as const }),
     });
+  }
+  if (version === 5 && (participants[0]?.authority === 'direct'
+    || !participants.some((participant) => participant.authority === 'direct'))) {
+    throw new Error('messageBus: atomic V5 requires a routed root and a direct participant');
   }
   if (version === 2 && !participants.some((participant) =>
     participant.outputLockingBytecode!.toLowerCase() !== participant.lockingBytecode.toLowerCase())) {
@@ -424,7 +484,7 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
     const argsHex = binToHex(reader.frame(`row ${index}.arguments`));
     const resultHex = binToHex(reader.frame(`row ${index}.result`));
     const effectHex = binToHex(reader.frame(`row ${index}.effect`));
-    const transactionSignatureFrameHex = version === 4
+    const transactionSignatureFrameHex = version >= 4
       ? binToHex(reader.frame(`row ${index}.transactionSignatureFrame`)) : '';
     validateTransactionSignatureFrame(
       hexToBin(transactionSignatureFrameHex), `row ${index} transaction signature frame`,
@@ -439,12 +499,13 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
       kind, owner, consumer, slot, mode, sourceOffset, targetOffset, selectorHex, position,
       parent, depth, subtreeEnd,
       subjectHex, argsHex, resultHex, effectHex,
-      ...(version === 4 && transactionSignatureFrameHex.length > 0 && { transactionSignatureFrameHex }),
+      ...(version >= 4 && transactionSignatureFrameHex.length > 0 && { transactionSignatureFrameHex }),
     });
   }
   if (version === 4 && !rows.some((row) => (row.transactionSignatureFrameHex?.length ?? 0) > 0)) {
     throw new Error('messageBus: atomic V4 requires transaction-signature provenance');
   }
+  if (version === 5) assertOpaqueDirectRows(participants, rows);
   if (!reader.eof()) throw new Error('messageBus: trailing bytes after atomic callManifest');
   return { ...(version > 1 && { version }), participants, rows };
 }
@@ -452,16 +513,22 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
 export interface AtomicPhysicalLayout {
   participantInputs: readonly number[];
   verifierInputs: readonly number[];
-  /** Canonical messageEnvelope source: the final verifier in the verifier region. */
+  /** Final routed verifier coordinate (legacy verifier-carried envelopes use it as their source). */
   verifierInput: number;
   feeInput: number;
   totalSlots: number;
 }
 
-/** Participant blocks occupy the prefix; one verifier per participant and the fee/change pair follow it. */
-export function atomicMessageBusPhysicalLayout(blockSizes: readonly number[]): AtomicPhysicalLayout {
+/** Participant blocks occupy the prefix; only routed owners have verifier slots before fee/change. */
+export function atomicMessageBusPhysicalLayout(
+  blockSizes: readonly number[], authorities: readonly ('routed' | 'direct')[] = blockSizes.map(() => 'routed'),
+): AtomicPhysicalLayout {
   if (blockSizes.length < 2 || blockSizes.length > ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS) {
     throw new Error(`messageBus: participant count must be in [2, ${ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS}]`);
+  }
+  if (authorities.length !== blockSizes.length || authorities[0] !== 'routed'
+    || authorities.some((authority) => authority !== 'routed' && authority !== 'direct')) {
+    throw new Error('messageBus: physical layout has invalid participant authority');
   }
   const participantInputs: number[] = [];
   let cursor = 0;
@@ -472,13 +539,15 @@ export function atomicMessageBusPhysicalLayout(blockSizes: readonly number[]): A
     participantInputs.push(cursor);
     cursor += size;
   });
-  const verifierInputs = blockSizes.map((_size, participant) => cursor + participant);
+  const verifierInputs = blockSizes.flatMap((_size, participant) =>
+    authorities[participant] === 'routed' ? [cursor + authorities.slice(0, participant)
+      .filter((authority) => authority === 'routed').length] : []);
   return Object.freeze({
     participantInputs: Object.freeze(participantInputs),
     verifierInputs: Object.freeze(verifierInputs),
     verifierInput: verifierInputs[verifierInputs.length - 1],
-    feeInput: cursor + blockSizes.length,
-    totalSlots: cursor + blockSizes.length + 1,
+    feeInput: cursor + verifierInputs.length,
+    totalSlots: cursor + verifierInputs.length + 1,
   });
 }
 

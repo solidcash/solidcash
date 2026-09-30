@@ -80,6 +80,7 @@ export async function createComposeSettlementContext(
 ): Promise<ComposeSettlementContext> {
   const selectedContainers = new Map<number, boolean | undefined>();
   await Promise.all(input.plan.participants.map(async (participant) => {
+    if (participant.authority === 'direct') return;
     const contract = input.descriptors[participant.invocations[0]].contract;
     const invocations = participant.invocations.map((index) => input.plan.invocations[index]);
     selectedContainers.set(participant.participant, await resolveSelectedSatoshiContainerRequired({

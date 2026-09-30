@@ -2,10 +2,10 @@
  * phase-boundary extract: Compose phase-boundary extract — validate prepared-call selector/args against the compiled plan.
  */
 
-import { hexToBin } from '@bitauth/libauth';
-import type { FunctionArgument } from '../Argument.js';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import {
-  encodeMessageBatch, preparedCallMatchesPlanInvocation,
+  encodeMessageBatch, encodeMessageBusArguments, preparedCallMatchesPlanInvocation,
 } from './message-bus.js';
 import { graphInvocationCallerIdentity } from './graph.js';
 import { findMessageBusHandlerForInvocation } from './graph-handler-join.js';
@@ -48,9 +48,22 @@ export function validateComposePreparedCallArguments(
         descriptorWitnesses[index][binding.routeInput],
       ]).filter((entry): entry is [string, FunctionArgument] => entry[1] !== undefined));
     const participantExecution = plan.participants[invocation.callee];
+    if (participantExecution.authority === 'direct') {
+      const abi = supplied.artifact.abi.find((candidate) =>
+        candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
+      const visible = abi?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+      const encoded = visible.length === 1 && supplied.args.length === 1
+        ? encodeFunctionArgument(supplied.args[0], visible[0].type,
+          supplied.artifact.structs ?? supplied.artifact.stateLayout?.structs) : undefined;
+      if (!(encoded instanceof Uint8Array)
+        || binToHex(encodeMessageBusArguments([encoded], [visible[0].type])) !== invocation.argsHex) {
+        throw new Error(`messageBus: prepared direct call ${index} has a non-canonical scalar argument`);
+      }
+      return;
+    }
     const plannedWitnesses = Object.fromEntries(participantExecution.routeInputs
       .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'))
-      .map((input, witnessIndex) => [input.name, participantExecution.batch.routeWitnesses[witnessIndex]]));
+      .map((input, witnessIndex) => [input.name, participantExecution.batch!.routeWitnesses[witnessIndex]]));
     const suppliedRow = encodeMessageBatch(supplied.artifact, [{
       function: supplied.functionName,
       selector: invocation.selectorHex,

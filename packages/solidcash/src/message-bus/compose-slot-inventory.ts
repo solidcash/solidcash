@@ -34,7 +34,7 @@ export function inventoryComposeSlots(
   plan: CompiledGraphPlan,
   selectedContainers: ReadonlyMap<number, boolean | undefined> = new Map(),
 ): ComposeSlotInventory {
-  const fixedEventSlots = plan.participants.flatMap((participant) =>
+  const fixedEventSlots = plan.participants.filter((participant) => participant.authority !== 'direct').flatMap((participant) =>
     participant.blockLayout!.slots.filter((slot) => slot.kind === 'event').map((slot) => ({
       participant: participant.participant, offset: slot.offset,
     })));
@@ -54,7 +54,7 @@ export function inventoryComposeSlots(
       return (handler?.runtimeLoopEvents?.length ?? 0) > 0;
     },
   ));
-  const resourceSlots = plan.participants.flatMap((participant) =>
+  const resourceSlots = plan.participants.filter((participant) => participant.authority !== 'direct').flatMap((participant) =>
     participant.blockLayout!.slots
       .filter((slot) => [
         'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer', 'trailing', 'lowLevelCall',
@@ -70,15 +70,15 @@ export function inventoryComposeSlots(
       .map((slot) => ({
         participant: participant.participant, offset: slot.offset, kind: slot.kind,
       })));
-  const valueSlots = plan.participants.flatMap((participant) =>
+  const valueSlots = plan.participants.filter((participant) => participant.authority !== 'direct').flatMap((participant) =>
     participant.blockLayout!.slots.filter((slot) => slot.kind === 'transfer').map((slot) => ({
       participant: participant.participant, offset: slot.offset,
     })));
-  const tokenSlots = plan.participants.flatMap((participant) =>
+  const tokenSlots = plan.participants.filter((participant) => participant.authority !== 'direct').flatMap((participant) =>
     participant.blockLayout!.slots.filter((slot) => slot.kind === 'tcTransfer').map((slot) => ({
       participant: participant.participant, offset: slot.offset,
     })));
-  const sidecarSlots = plan.participants.flatMap((participant) =>
+  const sidecarSlots = plan.participants.filter((participant) => participant.authority !== 'direct').flatMap((participant) =>
     participant.blockLayout!.slots
       .filter((slot) => ['blockhashOracle', 'keccakSideCar', 'ecrecoverSideCar'].includes(slot.kind))
       .map((slot) => ({

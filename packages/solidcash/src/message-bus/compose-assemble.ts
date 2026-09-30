@@ -265,8 +265,9 @@ export async function assembleAtomicComposition(
     predOutClaimsSlot,
   } = ctx;
 
-    const envelopeTransports = plan.participants.map((participant) =>
-      getMessageBusEnvelopeTransport(participant.artifact));
+    const envelopeTransports = plan.participants
+      .filter((participant) => participant.authority !== 'direct')
+      .map((participant) => getMessageBusEnvelopeTransport(participant.artifact));
     const envelopeTransport = envelopeTransports[0];
     if (envelopeTransport === undefined || envelopeTransports.some((value) => value !== envelopeTransport)) {
       throw new Error('messageBus: all participants must use the same canonical envelope transport');
@@ -343,6 +344,51 @@ export async function assembleAtomicComposition(
       const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
       const descriptor = descriptorByLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
       const blockSize = participant.lifecycle?.balancedSpan ?? participant.blockLayout!.blockSize;
+      if (participant.authority === 'direct') {
+        const invocationIndex = participant.invocations[0];
+        const invocation = plan.invocations[invocationIndex];
+        const selected = descriptors[invocationIndex];
+        const abiFunction = participant.artifact.abi.find((candidate) =>
+          candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
+        if (!selected || !abiFunction || selected.args.length !== 1
+          || graph.callManifest.participants[participant.participant].authority !== 'direct') {
+          throw new Error(`messageBus: direct participant ${participant.participant} has no V5 ABI frame`);
+        }
+        const base = graph.layout.participantInputs[participant.participant];
+        const localCall = new StatefulFunctionCall(
+          () => contract._createBuilder(selected.functionName, [...selected.args], {
+            abiFunction, blockBase: base, omitLocalFeeTail: true,
+          }),
+          contract, selected.functionName, [...selected.args],
+          { abiFunction, blockBase: base, omitLocalFeeTail: true },
+          invocation.selectorHex,
+        );
+        const local = await localCall.build();
+        if (local.inputs.length !== blockSize || local.outputs.length !== blockSize) {
+          throw new Error(
+            `messageBus: direct participant ${participant.participant} built ${local.inputs.length}/`
+            + `${local.outputs.length} slots, expected fixed V5 block ${blockSize}`,
+          );
+        }
+        const masterUnlocker = local.inputs[0]?.unlocker;
+        if (!masterUnlocker || !isContractUnlocker(masterUnlocker)) {
+          throw new Error(`messageBus: direct participant ${participant.participant} lacks a contract master input`);
+        }
+        const hiddenIndices = masterUnlocker.abiFunction.inputs.flatMap((input, index) =>
+          input.name === '__internal__callInputIndex' ? [index] : []);
+        if (hiddenIndices.length !== 1 || !masterUnlocker.syncEncodedArgsFromParams) {
+          throw new Error(`messageBus: direct participant ${participant.participant} lacks one canonical call-index witness`);
+        }
+        masterUnlocker.params[hiddenIndices[0]] = BigInt(graph.layout.totalSlots);
+        masterUnlocker.syncEncodedArgsFromParams(hiddenIndices);
+        actualSizes.push(blockSize);
+        for (let localIndex = 0; localIndex < local.inputs.length; localIndex += 1) {
+          registerAggregateInput(local.inputs[localIndex], participant.participant, localIndex, 'direct participant block');
+        }
+        aggregate.addInputs(local.inputs);
+        aggregate.addOutputs(local.outputs as Output[]);
+        continue;
+      }
       const returnBlob = participantReturnBlob(participant.participant, results);
       const returnCommitment = participantReturnCommitment(returnBlob);
       const routeRows = participant.invocations.map((invocationIndex) => {
@@ -636,8 +682,8 @@ export async function assembleAtomicComposition(
         }));
       }
       const localCall = contract._batchRaw(
-        participant.batch.blob,
-        participant.batch.routeWitnesses as FunctionArgument[],
+        participant.batch!.blob,
+        participant.batch!.routeWitnesses as FunctionArgument[],
         internalRouteWitnesses,
         graph.layout.participantInputs[participant.participant],
         returnBlob !== undefined,
@@ -1822,6 +1868,7 @@ export async function assembleAtomicComposition(
       }));
     }
     for (const participant of plan.participants) {
+      if (participant.authority === 'direct') continue;
       const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
       const verifierLock = getMessageBusVerifierLockingBytecodeForArtifact(
         participant.artifact, provider.consensusLimits?.maximumInputBytes ?? 10_000,
@@ -1840,7 +1887,7 @@ export async function assembleAtomicComposition(
       // A direct route carries the blob in master param 0, but a proxy master carries only the forwarded
       // selector while its implementation unlocker owns the route arguments. The compiler-planned participant
       // batch is the common canonical source used to build either shape and is what the verifier must bind.
-      const batchBlob = participant.batch.blob;
+      const batchBlob = participant.batch!.blob;
       const routeContext = graphRouteContext(graph, participant.participant, upgradeStateSuffixes);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_GRAPH_EMISSIONS === '1') {
@@ -2083,7 +2130,7 @@ export async function assembleAtomicComposition(
         })),
         keyWitnesses: plan.participants.flatMap((participant) => participant.routeInputs
           .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'))
-          .map((input, index) => ({ input, value: participant.batch.routeWitnesses[index] }))
+          .map((input, index) => ({ input, value: participant.batch!.routeWitnesses[index] }))
           .map(({ input, value }) => ({
             participant: participant.participant,
             name: input.name,

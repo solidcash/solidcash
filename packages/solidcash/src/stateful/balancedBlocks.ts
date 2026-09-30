@@ -51,6 +51,8 @@ export interface BalancedBlockPlacement {
   base: number;
   /** Compiler-declared local block extent for the executed route. */
   blockLayout: FunctionBlockLayout;
+  /** Only an explicitly opt-in V5 direct contract may omit a detached route verifier. */
+  authority?: 'direct';
 }
 
 /** The physical index space of a composed balanced transaction. */
@@ -112,7 +114,10 @@ export function assertCompleteLocalBlock(participant: number, layout: FunctionBl
 
 /** Minimal view of one builder input for deriving an assembly without a caller-declared layout. */
 export interface BalancedAssemblyInputView {
-  unlocker?: { abiFunction?: { blockLayout?: FunctionBlockLayout } };
+  unlocker?: {
+    abiFunction?: { blockLayout?: FunctionBlockLayout };
+    contract?: { artifact?: { messageBus?: unknown; compiler?: { options?: { messageBusDirectParticipant?: boolean } } } };
+  };
 }
 
 /** The block layout an input publishes as a participant master, or `undefined` when it publishes none. */
@@ -155,7 +160,11 @@ export function deriveBalancedAssemblyFromInputs(
   while (cursor < totalSlots) {
     const layout = publishedMasterBlock(inputs[cursor]);
     if (!layout) break;
-    blocks.push({ participant: blocks.length, base: cursor, blockLayout: layout });
+    const artifact = inputs[cursor]?.unlocker?.contract?.artifact;
+    const direct = artifact?.messageBus === undefined
+      && artifact?.compiler?.options?.messageBusDirectParticipant === true;
+    blocks.push({ participant: blocks.length, base: cursor, blockLayout: layout,
+      ...(direct && { authority: 'direct' as const }) });
     cursor += layout.blockSize;
   }
   if (blocks.length === 0) {
@@ -192,20 +201,22 @@ export function deriveBalancedAssemblyFromInputs(
   if (cursor > totalSlots) {
     fail(`participant ${blocks.length - 1} block runs past the transaction's ${totalSlots} slots`);
   }
-  if (cursor !== totalSlots - blocks.length - 1) {
+  const routedCount = blocks.filter((block) => block.authority !== 'direct').length;
+  if (cursor !== totalSlots - routedCount - 1) {
     fail(
-      `participant region ends at ${cursor}, but ${blocks.length} verifier slots plus fee require tail start `
-      + `${totalSlots - blocks.length - 1}; `
+      `participant region ends at ${cursor}, but ${routedCount} verifier slots plus fee require tail start `
+      + `${totalSlots - routedCount - 1}; `
       + 'atomic compositions permit no auxiliary or padding slots',
     );
   }
-  const verifierInputs = blocks.map((_block, participant) => cursor + participant);
+  const verifierInputs = blocks.flatMap((block, participant) => block.authority === 'direct' ? []
+    : [cursor + blocks.slice(0, participant).filter((candidate) => candidate.authority !== 'direct').length]);
   return {
     blocks,
     verifierInputs,
     verifierInput: verifierInputs[verifierInputs.length - 1],
-    feeInput: cursor + blocks.length,
-    changeOutput: cursor + blocks.length,
+    feeInput: cursor + routedCount,
+    changeOutput: cursor + routedCount,
     totalSlots,
   };
 }
@@ -257,13 +268,15 @@ export function preflightBalancedBlockAssembly(
   }
   const regionEnd = cursor;
 
-  const expectedVerifiers = assembly.blocks.map((_block, participant) => regionEnd + participant);
+  const expectedVerifiers = assembly.blocks.flatMap((block, participant) => block.authority === 'direct' ? []
+    : [regionEnd + assembly.blocks.slice(0, participant)
+      .filter((candidate) => candidate.authority !== 'direct').length]);
   if (assembly.verifierInputs.length !== expectedVerifiers.length
     || assembly.verifierInputs.some((input, participant) => input !== expectedVerifiers[participant])
     || assembly.verifierInput !== expectedVerifiers[expectedVerifiers.length - 1]
-    || assembly.feeInput !== regionEnd + assembly.blocks.length
-    || assembly.changeOutput !== regionEnd + assembly.blocks.length
-    || regionEnd !== assembly.totalSlots - assembly.blocks.length - 1) {
+    || assembly.feeInput !== regionEnd + expectedVerifiers.length
+    || assembly.changeOutput !== regionEnd + expectedVerifiers.length
+    || regionEnd !== assembly.totalSlots - expectedVerifiers.length - 1) {
     fail(
       `verifier/fee/change slots ${assembly.verifierInputs.join(',')}/${assembly.feeInput}/${assembly.changeOutput} must `
       + `follow participant region [0, ${regionEnd}) and end at the terminal slot`,

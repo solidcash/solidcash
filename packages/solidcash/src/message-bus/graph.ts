@@ -1,12 +1,12 @@
 import { MAX_MESSAGE_BUS_BLOB_BYTES, occurrenceBoundOf, occurrenceCountViolation } from '@solidcash/utils';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import type {
-  AbiFunction, Artifact, CallsiteCallerIdentityAbi, ExternalCallAbi, ExternalResultEncoding,
+  AbiFunction, Artifact, CallsiteCallerIdentityAbi, ExternalCallAbi, ExternalResultEncoding, FunctionBlockLayout,
   InvocationAnalysisFunction,
 } from '@solidcash/utils';
-import type { FunctionArgument } from '../Argument.js';
+import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import {
-  encodeMessageBatch, messageBusTransactionSignatureFrameHex,
+  encodeMessageBatch, encodeMessageBusArguments, messageBusTransactionSignatureFrameHex,
   resolveMessageBusAbiFunction, resolveMessageBusHandler,
   type EncodedMessageBatch, type MessageBatchCall,
 } from './message-bus.js';
@@ -30,6 +30,8 @@ import { terminalConditionalReturnBase } from './layout-resolver.js';
 
 export interface CompiledGraphParticipant {
   artifact: Artifact;
+  /** V5 opaque direct owner: its ordinary covenant executes, without a message-bus route/verifier. */
+  authority?: 'routed' | 'direct';
   /** Physical covenant identity used to intern and position the participant's state-owner block. */
   lockingBytecode: string;
   /** Replacement covenant identity created at master offset zero; omitted preserves the input identity. */
@@ -173,6 +175,7 @@ export interface ResolvedGraphCallerIdentity {
 
 export interface CompiledParticipantExecution {
   participant: number;
+  authority?: 'routed' | 'direct';
   /** Exact artifact whose route and state layout this physical owner executes. */
   artifact: Artifact;
   lockingBytecode: string;
@@ -186,11 +189,13 @@ export interface CompiledParticipantExecution {
   executorOffset: number | null;
   executorInputIndex: number;
   executorLockingBytecode: string;
-  batch: EncodedMessageBatch;
+  batch?: EncodedMessageBatch;
+  /** ABI-derived calldata for one opaque direct invocation; never a routed batch. */
+  directRow?: { function: string; selectorHex: string; argsHex: string };
   /** Global invocation indices, in the exact order executed by this owner's message-bus batch route. */
   invocations: readonly number[];
   /** Exact compiler-emitted balanced physical block for this owner's message-bus batch route. */
-  blockLayout: NonNullable<Artifact['messageBus']>['route']['blockLayout'];
+  blockLayout: FunctionBlockLayout;
   /** Exact compiler-owned route ABI, retained so argument derivation cannot silently lose internal witnesses. */
   routeInputs: NonNullable<Artifact['messageBus']>['route']['inputs'];
   /** Exclusive logical position after every invocation owned by this participant has completed. */
@@ -513,6 +518,14 @@ export function finalizeAtomicInvocationGraph(
   if (actualSizes !== undefined && actualSizes.length !== plan.participants.length) {
     throw new Error('messageBus: actual participant sizes must align with participants');
   }
+  for (const participant of plan.participants) {
+    if (participant.authority !== 'direct') continue;
+    const claimed = [eventEffects, resourceEffects, valueEffects, tokenEffects, sidecarEffects,
+      deploymentEffects].some((effects) => effects.some((effect) => effect.participant === participant.participant));
+    if (claimed) {
+      throw new Error(`messageBus: direct participant ${participant.participant} cannot claim graph effects`);
+    }
+  }
   const spans = plan.participants.map((participant, index) => {
     if (participant.lifecycle !== undefined) return participant.lifecycle.balancedSpan;
     const block = participant.blockLayout!;
@@ -526,7 +539,17 @@ export function finalizeAtomicInvocationGraph(
     }
     return actualSize;
   });
-  const layout = atomicMessageBusPhysicalLayout(spans);
+  const directV5 = plan.participants.some((participant) => participant.authority === 'direct');
+  if (directV5) {
+    const unsupported = plan.participants.findIndex((participant) => participant.authority !== 'direct'
+      && !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(5));
+    if (unsupported >= 0) {
+      throw new Error(`messageBus: routed participant ${unsupported} does not advertise atomic V5 authority`);
+    }
+  }
+  const layout = atomicMessageBusPhysicalLayout(
+    spans, plan.participants.map((participant) => participant.authority ?? 'routed'),
+  );
   // Every participant must verify the exact same physical carrier. Treat a missing descriptor as unsupported;
   // proxy-forward, direct root-route, and historical verifier-local transports are distinct covenants.
   const envelopeTransport = plan.participants[0].artifact.messageBus?.atomicMessageBus
@@ -536,7 +559,8 @@ export function finalizeAtomicInvocationGraph(
     throw new Error('messageBus: root participant has no supported atomic envelope transport');
   }
   const mismatchedEnvelopeTransport = plan.participants.findIndex((participant) => (
-    participant.artifact.messageBus?.atomicMessageBus?.messageEnvelope.region !== envelopeTransport
+    participant.authority !== 'direct'
+      && participant.artifact.messageBus?.atomicMessageBus?.messageEnvelope.region !== envelopeTransport
   ));
   if (mismatchedEnvelopeTransport >= 0) {
     throw new Error(
@@ -562,8 +586,8 @@ export function finalizeAtomicInvocationGraph(
   // manifest with a lifecycle participant. Detached `sig` leaves on the lifecycle handler itself remain a
   // compiler `KERNEL_TX_SIGNATURE` fence.
   if (outputIdentityV2) {
-    const legacy = plan.participants.findIndex((participant) =>
-      !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(2));
+    const legacy = plan.participants.findIndex((participant) => participant.authority !== 'direct'
+      && !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(2));
     if (legacy >= 0) {
       throw new Error(
         `messageBus: participant ${legacy} verifier does not advertise atomic callManifest protocol 2`,
@@ -571,8 +595,8 @@ export function finalizeAtomicInvocationGraph(
     }
   }
   if (signatureV4) {
-    const legacy = plan.participants.findIndex((participant) =>
-      !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(4));
+    const legacy = plan.participants.findIndex((participant) => participant.authority !== 'direct'
+      && !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(4));
     if (legacy >= 0) {
       throw new Error(
         `messageBus: participant ${legacy} verifier does not advertise atomic callManifest protocol 4`,
@@ -608,7 +632,7 @@ export function finalizeAtomicInvocationGraph(
     // It must not collapse callManifest fixedSize to maximumSize: that published graphFixedSize=88 with
     // trailingUsed=0 for FakeToken (artifact trailingBase 23 + identity +1), and the OUTPUTBYTECODE lock
     // loop then compared trailing NFT locks against the wrong schedule (take-job input 225 EQUALVERIFY).
-    const fixedSize = participant.lifecycle === undefined
+    const fixedSize = participant.authority === 'direct' ? maximumSize : participant.lifecycle === undefined
       ? Math.min(participant.blockLayout!.trailingBase ?? maximumSize,
         terminalConditionalReturnBase(participant.blockLayout!) ?? maximumSize)
       : 1 + lifecyclePrefix;
@@ -621,7 +645,8 @@ export function finalizeAtomicInvocationGraph(
     const internalCategory = (category.match(/../g) as string[]).reverse().join('');
     return {
       lockingBytecode, stateCategory: internalCategory,
-      ...((outputIdentityV2 || signatureV4) && { outputLockingBytecode }),
+      ...((directV5 || outputIdentityV2 || signatureV4) && { outputLockingBytecode }),
+      ...(participant.authority === 'direct' && { authority: 'direct' as const }),
       fixedSize, actualSize, maximumSize,
       trailingUsed: actualSize - fixedSize,
       // Route layouts publish the union of every eligible handler, so a void selected batch can retain a physical
@@ -656,17 +681,23 @@ export function finalizeAtomicInvocationGraph(
     }
     const signatureFrame = transactionSignatureFrames[invocation.index];
     if (signatureV4) {
-      const projected = plan.participants[invocation.callee].batch.rows[invocation.localRow];
-      if (projected === undefined || projected.selectorHex.toLowerCase() !== invocation.selectorHex.toLowerCase()
-        || projected.argsHex.toLowerCase() !== invocation.argsHex.toLowerCase()) {
-        throw new Error(
-          `messageBus: invocation ${invocation.index} signature provenance is not aligned with its encoded row`,
-        );
-      }
-      if (projected.transactionSignatureFrameHex.toLowerCase() !== signatureFrame.toLowerCase()) {
-        throw new Error(
-          `messageBus: invocation ${invocation.index} signature provenance disagrees with compiler policy`,
-        );
+      if (plan.participants[invocation.callee].authority === 'direct') {
+        if (signatureFrame.length !== 0) {
+          throw new Error(`messageBus: direct invocation ${invocation.index} cannot claim signature provenance`);
+        }
+      } else {
+        const projected = plan.participants[invocation.callee].batch?.rows[invocation.localRow];
+        if (projected === undefined || projected.selectorHex.toLowerCase() !== invocation.selectorHex.toLowerCase()
+          || projected.argsHex.toLowerCase() !== invocation.argsHex.toLowerCase()) {
+          throw new Error(
+            `messageBus: invocation ${invocation.index} signature provenance is not aligned with its encoded row`,
+          );
+        }
+        if (projected.transactionSignatureFrameHex.toLowerCase() !== signatureFrame.toLowerCase()) {
+          throw new Error(
+            `messageBus: invocation ${invocation.index} signature provenance disagrees with compiler policy`,
+          );
+        }
       }
     }
     return {
@@ -1125,7 +1156,8 @@ export function finalizeAtomicInvocationGraph(
     ...deploymentRows, ...sidecarRows,
   ];
   const callManifest = {
-    ...(signatureV4 ? { version: 4 as const }
+    ...(directV5 ? { version: 5 as const }
+      : signatureV4 ? { version: 4 as const }
       : outputIdentityV2 ? { version: 2 as const } : {}), participants, rows,
   };
   const bytes = encodeAtomicMessageBusCallManifest(callManifest);
@@ -2238,17 +2270,51 @@ export function planCompiledGraph(
         .map((handler) => ({ name: handler.name, keys: handler.batchKeyWitnesses })),
     })));
   }
-  const executions = participants.map((participant, owner) => {
+  const executions: CompiledParticipantExecution[] = participants.map((participant, owner) => {
     if (perOwner[owner].length === 0) {
       throw new Error(`messageBus: participant ${owner} has no invocation and must not be co-spent`);
     }
     const executionKind = participant.executionKind === 'delegate' ? 1 : 0;
+    const direct = participant.authority === 'direct';
+    const directInvocationIndex = globalByOwner[owner][0];
+    const directInvocation = direct ? invocations[directInvocationIndex] : undefined;
+    const directAbi = directInvocation === undefined ? undefined : resolveGraphAbiFunction(
+      participant.artifact, directInvocation.function, directInvocation.selector,
+    );
+    const directVisibleInputs = directAbi?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+    if (direct && (owner === 0 || executionKind !== 0 || globalByOwner[owner].length !== 1
+      || !directAbi?.blockLayout || !directAbi.selector
+      || (directAbi.outputs?.length ?? 0) !== 0
+      || directAbi.usesMsgSender === true
+      || directAbi.usesMsgData === true
+      || directAbi.inputs.some((input) => input.name === '__internal__msgData')
+      || directAbi.inputs.some((input) => input.name === '__internal__msgSenderCategory')
+      || directAbi.entryAccesses?.some((access) => access.keySources?.some((source) =>
+        source.kind === 'msgSender' && source.senderOp === 'msg.sender'))
+      || directAbi.externalCalls?.some((call) => call.addressIsMsgSender === true)
+      || directAbi.inputs.filter((input) => input.name === '__internal__callInputIndex').length !== 1
+      || directAbi.inputs[directAbi.inputs.length - 1]?.name !== '__internal__callInputIndex'
+      || directVisibleInputs.length !== 1 || !/^uint\d*$/.test(directVisibleInputs[0].type)
+      || invocations.some((invocation) => invocation.parent === directInvocationIndex)
+      || participant.outputLockingBytecode !== undefined
+      || participant.logicalLockingBytecode !== undefined
+      || directAbi.blockLayout.slots.some((slot) => !['master', 'dataNft', 'readOnlyDataNft', 'entry'].includes(slot.kind)))) {
+      throw new Error(`messageBus: direct participant ${owner} exceeds the V5 opaque-call proof profile`);
+    }
+    const directArg = direct ? encodeFunctionArgument(
+      directInvocation!.args?.[0] as FunctionArgument, directVisibleInputs[0].type,
+      participant.artifact.structs ?? participant.artifact.stateLayout?.structs,
+    ) : undefined;
+    if (direct && !(directArg instanceof Uint8Array)) {
+      throw new Error(`messageBus: direct participant ${owner} has no concrete scalar argument`);
+    }
     const executorSlots = executionKind === 1
       ? participant.artifact.messageBus?.route.blockLayout?.slots
         .filter((slot) => slot.kind === 'lowLevelCall') ?? []
       : [];
     const logicalIdentityOffset = participant.logicalIdentityOffset ?? 0;
-    const participantBlockSize = participant.artifact.messageBus?.route.blockLayout?.blockSize ?? 0;
+    const participantBlockSize = (direct ? directAbi?.blockLayout
+      : participant.artifact.messageBus?.route.blockLayout)?.blockSize ?? 0;
     const selectedLifecycle = globalByOwner[owner].flatMap((invocationIndex) => {
       const invocation = invocations[invocationIndex];
       const abi = resolveGraphAbiFunction(participant.artifact, invocation.function, invocation.selector);
@@ -2348,6 +2414,7 @@ export function planCompiledGraph(
     }
     return Object.freeze({
       participant: owner,
+      ...(direct && { authority: 'direct' as const }),
       artifact: participant.artifact,
       lockingBytecode: participant.lockingBytecode.toLowerCase(),
       ...(participant.outputLockingBytecode !== undefined && {
@@ -2361,7 +2428,11 @@ export function planCompiledGraph(
       executorOffset: executionKind === 1 ? executorSlots[0].offset : null,
       executorInputIndex: executionKind === 1
         ? participants.slice(0, owner).reduce(
-          (base, candidate) => base + candidate.artifact.messageBus!.route.blockLayout!.blockSize,
+          (base, candidate, index) => base + (candidate.authority === 'direct'
+            ? resolveGraphAbiFunction(candidate.artifact,
+              invocations[globalByOwner[index][0]].function,
+              invocations[globalByOwner[index][0]].selector)?.blockLayout?.blockSize ?? 0
+            : candidate.artifact.messageBus!.route.blockLayout!.blockSize),
           0,
         ) + executorSlots[0].offset
         : 0xffff,
@@ -2369,13 +2440,20 @@ export function planCompiledGraph(
         ? participant.executorLockingBytecode!.toLowerCase() : '',
       // Atomic composition re-derives and authenticates the terminal continuation value across every selected
       // writer row. Standalone batches retain the artifact's one-row fixed-chunkable guard.
-      batch: encodeMessageBatch(
+      ...(direct ? { directRow: {
+        function: directInvocation!.function,
+        selectorHex: directAbi!.selector!,
+        argsHex: binToHex(encodeMessageBusArguments(
+          [directArg as Uint8Array], [directVisibleInputs[0].type],
+          participant.artifact.structs ?? participant.artifact.stateLayout?.structs,
+        )),
+      } } : { batch: encodeMessageBatch(
         participant.artifact, perOwner[owner], participant.unboundRouteWitnesses,
         { atomicContinuationConvergence: true },
-      ),
+      ) }),
       invocations: Object.freeze(globalByOwner[owner]),
-      blockLayout: participant.artifact.messageBus!.route.blockLayout!,
-      routeInputs: participant.artifact.messageBus!.route.inputs,
+      blockLayout: direct ? directAbi!.blockLayout! : participant.artifact.messageBus!.route.blockLayout!,
+      routeInputs: direct ? [] : participant.artifact.messageBus!.route.inputs,
       settlementBoundary: Math.max(...globalByOwner[owner].map((index) => subtreeEnds[index] + 1)),
       completionPositions: Object.freeze(globalByOwner[owner].map((index) => subtreeEnds[index] + 1)),
       ...(lifecycle && { lifecycle }),
@@ -2392,8 +2470,8 @@ export function planCompiledGraph(
     const execution = executions[invocation.callee];
     const localRow = localCursor[invocation.callee];
     localCursor[invocation.callee] += 1;
-    const row = execution.batch.rows[localRow];
-    const result = execution.batch.results.find((candidate) => candidate.row === localRow);
+    const row = execution.directRow ?? execution.batch!.rows[localRow];
+    const result = execution.batch?.results.find((candidate) => candidate.row === localRow);
     const caller = invocation.parent === null ? null : invocations[invocation.parent].callee;
     const targetIdentity = invocationTargetIdentity(invocation, index);
     let callMode: 'call' | 'staticcall' = invocation.callMode ?? 'call';

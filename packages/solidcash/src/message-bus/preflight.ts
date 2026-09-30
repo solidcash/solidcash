@@ -703,6 +703,7 @@ const assertCanonicalMessageEnvelopePush = (
       throw new Error('messageBus: V5 proxy-forward envelope has no authenticated root proxy/executor pair');
     }
     for (const block of assembly.blocks) {
+      if (block.authority === 'direct') continue;
       const routeOffset = block.blockLayout.slots.find((slot) => slot.kind === 'lowLevelCall')?.offset ?? 0;
       const unlocker = builder.inputs[block.base + routeOffset]?.unlocker;
       if (!unlocker || !isContractUnlocker(unlocker)
@@ -763,6 +764,7 @@ const assertCanonicalMessageEnvelopePush = (
       throw new Error('messageBus: V5 root-route envelope has no authenticated input-0 participant');
     }
     for (const block of assembly.blocks) {
+      if (block.authority === 'direct') continue;
       const unlocker = builder.inputs[block.base]?.unlocker;
       if (!unlocker || !isContractUnlocker(unlocker)
         || getMessageBusEnvelopeTransport(unlocker.contract.artifact) !== 'root-route') {
@@ -812,6 +814,37 @@ const assertCanonicalMessageEnvelopePush = (
 const assertNoDerivationProbeOutpoints = (builder: TransactionBuilder): void => {
   if (builder.inputs.some((input) => input.vout === 0xffffffff)) {
     throw new Error('messageBus: finalized transactions cannot contain the internal derivation-probe outpoint');
+  }
+};
+
+/** V5 direct owners have no detached verifier; bind their dormant nested-call witness before VM evaluation. */
+const assertDirectParticipantFrames = (
+  builder: TransactionBuilder, transaction: Transaction, assembly: BalancedAssembly,
+): void => {
+  for (const block of assembly.blocks) {
+    if (block.authority !== 'direct') continue;
+    const unlocker = builder.inputs[block.base]?.unlocker;
+    const encoded = transaction.inputs[block.base]?.unlockingBytecode ?? new Uint8Array();
+    if (!unlocker || !isContractUnlocker(unlocker)
+      || unlocker.contract.artifact.compiler?.options?.messageBusDirectParticipant !== true
+      || unlocker.contract.artifact.messageBus !== undefined
+      || unlocker.abiFunction.blockLayout?.blockSize !== block.blockLayout.blockSize) {
+      throw new Error(`messageBus: direct participant ${block.participant} has no V5 master authority`);
+    }
+    const indices = unlocker.abiFunction.inputs.flatMap((input, index) =>
+      input.name === '__internal__callInputIndex' ? [index] : []);
+    const expected = BigInt(assembly.totalSlots);
+    const selector = readPush(encoded, 0);
+    const hidden = selector && readPush(encoded, selector.nextOffset);
+    const canonicalHidden = scriptToBytecode([bigIntToVmNumber(expected)]);
+    if (indices.length !== 1 || indices[0] !== unlocker.abiFunction.inputs.length - 1
+      || unlocker.params[indices[0]] !== expected
+      || !selector || encoded[0] !== 4
+      || binToHex(selector.data) !== unlocker.abiFunction.selector?.toLowerCase()
+      || !hidden || binToHex(encoded.slice(selector.nextOffset, hidden.nextOffset))
+        !== binToHex(canonicalHidden)) {
+      throw new Error(`messageBus: direct participant ${block.participant} has an unbound call-index frame`);
+    }
   }
 };
 
@@ -3760,6 +3793,7 @@ export const preflightMessageBusTransaction = (
   const transaction = builder.buildLibauthTransaction();
   logComposedTransactionLayout(builder, transaction, 'finalized');
   assertCanonicalMessageEnvelopePush(builder, transaction, assembly);
+  assertDirectParticipantFrames(builder, transaction, assembly);
   evaluateEveryInput(builder, transaction);
   // Byte rules LAST, so a transaction that cannot execute reports its semantic cause rather than whichever
   // relay observation happens to be true of it as well. A transaction refused by the VM is broken regardless

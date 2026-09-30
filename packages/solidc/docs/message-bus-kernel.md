@@ -396,7 +396,16 @@ standalone input-0 SCB1 batches.
 rooted at a baked `__forward(bytes)` proxy. The proxy forwards the SCB1 selector and envelope to its co-spent
 implementation; the verifier checks both root frames and removes the repeated verifier-envelope pushes. The
 existing proxy bytecode is unchanged, but the opt-in verifier program has a new address. The two envelope
-options are mutually exclusive. This does not admit direct-only participants into a kernel graph.
+options are mutually exclusive. By itself, this does not admit direct-only participants into a kernel graph.
+
+`messageBusDirectParticipant: true` independently opts routed artifacts into the V5 mixed-authority manifest.
+It admits a separately compiled direct-only callee for one void leaf invocation with one scalar argument and a
+fixed state block, while the routed caller authenticates the runtime target and delivered calldata. Direct
+participants have no verifier NFT; their own covenant executes normally. Unrepresented nested calls fail
+closed, and dynamic contract-typed addresses are not pinned to a particular implementation. This profile
+rejects direct methods dependent on `msg.sender` or `msg.data` until caller-slot and hidden-calldata semantics
+are certified. It requires one of the authenticated root-envelope carriers above and is otherwise unavailable
+by default.
 
 ---
 

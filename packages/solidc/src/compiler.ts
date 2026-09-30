@@ -2963,6 +2963,7 @@ function detachedVerifierLockKey(source: string, options: CompilerOptions, lifec
     options.messageBusKernel ?? '',
     options.messageBusRootEnvelope ?? '',
     options.messageBusProxyForwardEnvelope ?? '',
+    options.messageBusDirectParticipant ?? '',
     options.enforceFinalRequire ?? '',
     options.allowUnsafeOperations ?? '',
     source,
@@ -10542,11 +10543,16 @@ function synthesizeMessageBusRoute(
   }
   // V5 carries the one canonical envelope in root input 0, immediately after the SCB1 selector. Only that
   // direct-root unlocker shifts its batch push; nonroot participants retain the historical two-item prefix.
-  const rootEnvelopeTransport = compilerOptions.messageBusRootEnvelope === true
+  const rootEnvelopeTransport = (compilerOptions.messageBusRootEnvelope === true
+    || (compilerOptions.messageBusDirectParticipant === true
+      && compilerOptions.messageBusProxyForwardEnvelope === true && !isDelegateRoute))
     && compilerOptions.messageBusKernel === true;
   const proxyForwardEnvelopeTransport = compilerOptions.messageBusProxyForwardEnvelope === true
     && compilerOptions.messageBusKernel === true && isDelegateRoute;
   const sharedEnvelopeTransport = rootEnvelopeTransport || proxyForwardEnvelopeTransport;
+  if (compilerOptions.messageBusDirectParticipant === true && !sharedEnvelopeTransport) {
+    throw new Error('messageBusDirectParticipant requires root or proxy-forward envelope transport');
+  }
   if (proxyForwardEnvelopeTransport && (kernelUpgradeMode || kernelV2SignatureFence)) {
     throw new Error('proxy-forward envelope transport does not yet support upgrade or detached-signature routes');
   }
@@ -10711,8 +10717,18 @@ function synthesizeMessageBusRoute(
     ? 'callManifest.slice(0, 8) == hex"4c33425553320000"' : 'false';
   const atomicManifestV4Expression = compilerOptions.messageBusKernel === true
     ? 'callManifest.slice(0, 8) == hex"4c33425553340000"' : 'false';
+  const directParticipantMode = compilerOptions.messageBusDirectParticipant === true
+    && compilerOptions.messageBusKernel === true;
+  // V5 adds an explicit per-participant authority byte. A direct authority has no detached verifier NFT;
+  // its own co-spent covenant validates its state transition, while the routed caller binds delivery.
+  const atomicManifestV5Expression = directParticipantMode
+    ? 'callManifest.slice(0, 8) == hex"4c33425553350000"' : 'false';
+  const atomicManifestSignatureFrameExpression = directParticipantMode
+    ? `(${atomicManifestV4Expression} || ${atomicManifestV5Expression})` : atomicManifestV4Expression;
   const atomicManifestOutputIdentityExpression = compilerOptions.messageBusKernel === true
-    ? `(${atomicManifestV2Expression} || ${atomicManifestV4Expression})` : 'false';
+    ? directParticipantMode
+      ? `(${atomicManifestV2Expression} || ${atomicManifestV4Expression} || ${atomicManifestV5Expression})`
+      : `(${atomicManifestV2Expression} || ${atomicManifestV4Expression})` : 'false';
   const atomicEnvelopeReader = proxyForwardEnvelopeTransport ? `
         bytes proxyUnlock = tx.inputs[0].unlockingBytecode;
         require(proxyUnlock.length >= 20);
@@ -10942,7 +10958,8 @@ function synthesizeMessageBusRoute(
         ${compilerOptions.messageBusKernel === true
     ? `require(callManifest.length >= 15 && (callManifest.slice(0, 8) == hex"4c33425553310000"
           || callManifest.slice(0, 8) == hex"4c33425553320000"
-          || callManifest.slice(0, 8) == hex"4c33425553340000"));`
+          || callManifest.slice(0, 8) == hex"4c33425553340000"${directParticipantMode
+    ? '\n          || callManifest.slice(0, 8) == hex"4c33425553350000"' : ''}));`
     : 'require(callManifest.length >= 15 && callManifest.slice(0, 8) == hex"4c33425553310000");'}
         require(int(bytes.concat(callManifest.slice(8, 12), hex"00000000")) == callManifest.length);
         bigint participantCount = int(bytes.concat(callManifest.slice(12, 13), hex"00"));
@@ -10961,6 +10978,11 @@ function synthesizeMessageBusRoute(
         bytes participantBases = hex"";
         bytes participantSizes = hex"";
         bytes participantLbcs = hex"";
+        ${directParticipantMode ? `bytes participantAuthorities = hex"";
+        bytes directInvocations = hex"";
+        bigint routedParticipantCount = 0;
+        bigint activeRoutedOrdinal = 65535;
+        bigint directParticipantCount = 0;` : ''}
         bigint replacementIdentityCount = 0;
         ${kernelLifecycleHandlers.size > 0 ? 'bytes activeParticipantLbc;' : ''}
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
@@ -10995,13 +11017,24 @@ function synthesizeMessageBusRoute(
           bigint trailingUsed = int(bytes.concat(callManifest.slice(cursor + 34, cursor + 36), hex"00"));
           bigint returnOffset = int(bytes.concat(callManifest.slice(cursor + 36, cursor + 38), hex"00"));
           cursor = cursor + 38;
-          if (${atomicManifestV4Expression}) {
+          if (${atomicManifestSignatureFrameExpression}) {
             require(cursor + 3 <= callManifest.length);
             bigint lifecycleMode = int(bytes.concat(callManifest.slice(cursor, cursor + 1), hex"00"));
             bigint lifecycleCount = int(bytes.concat(callManifest.slice(cursor + 1, cursor + 3), hex"00"));
             require(lifecycleMode == 0 && lifecycleCount == 0);
             cursor = cursor + 3;
           }
+          ${directParticipantMode ? `bigint participantAuthority = 0;
+          if (${atomicManifestV5Expression}) {
+            require(cursor + 1 <= callManifest.length);
+            participantAuthority = int(bytes.concat(callManifest.slice(cursor, cursor + 1), hex"00"));
+            require(participantAuthority <= 1);
+            cursor = cursor + 1;
+          }
+          participantAuthorities = bytes.concat(participantAuthorities, bytes1(participantAuthority));
+          directInvocations = bytes.concat(directInvocations, hex"00");
+          if (participantAuthority == 0) { routedParticipantCount = routedParticipantCount + 1; }
+          else { directParticipantCount = directParticipantCount + 1; }` : ''}
           // expectedBase = base + blockSize is already proved below tx.inputs.length above,
           // and blockSize is positive, so base is necessarily a valid input index.
           require(base < tx.outputs.length);
@@ -11041,12 +11074,33 @@ function synthesizeMessageBusRoute(
           bigint returnOutput = returnOffset == 65535 ? 65535 : participantOutputBase + returnOffset;
           require(blockSize == fixedSize + trailingUsed && blockSize <= maximumSize);
           require(returnOffset == 65535 || returnOffset < fixedSize);
+          ${directParticipantMode ? `if (participantAuthority == 1) {
+            // First-slice opaque direct authority admits only ordinary state NFTs. The callee's own VM checks
+            // their commitment transitions; this verifier fixes the complete physical band and rules out
+            // hidden token, value, event, return, and lifecycle effects in that band.
+            require(fixedSize == blockSize && trailingUsed == 0 && returnOffset == 65535);
+            require(tx.outputs[base].lockingBytecode == participantLbc
+              && tx.outputs[base].tokenCategory == tx.inputs[base].tokenCategory
+              && tx.outputs[base].tokenAmount == tx.inputs[base].tokenAmount
+              && tx.outputs[base].value == tx.inputs[base].value);
+            for (bigint directSlot = base + 1; directSlot < base + blockSize;
+              directSlot = directSlot + 1) {
+              require(tx.inputs[directSlot].tokenCategory == bytes.concat(category, hex"01")
+                && tx.outputs[directSlot].tokenCategory == tx.inputs[directSlot].tokenCategory
+                && tx.outputs[directSlot].lockingBytecode == tx.inputs[directSlot].lockingBytecode
+                && tx.outputs[directSlot].tokenAmount == tx.inputs[directSlot].tokenAmount
+                && tx.outputs[directSlot].value == tx.inputs[directSlot].value);
+            }
+          }` : ''}
           // Direct routes execute at the participant base. Delegate routes execute at an authenticated interior
           // slot, but the verifier NFT and SDK transcript are participant-scoped, so both bind the canonical base.
           if (activeInputIndex >= base && activeInputIndex < base + blockSize) {
+            // Only routed participants execute this verifier. The direct authority has no verifier coordinate.
+            ${directParticipantMode ? 'require(participantAuthority == 0);' : ''}
             activeMembership = activeMembership + 1;
             activeBase = base;
             activeParticipant = participant;
+            ${directParticipantMode ? 'activeRoutedOrdinal = routedParticipantCount - 1;' : ''}
             activeFixedSize = fixedSize;
             activeBlockSize = blockSize;
             activeMaximumSize = maximumSize;
@@ -11058,8 +11112,13 @@ function synthesizeMessageBusRoute(
     ? 'require(__internal__upgradeBytecode == participantOutputLbc);' : ''}
           }
         }
-        // Participant prefix || one artifact-specialized verifier per participant || one fee input.
-        require(activeMembership == 1 && expectedBase + participantCount + 1 == tx.inputs.length);
+        ${directParticipantMode
+    ? `// Participant prefix || one verifier per routed participant || one fee input.
+        // Direct participants consume no synthetic verifier NFT or placeholder input.
+        require(activeMembership == 1 && expectedBase + routedParticipantCount + 1 == tx.inputs.length);
+        require(!(${atomicManifestV5Expression}) || directParticipantCount > 0);`
+    : `// Participant prefix || one artifact-specialized verifier per participant || one fee input.
+        require(activeMembership == 1 && expectedBase + participantCount + 1 == tx.inputs.length);`}
         ${proxyForwardEnvelopeTransport ? `if (activeInputIndex == 0) {
           require(activeBase == 0 && proxyExecutorIndex > activeBase
             && proxyExecutorIndex < activeBase + activeBlockSize);
@@ -11071,7 +11130,7 @@ function synthesizeMessageBusRoute(
           toPaddedBytes(expectedLocalRows, 2), sha256(localBatch)
           ${bindingDigestGraphValues}
         ));
-        bigint activeVerifier = expectedBase + activeParticipant;
+        bigint activeVerifier = expectedBase + ${directParticipantMode ? 'activeRoutedOrdinal' : 'activeParticipant'};
         require(tx.inputs[activeVerifier].tokenCategory.length == 33
           && tx.inputs[activeVerifier].tokenCategory.slice(0, 32) == activeCategory
           && tx.inputs[activeVerifier].tokenCategory.slice(32, 33) == hex"01");
@@ -11128,9 +11187,19 @@ function synthesizeMessageBusRoute(
           ${sharedEnvelopeTransport ? `// Legacy verifiers each carry an L3C1 first push. The envelope is >=256 bytes
           // and below the stack-item limit, so consensus minimal-push rules require PUSHDATA2 (0x4d).
           // Forbid that frame in every verifier slot; no co-spent participant may authenticate a private graph.
-          bytes verifierUnlock = tx.inputs[expectedBase + participant].unlockingBytecode;
+          ${directParticipantMode ? `if (int(bytes.concat(participantAuthorities.slice(participant, participant + 1), hex"00")) == 0) {
+            bigint verifierOrdinal = 0;
+            for (bigint prior = 0; prior < participant; prior = prior + 1) {
+              if (participantAuthorities.slice(prior, prior + 1) == hex"00") {
+                verifierOrdinal = verifierOrdinal + 1;
+              }
+            }
+            bytes verifierUnlock = tx.inputs[expectedBase + verifierOrdinal].unlockingBytecode;
+            require(verifierUnlock.slice(0, 1) != hex"4d"
+              || verifierUnlock.slice(3, 7) != hex"4c334331");
+          }` : `bytes verifierUnlock = tx.inputs[expectedBase + participant].unlockingBytecode;
           require(verifierUnlock.slice(0, 1) != hex"4d"
-            || verifierUnlock.slice(3, 7) != hex"4c334331");` : ''}
+            || verifierUnlock.slice(3, 7) != hex"4c334331");`}` : ''}
         }
         bigint activeSettlementBoundary = 0;
         bigint invocationRows = 0;
@@ -11268,7 +11337,7 @@ function synthesizeMessageBusRoute(
             cursor = cursor + fieldLength;
           }
           bytes rowSignatureFrame;
-          if (${atomicManifestV4Expression}) {
+          if (${atomicManifestSignatureFrameExpression}) {
             require(cursor + 2 <= callManifest.length);
             bigint signatureFrameLength = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
             cursor = cursor + 2;
@@ -11276,6 +11345,57 @@ function synthesizeMessageBusRoute(
             rowSignatureFrame = callManifest.slice(cursor, cursor + signatureFrameLength);
             cursor = cursor + signatureFrameLength;
           }
+          ${directParticipantMode ? `bigint rowConsumerAuthority = int(bytes.concat(
+            participantAuthorities.slice(consumer, consumer + 1), hex"00"
+          ));
+          bigint rowOwnerAuthority = int(bytes.concat(
+            participantAuthorities.slice(__message_bus_row_owner, __message_bus_row_owner + 1), hex"00"
+          ));
+          require(rowOwnerAuthority == 0);
+          if (rowConsumerAuthority == 1) {
+            // One void, leaf invocation into an opaque direct covenant. It executes its own VM but may not
+            // claim any graph child or effect row: no compiler-authenticated direct emission stream exists.
+            require(kind == 0 && row > 0 && targetOffset == 0 && subtreeEnd == row
+              && rowResult.length == 0 && rowEffect.length == 0 && rowSignatureFrame.length == 0
+              && callManifest.slice(rowStart + 5, rowStart + 6) == hex"00"
+              && rowSubject == tx.inputs[sourceSlot].lockingBytecode
+              && directInvocations.slice(consumer, consumer + 1) == hex"00");
+            directInvocations = bytes.concat(
+              directInvocations.slice(0, consumer), hex"01",
+              directInvocations.slice(consumer + 1, directInvocations.length)
+            );
+            bytes directUnlock = tx.inputs[targetSlot].unlockingBytecode;
+            require(directUnlock.length >= 7
+              && directUnlock.slice(0, 5) == bytes.concat(
+                hex"04", callManifest.slice(rowStart + 10, rowStart + 14)
+              ) && rowArguments.length > 0);
+            bytes directExpectedArg;
+            bigint directExpectedEnd;
+            (directExpectedArg, directExpectedEnd) = __message_bus_direct_push(rowArguments, 0);
+            require(directExpectedEnd == rowArguments.length);
+            bigint directAt = 5;
+            bigint directPushCount = 0;
+            bigint directPreviousAt = -1;
+            bigint directLastAt = -1;
+            while (directAt < directUnlock.length) {
+              bytes directPayload;
+              bigint directNextAt;
+              (directPayload, directNextAt) = __message_bus_direct_push(directUnlock, directAt);
+              if (directPushCount == 0) {
+                // An unplanned nested low-level call must fail at OP_INPUTBYTECODE, even if a currently
+                // dormant source branch later becomes active. No neighbouring participant can be aliased.
+                require(int(bytes.concat(directPayload, hex"00")) == tx.inputs.length);
+              }
+              directPreviousAt = directLastAt;
+              directLastAt = directAt;
+              directPushCount = directPushCount + 1;
+              directAt = directNextAt;
+            }
+            // Last push is the P2SH redeem (consensus binds it to the manifest LBC); the one canonical
+            // scalar ABI argument immediately before it must equal the source-authenticated row argument.
+            require(directPushCount >= 3 && directPreviousAt >= 5
+              && directUnlock.slice(directPreviousAt, directLastAt) == rowArguments);
+          }` : ''}
           if (rowSignatureFrame.length > 0) {
             transactionSignatureRows = transactionSignatureRows + 1;
             require(kind == 0 && rowSignatureFrame.length >= 6
@@ -11656,6 +11776,12 @@ function synthesizeMessageBusRoute(
         }
         // With no rows, rootSubtreeEnd retains 65535, so the root-subtree equality also rejects an empty graph.
         require(rootSubtreeEnd + 1 == invocationRows);
+        ${directParticipantMode ? `for (bigint participant = 0; participant < participantCount;
+          participant = participant + 1) {
+          if (participantAuthorities.slice(participant, participant + 1) == hex"01") {
+            require(directInvocations.slice(participant, participant + 1) == hex"01");
+          }
+        }` : ''}
         bigint physicalResourceEndpoints = 0;
         bigint physicalSatoshiContainers = 0;
         bigint physicalTokenContainers = 0;
@@ -11960,7 +12086,41 @@ function synthesizeMessageBusRoute(
     ${routeTypes}
     ${routeStructs}
 `;
+  const directPushHelperSource = directParticipantMode ? `function __message_bus_direct_push(
+        bytes script, bigint at
+      ) internal pure returns (bytes, bigint) {
+        require(at >= 0 && at < script.length);
+        bigint opcode = int(bytes.concat(script.slice(at, at + 1), hex"00"));
+        bytes payload = hex"";
+        bigint nextAt = at + 1;
+        if (opcode == 0) {
+          payload = hex"";
+        } else if (opcode == 79) {
+          payload = hex"81";
+        } else if (opcode >= 81 && opcode <= 96) {
+          payload = bytes1(opcode - 80);
+        } else {
+          bigint payloadAt = at + 1;
+          bigint payloadLength = opcode;
+          if (opcode == 76) {
+            require(payloadAt < script.length);
+            payloadLength = int(bytes.concat(script.slice(payloadAt, payloadAt + 1), hex"00"));
+            payloadAt = payloadAt + 1;
+            require(payloadLength >= 76);
+          } else if (opcode == 77) {
+            require(payloadAt + 2 <= script.length);
+            payloadLength = int(bytes.concat(script.slice(payloadAt, payloadAt + 2), hex"00"));
+            payloadAt = payloadAt + 2;
+            require(payloadLength >= 256);
+          } else { require(opcode >= 1 && opcode <= 75); }
+          require(payloadAt + payloadLength <= script.length);
+          payload = script.slice(payloadAt, payloadAt + payloadLength);
+          nextAt = payloadAt + payloadLength;
+        }
+        return (payload, nextAt);
+      }` : '';
   const helperSource = `${preamble}    contract __MessageBusHost() {
+      ${directPushHelperSource}
       ${graphCallManifestLoader}
       ${atomicCallManifestLoader}
       function __message_bus_parse_row(
@@ -12325,6 +12485,7 @@ function synthesizeMessageBusRoute(
   contract.functions.push(...helpers, route);
   if ((useBoundRoute || compilerOptions.messageBusKernel === true) && !offloadedVerifier) {
     const verifierHost = `${preamble}    contract __MessageBusVerifierHost() {
+      ${directPushHelperSource}
       function ${MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM}(
         bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
         ${!kernelUpgradeMode ? '' : ', bytes __internal__upgradeBytecode, bytes __internal__upgradeStateSuffix'}
@@ -13978,6 +14139,34 @@ function compileResolvedAst(
     }
   }
 
+  // An entry's msg.data reads the unlocking frame, which can include compiler-hidden witnesses in addition
+  // to source-visible arguments. The internal-context lowering above replaces helper reads with a synthetic
+  // parameter, so survey both remaining reads and that parameter before publishing ABI admission metadata.
+  // Propagate through named calls conservatively, as for msg.sender; an SDK must not mistake an indirect
+  // reader for a direct method whose calldata is fully described by its visible ABI.
+  if (needsMsgDataContext) {
+    const byName = new Map<string, FunctionDefinitionNode[]>();
+    const directDataNames = new Set<string>();
+    for (const fn of ast.contract.functions) {
+      const group = byName.get(fn.name) ?? [];
+      group.push(fn);
+      byName.set(fn.name, group);
+      let direct = fn.usesMsgData === true
+        || fn.parameters.some((parameter) => parameter.name === '__internal__msgData');
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_DATA) direct = true;
+      });
+      if (direct) directDataNames.add(fn.name);
+    }
+    if (directDataNames.size > 0) {
+      for (const fn of ast.contract.functions) {
+        if ([...collectNamedFunctionClosure(fn, byName)].some((name) => directDataNames.has(name))) {
+          fn.usesMsgData = true;
+        }
+      }
+    }
+  }
+
   // Reapply the pre-lowering requirement to the final logical functions and compiler-owned handler clones, while
   // also discovering any dynamic-state dependency synthesized after the first survey.
   markDynamicChunkInputBaseFunctions(ast, dynamicChunkInputBaseFunctionKeys);
@@ -14566,8 +14755,10 @@ function compileResolvedAst(
   const verifierEnvelopeTransport = mergedCompilerOptions.messageBusKernel !== true ? undefined
     : mergedCompilerOptions.messageBusRootEnvelope === true ? 'root-route'
       : mergedCompilerOptions.messageBusProxyForwardEnvelope === true
-        && ast.contract.functions.some((fn) => fn.messageBusRoute === true
-          && fn.modifiers.includes(FunctionModifier.DELEGATE)) ? 'proxy-forward' : undefined;
+        ? ast.contract.functions.some((fn) => fn.messageBusRoute === true
+          && fn.modifiers.includes(FunctionModifier.DELEGATE)) ? 'proxy-forward'
+          : mergedCompilerOptions.messageBusDirectParticipant === true ? 'root-route' : undefined
+        : undefined;
   if ((mergedCompilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true
     && !mergedCompilerOptions.__messageBusVerifierProgram
     && singlePassVerifierSource) {
@@ -15606,7 +15797,8 @@ function compileResolvedAst(
       atomicMessageBus: {
         domain: ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
         protocolVersions: mergedCompilerOptions.messageBusKernel === true && detachedVerifierProgram
-          ? [1, 2, 4] : mergedCompilerOptions.messageBusKernel === true ? [1, 2] : [1],
+          ? mergedCompilerOptions.messageBusDirectParticipant === true ? [1, 2, 4, 5] : [1, 2, 4]
+          : mergedCompilerOptions.messageBusKernel === true ? [1, 2] : [1],
         messageEnvelope: extractedVerifierProgram?.envelopeTransport === 'root-route'
           ? {
             region: 'root-route' as const,

@@ -79,8 +79,14 @@ if (preparedAtomicNodes?.length) {
     const artifact = node.executionArtifact ?? node.contract.inner.artifact;
     if (node.selector === undefined) return [node];
     const selector = node.selector.toLowerCase();
-    return artifact.messageBus?.handlers.some((handler: any) =>
-      handler.selector.toLowerCase() === selector && handler.eligible) === true ? [] : [node];
+    const routed = artifact.messageBus?.handlers.some((handler: any) =>
+      handler.selector.toLowerCase() === selector && handler.eligible) === true;
+    const rootAllowsDirect = (preparedAtomicNodes![0].executionArtifact
+      ?? preparedAtomicNodes![0].contract.inner.artifact).compiler?.options?.messageBusDirectParticipant === true;
+    const direct = artifact.messageBus === undefined
+      && artifact.compiler?.options?.messageBusDirectParticipant === true
+      && rootAllowsDirect && node.parent !== null;
+    return routed || direct ? [] : [node];
   });
   const completeGraph = orderedNodes.length === preparedAtomicNodes.filter((node) => node.active).length;
   const allRoutesEligible = completeGraph && unrouteableNodes.length === 0;
@@ -123,7 +129,7 @@ if (preparedAtomicNodes?.length) {
     throw new Error(
       'messageBus: repeated-owner calls require atomic composition, but the prepared graph contains '
       + `direct-only participant${directOnly.length === 1 ? '' : 's'}: ${directOnly.join(', ')}. `
-      + 'Mixed direct/kernel participant composition is not yet supported.',
+      + 'This direct/kernel graph lacks the explicit V5 authority or an eligible direct-call shape.',
     );
   }
   if (requiresAtomicPromotion && allRoutesEligible) {

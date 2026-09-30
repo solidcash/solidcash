@@ -274,7 +274,13 @@ export const participantOf = (
   unboundRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
   outputLockingBytecode?: string,
 ): WorklistParticipant => {
-  const logicalLockingBytecode = binToHex(addressToLockScript(descriptor.contract.target));
+  // A prepared direct edge records the address actually evaluated by the caller. A contract wrapper's
+  // SCID public target can differ from the physical script being co-spent even when the caller explicitly
+  // holds the latter. Only the source-evaluated target may stand in for a direct participant identity.
+  const logicalLockingBytecode = descriptor.artifact.messageBus === undefined
+    && descriptor.targetLockingBytecode !== undefined
+    ? descriptor.targetLockingBytecode.toLowerCase()
+    : binToHex(addressToLockScript(descriptor.contract.target));
   const representedLogicalIdentity = [
     descriptor.contract.inner.lockingBytecode,
     descriptor.executor?.inner.lockingBytecode,
@@ -282,8 +288,20 @@ export const participantOf = (
   const identityAnchorCount = descriptor.contract._logicalAddress && !representedLogicalIdentity ? 1 : 0;
   const effectiveArtifact = descriptor.executor
     ? delegateParticipantArtifact(descriptor.artifact, identityAnchorCount)
-    : ownerParticipantArtifact(descriptor.artifact, identityAnchorCount);
-  const effectiveLayout = effectiveArtifact.messageBus?.route?.blockLayout;
+    : descriptor.artifact.messageBus
+      ? ownerParticipantArtifact(descriptor.artifact, identityAnchorCount)
+      : descriptor.artifact;
+  const direct = effectiveArtifact.messageBus === undefined;
+  const directAbi = direct ? resolveMessageBusAbiFunction(
+    effectiveArtifact, descriptor.functionName, descriptor.selector,
+  ) : undefined;
+  if (direct && (effectiveArtifact.compiler?.options?.messageBusDirectParticipant !== true
+    || descriptor.targetLockingBytecode === undefined
+    || descriptor.executor !== undefined || identityAnchorCount !== 0
+    || logicalLockingBytecode !== descriptor.contract.inner.lockingBytecode)) {
+    throw new Error(`messageBus: direct participant '${effectiveArtifact.contractName}' lacks V5 authority`);
+  }
+  const effectiveLayout = direct ? directAbi?.blockLayout : effectiveArtifact.messageBus?.route?.blockLayout;
   if (!effectiveLayout) {
     throw new Error(
       `messageBus: participant '${descriptor.artifact.contractName}' function '${descriptor.functionName}' has no compiled route`,
@@ -314,6 +332,7 @@ export const participantOf = (
   }
   return {
     artifact: effectiveArtifact,
+    ...(direct && { authority: 'direct' as const }),
     lockingBytecode: descriptor.contract.inner.lockingBytecode,
     ...(outputLockingBytecode !== undefined && { outputLockingBytecode }),
     ...(logicalLockingBytecode !== descriptor.contract.inner.lockingBytecode && {
@@ -455,6 +474,15 @@ export const graphRouteContext = (
   upgradeStateSuffixes: ReadonlyMap<string, Uint8Array> = new Map(),
 ): Readonly<Record<string, FunctionArgument>> => {
   const execution = finalized.plan.participants[participant];
+  if (execution.authority === 'direct') {
+    throw new Error(`messageBus: direct participant ${participant} has no graph route context`);
+  }
+  const routedOrdinal = finalized.plan.participants.slice(0, participant)
+    .filter((candidate) => candidate.authority !== 'direct').length;
+  const activeVerifierIndex = finalized.layout.verifierInputs[routedOrdinal];
+  if (activeVerifierIndex === undefined) {
+    throw new Error(`messageBus: routed participant ${participant} has no verifier coordinate`);
+  }
   const rows = finalized.callManifest.rows;
   const emissions = rows.map((row, invocation) => ({ row, invocation }))
     .filter(({ row }) => row.kind === 0 && row.parent !== 0xffff && row.owner === participant)
@@ -517,7 +545,7 @@ export const graphRouteContext = (
   const blockhashSlot = execution.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
   const blockhashParameter = execution.artifact.messageBus?.route.graphBlockhashOracle?.inputBaseParameter;
   return Object.freeze({
-    __internal__activeVerifierIndex: BigInt(finalized.layout.verifierInputs[participant]),
+    __internal__activeVerifierIndex: BigInt(activeVerifierIndex),
     __internal__graphFixedSize: BigInt(finalized.callManifest.participants[participant].fixedSize),
     __internal__returnOutputIdx: BigInt(
       finalized.callManifest.participants[participant].returnOffset === 0xffff

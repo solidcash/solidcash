@@ -2656,6 +2656,7 @@ function buildFunctionAbiMetadata(
       })),
     }),
     ...(func.usesMsgSender && { usesMsgSender: true }),
+    ...(func.usesMsgData && { usesMsgData: true }),
     // Absent means no signature check was proven - a body with none, or an artifact predating the field.
     // Both read as "unguarded"; absent is never a proof of authority.
     ...(signatureGuard && { signatureGuard }),
@@ -3343,6 +3344,7 @@ export function generateArtifact(
         messageBus: compilerOptions.messageBus,
         ...(compilerOptions.messageBus && compilerOptions.messageBusKernel !== undefined
           && { messageBusKernel: compilerOptions.messageBusKernel }),
+        ...(compilerOptions.messageBusDirectParticipant === true && { messageBusDirectParticipant: true }),
         // Runtime external-call argument reconstruction must mirror Solidity-only encoding rules such as
         // abi.encodePacked(address) narrowing to the 20-byte account payload.
         solidityImportCompat: compilerOptions.solidityImportCompat,

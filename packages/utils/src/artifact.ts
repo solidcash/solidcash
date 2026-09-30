@@ -130,6 +130,8 @@ export interface CompilerOptions {
   // compilation and is rejected when semantic analysis finds a transaction shape that cannot be built without
   // one shared message bus. The resolved value is what the artifact publishes.
   messageBus?: boolean;
+  /** Opt in to V5 atomic manifests with a co-spent direct-only participant and no verifier NFT. */
+  messageBusDirectParticipant?: boolean;
   // Optional compile-time surface for large compatibility projects. Direct ABI entry points remain unchanged;
   // only these functions are cloned into the authenticated message-bus route. A legacy string selects every
   // overload with that name; an exact reference selects only the entry point with both that name and selector.
@@ -593,6 +595,8 @@ export interface AbiFunction {
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   tokenContainerTransferSites?: readonly TokenContainerTransferSiteAbi[];
   usesMsgSender?: boolean;
+  /** The function or a reachable named internal helper reads msg.data. */
+  usesMsgData?: boolean;
   /**
    * The signature check that authorizes this function, described by the key it is checked against.
    *
@@ -1771,7 +1775,7 @@ export interface Artifact {
     atomicMessageBus?: {
       domain: typeof ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
       /** Atomic callManifest wire versions accepted by this artifact's verifier program. */
-      protocolVersions?: readonly (1 | 2 | 3 | 4)[];
+      protocolVersions?: readonly (1 | 2 | 3 | 4 | 5)[];
       /** Physical carrier for the canonical frame authenticated by every participant binder. */
       messageEnvelope: {
         region: 'participant-verifiers';

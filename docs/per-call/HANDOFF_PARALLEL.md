@@ -487,3 +487,28 @@ lands it removes the claim line.
   `post job from unregistered user` and the other revert titles report their source text.
 - **Size**: half a day to a day. **Coordination**: `refusal.ts` is the ladder stream's; the publication is the
   compiler's. Confirm before editing `refusal.ts`.
+
+### PW10. A read-only entry reached through a proxy (the read shape of the 24 titles)
+
+- **Why**: a per-call transaction reaches a proxied contract by naming the proxy's master; the proxy's `__fallback`
+  records a `DELEGATE` call to the implementation. For a **read-only** entry the caller's compiled body requires its
+  call record's kind to be `STATIC` (the site's kind is fixed by the interface declaration it was compiled
+  against), so the plan states the proxy frame `STATIC` and its own call to the implementation `DELEGATE`, which
+  `checkV10` refuses (`V10_STATIC_NON_STATIC_CALL`, `packages/solidc/src/per-call/validator/checks.ts`). Measured: the
+  same hop settles and broadcasts with the method declared non-`view`, and fails with it declared `view`
+  (`HOPTRACE verdict id=validator/1 index=2 objection=Program failed an OP_VERIFY operation.`). Most of the
+  remaining acceptance titles read through a proxy: `meceTags`, `userRegistered` and `arbitratorRegistered` are all
+  `STATIC` sites in the specification's own edge catalog (section 22).
+- **Why the relaxation is sound**: V10's property is "nothing below a read-only frame changes state", and
+  `checkV10` already collects that subtree transitively and checks every frame in it for unchanged record
+  commitments, no event, no send and no value. The only clause the proxy leg trips is the **call-kind** one, and a
+  `DELEGATE` call is not a state change in itself: it runs the callee's code against the caller's records, and the
+  delegate frame's own entries are checked by the same loop. Admitting `DELEGATE` as a callee kind while keeping
+  every other requirement on that frame and its subtree keeps T34.
+- **Do**: relax the call-kind clause (off chain) and `requireStaticCalls` (on chain, `validator/program.ts`) to
+  accept `STATIC` or `DELEGATE` and nothing else, with the rest of each walk unchanged; prove it with machine-level
+  pairs — a read-only delegate accepted, and the same plan refused when the delegate changes a record, emits, sends
+  or carries value, at two levels, both off chain and from the program.
+- **Done when**: a `view` call through a proxy settles with the caller reading the value, and the refusals above
+  still hold from the program.
+- **Size**: half a day to a day. **Coordination**: `validator/` only — the ladder stream has an agent on it.

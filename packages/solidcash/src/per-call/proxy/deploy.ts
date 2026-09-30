@@ -55,7 +55,7 @@ import {
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftCall, type DraftInput,
   type DraftMaster, type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
-import { readComputedDeclaration } from '../deploy/declaration.js';
+import { readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
 import { frameDataRecordIndices } from '../call/entry-records.js';
 import { eventLockingBytecode, eventSentinel } from '../deploy/genesis.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
@@ -711,9 +711,7 @@ export async function deployPerCallProxy(
   });
   // A sorted collection the entry writes has no node until it does, so the proxy's genesis seeds its empty head;
   // a dynamic value's run has no head, so a write that only appends to one seeds nothing.
-  const headCollections = entryWrites?.collection === undefined || entryWrites.signature === undefined
-    ? []
-    : [{ name: entryWrites.collection, signature: entryWrites.signature }];
+  const headCollections = [...(entryWrites?.collections ?? [])];
 
   // 1. The implementation's genesis and pools.
   const implementation = await deployStatefulContract(
@@ -1152,6 +1150,10 @@ async function settleCallees(options: {
           + `reported=${refusal.innermost?.master ?? 'none'} `
           + `refs=[${traceCallRefs(candidate.draft, callee.master)}]`);
         hopTrace(`close callee=${callee.master} reason=${attributed}`);
+        hopTrace(`reading callee=${callee.master} ${traceReading(reading)}`);
+        hopTrace(`callee=${callee.master} returns=${callee.returns} records=[`
+          + `${callee.records.map((record) => binToHex(record.commitment).slice(0, 20)).join(',')}] retvalCandidate=`
+          + `${binToHex(placeholder).slice(0, 20)}`);
       }
       throw new PerCallProxyDeployError(
         `the call's callee "${callee.functionName}" did not settle through the proxy: ${failing}`,
@@ -1197,6 +1199,19 @@ function traceCallRefs(draft: CompositionDraft, master: string): string {
     const callee = byIndex.get(call.calleeRef) ?? '?';
     return `${callee}@${ref}->${binToHex(call.target).slice(0, 8)}`;
   }).join(' ');
+}
+
+/**
+ * The reading a settle got from the evaluated frame's own program: the close it left, or why its stop is not one.
+ *
+ * A refusal's attributed reason names the frame the reporter picked, which can be another frame; the reading is the
+ * evaluated frame's own result, so it tells a stop at a value the plan should have stated from a stop elsewhere.
+ */
+function traceReading(reading: DeclarationReading): string {
+  return reading.ok
+    ? `ok declaredLen=${reading.declared.length} computedLen=${reading.computed.length} `
+      + `declared=${binToHex(reading.declared).slice(0, 40)} computed=${binToHex(reading.computed).slice(0, 40)}`
+    : `stop reason=${reading.reason} opcode=${reading.opcode ?? 'none'} length=${reading.length ?? 'none'}`;
 }
 
 /** The category a frame's own events are emitted under: its own, or its caller's for a delegate frame. */
@@ -1370,6 +1385,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
           + `reported=${refusal.innermost?.master ?? 'none'} `
           + `refs=[${traceCallRefs(candidate.draft, IMPLEMENTATION_MASTER_ID)}]`);
         hopTrace(`close entry=${IMPLEMENTATION_MASTER_ID} reason=${attributed}`);
+        hopTrace(`reading entry=${IMPLEMENTATION_MASTER_ID} ${traceReading(reading)}`);
       }
       throw new PerCallProxyDeployError(
         `the implementation's ${options.entryLabel} did not settle through the proxy: ${failing}`

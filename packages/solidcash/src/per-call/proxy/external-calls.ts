@@ -914,6 +914,9 @@ async function placeCalleeMasters(
       senderAddress: caller.selfAddress, categoryId, deployment,
     });
     for (const node of readNodes) ctx.utxos.set(node.id, node.utxo);
+    // A mapping node the frame writes sits on a live UTXO the deployment's classification already placed, so the
+    // hop hands the rebuild its outpoint rather than have it search the category again.
+    for (const [id, utxo] of writes?.spentUtxos ?? []) ctx.utxos.set(id, utxo);
     const frame: HopCallee = {
       master,
       contract,
@@ -1069,6 +1072,7 @@ async function placeProxiedCallee(
       senderAddress: caller.selfAddress, categoryId: external.categoryId, deployment: proxyDeployment,
     });
     for (const node of implementationReads) ctx.utxos.set(node.id, node.utxo);
+    for (const [id, utxo] of implementationWrites?.spentUtxos ?? []) ctx.utxos.set(id, utxo);
     const implementationBaseFrame: HopCallee = {
       master: implementationMaster,
       contract: implementationContract,

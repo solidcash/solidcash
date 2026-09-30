@@ -1700,34 +1700,37 @@ risk. Take the slices in order, each with its own tests.
     `try`, the origin checks) first; each cross-contract row is recorded as served or refused by name, with no work
     on the hop's side. Files: the new conformance directory, and the subroutine operands and admission a row finds
     missing (the generation pass, `support.ts` merged onto the implementer's working tree).
-  - **Claimed by the second worker (this one), from `8734368b0`, landed `d88758b41`:** **Y7's exact
-    `sweep(t)` spelling** -- a self call whose argument is a **mapping read**,
-    `this.transfer(t, this.bal[address(this)])`. The compiler threw rather than emitting the shape: `Found
-    parameters (address,int256) in call to function 'transfer' where parameters
-    (address,int256,bytes32,bigint,...) were expected`, i.e. the hidden per-call operands a mapping access needs
-    were demanded of the *source* call, which passes only the declared parameters. **Landed**: under the per-call
-    convention the call resolves against the callee's declared parameters, because the master derives the
-    sorted-batch operands from its own witness block (`TypeCheckTraversal.callSiteParameterTypes`); the read the
-    argument performs takes its block-layout slot like any other access of the body, because the entry-access walk
-    now descends into a call statement's `call` field (`SymbolTableTraversal`, both walks); and a derived key that
-    is a frame value hashes the item the body's own `msg.sender`/`tx.origin` read picks, so a subroutine's write
-    uses the context its caller pushed (`GenerateTargetTraversal.frameValueSlotName`). A body that derives a batch
-    write is now refused by the name of its caller when the frame that invokes it makes an external call: a
-    subroutine's own call count names the segment only while the caller's frame has made none, so the admission
-    fails closed rather than composing a frame whose write lands in a later segment
-    (`master/subroutine-batch-segment.test.ts`). **Measured**
-    (`toys/identity.test.ts`, 20 cases green): the plan's exact spelling and its helper variant compile with no
-    published refusals; the same mapping read held in a local and passed as a call argument now publish the same
-    entry access and the same layout slot, in **both** conventions (before, a read in an argument made codegen
-    refuse the whole contract with `The verified-mapping read on 'bal' in 'readThrough' has no allocated entry
-    slot`). **Still open, measured, not this worker's to guess**: the sweep's own settle stalls at the frame's
-    segment close (`PER_CALL_DERIVATION_STALLED: master "tok-1" of Tok.sweep() filled no witness at site 0 (close
-    of segment 0)`), and the same stall holds with the read held in a local, so what stops it is the frame's own
-    record declaration for a read-only node, not the call-argument spelling; the third case in the toy pins it.
-    Serving the settle means attributing a self-called body's accesses to the frame that runs it and sizing the
-    derivation's leading records from that frame. Files touched: the per-call call resolution and lowering under
-    `packages/solidc/src/`, and the identity toy's own cases. **This worker is a second, non-ladder worker**: it
-    takes no scoreboard title, no ladder-order item, and no fixture/harness file.
+  - **Claimed by the second worker (this one), from `8734368b0`, landed `d88758b41`:** **a mapping access written
+    *inside a call's argument* is not collected, so it takes no block-layout slot, and a call to a mapping writer
+    inside the same contract cannot resolve** -- two compiler defects of the per-call path, measured through the
+    plan's own Y7 shape (`sweep(t)` calling `this.transfer(t, this.bal[address(this)])`). **This claim is
+    off-ladder**: it takes no scoreboard title, no ladder-order item held by this worker and no fixture or harness
+    file, it does not tick Y7 or any I1/I2/I2b box, and its deliverable is a defect fix in the shipped compiler
+    whose tests are compiler/per-call tests (`master/subroutine-batch-segment.test.ts`, plus the call-argument and
+    compile cases in `toys/identity.test.ts`); Y7 itself stays unticked, because its settlement half is still open
+    (below). The Y7 spelling is the shape that measured the defects, not the item.
+    **Defect 1**: `collectEntryAccesses`/`assignEntrySlotIndices` walk a body generically by field name and never
+    descend into a `FunctionCallStatementNode`'s `call`, so `this.g(m[k])` entered no entry access: codegen then
+    refused the *whole contract* (`The verified-mapping read on 'bal' in 'g' has no allocated entry slot`) in
+    **both** conventions, while the same read held in a local compiled. Both walks now descend into `call`.
+    **Defect 2**: a body that writes a sorted mapping carries the sorted-batch operands, which the direct
+    convention receives from its SDK, and the type check demanded them of the *source* call, which passes only the
+    declared parameters (`Found parameters (address,int256) in call to function 'transfer' where parameters
+    (address,int256,bytes32,bigint,...) were expected`). Under the per-call convention the call now resolves
+    against the callee's declared parameters, because the master derives those operands from its own witness block
+    (`TypeCheckTraversal.callSiteParameterTypes`); a derived key that is a frame value hashes the item the body's
+    own `msg.sender`/`tx.origin` read picks, so a subroutine's write uses the context its caller pushed
+    (`GenerateTargetTraversal.frameValueSlotName`); and a body whose batch write would land in a later segment than
+    its own derivation reads is refused by the name of its caller (`support.ts`, `master/subroutine-batch-segment.test.ts`),
+    since a self-call is a subroutine rather than a record and closes no segment. **Measured**
+    (`toys/identity.test.ts`, 20 cases green; `master/subroutine-batch-segment.test.ts`, 2 cases green): the plan's
+    exact spelling and its helper variant compile with no published refusals; the read held in a local and the same
+    read passed as an argument publish the same entry access and the same layout slot in both conventions; the
+    caller that makes an external call is refused by name with its callee. **Still open, measured**: the sweep's own
+    settle stalls at the frame's segment close (`PER_CALL_DERIVATION_STALLED: master "tok-1" of Tok.sweep() filled
+    no witness at site 0 (close of segment 0)`), and the same stall holds with the read held in a local, so the
+    frame's declaration for a read-only node is what stops it rather than the call-argument spelling; the toy's
+    third case pins it, and Y7 therefore stays unticked.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

@@ -209,6 +209,78 @@ function delegatedSourceDeclaresReason(transaction: any, match: RegExp | string)
   ));
 }
 
+function errorMessage(error: unknown): string {
+  return String((error as { message?: unknown })?.message ?? error);
+}
+
+/** The contract's own reason a per-call failure named, and the argument tuple when it named a custom error. */
+interface PerCallFailure {
+  readonly reason?: string;
+  /** Absent when the refusal named no argument tuple, which a `.withArgs` assertion must then refuse. */
+  readonly errorArgs?: readonly unknown[];
+}
+
+/** A frame refusal's reason, as the composer publishes it: the custom error's description, or the `require` message. */
+function describeFrameRefusalReason(reason: {
+  message?: string;
+  error?: { name?: string; parameters?: readonly { type: string }[] };
+} | undefined): string | undefined {
+  if (reason?.error !== undefined) {
+    const types = reason.error.parameters?.map((parameter) => parameter.type).join(', ') ?? '...';
+    return `revert ${reason.error.name}(${types})`;
+  }
+  return reason?.message;
+}
+
+/**
+ * The frame reason a per-call refusal message names, or undefined when the message names no frame.
+ *
+ * A refusal that reached the machine reports the innermost frame's own source reason as
+ * `frame "<master>" of <entry> at line <n>: <reason> (<objection>)`. A construction or planner failure does not
+ * carry that shape, so a harness message that merely mentions a frame is not read as a contract reason.
+ */
+function frameReasonFromRefusalMessage(message: string): string | undefined {
+  const at = message.indexOf('frame "');
+  if (at < 0) return undefined;
+  const match = /^frame "[^"]*" of [^:]+: ([\s\S]*) \(([^()]*)\)$/.exec(message.slice(at));
+  return match?.[1];
+}
+
+/**
+ * The contract's own reason a per-call failure carries, or undefined when the failure is not a per-call refusal.
+ *
+ * `PerCallCompositionRefusedError` publishes the refusal report directly; the proxy hop reports the same frame
+ * description inside its message. Both carry the custom-error argument tuple a `.withArgs` assertion reads; a
+ * failure that names no frame (a construction error, a planner refusal, an unsupported shape) yields a result
+ * with no `reason` and does not satisfy a contract-reason expectation.
+ */
+function perCallFailure(error: unknown): PerCallFailure | undefined {
+  const name = (error as { name?: unknown })?.name;
+  const record = error as {
+    report?: { innermost?: { reason?: { message?: string; error?: { name?: string } } } };
+    errorArgs?: readonly unknown[];
+    message?: string;
+  };
+  if (name === 'PerCallCompositionRefusedError') {
+    return {
+      reason: describeFrameRefusalReason(record?.report?.innermost?.reason),
+      ...(record?.errorArgs === undefined ? {} : { errorArgs: record.errorArgs }),
+    };
+  }
+  if (name === 'PerCallProxyDeployError') {
+    return {
+      reason: frameReasonFromRefusalMessage(String(record?.message ?? '')),
+      ...(record?.errorArgs === undefined ? {} : { errorArgs: record.errorArgs }),
+    };
+  }
+  return undefined;
+}
+
+/** A contract reason matches an expected string exactly; a regex is the assertion's own explicit looseness. */
+function matchesRevertReason(actual: string, expected: RegExp | string): boolean {
+  return expected instanceof RegExp ? expected.test(actual) : actual === expected;
+}
+
 /** Recursive subset match (chai-subset semantics): primitives equal; objects match per-key; arrays: every
  *  subset element must be a subset of SOME target element. bigint/number are compared loosely. */
 function isSubset(target: any, subset: any): boolean {
@@ -701,51 +773,95 @@ class Assertion {
   }
 
   revertedWith(reason: RegExp | string): Promise<void> {
+    return this.revertExpectation(reason).promise;
+  }
+
+  /**
+   * One revert assertion, plus the facts a `.withArgs(...)` continuation reads.
+   *
+   * A per-call contract's refusal names its own frame's reason and, for a custom error, the argument tuple it was
+   * raised with; the reason is compared exactly, and a failure the harness produced (a construction error, a
+   * planner refusal, an unsupported shape) does not satisfy a contract-reason expectation. A direct-convention
+   * contract or a mock provider exposes no such reason, so those keep their previous lenient behaviour.
+   */
+  private revertExpectation(reason: RegExp | string): {
+    promise: Promise<void>;
+    outcome: { perCall: boolean; errorArgs?: readonly unknown[] };
+  } {
+    const outcome: { perCall: boolean; errorArgs?: readonly unknown[] } = { perCall: false };
     const maximumInputBytes = (this.actual as any)?.parentContract?.inner?.provider
       ?.consensusLimits?.maximumInputBytes ?? 10_000;
     const relaxed = maximumInputBytes > 10_000;
-    const isConstructionFailure = (error: unknown): boolean => {
-      const message = String((error as { message?: unknown })?.message ?? error);
-      return /Cannot send stateful transaction|could not be auto-derived|state commitments could not/i
-        .test(message);
-    };
+    const isConstructionFailure = (error: unknown): boolean =>
+      /Cannot send stateful transaction|could not be auto-derived|state commitments could not/i.test(errorMessage(error));
     const viewRead = this.actual?.parentContract?.inner?.artifact?.abi
       ?.find((fn: { name?: string; writesState?: boolean }) => fn.name === this.actual?.functionName)
       ?.writesState === false;
-    if (!this.negate && !viewRead && (relaxed || delegatedSourceDeclaresReason(this.actual, reason))) {
-      const result = typeof this.actual?.send === 'function' ? this.actual.send() : this.actual;
-      return Promise.resolve(result).then(
+    const perCallCall = typeof (this.actual as { compose?: unknown })?.compose === 'function';
+    if (!this.negate && (perCallCall || (!viewRead && (relaxed || delegatedSourceDeclaresReason(this.actual, reason))))) {
+      // A per-call call is awaited rather than `.send()`-ed: a read-only entry is read, a writing entry is sent,
+      // so a pass-through expectation never broadcasts a read the way a forced `send()` would.
+      const started = perCallCall
+        ? Promise.resolve(this.actual)
+        : Promise.resolve(typeof this.actual?.send === 'function' ? this.actual.send() : this.actual);
+      const promise = started.then(
         () => { throw new Error(`expected transaction to revert with ${String(reason)}, but it succeeded`); },
         (error) => {
-          // A failed layout/derivation is not the Solidity require named in the assertion.
-          if (isConstructionFailure(error)) throw error;
+          const failure = perCallFailure(error);
+          if (!perCallCall && failure === undefined) {
+            // Legacy: a failed layout/derivation is not the Solidity require named in the assertion; any other
+            // failure is accepted where the richer per-call facts are unavailable.
+            if (isConstructionFailure(error)) throw error;
+            return;
+          }
+          outcome.perCall = true;
+          if (failure?.errorArgs !== undefined) outcome.errorArgs = failure.errorArgs;
+          if (failure?.reason !== undefined && matchesRevertReason(failure.reason, reason)) return;
+          if (failure?.reason !== undefined) {
+            throw new Error(
+              `expected revert reason ${String(reason)}, but the contract's own reason was `
+              + `${JSON.stringify(failure.reason)}`,
+            );
+          }
+          throw new Error(
+            `expected revert reason ${String(reason)}, but the call failed before reaching a contract reason: `
+            + errorMessage(error),
+          );
         },
       );
+      return { promise, outcome };
     }
     const e = ensureVitest();
     const assertion = Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
-    if (this.negate) return assertion;
-    return assertion.catch((error) => {
+    const promise = this.negate ? assertion : assertion.catch((error) => {
       if (delegatedSourceDeclaresReason(this.actual, reason)) return;
       throw error;
     });
+    return { promise, outcome };
   }
 
   /**
    * Custom-error revert with optional argument verification.
    *
-   * A locally modelled contract raises its errors with the argument tuple attached, so `.withArgs(...)` can be
-   * checked here. A compiled covenant only carries the error *name* in its debug metadata: when no argument tuple
-   * reaches the matcher the assertion keeps the previous informative failure instead of silently passing.
+   * A per-call contract reports the contract's own error arguments, so `.withArgs(...)` is compared against them;
+   * a refusal that carries no tuple is refused loudly rather than passed without checking. A locally modelled
+   * contract attaches its argument tuple. A compiled covenant only carries the error *name* in its debug metadata:
+   * when no argument tuple reaches the matcher the assertion keeps the previous informative failure.
    */
   revertedWithCustomError(_contract: any, name: string): Promise<void> & { withArgs: (...a: any[]) => Promise<void> } {
-    const p = this.revertedWith(new RegExp(name)) as Promise<void> & { withArgs: (...a: any[]) => Promise<void> };
+    const { promise, outcome } = this.revertExpectation(new RegExp(name));
+    const p = promise as Promise<void> & { withArgs: (...a: any[]) => Promise<void> };
     p.withArgs = async (...expected: any[]): Promise<void> => {
-      await p;
-      const actualArgs = await this.revertArgumentTuple();
-      // A compiled covenant only carries the error name, so there is nothing to verify: keep this branch's
-      // lenient pass-through. A locally modelled contract attaches its argument tuple.
-      if (actualArgs === undefined) return;
+      await promise;
+      const actualArgs = outcome.perCall ? outcome.errorArgs : await this.revertArgumentTuple();
+      if (actualArgs === undefined) {
+        // A per-call refusal is where arguments can be observed; when it named none the matcher refuses rather
+        // than passing without checking. A compiled covenant carries only the error name.
+        if (outcome.perCall) {
+          throw new Error(`cannot verify custom error ${name} arguments: the failure carried no argument tuple`);
+        }
+        return;
+      }
       expected.forEach((want, index) => {
         const got = actualArgs[index];
         const ga = typeof got === 'bigint' ? got : (got as any)?.toString?.() ?? got;

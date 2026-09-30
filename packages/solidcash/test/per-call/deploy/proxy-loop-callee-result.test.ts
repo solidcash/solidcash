@@ -23,31 +23,45 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * encoding is the caller's to read: a native callee returns the canonical pushes of its values, and a
  * Solidity-compatible one returns an ABI tuple whose first byte is an offset.
  */
-const SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' interface IData { function tag(string key) external returns (string); }'
-  + ' contract Data {'
-  + '   mapping(string => string) public tags;'
-  + '   function tag(string key) returns (string) { return this.tags[key]; }'
-  + '   function initialize() { this.tags["DV"] = "DIGITAL_VIDEO"; }'
-  + ' }'
-  + ' contract Caller {'
-  // A proxy mirrors its implementation's records field by field, so the caller declares the fields a record needs
-  // as well as the address it calls.
-  + '   uint256 public openedAt;'
-  + '   uint256 public closedAt;'
-  + '   uint256 public revision;'
-  + '   uint256 public rate;'
-  + '   address public data;'
-  + '   function initialize(address data_) { this.data = data_; }'
-  + '   function check(string[] keys) returns (uint) {'
-  + '     uint count = 0;'
-  + '     for (uint i = 0; i < keys.length; i++) {'
-  + '       if (bytes(IData(this.data).tag(keys[i])).length != 0) { count = count + 1; }'
-  + '     }'
-  + '     require(count == 1, "Exactly one tag");'
-  + '     return count;'
-  + '   }'
-  + ' }';
+function source(declaration: string): string {
+  return 'pragma solidcash ^0.13.0;'
+    + ' interface IData { function tags(string key) external view returns (string); }'
+    + ' contract Data {'
+    + '   mapping(string => string) public tags;'
+    + `   ${declaration}`
+    + '   function initialize() { this.tags["DV"] = "DIGITAL_VIDEO"; }'
+    + ' }'
+    + ' contract Caller {'
+    // A proxy mirrors its implementation's records field by field, so the caller declares the fields a record
+    // needs as well as the address it calls.
+    + '   uint256 public openedAt;'
+    + '   uint256 public closedAt;'
+    + '   uint256 public revision;'
+    + '   uint256 public rate;'
+    + '   address public data;'
+    + '   function initialize(address data_) { this.data = data_; }'
+    + '   function check(string[] keys) returns (uint) {'
+    + '     uint count = 0;'
+    + '     for (uint8 i = 0; i < keys.length; i++) {'
+    + '       if (bytes(IData(this.data).tags(keys[i])).length != 0) { count = count + 1; }'
+    + '     }'
+    + '     require(count == 1, "Exactly one tag");'
+    + '     return count;'
+    + '   }'
+    + ' }';
+}
+
+/**
+ * The two boundaries' sources.
+ *
+ * A Solidity-compatible import publishes a public mapping's own generated getter as an entry, which is the callee
+ * a Solidity codebase calls; a native compilation publishes no such entry, so that source declares the getter it
+ * calls.
+ */
+const SOURCES = {
+  compat: source(''),
+  native: source('function tags(string key) view returns (string) { return this.tags[key]; }'),
+};
 
 /** A 32-byte outpoint hash whose bytes are not all the same, so a byte-order bug cannot hide in it. */
 function outpointHash(seed: number): string {
@@ -100,23 +114,27 @@ async function deployBehindProxy(
 }
 
 /**
- * Deploys both contracts behind their own proxies and calls the loop through the caller's, seeded by two coins.
+ * Deploys both contracts behind their own proxies and calls the loop through the caller's, under one boundary.
  *
  * The caller's own state holds the callee's address, which is what its body computes the call's target from; the
  * callee's deployment is handed over as the caller's named external for the interface the call reaches.
+ *
+ * A genesis-outpoint reservation is process-local and keyed by the outpoint, so the two cases each fund from their
+ * own `seed`: sharing one outpoint across chains would hold it out of the second case's funding selection.
  */
-async function run(solidityImportCompat: boolean): Promise<{
+async function run(solidityImportCompat: boolean, seed: number): Promise<{
   readonly accepted: boolean;
   readonly objections: readonly string[];
   readonly broadcast?: { readonly txid: string };
 }> {
-  const artifacts = compileStringMulti(SOURCE, {
-    composition: 'per-call', ...(solidityImportCompat ? { solidityImportCompat: true } : {}),
-  });
+  const artifacts = compileStringMulti(
+    solidityImportCompat ? SOURCES.compat : SOURCES.native,
+    { composition: 'per-call', ...(solidityImportCompat ? { solidityImportCompat: true } : {}) },
+  );
   const wire = await wired();
-  const data = await deployBehindProxy(wire, artifacts.Data!, 0x30, []);
+  const data = await deployBehindProxy(wire, artifacts.Data!, seed, []);
   expect(data.initialize.broadcast).toBeDefined();
-  const caller = await deployBehindProxy(wire, artifacts.Caller!, 0x40, [data.proxy.address]);
+  const caller = await deployBehindProxy(wire, artifacts.Caller!, seed + 0x10, [data.proxy.address]);
   expect(caller.initialize.broadcast).toBeDefined();
 
   const external: PerCallProxyExternal = {
@@ -125,7 +143,7 @@ async function run(solidityImportCompat: boolean): Promise<{
     proxyArtifact: buildProxyArtifact(artifacts.Data!),
     implementationCategoryId: data.implementation.categoryId,
   };
-  const coin = { txid: outpointHash(0x50), vout: 0, satoshis: 100_000n };
+  const coin = { txid: outpointHash(seed + 0x20), vout: 0, satoshis: 100_000n };
   await wire.network.addUtxo(binToHex(wire.deployerLock), coin);
 
   const answered = await callPerCallProxyEntry({
@@ -152,17 +170,17 @@ async function run(solidityImportCompat: boolean): Promise<{
 }
 
 describe('a run-time loop reads a proxied getter once per turn', () => {
-  it('settles the loop where the callee returns a Solidity-compatible result tuple', async () => {
-    // The callee's retval is an ABI tuple, whose first word is the offset of the returned string: reading it as
-    // pushdata takes that offset's first byte as an empty push, and the answer the caller counts comes back empty.
-    const answered = await run(true);
+  it('settles the loop where the callee returns its values as canonical pushes', async () => {
+    const answered = await run(false, 0x30);
     expect({ accepted: answered.accepted, objections: answered.objections })
       .toStrictEqual({ accepted: true, objections: [] });
     expect(answered.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('settles the loop where the callee returns its values as canonical pushes', async () => {
-    const answered = await run(false);
+  it('settles the loop where the callee returns a Solidity-compatible result tuple', async () => {
+    // The callee's retval is an ABI tuple, whose first word is the offset of the returned string: reading it as
+    // pushdata takes that offset's first byte as an empty push, and the answer the caller counts comes back empty.
+    const answered = await run(true, 0x60);
     expect({ accepted: answered.accepted, objections: answered.objections })
       .toStrictEqual({ accepted: true, objections: [] });
     expect(answered.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);

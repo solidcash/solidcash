@@ -6,6 +6,8 @@ import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
+import { planCallLoopWrites } from '../../../src/per-call/call/entry-records.js';
+import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -23,7 +25,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * node per turn: the per-call layout declares the collection's `entry` slot and the artifact publishes the in-loop
  * access, and the call path plans one node per turn - the predecessor and its new node for an insert, chained
  * through the node the turn before created - and declares them where the emitted coordinate reads them. The same
- * accept-and-refused-mutation pair is taken there too, on the records the loop itself wrote.
+ * accept-and-refused-mutation pair is taken there for one turn and for three.
  */
 
 const FIXED_SOURCE = 'pragma solidcash ^0.13.0;'
@@ -89,6 +91,54 @@ const objectionsOf = (answered: CallResult): string => answered.verdicts
 const commitmentOf = (output: { readonly token?: { readonly nft?: { readonly commitment?: Uint8Array } } }):
 Uint8Array | undefined => output.token?.nft?.commitment;
 
+/**
+ * The addresses a varying-key loop chains, lowest slot first.
+ *
+ * The emitted loop reaches the node it created only while each turn's key sits above the one before it, so the
+ * caller's array has to ascend by slot value. The order is taken from the shipped planner - the entry's own key
+ * hash of the argument as it hands it over - rather than assumed from the address text.
+ */
+function ascendingKeys(count: number): string[] {
+  const artifact = compileStringMulti(VARYING_SOURCE, { composition: 'per-call' }).Ledger!;
+  return Array.from({ length: 48 }, (_unused, seed) => binToHex(new Uint8Array(20).fill(seed * 5 + 1)))
+    .map((address) => {
+      const planned = planCallLoopWrites({
+        artifact, functionName: 'move', args: [[address], 42n], callerLockingBytecode: new Uint8Array(0),
+      });
+      return { address, slot: bytesToSlotValue(keyToSlotMulti([...planned![0]!.turns[0]!.keys])) };
+    })
+    .sort((left, right) => (left.slot < right.slot ? -1 : 1))
+    .slice(0, count)
+    .map((entry) => entry.address);
+}
+
+/** The same transaction with one byte of a record the entry wrote changed, which the machine must refuse. */
+function expectMutatedRecordRefused(answered: CallResult): void {
+  // The record the entry wrote is the output whose commitment differs from the input's at the same index.
+  const index = answered.transaction.outputs.findIndex((output, at) =>
+    commitmentOf(output) !== undefined
+    && binToHex(commitmentOf(output)!) !== binToHex(commitmentOf(answered.sourceOutputs[at]!) ?? new Uint8Array()));
+  expect(index).toBeGreaterThanOrEqual(0);
+
+  // One byte of that commitment changed, so the record no longer carries the value the entry's own code computed.
+  const committed = commitmentOf(answered.transaction.outputs[index]!)!;
+  const changed = new Uint8Array(committed);
+  changed[changed.length - 1] = (changed[changed.length - 1]! ^ 0x01) & 0xff;
+  const mutated = {
+    ...answered.transaction,
+    outputs: answered.transaction.outputs.map((output, at) => (at === index
+      ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: changed } } }
+      : output)),
+  };
+  const master = answered.verdicts.findIndex((verdict) => verdict.accepted);
+  expect(master).toBeGreaterThanOrEqual(0);
+  const vm = compositionMachine();
+  const state = vm.evaluate({
+    inputIndex: master, sourceOutputs: answered.sourceOutputs, transaction: mutated,
+  });
+  expect(vm.stateSuccess(state)).not.toBe(true);
+}
+
 describe('a mapping upsert inside a run-time loop, through the shipped call path', () => {
   it('the machine accepts the run-time-loop upsert, and refuses the record it wrote being changed', async () => {
     // The machine is the BCH-2026 VM: `accepted` is true only when every participant's verdict is accepted, so this
@@ -96,31 +146,7 @@ describe('a mapping upsert inside a run-time loop, through the shipped call path
     const answered = await call(FIXED_SOURCE, 'move', [KEY, 42n, 2n]);
     expect({ accepted: answered.accepted, objections: objectionsOf(answered) })
       .toStrictEqual({ accepted: true, objections: '' });
-
-    // The record the entry wrote is the output whose commitment differs from the input's at the same index.
-    const index = answered.transaction.outputs.findIndex((output, at) =>
-      commitmentOf(output) !== undefined
-      && binToHex(commitmentOf(output)!) !== binToHex(commitmentOf(answered.sourceOutputs[at]!) ?? new Uint8Array()));
-    expect(index).toBeGreaterThanOrEqual(0);
-
-    // The mutated spend: the same transaction with one byte of that commitment changed, so the record no longer
-    // carries the value the entry's own code computed.
-    const committed = commitmentOf(answered.transaction.outputs[index]!)!;
-    const changed = new Uint8Array(committed);
-    changed[changed.length - 1] = (changed[changed.length - 1]! ^ 0x01) & 0xff;
-    const mutated = {
-      ...answered.transaction,
-      outputs: answered.transaction.outputs.map((output, at) => (at === index
-        ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: changed } } }
-        : output)),
-    };
-    const master = answered.verdicts.findIndex((verdict) => verdict.accepted);
-    expect(master).toBeGreaterThanOrEqual(0);
-    const vm = compositionMachine();
-    const state = vm.evaluate({
-      inputIndex: master, sourceOutputs: answered.sourceOutputs, transaction: mutated,
-    });
-    expect(vm.stateSuccess(state)).not.toBe(true);
+    expectMutatedRecordRefused(answered);
   });
 
   it('accepts the loop upsert whose key varies per turn, and refuses a record it wrote being changed', async () => {
@@ -131,31 +157,15 @@ describe('a mapping upsert inside a run-time loop, through the shipped call path
     const answered = await call(VARYING_SOURCE, 'move', [[KEY], 42n]);
     expect({ accepted: answered.accepted, objections: objectionsOf(answered) })
       .toStrictEqual({ accepted: true, objections: '' });
+    expectMutatedRecordRefused(answered);
+  });
 
-    // The records the loop wrote are the outputs whose commitments differ from the inputs at the same index; the
-    // first of them is the node the insert created, whose commitment carries the value the entry's own code stored.
-    const index = answered.transaction.outputs.findIndex((output, at) =>
-      commitmentOf(output) !== undefined
-      && binToHex(commitmentOf(output)!) !== binToHex(commitmentOf(answered.sourceOutputs[at]!) ?? new Uint8Array()));
-    expect(index).toBeGreaterThanOrEqual(0);
-
-    // The mutated spend: the same transaction with one byte of that commitment changed, so the record no longer
-    // carries the value the entry's own code computed.
-    const committed = commitmentOf(answered.transaction.outputs[index]!)!;
-    const changed = new Uint8Array(committed);
-    changed[changed.length - 1] = (changed[changed.length - 1]! ^ 0x01) & 0xff;
-    const mutated = {
-      ...answered.transaction,
-      outputs: answered.transaction.outputs.map((output, at) => (at === index
-        ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: changed } } }
-        : output)),
-    };
-    const master = answered.verdicts.findIndex((verdict) => verdict.accepted);
-    expect(master).toBeGreaterThanOrEqual(0);
-    const vm = compositionMachine();
-    const state = vm.evaluate({
-      inputIndex: master, sourceOutputs: answered.sourceOutputs, transaction: mutated,
-    });
-    expect(vm.stateSuccess(state)).not.toBe(true);
+  it('accepts a three-turn varying-key loop, and refuses a record it wrote being changed', async () => {
+    // Three elements in one gap chain through the node each turn before created, so the frame declares four records:
+    // the rewritten predecessor and three created nodes, each read at the position the emitted coordinate names.
+    const answered = await call(VARYING_SOURCE, 'move', [ascendingKeys(3), 42n]);
+    expect({ accepted: answered.accepted, objections: objectionsOf(answered) })
+      .toStrictEqual({ accepted: true, objections: '' });
+    expectMutatedRecordRefused(answered);
   });
 });

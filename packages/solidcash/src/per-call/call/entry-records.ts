@@ -298,6 +298,22 @@ export function planCallLoopWrites(
         return resolved;
       }),
     }));
+    // The emitted body chains a turn's insert in the gap its pending predecessor opened, so it reaches the node it
+    // created only while each turn's key sits above the one before it. A turn below the pending takes the body's
+    // normal path and co-spends the predecessor of the chain the plan built, which is the array's own order only
+    // when that order ascends; a turn that repeats a slot is refused by the plan itself.
+    let previous: bigint | undefined;
+    for (const turn of turns) {
+      const value = bytesToSlotValue(keyToSlotMulti([...turn.keys]));
+      if (previous !== undefined && value < previous) {
+        throw new PerCallCallRecordError(
+          `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${turn.turn} of `
+          + `"${arrayName}" under a key that does not sit above the turn before it, and the run-time loop inserts `
+          + 'through its predecessor only in ascending slot order',
+        );
+      }
+      previous = value;
+    }
     return {
       collection: info.collection,
       op: (info as { readonly op?: string }).op ?? 'set',

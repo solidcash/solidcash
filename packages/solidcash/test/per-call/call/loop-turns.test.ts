@@ -21,8 +21,13 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * each turn's key the element at its index - and the same derivation reached through the shipped call path, whose
  * frame declares one node per derived turn where the emitted coordinate reads it.
  *
+ * The emitted loop chains a turn's insert in the gap the predecessor it co-spent opened, so it reaches the node it
+ * created only while each turn's key sits above the one before it: the caller's array has to ascend by slot value.
+ * A slot compares as the little-endian VM number its bytes spell, which is also how the plan orders the chain, so an
+ * array that descends is refused by name rather than planned into a frame the body cannot walk.
+ *
  * Nothing is re-implemented here: the artifact comes from the shipped compiler, the keys the derivation is checked
- * against are the ones the caller passed, and the shipped-path case drives `callPerCallEntry` over a real deployment.
+ * against are the ones the caller passed, and the shipped-path cases drive `callPerCallEntry` over a real deployment.
  */
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
@@ -41,12 +46,35 @@ const key = (seed: number): Uint8Array => {
   for (let index = 0; index < bytes.length; index += 1) bytes[index] = (seed * 17 + index * 3) & 0xff;
   return bytes;
 };
-const WORKERS = [key(1), key(2), key(3)];
+// Ascending by slot: key(5) < key(3) < key(6) as little-endian slot values.
+const WORKERS = [key(5), key(3), key(6)];
 
 function outpointHash(seed: number): string {
   const bytes = new Uint8Array(32);
   for (let index = 0; index < bytes.length; index += 1) bytes[index] = (seed + index * 7) & 0xff;
   return binToHex(bytes);
+}
+
+/** Drives the entry through the shipped deploy and call path with one array, and reports what it answered. */
+async function callWorkers(workers: readonly Uint8Array[]):
+Promise<Awaited<ReturnType<typeof callPerCallEntry>>> {
+  const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+  const signature = new SignatureTemplate(alicePriv);
+  const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const fundingUtxo = { txid: outpointHash(0x30), vout: 0, satoshis: 500_000n };
+  await provider.addUtxo(funder.address, fundingUtxo);
+  await fundShippedFacets(provider);
+  const deployment = await deployStatefulContract(artifact, [], {
+    provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
+  });
+  const callerLockingBytecode = encodeLockingBytecodeP2pkh(alicePkh);
+  const callerUtxo = { txid: outpointHash(0x50), vout: 0, satoshis: 200_000n };
+  await provider.addUtxo(binToHex(callerLockingBytecode), callerUtxo);
+  return callPerCallEntry({
+    provider, artifact, categoryId: deployment.categoryId, functionName: 'move',
+    args: [workers, 42n] as never,
+    callerUtxo, callerLockingBytecode, funder: signature.unlockP2PKH(), vm: compositionMachine(),
+  });
 }
 
 describe('the turns of a run-time-loop mapping write', () => {
@@ -83,32 +111,29 @@ describe('the turns of a run-time-loop mapping write', () => {
     })).toThrow(/writes mapping "balances" in a run-time loop over "workers"/);
   });
 
-  it('settles the derived turns through the shipped call path, one node per element', async () => {
-    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const signature = new SignatureTemplate(alicePriv);
-    const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: outpointHash(0x30), vout: 0, satoshis: 500_000n };
-    await provider.addUtxo(funder.address, fundingUtxo);
-    await fundShippedFacets(provider);
-    const deployment = await deployStatefulContract(artifact, [], {
-      provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
-    });
-    const callerLockingBytecode = encodeLockingBytecodeP2pkh(alicePkh);
-    const callerUtxo = { txid: outpointHash(0x50), vout: 0, satoshis: 200_000n };
-    await provider.addUtxo(binToHex(callerLockingBytecode), callerUtxo);
-    const answered = await callPerCallEntry({
-      provider, artifact, categoryId: deployment.categoryId, functionName: 'move',
-      args: [WORKERS.slice(0, 2), 42n] as never,
-      callerUtxo, callerLockingBytecode, funder: signature.unlockP2PKH(), vm: compositionMachine(),
-    });
+  it('refuses an array whose keys do not ascend, naming the turn that descends', () => {
+    // The loop chains each insert through the node the turn before created, which the body reaches only while the
+    // keys ascend: a descending turn is refused where the turns are derived, not planned into a body it cannot walk.
+    expect(() => planCallLoopWrites({
+      artifact, functionName: 'move', args: [[WORKERS[1]!, WORKERS[0]!], 42n], callerLockingBytecode: new Uint8Array(0),
+    })).toThrow(/at turn 1 of "workers" under a key that does not sit above the turn before it/);
+  });
+
+  it('settles three derived turns through the shipped call path, one node per element', async () => {
+    const answered = await callWorkers(WORKERS);
     // One node per derived turn, declared where the emitted coordinate reads it: the frame's first turn co-spends
-    // the bracketing predecessor and the next turn chains through the node the turn before created, so the machine
-    // accepts every participant. A third element reaches a further wall - the run-time loop's third chained insert -
-    // which this pin does not cover.
+    // the bracketing predecessor, and every later turn chains through the node the turn before created - so three
+    // chained inserts settle, not only two.
     expect({
       accepted: answered.accepted,
       objections: answered.verdicts.filter((verdict) => !verdict.accepted)
         .map((verdict) => String(verdict.objection ?? 'refused')),
     }).toStrictEqual({ accepted: true, objections: [] });
+  }, 600_000);
+
+  it('refuses a descending array on the shipped call path, before any frame is planned', async () => {
+    await expect(callWorkers([WORKERS[1]!, WORKERS[0]!])).rejects.toThrow(
+      /writes mapping "balances" at turn 1 of "workers" under a key that does not sit above the turn before it/,
+    );
   }, 600_000);
 });

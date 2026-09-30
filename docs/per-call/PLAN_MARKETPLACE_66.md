@@ -1586,6 +1586,13 @@ risk. Take the slices in order, each with its own tests.
   - a toy or replica settles in its own shape. A narrower variant (a loop for separate call statements, a scalar
     rewrite for an array append, fewer turns, no events) is logged as partial and leaves the toy's box and the
     catalog row's status unchanged.
+- [x] **No repeated-byte identifiers in tests** (user direction 2026-09-30). A 32-byte constant whose bytes all
+  repeat -- `'66'.repeat(32)`, `'11'.repeat(32)` -- is its own reverse, so a byte-order mistake in the code or in the
+  VM cannot show up as a mismatch, and a category that reverses to itself hides exactly the class of bug the tests
+  exist to catch. Every category, txid and outpoint a test names uses bytes that are neither constant nor
+  palindromic, and where a value's byte order matters the two orders differ. Agents are told the same in every
+  brief. A sweep of the existing focused tests replaces the repeated constants; a test that compares a derived
+  value to such a constant keeps working because the constant changes on both sides.
 - [x] **Targeted title runs, not full ladders** (user direction 2026-09-30). A round does not run the
   66-title ladder for its own sake: it runs the one failing title it is fixing, and when that title turns green it
   runs the title that precedes it in the file as a regression check. The full ladder is reserved for a milestone

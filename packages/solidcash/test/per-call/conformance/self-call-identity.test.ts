@@ -85,9 +85,22 @@ const ROWS: readonly Row[] = [
   },
   {
     label: 'msg.sender == tx.origin inside this.g()', entry: 'senderIsOriginViaThis', evm: false,
-    refusal: /tx\.origin is read outside the frame's slots while compiling 'senderIsOriginExt'/,
     members: 'function senderIsOriginExt() external view returns (bool) { return msg.sender == tx.origin; }'
       + ' function senderIsOriginViaThis() external returns (bool) { marker += 1; return this.senderIsOriginExt(); }',
+  },
+];
+
+/** Rows beyond the reference file: where `tx.origin` is read, which the per-call path threads to a subroutine. */
+const ORIGIN_ROWS: readonly Row[] = [
+  {
+    label: 'tx.origin read in an internal helper', entry: 'originViaHelper', evm: 'EOA',
+    members: 'function _origin() internal view returns (address) { return tx.origin; }'
+      + ' function originViaHelper() external returns (address) { marker += 1; return _origin(); }',
+  },
+  {
+    label: 'tx.origin inside this.g()', entry: 'originViaThis', evm: 'EOA',
+    members: 'function originExt() external view returns (address) { return tx.origin; }'
+      + ' function originViaThis() external returns (address) { marker += 1; return this.originExt(); }',
   },
 ];
 
@@ -170,7 +183,7 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly
 }
 
 describe('S0: the single-contract reference rows, the EVM against the per-call path', () => {
-  for (const row of ROWS) {
+  for (const row of [...ROWS, ...ORIGIN_ROWS]) {
     it(`${row.label}: the EVM answers ${String(row.evm)}${row.refusal === undefined ? ', and so does per-call' : ''}`,
       async () => {
         expect(await evmAnswer(row)).toBe(row.evm);

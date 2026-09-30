@@ -597,6 +597,8 @@ const PER_CALL_RECEIVE_SITE: MasterCallSite = {
  * hidden context. The name is internal and never reaches the ABI.
  */
 const PER_CALL_SELF_CONTEXT = '__internal__handlerSelf';
+/** The hidden operand a per-call subroutine that reads `tx.origin` receives it through. */
+const PER_CALL_ORIGIN_CONTEXT = '__internal__handlerOrigin';
 
 /** True when a body reads the contract's own locking bytecode, `address(this)`. */
 function functionReadsOwnAddress(fn: FunctionDefinitionNode): boolean {
@@ -605,6 +607,15 @@ function functionReadsOwnAddress(fn: FunctionDefinitionNode): boolean {
     if (node instanceof UnaryOpNode && node.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
       && node.expression instanceof NullaryOpNode
       && node.expression.operator === NullaryOperator.INPUT_INDEX) found = true;
+  });
+  return found;
+}
+
+/** True when a body reads `tx.origin`. */
+function functionReadsOrigin(fn: FunctionDefinitionNode): boolean {
+  let found = false;
+  walkInvocationAst(fn.body, (node) => {
+    if (node instanceof NullaryOpNode && node.operator === NullaryOperator.TX_ORIGIN) found = true;
   });
   return found;
 }
@@ -1059,6 +1070,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * either. Memoized: the set depends only on the lowered AST, which code generation does not reshape.
    */
   private perCallSelfContextCarriers?: Set<string>;
+  private perCallOriginCarriers?: Set<string>;
   /**
    * Which segment of its execution the body being emitted is in, counted by the external calls already emitted.
    *
@@ -7481,6 +7493,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // A per-call subroutine that reaches the contract's own address receives it as a hidden operand, placed
     // above the caller's other hidden contexts because the caller pushes it last (see visitUserFunctionCall).
+    // The origin sits above even that: the caller pushes it right after the address.
+    if (this.isDefineSubTraversal && this.perCallMaster && this.perCallOriginCarrierNames().has(node.name)) {
+      this.pushToStack(PER_CALL_ORIGIN_CONTEXT, true);
+    }
     if (this.isDefineSubTraversal && this.perCallMaster && this.perCallSelfContextCarrierNames().has(node.name)) {
       this.pushToStack(PER_CALL_SELF_CONTEXT, true);
     }
@@ -13060,6 +13076,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       this.emitCallerSelfContext(contextLoc);
       this.pushToStack(`(__handler_self_${targetFunc.functionId})`);
+      hiddenContextCount += 1;
+    }
+    if (this.perCallMaster && this.perCallOriginCarrierNames().has(targetFunc.name)) {
+      this.emitTxOrigin({ location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(`(__handler_origin_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
     if (targetFunc.graphEmissionHandler && !targetFunc.graphRuntimeEmissionHandler) {
@@ -38450,12 +38471,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private perCallSelfContextCarrierNames(): Set<string> {
     if (this.perCallSelfContextCarriers !== undefined) return this.perCallSelfContextCarriers;
+    this.perCallSelfContextCarriers = this.perCallCarrierNames(
+      (fn) => functionReadsOwnAddress(fn) || functionMakesExternalSelfCall(fn),
+    );
+    return this.perCallSelfContextCarriers;
+  }
+
+  /** The functions that read `tx.origin`, directly or through a function they call, which a call leaves unchanged. */
+  private perCallOriginCarrierNames(): Set<string> {
+    this.perCallOriginCarriers ??= this.perCallCarrierNames(functionReadsOrigin);
+    return this.perCallOriginCarriers;
+  }
+
+  /** The functions that reach a seed, directly or through the functions they call. */
+  private perCallCarrierNames(seeded: (fn: FunctionDefinitionNode) => boolean): Set<string> {
     const byName = new Map<string, FunctionDefinitionNode>();
     for (const fn of this.userFunctionDefs.values()) byName.set(fn.name, fn);
     const directCalls = new Map<string, Set<string>>();
     const seeds = new Set<string>();
     for (const fn of byName.values()) {
-      if (functionReadsOwnAddress(fn) || functionMakesExternalSelfCall(fn)) seeds.add(fn.name);
+      if (seeded(fn)) seeds.add(fn.name);
       const calls = new Set<string>();
       walkInvocationAst(fn.body, (candidate) => {
         const call = candidate instanceof FunctionCallStatementNode ? candidate.call
@@ -38479,7 +38514,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (carries) carriers.add(name);
     }
-    this.perCallSelfContextCarriers = carriers;
     return carriers;
   }
 
@@ -38507,8 +38541,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., lockingBytecode]  (the P2PKH address of the origin)
    */
   private emitTxOrigin(locationData: SingleLocationData): void {
-    if (this.stack.includes('__internal__frameOrigin')) {
-      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__frameOrigin'))), locationData);
+    const originSlot = this.stack.includes('__internal__frameOrigin') ? '__internal__frameOrigin'
+      : this.stack.includes(PER_CALL_ORIGIN_CONTEXT) ? PER_CALL_ORIGIN_CONTEXT : undefined;
+    if (originSlot !== undefined) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(originSlot))), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
     }

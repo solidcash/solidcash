@@ -140,13 +140,17 @@ describe('the segment each write of a per-call entry lands in, as an artifact pu
   });
 
   it('publishes nothing for a batch write whose target varies per turn of a loop that calls', () => {
-    // The target is the loop's own element, so the batch is not one write the walk places: no compile-time fact
-    // states where its records land, and a builder reading only the artifact cannot guess a segment. The shape stays
-    // unstated by design, not because it is unserved: the per-call lane's call path plans the loop's turns itself -
-    // one node per element of the caller's array, the first turn's node at the frame's declared offset and each
-    // later insert chained through the node the turn before created - and declares each where the emitted per-turn
-    // coordinate reads it, which `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` drives end to
-    // end (the machine accepts the well-formed spend and refuses a record the loop wrote being changed).
+    // The loop body makes the call as well as the write (the fixture's own shape,
+    // `.marketplace/contracts/MarketplaceV1.sol:474-497`: `whitelistWorkers[...] = true;` then
+    // `publishJobEvent(...)` in one iteration), so the write's segment is decided at run time and no compile-time
+    // walk can place it - `callFreeNestedBlocks` returns undefined for any loop whose body reaches a call
+    // (`packages/solidc/src/per-call/master/support.ts:722`). The shape stays unstated by design, and that is a fact
+    // about this body, not about the loop protocol: the same loop over a caller's array with NO call in its body is
+    // planned by the per-call lane's call path - one node per element, each declared where the emitted per-turn
+    // coordinate reads it - and it settles end to end, which
+    // `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` drives (machine accept beside a refused
+    // mutation) and `solidcash/test/per-call/call/loop-turns.test.ts` pins for three elements. The variant here
+    // additionally needs the hop's callee-frame planning, because a call inside the loop opens a segment per turn.
     expect(publishedWrites(varyingLoop, 'Ledger', 'move')).toStrictEqual({});
   });
 });

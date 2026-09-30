@@ -34,7 +34,11 @@ import {
   bytesEqual,
   bytesToHex,
   decodePushdataValue,
+  dynamicChunkSignature,
+  dynamicLenKey,
+  joinChunks,
   joinValueChunks,
+  parseChunkCommitment,
   parsePushdataCommitment,
   parseValueChunkCommitment,
   sha256,
@@ -55,6 +59,7 @@ import { evalComputedKey } from '../../stateful/route-expression-key.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
 import { PerCallCallRecordError, readEntryNode } from '../call/entry-records.js';
 import {
+  chunkRecordLockingBytecode,
   deployMaster,
   entryRecordReadUnlock,
   readComputedDeclaration,
@@ -769,14 +774,31 @@ function entryReadRecords(
       + 'not publish as a collection',
     );
   }
-  const turns = loopTurns(frame.args, frame.entry.inputs, (paged ?? arrayed!).named);
+  const live = arrayed === undefined ? undefined : liveArrayValue(frame, deployment, arrayed.array);
+  if (arrayed !== undefined && live === undefined) {
+    throw new PerCallReadError(
+      `entry "${frame.entry.name}" names mapping "${access?.collection ?? '<unnamed>'}" at an element of `
+      + `"${arrayed.array}" that the artifact's live records do not state`,
+    );
+  }
+  const turns = readTurns(frame, live, paged, arrayed);
+  if (arrayed !== undefined && live !== undefined && isChunkBacked(frame, arrayed.array) && turns !== 1) {
+    // A chunk-backed array's chunk run sits at the layout width past the record block, one coordinate past the
+    // entry slot's own node: the entry's first turn must sit between the array's record and its run, and a second
+    // turn (or none) would move the run off the coordinate the emitted body addresses. So only a one-turn page over
+    // a chunk-backed array is composed; any other is refused rather than composed into a frame the machine rejects.
+    throw new PerCallReadError(
+      `entry "${frame.entry.name}" reads "${arrayed.array}" at ${turns} turn(s), but a chunk-backed array's chunk `
+      + 'run shares the fixed record band with the entry slot\'s own turn, so exactly one turn can be composed',
+    );
+  }
   const reads: EntryRead[] = [];
   const declared = new Set<string>();
   for (let turn = 0; turn < turns; turn += 1) {
     const keyType = collection.keyTypes?.[0] ?? collection.keyType;
     const key = paged !== undefined
       ? pagedKeyAt(label!, paged.counter, frame.args, frame.entry.inputs, turn)
-      : arrayElementKeyAt(frame, deployment, arrayed!, keyType, turn);
+      : arrayElementKeyAt(frame, arrayed!, live!, keyType, turn);
     if (key === undefined) {
       throw new PerCallReadError(
         `entry "${frame.entry.name}" names mapping "${access?.collection ?? '<unnamed>'}" at a key no run of its `
@@ -788,54 +810,147 @@ function entryReadRecords(
     declared.add(read.record.id);
     reads.push(read);
   }
+  // A key indexing a chunk-backed array reads the array's bytes from its chunk run, which the frame spends right
+  // after the entry's own node, where the emitted body addresses the run. An inline array keeps its bytes in the
+  // record the block already declares, so it contributes no chunk record.
+  if (arrayed !== undefined && reads.length > 0) {
+    for (const record of arrayChunkRecords(frame, deployment, arrayed.array)) reads.push({ record });
+  }
   return reads;
+}
+
+/**
+ * How many turns a paged access runs.
+ *
+ * A key that is a bare sum runs the turns the frame's arguments fix, which `loopTurns` reads off the arguments the
+ * key does not name. A key that indexes a state array additionally runs no further than the array's own live
+ * length: the loop bound is the array's remaining elements, so a bound argument of zero names the whole remainder
+ * and a positive one names at most it.
+ */
+function readTurns(
+  frame: ReadFrame,
+  live: readonly StateValue[] | undefined,
+  paged: PagedKey | undefined,
+  arrayed: PagedArrayKey | undefined,
+): number {
+  if (paged !== undefined) return loopTurns(frame.args, frame.entry.inputs, paged.named);
+  const bound = loopTurns(frame.args, frame.entry.inputs, arrayed!.named);
+  const start = pagedKeyAt(arrayed!.inner, arrayed!.counter, frame.args, frame.entry.inputs, 0);
+  if (start === undefined || live === undefined) return bound;
+  const decoded = vmNumberToBigInt(start, { maximumVmNumberByteLength: 32 });
+  if (isVmNumberError(decoded)) return bound;
+  const remaining = Math.max(0, live.length - Number(decoded));
+  return bound === 0 ? remaining : Math.min(bound, remaining);
+}
+
+/** True when the named state array keeps its elements in a chunk run rather than in its data-NFT record. */
+function isChunkBacked(frame: ReadFrame, array: string): boolean {
+  return frame.artifact.stateLayout?.variables?.find((candidate) => candidate.name === array)?.dynamic === true;
+}
+
+/** The live array a collection label indexes, decoded from the variable's own data-NFT record and its chunk run. */
+function liveArrayValue(
+  frame: ReadFrame,
+  deployment: PerCallDeploymentSet,
+  array: string,
+): readonly StateValue[] | undefined {
+  const layout = frame.artifact.stateLayout;
+  const variable = layout?.variables?.find((candidate) => candidate.name === array);
+  if (layout === undefined || variable === undefined) return undefined;
+  const record = deployment.records[variable.nftIndex ?? 0];
+  const commitment = record?.token?.nft?.commitment;
+  if (commitment === undefined) {
+    throw new PerCallReadError(
+      `category ${frame.categoryId} holds no data-NFT record at index ${variable.nftIndex ?? 0}, which the entry `
+      + `reads "${array}" from`,
+    );
+  }
+  let bytes: Uint8Array;
+  if (variable.dynamic === true) {
+    const header = parsePushdataCommitment(commitment, layout, variable.nftIndex ?? 0);
+    const length = header[dynamicLenKey(variable.name)];
+    if (typeof length !== 'bigint') return undefined;
+    if (length === 0n) return [];
+    try {
+      bytes = joinChunks(dynamicChunkBytes(frame, deployment, variable), Number(length));
+    } catch {
+      return undefined;
+    }
+  } else {
+    const values = parsePushdataCommitment(commitment, layout, variable.nftIndex ?? 0);
+    const inline = values[variable.name];
+    return Array.isArray(inline) ? inline : undefined;
+  }
+  try {
+    const decoded = decodePushdataValue(bytes, 0, variable.type, layout.structs);
+    return Array.isArray(decoded.value) ? decoded.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A dynamic variable's live chunk data, ordered by chunk index. */
+function dynamicChunkBytes(
+  frame: ReadFrame,
+  deployment: PerCallDeploymentSet,
+  variable: { readonly name: string; readonly type: string },
+): Uint8Array[] {
+  const lock = bytesToHex(chunkRecordLockingBytecode(frame.categoryId, variable.name, variable.type));
+  return deployment.chunks
+    .filter((utxo) => utxo.lockingBytecode !== undefined && bytesToHex(utxo.lockingBytecode) === lock
+      && utxo.token?.nft?.commitment !== undefined)
+    .map((utxo) => parseChunkCommitment(utxo.token!.nft!.commitment!))
+    .sort((left, right) => left.chunkIndex - right.chunkIndex)
+    .map((chunk) => chunk.chunkData);
+}
+
+/** The records a dynamic array's live chunk run contributes to the frame, in chunk order. */
+function arrayChunkRecords(
+  frame: ReadFrame,
+  deployment: PerCallDeploymentSet,
+  array: string,
+): readonly ReadRecord[] {
+  const variable = frame.artifact.stateLayout?.variables?.find((candidate) => candidate.name === array);
+  if (variable === undefined || variable.dynamic !== true) return [];
+  const lock = bytesToHex(chunkRecordLockingBytecode(frame.categoryId, variable.name, variable.type));
+  const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(
+    frame.categoryId, dynamicChunkSignature(variable.name, variable.type),
+  );
+  return deployment.chunks
+    .filter((utxo) => utxo.lockingBytecode !== undefined && bytesToHex(utxo.lockingBytecode) === lock
+      && utxo.token?.nft?.commitment !== undefined)
+    .map((utxo) => ({ utxo, chunk: parseChunkCommitment(utxo.token!.nft!.commitment!) }))
+    .sort((left, right) => left.chunk.chunkIndex - right.chunk.chunkIndex)
+    .map(({ utxo, chunk }) => ({
+      id: `${frame.master}-chunk-${array}-${chunk.chunkIndex}`,
+      commitment: new Uint8Array(hexToBin(utxo.token!.nft!.commitment!)),
+      satoshis: utxo.satoshis,
+      lockingBytecode,
+      unlockingBytecode,
+    }));
 }
 
 /**
  * The key one turn of a collection label names: the element of the state array at the index that turn reads it at.
  *
- * The index is the label's own inner sum evaluated against the frame's arguments with the counter substituted, so
- * it is a value the frame's arguments fix. The array is a state variable the artifact publishes, and its live value
- * is the data-NFT record the frame already declares, decoded with the shipped commitment parser; the element is
- * encoded as the key type the entry's own collection declares, which is how the body's key is built. A dynamic
- * variable keeps no element in its record — its bytes sit in chunk records a read does not co-spend — so a key
- * indexing one is refused rather than resolved short.
+ * The index is the label's own inner sum evaluated against the frame's arguments with the counter substituted, so it
+ * is a value the frame's arguments fix. The array's live value is the one `liveArrayValue` decoded; the element is
+ * encoded as the key type the entry's own collection declares, which is how the body's key is built.
  */
 function arrayElementKeyAt(
   frame: ReadFrame,
-  deployment: PerCallDeploymentSet,
   paged: PagedArrayKey,
+  live: readonly StateValue[],
   keyType: string,
   turn: number,
 ): Uint8Array | undefined {
-  const layout = frame.artifact.stateLayout;
-  if (layout === undefined) return undefined;
-  const variable = layout.variables?.find((candidate) => candidate.name === paged.array);
-  if (variable === undefined) return undefined;
-  if (variable.dynamic === true) {
-    throw new PerCallReadError(
-      `entry "${frame.entry.name}" reads the key at an index of "${paged.array}", a dynamic array whose elements `
-      + 'live in chunk records a read does not co-spend',
-    );
-  }
   const indexed = pagedKeyAt(paged.inner, paged.counter, frame.args, frame.entry.inputs, turn);
   if (indexed === undefined) return undefined;
   const decoded = vmNumberToBigInt(indexed, { maximumVmNumberByteLength: 32 });
   if (isVmNumberError(decoded)) return undefined;
   const index = Number(decoded);
   if (!Number.isSafeInteger(index) || index < 0) return undefined;
-  const record = deployment.records[variable.nftIndex ?? 0];
-  const commitment = record?.token?.nft?.commitment;
-  if (commitment === undefined) {
-    throw new PerCallReadError(
-      `category ${frame.categoryId} holds no data-NFT record at index ${variable.nftIndex ?? 0}, which the entry `
-      + `reads "${paged.array}" from`,
-    );
-  }
-  const values = parsePushdataCommitment(commitment, layout, variable.nftIndex ?? 0);
-  const array = values[paged.array];
-  if (!Array.isArray(array)) return undefined;
-  const element = array[index];
+  const element = live[index];
   if (element === undefined) return undefined;
   return encodeFunctionArgument(element, keyType, structDefinitionsOf(frame.artifact)) as Uint8Array;
 }

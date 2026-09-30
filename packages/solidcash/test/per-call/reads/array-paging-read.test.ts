@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
-import { buildPushdataCommitment, bytesToHex, encodeIntegerValue } from '@solidcash/utils';
+import { buildPushdataCommitment, bytesToHex, encodeIntegerValue, encodePushdataValue } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
+  chunkRecordLockingBytecode,
   deployMaster,
   entryRecordLockingBytecode,
   readPerCallDeployment,
   stateRecordLockingBytecode,
 } from '../../../src/per-call/deploy/index.js';
-import { participant, planMappingBatch } from '../../../src/per-call/composer/index.js';
+import { dynamicValueRecords, participant, planMappingBatch } from '../../../src/per-call/composer/index.js';
 import { readPerCallEntry } from '../../../src/per-call/read/index.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
@@ -20,50 +21,62 @@ import {
 /**
  * Reading a page whose key is an element of a dynamic state array.
  *
- * The contract keeps one `address[] packed` array and one `mapping(address => uint256)`, and reads the mapping at
- * a key its own arguments and a loop counter name: `values[items[start + i]]` for `i` up to the caller's count.
- * The published key is `map:items(binop:+(id:start,id:i))`, a collection label over the computed index `start + i`.
- * The read has to enumerate the turns the arguments fix, resolve each turn's array element from the live record,
- * and locate the mapping node that element names. A page whose arguments name no turn declares no node at all, and
- * a page of several turns declares each turn's node, kept unchanged.
+ * The contract keeps one `address[]` array and one `mapping(address => uint256)`, and reads the mapping at a key
+ * its own arguments and a loop counter name: `values[items[start + i]]` for `i` up to the caller's count, bounded
+ * by the array's remaining length. The published key is `map:items(binop:+(id:start,id:i))`, a collection label
+ * over the computed index `start + i`. The read enumerates the turns the array's live length fixes, resolves each
+ * turn's element from the record (or the chunk run) the frame spends, and locates the mapping node that element
+ * names.
+ *
+ * A chunk-backed array's bytes sit in a run of chunk records one layout width past the record block — the
+ * coordinate the entry slot's own node occupies. The array's first turn must sit between the record and the run, so
+ * exactly one turn can be composed over a chunk-backed array; a page of none or several is refused rather than
+ * composed into a frame the machine rejects. An inline array has no chunk run, so a page of several turns composes
+ * and is accepted.
  */
 
-const LABEL = 'array paging read';
-const CATEGORY = seededCategory(LABEL);
-const CATEGORY_HEX = bytesToHex(CATEGORY);
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 
-const SOURCE = 'pragma solidity ^0.8.0;'
-  + ' contract Registry {'
-  + '   address[] packed items;'
-  + '   mapping(address => uint256) public values;'
-  + '   function get(uint256 start, uint256 count) public view returns (uint256[] memory) {'
-  + '     uint256[] memory out = new uint256[](count);'
-  + '     for (uint256 i = 0; i < count; i = i + 1) { out[i] = values[items[start + i]]; }'
-  + '     return out;'
-  + '   }'
-  + ' }';
+/** The real getter's shape: the loop runs while the array has a remaining element, capped by the caller's count. */
+function source(contract: string, items: string): string {
+  return 'pragma solidity ^0.8.0;'
+    + ` contract ${contract} {`
+    + `   address[]${items} items;`
+    + '   mapping(address => uint256) public values;'
+    + '   function get(uint256 start, uint256 count) public view returns (uint256[] memory) {'
+    + '     uint256 length = items.length - start;'
+    + '     if (count == 0) { count = length; }'
+    + '     length = length > count ? count : length;'
+    + '     uint256[] memory out = new uint256[](length);'
+    + '     for (uint256 i = 0; i < length; i = i + 1) { out[i] = values[items[start + i]]; }'
+    + '     return out;'
+    + '   }'
+    + ' }';
+}
 
-const artifact = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true }).Registry!;
-const COLLECTION = artifact.stateLayout!.collections!.find((collection) => collection.name === 'values')!;
-const ENTRY_LOCK = entryRecordLockingBytecode(CATEGORY_HEX, COLLECTION.signature);
+const CHUNKED_LABEL = 'array paging read chunked';
+const CHUNKED_CATEGORY = seededCategory(CHUNKED_LABEL);
+const CHUNKED_ARTIFACT = compileStringMulti(source('Chunked', ''), {
+  composition: 'per-call', solidityImportCompat: true,
+}).Chunked!;
 
-/** The addresses the array holds, each a distinct 20-byte locking bytecode. */
+const INLINE_LABEL = 'array paging read inline';
+const INLINE_CATEGORY = seededCategory(INLINE_LABEL);
+const INLINE_ARTIFACT = compileStringMulti(source('Inline', ' packed'), {
+  composition: 'per-call', solidityImportCompat: true,
+}).Inline!;
+
+/** The addresses the array holds; element `k` is the key of the mapping value `1000 + k`. */
 const ITEMS = Array.from({ length: 5 }, (_unused, index) => new Uint8Array(20).fill(0x40 + index));
 
-/** The mapping's live value at each array element: key -> value, so a page's answer is `1000 + key`. */
-const VALUES = ITEMS.map((_item, index) => ({ key: ITEMS[index]!, value: 1000n + BigInt(index) }));
-
-const BATCH = planMappingBatch({
-  writes: VALUES.map(({ key, value }) => ({ keys: [key], value: encodeIntegerValue(value) })),
-  inventory: [headSentinelCommitment()],
-  encodeValue: (encoded: Uint8Array) => encoded,
-});
-
-/** The record commitment the array's packed state makes, from the shipped encoder. */
-const RECORD = new Uint8Array(Buffer.from(
-  buildPushdataCommitment(artifact.stateLayout!, { items: ITEMS }, 0), 'hex',
-));
+/** The mapping's live nodes, keyed by the array's elements. */
+function mappingNodes(items: readonly Uint8Array[]): ReturnType<typeof planMappingBatch> {
+  return planMappingBatch({
+    writes: items.map((key, index) => ({ keys: [key], value: encodeIntegerValue(1000n + BigInt(index)) })),
+    inventory: [headSentinelCommitment()],
+    encodeValue: (encoded: Uint8Array) => encoded,
+  });
+}
 
 const empty = new Uint8Array(0);
 
@@ -76,25 +89,55 @@ function utxo(categoryHex: string, txid: string, satoshis: bigint, capability: '
     token: { category: categoryHex, amount: 0n, nft: { capability, commitment: bytesToHex(value) } } };
 }
 
-/** The provider a read runs against: the master, a validator, the array's record and the list's live nodes. */
-async function chain(provider: MockNetworkProvider): Promise<void> {
-  const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
+/**
+ * The provider a read runs against: the master, a validator, the array's record (and its chunk run for a
+ * chunk-backed array), and the list's live nodes.
+ */
+async function chain(options: {
+  readonly category: Uint8Array;
+  readonly categoryHex: string;
+  readonly artifact: typeof CHUNKED_ARTIFACT;
+  readonly items: readonly Uint8Array[];
+  readonly chunked: boolean;
+}): Promise<MockNetworkProvider> {
+  const { category, categoryHex, artifact, items, chunked } = options;
+  const collection = artifact.stateLayout!.collections!.find((candidate) => candidate.name === 'values')!;
+  const entryLock = bytesToHex(entryRecordLockingBytecode(categoryHex, collection.signature));
+  const provider = new MockNetworkProvider();
+  const deployed = deployMaster(artifact, category, VALIDATOR_PROGRAM);
   await provider.addUtxo(bytesToHex(deployed.lockingBytecode),
-    utxo(CATEGORY_HEX, '11'.repeat(32), 20_000n, 'minting', empty));
-  await provider.addUtxo(bytesToHex(deployed.address), utxo(CATEGORY_HEX, '22'.repeat(32), 20_000n, 'mutable', empty));
-  await provider.addUtxo(bytesToHex(stateRecordLockingBytecode(CATEGORY_HEX)),
-    utxo(CATEGORY_HEX, '23'.repeat(32), 1_500n, 'mutable', RECORD));
-  for (const [index, node] of BATCH.written.entries()) {
-    const txid = (0x33 + index).toString(16).padStart(2, '0').repeat(32);
-    await provider.addUtxo(bytesToHex(ENTRY_LOCK), utxo(CATEGORY_HEX, txid, 1_500n, 'mutable', node.after));
+    utxo(categoryHex, '11'.repeat(32), 20_000n, 'minting', empty));
+  await provider.addUtxo(bytesToHex(deployed.address), utxo(categoryHex, '22'.repeat(32), 20_000n, 'mutable', empty));
+
+  let record: Uint8Array;
+  let chunks: readonly Uint8Array[] = [];
+  if (chunked) {
+    const records = dynamicValueRecords(artifact.stateLayout, 'items', encodePushdataValue([...items], 'address[]'));
+    record = records.header;
+    chunks = records.chunks;
+  } else {
+    record = new Uint8Array(Buffer.from(buildPushdataCommitment(artifact.stateLayout!, { items: [...items] }, 0), 'hex'));
   }
+  await provider.addUtxo(bytesToHex(stateRecordLockingBytecode(categoryHex)),
+    utxo(categoryHex, '23'.repeat(32), 1_500n, 'mutable', record));
+  const chunkLock = bytesToHex(chunkRecordLockingBytecode(categoryHex, 'items', 'address[]'));
+  for (const [index, chunk] of chunks.entries()) {
+    const txid = (0x60 + index).toString(16).padStart(2, '0').repeat(32);
+    await provider.addUtxo(chunkLock, utxo(categoryHex, txid, 1_000n, 'mutable', chunk));
+  }
+  for (const [index, node] of mappingNodes(items).written.entries()) {
+    const txid = (0x33 + index).toString(16).padStart(2, '0').repeat(32);
+    await provider.addUtxo(entryLock, utxo(categoryHex, txid, 1_500n, 'mutable', node.after));
+  }
+  return provider;
 }
 
-/** The read of `get(start, count)` through the shipped read module. */
-function read(provider: MockNetworkProvider, start: bigint, count: bigint): ReturnType<typeof readPerCallEntry> {
+function read(
+  provider: MockNetworkProvider, artifact: typeof CHUNKED_ARTIFACT, categoryHex: string,
+  start: bigint, count: bigint,
+): ReturnType<typeof readPerCallEntry> {
   return readPerCallEntry({
-    provider, artifact, categoryId: CATEGORY_HEX, functionName: 'get', args: [start, count],
-    vm: compositionMachine(),
+    provider, artifact, categoryId: categoryHex, functionName: 'get', args: [start, count], vm: compositionMachine(),
   });
 }
 
@@ -111,70 +154,110 @@ function verdict(
 
 /** The records the frame declares for the entry slot's own turns, in declaration order. */
 function entryRecords(result: Awaited<ReturnType<typeof readPerCallEntry>>): readonly string[] {
-  return result.draft.layout.participants
-    .map((placed) => placed.id)
-    .filter((id) => id.startsWith('read-entry-'));
+  return result.draft.layout.participants.map((placed) => placed.id).filter((id) => id.startsWith('read-entry-'));
 }
 
-describe('reading a page whose key is an element of a dynamic array', () => {
-  it('reads the page the arguments name, for a page of zero, one and several turns', async () => {
-    const provider = new MockNetworkProvider();
-    await chain(provider);
+const CHUNKED_HEX = bytesToHex(CHUNKED_CATEGORY);
+const INLINE_HEX = bytesToHex(INLINE_CATEGORY);
 
-    const single = await read(provider, 2n, 1n);
-    expect(single.accepted).toBe(true);
-    expect(single.value).toStrictEqual([1002n]);
+describe('reading a page whose key is an element of a chunk-backed dynamic array', () => {
+  it('reads the one turn the arguments leave, when the live array holds one element', async () => {
+    const provider = await chain({
+      category: CHUNKED_CATEGORY, categoryHex: CHUNKED_HEX, artifact: CHUNKED_ARTIFACT,
+      items: [ITEMS[0]!], chunked: true,
+    });
+    const deployment = await readPerCallDeployment(provider, CHUNKED_HEX, CHUNKED_ARTIFACT.stateLayout!);
+    expect(deployment.records).toHaveLength(1);
 
-    const page = await read(provider, 1n, 3n);
-    expect(page.accepted).toBe(true);
-    expect(page.value).toStrictEqual([1001n, 1002n, 1003n]);
-    expect(entryRecords(page)).toHaveLength(3);
-
-    const emptyPage = await read(provider, 0n, 0n);
-    expect(emptyPage.accepted).toBe(true);
-    expect(emptyPage.value).toStrictEqual([]);
-    expect(entryRecords(emptyPage)).toStrictEqual([]);
-  });
-
-  it('keeps the read frame and every node the page names accepted, each node recreated unchanged', async () => {
-    const provider = new MockNetworkProvider();
-    await chain(provider);
-
-    const result = await read(provider, 2n, 3n);
+    // `get(0, 5)` names five turns, but the array holds one element, so the loop the entry's own argument fixes
+    // runs one turn. This is the real getter's shape: a limit larger than the array.
+    const result = await read(provider, CHUNKED_ARTIFACT, CHUNKED_HEX, 0n, 5n);
     expect(result.accepted).toBe(true);
-    expect(result.value).toStrictEqual([1002n, 1003n, 1004n]);
+    expect(result.value).toStrictEqual([1000n]);
 
+    // The frame and every record it spends — the array's record, its chunk run and the mapping node — are accepted.
     const program = result.draft.programFor('read');
     expect(verdict(program, program.inputIndex)).toBe('accepted');
-    for (const node of entryRecords(result)) {
-      const nodeIndex = participant(result.draft.layout, node).index;
-      expect(verdict(program, nodeIndex)).toBe('accepted');
-      expect(program.transaction.outputs[nodeIndex]!.token?.nft?.commitment)
-        .toStrictEqual(program.sourceOutputs[nodeIndex]!.token?.nft?.commitment);
+    for (const id of result.draft.layout.participants.map((placed) => placed.id)
+      .filter((id) => id.startsWith('record-') || id.startsWith('read-entry-') || id.startsWith('read-chunk-'))) {
+      expect(verdict(program, participant(result.draft.layout, id).index), id).toBe('accepted');
     }
   });
 
-  it('resolves each turn key from the live array element the record holds', async () => {
-    const provider = new MockNetworkProvider();
-    await chain(provider);
-    const deployment = await readPerCallDeployment(provider, CATEGORY_HEX, artifact.stateLayout!);
-    expect(deployment.records).toHaveLength(1);
-
-    const result = await read(provider, 2n, 2n);
-    expect(result.accepted).toBe(true);
-    expect(result.value).toStrictEqual([1002n, 1003n]);
-
-    // The declared nodes are the ones the keys `items[2]` and `items[3]` name, in turn order.
-    const nodeIds = entryRecords(result);
-    const slots = nodeIds.map((id) => {
-      const index = participant(result.draft.layout, id).index;
-      return bytesToHex(decodeEntryCommitment(
-        result.draft.programFor('read').sourceOutputs[index]!.token!.nft!.commitment,
-      ).slot);
+  it('reads each one-turn page, and the declared node is the one its key names', async () => {
+    const provider = await chain({
+      category: CHUNKED_CATEGORY, categoryHex: CHUNKED_HEX, artifact: CHUNKED_ARTIFACT, items: ITEMS, chunked: true,
     });
-    expect(slots).toStrictEqual([
-      bytesToHex(keyToSlotMulti([ITEMS[2]!])),
-      bytesToHex(keyToSlotMulti([ITEMS[3]!])),
-    ]);
+
+    for (const [start, expected] of [[0n, 1000n], [4n, 1004n]] as const) {
+      const result = await read(provider, CHUNKED_ARTIFACT, CHUNKED_HEX, start, 1n);
+      expect(result.accepted).toBe(true);
+      expect(result.value).toStrictEqual([expected]);
+
+      // The declared node is the one the key `items[start]` names.
+      const nodeId = entryRecords(result)[0]!;
+      const index = participant(result.draft.layout, nodeId).index;
+      const slot = decodeEntryCommitment(
+        result.draft.programFor('read').sourceOutputs[index]!.token!.nft!.commitment,
+      ).slot;
+      expect(bytesToHex(slot)).toBe(bytesToHex(keyToSlotMulti([ITEMS[Number(start)]!])));
+    }
+  });
+
+  it('refuses a page of several turns or none, which the chunk run and the entry node cannot share', async () => {
+    const provider = await chain({
+      category: CHUNKED_CATEGORY, categoryHex: CHUNKED_HEX, artifact: CHUNKED_ARTIFACT, items: ITEMS, chunked: true,
+    });
+    // Two turns name two entry nodes, and the second would land on the chunk run's first coordinate.
+    await expect(read(provider, CHUNKED_ARTIFACT, CHUNKED_HEX, 3n, 2n)).rejects.toThrow(
+      /chunk-backed array's chunk run shares the fixed record band with the entry slot's own turn/,
+    );
+
+    const emptyProvider = await chain({
+      category: CHUNKED_CATEGORY, categoryHex: CHUNKED_HEX, artifact: CHUNKED_ARTIFACT, items: [], chunked: true,
+    });
+    // No turn names no entry node, which the run needs in the band before it, so the block cannot be laid out.
+    await expect(read(emptyProvider, CHUNKED_ARTIFACT, CHUNKED_HEX, 0n, 5n)).rejects.toThrow(
+      /reads "items" at 0 turn\(s\)/,
+    );
+  });
+});
+
+describe('reading a page over an inline dynamic array', () => {
+  it('reads a page of several turns, each turn the node its own key names', async () => {
+    const provider = await chain({
+      category: INLINE_CATEGORY, categoryHex: INLINE_HEX, artifact: INLINE_ARTIFACT, items: ITEMS, chunked: false,
+    });
+
+    const result = await read(provider, INLINE_ARTIFACT, INLINE_HEX, 1n, 3n);
+    expect(result.accepted).toBe(true);
+    expect(result.value).toStrictEqual([1001n, 1002n, 1003n]);
+    expect(entryRecords(result)).toHaveLength(3);
+
+    const program = result.draft.programFor('read');
+    expect(verdict(program, program.inputIndex)).toBe('accepted');
+    for (const id of entryRecords(result)) {
+      const index = participant(result.draft.layout, id).index;
+      expect(verdict(program, index)).toBe('accepted');
+      expect(program.transaction.outputs[index]!.token?.nft?.commitment)
+        .toStrictEqual(program.sourceOutputs[index]!.token?.nft?.commitment);
+    }
+  });
+
+  it('reads the whole remaining array for a zero limit, and an empty page for an empty array', async () => {
+    const provider = await chain({
+      category: INLINE_CATEGORY, categoryHex: INLINE_HEX, artifact: INLINE_ARTIFACT, items: ITEMS, chunked: false,
+    });
+    const whole = await read(provider, INLINE_ARTIFACT, INLINE_HEX, 2n, 0n);
+    expect(whole.accepted).toBe(true);
+    expect(whole.value).toStrictEqual([1002n, 1003n, 1004n]);
+
+    const emptyProvider = await chain({
+      category: INLINE_CATEGORY, categoryHex: INLINE_HEX, artifact: INLINE_ARTIFACT, items: [], chunked: false,
+    });
+    const none = await read(emptyProvider, INLINE_ARTIFACT, INLINE_HEX, 0n, 5n);
+    expect(none.accepted).toBe(true);
+    expect(none.value).toStrictEqual([]);
+    expect(entryRecords(none)).toStrictEqual([]);
   });
 });

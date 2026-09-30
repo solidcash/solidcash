@@ -1734,11 +1734,18 @@ risk. Take the slices in order, each with its own tests.
     followed by the entry's argument pushes, so a ROOT frame binds `t` from them (`toys/identity.test.ts`, "serves
     `sweep(t)` as a user-entered root", with a control that pushes another address and is refused by the body's own
     require; the toy's earlier pin that a user entry supplies no run-time argument came from a plan whose master
-    carried neither a dispatcher nor pushes, and is corrected). **Still open, measured**: the sweep's own settle
-    stalls at the frame's segment close (`PER_CALL_DERIVATION_STALLED: master "tok-1" of Tok.sweep() filled no
-    witness at site 0 (close of segment 0)`), with the argument supplied through the dispatcher's call data and
-    with the read held in a local alike, so the frame's declaration for a read-only node is what stops it rather
-    than the call-argument spelling; the toy's third case pins it, and Y7 therefore stays unticked.
+    carried neither a dispatcher nor pushes, and is corrected). **Still open, measured, and narrowed to one shape**: a frame whose
+    segment declares a kept (read-only) sorted-mapping node is refused by the machine with `Program failed an
+    OP_VERIFY operation.` - in the emitted program's record-preservation section, ip 2459 of the composer's redeem
+    script, which the refusal reporter cannot map to a source line because it is generated code - when the mapping
+    read is the *argument of a self-call*, while the identical records (the same written data record and the same
+    kept node) are **accepted** when that read is held in a local in the caller's own body. The sweep's own settle
+    then stalls (`PER_CALL_DERIVATION_STALLED: master "tok-1" of Tok.sweep() filled no witness at site 0 (close of
+    segment 0)`). A self-call writes no call record and closes no segment, so the leading suspect is that the
+    caller and the invoked subroutine disagree on how many records precede the frame's batch groups: the count is
+    `perCallRecordsBeforeGroups()` of the *emitted body's own layout* (`dataNftCount` plus its non-batched entry
+    slots), and the caller with a kept read has one where a callee that only writes a scalar has none. The toy's
+    third case pins the stall, and Y7 therefore stays unticked.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

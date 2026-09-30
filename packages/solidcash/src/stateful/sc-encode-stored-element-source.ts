@@ -4,6 +4,7 @@
 
 import {
   decodePushdataValue,
+  encodePushdataValue,
   type AbiFunction,
   type Artifact,
   type EntryAccessAbi,
@@ -262,7 +263,14 @@ function encodeStoredSource(
   if (value === undefined) return undefined;
   try {
     const encoded = encodeFunctionArgument(value, storedType, structs);
-    return encoded instanceof Uint8Array ? encoded : undefined;
+    if (!(encoded instanceof Uint8Array)) return undefined;
+    // A handler argument is an unframed stack item, but a variable-width array
+    // element is persisted with its own pushdata header. The compiler applies
+    // emitPushdataEncode before appending bytes/string elements to the array.
+    if (!wholeValue && (storedType === 'bytes' || storedType === 'string')) {
+      return encodePushdataValue(encoded, 'bytes');
+    }
+    return encoded;
   } catch {
     return undefined;
   }

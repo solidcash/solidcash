@@ -1734,18 +1734,27 @@ risk. Take the slices in order, each with its own tests.
     followed by the entry's argument pushes, so a ROOT frame binds `t` from them (`toys/identity.test.ts`, "serves
     `sweep(t)` as a user-entered root", with a control that pushes another address and is refused by the body's own
     require; the toy's earlier pin that a user entry supplies no run-time argument came from a plan whose master
-    carried neither a dispatcher nor pushes, and is corrected). **Still open, measured, and narrowed to one shape**: a frame whose
-    segment declares a kept (read-only) sorted-mapping node is refused by the machine with `Program failed an
-    OP_VERIFY operation.` - in the emitted program's record-preservation section, ip 2459 of the composer's redeem
-    script, which the refusal reporter cannot map to a source line because it is generated code - when the mapping
-    read is the *argument of a self-call*, while the identical records (the same written data record and the same
-    kept node) are **accepted** when that read is held in a local in the caller's own body. The sweep's own settle
-    then stalls (`PER_CALL_DERIVATION_STALLED: master "tok-1" of Tok.sweep() filled no witness at site 0 (close of
-    segment 0)`). A self-call writes no call record and closes no segment, so the leading suspect is that the
-    caller and the invoked subroutine disagree on how many records precede the frame's batch groups: the count is
-    `perCallRecordsBeforeGroups()` of the *emitted body's own layout* (`dataNftCount` plus its non-batched entry
-    slots), and the caller with a kept read has one where a callee that only writes a scalar has none. The toy's
-    third case pins the stall, and Y7 therefore stays unticked.
+    carried neither a dispatcher nor pushes, and is corrected). **A kept-node self-call frame settles from a well-formed plan** (this entry's
+    first report of it is corrected here): the refusal attributed to "the frame's declaration for a read-only node"
+    was the dispatcher's entry-selector size check, because the probe's plan omitted the selector for a contract
+    whose master dispatches over two entries, and libauth's `state.ip` is an *instruction index* rather than a byte
+    offset, which is why the failing instruction was misread as the record census. With the selector stated, the
+    self-call frame is accepted with its node kept and recreated unchanged and its data record carrying the body's
+    value, beside the single-entry local-read control (`call/self-call-kept-record.test.ts`, 2 cases green).
+    **De-scoped, reserved to the coordinator (measured, not a defect fix)**: the *sweep* shape - a self-call whose
+    callee batch-writes a mapping while the caller's own frame declares a kept read node. Measured with a
+    well-formed plan (the dispatcher's selector and the entry's argument both supplied through the call data): the
+    frame is refused in the census and the derivation stalls (`PER_CALL_DERIVATION_STALLED: master "tok-1" of
+    Tok.sweep() filled no witness at site 0 (close of segment 0)`). In the sweep the caller's read and the callee's
+    write are one access to **one node**, and the frame's segment list would have to carry that node both at the
+    position the caller's own layout gives the read and at the position the callee's layout gives the batch group:
+    the per-call block layout is per body (`GenerateTargetTraversal.entrySlots = node.entryAccesses`) and the batch
+    derivation reads its groups from `perCallRecordsBeforeGroups()` of the body it is emitted in, so the two bodies
+    disagree about one record list. Serving it needs a record layout a frame and the subroutines it invokes share,
+    or a slot-addressed lookup instead of a positional one - a decision about the convention's record layout rather
+    than a defect fix inside it, which the plan reserves to the coordinator. The neighbouring shape already fails
+    closed: a caller that has made an external call before invoking such a body is refused by name. The toy's third
+    case pins the stall, and Y7 stays unticked for it.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

@@ -20,7 +20,9 @@ import {
   getTokenContainerAddress,
 } from './covenant-helpers.js';
 import { evalComputedKey } from './route-expression-key.js';
-import { SortedList, keyToSlotMulti, decodeEntryCommitment } from './SortedList.js';
+import {
+  SortedList, bytesToSlotValue, keyToSlotMulti, decodeEntryCommitment,
+} from './SortedList.js';
 import { isMsgSenderKeySource } from './soft-state-overlays.js';
 
 export interface AssembleCreateBuilderNestedCalleeBlockHost {
@@ -562,6 +564,28 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
         for (let index = 0; index < bValueChunkOutputCount; index += 1) {
           ctx.bBlockInputs.push(await makeFunder());
         }
+      }
+      // Direct callees use this block's sorted-entry proofs, but unlike composed/transitive callees
+      // they do not pass through the nested batch planner. Publish the same ordered row vector and
+      // per-slot ranks from the authenticated target/next witnesses assembled above.
+      for (const batch of bAbiFunc?.sortedBatchInfo ?? []) {
+        if (!batch.linear || batch.slotIndices.some((index) =>
+          ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${index}`] === -2n)) continue;
+        const rows = batch.slotIndices.map((index) => {
+          const slot = ctx.bCompilerInternalArgs[`__internal__vmapBatchSlot_${index}`];
+          const next = ctx.bCompilerInternalArgs[`__internal__vmapBatchNext_${index}`];
+          if (!(slot instanceof Uint8Array) || slot.length !== 32
+            || !(next instanceof Uint8Array) || next.length !== 32) {
+            throw new Error(`External sorted batch '${batch.collection}' has no row witness for slot ${index}`);
+          }
+          return { index, slot, next };
+        }).sort((left, right) => (bytesToSlotValue(left.slot) < bytesToSlotValue(right.slot) ? -1 : 1));
+        rows.forEach((row, rank) => {
+          ctx.bCompilerInternalArgs[`__internal__vmapBatchRank_${row.index}`] = BigInt(rank);
+        });
+        ctx.bCompilerInternalArgs[`__internal__vmapBatchRows_${batch.collection}`] = Uint8Array.from(
+          rows.flatMap((row) => [...row.slot, ...row.next]),
+        );
       }
     }
   }

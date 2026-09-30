@@ -249,6 +249,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     requiredDataNftIndices: bRequiredNftIndices,
     functionName: callInfo.functionName,
     functionArgs: callInfo.args,
+    ...(ec.callsiteId !== undefined && { sourceCallsiteId: ec.callsiteId }),
     externalContract: callInfo.externalContract,
     callerIdentity: publicSelfIdentity,
     logicalFunctionName: callInfo.functionName,

@@ -6,6 +6,7 @@ import type { ExternalCallAbi } from '@solidcash/utils';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 
 export type CreateBuilderSharedFunderExternalCall = {
+  functionName?: string;
   externalContract?: {
     categoryId: string;
     inner: {
@@ -47,7 +48,7 @@ export async function allocateCreateBuilderSharedFunders(
     const ci = resolvedExternalCalls[si];
     if (!ci?.externalContract) continue;
     const bArt = ci.externalContract.inner.artifact;
-    const bAbiFunc = bArt.abi.find((f) => f.name === ecSlot.functionName);
+    const bAbiFunc = bArt.abi.find((f) => f.name === (ci.functionName ?? ecSlot.functionName));
     const bLayout = bAbiFunc?.blockLayout;
     if (!bLayout) continue;
     const fullBlockKinds = new Set(

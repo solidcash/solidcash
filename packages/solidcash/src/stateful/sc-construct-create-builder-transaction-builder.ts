@@ -342,6 +342,7 @@ export function constructCreateBuilderTransactionBuilder(
     void materialized;
     let changed = false;
     for (const [ordinal, groupIdx] of topLevelReturnWitnessGroups.entries()) {
+      if (groupIdx < 0) continue;
       const name = topLevelReturnWitnessNames[ordinal];
       if (name === undefined) break;
       const position = abiFunction!.inputs.findIndex((input) => input.name === name);

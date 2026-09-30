@@ -173,6 +173,11 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         bFinalArgs.push(-1n);
       } else if (paramName === '__internal__msgSenderCategory') {
         bFinalArgs.push(hexToBin(meta.callerCategoryId).reverse());
+      } else if (paramName === '__internal__msgSenderAnchorIdx') {
+        // Direct groups use the root contract's physical locking bytecode as callerIdentity.
+        // The negative sentinel authenticates that input directly; zero would point at the
+        // root master NFT and compare its capability-tagged category with the bare SCID.
+        bFinalArgs.push(-1n);
       } else if (paramName === '__internal__blockhashInputIndex') {
         const firstOracleOffset = group.blockLayout?.slots.find(
           (slot) => slot.kind === 'blockhashOracle',

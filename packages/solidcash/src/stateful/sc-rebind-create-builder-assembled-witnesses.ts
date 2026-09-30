@@ -9,6 +9,7 @@ import { binToHex } from '@bitauth/libauth';
 import type { AbiFunction } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { groupIndexForExternalCallSlot } from './physical-external-call.js';
 import { assignPhysicalReturnIndices } from './physical-return-layout.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
@@ -244,11 +245,22 @@ refreshTopLevelIdentityAnchorWitnesses();
 // `OP_VERIFY` before anything else in the frame can run. Rebind it from the assembled transaction.
 if (abiFunction && externalCallUtxoGroups.length > 0) {
   let masterWitnessesChanged = false;
+  const groupByCallsite = new Map<number, number>();
+  for (const [groupIndex, group] of externalCallUtxoGroups.entries()) {
+    if (group.sourceCallsiteId !== undefined && !groupByCallsite.has(group.sourceCallsiteId)) {
+      groupByCallsite.set(group.sourceCallsiteId, groupIndex);
+    }
+  }
   for (const input of abiFunction.inputs) {
     const masterWitness = /^__internal__extcallMasterIdx(\d*)$/.exec(input.name);
     if (masterWitness === null) continue;
     const slot = masterWitness[1] === '' ? 0 : Number(masterWitness[1]);
-    const group = externalCallUtxoGroups[slot];
+    const groupIndex = groupIndexForExternalCallSlot({
+      slot, externalCalls: abiFunction.externalCalls, groupByCallsite,
+      compactGroups: externalCallUtxoGroups.map((_, index) => index),
+    });
+    if (groupIndex === undefined) continue;
+    const group = externalCallUtxoGroups[groupIndex];
     if (group === undefined) continue;
     const position = abiFunction.inputs.findIndex((candidate) => candidate.name === input.name);
     if (position < 0 || position >= finalArgs.length) continue;
@@ -264,7 +276,7 @@ if (abiFunction && externalCallUtxoGroups.length > 0) {
     const anchorValue = anchorPosition < 0 ? undefined : finalArgs[anchorPosition];
     const anchorIndex = typeof anchorValue === 'bigint'
       && anchorValue >= 0n && anchorValue < 1_000_000n ? Number(anchorValue) : -1;
-    const materializedMaster = builder.findMaterializedMasterInput(group.sharedGroupIndex ?? slot);
+    const materializedMaster = builder.findMaterializedMasterInput(group.sharedGroupIndex ?? groupIndex);
     const authoritative = materializedMaster >= 0 ? materializedMaster : anchorIndex;
     if (authoritative < 0 || finalArgs[position] === BigInt(authoritative)) continue;
     finalArgs[position] = BigInt(authoritative);

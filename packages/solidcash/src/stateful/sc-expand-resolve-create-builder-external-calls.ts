@@ -32,6 +32,14 @@ export interface ExpandResolveCreateBuilderExternalCallsHost {
   }>;
   resolveExternalArgs(...args: any[]): FunctionArgument[] | undefined;
   evaluateExternalExpression(...args: any[]): FunctionArgument | undefined;
+  hydrateExternalPredicateState?(
+    expressions: readonly ExternalCallExpression[],
+    functionArgs: FunctionArgument[],
+    artifact: Artifact,
+    state: Record<string, unknown>,
+    callerInputs?: readonly { type: string }[],
+    executionSelfAddress?: FunctionArgument,
+  ): Promise<Record<string, unknown>>;
   getExternalRegistryEntry(interfaceName: string): unknown | undefined;
   getExternalDeploymentByAddressValue(value: string | Uint8Array): unknown | undefined;
   getFullState(): Promise<{ state: Record<string, StateValue> }>;
@@ -79,6 +87,29 @@ export async function expandResolveCreateBuilderExternalCalls(
       return pretest === false;
     });
     if (allZeroTrip) {
+      return {
+        externalCalls: [], presetResolved: [], loopIdxRanges: [], resolvedExternalCalls: [],
+        callerStateSnapshot,
+      };
+    }
+  }
+
+  // A published false activation has no call operand or participant block to resolve. The final covenant
+  // remains authoritative if an earlier write changes the condition: an omitted required callee cannot
+  // satisfy its on-chain identity check. Keep unresolved conditions as candidates rather than guessing.
+  if (!overrideExternalCalls && externalCalls?.some((call) => call.occurrence === 'conditional' && call.condition)) {
+    callerStateSnapshot ??= (await host.getFullState()).state;
+    const conditions = externalCalls.flatMap((call) => call.occurrence === 'conditional' && call.condition
+      ? [call.condition] : []);
+    if (host.hydrateExternalPredicateState) {
+      callerStateSnapshot = await host.hydrateExternalPredicateState(
+        conditions, args, artifact, callerStateSnapshot, abiFunction?.inputs, publicSelfAddress,
+      ) as Record<string, StateValue>;
+    }
+    externalCalls = externalCalls.filter((call) => call.occurrence !== 'conditional' || !call.condition
+      || host.evaluateExternalExpression(call.condition, args, artifact, callerStateSnapshot,
+        abiFunction?.inputs, undefined, 0, false, publicSelfAddress) !== false);
+    if (externalCalls.length === 0) {
       return {
         externalCalls: [], presetResolved: [], loopIdxRanges: [], resolvedExternalCalls: [],
         callerStateSnapshot,
@@ -151,16 +182,41 @@ export async function expandResolveCreateBuilderExternalCalls(
         canAutoResolve = false;
         break;
       }
+      let functionName = ec.functionName;
+      if (ec.interfaceName === '__raw__') {
+        const selected = (registered as { implementation?: unknown }).implementation ?? registered;
+        const concreteAbi = (selected as { inner?: { artifact?: Artifact } }).inner?.artifact?.abi ?? [];
+        const matches = concreteAbi.filter((candidate) => (
+          (ec.rawFunctionName !== undefined && candidate.name === ec.rawFunctionName)
+          || (ec.rawSelector !== undefined && candidate.selector?.toLowerCase() === ec.rawSelector.toLowerCase())
+        ));
+        if (matches.length !== 1) {
+          throw new Error(`Raw external call selector '${ec.rawSelector ?? '<unknown>'}' has no unique pinned callee`);
+        }
+        functionName = matches[0].name;
+      }
       // Expression arg sources are evaluated against the caller's OWN state (`jobs.length - 1` and friends).
       // `_evaluateExternalExpression` already covers every shape these reach - state/array length/arithmetic,
       // struct constructors, the Encoding helpers - but silently yields undefined without a state snapshot,
       // which then surfaces as "cannot be auto-resolved". Read it once and thread it through.
       callerStateSnapshot ??= (await host.getFullState()).state;
-      const resolvedArgs = host.resolveExternalArgs(
-        ec.argSources, args, artifact, callerStateSnapshot, abiFunction?.inputs,
+      const argSources = ec.interfaceName === '__raw__' ? ec.rawArgSources ?? ec.argSources : ec.argSources;
+      let resolvedArgs = host.resolveExternalArgs(
+        argSources, args, artifact, callerStateSnapshot, abiFunction?.inputs,
         undefined, 0, false, publicSelfAddress,
       );
-      if (resolvedArgs === undefined && ec.argSources?.some((s) => s.kind === 'expression')) {
+      const expressionArgs = argSources?.flatMap((source) => source.kind === 'expression'
+        && source.expression ? [source.expression] : []) ?? [];
+      if (resolvedArgs === undefined && expressionArgs.length > 0 && host.hydrateExternalPredicateState) {
+        callerStateSnapshot = await host.hydrateExternalPredicateState(
+          expressionArgs, args, artifact, callerStateSnapshot, abiFunction?.inputs, publicSelfAddress,
+        ) as Record<string, StateValue>;
+        resolvedArgs = host.resolveExternalArgs(
+          argSources, args, artifact, callerStateSnapshot, abiFunction?.inputs,
+          undefined, 0, false, publicSelfAddress,
+        );
+      }
+      if (resolvedArgs === undefined && argSources?.some((s) => s.kind === 'expression')) {
         throw new Error(
           `External call to ${ec.interfaceName}.${ec.functionName} has expression-based argSources `
           + 'that cannot be auto-resolved. Use withExternalCall() to provide args explicitly.',
@@ -168,7 +224,7 @@ export async function expandResolveCreateBuilderExternalCalls(
       }
       autoResolved.push({
         externalContract: registered,
-        functionName: ec.functionName,
+        functionName,
         args: resolvedArgs ?? [],
       });
     }

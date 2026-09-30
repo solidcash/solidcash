@@ -218,10 +218,21 @@ export function reassertNestedSameIndexMutables(
   const plannedInsertByPredecessor = new Map<number, {
     outputIndex: number; commitment?: string; newCommitment?: string;
   }>();
+  const isCompilerOwnedPredOut = (
+    group: ExternalCallUtxoGroup,
+    insert: NonNullable<ExternalCallUtxoGroup['plannedEntryInserts']>[number],
+  ): boolean => {
+    if (insert.slotIndex === undefined) return false;
+    const name = `__internal__vmapBatchPredOut_${insert.slotIndex}`;
+    return group.relativeOutputInternalArgs?.includes(name) === true;
+  };
   for (const [groupIndex, group] of host.externalCallUtxoGroups.entries()) {
     if (group.sharedGroupIndex !== undefined) continue;
     const base = host.getExternalCallMasterInputIndex(groupIndex);
     for (const insert of group.plannedEntryInserts ?? []) {
+      // The compiler's sorted-batch INSERT puts NEW at the fixed entry slot and reserves
+      // outputBlockSlot for P'. The legacy 1:1 repair below assumes the inverse layout.
+      if (isCompilerOwnedPredOut(group, insert)) continue;
       plannedInsertByPredecessor.set(base + insert.blockSlot, {
         outputIndex: base + insert.outputBlockSlot,
         commitment: insert.commitment,
@@ -232,6 +243,7 @@ export function reassertNestedSameIndexMutables(
   for (const [groupIndex, group] of host.lowLevelCallUtxoGroups.entries()) {
     const base = host.getLowLevelCallMasterInputIndex(groupIndex);
     for (const insert of group.plannedEntryInserts ?? []) {
+      if (isCompilerOwnedPredOut(group, insert)) continue;
       plannedInsertByPredecessor.set(base + insert.blockSlot, {
         outputIndex: base + insert.outputBlockSlot,
         commitment: insert.commitment,

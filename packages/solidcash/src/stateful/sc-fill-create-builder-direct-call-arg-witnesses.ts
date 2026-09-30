@@ -13,6 +13,8 @@ import { addressToLockScript } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { logicalIdentityBandKey, resolveLogicalIdentity } from './logical-identity.js';
 import { externalCallTargetSourceLockingBytecodeHex } from './mapping-key-lookup.js';
+import { defaultInternalFunctionArg, materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import { selectorParamSlot } from './physical-external-call.js';
 import type { CreateBuilderLoopIdxRange } from './sc-expand-resolve-create-builder-external-calls.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 
@@ -82,6 +84,61 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
     identityAnchorBandByAddress, externalCallAnchorIndices, topLevelAnchorFillPositions,
     topLevelReturnWitnessPlan, topLevelReturnWitnessGroups,
   } = params;
+
+  // Conditional callsites retain their ABI slot numbers when inactive, while the physical groups compact.
+  // Fill this topology by ABI name; appending one witness per physical group would put the later group's
+  // master index into an earlier omitted bytes4 selector slot.
+  const publishedCalls = abiFunction.externalCalls ?? [];
+  const slotByCallsite = new Map(publishedCalls.flatMap((call, slot) => call.callsiteId === undefined
+    ? [] : [[call.callsiteId, slot] as const]));
+  const physicalSlot = (groupIndex: number): number => {
+    const id = groupMetas[groupIndex]?.ecSlot.callsiteId;
+    return id === undefined ? groupIndex : slotByCallsite.get(id) ?? groupIndex;
+  };
+  const sparse = Array.from({ length: directGroupCount }, (_, index) => physicalSlot(index))
+    .some((slot, index) => slot !== index);
+  if (sparse) {
+    if (loopIdxRanges.length > 0) {
+      throw new Error('Sparse direct-call witnesses cannot include an expanded loop slot');
+    }
+    const groupBySlot = new Map(Array.from({ length: directGroupCount }, (_, index) => (
+      [physicalSlot(index), index] as const
+    )));
+    const returningSlots = publishedCalls.flatMap((call, slot) => call.hasReturnValues ? [slot] : []);
+    for (const input of abiFunction.inputs) {
+      const selector = /^__internal__externalCallSelector(\d*)$/.exec(input.name);
+      const master = /^__internal__extcallMasterIdx(\d*)$/.exec(input.name);
+      const anchor = /^__internal__extcallAnchorIdx(\d*)$/.exec(input.name);
+      const returned = /^__internal__externalReturnOutputIdx(\d*)$/.exec(input.name);
+      if (!selector && !master && !anchor && !returned) continue;
+      const slot = returned ? returningSlots[Number(returned[1])]
+        : selector ? selectorParamSlot(input.name, publishedCalls)
+          : Number((master ?? anchor)![1]);
+      const groupIndex = slot === undefined ? undefined : groupBySlot.get(slot);
+      const group = groupIndex === undefined ? undefined : externalCallUtxoGroups[groupIndex];
+      let value: FunctionArgument = defaultInternalFunctionArg(input);
+      if (groupIndex !== undefined && group) {
+        if (selector) {
+          const selected = group.compilerRoute?.selector
+            ?? (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
+              .find((candidate) => candidate.name === group.functionName)?.selector;
+          if (selected === undefined) throw new Error(`No selector for direct callee '${group.functionName}'`);
+          value = typeof selected === 'string' ? hexToBin(selected) : selected;
+        } else if (master) value = BigInt(groupMasterIndices[groupIndex]);
+        else if (anchor) value = externalCallAnchorIndices.get(groupIndex) ?? -1n;
+        else if (returned) {
+          const outputIndex = returnEventIndexMap.get(groupIndex);
+          if (outputIndex !== undefined) value = BigInt(outputIndex);
+        }
+      } else if (master || anchor || returned) value = -1n;
+      finalArgs = materializeInternalFunctionArgument(finalArgs, abiFunction.inputs, input.name, value);
+      if (returned) {
+        topLevelReturnWitnessPlan.push(typeof value === 'bigint' ? value : -1n);
+        topLevelReturnWitnessGroups.push(groupIndex ?? -1);
+      }
+    }
+    return finalArgs;
+  }
 
   // Resolve 4-byte hash selector from B's ABI - only for A's DIRECT external calls.
   // Transitive call selectors are handled above as part of B's hidden params.

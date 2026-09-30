@@ -22,6 +22,7 @@ import {
 import { createTestProvider } from '../test-util.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { expandResolveCreateBuilderExternalCalls } from '../../src/stateful/sc-expand-resolve-create-builder-external-calls.js';
+import { fillCreateBuilderDirectCallArgWitnesses } from '../../src/stateful/sc-fill-create-builder-direct-call-arg-witnesses.js';
 
 type PredicateEvaluator = {
   _evaluateExternalExpression: (
@@ -602,6 +603,143 @@ describe('conditional external-call topology', () => {
     expect(resolved.resolvedExternalCalls).toEqual([{
       externalContract: callee, functionName: 'ping', args: [],
     }]);
+  });
+
+  it('hydrates mapping-backed arguments before resolving a direct callee', async () => {
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const fn = {
+      name: 'run', inputs: [], externalCalls: [{
+        interfaceName: 'IToken', functionName: 'pay', requiredDataNftIndices: [],
+        argSources: [{ kind: 'expression', expression: {
+          kind: 'field', name: 'amount', expression: { kind: 'stateAccess', name: 'users', args: [
+            { kind: 'literal', type: 'bigint', value: '0' },
+          ] },
+        } }],
+      }],
+    } as unknown as Artifact['abi'][number];
+    let hydrated = false;
+    const resolved = await expandResolveCreateBuilderExternalCalls({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: () => callee,
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+      hydrateExternalPredicateState: async () => {
+        hydrated = true;
+        return { users: { 0: { amount: 7n } } };
+      },
+    }, fn, [], artifact, undefined, undefined);
+    expect(hydrated).toBe(true);
+    expect(resolved.resolvedExternalCalls).toEqual([{
+      externalContract: callee, functionName: 'pay', args: [7n],
+    }]);
+  });
+
+  it('omits a false mapping-backed call without renumbering a later required callsite', async () => {
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const fn = {
+      name: 'run', inputs: [], externalCalls: [{
+        callsiteId: 4, occurrence: 'conditional', interfaceName: 'IAbsent',
+        functionName: 'optional', requiredDataNftIndices: [],
+        condition: { kind: 'binary', operator: '>', left: {
+          kind: 'field', name: 'amount', expression: { kind: 'stateAccess', name: 'users', args: [
+            { kind: 'literal', type: 'bigint', value: '0' },
+          ] },
+        }, right: { kind: 'literal', type: 'bigint', value: '0' } },
+        argSources: [{ kind: 'expression', expression: { kind: 'identifier', name: 'unreached' } }],
+      }, {
+        callsiteId: 7, occurrence: 'once', interfaceName: 'IRequired',
+        functionName: 'pay', requiredDataNftIndices: [], argSources: [],
+      }],
+    } as unknown as Artifact['abi'][number];
+    const resolved = await expandResolveCreateBuilderExternalCalls({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: (name) => name === 'IRequired' ? callee : undefined,
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+      hydrateExternalPredicateState: async () => ({ users: { 0: { amount: 0n } } }),
+    }, fn, [], artifact, undefined, undefined);
+    expect(resolved.externalCalls?.map((call) => call.callsiteId)).toEqual([7]);
+    expect(resolved.resolvedExternalCalls).toEqual([{
+      externalContract: callee, functionName: 'pay', args: [],
+    }]);
+  });
+
+  it('binds a pinned raw call by its published selector and decoded argument sources', async () => {
+    const target = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x61), 0x87);
+    const callee = { inner: { artifact: { abi: [{ name: 'transferFrom', selector: '4b6685e7' }] } } };
+    const fn = {
+      name: 'run', inputs: [{ name: 'amount', type: 'uint256' }], externalCalls: [{
+        callsiteId: 7, occurrence: 'once', interfaceName: '__raw__', functionName: '__raw__',
+        rawSelector: '4b6685e7', requiredDataNftIndices: [],
+        addressSource: { kind: 'expression', expression: { kind: 'state', name: 'target' } },
+        argSources: [{ kind: 'expression', expression: { kind: 'unsupported', name: 'AbiEncodeWithSelectorNode' } }],
+        rawArgSources: [{ kind: 'forward', paramIndex: 0 }],
+      }],
+    } as unknown as Artifact['abi'][number];
+    const resolved = await expandResolveCreateBuilderExternalCalls({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: () => undefined,
+      getExternalDeploymentByAddressValue: (value) => value === target ? callee : undefined,
+      getFullState: async () => ({ state: { target } }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+    }, fn, [17n], artifact, undefined, undefined);
+    expect(resolved.resolvedExternalCalls).toEqual([{
+      externalContract: callee, functionName: 'transferFrom', args: [17n],
+    }]);
+  });
+
+  it('keeps sparse direct-call witnesses in their original ABI slots', async () => {
+    const calls = [{ callsiteId: 4, occurrence: 'conditional', hasReturnValues: true },
+      { callsiteId: 7, occurrence: 'once', hasReturnValues: true }];
+    const inputs = [
+      { name: '__internal__externalCallSelector0', type: 'bytes4' },
+      { name: '__internal__extcallMasterIdx0', type: 'bigint' },
+      { name: '__internal__extcallMasterIdx1', type: 'bigint' },
+      { name: '__internal__extcallAnchorIdx0', type: 'bigint' },
+      { name: '__internal__extcallAnchorIdx1', type: 'bigint' },
+      { name: '__internal__externalReturnOutputIdx0', type: 'bigint' },
+      { name: '__internal__externalReturnOutputIdx1', type: 'bigint' },
+    ];
+    const returnGroups: number[] = [];
+    const finalArgs = await fillCreateBuilderDirectCallArgWitnesses({
+      inner: { provider: createTestProvider(), artifact },
+      resolveExternalArgs: () => undefined,
+    }, {
+      abiFunction: { inputs, externalCalls: calls } as unknown as Artifact['abi'][number],
+      args: [], finalArgs: [],
+      externalCallUtxoGroups: [{
+        functionName: 'transferFrom', externalContract: {
+          inner: { artifact: { abi: [{ name: 'transferFrom', selector: '4b6685e7' }] } },
+        },
+      }] as any,
+      groupMetas: [{ ecSlot: calls[1], callerCategoryId: 'ab'.repeat(32), parentGroupIndex: -1 }] as any,
+      directGroupCount: 1, loopIdxRanges: [], groupMasterIndices: [8],
+      externalCalls: [calls[1]] as any, returnEventOutputBase: 12,
+      returnEventIndexMap: new Map([[0, 12]]), callerStateSnapshot: undefined,
+      onChainState: { state: {} }, publicSelfAddress: new Uint8Array(),
+      identityAnchors: [], identityAnchorBandByAddress: new Map(),
+      externalCallAnchorIndices: new Map(), topLevelAnchorFillPositions: [],
+      topLevelReturnWitnessPlan: [], topLevelReturnWitnessGroups: returnGroups,
+    });
+    expect(finalArgs).toEqual([new Uint8Array(4), -1n, 8n, -1n, -1n, -1n, 12n]);
+    expect(returnGroups).toEqual([-1, 0]);
   });
 
   it('omits direct callees when every published affine loop has zero iterations', async () => {

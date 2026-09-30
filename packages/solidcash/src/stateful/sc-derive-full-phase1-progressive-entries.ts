@@ -400,9 +400,14 @@ export function deriveFullPhase1ProgressiveEntries(
         transaction: pb2.buildLibauthTransaction(),
       }) as AuthenticationProgramStateCommon[]);
       for (const { handle, newIdx, planned } of insertHandles) {
+        // A planned insert handle owns the predecessor rewrite P', already computed from the
+        // authenticated sorted-list predecessor. The trace can also expose the fixed NEW node's
+        // 64-byte link at this coordinate before it reaches the P' comparison; treating that
+        // intermediate value as the handle commitment swaps the two nodes and blocks later emits.
+        if (planned) continue;
         const newCommit = map2.get(newIdx);
         if (newCommit !== undefined) stb.setExternalCallEntryInsertCommitment(handle, newCommit);
-        else if (!planned) stb.removeExternalCallEntryInsert(handle);
+        else stb.removeExternalCallEntryInsert(handle);
       }
     }
   }

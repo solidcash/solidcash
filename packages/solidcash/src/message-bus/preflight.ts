@@ -2668,6 +2668,7 @@ const evaluateEveryInput = (
           lastOutputCategoryIndex?: number;
           lastOutputCategory?: string;
           lastOutputBytecodeIndex?: number;
+          lastOutputCommitmentIndex?: number;
           lastInputBytecodeIndex?: number;
           lastInputSourceLock?: string;
           lastInputUnlockerLock?: string;
@@ -2675,6 +2676,7 @@ const evaluateEveryInput = (
         let lastOutputCategoryIndex: number | undefined;
         let lastOutputCategory: string | undefined;
         let lastOutputBytecodeIndex: number | undefined;
+        let lastOutputCommitmentIndex: number | undefined;
         // Input-side counterpart: a block/entry guard compares `tx.inputs[OP_INPUTINDEX + n].lockingBytecode`
         // against an expected lock, so the index it resolved is the coordinate under test. Captured at the
         // OP_UTXOBYTECODE that reads it, because the comparison itself has already popped both operands.
@@ -2794,6 +2796,11 @@ const evaluateEveryInput = (
                 });
               }
             }
+            if (state.instructions[state.ip]?.opcode === Op.OP_OUTPUTTOKENCOMMITMENT) {
+              const indexBytes = state.stack.at(-1);
+              lastOutputCommitmentIndex = indexBytes === undefined ? undefined
+                : Number(vmNumberToBigInt(indexBytes));
+            }
             if (state.instructions[state.ip]?.opcode === Op.OP_OUTPUTTOKENCATEGORY) {
               const indexBytes = state.stack.at(-1);
               lastOutputCategoryIndex = indexBytes === undefined ? undefined
@@ -2812,6 +2819,7 @@ const evaluateEveryInput = (
               lastOutputCategoryIndex,
               lastOutputCategory,
               lastOutputBytecodeIndex,
+              lastOutputCommitmentIndex,
               lastInputBytecodeIndex,
               // The VM's own view of the input the guard read, next to what that input's unlocker would generate.
               // A mismatch between the two is a stale source list; agreement means the guard's EXPECTATION is wrong.

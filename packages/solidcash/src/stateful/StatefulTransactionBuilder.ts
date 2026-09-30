@@ -2420,6 +2420,8 @@ export class StatefulTransactionBuilder {
       valueChunkOutputs: this.valueChunkOutputs,
       derivedChunkOutputs: this.derivedChunkOutputs,
       dynamicChunkVars: this.dynamicChunkVars,
+      dynamicChunkInputs: this.dynamicChunkInputs,
+      allInputs: this.allInputs,
       chunkRawCommitments: this.chunkRawCommitments,
       blockLayout: this.blockLayout,
       externalCallUtxoGroups: this.externalCallUtxoGroups,

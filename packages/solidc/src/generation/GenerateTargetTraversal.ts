@@ -29088,8 +29088,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // explicit dynamic base already includes them and must not count them again.
         const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
         if (batchCountIdx >= 0) {
+          if (explicitDynamicBase >= 0) {
+            // A nonnegative runtime base is the assembled input/output coordinate, including any preceding
+            // mapping entry band. Only the negative sentinel takes the reconstructed path below.
+            this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc, 1);
+            this.emit(encodeInt(0n), loc);
+            this.emit(Op.OP_LESSTHAN, loc);
+            this.emit(Op.OP_IF, loc);
+          }
           this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 1);
           this.emit(Op.OP_ADD, loc);
+          if (explicitDynamicBase >= 0) this.emit(Op.OP_ENDIF, loc);
         }
         if (this.runtimeLoopEntryOutputCountActive) {
           // Runtime mapping entries are verified inline before the epilogue's newly written dynamic chunks. Their
@@ -32396,14 +32405,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Consume the first Bitcoin Script push from unlocking bytecode.
    * Stack: [script] -> [payload, leftover].
-   * Direct push 1-75: payload is those bytes. OP_PUSHDATA1: payload is the
-   * declared length. Any other opcode (OP_N, OP_0) is a one-byte push whose
-   * payload is empty so a following 4-byte selector is still visible.
+   * Direct push 1-75 and PUSHDATA1/2/4: payload is the declared number of
+   * bytes. Any other opcode (OP_N, OP_0) consumes only itself and yields an
+   * empty payload, so a following selector remains visible.
    */
   private emitConsumeFirstScriptPush(locationData: SingleLocationData): void {
     this.emit(encodeInt(1n), locationData);
     this.emit(Op.OP_SPLIT, locationData); // [op, rest]
     this.emit(Op.OP_SWAP, locationData); // [rest, op]
+    this.emit(new Uint8Array([0]), locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_BIN2NUM, locationData); // unsigned, minimally encoded opcode number
     this.emit(Op.OP_DUP, locationData);
     this.emit(encodeInt(75n), locationData);
     this.emit(Op.OP_LESSTHANOREQUAL, locationData);
@@ -32418,11 +32430,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(1n), locationData);
     this.emit(Op.OP_SPLIT, locationData); // [len, rest]
     this.emit(Op.OP_SWAP, locationData);
+    this.emit(new Uint8Array([0]), locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_BIN2NUM, locationData); // unsigned one-byte length
     this.emit(Op.OP_SPLIT, locationData); // [payload, leftover]
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(77n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(new Uint8Array([0]), locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_BIN2NUM, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(78n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(encodeInt(4n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(new Uint8Array([0]), locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_BIN2NUM, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
     this.emit(Op.OP_ELSE, locationData);
     this.emit(Op.OP_DROP, locationData); // drop OP_N / other opcode
     this.emit(Op.OP_0, locationData);
     this.emit(Op.OP_SWAP, locationData); // [empty, leftover]
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
     this.emit(Op.OP_ENDIF, locationData);
     this.emit(Op.OP_ENDIF, locationData);
   }
@@ -37064,256 +37107,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Forward-parse through a serialized script (unlocking bytecode) on the stack
    * to extract the last pushdata element (the redeem script).
    *
-   * Scans byte-by-byte through the script opcodes to find the start of the last
-   * push element, then extracts just its data payload (without the opcode prefix).
+   * Consumes one encoded push or standalone opcode per iteration, retaining the
+   * last payload without repeatedly copying the full unlocking bytecode.
    *
    * Stack before: [..., ub]
    * Stack after:  [..., lastPushData]
    */
   private emitExtractLastPush(locationData: SingleLocationData): void {
-    // Stack: [ub]
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);            // [ub, total]
-    this.emit(Op.OP_0, locationData);              // [ub, total, pos=0]
-    this.emit(Op.OP_DUP, locationData);            // [ub, total, pos, lastPos=0]
-
+    // Consume encoded pushes from the front, retaining only the remaining suffix and
+    // most recent payload. The previous positional scan copied the entire unlocking
+    // bytecode on every iteration, making a large callee redeem script exceed BCH's
+    // operation-cost density limit even when it contained only a few argument pushes.
+    // [remaining] -> [remaining, lastPayload]
+    this.emit(Op.OP_0, locationData);
     this.emit(Op.OP_BEGIN, locationData);
-
-    // Check: pos < total?
-    // Stack: [ub, total, pos, lastPos]
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_PICK, locationData);           // [ub, total, pos, lastPos, total]
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_PICK, locationData);           // [ub, total, pos, lastPos, total, pos]
-    this.emit(Op.OP_GREATERTHAN, locationData);    // [ub, total, pos, lastPos, total>pos]
-
+    this.emit(Op.OP_OVER, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_0NOTEQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
-
-    // pos < total: update lastPos = pos, then compute element size
-    // Stack: [ub, total, pos, lastPos]
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, pos] - drop old lastPos
-    this.emit(Op.OP_DUP, locationData);            // [ub, total, pos, newLastPos=pos]
-    this.emit(Op.OP_OVER, locationData);           // [ub, total, pos, lastPos, pos]
-
-    // Read the opcode byte at position pos from ub
-    // Stack: [ub, total, pos, lastPos, pos]
-    this.emit(encodeInt(4n), locationData);
-    this.emit(Op.OP_PICK, locationData);           // [ub, total, pos, lastPos, pos, ub]
-    this.emit(Op.OP_SWAP, locationData);           // [ub, total, pos, lastPos, ub, pos]
-    this.emit(Op.OP_SPLIT, locationData);          // [ub, total, pos, lastPos, ub_before, ub_from_pos]
-    this.emit(Op.OP_NIP, locationData);            // [ub, total, pos, lastPos, ub_from_pos]
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_SPLIT, locationData);          // [ub, total, pos, lastPos, opcode_byte, ub_rest]
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, pos, lastPos, opcode_byte]
-
-    // Convert opcode byte to unsigned integer using OP_0 OP_CAT OP_BIN2NUM
-    // This forces unsigned interpretation by prepending a 0x00 byte (clearing sign bit)
-    // e.g. 0x80 -> [0x80, 0x00] -> BIN2NUM -> 128 (not negative zero)
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_CAT, locationData);
-    this.emit(Op.OP_BIN2NUM, locationData);        // [ub, total, pos, lastPos, opcodeInt] (unsigned)
-
-    // Compute element_size based on opcode:
-    //   0x00         -> 1 (OP_0: just the opcode, pushes empty bytes)
-    //   0x01-0x4b    -> 1 + opcode (direct push)
-    //   0x4c (76)    -> 2 + next_byte_as_length (PUSHDATA1)
-    //   0x4d (77)    -> 3 + next_2bytes_as_LE_length (PUSHDATA2)
-    //   0x4e (78)    -> 5 + next_4bytes_as_LE_length (PUSHDATA4)
-    //   anything else -> 1 (single-byte opcode)
-
-    // Check: opcode == 0?
-    this.emit(Op.OP_DUP, locationData);            // [ub, total, pos, lastPos, op, op]
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_EQUAL, locationData);          // [ub, total, pos, lastPos, op, isZero]
-    this.emit(Op.OP_IF, locationData);
-    // OP_0: element size = 1
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, pos, lastPos]
-    this.emit(Op.OP_1, locationData);              // [ub, total, pos, lastPos, size=1]
+    this.emit(Op.OP_DROP, locationData); // discard the preceding payload
+    this.emitConsumeFirstScriptPush(locationData); // [payload, remaining]
+    this.emit(Op.OP_SWAP, locationData); // [remaining, payload]
+    this.emit(Op.OP_0, locationData); // continue
     this.emit(Op.OP_ELSE, locationData);
-
-    // Check: 1 <= opcode <= 75? (direct push)
-    this.emit(Op.OP_DUP, locationData);            // [ub, total, pos, lastPos, op, op]
-    this.emit(encodeInt(75n), locationData);
-    this.emit(Op.OP_LESSTHANOREQUAL, locationData); // [ub, total, pos, lastPos, op, isDirectPush]
-    this.emit(Op.OP_IF, locationData);
-    // Direct push: element size = 1 + opcode
-    this.emit(Op.OP_1ADD, locationData);           // [ub, total, pos, lastPos, size=1+op]
-    this.emit(Op.OP_ELSE, locationData);
-
-    // Check: opcode == 76? (PUSHDATA1)
-    this.emit(Op.OP_DUP, locationData);            // [ub, total, pos, lastPos, op, op]
-    this.emit(encodeInt(76n), locationData);
-    this.emit(Op.OP_EQUAL, locationData);          // [ub, total, pos, lastPos, op, isPD1]
-    this.emit(Op.OP_IF, locationData);
-    // PUSHDATA1: read next byte as unsigned length
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, pos, lastPos]
-    this.emit(Op.OP_OVER, locationData);           // [ub, total, pos, lastPos, pos]
-    this.emit(Op.OP_1ADD, locationData);           // [ub, total, pos, lastPos, pos+1]
-    this.emit(encodeInt(4n), locationData);
-    this.emit(Op.OP_PICK, locationData);           // [ub, total, pos, lastPos, pos+1, ub]
-    this.emit(Op.OP_SWAP, locationData);           // [ub, total, pos, lastPos, ub, pos+1]
-    this.emit(Op.OP_SPLIT, locationData);          // [ub, total, pos, lastPos, _, ub_from_pos1]
-    this.emit(Op.OP_NIP, locationData);            // [ub, total, pos, lastPos, ub_from_pos1]
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_SPLIT, locationData);          // [ub, total, pos, lastPos, len_byte, _]
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, pos, lastPos, len_byte]
-    // Unsigned interpretation: prepend 0x00 to prevent sign-bit issue for bytes >= 0x80
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_CAT, locationData);
-    this.emit(Op.OP_BIN2NUM, locationData);        // [ub, total, pos, lastPos, dataLen] (unsigned)
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_ADD, locationData);            // [ub, total, pos, lastPos, size=2+dataLen]
-    this.emit(Op.OP_ELSE, locationData);
-
-    // Check: opcode == 77? (PUSHDATA2)
-    this.emit(Op.OP_DUP, locationData);            // [ub, total, pos, lastPos, op, op]
-    this.emit(encodeInt(77n), locationData);
-    this.emit(Op.OP_EQUAL, locationData);          // [ub, total, pos, lastPos, op, isPD2]
-    this.emit(Op.OP_IF, locationData);
-    // PUSHDATA2: read next 2 bytes as unsigned LE length
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, pos, lastPos]
-    this.emit(Op.OP_OVER, locationData);           // [ub, total, pos, lastPos, pos]
-    this.emit(Op.OP_1ADD, locationData);           // [ub, total, pos, lastPos, pos+1]
-    this.emit(encodeInt(4n), locationData);
-    this.emit(Op.OP_PICK, locationData);           // [ub, total, pos, lastPos, pos+1, ub]
-    this.emit(Op.OP_SWAP, locationData);           // [ub, total, pos, lastPos, ub, pos+1]
-    this.emit(Op.OP_SPLIT, locationData);          // [ub, total, pos, lastPos, _, ub_from_pos1]
-    this.emit(Op.OP_NIP, locationData);            // [ub, total, pos, lastPos, ub_from_pos1]
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);          // [ub, total, pos, lastPos, len_bytes, _]
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, pos, lastPos, len_bytes]
-    // Unsigned interpretation: prepend 0x00 for sign safety
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_CAT, locationData);
-    this.emit(Op.OP_BIN2NUM, locationData);        // [ub, total, pos, lastPos, dataLen] (unsigned)
-    this.emit(encodeInt(3n), locationData);
-    this.emit(Op.OP_ADD, locationData);            // [ub, total, pos, lastPos, size=3+dataLen]
-    this.emit(Op.OP_ELSE, locationData);
-
-    // Check: opcode == 78? (PUSHDATA4)
-    this.emit(Op.OP_DUP, locationData);            // [ub, total, pos, lastPos, op, op]
-    this.emit(encodeInt(78n), locationData);
-    this.emit(Op.OP_EQUAL, locationData);          // [ub, total, pos, lastPos, op, isPD4]
-    this.emit(Op.OP_IF, locationData);
-    // PUSHDATA4: read next 4 bytes as unsigned LE length
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, pos, lastPos]
-    this.emit(Op.OP_OVER, locationData);           // [ub, total, pos, lastPos, pos]
-    this.emit(Op.OP_1ADD, locationData);           // [ub, total, pos, lastPos, pos+1]
-    this.emit(encodeInt(4n), locationData);
-    this.emit(Op.OP_PICK, locationData);           // [ub, total, pos, lastPos, pos+1, ub]
-    this.emit(Op.OP_SWAP, locationData);           // [ub, total, pos, lastPos, ub, pos+1]
-    this.emit(Op.OP_SPLIT, locationData);          // [ub, total, pos, lastPos, _, ub_from_pos1]
-    this.emit(Op.OP_NIP, locationData);            // [ub, total, pos, lastPos, ub_from_pos1]
-    this.emit(encodeInt(4n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);          // [ub, total, pos, lastPos, len_bytes, _]
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, pos, lastPos, len_bytes]
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_CAT, locationData);
-    this.emit(Op.OP_BIN2NUM, locationData);        // [ub, total, pos, lastPos, dataLen] (unsigned)
-    this.emit(encodeInt(5n), locationData);
-    this.emit(Op.OP_ADD, locationData);            // [ub, total, pos, lastPos, size=5+dataLen]
-    this.emit(Op.OP_ELSE, locationData);
-
-    // Anything else: single-byte opcode, element size = 1
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, pos, lastPos]
-    this.emit(Op.OP_1, locationData);              // [ub, total, pos, lastPos, size=1]
-
-    this.emit(Op.OP_ENDIF, locationData);          // end PUSHDATA4 check
-    this.emit(Op.OP_ENDIF, locationData);          // end PUSHDATA2 check
-    this.emit(Op.OP_ENDIF, locationData);          // end PUSHDATA1 check
-    this.emit(Op.OP_ENDIF, locationData);          // end direct push check
-    this.emit(Op.OP_ENDIF, locationData);          // end OP_0 check
-
-    // Stack: [ub, total, pos, lastPos, elementSize]
-    // Advance pos: pos = pos + elementSize
-    // Stack goal: [ub, total, newPos, lastPos]
-    this.emit(Op.OP_ROT, locationData);            // [ub, total, lastPos, elementSize, pos]
-    this.emit(Op.OP_ADD, locationData);            // [ub, total, lastPos, newPos]
-    this.emit(Op.OP_SWAP, locationData);           // [ub, total, newPos, lastPos]
-
-    // Continue loop
-    this.emit(Op.OP_0, locationData);
-
-    this.emit(Op.OP_ELSE, locationData);
-    // pos >= total: exit loop
-    this.emit(Op.OP_1, locationData);
-
+    this.emit(Op.OP_1, locationData); // no bytes remain
     this.emit(Op.OP_ENDIF, locationData);
-
     this.emit(Op.OP_UNTIL, locationData);
-
-    // Stack: [ub, total, pos, lastPos]
-    // lastPos = start of the last element in the unlocking bytecode
-    // Now extract just the data of that last element (skip its opcode/length prefix)
-
-    // Read opcode at lastPos (unsigned)
-    this.emit(Op.OP_NIP, locationData);            // [ub, total, lastPos]
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_PICK, locationData);           // [ub, total, lastPos, ub]
-    this.emit(Op.OP_OVER, locationData);           // [ub, total, lastPos, ub, lastPos]
-    this.emit(Op.OP_SPLIT, locationData);          // [ub, total, lastPos, _, ub_from_lp]
-    this.emit(Op.OP_NIP, locationData);            // [ub, total, lastPos, ub_from_lp]
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_SPLIT, locationData);          // [ub, total, lastPos, opByte, ub_rest]
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, lastPos, opByte]
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_CAT, locationData);
-    this.emit(Op.OP_BIN2NUM, locationData);        // [ub, total, lastPos, opInt] (unsigned)
-
-    // Compute prefix size (bytes to skip before raw data):
-    //   0x01-0x4b: prefix=1 (just the opcode)
-    //   0x4c (76): prefix=2 (opcode + 1 length byte)
-    //   0x4d (77): prefix=3 (opcode + 2 length bytes)
-    //   0x4e (78): prefix=5 (opcode + 4 length bytes)
-    //   anything else: prefix=1
-
-    this.emit(Op.OP_DUP, locationData);            // [ub, total, lastPos, op, op]
-    this.emit(encodeInt(76n), locationData);
-    this.emit(Op.OP_EQUAL, locationData);          // [ub, total, lastPos, op, isPD1]
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, lastPos]
-    this.emit(encodeInt(2n), locationData);         // [ub, total, lastPos, prefixSize=2]
-    this.emit(Op.OP_ELSE, locationData);
-
-    this.emit(Op.OP_DUP, locationData);            // [ub, total, lastPos, op, op]
-    this.emit(encodeInt(77n), locationData);
-    this.emit(Op.OP_EQUAL, locationData);          // [ub, total, lastPos, op, isPD2]
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, lastPos]
-    this.emit(encodeInt(3n), locationData);         // [ub, total, lastPos, prefixSize=3]
-    this.emit(Op.OP_ELSE, locationData);
-
-    this.emit(Op.OP_DUP, locationData);            // [ub, total, lastPos, op, op]
-    this.emit(encodeInt(78n), locationData);
-    this.emit(Op.OP_EQUAL, locationData);          // [ub, total, lastPos, op, isPD4]
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, lastPos]
-    this.emit(encodeInt(5n), locationData);         // [ub, total, lastPos, prefixSize=5]
-    this.emit(Op.OP_ELSE, locationData);
-    // Default: prefix=1 (direct push or other opcode)
-    this.emit(Op.OP_DROP, locationData);           // [ub, total, lastPos]
-    this.emit(Op.OP_1, locationData);              // [ub, total, lastPos, prefixSize=1]
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-
-    // Stack: [ub, total, lastPos, prefixSize]
-    // dataStart = lastPos + prefixSize
-    this.emit(Op.OP_ADD, locationData);            // [ub, total, dataStart]
-
-    // Extract: ub from dataStart to end
-    // dataLen = total - dataStart
-    this.emit(Op.OP_SWAP, locationData);           // [ub, dataStart, total]
-    this.emit(Op.OP_OVER, locationData);           // [ub, dataStart, total, dataStart]
-    this.emit(Op.OP_SUB, locationData);            // [ub, dataStart, dataLen]
-    this.emit(Op.OP_ROT, locationData);            // [dataStart, dataLen, ub]
-    this.emit(Op.OP_ROT, locationData);            // [dataLen, ub, dataStart]
-    this.emit(Op.OP_SPLIT, locationData);          // [dataLen, ub_before, ub_from_dataStart]
-    this.emit(Op.OP_NIP, locationData);            // [dataLen, ub_from_dataStart]
-    this.emit(Op.OP_SWAP, locationData);           // [ub_from_dataStart, dataLen]
-    this.emit(Op.OP_SPLIT, locationData);          // [data, remainder]
-    this.emit(Op.OP_DROP, locationData);           // [data]
+    this.emit(Op.OP_NIP, locationData); // final push's payload
   }
 
   /**

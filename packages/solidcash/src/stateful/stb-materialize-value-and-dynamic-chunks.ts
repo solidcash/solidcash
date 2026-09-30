@@ -15,6 +15,8 @@ export interface MaterializeValueAndDynamicChunksHost {
   readonly valueChunkOutputs: readonly Output[];
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly dynamicChunkVars: ReadonlyArray<{ name: string; lockingBytecode: Uint8Array }>;
+  readonly dynamicChunkInputs: readonly UnlockableUtxo[];
+  readonly allInputs: readonly UnlockableUtxo[];
   readonly chunkRawCommitments: ReadonlyMap<string, readonly string[]>;
   readonly blockLayout?: FunctionBlockLayout;
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
@@ -142,6 +144,24 @@ export function appendDynamicChunks(
   }
   for (const dv of host.dynamicChunkVars) {
     const commitments = host.chunkRawCommitments.get(dv.name) ?? [];
+    const chunkLock = binToHex(dv.lockingBytecode);
+    const oldChunks = host.dynamicChunkInputs.filter((input) => (
+      input.token?.category === host.categoryId
+      && binToHex(input.unlocker.generateLockingBytecode()) === chunkLock
+    ));
+    // A read-modify-write can co-spend its old chunks before an external callee. Those inputs already have
+    // 1:1 preservation outputs at their absolute coordinates, and the compiler's published dynamic base points
+    // there. Replace those recreations when the width is unchanged; appending another run after the callee
+    // would duplicate the collection's chunk index and violate its exact-output-count covenant.
+    const inPlaceIndices = oldChunks.map((input) => host.allInputs.findIndex((candidate) => (
+      candidate.txid === input.txid && candidate.vout === input.vout
+    )));
+    const inPlace = commitments.length > 0 && commitments.length === oldChunks.length
+      && inPlaceIndices.every((index) => index >= 0 && index < builder.outputs.length
+        && builder.outputs[index]?.token?.category === host.categoryId
+        && binToHex(builder.outputs[index]!.to instanceof Uint8Array
+          ? builder.outputs[index]!.to as Uint8Array : addressToLockScript(builder.outputs[index]!.to as string))
+          === chunkLock);
     const debugChunkLayout = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_CHUNK_LAYOUT === '1';
     const computedBase = host.getChunkOutputBase();
@@ -178,7 +198,7 @@ export function appendDynamicChunks(
         count: commitments.length,
       });
     }
-    for (const commitment of commitments) {
+    for (const [chunkIndex, commitment] of commitments.entries()) {
       const chunkOutput = {
         to: dv.lockingBytecode,
         amount: 1200n,
@@ -189,7 +209,8 @@ export function appendDynamicChunks(
         },
       };
       chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
-      builder.addOutput(chunkOutput);
+      if (inPlace) builder.outputs[inPlaceIndices[chunkIndex]!] = chunkOutput;
+      else builder.addOutput(chunkOutput);
     }
   }
 }

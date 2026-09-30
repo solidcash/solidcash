@@ -194,34 +194,48 @@ lands it removes the claim line.
   without re-implementing that plan. No partial landing: adding the slot without the emission
   moves `blockSize` for that body, and publishing the access without the SDK's per-turn planning changes what the
   shipped path does with the entry, so the three land as one sequence with the fixture census held at 0 refusals.
-- **Decision (coordinator, 2026-09-30, on the measured compiler half)**: the remaining SDK protocol — the per-call
-  composer's run-time-loop record planning — is **handed to the ladder stream**, which owns `per-call/proxy/**`,
-  `per-call/read.ts` and the composer's records, and whose files carry live uncommitted edits in this tree. The
-  compiler half stays with this stream as a saved patch, now committed at
-  `docs/per-call/patches/pw3-varying-key-compiler-half.diff` (it applies cleanly to the tree the ladder stream is
-  editing and names no SDK file), and lands with that work rather than before it. **What the handoff gives the
-  taker**: the per-call layout's `entry` slot for the collection, the published in-loop access
-  (`entryAccesses` with `keyParams: ["arridx(id:workers,id:i)"]`), and the emitter's frame-relative per-turn
-  coordinate - as the patch - plus the measured statement that the shipped path then refuses by name at
-  `packages/solidcash/src/per-call/call/entry-records.ts:374`, which is the line the taker's planner replaces.
-  **What the taker still owes**: the per-turn node planning for a loop write (the artifact's
-  `sortedUpsertLoopInfo.varyingArrayParam` names the array and `valueScalarParam` the value) and the loop's per-turn
-  *outputs* named by their position in the segment's declared list rather than by a frame coordinate. **Acceptance
-  status**: the offer is recorded here and in the plan's Log; no commit from the ladder stream accepts it yet, and the
-  plan's verification status records that as pending rather than as agreed. PW3's item closes on that split: the three
-  write-segment shapes are served with their machine pairs, and the varying-key variant is not served here.
+- **Decision (coordinator, 2026-09-30, revised the same day)**: the varying-key item **stays in this lane and is
+  implemented here, in steps**. The earlier reading of that day handed the SDK protocol to the ladder stream; the
+  coordinator reversed it on the measured boundary, because the per-turn record protocol is this lane's own
+  counterpart to the compiler half and the ladder stream's live edits (`per-call/proxy/**`, `per-call/read.ts`) do
+  not touch it. PW3's item is open in this lane until the fixture's `updateJobWhitelist` shape settles, and its box
+  stays unticked.
+- **The compiler half is landed (`aecdbf5ef`)**: three per-call-only edits, 28 lines. `SymbolTableTraversal.ts` gives
+  an in-loop access a `{kind: 'entry', conditional: true}` slot in the per-call block layout, `Artifact.ts` publishes
+  the in-loop access for per-call, and `GenerateTargetTraversal.ts`'s `runtimeLoopEntry` arm and
+  `emitSortedUpsertLoopBody`'s `pushIdx` address the turn's node from the frame's parked record base plus the slot's
+  per-call offset plus the loop's counter instead of the direct convention's trailing band. **Measured with it in
+  place**: the artifact publishes `blockLayout {blockSize: 2, slots: [master, {kind: 'entry', conditional: true}]}`
+  and `entryAccesses [{slotIndex: 0, collection: "balances", keyParams: ["arridx(id:workers,id:i)"], operations:
+  ["write"]}]`; the shipped call path refuses the varying-key write **by name** at the seam the planner replaces
+  (`packages/solidcash/src/per-call/call/entry-records.ts:374`, `... as write outside a sorted batch, which a call
+  does not plan`) where the machine previously failed inside the emitted body; and the hand-built frame in
+  `solidc/test/per-call/master/loop-upsert-segment.test.ts` now reads the **no-record sentinel**
+  (`requested index: -32767`) rather than an unrelated participant, which is the frame's own base - the proof that
+  the emitter addresses what the frame's plan declares. The frame-held-key loop upsert still settles under the new
+  coordinate (its machine pair is green). Blast radius measured: only the two varying-key pins changed; solidc master
+  600, solidcash conformance 79 and hostile 103 all pass, and the census stays at 0 refusals. The saved patch
+  `docs/per-call/patches/pw3-varying-key-compiler-half.diff` is superseded by this landing and is removed with it.
+- **What the SDK half must do, from the measured seam.** Three pieces, in this order: (1) plan the loop's turns from
+  the artifact's `sortedUpsertLoopInfo[k]` (`varyingArrayParam`, `valueScalarParam`, `op`) and resolve each turn's
+  key - the read path's own paged planning (`entryReadRecords`, `pagedKeyAt`, `loopTurns` in `per-call/read/read.ts`)
+  is the mirror; (2) declare the turn's node in the frame's record list where the emitted coordinate looks for it, so
+  the turns' records sit in turn order starting at the slot's per-call offset from the frame's first declared record
+  (`GenerateTargetTraversal.perCallEntryOffset`), which is where the sentinel becomes a real node; (3) name the loop's
+  per-turn **outputs** by their position in the segment's declared list - the mechanism the batch path already
+  reaches through `emitDeclaredGroupRecordOrdinal` / `batchTargetOrdinal` - since a per-call frame's created records
+  sit in the transaction's trailing outputs rather than at a frame coordinate.
 - **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder
   stream has taken the published facts. **Status 2026-09-30: two of the three shapes are done.** The census read back
   with this round's compiler shows seven contracts and **0 refusals**, `postThreadMessage` publishes
   `writeSegments: []` and `refund` its batch and its run, the master tests pass, and the facts are in the ladder
-  stream's hands. **The third shape is the varying key, and its SDK half is handed to the ladder stream** (the
-  coordinator's 2026-09-30 decision below): the fixture's `updateJobWhitelist` writes a **different node per turn** —
-  its key is an element of a caller-supplied array — and that variant publishes no write fact. The entry's block
-  layout reserves no `entry` slot for the collection, so nothing declares those records, and the machine refuses the
-  well-formed spend on the frame the shipped call path plans itself (`conformance/loop-upsert-settlement.test.ts`),
-  while the same loop over a key the frame holds settles on that path. Serving it needs the collection declared in
-  the frame's layout and the per-turn operands derived: the first is written and measured (the compiler-half bullet
-  above), the second is the per-call composer's run-time-loop record protocol, which is the ladder stream's code. Reproducers: `solidc/test/per-call/master/loop-upsert-segment.test.ts`
+  stream's hands. **The third shape is the varying key, and it is in this lane** (the coordinator's 2026-09-30
+  decision below): its compiler half is landed and its SDK half is the next rounds' work. The fixture's
+  `updateJobWhitelist` writes a **different node per turn** — its key is an element of a caller-supplied array —
+  and that variant publishes no write fact, while its collection now has an `entry` slot in the frame's layout and a
+  published access. Serving it needs the per-turn operands derived: the first is landed (the compiler-half bullet
+  above), the second is the per-call composer's run-time-loop record protocol, which this lane implements piece by
+  piece until the shape settles. Reproducers: `solidc/test/per-call/master/loop-upsert-segment.test.ts`
   (the fixture's own shape, the machine's refusals, the segment control) and
   `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` (the shipped call path).
 - **Size**: 1-2 days. **Coordination**: high (the ladder stream wrote this code; the second worker edits

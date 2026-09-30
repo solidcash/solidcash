@@ -68,7 +68,6 @@ const ROWS: readonly Row[] = [
   },
   {
     label: 'address(this).delegatecall(g)', entry: 'viaDelegateSelf', evm: 'EOA',
-    refusal: /a low-level call needs the witness `calls\[\]` checks, which are not emitted yet/,
     // A delegatecall body must not write its own state, so this row's entry does not bump the marker.
     members: `${WHO} function viaDelegateSelf() external returns (address) {`
       + ' (bool ok, bytes memory r) = address(this).delegatecall(abi.encodeCall(IA.whoExt, ())); require(ok);'

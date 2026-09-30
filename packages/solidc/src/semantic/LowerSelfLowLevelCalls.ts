@@ -47,6 +47,10 @@ import { cloneNode } from '../ast/clone.js';
  * Rewritten sites: `(bool s, bytes r) = address(this).call(p);` (slots may be declarations, existing
  * lvalues, or empty), `return address(this).call(p);`, and the bare statement form. A fallback whose body
  * reads msg.data directly is NOT lowered (msg.data inside the callee would need payload substitution).
+ *
+ * `address(this).delegatecall(p)` whose payload names an own function runs that function's code in the
+ * caller's own context, so it is the plain internal call: the callee keeps the caller's `msg.sender`, where a
+ * `call` makes the contract the sender. A payload that names no function is not lowered.
  */
 const PREFIX = '__selfcall_ret_';
 
@@ -132,7 +136,7 @@ export default class LowerSelfLowLevelCalls extends AstTraversal {
 
   private matchSelfCall(expr: Node | undefined): MethodCallNode | undefined {
     if (!(expr instanceof MethodCallNode)
-      || (expr.methodName !== 'call' && expr.methodName !== 'staticcall')
+      || (expr.methodName !== 'call' && expr.methodName !== 'staticcall' && expr.methodName !== 'delegatecall')
       || expr.parameters.length !== 1) {
       return undefined;
     }
@@ -207,7 +211,7 @@ export default class LowerSelfLowLevelCalls extends AstTraversal {
     }
     if (!target) {
       const fb = this.contract?.fallbackDef;
-      if (!fb) return undefined;
+      if (!fb || call.methodName === 'delegatecall') return undefined;
       if (this.bodyReadsMsgData(fb)) return this.inlineMsgDataFallback(fb, payload, loc, success, emptyBytes);
       target = fb;
       args = fb.parameters.length > 0 ? [payload] : [];
@@ -229,7 +233,7 @@ export default class LowerSelfLowLevelCalls extends AstTraversal {
     const id = new IdentifierNode(target.name);
     id.location = loc;
     const callee = new FunctionCallNode(id, args);
-    callee.fromThisCall = true;
+    callee.fromThisCall = call.methodName !== 'delegatecall';
     callee.location = loc;
     const stmts: StatementNode[] = [];
     let retval: () => ExpressionNode;

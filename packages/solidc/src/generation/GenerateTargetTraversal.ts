@@ -22125,11 +22125,61 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // dynamic values are call-site-relative; the other callers have only the running partial and keep depth 0.
       // Keep the legacy delegate skip on ordinary INSERTs (registerUser): ungating it shifted NEW onto a pad.
       // Entry-loop / route-preserved-dyn handlers take the absolute-base branch above instead.
-      // A selected scalar route lane which is outside the aggregate sorted batch publishes its INSERT node at
-      // the route's first trailing coordinate. Its hidden slot/proof/next/predOut vector authenticates that lane
-      // independently; aggregate predecessor and preserved-dynamic counts describe sibling families and must not
-      // shift this scalar node past the coordinate materialized by the SDK.
-      if (!routeScalarWitness && !usesAnchoredDelegateTrailingBase
+      // A selected scalar route lane must cross preserved dynamic chunks only when they physically precede its
+      // NEW output. The route has an authenticated absolute dynamic base; its directly invoked proxy handler
+      // lacks that witness, so it checks the first trailing input's collection covenant instead.
+      const routeHasDynamicBase = routeScalarWitness
+        && this.getStackIndex('__internal__dynamicChunkInputBase', true) >= 0;
+      const delegateNeedsChunkProbe = this.usesDelegateTransactionSuffix()
+        && (this.currentFunction.messageBusRouteDynamicResources?.length ?? 0) > 0
+        && (this.currentFunction.dynamicWrites?.length ?? 0) === 0;
+      if (routeHasDynamicBase) {
+        this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc, 5);
+        this.emit(Op.OP_OVER, loc); // Compare the authenticated chunk input base with this NEW output base.
+        this.emit(Op.OP_NUMEQUAL, loc);
+      } else if (delegateNeedsChunkProbe) {
+        // Direct proxy calls put the sorted entry before old dynamic chunks. Compiler-owned participants preserve
+        // those chunks at the leading trailing coordinates, and both paths invoke this same handler body.
+        const leadingChunks = [...new Set([
+          ...(this.currentFunction.messageBusRouteDynamicResources ?? []),
+          ...(this.currentFunction.dynamicReads ?? []),
+        ])]
+          .map((name) => this.stateVariables.find((variable) => variable.name === name && variable.isDynamic))
+          .filter((variable): variable is StateVariableNode => variable !== undefined);
+        this.emit(Op.OP_DUP, loc); // Keep the NEW output base below the input coordinate probe.
+        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TXINPUTCOUNT, loc);
+        this.emit(Op.OP_LESSTHAN, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emit(Op.OP_0, loc); // [newBase, probeInput, matchesLeadingChunk]
+        for (const variable of leadingChunks) {
+          this.emit(Op.OP_OVER, loc); this.emit(Op.OP_DUP, loc);
+          this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_SWAP, loc);
+          this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+          this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+          this.emit(encodeInt(32n), loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+          this.emit(Op.OP_IF, loc);
+          this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+          this.emitSortedEntryAddress(
+            computeCollectionHash(computeCollectionSignature(variable.name, variable.type.toString())), loc,
+          );
+          this.emit(Op.OP_EQUAL, loc);
+          this.emit(Op.OP_ELSE, loc);
+          this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_0, loc);
+          this.emit(Op.OP_ENDIF, loc);
+          this.emit(Op.OP_BOOLOR, loc);
+        }
+        this.emit(Op.OP_NIP, loc); // Drop the probe input, retaining only the authenticated match.
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc);
+        this.emit(Op.OP_ENDIF, loc);
+      }
+      if (routeHasDynamicBase || delegateNeedsChunkProbe) {
+        this.emit(Op.OP_IF, loc);
+        // Route-wide dynamicWrites is a union of handlers. It cannot prove that this selected scalar write
+        // replaces the old chunks, so the physical-base check above selects their preserved lane.
+        this.emitAddForeignReadOnlyChunkCounts(loc, routeScalarWitness, 5);
+        this.emit(Op.OP_ENDIF, loc);
+      } else if (!routeScalarWitness && !usesAnchoredDelegateTrailingBase
         && (preferAbsoluteDynBase || !this.usesDelegateTransactionSuffix())) {
         this.emitAddDynamicOutputsBeforeEntries(loc, 5);
       }

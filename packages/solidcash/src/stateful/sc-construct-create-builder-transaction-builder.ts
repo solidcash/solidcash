@@ -269,6 +269,9 @@ export function constructCreateBuilderTransactionBuilder(
     ...(delegateEventSlots.some((slot: any) => slot.kind === 'entry') && { preserveBlockLayoutWidth: true }),
     ...((batchPredCommitments.size > 0 || sortedLoopCommitments.size > 0
       || runtimeLoopEventOutputs.length > 0 || runtimeLoopTransferOutputs.length > 0)
+      // A compiler-owned delegate block preserves its dynamic chunks at the published trailing base;
+      // sorted entry creations in that same block follow the chunks.
+      && !(compilerRouteDelegateLayout && dynamicChunkVars.length > 0)
       && { loopEntriesBeforeDynamicChunks: true }),
     ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
     ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),

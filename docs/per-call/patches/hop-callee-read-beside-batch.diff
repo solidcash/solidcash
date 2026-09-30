@@ -10,7 +10,7 @@
   * A dynamic-state write is the same shape one level out: the value is not in a node but in a run of chunk records
   * at its own collection covenant, and the hop declares that run exactly as the body addresses it. The run's width
   * has to be stated because a run laid out at another width is not the run the body reads; it is the value the write
-@@ -187,6 +190,12 @@
+@@ -197,6 +200,12 @@
     * which is the deployment path's shape.
     */
    readonly writtenCommitments?: readonly Uint8Array[];
@@ -23,7 +23,7 @@
  }
  
  /** The live deployment a call's hop reads its writes against, from the deployment's own classification. */
-@@ -631,9 +640,14 @@
+@@ -654,9 +663,14 @@
      );
    }
    // A key the entry only reads beside the batches it writes has no group of its own: every access that is not one of
@@ -42,7 +42,7 @@
        `the implementation's "${request.functionName}" entry reads mapping "${read.collection}" beside the batch it `
 --- a/packages/solidcash/src/per-call/proxy/external-calls.ts
 +++ b/packages/solidcash/src/per-call/proxy/external-calls.ts
-@@ -795,12 +795,14 @@
+@@ -800,12 +800,14 @@
   *
   * The frame's `msg.sender` is the caller's own address, which a write keyed by the sender resolves to, and the
   * deployment is the one that frame runs on: its own records and collection nodes for a call frame, the proxy's for
@@ -62,7 +62,7 @@
   */
  function calleeEntryWrites(
    artifact: Artifact,
-@@ -808,19 +810,35 @@
+@@ -813,19 +815,35 @@
    args: readonly FunctionArgument[],
    senderAddress: Uint8Array | undefined,
    live: HopLiveDeployment,
@@ -101,7 +101,7 @@
  }
  
  /**
-@@ -1010,15 +1028,15 @@
+@@ -1018,15 +1036,15 @@
      const master = `callee-master-${calleeIndex + 1}`;
      const masterUtxo = deployment.masters[base + occurrence]!;
      const deployed = deployMaster(external.artifact, category, ctx.validatorProgram);
@@ -122,7 +122,7 @@
      for (const node of readNodes) ctx.utxos.set(node.id, node.utxo);
      // A mapping node the frame writes sits on a live UTXO the deployment's classification already placed, so the
      // hop hands the rebuild its outpoint rather than have it search the category again.
-@@ -1174,14 +1192,14 @@
+@@ -1182,15 +1200,15 @@
        callBases: [0],
        enteredBy,
      };
@@ -133,6 +133,7 @@
      const implementationReads = calleeReadNodesOrNone({
        artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
        senderAddress: caller.selfAddress, categoryId: external.categoryId, deployment: proxyDeployment,
+       recordLayout: proxyReadLayout,
      });
 +    // The implementation entry's own write is planned from this reach's call data, against the proxy's deployment.
 +    const implementationWrites = calleeEntryWrites(

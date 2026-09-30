@@ -1,0 +1,62 @@
+pragma solidcash >=0.8.0;
+
+// Update-only supply operations run as a branded delegate against the proxy.
+// State slot order MUST match nusdt_state.inc and the master exactly.
+library UsdtSupplyFacet {
+    event Issue(int amount);
+    event Redeem(int amount);
+    event DestroyedBlackFunds(address indexed blackListedUser, int balance);
+
+    address owner;
+    int totalSupply;
+    mapping(address => int) balances;
+    mapping(address => mapping(address => int)) allowed;
+    bool paused;
+    mapping(address => bool) isBlackListed;
+    bytes32 name;
+    bytes32 symbol;
+    uint8 decimals;
+    bool deprecated;
+    address upgradedAddress;
+    mapping(address => bool) frozen;
+    mapping(address => int) pendingAmount;
+    mapping(address => int) pendingUnlockAt;
+    int quarantineBlocks;
+    bytes32 backingCategory;
+    bool backingSet;
+    int containerSeen;
+    int backedSupply;
+    int clock;
+
+    function redeem(int amount) public {
+        require(msg.sender == this.owner);
+        require(amount > 0);
+        require(this.totalSupply >= amount);
+        require(this.balances[this.owner] >= amount);
+        this.totalSupply = this.totalSupply - amount;
+        this.balances[this.owner] = this.balances[this.owner] - amount;
+        this.backedSupply = this.backedSupply - amount;
+        emit Redeem(amount);
+    }
+
+    // Destroyed funds return to the premint reserve and can be issued again.
+    function destroyBlackFunds(address blackListedUser) public {
+        require(msg.sender == this.owner);
+        require(this.isBlackListed[blackListedUser]);
+        int dirtyFunds = this.balances[blackListedUser];
+        this.balances[blackListedUser] = 0;
+        this.totalSupply = this.totalSupply - dirtyFunds;
+        this.backedSupply = this.backedSupply - dirtyFunds;
+        emit DestroyedBlackFunds(blackListedUser, dirtyFunds);
+    }
+
+    function issue(int amount) public {
+        require(msg.sender == this.owner);
+        require(amount > 0);
+        require(this.containerSeen >= this.backedSupply + amount);
+        this.balances[this.owner] = this.balances[this.owner] + amount;
+        this.totalSupply = this.totalSupply + amount;
+        this.backedSupply = this.backedSupply + amount;
+        emit Issue(amount);
+    }
+}

@@ -54,11 +54,19 @@ const UNIT = 10n ** DECIMALS;
 const PREMINT = 1_000_000n * UNIT;
 
 let masterArt: Artifact;
-let facetArt: Artifact;
+const FACETS = {
+  UsdtFacet: 'nusdt_facet.scash',
+  UsdtTransferFacet: 'nusdt_transfer_facet.scash',
+  UsdtSupplyFacet: 'nusdt_supply_facet.scash',
+} as const;
+type FacetName = keyof typeof FACETS;
+const facetArt = {} as Record<FacetName, Artifact>;
 
 beforeAll(() => {
   masterArt = compileFile(fx('nusdt.scash'), { messageBus: false }) as Artifact;
-  facetArt = compileFile(fx('nusdt_facet.scash'), { brandLibrary: true, messageBus: false }) as Artifact;
+  for (const [name, file] of Object.entries(FACETS)) {
+    facetArt[name as FacetName] = compileFile(fx(file), { brandLibrary: true, messageBus: false }) as Artifact;
+  }
 }, 300000);
 
 function b32(text: string): Uint8Array {
@@ -86,12 +94,21 @@ async function deploy(): Promise<Deployed> {
   seed += 1;
   const tag = seed.toString(16).padStart(2, '0');
   const masterCat = `${'c'.repeat(62)}${tag}`;
-  const libCat = `${'d'.repeat(62)}${tag}`;
-
-  const libContract = StatefulContract.brandedLibrary(facetArt, masterCat, { provider });
-  const libAddr = hexToBin(libContract.withCategory(hexToBin(libCat)).lockingBytecode);
-  const ctorArgs = masterArt.constructorInputs.map((input) => (
-    input.name === 'initialOwner' ? ownerAddr : libAddr));
+  const libCats = {} as Record<FacetName, string>;
+  const libContracts = {} as Record<FacetName, Contract>;
+  for (const [index, name] of (Object.keys(FACETS) as FacetName[]).entries()) {
+    libCats[name] = `${String(index + 1).repeat(62)}${tag}`;
+    libContracts[name] = StatefulContract.brandedLibrary(facetArt[name], masterCat, { provider });
+  }
+  const libAddr = (name: FacetName): Uint8Array => hexToBin(
+    libContracts[name].withCategory(hexToBin(libCats[name])).lockingBytecode,
+  );
+  const ctorArgs = masterArt.constructorInputs.map((input) => {
+    if (input.name === 'initialOwner') return ownerAddr;
+    const match = input.name.match(/^__libAddr_(.+)$/);
+    if (match && match[1] in FACETS) return libAddr(match[1] as FacetName);
+    throw new Error(`unexpected constructor input ${input.name}`);
+  });
   const masterContract = new Contract(masterArt, ctorArgs as never, { provider });
   const state: Record<string, unknown> = {
     owner: ownerAddr,
@@ -112,9 +129,11 @@ async function deploy(): Promise<Deployed> {
   await setupStatefulUtxos(provider, masterContract, masterArt.stateLayout!, state,
     { saltContract: true, categoryOverride: masterCat });
   const master = StatefulContract.withCategory(masterContract, masterCat);
-  await setupStatefulUtxos(provider, libContract, facetArt.stateLayout!, state,
-    { saltContract: true, categoryOverride: libCat });
-  master.registerLibrary('UsdtFacet', StatefulContract.withCategory(libContract, libCat));
+  for (const name of Object.keys(FACETS) as FacetName[]) {
+    await setupStatefulUtxos(provider, libContracts[name], facetArt[name].stateLayout!, state,
+      { saltContract: true, categoryOverride: libCats[name] });
+    master.registerLibrary(name, StatefulContract.withCategory(libContracts[name], libCats[name]));
+  }
 
   const ft = await genesisFtContainer(provider, masterContract, masterCat, [PREMINT]);
   const owner = new Signer(alicePriv, provider);
@@ -161,7 +180,7 @@ async function ready(amount: bigint, txid: string): Promise<{ d: Deployed; coin:
 const spendBobs = (coin: Utxo): [Utxo, ReturnType<SignatureTemplate['unlockP2PKH']>] => (
   [coin, new SignatureTemplate(bobPriv).unlockP2PKH()]);
 
-// This hand-linked proxy/facet fixture must pre-choose both circularly-dependent categories and therefore uses
+// This hand-linked proxy/facet fixture must pre-choose the circularly-dependent categories and therefore uses
 // categoryOverride. That creates synthetic chosen-category UTXOs and is deliberately mock-only; the split
 // contract's structural and live spendability coverage remains in NativeUsdt.test.ts/NativeUsdtInherited.test.ts.
 describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('NativeUsdt / deposit delivery proof', () => {

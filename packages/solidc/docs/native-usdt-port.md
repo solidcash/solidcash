@@ -1,11 +1,14 @@
 # Native USDT port: fidelity audit and implementation status
 
-Status: **executing.** The whole mapping surface settles, including `transfer` from the owner - the entire
-supply path - and the quarantined admission boundary now works end to end: `deposit` proves delivery against
-the reserve itself and `claimDeposit` releases it (s3.3). Two arrangements exist: the hand-split `.scash` files
-(s1, master + one facet) and an inheritance-composed rewrite partitioned by the built-in splitter (s5). Files
-under `packages/solidcash/test/fixture/`, tests in `packages/solidcash/test/e2e/NativeUsdt.test.ts` (29) plus
-`NativeUsdtDepositProof`, `VMapRuntimeSlotAlias`, `NativeUsdtInherited` and `NativeUsdtSurfaceParity`.
+Status: **under focused regression testing.** The hand split now has a proxy master and three branded
+delegate libraries (administration/claims, transfers, supply). Exact VM titles for issue, transfer,
+finite-allowance transferFrom,
+blacklist updates, and deposit/claim settle; the full USDT suite has not been rerun. The inheritance-composed
+rewrite remains a separate arrangement (s5). Fixtures are under `packages/solidcash/test/fixture/`, with
+structural, VM, deposit-proof, and surface-parity tests under `packages/solidcash/test/e2e/`.
+
+Sections 3-5 below preserve the development history. Their intermediate size measurements and one-facet
+descriptions are not the current hand-split layout; the current scripts are listed in s1.1.
 
 Reference: `TetherToken` at `0xdAC17F958D2ee523a2206206994597C13D831ec7`, solc `v0.4.18+commit.9cf6e910`.
 Audited against the **deployed verified source** (fetched via Blockscout), which is byte-identical to
@@ -34,7 +37,7 @@ extensions: **quarantined admission**, **blacklist** (USDT-native, extended), an
 Everything is written in SolidCash. No hand-rolled Bitcoin Script covenant was introduced; the split uses
 the shipped `library` + `brandLibrary` delegate machinery and the standard token-container primitive.
 
-### 1.1 Why it is two files, not one
+### 1.1 Why it is four files, not one
 
 The monolith (`native_usdt.scash`, kept as the readable reference spec) compiles to **12,612 B**. BCH enforces
 `MAX_INPUT_BYTESIZE = 10,000` bytes **per spending input** - the P2SH32 redeem script plus its unlocking data.
@@ -43,19 +46,19 @@ function is over the limit (largest body 964 B) - the sum is. So this needs part
 `large-contract-splitting.md` strategy S2: a proxy master holding state plus facets deployed as branded
 delegate libraries, each riding its own co-spent input with its own 10 KB budget.
 
-The port went 6 files -> 4 -> **2**. Moving the insert path into the master (s3.1) emptied
-`nusdt_transfer.scash` and `nusdt_spend.scash`; merging what was left into one facet bought back the
-constructor-argument space the master needed (s1.4).
+The one-facet hand split later exceeded the per-input cap again as compiler codegen changed. The current
+four-file arrangement separates delegated operations by role while keeping the same state-slot layout and
+public token surface. Artifact byte counts measured with `messageBus: false`, branded facets, and the current
+compiler are:
 
-| script | 07-25 | 08-07 @`83c0a8da` | now | contents |
-| --- | --: | --: | --: | --- |
-| `nusdt.scash` (master) | 7,992 | 4,934 | **9,689** | state, the FT-moving functions, and the whole INSERT path |
-| `nusdt_facet.scash` | - | - | **6,238** | everything delegated: all 14 UPDATE-only functions |
-| *(dissolved)* `nusdt_transfer` / `nusdt_spend` / `nusdt_admin` / `nusdt_supply` / `nusdt_boundary` | | | - | |
-| `native_usdt.scash` (monolith) | 32,644 | 13,698 | **12,612** | the whole surface in one file |
+| script | artifact bytes | role |
+| --- | --: | --- |
+| `nusdt.scash` | 9,815 | master, token container, first-touch rows |
+| `nusdt_facet.scash` | 7,643 | administration and deposit claims |
+| `nusdt_transfer_facet.scash` | 6,943 | transfer and transferFrom |
+| `nusdt_supply_facet.scash` | 4,526 | issue, redeem, destroyBlackFunds |
 
-Sum of the two shipping scripts: **15,927 B**, against 18,671 B across four, 25,139 B across six, and
-44,031 B on 2026-07-25.
+The four artifacts sum to **28,927 B**. The monolith remains above 10,000 B and unspendable.
 
 Splitting still multiplies the available budget rather than compressing code, and that is still the reason
 the contract exists at all - but the margin is now 2,612 B over the cap, not 22,644 B.
@@ -65,7 +68,7 @@ Two rules the split must obey, both learned the hard way and both now pinned by 
 - **Every facet must declare the state layout identically to the master.** A delegate writes the caller's state
   BY SLOT, so a divergent layout writes the wrong field. `nusdt_state.inc` is the authoritative copy;
   libraries cannot inherit (`library X is Base` is not grammatical - only contracts can), so the block is
-  duplicated and a test asserts all four agree.
+  duplicated and a test asserts the master and all three facets agree.
 - **Forwarder parameter names must match the facet's exactly.** The SDK resolves a sorted-mapping key by
   looking the facet's declared `keyParam` name up in the ABI of the function being called. A renamed forwarder
   parameter fails at transaction-build time ("Cannot convert value to bytes for type address"), not at compile
@@ -79,19 +82,17 @@ the ENTIRE unlocking bytecode of an input, which is:
     redeem script  +  constructor arguments  +  the call's own arguments  +  the redeem push
 
 The compiler's script-size check - and `scriptToBytecode(asmToScript(artifact.bytecode)).length`, which this
-document used throughout - sees only the FIRST of those. Measured on this master: 9,689 B of artifact,
-9,761 B of deployed redeem script once one facet address is baked in, and a further ~239 B needed for a single
-`address` argument at call time. A contract the compiler passes can be entirely unspendable, and the SDK's
-preflight says so in as many words:
+document used throughout - sees only the FIRST of those. A contract the compiler passes can still be
+unspendable once constructor links and call arguments are included. One earlier over-limit master produced
+this SDK preflight diagnostic:
 
 > `... whose 9,856-byte redeem script fits the limit on its own but leaves only 144 bytes for the 239 bytes of
 > arguments and redeem push it must also carry. The limit is on the WHOLE unlocking bytecode, so a contract the
 > compiler's script-size check passes can still be unspendable`
 
-Two consequences shaped the final layout. Each additional facet costs the master one constructor argument
-(~72 B in the deployed script for one, ~171 B for three), which is why the three remaining facets were merged
-into one (s1.1) - that alone bought back ~99 B. And the master's usable budget is not 10,000 B but roughly
-9,760 B, which is what makes s3.1's remaining gap a hard wall rather than a near miss.
+Each additional facet costs the master one constructor argument, so the artifact figure alone is not a
+spendability proof. The current master is 9,815 B before those links; exact VM spends exercise the deployed
+byte limit on the covered routes. Other routes still require focused validation before a release claim.
 
 The port's own size test asserts the artifact figure, which is the number that rots quietly. What actually
 proved this was the SDK preflight refusing a built transaction, so the check that matters is a spend, not a

@@ -19,7 +19,7 @@ import {
 
 // =============================================================================
 // NativeUsdt: a drop-in port of Ethereum USDT backed by a real CashTokens FT,
-// split across a proxy master + ONE branded delegate-library facet so every
+// split across a proxy master + three branded delegate-library facets so every
 // spending input stays under MAX_INPUT_BYTESIZE (10,000 B).
 //
 // The split is drawn by WRITE KIND: a mapping UPDATE settles through a delegate
@@ -38,6 +38,8 @@ const scriptSize = (a: Artifact): number => scriptToBytecode(asmToScript(a.bytec
 
 const FACETS = {
   UsdtFacet: 'nusdt_facet.scash',
+  UsdtTransferFacet: 'nusdt_transfer_facet.scash',
+  UsdtSupplyFacet: 'nusdt_supply_facet.scash',
 } as const;
 type FacetName = keyof typeof FACETS;
 
@@ -46,7 +48,7 @@ const facetArt = {} as Record<FacetName, Artifact>;
 
 // `messageBus: false` mirrors test/direct-compile.ts: this suite exercises direct facet calls, and the
 // default `auto` mode spends its time building message-bus routes this contract never takes.
-// Six scripts at a few seconds each also overrun the suite's 10 s hookTimeout, hence the explicit budget.
+// Compiling the master and facets can overrun the suite's 10 s hookTimeout, hence the explicit budget.
 beforeAll(() => {
   masterArt = compileFile(fx('nusdt.scash'), { messageBus: false }) as Artifact;
   for (const [name, file] of Object.entries(FACETS)) {
@@ -106,7 +108,7 @@ interface Deployed {
 
 let categorySeed = 0x10;
 
-// Stand up the whole diamond: proxy master, one branded facet registered for
+// Stand up the whole diamond: proxy master, branded facets registered for
 // L.f() auto-wiring, and a premint of real FTs in the master's token container.
 //
 // Categories are pre-chosen because the link is circular: the master embeds each
@@ -225,7 +227,7 @@ async function flagOf(d: Deployed, name: 'isBlackListed' | 'frozen', addr: Uint8
 }
 
 describe('NativeUsdt / structural: the split is what makes the contract deployable', () => {
-  it('every script - master and the facet - fits the 10,000 B per-input limit', () => {
+  it('every script - master and the facets - fits the 10,000 B per-input limit', () => {
     const rows: Array<[string, number]> = [['nusdt.scash (master)', scriptSize(masterArt)]];
     for (const name of Object.keys(FACETS) as FacetName[]) {
       rows.push([FACETS[name], scriptSize(facetArt[name])]);
@@ -403,35 +405,19 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))(
 );
 
 // =============================================================================
-// THE MAPPING SURFACE, unblocked.
-//
-// Two facts set the shape here. A mapping UPDATE through a delegate facet
-// settles (X11, 837c8b8d, routed the implementation's entry accesses). A mapping
-// INSERT does not, and cannot: an insert mints an entry node, so the
-// transaction's own-category mutable NFT count rises, and a delegatecall master
-// conserves that count. That is the same defence which refuses an appended
-// fabricated entry node, so the proxy cannot admit one without admitting both.
-//
-// So the split is drawn by WRITE KIND, not by subject matter: every function
-// that can first-touch a key runs directly on the master, and only update-only
-// functions are delegated. `transfer`, `transferFrom`, `approve`, `issue`,
-// `addBlackList` and `freeze` moved into the master (9,748 B, 252 B spare);
-// `redeem`, `destroyBlackFunds`, `removeBlackList` and `unfreeze` stay on their
-// facets because they only ever write a key that already exists.
-//
-// This also deleted two facets outright - nusdt_transfer.scash and
-// nusdt_spend.scash held nothing else - so the port is four scripts, not six.
-//
-// Still refused: `deposit` and `claimDeposit`. Both first-touch (pendingAmount /
-// pendingUnlockAt, and balances for a never-seen claimant) and neither fits in
-// the master's remaining 252 B. They are pinned below.
+// THE MAPPING SURFACE. openSelf creates balance, blacklist, and freeze rows;
+// deposit creates pending rows; approve creates allowance rows. Those direct
+// paths first-touch keys. The three facets only UPDATE existing rows, so their
+// own mapping covenants can settle without a delegated first-touch insertion.
+// Splitting transfer and supply from administration keeps every script below the
+// per-input limit without dropping an externally callable token operation.
 // =============================================================================
 describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('NativeUsdt / the mapping surface', () => {
   // Each account opens ITSELF once. Two platform rules force this: a first-touch INSERT
   // cannot settle through a delegate, and two ABSENT keys in one collection prove through
   // the SAME predecessor, which would co-spend one entry NFT twice. openSelf() is keyed on
   // msg.sender so it carries no address argument - the 10,000 B cap covers a call's
-  // arguments too, and one address costs ~239 B of it.
+  // arguments as well as the redeem script.
   const open = async (d: Deployed, who: Signer): Promise<void> => {
     await d.as(who).call.openSelf().send();
     await d.fund(who);
@@ -460,6 +446,16 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('NativeUsdt / the mappin
     await d.as(d.signers.owner).call.transfer(ADDR.bob(), 40n * UNIT).send();
     expect(await balanceOf(d, ADDR.bob())).toBe(40n * UNIT);
     expect(await balanceOf(d, ADDR.owner())).toBe(960n * UNIT);
+  });
+
+  it('transferFrom spends a finite allowance through the transfer facet', async () => {
+    const d = await funded();
+    await open(d, d.signers.bob);
+    await d.as(d.signers.owner).call.approve(ADDR.bob(), 20n * UNIT).send();
+    await d.as(d.signers.bob).call.transferFrom(ADDR.owner(), ADDR.bob(), 12n * UNIT).send();
+    expect(await balanceOf(d, ADDR.bob())).toBe(12n * UNIT);
+    expect(await balanceOf(d, ADDR.owner())).toBe(988n * UNIT);
+    expect(await allowanceOf(d, ADDR.owner(), ADDR.bob())).toBe(8n * UNIT);
   });
 
   it('a non-owner transfers on, so balances really move', async () => {
@@ -560,5 +556,20 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('NativeUsdt / the mappin
     const d = await funded();
     await expect(d.as(d.signers.owner).call.openSelf().send()).rejects.toThrow();
     expect(await balanceOf(d, ADDR.owner())).toBe(1000n * UNIT);
+  });
+
+  it('openSelf cannot clear an owner-imposed freeze or blacklist', async () => {
+    const d = await deployAll();
+    await open(d, d.signers.carol);
+    await d.as(d.signers.owner).call.freeze(ADDR.carol()).send();
+    await expect(d.as(d.signers.carol).call.openSelf().send()).rejects.toThrow();
+    expect(await flagOf(d, 'frozen', ADDR.carol())).toBe(true);
+
+    await d.fund(d.signers.owner);
+    await d.as(d.signers.owner).call.unfreeze(ADDR.carol()).send();
+    await d.fund(d.signers.owner);
+    await d.as(d.signers.owner).call.addBlackList(ADDR.carol()).send();
+    await expect(d.as(d.signers.carol).call.openSelf().send()).rejects.toThrow();
+    expect(await flagOf(d, 'isBlackListed', ADDR.carol())).toBe(true);
   });
 });

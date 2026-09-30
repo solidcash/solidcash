@@ -1,6 +1,8 @@
 pragma solidcash >=0.8.0;
 
 import { UsdtFacet } from "./nusdt_facet.scash";
+import { UsdtTransferFacet } from "./nusdt_transfer_facet.scash";
+import { UsdtSupplyFacet } from "./nusdt_supply_facet.scash";
 
 
 // =============================================================================
@@ -17,16 +19,14 @@ import { UsdtFacet } from "./nusdt_facet.scash";
 // intra-function splitting.
 //
 // The partition follows docs/large-contract-splitting.md strategy S2: a proxy
-// master holding the state, plus a facet deployed as a BRANDED DELEGATE LIBRARY
-// (docs/library-contracts.md). The facet rides its OWN co-spent input with its
+// master holding the state, plus branded delegate-library facets
+// (docs/library-contracts.md). Each facet rides its OWN co-spent input with its
 // own 10 KB budget, so splitting multiplies the available budget instead of
 // compressing code.
 //
-// ONE facet, not three. The 10,000 B cap is on the whole UNLOCKING BYTECODE -
-// redeem script plus constructor arguments plus the call's own arguments - and
-// each extra facet costs the master a constructor argument (~72 B deployed for
-// one, ~171 B for three). The master runs at ~9,760 B of usable budget, so that
-// difference is not decorative. See packages/solidc/docs/native-usdt-port.md s1.2.
+// Three facets separate administration/claim, transfers, and supply updates.
+// The 10,000 B cap applies to each whole unlocking bytecode, including constructor
+// and call arguments, so deployed spends must also be tested beyond artifact size.
 //
 // WHERE THE LINE IS DRAWN: BY WRITE KIND, NOT BY SUBJECT. A mapping UPDATE
 // settles through a delegate, but a first-touch INSERT cannot - an insert mints
@@ -192,8 +192,8 @@ contract NativeUsdt(address initialOwner) {
     // up in the ABI of the function being called, so a renamed forwarder parameter
     // silently breaks slot derivation ("Cannot convert value to bytes for type
     // address") rather than failing at compile time.
-    function redeem(int amount) { UsdtFacet.redeem(amount); }
-    function destroyBlackFunds(address blackListedUser) { UsdtFacet.destroyBlackFunds(blackListedUser); }
+    function redeem(int amount) { UsdtSupplyFacet.redeem(amount); }
+    function destroyBlackFunds(address blackListedUser) { UsdtSupplyFacet.destroyBlackFunds(blackListedUser); }
     function transferOwnership(address newOwner) { UsdtFacet.transferOwnership(newOwner); }
     function pause() { UsdtFacet.pause(); }
     function unpause() { UsdtFacet.unpause(); }
@@ -208,8 +208,7 @@ contract NativeUsdt(address initialOwner) {
     // Re-entry, step 2, and the one admission function that is NOT delegated. A token
     // container is a master-only capability: a delegate input fails its covenant on any
     // container operation, so a facet cannot see the reserve at all - not even to read it.
-    // Its own mapping writes are plain UPDATEs, so this is here for the container alone.
-    // `transferFrom` was moved to the facet to pay for the room; see its note there.
+    // The pending rows are created here and subsequently updated by claimDeposit.
     function deposit(bytes32 category, int nowHeight, int amount) {
         require(!this.paused);
         require(!this.deprecated);
@@ -248,16 +247,13 @@ contract NativeUsdt(address initialOwner) {
         emit DepositQuarantined(claimant, amount, unlockAt);
     }
 
-    // ---- The INSERT path, direct (non-delegated) ----
-    // A delegatecall proxy conserves the count of its own-category mutable NFTs, and a vmap INSERT
-    // mints one, so a first-touch mapping write cannot settle through a facet. These six each
-    // first-touch a key, so they run HERE, on the master, where the write is direct.
-    // The update-only functions (redeem, destroyBlackFunds, removeBlackList, unfreeze) stay on
-    // their facets, because an UPDATE through a delegate does settle.
+    // ---- Transfer/supply forwarding and the direct first-touch allowance path ----
+    // openSelf creates account rows, so the delegated balance and flag changes are UPDATEs.
+    // approve creates an allowance row and therefore stays on the master.
 
-    function transfer(address to, int value) { UsdtFacet.transfer(to, value); }
+    function transfer(address to, int value) { UsdtTransferFacet.transfer(to, value); }
 
-    function transferFrom(address from, address to, int value) { UsdtFacet.transferFrom(from, to, value); }
+    function transferFrom(address from, address to, int value) { UsdtTransferFacet.transferFrom(from, to, value); }
 
     function approve(address spender, int value) {
         require(!this.deprecated);
@@ -267,7 +263,7 @@ contract NativeUsdt(address initialOwner) {
         emit Approval(tokenOwner, spender, value);
     }
 
-    function issue(int amount) { UsdtFacet.issue(amount); }
+    function issue(int amount) { UsdtSupplyFacet.issue(amount); }
 
     function addBlackList(address evilUser) { UsdtFacet.addBlackList(evilUser); }
 
@@ -277,14 +273,15 @@ contract NativeUsdt(address initialOwner) {
         address who = msg.sender;
         require(this.balances[who] == 0);
         require(this.pendingAmount[who] == 0);
+        require(!this.isBlackListed[who]);
+        require(!this.frozen[who]);
         this.balances[who] = 0;
-        this.pendingAmount[who] = 0;
-        this.pendingUnlockAt[who] = 0;
+        // deposit creates both pending keys on the master when admission actually occurs;
+        // claimDeposit only updates those existing entries after a successful deposit.
+        // Delegate updates need existing rows, and distinct transfer participants
+        // must not co-spend the same absent-key predecessor.
         this.isBlackListed[who] = false;
         this.frozen[who] = false;
     }
 
-    function authorize(pubkey pk, sig s) unsafe {
-        require(checkSig(s, pk));
-    }
 }

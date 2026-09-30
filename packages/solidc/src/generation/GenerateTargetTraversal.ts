@@ -5339,7 +5339,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         : this.currentContractHasMessageBus
           ? this.compilerOptions.messageBusKernel === true ? [12, 10] : [12]
           : [12, 10];
-      const candidateGroupsPerRound = largeBodyOutline ? 12288 : 1024;
+      const candidateGroupsPerRound = largeBodyOutline ? 12288
+        : !this.currentContractHasMessageBus && emittedBytesBeforeOutline > MAX_INPUT_BYTESIZE
+          ? 4096 : 1024;
       const originalOrder = bodies.map((_body, index) => index);
       const shortestOrder = [...originalOrder].sort((left, right) =>
         bodies[left].script.length - bodies[right].script.length);
@@ -7333,8 +7335,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // those proxy-category immutable outputs itself; emitting the root census too would duplicate authority and
       // make the earlier input, rather than the producing facet, decide the event family.
       const splitDelegateOwnsImmutableEvents = node.splitDelegateEventOffsets !== undefined;
+      // A forwarder with no local emit cannot name its delegate's event offset: the callee may put mapping,
+      // return, or other resource slots before the event. The delegate's own immutable-output pin runs with
+      // that callee's actual layout and authenticates both honest and forged logs. Keep the proxy pin when it
+      // emits locally; those output slots are known to this function and need their own protection.
+      const delegateOwnsAllEvents = this.functionHasDelegatecall && !hasEventEmits;
       if (node.name !== '__construct' && isStatefulContract
-        && !splitDelegateOwnsImmutableEvents
+        && !splitDelegateOwnsImmutableEvents && !delegateOwnsAllEvents
         && (declaresEvents || this.currentFunctionIsDelegate || proxyCanAdmitDelegateEvent)) {
         this.emitOwnCategoryImmutableNftOutputPin(node);
       }
@@ -12956,7 +12963,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // Check if both operands are compile-time constants
       if (node.left instanceof IntLiteralNode && node.right instanceof IntLiteralNode) {
-        // Compile-time evaluation: replace stack top two with the result
+        // The literal visitors have already pushed both operands. Drop them in the VM as well as in the
+        // tracker before publishing the folded result; otherwise the operands survive under the result and
+        // redirect every later stack-relative read (including mapping keys in a conditional write).
+        this.emit(Op.OP_2DROP, locationData);
         this.popFromStack(2);
         const result = node.left.value ** node.right.value;
         this.emit(encodeInt(result), locationData);

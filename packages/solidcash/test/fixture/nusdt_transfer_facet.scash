@@ -1,0 +1,71 @@
+pragma solidcash >=0.8.0;
+
+// Update-only transfers run as a branded delegate against the proxy master.
+// State slot order MUST match nusdt_state.inc and the master exactly.
+library UsdtTransferFacet {
+    event Transfer(address indexed from, address indexed to, int value);
+
+    int constant MAX_ALLOWANCE = 2 ** 256 - 1;
+
+    address owner;
+    int totalSupply;
+    mapping(address => int) balances;
+    mapping(address => mapping(address => int)) allowed;
+    bool paused;
+    mapping(address => bool) isBlackListed;
+    bytes32 name;
+    bytes32 symbol;
+    uint8 decimals;
+    bool deprecated;
+    address upgradedAddress;
+    mapping(address => bool) frozen;
+    mapping(address => int) pendingAmount;
+    mapping(address => int) pendingUnlockAt;
+    int quarantineBlocks;
+    bytes32 backingCategory;
+    bool backingSet;
+    int containerSeen;
+    int backedSupply;
+    int clock;
+
+    // `openSelf` creates recipient rows before any delegated balance update.
+    function transfer(address to, int value) public {
+        require(!this.paused);
+        require(!this.deprecated);
+        address sender = msg.sender;
+        require(!this.isBlackListed[sender]);
+        require(!this.frozen[sender]);
+        require(!this.frozen[to]);
+        require(value > 0);
+
+        require(to != sender);
+        require(this.balances[sender] >= value);
+        this.balances[sender] = this.balances[sender] - value;
+        this.balances[to] = this.balances[to] + value;
+        emit Transfer(sender, to, value);
+    }
+
+    // Every write is an UPDATE: approve creates the allowance row, and openSelf
+    // creates the recipient balance row. MAX_ALLOWANCE is the infinite sentinel.
+    function transferFrom(address from, address to, int value) public {
+        require(!this.paused);
+        require(!this.deprecated);
+        address spender = msg.sender;
+        require(!this.isBlackListed[from]);
+        require(!this.frozen[from]);
+        require(!this.frozen[to]);
+        require(value > 0);
+
+        int currentAllowance = this.allowed[from][spender];
+        if (currentAllowance < MAX_ALLOWANCE) {
+            require(currentAllowance >= value);
+            this.allowed[from][spender] = currentAllowance - value;
+        }
+
+        require(to != from);
+        require(this.balances[from] >= value);
+        this.balances[from] = this.balances[from] - value;
+        this.balances[to] = this.balances[to] + value;
+        emit Transfer(from, to, value);
+    }
+}

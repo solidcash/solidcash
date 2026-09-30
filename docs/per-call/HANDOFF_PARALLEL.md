@@ -246,6 +246,16 @@ lands it removes the claim line.
   read path's own convention and the reason a frame that declares only the node at the base reads the neighbouring
   participant. So piece 2's declaration is `[one record at the base, turn 0's node, turn 1's node, ...]` with the
   loop's transition views - the shape of the list is settled; what the records carry is not.
+- **Piece 3's emitter half is landed (2026-09-30).** `emitSortedUpsertLoopBody`'s `pushIdx` now has the arm the
+  mechanism calls for: when the frame is a per-call one, no sorted batch shares the body and the entry slot is the
+  loop's (`readsRecordsFromFrame`, `batchTargetSlots().length === 0`, `entrySlots[slotIndex].inLoop`), the **out**
+  side is emitted as the negative declared-list ordinal `-(perCallRecordsBeforeGroups() + 1)` with the loop's counter
+  **subtracted**, so turn `t` names the position `perCallRecordsBeforeGroups() + t` - the records a batch creates sit
+  at that base too, so the one convention serves both. The in side is unchanged (it names the witness-declared
+  record the frame parks). Gated this narrowly, nothing that settles today moves: the shipped-path guards are 6/6
+  and the compiler pins 14/14 with it in (`{SCRATCH}/piece3-emitter.log`). **The arm is the emitter half only**: it is
+  exercised once the plan declares the loop's created nodes at that base, which is piece 2's declaration, so the
+  varying-key pins' verdicts are unchanged for now.
 - **Piece 3's mechanism, named from the shipped code (2026-09-30).** The emitter's per-call branch of
   `emitSortedUpsertLoopBody`'s `pushIdx` addresses the loop's **output** side at the frame's own coordinate
   (`emitPerCallEntryIndex('out', slotIndex)`), and in a per-call hop that coordinate names a *participant* output -

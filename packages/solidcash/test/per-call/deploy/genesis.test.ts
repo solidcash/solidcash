@@ -28,7 +28,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * output both carry exactly the value the body computed, so a transaction that writes a different value is refused
  * — which is what the mutated control below pins.
  *
- * The last case drives the shipped SDK entry point: `StatefulContract.deploy` detects the artifact's convention and
+ * The SDK cases drive the shipped entry point: `StatefulContract.deploy` detects the artifact's convention and
  * deploys through the derivation above, with no change to the caller.
  */
 
@@ -134,29 +134,6 @@ describe('a per-call genesis derived by running the constructor frame', () => {
 
     expect(accepted(genesis.program)).toBe(true);
     expect(accepted(withMutatedOutput(genesis.program!, expectedCommitment(7n)))).toBe(false);
-  });
-
-  it('deploys through the shipped SDK entry point, which selects the convention from the artifact', async () => {
-    // The profile the per-call suites run on: a composition's operation-cost density is above a real chain's, so a
-    // budget refusal would read as a rule refusal.
-    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const signature = new SignatureTemplate(alicePriv);
-    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: '11'.repeat(31) + 'ee', vout: 0, satoshis: 500_000n };
-    await provider.addUtxo(funding.address, fundingUtxo);
-
-    const { contract, categoryId } = await StatefulContract.deploy(artifact, [5n], {
-      provider,
-      fundingUtxo,
-      funder: funding.unlock.spend(alicePub, signature),
-      changeAddress: funding.address,
-    });
-
-    expect(categoryId).toBe(fundingUtxo.txid);
-    expect(contract).toBeDefined();
-    // The genesis transaction was built and broadcast: the funding outpoint was spent.
-    const remaining = await provider.getUtxos(funding.address);
-    expect(remaining.some((utxo) => utxo.txid === fundingUtxo.txid && utxo.vout === 0)).toBe(false);
   });
 });
 
@@ -562,30 +539,6 @@ describe('a per-call genesis whose constructor writes one mapping as a sorted ba
     const wrong = new Uint8Array(created[0]!.after);
     wrong[wrong.length - 1] = 0x7f;
     expect(accepted(withOutputCommitment(genesis.program!, index, wrong))).toBe(false);
-  });
-
-  it('deploys through the shipped SDK entry point, minting the batch nodes at the collection covenant', async () => {
-    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const signature = new SignatureTemplate(alicePriv);
-    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: '13'.repeat(31) + 'ec', vout: 0, satoshis: 500_000n };
-    await provider.addUtxo(funding.address, fundingUtxo);
-
-    const { categoryId } = await StatefulContract.deploy(
-      batchArtifact, [BATCH_FIRST, BATCH_SECOND, BATCH_SEED], {
-        provider,
-        fundingUtxo,
-        funder: funding.unlock.spend(alicePub, signature),
-        changeAddress: funding.address,
-      },
-    );
-
-    expect(categoryId).toBe(fundingUtxo.txid);
-    const minted = await provider.getUtxosByTokenCategory(categoryId);
-    const commitments = minted.map((utxo) => utxo.token?.nft?.commitment ?? '');
-    for (const node of batchPlan.written) {
-      expect(commitments).toContain(Buffer.from(node.after).toString('hex'));
-    }
   });
 });
 

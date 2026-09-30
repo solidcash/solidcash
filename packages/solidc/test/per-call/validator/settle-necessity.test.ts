@@ -198,12 +198,20 @@ function buildPlan(settles: readonly PlannedSettlement[]): CompositionDraftPlan 
   };
 }
 
-/** Composes the plan, derives it, and hands back the transaction the machine is asked about. */
-function compose(settles: readonly PlannedSettlement[]): {
+/** A derived composition: the transaction the machine is asked about and the validator head's index in it. */
+interface Composed {
   readonly program: ShippedVmProgram;
   readonly transaction: VmTransaction;
   readonly head: number;
-} {
+}
+
+/** Each settle list's composition, derived once: every case of a list asks about the same transaction. */
+const composedBySettles = new Map<readonly PlannedSettlement[], Composed>();
+
+/** Composes the plan, derives it, and hands back the transaction the machine is asked about. */
+function compose(settles: readonly PlannedSettlement[]): Composed {
+  const known = composedBySettles.get(settles);
+  if (known !== undefined) return known;
   const plan = buildPlan(settles);
   const { host, draft } = createComposedDerivationHost({
     vm: compositionMachine(), artifacts: [artifacts.Caller!, artifacts.Callee!], plan,
@@ -212,7 +220,9 @@ function compose(settles: readonly PlannedSettlement[]): {
   requireLearnedViews(draft);
   const head = participant(draft.layout, VALIDATOR_ID).index;
   const program = draft.programFor(CALLER_ID);
-  return { program, transaction: program.transaction!, head };
+  const composed = { program, transaction: program.transaction!, head };
+  composedBySettles.set(settles, composed);
+  return composed;
 }
 
 /** Every verdict the consensus machine gives the validator's inputs, in order. */
@@ -239,14 +249,16 @@ const NEEDED_SETTLE: PlannedSettlement = { category: CATEGORY_CALLEE, stateInput
 
 /** A contract the covered masters need settled is one the program and the derivation accept. */
 describe('a settlement naming the contract two covered masters run on', () => {
+  const settles: readonly PlannedSettlement[] = [NEEDED_SETTLE];
+
   it('accepts it on the chain profile and in the derivation', () => {
-    const { program, head } = compose([NEEDED_SETTLE]);
+    const { program, head } = compose(settles);
     expect(derivationReason(program, head)).toBeUndefined();
     expect(validatorVerdicts(program, head)).toStrictEqual([true, true]);
   });
 
   it('fits the validator inputs inside the chain input cap', () => {
-    const { program, head, transaction } = compose([NEEDED_SETTLE]);
+    const { head, transaction } = compose(settles);
     for (let offset = 0; offset < VALIDATOR_PARTS; offset += 1) {
       expect(transaction.inputs[head + offset]!.unlockingBytecode.length).toBeLessThanOrEqual(INPUT_LIMIT_BYTES);
     }
@@ -254,7 +266,7 @@ describe('a settlement naming the contract two covered masters run on', () => {
 
   it('is the contract with two masters, while Caller has one', () => {
     // Two masters of Callee is what forces it to be settled; Caller's single master is what means nothing needs it.
-    const { program } = compose([NEEDED_SETTLE]);
+    const { program } = compose(settles);
     // A master carries its category with the minting capability; the validator's mutable token does not.
     const masters = toModel(program).inputs.filter((input) => input.token.capability === 2);
     const ofCaller = masters.filter((input) => input.token.category.every((byte, at) => byte === CATEGORY_CALLER[at]));

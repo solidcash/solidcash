@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
-import { isServed, publishedRefusals } from './refused-entry.js';
+import { isServed } from './refused-entry.js';
 
 /**
  * A body that touches a dynamic value and makes an external call is served.
@@ -73,12 +73,6 @@ describe('a body that touches a dynamic value and makes an external call', () =>
   it('serves the write with a returning call rather than crashing code generation', () => {
     expect(() => compileString(WRITE_WITH_RETURNING_CALL, { composition: 'per-call' })).not.toThrow();
     expect(isServed(WRITE_WITH_RETURNING_CALL)).toBe(true);
-  });
-
-  it('publishes no refusal for the write with a returning call', () => {
-    const refusals = publishedRefusals(compileStringMulti(WRITE_WITH_RETURNING_CALL, { composition: 'per-call' }) as
-      Record<string, { composition?: unknown }>);
-    expect(refusals).toStrictEqual([]);
     expect(abiNames(WRITE_WITH_RETURNING_CALL, 'A')).toStrictEqual(['push']);
   });
 

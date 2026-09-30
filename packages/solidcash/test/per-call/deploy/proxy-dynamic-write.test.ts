@@ -65,29 +65,7 @@ const COUNTER_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function again(address who) { this.counts[who] = this.counts[who] + 1; this.items.push(msg.sender); }'
   + ' }';
 
-/**
- * The registration shape: an insert of a chunked struct value beside the append, over a list the deployment seeded.
- *
- * The deployment's own entry writes the collection, so the deployment mints the list's empty head and the call
- * splices a fresh key beside it. The entry takes its struct as a parameter, which is the shape the artifact
- * publishes an element source for: a body that also builds the struct clears the push's exactly-once proof, so
- * only a forwarded struct keeps the append a single stated element.
- */
-const REGISTER_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Impl {'
-  + '   struct Member { address who; string name; string bio; uint up; }'
-  + '   address public implementation;'
-  + '   mapping(address => Member) public members;'
-  + '   address[] public items;'
-  + '   function initialize(address who, Member m) { this.members[who] = m; this.items.push(msg.sender); }'
-  + '   function register(address who, Member m) {'
-  + '     require(this.members[who].up == 0);'
-  + '     this.members[who] = m;'
-  + '     this.items.push(msg.sender);'
-  + '   }'
-  + ' }';
-
-/** The same insert beside the append, over a mapping the deployment's own entry never wrote. */
+/** An insert of a chunked struct value beside the append, over a mapping the deployment's own entry never wrote. */
 const UNSEEDED_REGISTER_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Impl {'
   + '   struct Member { address who; string name; string bio; uint up; }'
@@ -450,73 +428,6 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(bytesToHex(node.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
   });
 
-  it('settles an insert of a chunked value beside the append, the node and the value chunks created', async () => {
-    // The registration shape: the deployment's own entry wrote the collection, so the head the insert splices
-    // through is a live node the hop plans the batch against, and the call declares the group's two records, the
-    // dynamic run's kept chunk and the value's chunk run. The created node, its chunks and the dynamic chunk all
-    // carry what the body computed.
-    const seeded = { who: encodeLockingBytecodeP2pkh(alicePkh), name: 'n', bio: 'b', up: 1n };
-    const { deployment, network, artifacts, funding }
-      = await deploy(REGISTER_CALL_SOURCE, [seeded.who, seeded], true);
-    expect(deployment.initialize.accepted).toBe(true);
-
-    const name = 'n'.repeat(80);
-    const bio = 'b'.repeat(80);
-    const result = await callPerCallProxyEntry({
-      provider: network,
-      implementationArtifact: artifacts.Impl!,
-      proxyCategoryId: deployment.proxy.categoryId,
-      implementationCategoryId: deployment.implementation.categoryId,
-      functionName: 'register',
-      args: [FRESH_LOCK, { who: FRESH_LOCK, name, bio, up: 1n }],
-      callerUtxo: funding.callUtxo,
-      callerLockingBytecode: funding.deployerLock,
-      funder: funding.signature.unlockP2PKH(),
-      changeAddress: funding.changeAddress,
-      vm: compositionMachine(),
-    });
-    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(result.accepted).toBe(true);
-    expect(result.broadcast).toBeDefined();
-
-    // The value the entry's own body computed, and the run its created node takes.
-    const value = encodePushdataValue(
-      { who: FRESH_LOCK, name, bio, up: 1n }, 'Member', artifacts.Impl!.structs,
-    );
-    expect(value.length).toBeGreaterThan(60);
-    const slot = keyToSlotMulti([FRESH_LOCK]);
-    const chunkLock = mappingValueChunkLock(
-      hexToBin(deployment.proxy.categoryId), 'members', { slot, root: sha256(value) },
-    );
-    const valueChunks = splitValueIntoValueChunks(value).map(
-      (piece, index) => ({ index, commitment: hexToBin(buildValueChunkCommitment(index, piece)) }),
-    );
-    expect(valueChunks.length).toBeGreaterThan(0);
-
-    // The created node is a trailing output; the value's chunks follow it at the value's own covenant.
-    const trailing = result.draft.trailingOutputs;
-    expect(trailing).toHaveLength(1 + valueChunks.length);
-    const created = decodeEntryCommitment(
-      Uint8Array.from(result.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment!));
-    expect(bytesToHex(created.slot)).toBe(bytesToHex(slot));
-    expect(bytesToHex(created.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
-    trailing.slice(1).forEach((output, position) => {
-      expect(output.output.lockingBytecode).toStrictEqual(chunkLock);
-      expect(output.output.token!.nft!.commitment).toStrictEqual(valueChunks[position]!.commitment);
-    });
-
-    // The dynamic value's run is the live chunk recreated in place, carrying the array the append grew.
-    const grown = encodePushdataValue(
-      [funding.deployerLock, funding.deployerLock], 'address[]', artifacts.Impl!.structs,
-    );
-    const chunkIds = result.draft.layout.participants
-      .filter((placed) => placed.id.startsWith('dynamic-chunk-'));
-    expect(chunkIds).toHaveLength(1);
-    expect(result.transaction.outputs[chunkIds[0]!.index]!.token!.nft!.commitment)
-      .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, grown))));
-    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
-  });
-
   it('settles a first insert beside the append, the hop minting the head it splices through', async () => {
     // A call into a collection the deployment holds no node of plans its first write against the empty list's head
     // sentinel, which no live UTXO carries. The hop mints that head in its own transaction — the shipped encoder's
@@ -532,7 +443,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     // the collection's zero slot relinked to the target, and drops the proof-input bytecode comparison that has no
     // input to compare with. The isolated shape and its wrong-relink control settle
     // (`solidc test/per-call/master/insert-beside-append.test.ts`); the control beside this case is the live-head
-    // insert above, which splices through a node the deployment already holds.
+    // insert below, which splices through a node the deployment already holds.
     const { deployment, network, artifacts, funding } = await deploy(UNSEEDED_REGISTER_SOURCE, [], true);
     expect(deployment.initialize.accepted).toBe(true);
 

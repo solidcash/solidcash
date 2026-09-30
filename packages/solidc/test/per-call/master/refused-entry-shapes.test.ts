@@ -108,19 +108,7 @@ describe('a verified-mapping write whose segment a call the source does not fix 
     expect(refusalMessageOf(source)).toBe(`Ledger.move(): ${WRITE_BEHIND_CALL_REASON}`);
   });
 
-  it('serves the write when every path makes the same number of calls before it', () => {
-    // Both arms make one call, so the write lands in segment 1 whatever ran and the derivation reads that segment.
-    const source = `pragma solidcash ^0.13.0;${CALL_CONTRACT}`
-      + ' contract Ledger {'
-      + '   mapping(address => uint) balances;'
-      + '   function move(bool go, address to, uint amount) {'
-      + `     if (go) { ${CALL} } else { ${CALL} }`
-      + '     balances[to] = amount;'
-      + '   }'
-      + ' }';
-    expect(refusalMessageOf(source)).toBe('');
-  });
-
+  // A branch whose arms make the same number of calls is served and settled in `write-after-call.test.ts`.
   it('serves the write when no call sits beside it', () => {
     // The boundary: the write's own segment is the frame's first, which the derivation reads without a skip.
     const source = 'pragma solidcash ^0.13.0;'

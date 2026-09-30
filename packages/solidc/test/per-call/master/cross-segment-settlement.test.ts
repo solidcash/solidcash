@@ -233,11 +233,6 @@ function verdict(options: Options = {}): { accepted: boolean; objection?: string
 }
 
 describe('a compiled master whose execution is split at a call', () => {
-  it('publishes a caller and a callee, each with a validator program hash slot', () => {
-    expect(callerArtifact.composition?.convention).toBe('per-call');
-    expect(artifacts.Callee!.composition!.placeholders.templateHashOffset).toBeTypeOf('number');
-  });
-
   it('is accepted when the two declarations chain into the commitment the transaction writes', () => {
     expect(verdict()).toStrictEqual({ accepted: true });
   });

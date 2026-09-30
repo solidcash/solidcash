@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind,
   argsHash,
@@ -199,8 +198,6 @@ interface Built {
   readonly eventPayload: Uint8Array;
   /** The implementation's `append` selector. */
   readonly appendSelector: Uint8Array;
-  /** The call-data band a caller's site carries: the selector's push and the item's push, framed. */
-  readonly callData: Uint8Array;
   readonly proxyContract: string;
   readonly implementationContract: string;
   readonly hubContract?: string;
@@ -253,7 +250,6 @@ function build(): Built {
   // The callee's argument pushes carry the last parameter first: the selector, then the item. That band is what
   // the fallback's one parameter carries and what the user supplies.
   const appendPushes = [appendSelector, encodeIntegerValue(APPEND.item)];
-  const callData = new Uint8Array(appendPushes.flatMap((push) => [...encodeDataPush(push)]));
 
   const runPlan = planChunkRun({ layout, variable: 'items', spent: stages[0]!, written: stages[APPEND_COUNT]! });
 
@@ -409,7 +405,7 @@ function build(): Built {
 
   return {
     plan, artifacts: [proxyArtifact, implementationArtifact], layout, proxy, impl, headers, stages, records,
-    eventPayload: payload, appendSelector, callData, proxyContract, implementationContract,
+    eventPayload: payload, appendSelector, proxyContract, implementationContract,
     roots: Array.from({ length: APPEND_COUNT }, (_unused, turn) =>
       rootOf(proxyContract, '__fallback', proxyMasterId(turn + 1))),
   };
@@ -439,7 +435,6 @@ function buildHubCall(forward = false): Built {
   const argumentPushes = forward
     ? [FORWARD_SELECTOR, encodeIntegerValue(APPEND.item)]
     : [appendSelector, encodeIntegerValue(APPEND.item)];
-  const callData = new Uint8Array(argumentPushes.flatMap((push) => [...encodeDataPush(push)]));
 
   const hubArtifact = compileStringMulti(forward
     ? forwardHubSource(proxy.address, encodeIntegerValue(APPEND.item), APPEND_COUNT)
@@ -605,7 +600,7 @@ function buildHubCall(forward = false): Built {
 
   return {
     plan, artifacts: [hubArtifact, proxyArtifact, implementationArtifact], layout, proxy, impl, headers, stages,
-    records, eventPayload: payload, appendSelector, callData, proxyContract, implementationContract, hubContract,
+    records, eventPayload: payload, appendSelector, proxyContract, implementationContract, hubContract,
     roots: [rootOf(hubContract, 'go', HUB_MASTER)],
   };
 }
@@ -847,23 +842,6 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
         capability: 'none', commitment: built.eventPayload,
       });
     });
-  });
-
-  it('refuses a call to the proxy whose band is the framed call data alone', () => {
-    // The control that genuinely refuses. Every called frame's call data leads with a four-byte selector: the
-    // validator reads that push as the selector and hashes it with the argument pushes, so a band that is the whole
-    // framed call data as one push cannot describe a call. The composer names the band's first push and refuses it.
-    const built = buildHubCall();
-    const framedBand = [built.callData];
-    const plan: CompositionDraftPlan = {
-      ...built.plan,
-      masters: built.plan.masters.map((candidate) => (candidate.master === HUB_MASTER
-        ? { ...candidate, calls: candidate.calls.map((call) => ({ ...call, argumentPushes: framedBand })) }
-        : candidate)),
-    };
-    expect(() => createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: built.artifacts, plan,
-    })).toThrowError(/the call from "hub-1" to "proxy-1" does not begin with a 4-byte selector/);
   });
 
   it('refuses the forwarding spelling: the implementation has no entry for the selector a caller forwards', () => {

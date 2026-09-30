@@ -119,10 +119,33 @@ async function deployBoth(network: MockNetworkProvider, threadCount: number): Pr
   };
 }
 
+/** A deployment of both contracts, on the network that holds it. */
+interface Deployed {
+  readonly network: MockNetworkProvider;
+  readonly funded: Awaited<ReturnType<typeof deployBoth>>;
+}
+
+let deployedRun: Promise<Deployed> | undefined;
+
+/**
+ * The one deployment both cases share, its callee's pool holding a master for each of the five reaches the second
+ * case makes: the first call enters with the coin it funded, a later one with a fresh coin at `txid`.
+ */
+async function sharedDeployment(txid?: string): Promise<Deployed> {
+  deployedRun ??= (async (): Promise<Deployed> => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    return { network, funded: await deployBoth(network, 5) };
+  })();
+  const deployed = await deployedRun;
+  if (txid === undefined) return deployed;
+  const callCoin = funding(txid);
+  await deployed.network.addUtxo(hexOf(deployed.funded.deployerLock), callCoin);
+  return { network: deployed.network, funded: { ...deployed.funded, callCoin } };
+}
+
 describe('a hop whose entry reaches one contract from several sites', () => {
   it('gives each reach its own master, skips the untaken site, and broadcasts', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployBoth(network, 4);
+    const { network, funded } = await sharedDeployment();
 
     const result = await callPerCallProxyEntry({
       provider: network,
@@ -166,8 +189,7 @@ describe('a hop whose entry reaches one contract from several sites', () => {
   });
 
   it('carries each reach\'s own call data, so the loop\'s turns differ from one another', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployBoth(network, 5);
+    const { network, funded } = await sharedDeployment('77'.repeat(31) + 'c2');
 
     const result = await callPerCallProxyEntry({
       provider: network,

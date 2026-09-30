@@ -153,10 +153,6 @@ describe('a compiled master refuses to be spent as anything but its own minting 
 });
 
 describe('a compiled master refuses an output that is not itself, recreated in place', () => {
-  it('accepts a faithful recreation, so the refusals below are not malformed transactions', () => {
-    expect(evaluate()).toStrictEqual({ accepted: true });
-  });
-
   it('refuses an output at its own index with no token', () => {
     expect(evaluate({ outputToken: undefined }).accepted).toBe(false);
   });

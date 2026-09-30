@@ -34,6 +34,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
 
 const CATEGORY_HEX = '77'.repeat(32);
 const CALLER_TXID = '88'.repeat(32);
+const SECOND_CALLER_TXID = '88'.repeat(31) + 'c2';
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Ledger {'
@@ -104,6 +105,21 @@ async function deploy(artifact: Artifact = ledger, seed: Uint8Array = SEED_LOCK)
   return { provider, categoryId: deployment.categoryId, callerUtxo, callerLock, funder: signature.unlockP2PKH() };
 }
 
+/** The deployment with a fresh coin of the caller's own, for a call after another spent the first. */
+async function withCallerCoin(deployed: Deployed, txid: string): Promise<Deployed> {
+  const callerUtxo = { txid, vout: 0, satoshis: 200_000n };
+  await deployed.provider.addUtxo(binToHex(deployed.callerLock), callerUtxo);
+  return { ...deployed, callerUtxo };
+}
+
+let ledgerRun: Promise<Deployed> | undefined;
+
+/** The ledger the first two cases share: the key each writes is one the other does not read. */
+function ledgerDeployment(): Promise<Deployed> {
+  ledgerRun ??= deploy();
+  return ledgerRun;
+}
+
 /** Calls `deposit` through the shipped call path. */
 async function deposit(deployed: Deployed, who: Uint8Array, amount: bigint): ReturnType<typeof callPerCallEntry> {
   return callPerCallEntry({
@@ -128,7 +144,7 @@ function nodeOutput(result: Awaited<ReturnType<typeof callPerCallEntry>>, index:
 
 describe('calling an entry that writes a mapping on a deployed per-call contract', () => {
   it('declares the head sentinel and creates the node for a key the list does not hold', async () => {
-    const deployed = await deploy();
+    const deployed = await ledgerDeployment();
     // The genesis wrote `balances[SEED]`, so the category holds the relinked head and the seeded node.
     const genesis = await readPerCallDeployment(deployed.provider, deployed.categoryId, ledger.stateLayout!);
     const seeded = genesis.nodesByCollection.get('balances') ?? [];
@@ -168,7 +184,7 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
   });
 
   it('declares the node a held key sits at, and rewrites it in place', async () => {
-    const deployed = await deploy();
+    const deployed = await withCallerCoin(await ledgerDeployment(), SECOND_CALLER_TXID);
     const result = await deposit(deployed, SEED_LOCK, 10n);
 
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -203,8 +219,10 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
       + '   function viaSetAndReturn(uint amount) returns (uint) { return setAndReturn(amount) + 1; }'
       + ' }';
     const token = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+    // One deployment serves both entries, each setting the caller's node outright; the second enters with a fresh coin.
+    const shared = await deploy(token, CALLER_LOCK);
     for (const [entry, amount] of [['viaSet', 7n], ['viaSetAndReturn', 9n]] as const) {
-      const deployed = await deploy(token, CALLER_LOCK);
+      const deployed = entry === 'viaSet' ? shared : await withCallerCoin(shared, SECOND_CALLER_TXID);
       const result = await callPerCallEntry({
         provider: deployed.provider, artifact: token, categoryId: deployed.categoryId, functionName: entry,
         args: [amount], callerUtxo: deployed.callerUtxo, callerLockingBytecode: deployed.callerLock,
@@ -326,63 +344,6 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     expect(result.values).toStrictEqual([5n]);
   });
 
-  it('settles a batch whose updated node is also the insert target relinked predecessor', async () => {
-    // `transfer` debits the caller and credits an argument key in one batch. The caller's node sorts below the
-    // recipient's, so the recipient's insert relinks the caller's own node: one node is both an updated target and
-    // the insert's predecessor, and the batch declares it once per group that names it.
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Ledger {'
-      + '   mapping(address => uint) balances;'
-      + '   constructor(address owner) { this.balances[owner] = 1000; }'
-      + '   function transfer(address to, uint amount) returns (uint) {'
-      + '     this.balances[msg.sender] = this.balances[msg.sender] - amount;'
-      + '     this.balances[to] = this.balances[to] + amount;'
-      + '     return this.balances[to];'
-      + '   }'
-      + ' }';
-    const token = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
-    // The constructor seeds the caller's own key, so the caller's write rewrites a held node; the recipient's key
-    // is one the list does not hold, and the caller's node is the greatest slot below it.
-    const deployed = await deploy(token, CALLER_LOCK);
-    const genesis = await readPerCallDeployment(deployed.provider, deployed.categoryId, token.stateLayout!);
-    expect(genesis.nodesByCollection.get('balances') ?? []).toHaveLength(2);
-    const callerSlot = keyToSlotMulti([keyOf(CALLER_LOCK)]);
-    const recipientSlot = keyToSlotMulti([keyOf(RELINKED_LOCK)]);
-    expect(bytesToSlotValue(callerSlot) < bytesToSlotValue(recipientSlot)).toBe(true);
-
-    const result = await callPerCallEntry({
-      provider: deployed.provider, artifact: token, categoryId: deployed.categoryId, functionName: 'transfer',
-      args: [RELINKED_LOCK, 5n], callerUtxo: deployed.callerUtxo, callerLockingBytecode: deployed.callerLock,
-      funder: deployed.funder, vm: compositionMachine(),
-    });
-
-    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(result.accepted).toBe(true);
-    // The batch declares the caller's held node alone, and creates the recipient's node as a trailing output.
-    const nodeIds = result.draft.layout.participants
-      .filter((placed) => placed.id.startsWith('mapping-node-'));
-    expect(nodeIds).toHaveLength(1);
-    expect(result.draft.trailingOutputs).toHaveLength(1);
-
-    // The held node is rewritten where it sits: its own slot, the successor the insert relinked it to, and the
-    // balance the body debited.
-    const held = decodeEntryCommitment(nodeOutput(result, nodeIds[0]!.index));
-    expect(bytesToHex(held.slot)).toBe(bytesToHex(callerSlot));
-    expect(bytesToHex(held.nextKey)).toBe(bytesToHex(recipientSlot));
-    expect(bytesToHex(held.value)).toBe(bytesToHex(valueOf(995n)));
-
-    // The created node carries the recipient's slot and the balance the body credited, and takes the successor the
-    // rewritten node used to point at.
-    const created = decodeEntryCommitment(nodeOutput(result, result.draft.trailingOutputs[0]!.index));
-    expect(bytesToHex(created.slot)).toBe(bytesToHex(recipientSlot));
-    expect(bytesToHex(created.nextKey)).toBe('00'.repeat(32));
-    expect(bytesToHex(created.value)).toBe(bytesToHex(valueOf(5n)));
-
-    // The entry returned the balance it credited.
-    expect(result.values).toStrictEqual([5n]);
-    expect(result.broadcast).toBeDefined();
-  });
-
   it('settles a two-target batch beside an event, seeded to the caller by the constructor', async () => {
     // A token's own shape: the constructor seeds `balances[msg.sender]`, and `transfer` debits the caller while
     // crediting an argument key in one batch, then emits. The genesis binds the constructor's frame caller to the
@@ -417,13 +378,17 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
     await fundShippedFacets(provider);
 
-    // The constructor seeded the caller's key, so the caller's write rewrites a held node and the recipient's
-    // insert relinks it: the same coordinate the case above covers, now with the entry emitting beside it.
+    // The constructor seeded the caller's key, so the caller's write rewrites a held node. The recipient's key is
+    // one the list does not hold and the caller's node is the greatest slot below it, so the insert relinks that
+    // same node: it is both an updated target and the insert's predecessor, declared once per group that names it.
     const genesis = await readPerCallDeployment(provider, deployment.categoryId, token.stateLayout!);
     expect(genesis.nodesByCollection.get('balances') ?? []).toHaveLength(2);
     // The constructor never writes `allowances`, so the genesis mints its empty head: a first insert into that
     // collection later splices beside it.
     expect(genesis.nodesByCollection.get('allowances') ?? []).toHaveLength(1);
+    const callerSlot = keyToSlotMulti([keyOf(CALLER_LOCK)]);
+    const recipientSlot = keyToSlotMulti([keyOf(RELINKED_LOCK)]);
+    expect(bytesToSlotValue(callerSlot) < bytesToSlotValue(recipientSlot)).toBe(true);
 
     const result = await callPerCallEntry({
       provider, artifact: token, categoryId: deployment.categoryId, functionName: 'transfer',
@@ -433,13 +398,34 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
 
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.accepted).toBe(true);
-    // The trailing region holds the entry's event first, then the created recipient node.
+    // The batch declares the caller's held node alone; the trailing region holds the entry's event first, then the
+    // created recipient node.
     const nodeIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
     expect(nodeIds).toHaveLength(1);
     expect(result.draft.trailingOutputs).toHaveLength(2);
 
+    // The held node is rewritten where it sits: its own slot, the successor the insert relinked it to, and the
+    // balance the body debited.
+    const held = decodeEntryCommitment(nodeOutput(result, nodeIds[0]!.index));
+    expect(bytesToHex(held.slot)).toBe(bytesToHex(callerSlot));
+    expect(bytesToHex(held.nextKey)).toBe(bytesToHex(recipientSlot));
+    expect(bytesToHex(held.value)).toBe(bytesToHex(valueOf(995n)));
+
+    // The created node carries the recipient's slot and the balance the body credited, and takes the successor the
+    // rewritten node used to point at.
     const created = decodeEntryCommitment(nodeOutput(result, result.draft.trailingOutputs[1]!.index));
+    expect(bytesToHex(created.slot)).toBe(bytesToHex(recipientSlot));
+    expect(bytesToHex(created.nextKey)).toBe('00'.repeat(32));
     expect(bytesToHex(created.value)).toBe(bytesToHex(valueOf(5n)));
+
+    // `total` is the contract's one data record, which the entry never writes: its segment close requires it kept,
+    // so the run learns it kept and the transaction writes back what it spent, the plain encoded 1000.
+    const total = result.sourceOutputs.findIndex((output) => output.token?.nft !== undefined
+      && binToHex(output.token.nft.commitment) === '02e803');
+    expect(total).toBeGreaterThanOrEqual(0);
+    expect(binToHex(result.transaction.outputs[total]!.token!.nft!.commitment)).toBe('02e803');
+
+    // The entry returned the balance it credited.
     expect(result.values).toStrictEqual([5n]);
     expect(result.broadcast).toBeDefined();
   });

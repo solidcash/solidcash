@@ -173,12 +173,6 @@ const outcome = composeAndDerive(
 );
 
 describe('a per-call master whose dynamic write shares the frame with a call', () => {
-  it('serves both contracts rather than refusing the entry by name', () => {
-    expect(artifacts.Appender!.composition?.convention).toBe('per-call');
-    expect(artifacts.Appender!.composition?.refusedEntries).toBeUndefined();
-    expect(artifacts.Callee!.composition?.refusedEntries).toBeUndefined();
-  });
-
   it('derives the callee before its caller', () => {
     expect(outcome.completed.map((frame) => `${frame.contract}.${frame.functionName}`)).toStrictEqual([
       'Callee.Callee.ping()', 'Appender.Appender.append()',

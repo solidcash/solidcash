@@ -74,9 +74,43 @@ async function deploy(): Promise<{ calls: TallyCalls; handle: StatefulContract; 
   return { calls: handle.call as unknown as TallyCalls, handle, provider };
 }
 
+let deployedRun: ReturnType<typeof deploy> | undefined;
+
+/** One deployment serves every case: only the last writes, after the read that expects the total the genesis left. */
+function sharedDeployment(): ReturnType<typeof deploy> {
+  deployedRun ??= deploy();
+  return deployedRun;
+}
+
 describe('the call surface of a deployed per-call contract', () => {
+  it('answers a read-only entry with the value its own frame computed and sends nothing', async () => {
+    const { calls } = await sharedDeployment();
+    // A read is derived and evaluated locally: the contract's total starts at zero and no transaction is built.
+    expect(await calls.current()).toBe(0n);
+  });
+
+  it('reports the entry\'s own refusal for a caller that holds no coin, simulated before any funding', async () => {
+    const { handle, provider } = await sharedDeployment();
+    const before = await recordCommitment(provider, handle.categoryId);
+    const calls = handle.connect(HDSigner.fromPhrase(UNFUNDED_PHRASE, provider)).call as unknown as TallyCalls;
+    // The call is derived over a stand-in coin at the caller's own lock, so the body's refusal is what it reports,
+    // not that the caller cannot pay.
+    await expect(calls.add(-1n)).rejects.toThrow(
+      /PER_CALL_COMPOSITION_REFUSED: frame "master" of Tally\.add\(\) at line \d+/,
+    );
+    expect(await recordCommitment(provider, handle.categoryId)).toBe(before);
+  });
+
+  it('reports that a caller holding no coin cannot pay for a call that would settle, and sends nothing', async () => {
+    const { handle, provider } = await sharedDeployment();
+    const before = await recordCommitment(provider, handle.categoryId);
+    const calls = handle.connect(HDSigner.fromPhrase(UNFUNDED_PHRASE, provider)).call as unknown as TallyCalls;
+    await expect(calls.add(4n)).rejects.toThrow(/holds no tokenless UTXO to pay the call with/);
+    expect(await recordCommitment(provider, handle.categoryId)).toBe(before);
+  });
+
   it('broadcasts an entry the handle is awaited on, and the record carries what the entry computed', async () => {
-    const { calls, handle, provider } = await deploy();
+    const { calls, handle, provider } = await sharedDeployment();
     const before = await recordCommitment(provider, handle.categoryId);
     expect(recordTotal(before)).toBe(0n);
 
@@ -89,43 +123,5 @@ describe('the call surface of a deployed per-call contract', () => {
     const after = await recordCommitment(provider, handle.categoryId);
     expect(after).not.toBe(before);
     expect(recordTotal(after)).toBe(4n);
-  });
-
-  it('answers a read-only entry with the value its own frame computed and sends nothing', async () => {
-    const { calls } = await deploy();
-    // A read is derived and evaluated locally: the contract's total starts at zero and no transaction is built.
-    expect(await calls.current()).toBe(0n);
-  });
-
-  it('refuses a call the entry itself rejects, and broadcasts nothing', async () => {
-    const { calls, handle, provider } = await deploy();
-    const before = await recordCommitment(provider, handle.categoryId);
-    // `add(-1)` leaves the total below the entry's own `require(this.total >= 0)`. The rejection names the
-    // refusing frame's own entry and source site rather than the opcode the run stopped on.
-    await expect(calls.add(-1n)).rejects.toThrow(
-      /PER_CALL_COMPOSITION_REFUSED: frame "master" of Tally\.add\(\) at line \d+/,
-    );
-    // Nothing was broadcast, so the record still carries the commitment the deployment minted.
-    expect(await recordCommitment(provider, handle.categoryId)).toBe(before);
-  });
-
-  it('reports the entry\'s own refusal for a caller that holds no coin, simulated before any funding', async () => {
-    const { handle, provider } = await deploy();
-    const before = await recordCommitment(provider, handle.categoryId);
-    const calls = handle.connect(HDSigner.fromPhrase(UNFUNDED_PHRASE, provider)).call as unknown as TallyCalls;
-    // The call is derived over a stand-in coin at the caller's own lock, so the body's refusal is what it reports,
-    // not that the caller cannot pay.
-    await expect(calls.add(-1n)).rejects.toThrow(
-      /PER_CALL_COMPOSITION_REFUSED: frame "master" of Tally\.add\(\) at line \d+/,
-    );
-    expect(await recordCommitment(provider, handle.categoryId)).toBe(before);
-  });
-
-  it('reports that a caller holding no coin cannot pay for a call that would settle, and sends nothing', async () => {
-    const { handle, provider } = await deploy();
-    const before = await recordCommitment(provider, handle.categoryId);
-    const calls = handle.connect(HDSigner.fromPhrase(UNFUNDED_PHRASE, provider)).call as unknown as TallyCalls;
-    await expect(calls.add(4n)).rejects.toThrow(/holds no tokenless UTXO to pay the call with/);
-    expect(await recordCommitment(provider, handle.categoryId)).toBe(before);
   });
 });

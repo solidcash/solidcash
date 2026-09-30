@@ -204,7 +204,7 @@ describe('a proxied initialize that writes state', () => {
     const { artifacts } = compileAndDeploy(mismatched, { Proxy: 'mismatch proxy', Impl: 'mismatch impl' });
     const network = provider();
     const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
-    await expect(deployPerCallProxy({
+    const deployment = deployPerCallProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyArtifact: artifacts.Proxy!,
@@ -213,7 +213,9 @@ describe('a proxied initialize that writes state', () => {
       initialize: { functionName: 'initialize', args: [deployerLock] },
       callerLockingBytecode: deployerLock,
       vm: compositionMachine(),
-    })).rejects.toThrowError(PerCallProxyDeployError);
+    });
+    await expect(deployment).rejects.toThrowError(PerCallProxyDeployError);
+    await expect(deployment).rejects.toThrowError(/must declare the same record fields/);
   });
 
   it('refuses a proxy whose delegatecall target is a filled constant rather than a value the contract holds', () => {

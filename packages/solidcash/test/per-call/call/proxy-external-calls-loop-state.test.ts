@@ -28,9 +28,9 @@ import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
  *  - a site whose target and arguments live in a dynamic state value, whose records carry a byte length and whose
  *    value the hop joins from the field's chunk records the way the contract's own body reads it.
  *
- * The shapes that must still be refused — a loop whose width only an earlier call's result fixes, and a reach the
- * callee's own master pool cannot serve — are pinned beside them, and so is the entry whose several call sites
- * reach one contract, which now plans with a master of that contract per reach.
+ * The shape that must still be refused, a reach the callee's own master pool cannot serve, is pinned beside them,
+ * and so is the entry whose several call sites reach one contract, which now plans with a master of that contract
+ * per reach. A loop whose width only an earlier call's result fixes is `proxy-external-calls-published.test.ts`'s.
  */
 
 const ARTIFACTS_DIR = resolve(
@@ -316,24 +316,6 @@ describeShipped('solving a call site from the caller\'s own facts', () => {
     })).rejects.toThrow(
       /which this hop already places; its category \w+ holds 1 master\(s\), so it cannot be entered 2 time\(s\)/,
     );
-  });
-
-  it("still refuses a loop whose width an earlier call's result fixes", async () => {
-    const network = new MockNetworkProvider();
-    const data = loadArtifact(DATA);
-    const facade = loadArtifact(FACADE);
-    await seedDeployment(network, facade, FACADE_CATEGORY);
-
-    // The reader's loop runs as many times as the callee it calls first reports, which no caller-held fact fixes.
-    await expect(planHopExternalCalls({
-      provider: network,
-      artifact: data,
-      functionName: 'getJobs',
-      args: [0n, 0n],
-      externals: { MarketplaceV1: { artifact: facade, categoryId: FACADE_CATEGORY } },
-      stateValues: { marketplace: new Uint8Array(35).fill(6) },
-      validatorProgram: VALIDATOR_PROGRAM,
-    })).rejects.toThrow(/runs a loop whose bound is not fixed by the caller's own arguments/);
   });
 });
 

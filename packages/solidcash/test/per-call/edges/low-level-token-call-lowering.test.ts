@@ -293,10 +293,11 @@ describe('a low-level token call whose callee and method are statically known', 
     const typed = typedCall();
     expect(typed.record.argsHash).toStrictEqual(typed.expected);
     expect(typed.record.target).toStrictEqual(TOKEN_ADDRESS);
-    for (const source of [BOUND, SELECTOR]) {
-      // The whole record agrees: kind, target, value, callee reference, argument digest and returned result.
-      expect(callRecord(source).record).toStrictEqual(typed.record);
-    }
+    // The whole record agrees: kind, target, value, callee reference, argument digest and returned result.
+    expect(callRecord(BOUND).record).toStrictEqual(typed.record);
+    // The selector spelling compiles to the bound spelling's program, so it settles as that one does.
+    const callerOf = (source: string): Artifact => compileStringMulti(source, { composition: 'per-call' }).Caller!;
+    expect(callerOf(SELECTOR).bytecode).toBe(callerOf(BOUND).bytecode);
   });
 
   it('lowers the bare statement whose result is ignored to the same typed call', () => {

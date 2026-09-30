@@ -150,7 +150,7 @@ function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType
 const ROOT = { contract: 'Caller', functionName: CALLER_ENTRY, kind: FrameKind.ROOT, master: CALLER_MASTER };
 
 /** Compiles, deploys, plans, assembles and derives the composition; returns the assembled transaction. */
-function deriveComposition(): {
+function deriveFresh(): {
   vm: ReturnType<typeof createVirtualMachineBch2026>;
   transaction: VmTransaction;
   sourceOutputs: VmSourceOutputs;
@@ -163,6 +163,14 @@ function deriveComposition(): {
   const program = draft.programFor(CALLER_MASTER);
   const vm = compositionMachine();
   return { vm, transaction: program.transaction, sourceOutputs: program.sourceOutputs, draft };
+}
+
+let sharedRun: ReturnType<typeof deriveFresh> | undefined;
+
+/** The composition, derived once: the cases read it and each control mutates a clone. */
+function deriveComposition(): ReturnType<typeof deriveFresh> {
+  sharedRun ??= deriveFresh();
+  return sharedRun;
 }
 
 /**

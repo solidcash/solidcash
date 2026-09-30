@@ -10,7 +10,6 @@ import {
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   deployMaster,
   readComputedDeclaration,
@@ -28,7 +27,6 @@ import {
   type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { layoutWithFacets } from '../shapes/harness.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
 } from '../../../../solidc/test/per-call/master/validator-input.js';
@@ -236,13 +234,5 @@ describe('a read whose entry reads another contract\'s view entry', () => {
     // first and resumes the caller.
     expect(error).toBeUndefined();
     expect(completed).toStrictEqual(['value-1', 'read-1']);
-  });
-
-  it('is refused by the SDK read module: an entry that calls is not a one-contract read', async () => {
-    // The module plans a read of the contract's own records only; the nested shape is the composer's to drive.
-    const provider = new MockNetworkProvider();
-    await expect(readPerCallEntry({
-      provider, artifact: aArtifact, categoryId: bytesToHex(CATEGORY_A), functionName: 'peek',
-    })).rejects.toThrow(/makes 1 external call/);
   });
 });

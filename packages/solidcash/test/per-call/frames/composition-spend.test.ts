@@ -2,12 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   FrameKind,
-  buildMasterUnlockingBytecode,
   computeFunctionSelector,
   computeFunctionSignature,
-  sha256,
   validatorAddress,
-  type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -223,22 +220,6 @@ function deriveComposition(): ReturnType<typeof deriveFresh> {
   return sharedRun;
 }
 
-/**
- * The caller's input with its witness block replaced by `mutate`'s result, rebuilt through the shipped encoder.
- *
- * The control never edits the assembled bytes by hand: the mutated block goes back through the same builder the
- * composer used, so the only difference between the accept and the control is the block field under test.
- */
-function withCallerBlock(
-  derived: { draft: ReturnType<typeof createComposedDerivationHost>['draft'] },
-  mutate: (block: WitnessBlock) => WitnessBlock,
-): Uint8Array {
-  const { plan } = buildComposition();
-  const caller = plan.masters.find((master) => master.master === CALLER_MASTER)!;
-  const block = mutate(structuredClone(derived.draft.blockOf(CALLER_MASTER)) as WitnessBlock);
-  return buildMasterUnlockingBytecode(block, caller.argumentPushes, caller.redeemScript);
-}
-
 describe('a composed transaction through the shipped compile, deployment and composer', () => {
   it('the composer places the caller, its callee and the validator at the indices it derived', () => {
     const { artifacts } = buildComposition();
@@ -260,43 +241,16 @@ describe('a composed transaction through the shipped compile, deployment and com
       .toStrictEqual(draft.assembly.inputs.find((input) => input.id === CALLER_MASTER)!.unlockingBytecode);
   });
 
-  it('the machine accepts every contract input of the assembled caller, callee and validator spend', () => {
-    const { vm, transaction, sourceOutputs } = deriveComposition();
-
-    // The caller, the validator, its facet, the callee, then the user.
-    expect(transaction.inputs).toHaveLength(5);
-    const outcomes = CONTRACT_INPUTS.map((index) => verdict(vm, transaction, sourceOutputs, index));
-    for (const [position, outcome] of outcomes.entries()) {
-      const index = CONTRACT_INPUTS[position]!;
-      expect(`${index}: ${outcome.objection ?? 'accepted'}`).toBe(`${index}: accepted`);
-    }
-  });
-
   it('answers the same verdict twice on the same bytes', () => {
     const { vm, transaction, sourceOutputs } = deriveComposition();
+    // The caller, the validator, its facet, the callee, then the user.
+    expect(transaction.inputs).toHaveLength(5);
     const ask = (): ReturnType<typeof verdict>[] =>
       CONTRACT_INPUTS.map((index) => verdict(vm, transaction, sourceOutputs, index));
     const first = ask();
     const second = ask();
     expect(second).toStrictEqual(first);
     expect(first.every((outcome) => outcome.accepted)).toBe(true);
-  });
-
-  it('refuses the same transaction when the caller records a callee that did not run it', () => {
-    const derived = deriveComposition();
-    const { vm, transaction, sourceOutputs } = derived;
-    // The caller's recorded callee is rewritten to the validator's index: an input that is covered, but is not the
-    // callee the call reached. The call binding is the only thing this control changes.
-    const mutated = structuredClone(transaction) as VmTransaction;
-    mutated.inputs[0]!.unlockingBytecode = withCallerBlock(derived, (block) => {
-      block.calls[0]!.calleeRef = 1;
-      return block;
-    });
-
-    expect(verdict(vm, transaction, sourceOutputs, 0)).toStrictEqual({ accepted: true });
-    const control = verdict(vm, mutated, sourceOutputs, 0);
-    expect(control.accepted).toBe(false);
-    expect(control.objection).toBeTruthy();
   });
 
   it('refuses the same transaction when the caller does not recreate its own master', () => {

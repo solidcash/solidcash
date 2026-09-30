@@ -4,7 +4,7 @@ import { accepted, decisionOf, laidOut } from './validator-machine.js';
 import {
   categoryOf, emptyToken, masterTokenShape, materialise, mutableTokenShape, seedBytes, userLockOf,
 } from '../validator/fixture.js';
-import { abbaPlan } from '../validator/plans.js';
+import { abbaPlan, singleContractPlan } from '../validator/plans.js';
 
 /**
  * Inputs the plan does not know about, appended to the assembled spend.
@@ -23,7 +23,8 @@ import { abbaPlan } from '../validator/plans.js';
  *   commits to every input under `SIGHASH_ALL` (the fixture's signatures are filler, so the machine cannot show it).
  *
  * The reference `A.f -> B.g -> A.k -> B.g -> A.f` composition, where `A` has two masters and is settled while `B`
- * has one and is not, is the spend these are appended to.
+ * has one and is not, is the spend these are appended to. The tokenless and the stranger's minting input are also
+ * appended to the one-contract composition, whose settled contract creates a record, emits an event and sends value.
  */
 
 const FOREIGN = categoryOf('unsolicited input foreign');
@@ -92,6 +93,7 @@ describe('an input the plan does not list', () => {
     // input set. A finding.
     const composition = laidOut(abbaPlan());
     const modelled = appended(materialise(composition), masterTokenShape(FOREIGN));
+    expect(decisionOf(modelled, composition.validatorIndex).accepted).toBe(true);
     expect(accepted(modelled, composition.validatorIndex)).toBe(true);
   });
 
@@ -99,6 +101,20 @@ describe('an input the plan does not list', () => {
     // Plain BCH added to the transaction changes no token fact any rule is about. A finding.
     const composition = laidOut(abbaPlan());
     const modelled = appended(materialise(composition), emptyToken());
+    expect(decisionOf(modelled, composition.validatorIndex).accepted).toBe(true);
+    expect(accepted(modelled, composition.validatorIndex)).toBe(true);
+  });
+
+  test('accepts a tokenless input appended to the one-contract composition', () => {
+    const composition = laidOut(singleContractPlan());
+    const modelled = appended(materialise(composition), emptyToken());
+    expect(decisionOf(modelled, composition.validatorIndex).accepted).toBe(true);
+    expect(accepted(modelled, composition.validatorIndex)).toBe(true);
+  });
+
+  test('accepts a stranger contract\'s minting input appended to the one-contract composition', () => {
+    const composition = laidOut(singleContractPlan());
+    const modelled = appended(materialise(composition), masterTokenShape(FOREIGN));
     expect(decisionOf(modelled, composition.validatorIndex).accepted).toBe(true);
     expect(accepted(modelled, composition.validatorIndex)).toBe(true);
   });

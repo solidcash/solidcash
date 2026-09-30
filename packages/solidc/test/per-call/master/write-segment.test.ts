@@ -87,39 +87,7 @@ describe('whether every call precedes the write', () => {
 });
 
 describe('an entry whose write follows a call the source does not fix', () => {
-  const CALL = 'IOther(0x1111111111111111111111111111111111111111).ping.call();';
-  const CALL_CONTRACT = ' interface IOther { function ping(); }'
-    + ' contract Other { function ping() { require(true); } }';
-
-  it('is served, reading the segment the run\'s declared call count names', () => {
-    const source = `pragma solidcash ^0.13.0;${CALL_CONTRACT}`
-      + ' contract Ledger {'
-      + '   mapping(address => uint) balances;'
-      + '   function move(bool go, address to, uint amount) {'
-      + `     if (go) { ${CALL} }`
-      + '     balances[to] = amount;'
-      + '   }'
-      + ' }';
-    expect(publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
-      Record<string, { composition?: unknown }>)).toStrictEqual([]);
-  });
-
-  it('stays refused when a call follows the write, so the declared count does not name its segment', () => {
-    const source = `pragma solidcash ^0.13.0;${CALL_CONTRACT}`
-      + ' contract Ledger {'
-      + '   mapping(address => uint) balances;'
-      + '   function move(bool go, address to, uint amount) {'
-      + `     if (go) { ${CALL} }`
-      + '     balances[to] = amount;'
-      + `     ${CALL}`
-      + '   }'
-      + ' }';
-    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
-      Record<string, { composition?: unknown }>);
-    expect(refusals.map((refused) => refused.functionName)).toStrictEqual(['Ledger.move()']);
-    expect(refusals[0]!.reason).toContain('cannot follow the segment the write lands in');
-  });
-
+  // The served and refused shapes of a guarded call before the write are `refused-entry-shapes.test.ts`'s.
   it('is served when its write precedes every call it makes', () => {
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Ledger {'

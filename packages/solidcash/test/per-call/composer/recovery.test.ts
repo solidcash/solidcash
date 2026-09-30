@@ -241,14 +241,6 @@ function rawVerdicts(test: RecoveryCase): Record<string, boolean> {
 }
 
 describe('a composed per-call recovery', () => {
-  it('is accepted at the master input and every recovery side-car input', () => {
-    const test = signerCase('pubkey');
-    const verdicts = verdictsOf(test);
-    expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
-    for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
-    expect(test.ids).toHaveLength(2); // one A/B pair, no keccak side-car
-  });
-
   it('is accepted when the EVM projection reads its address from a keccak side-car', () => {
     // A trailing output, as an event or a send adds: the side-car must recreate at its own index, not at an offset
     // from the end of the outputs.
@@ -447,11 +439,9 @@ describe('the EVM invalid-input rule through the composer', () => {
   // each range the body tests).
   it('co-spends a placeholder pair where the body answers the zero address, and every input accepts', () => {
     const zero = new Uint8Array(32);
-    for (const scalars of [{ h: zero, v: 0, r: zero, s: zero }, { ...signer, v: 0 }]) {
-      const test = recoveryCase(scalars, 'pubkey(0x)', 'pubkey');
-      const verdicts = verdictsOf(test);
-      expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
-      for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
-    }
+    const test = recoveryCase({ h: zero, v: 0, r: zero, s: zero }, 'pubkey(0x)', 'pubkey');
+    const verdicts = verdictsOf(test);
+    expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
+    for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
   });
 });

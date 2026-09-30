@@ -146,13 +146,36 @@ async function deployed(network: MockNetworkProvider): Promise<{
   };
 }
 
+/** A deployment with the escrow it calls, on the network that holds it. */
+interface Deployed {
+  readonly network: MockNetworkProvider;
+  readonly funded: Awaited<ReturnType<typeof deployed>>;
+}
+
+let deployedRun: Promise<Deployed> | undefined;
+
+/**
+ * The one deployment both cases share: the first call enters with the coin it funded, a later one with a fresh coin
+ * at `txid`. Each entry writes the amount outright, so neither reads what the other wrote.
+ */
+async function sharedDeployment(txid?: string): Promise<Deployed> {
+  deployedRun ??= (async (): Promise<Deployed> => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    return { network, funded: await deployed(network) };
+  })();
+  const shared = await deployedRun;
+  if (txid === undefined) return shared;
+  const callCoin = { txid, vout: 0, satoshis: 300_000n };
+  await shared.network.addUtxo(hexOf(shared.funded.deployerLock), callCoin);
+  return { network: shared.network, funded: { ...shared.funded, callCoin } };
+}
+
 describe('a proxied entry that writes its own record after an external call', () => {
   it('settles the record in the segment the call opened and broadcasts the hop', async () => {
     // The artifact publishes the segment the entry's own write lands in: the call before it opens the second one.
     expect(publishedWriteSegment(impl, 'recordAfter')).toBe(1);
 
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployed(network);
+    const { network, funded } = await sharedDeployment();
 
     const result = await callPerCallProxyEntry({
       provider: network,
@@ -192,8 +215,7 @@ describe('a proxied entry that writes its own record after an external call', ()
 
   it('settles a record the entry writes before its call, which the same plan places in the first segment', async () => {
     expect(publishedWriteSegment(impl, 'recordFirst')).toBe(0);
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployed(network);
+    const { network, funded } = await sharedDeployment('44'.repeat(31) + 'c2');
     const result = await callPerCallProxyEntry({
       provider: network,
       implementationArtifact: impl,

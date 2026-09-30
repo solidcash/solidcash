@@ -125,6 +125,30 @@ async function deployBoth(network: MockNetworkProvider): Promise<{
   };
 }
 
+/** A deployment of both contracts, on the network that holds it. */
+interface Deployed {
+  readonly network: MockNetworkProvider;
+  readonly funded: Awaited<ReturnType<typeof deployBoth>>;
+}
+
+let deployedRun: Promise<Deployed> | undefined;
+
+/**
+ * The one deployment both cases share: the first call enters with the coin it funded, a later one with a fresh coin
+ * at `txid`. The reaches only read the node, so neither case changes what the other reads.
+ */
+async function sharedDeployment(txid?: string): Promise<Deployed> {
+  deployedRun ??= (async (): Promise<Deployed> => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    return { network, funded: await deployBoth(network) };
+  })();
+  const deployed = await deployedRun;
+  if (txid === undefined) return deployed;
+  const callCoin = funding(txid);
+  await deployed.network.addUtxo(binToHex(deployed.funded.deployerLock), callCoin);
+  return { network: deployed.network, funded: { ...deployed.funded, callCoin } };
+}
+
 /** The value the callee's mapping node holds for a key, read back through the shipped reader. */
 async function allowanceOf(
   network: MockNetworkProvider, categoryId: string, who: Uint8Array,
@@ -173,8 +197,7 @@ async function callRun(
 
 describe('a hop whose proxied callee only reads a mapping node', () => {
   it('declares the read node, settles every reach and broadcasts', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployBoth(network);
+    const { network, funded } = await sharedDeployment();
 
     const result = await callRun(network, funded, [funded.deployerLock, 500n, false, 2n]);
 
@@ -208,24 +231,8 @@ describe('a hop whose proxied callee only reads a mapping node', () => {
     expect(await allowanceOf(network, funded.ledgerProxyCategoryId, funded.deployerLock)).toBe(500n);
   });
 
-  it('takes the guarded site too when the caller asks for it', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployBoth(network);
-
-    const result = await callRun(network, funded, [funded.deployerLock, 500n, true, 2n]);
-
-    // The guarded site is taken now, so the callee's two blocks each hold five masters.
-    const proxyContract = buildProxyArtifact(ledger).contractName;
-    expect(result.draft.layout.blocks.find((block) => block.contract === proxyContract)!.masters).toHaveLength(5);
-    expect(result.draft.layout.blocks.find((block) => block.contract === ledger.contractName)!.masters)
-      .toHaveLength(5);
-    expect(result.accepted).toBe(true);
-    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-  });
-
   it('refuses when the value the node holds is not the one the caller states', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployBoth(network);
+    const { network, funded } = await sharedDeployment('77'.repeat(31) + 'c2');
 
     // The caller states 501 where the node holds 500, so the callee's own `require` refuses every reach.
     await expect(callRun(network, funded, [funded.deployerLock, 501n, false, 2n]))

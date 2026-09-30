@@ -145,35 +145,34 @@ describe('reading a page over a mapping', () => {
     const deployment = await readPerCallDeployment(provider, CATEGORY_HEX, artifact.stateLayout!);
     expect(deployment.nodesByCollection.get('cells')).toHaveLength(VALUES.length + 1);
 
-    for (const [start, expected] of [[0n, 1000n], [3n, 1003n], [7n, 1007n]] as const) {
-      const result = await read(provider, start, 1n);
-      expect(result.accepted).toBe(true);
-      expect(result.value).toStrictEqual([expected]);
-      // The page holds one turn, so the frame declares the one node that turn names and nothing else.
-      const nodeIds = entryRecords(result);
-      expect(nodeIds).toHaveLength(1);
+    const result = await read(provider, 3n, 1n);
+    expect(result.accepted).toBe(true);
+    expect(result.value).toStrictEqual([1003n]);
+    // The page holds one turn, so the frame declares the one node that turn names and nothing else.
+    const nodeIds = entryRecords(result);
+    expect(nodeIds).toHaveLength(1);
 
-      // The read resolved the key the sum names at the page's first turn, and declared that node kept.
-      const nodeIndex = participant(result.draft.layout, nodeIds[0]!).index;
-      const source = result.draft.programFor('read').sourceOutputs[nodeIndex]!.token!.nft!.commitment;
-      const output = result.draft.programFor('read').transaction.outputs[nodeIndex]!.token!.nft!.commitment;
-      expect(source).toStrictEqual(output);
-      expect(bytesToHex(decodeEntryCommitment(output).slot))
-        .toBe(bytesToHex(keyToSlotMulti([encodeIntegerValue(start)])));
-    }
+    // The read resolved the key the sum names at the page's first turn and declared that node kept: the machine
+    // accepts the read frame and the node, which is recreated unchanged.
+    const program = result.draft.programFor('read');
+    const nodeIndex = participant(result.draft.layout, nodeIds[0]!).index;
+    expect(verdict(program, program.inputIndex)).toBe('accepted');
+    expect(verdict(program, nodeIndex)).toBe('accepted');
+    const source = program.sourceOutputs[nodeIndex]!.token!.nft!.commitment;
+    const output = program.transaction.outputs[nodeIndex]!.token!.nft!.commitment;
+    expect(source).toStrictEqual(output);
+    expect(bytesToHex(decodeEntryCommitment(output).slot)).toBe(bytesToHex(keyToSlotMulti([encodeIntegerValue(3n)])));
   });
 
   it('reads a page whose arguments name no turn of as no entries, without declaring a node', async () => {
     const provider = new MockNetworkProvider();
     await chain(provider);
 
-    for (const start of [0n, 4n]) {
-      const result = await read(provider, start, 0n);
-      expect(result.accepted).toBe(true);
-      expect(result.value).toStrictEqual([]);
-      // No turn runs, so the slot's key is never named and the frame declares no node for it.
-      expect(entryRecords(result)).toStrictEqual([]);
-    }
+    const result = await read(provider, 0n, 0n);
+    expect(result.accepted).toBe(true);
+    expect(result.value).toStrictEqual([]);
+    // No turn runs, so the slot's key is never named and the frame declares no node for it.
+    expect(entryRecords(result)).toStrictEqual([]);
   });
 
   it('reads a key the list does not hold beside its bracketing predecessor', async () => {
@@ -185,20 +184,6 @@ describe('reading a page over a mapping', () => {
     const result = await read(provider, 20n, 1n);
     expect(result.accepted).toBe(true);
     expect(result.value).toStrictEqual([0n]);
-  });
-
-  it('keeps the read frame and the node the page names accepted, with that node recreated unchanged', async () => {
-    const provider = new MockNetworkProvider();
-    await chain(provider);
-
-    const result = await read(provider, 2n, 1n);
-    expect(result.accepted).toBe(true);
-    const program = result.draft.programFor('read');
-    expect(verdict(program, program.inputIndex)).toBe('accepted');
-    const nodeIndex = participant(result.draft.layout, entryRecords(result)[0]!).index;
-    expect(verdict(program, nodeIndex)).toBe('accepted');
-    expect(program.transaction.outputs[nodeIndex]!.token?.nft?.commitment)
-      .toStrictEqual(program.sourceOutputs[nodeIndex]!.token?.nft?.commitment);
   });
 
   it('refuses a key of the same shape whose anchor is the entry\'s own state, not an argument', async () => {

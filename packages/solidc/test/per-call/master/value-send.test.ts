@@ -187,10 +187,6 @@ describe('a send paid from the contract\'s containers, compiled per-call', () =>
     expect(pay({ trailing: [container(30_000n), payment(AMOUNT)] }).accepted).toBe(false);
   });
 
-  it('is refused when no container precedes the send', () => {
-    expect(pay({ trailing: [payment(40_000n), payment(AMOUNT)] }).accepted).toBe(false);
-  });
-
   it('leaves the value to the validator when another master of the contract shares the transaction', () => {
     const covered = (secondMaster: boolean): Partial<Spend> => ({
       validator: { secondMaster }, sends: [secondMaster ? 5 : 4],

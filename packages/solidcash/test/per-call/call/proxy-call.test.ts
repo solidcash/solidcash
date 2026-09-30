@@ -127,60 +127,33 @@ async function deployedWithCallerCoins(
   };
 }
 
-describe('a call into a per-call implementation through its proxy', () => {
-  it('derives the hop, accepts every contract input, broadcasts it, and the record carries what the entry computed',
-    async () => {
-      const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-      const funded = await deployedWithCallerCoins(network);
+/** A deployment behind the generated proxy, on the network that holds it. */
+interface Deployed {
+  readonly network: MockNetworkProvider;
+  readonly funded: Awaited<ReturnType<typeof deployedWithCallerCoins>>;
+}
 
-      // The deployment's own initialize hop ran on chain, so the state the entry computed is the state the next
-      // call reads.
-      const afterInitialize = await recordState(network, funded.proxyCategoryId);
-      expect(afterInitialize).toBe(bytesToHex(commitment(impl.stateLayout!, {
-        implementation: implementationAddress(), initialized: 1n, total: 5n,
-      })));
+let deployedRun: Promise<Deployed> | undefined;
 
-      const result = await callPerCallProxyEntry({
-        provider: network,
-        implementationArtifact: impl,
-        proxyArtifact: buildProxyArtifact(impl),
-        proxyCategoryId: funded.proxyCategoryId,
-        implementationCategoryId: funded.implementationCategoryId,
-        functionName: 'add',
-        args: [4n],
-        callerUtxo: funded.callCoin,
-        callerLockingBytecode: funded.deployerLock,
-        funder: funded.funder,
-        changeAddress: funded.changeAddress,
-        vm: compositionMachine(),
-      });
-
-      // The proxy's fallback frame is entered first and the implementation's entry completes before it.
-      expect(result.completed.map((frame) => frame.functionName))
-        .toStrictEqual([`${impl.contractName}.add()`, 'ImplProxy.__fallback()']);
-      expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-      expect(result.accepted).toBe(true);
-      expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-      expect(bytesToHex(result.writtenCommitments[0]!)).toBe(bytesToHex(commitment(impl.stateLayout!, {
-        implementation: implementationAddress(), initialized: 1n, total: 9n,
-      })));
-      // A non-returning entry reports no value.
-      expect(result.values).toStrictEqual([]);
-      expect(result.retval).toStrictEqual(new Uint8Array(0));
-      expect(result.value).toBe(0n);
-
-      // The state the broadcast left behind, read back through the shipped reader rather than recomputed here.
-      expect(await recordState(network, funded.proxyCategoryId))
-        .toBe(bytesToHex(commitment(impl.stateLayout!, {
-          implementation: implementationAddress(), initialized: 1n, total: 9n,
-        })));
-    });
-
-  it('lays out the hop with no OP_RETURN and no bare OP_1 output', async () => {
-    // A hop is a whole transaction the composer lays out, so its outputs are where the path's no-placeholder rule
-    // shows: every output carries a positive value and a lock that is not anyone-can-spend, and none carries data.
+/** The deployment the first two cases share: only the first broadcasts, and the refusal's record check is relative. */
+function sharedDeployment(): Promise<Deployed> {
+  deployedRun ??= (async (): Promise<Deployed> => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallerCoins(network);
+    return { network, funded: await deployedWithCallerCoins(network) };
+  })();
+  return deployedRun;
+}
+
+describe('a call into a per-call implementation through its proxy', () => {
+  it('lays out the hop with no OP_RETURN and no bare OP_1 output', async () => {
+    const { network, funded } = await sharedDeployment();
+
+    // The deployment's own initialize hop ran on chain, so the state the entry computed is the state the next
+    // call reads.
+    const afterInitialize = await recordState(network, funded.proxyCategoryId);
+    expect(afterInitialize).toBe(bytesToHex(commitment(impl.stateLayout!, {
+      implementation: implementationAddress(), initialized: 1n, total: 5n,
+    })));
 
     const result = await callPerCallProxyEntry({
       provider: network,
@@ -197,18 +170,40 @@ describe('a call into a per-call implementation through its proxy', () => {
       vm: compositionMachine(),
     });
 
+    // The proxy's fallback frame is entered first and the implementation's entry completes before it.
+    expect(result.completed.map((frame) => frame.functionName))
+      .toStrictEqual([`${impl.contractName}.add()`, 'ImplProxy.__fallback()']);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.accepted).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(bytesToHex(result.writtenCommitments[0]!)).toBe(bytesToHex(commitment(impl.stateLayout!, {
+      implementation: implementationAddress(), initialized: 1n, total: 9n,
+    })));
+    // A non-returning entry reports no value.
+    expect(result.values).toStrictEqual([]);
+    expect(result.retval).toStrictEqual(new Uint8Array(0));
+    expect(result.value).toBe(0n);
+
+    // A hop is a whole transaction the composer lays out, so its outputs are where the path's no-placeholder rule
+    // shows: every output carries a positive value and a lock that is not anyone-can-spend, and none carries data.
     expect(result.transaction.outputs.length).toBeGreaterThan(0);
     const locks = result.transaction.outputs.map((output) => binToHex(output.lockingBytecode));
     expect(locks.filter((lock) => lock.startsWith('6a'))).toStrictEqual([]);
     expect(locks.filter((lock) => lock === '51')).toStrictEqual([]);
     expect(locks.filter((lock) => lock.length === 0)).toStrictEqual([]);
     expect(result.transaction.outputs.filter((output) => output.valueSatoshis <= 0n)).toStrictEqual([]);
+
+    // The state the broadcast left behind, read back through the shipped reader rather than recomputed here.
+    expect(await recordState(network, funded.proxyCategoryId))
+      .toBe(bytesToHex(commitment(impl.stateLayout!, {
+        implementation: implementationAddress(), initialized: 1n, total: 9n,
+      })));
   });
 
   it('refuses an entry the implementation does not publish, and broadcasts nothing', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallerCoins(network);
+    const { network, funded } = await sharedDeployment();
+    const callCoin = { txid: '44'.repeat(31) + 'c2', vout: 0, satoshis: 300_000n };
+    await network.addUtxo(binToHex(funded.deployerLock), callCoin);
     const before = await recordState(network, funded.proxyCategoryId);
 
     await expect(callPerCallProxyEntry({
@@ -219,7 +214,7 @@ describe('a call into a per-call implementation through its proxy', () => {
       implementationCategoryId: funded.implementationCategoryId,
       functionName: 'noSuchEntry',
       args: [],
-      callerUtxo: funded.callCoin,
+      callerUtxo: callCoin,
       callerLockingBytecode: funded.deployerLock,
       funder: funded.funder,
       changeAddress: funded.changeAddress,

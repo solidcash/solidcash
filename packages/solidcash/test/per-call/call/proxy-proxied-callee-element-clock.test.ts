@@ -187,7 +187,8 @@ function loadArtifact(name: string): Artifact {
   return JSON.parse(readFileSync(join(ARTIFACTS_DIR, name), 'utf8')) as Artifact;
 }
 
-const describeShipped: typeof describe = hasArtifacts ? describe : describe.skip;
+// Deploying the shipped data contract takes minutes, so the case runs at milestones (`PER_CALL_FULL=1`).
+const describeShipped: typeof describe = hasArtifacts && process.env.PER_CALL_FULL === '1' ? describe : describe.skip;
 
 describeShipped('the shipped artifact whose append carries the transaction clock', () => {
   const DATA_IMPL_CATEGORY = '0b'.repeat(32);

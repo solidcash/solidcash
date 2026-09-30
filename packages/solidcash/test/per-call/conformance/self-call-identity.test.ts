@@ -2,7 +2,8 @@ import { createRequire } from 'module';
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { Interface, id } from 'ethers';
-import { computeFunctionSelectorHex } from '@solidcash/utils';
+import { computeFunctionSelectorHex, hash160, validatorAddress } from '@solidcash/utils';
+import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
@@ -214,17 +215,30 @@ const selected = (row: Row, answer: string, selectorOf: (signature: string) => s
 const sourceOf = (row: Row): string =>
   `pragma solidity ^0.8.0; ${IA} contract A { uint256 public marker; ${row.members} ${SELF} }`;
 
+const ALL_ROWS = [...ROWS, ...ORIGIN_ROWS, ...VALUE_ROWS, ...SIG_ROWS, ...DATA_ROWS];
+
+interface EvmContract { readonly abi: never; readonly evm: { readonly bytecode: { readonly object: string } } }
+
+/** Every row's contract, compiled by solc in one pass. */
+let evmContracts: Map<Row, EvmContract> | undefined;
+function evmContractOf(row: Row): EvmContract {
+  if (evmContracts === undefined) {
+    const require = createRequire(import.meta.url);
+    const solc = require('solc') as { compile(input: string): string };
+    const sources = Object.fromEntries(ALL_ROWS.map((each, index) => [`row${index}.sol`, { content: sourceOf(each) }]));
+    const output = JSON.parse(solc.compile(JSON.stringify({
+      language: 'Solidity', sources, settings: { outputSelection: { '*': { '*': ['abi', 'evm.bytecode.object'] } } },
+    }))) as { contracts: Record<string, Record<string, EvmContract>> };
+    evmContracts = new Map(ALL_ROWS.map((each, index) => [each, output.contracts[`row${index}.sol`]!.A!]));
+  }
+  return evmContracts.get(row)!;
+}
+
 /** The row's answer on the EVM, by role. */
 async function evmAnswer(row: Row): Promise<Role> {
-  const require = createRequire(import.meta.url);
-  const solc = require('solc') as { compile(input: string): string };
   const { createEVM } = await import('@ethereumjs/evm');
   const { createAccount, createAddressFromString } = await import('@ethereumjs/util');
-  const output = JSON.parse(solc.compile(JSON.stringify({
-    language: 'Solidity', sources: { 'row.sol': { content: sourceOf(row) } },
-    settings: { outputSelection: { '*': { '*': ['abi', 'evm.bytecode.object'] } } },
-  }))) as { contracts: Record<string, Record<string, { abi: never; evm: { bytecode: { object: string } } }>> };
-  const compiled = output.contracts['row.sol']!.A!;
+  const compiled = evmContractOf(row);
   const eoa = createAddressFromString(`0x${'e0'.repeat(20)}`);
   const evm = await createEVM();
   await evm.stateManager.putAccount(eoa, createAccount({ nonce: 0n, balance: 10n ** 20n }));
@@ -275,7 +289,9 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly
       ...(value === undefined ? {} : { value }),
     });
   };
-  const self = await call('self', '44'.repeat(31) + 'bb');
+  // What `self()` answers: a Solidity `address` is the hash160 of the lock the contract's category derives.
+  const lock = validatorAddress(hexToBin(deployment.categoryId), perCallValidator.buildValidatorProgram());
+  const self = binToHex(hash160(lock));
   let answered;
   try {
     answered = await call(row.entry, '45'.repeat(31) + 'ba', row.value);
@@ -292,11 +308,11 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly
   const bare = hexOf(answer).replace(/^0x/, '');
   if (bare.length === 8) return { role: selected(row, bare, computeFunctionSelectorHex) };
   const address = hexOf(answer);
-  return { role: address === binToHex(alicePkh) ? 'EOA' : address === hexOf(self.values[0]) ? 'A' : address as never };
+  return { role: address === binToHex(alicePkh) ? 'EOA' : address === self ? 'A' : address as never };
 }
 
 describe('S0: the single-contract reference rows, the EVM against the per-call path', () => {
-  for (const row of [...ROWS, ...ORIGIN_ROWS, ...VALUE_ROWS, ...SIG_ROWS, ...DATA_ROWS]) {
+  for (const row of ALL_ROWS) {
     it(`${row.label}: the EVM answers ${String(row.evm)}${row.refusal === undefined ? ', and so does per-call' : ''}`,
       async () => {
         expect(await evmAnswer(row)).toBe(row.evm);

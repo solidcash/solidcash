@@ -135,11 +135,13 @@ describe('a proxied append of a struct whose default holds an address field', ()
     expect(deployment.initialize.broadcast).toBeDefined();
   });
 
-  it('settles the spelled-out `address(0)`, which the artifact states identically', async () => {
-    const spelled = await deploy(SPELLED_SOURCE);
-    expect(spelled.deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(spelled.deployment.initialize.accepted).toBe(true);
-    expect(spelled.artifacts.Impl!.abi.find((candidate) => candidate.name === 'initialize')?.dynamicWriteSources)
+  it('settles the spelled-out `address(0)`, which the artifact states identically', () => {
+    // The spelled-out element compiles to the default's program and ABI, so it settles through the deployment above.
+    const spelled = compileStringMulti(SPELLED_SOURCE, { composition: 'per-call' }).Impl!;
+    const plain = compileStringMulti(DEFAULT_SOURCE, { composition: 'per-call' }).Impl!;
+    expect(spelled.bytecode).toBe(plain.bytecode);
+    expect(spelled.abi).toStrictEqual(plain.abi);
+    expect(spelled.abi.find((candidate) => candidate.name === 'initialize')?.dynamicWriteSources)
       .toStrictEqual(defaultElementSource());
   });
 

@@ -203,40 +203,12 @@ describe('a proxied initialize that writes a sorted mapping', () => {
     );
   });
 
-  it('settles the eight-key initializer the marketplace data contract publishes', async () => {
-    const { deployment, network, artifacts } = await deploy(EIGHT_SOURCE);
+  it('broadcasts the eight-key initializer, spending the head the proxy genesis minted', async () => {
+    const { deployment, network, artifacts } = await deploy(EIGHT_SOURCE, [], true);
 
     expect(deployment.initialize.completed.map((frame) => frame.functionName))
       .toStrictEqual(['Impl.initialize()', 'ImplProxy.__fallback()']);
     expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(deployment.initialize.accepted).toBe(true);
-
-    const encoder = new TextEncoder();
-    const plan = planMappingBatch({
-      writes: EIGHT_TAGS.map(([key, value]) => ({ keys: [encoder.encode(key)], value: encoder.encode(value) })),
-      inventory: [headSentinelCommitment()],
-      encodeValue: encodeChunkableValueTail,
-    });
-    const created = plan.written.filter((node) => !node.existed);
-    const trailing = deployment.initialize.draft.trailingOutputs;
-    expect(trailing).toHaveLength(created.length);
-    trailing.forEach((output, position) => {
-      expect(bytesToHex(output.output.token?.nft?.commitment ?? '')).toBe(bytesToHex(created[position]!.after));
-    });
-
-    // The proxy genesis minted the collection's empty head, and the deployment reads it back as a collection node
-    // rather than folding it into the validator pool.
-    const proxyLayout = buildProxyArtifact(artifacts.Impl!).stateLayout!;
-    const pools = await readPerCallDeployment(network, deployment.proxy.categoryId, proxyLayout);
-    expect(pools.collectionNodes.map((node) => node.token?.nft?.commitment))
-      .toStrictEqual([binToHex(headSentinelCommitment())]);
-    expect(pools.validators).toHaveLength(DEFAULT_MASTER_POOL_SIZE.validators);
-    expect(pools.records).toHaveLength(1);
-  });
-
-  it('broadcasts the eight-key initializer, spending the head the proxy genesis minted', async () => {
-    const { deployment, network } = await deploy(EIGHT_SOURCE, [], true);
-
     expect(deployment.initialize.accepted).toBe(true);
     const hop = deployment.initialize.broadcast;
     expect(hop).toBeDefined();
@@ -259,11 +231,23 @@ describe('a proxied initialize that writes a sorted mapping', () => {
     expect(bytesToHex(hop!.outputs[headIndex]!.token!.nft!.commitment))
       .toBe(bytesToHex(plan.written.find((node) => node.existed)!.after));
     const created = plan.written.filter((node) => !node.existed);
+    const trailing = deployment.initialize.draft.trailingOutputs;
+    expect(trailing).toHaveLength(created.length);
     created.forEach((node, position) => {
-      const output = deployment.initialize.draft.trailingOutputs[position]!;
+      const output = trailing[position]!;
+      expect(bytesToHex(output.output.token!.nft!.commitment)).toBe(bytesToHex(node.after));
       expect(bytesToHex(hop!.outputs[output.index]!.token!.nft!.commitment)).toBe(bytesToHex(node.after));
     });
     expect(await network.getRawTransaction(hop!.txid)).toMatch(/^[0-9a-f]+$/);
+
+    // The deployment reads the relinked head and the eight created nodes back as collection nodes rather than
+    // folding them into the validator pool.
+    const proxyLayout = buildProxyArtifact(artifacts.Impl!).stateLayout!;
+    const pools = await readPerCallDeployment(network, deployment.proxy.categoryId, proxyLayout);
+    expect(pools.collectionNodes.map((node) => node.token?.nft?.commitment).sort())
+      .toStrictEqual(plan.written.map((node) => binToHex(node.after)).sort());
+    expect(pools.validators).toHaveLength(DEFAULT_MASTER_POOL_SIZE.validators);
+    expect(pools.records).toHaveLength(1);
   });
 
   it('settles a struct value past the inline limit, declaring the run of chunks it wrote', async () => {

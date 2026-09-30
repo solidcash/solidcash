@@ -273,11 +273,6 @@ function verdict(options: Options = {}): { accepted: boolean; objection?: string
 }
 
 describe('a per-call master whose entry writes a verified mapping after an external call', () => {
-  it('serves the entry and publishes no refusal for the write', () => {
-    expect(callerArtifact.composition?.convention).toBe('per-call');
-    expect(refusalMessageOf(SOURCE)).toBe('');
-  });
-
   it('derives the write witness from the segment the write lands in and is accepted', () => {
     const outcome = verdict();
     expect(outcome.accepted, outcome.objection).toBe(true);
@@ -400,10 +395,6 @@ const VARYING_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
 const varyingCallArtifacts = compileStringMulti(VARYING_CALL_SOURCE, { composition: 'per-call' });
 
 describe('a per-call master whose write follows a branch whose arms call a different number of times', () => {
-  it('serves the entry and publishes no refusal for the write', () => {
-    expect(refusalMessageOf(VARYING_CALL_SOURCE)).toBe('');
-  });
-
   it('settles over the arm that made one call, reading the segment that call opened', () => {
     const outcome = verdict({ calls: 1, amount: 42, callerUnit: varyingCallArtifacts });
     expect(outcome.accepted, outcome.objection).toBe(true);

@@ -125,6 +125,25 @@ async function deploy(): Promise<Deployed> {
   };
 }
 
+/** A deployment and the caller coin its calls are entered with. */
+interface Funded {
+  readonly deployed: Deployed;
+  readonly callerUtxo: { txid: string; vout: number; satoshis: bigint };
+}
+
+let refusalRun: Promise<Funded> | undefined;
+
+/** One deployment serves the refusal cases: none of them broadcasts, so each enters with the same live coin. */
+function refusalDeployment(): Promise<Funded> {
+  refusalRun ??= (async (): Promise<Funded> => {
+    const deployed = await deploy();
+    const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 300_000n };
+    await deployed.provider.addUtxo(binToHex(deployed.callerLock), callerUtxo);
+    return { deployed, callerUtxo };
+  })();
+  return refusalRun;
+}
+
 /** Calls `bump` with the signature through the shipped call path, on a caller coin funded for it. */
 async function bump(deployed: Deployed, txid: string, provider: NetworkProvider = deployed.provider):
 ReturnType<typeof callPerCallEntry> {
@@ -168,9 +187,7 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
   it('answers the zero address for a signature of 65 zero bytes, so the body reaches its own revert', async () => {
     // `v` is 0, which the precompile refuses: the body reads no pair and its own `revert` is the refusal, while
     // the placeholder pair the call co-spends accepts on its own.
-    const deployed = await deploy();
-    const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 300_000n };
-    await deployed.provider.addUtxo(binToHex(deployed.callerLock), callerUtxo);
+    const { deployed, callerUtxo } = await refusalDeployment();
     const refused = await callPerCallEntry({
       provider: deployed.provider,
       artifact: guard,
@@ -204,9 +221,7 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
       }
     };
     while (onCurve()) x += 1n;
-    const deployed = await deploy();
-    const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 300_000n };
-    await deployed.provider.addUtxo(binToHex(deployed.callerLock), callerUtxo);
+    const { deployed, callerUtxo } = await refusalDeployment();
     const refused = await callPerCallEntry({
       provider: deployed.provider,
       artifact: guard,
@@ -226,10 +241,8 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
   }, 120_000);
 
   it('refuses a signature of another length by name and length, as OZ\'s recover does: "0x" and 20 bytes', async () => {
+    const { deployed, callerUtxo } = await refusalDeployment();
     for (const signature of [new Uint8Array(0), new Uint8Array(20).fill(7)]) {
-      const deployed = await deploy();
-      const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 300_000n };
-      await deployed.provider.addUtxo(binToHex(deployed.callerLock), callerUtxo);
       const refused = await callPerCallEntry({
         provider: deployed.provider,
         artifact: guard,

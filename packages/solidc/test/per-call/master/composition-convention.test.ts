@@ -11,20 +11,6 @@ const STATE_CONTRACT = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-/** Two entry points: one master head, and the dispatcher picks the entry the unlocking selector names. */
-const TWO_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
-  + ' contract TwoEntry {'
-  + '   int public counter;'
-  + '   function inc() { this.counter = this.counter + 1; }'
-  + '   function dec() { this.counter = this.counter - 1; }'
-  + ' }';
-
-/** A returning entry point: one scalar value, settled against the frame's witness `retval`. */
-const RETURNING_CONTRACT = 'pragma solidcash ^0.13.0;'
-  + ' contract Answer {'
-  + '   function answer() returns (int) { return 42; }'
-  + ' }';
-
 /** A composite return: a function pointer is a pair, not one value the frame compares against `retval`. */
 const COMPOSITE_RETURN_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' contract Holder {'
@@ -43,36 +29,6 @@ const LOOP_EVENT_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' contract Repeated {'
   + '   event Ping(int indexed x);'
   + '   function ping(int n) { for (int i = 0; i < n; i = i + 1) { emit Ping(i); } }'
-  + ' }';
-
-/** One entry that makes two calls: the tail's count is fixed at two, one record per call in execution order. */
-const TWO_CALLS_IN_ONE_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
-  + ' interface ICallee { function ping(); function pong(); }'
-  + ' contract Caller {'
-  + `   function callIt() { ICallee(0x${'11'.repeat(35)}).ping.call(); ICallee(0x${'22'.repeat(35)}).pong.call(); }`
-  + ' }';
-
-/** One entry that makes two calls through a single-method interface, so no selector operand is involved. */
-const TWO_CALLS_SINGLE_METHOD_CONTRACT = 'pragma solidcash ^0.13.0;'
-  + ' interface ICallee { function ping(); }'
-  + ' contract Caller {'
-  + `   function callIt() { ICallee(0x${'11'.repeat(35)}).ping.call(); ICallee(0x${'22'.repeat(35)}).ping.call(); }`
-  + ' }';
-
-/** Entries that make different calls but the same number: one head fixes the count, each site binds its record. */
-const DIFFERENT_CALLS_PER_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
-  + ' interface ICallee { function ping(); function pong(); }'
-  + ' contract Caller {'
-  + `   function a() { ICallee(0x${'11'.repeat(35)}).ping.call(); }`
-  + `   function b() { ICallee(0x${'22'.repeat(35)}).pong.call(); }`
-  + ' }';
-
-/** Entries that make different numbers of calls, which one fixed tail count cannot describe. */
-const DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
-  + ' interface ICallee { function ping(); }'
-  + ' contract Caller {'
-  + `   function a() { ICallee(0x${'11'.repeat(35)}).ping.call(); }`
-  + '   function b() { require(true); }'
   + ' }';
 
 /** Dynamic state stores its bytes in a run of chunk NFTs whose base a per-call frame cannot name. */
@@ -131,25 +87,7 @@ describe('composition convention selection', () => {
     expect(perCall.bytecode).not.toBe(direct.bytecode);
   });
 
-  it('compiles a contract with several entry points to one master, dispatched by selector', () => {
-    const artifact = compileString(TWO_ENTRY_CONTRACT, { composition: 'per-call' });
-    expect(artifact.composition?.convention).toBe('per-call');
-    expect(artifact.abi.map((entry) => entry.name).sort()).toEqual(['dec', 'inc']);
-  });
-
-  it('compiles an entry point that returns one scalar value', () => {
-    const artifact = compileString(RETURNING_CONTRACT, { composition: 'per-call' });
-    expect(artifact.composition?.convention).toBe('per-call');
-  });
-
-  it('refuses a composite return shape a master cannot emit for, by name', () => {
-    // The contract compiles and the body that returns a composite shape is refused by name, which is what a builder
-    // reports instead of the whole unit failing.
-    const refusal = refusalOf(COMPOSITE_RETURN_CONTRACT);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-  });
-
-  // The refusal's message for this shape is asserted in `composite-return.test.ts`.
+  // The per-call refusal of this shape is asserted in `composite-return.test.ts`.
   it('still compiles a refused shape under the direct convention', () => {
     expect(() => compileString(COMPOSITE_RETURN_CONTRACT)).not.toThrow();
   });
@@ -181,34 +119,6 @@ describe('the tail sections a compiled master fixes', () => {
   // A value send is served: the body pins the lock it computed at the listed output. Its machine cases are in
   // `master/send-output.test.ts`, and the served spelling is asserted in
   // `solidcash/test/per-call/edges/refused-contract-shapes.test.ts`.
-});
-
-describe('the call set a compiled master fixes', () => {
-  it('compiles an entry that makes two calls, through one interface with two methods', () => {
-    const artifact = compileString(TWO_CALLS_IN_ONE_ENTRY_CONTRACT, { composition: 'per-call' });
-    expect(artifact.composition?.convention).toBe('per-call');
-  });
-
-  it('compiles an entry that makes two calls through a single-method interface', () => {
-    const artifact = compileString(TWO_CALLS_SINGLE_METHOD_CONTRACT, { composition: 'per-call' });
-    expect(artifact.composition?.convention).toBe('per-call');
-  });
-
-  it('compiles entries that make different calls but the same number of them', () => {
-    // The head fixes one count and walks one record per call; each site binds its own entry's record in the body,
-    // so two entries may call different methods at different targets.
-    const artifact = compileString(DIFFERENT_CALLS_PER_ENTRY_CONTRACT, { composition: 'per-call' });
-    expect(artifact.composition?.convention).toBe('per-call');
-    expect(artifact.abi.map((entry) => entry.name).sort()).toEqual(['a', 'b']);
-  });
-
-  it('admits one entry that calls beside one that makes no call, since each body pins its own count', () => {
-    // The walk reads the count the block declares and the body that runs holds the block to its own, so one head
-    // can serve a contract entered twice: once as a caller and once as a plain state write.
-    const artifact = compileString(DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT, { composition: 'per-call' });
-    expect(artifact.composition?.convention).toBe('per-call');
-    expect(artifact.abi.map((entry) => entry.name).sort()).toEqual(['a', 'b']);
-  });
 });
 
 describe('dynamic state a per-call frame locates', () => {

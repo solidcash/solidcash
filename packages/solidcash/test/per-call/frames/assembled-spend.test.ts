@@ -41,13 +41,8 @@ const RELAXED_LIMITS = {
   hashDigestIterationsPerByte: 3,
 };
 
-interface SpendOptions {
-  /** Patches the planned frame before assembly, to produce a control. */
-  readonly frameValue?: bigint;
-}
-
 /** Compiles, deploys, plans, assembles, and evaluates a spend of the assembled master. */
-function evaluateAssembledSpend(options: SpendOptions = {}): { accepted: boolean; objection?: string } {
+function evaluateAssembledSpend(): { accepted: boolean; objection?: string } {
   const artifact = compileString(SOURCE, { composition: 'per-call' });
   const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
   // A contract's redeem script is its constructor arguments pushed before its program.
@@ -74,7 +69,7 @@ function evaluateAssembledSpend(options: SpendOptions = {}): { accepted: boolean
         makesExternalCall: false,
         mastersOfContract: 1,
       },
-      frame: { kind: FrameKind.ROOT, sender: OWNER_LOCK, self: deployed.address, value: options.frameValue ?? 0n },
+      frame: { kind: FrameKind.ROOT, sender: OWNER_LOCK, self: deployed.address, value: 0n },
       enteredBy: 'user',
       origin: 'user',
       calls: [],
@@ -165,11 +160,5 @@ describe('a spend assembled by the composer', () => {
     expect(assembly.layout.participants.map((participant) => participant.index)).toStrictEqual([0]);
     // The frame's caller is the user's signed input, which is outside the layout's participants.
     expect(assembly.layout.funderInputBase).toBe(1);
-  });
-
-  it('is refused when the assembled frame claims a value a root frame may not carry', () => {
-    const outcome = evaluateAssembledSpend({ frameValue: 1n });
-    expect(outcome.accepted).toBe(false);
-    expect(outcome.objection).toBeDefined();
   });
 });

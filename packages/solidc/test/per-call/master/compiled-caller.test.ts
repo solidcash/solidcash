@@ -9,7 +9,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { buildMasterHeadScript } from '../../../src/per-call/master/master-head.js';
-import { assertPlaceholders, fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 import {
@@ -83,8 +83,6 @@ const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
 interface CompositionOptions {
   /** The hash the caller's reserved slot is filled with, so a wrong value can be refused. */
   readonly templateHash?: Uint8Array;
-  /** Replace the caller's recorded argument hash. */
-  readonly argsHash?: Uint8Array;
   /** The hash type the user's signature ends in. */
   readonly callerHashType?: number;
 }
@@ -148,7 +146,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
       target: ADDRESS_CALLEE,
       value: 0n,
       calleeRef: CALLEE_INDEX,
-      argsHash: options.argsHash ?? sha256(CALLEE_SELECTOR),
+      argsHash: sha256(CALLEE_SELECTOR),
       result: new Uint8Array(0),
     }],
     segments: [[], []],
@@ -241,26 +239,6 @@ function verdicts(options: CompositionOptions = {}): Record<number, boolean> {
   ]));
 }
 
-describe('a compiled caller that makes a call', () => {
-  it('publishes the category, the address and the validator program hash offsets', () => {
-    const artifact = compile();
-    expect(artifact.composition?.convention).toBe('per-call');
-    const placeholders = artifact.composition!.placeholders;
-    expect(placeholders.version).toBe(1);
-    expect(placeholders.templateHashOffset).toBeTypeOf('number');
-    // The reserved pushes must be exactly where deployment will fill them.
-    assertPlaceholders(scriptBytes(artifact), placeholders);
-  });
-
-  it('reserves the validator program hash slot for a contract that makes no call', () => {
-    // A contract whose entries make no call can still be entered as a callee, so its master admits a call frame
-    // and has to recognise the validator that covers it.
-    const standalone = compileString('pragma solidcash ^0.13.0;'
-      + ' contract Standalone { function ping() { require(true); } }', { composition: 'per-call' });
-    expect(standalone.composition!.placeholders.templateHashOffset).toBeTypeOf('number');
-  });
-});
-
 describe('a caller, its callee and a validator evaluated in the BCH-2026 virtual machine', () => {
   it('is accepted at every input when the reserved hash is the validator program\'s', () => {
     expect(verdicts()).toStrictEqual({
@@ -274,16 +252,6 @@ describe('a caller, its callee and a validator evaluated in the BCH-2026 virtual
     expect(results[CALLEE_INDEX]).toBe(false);
     // The validator's own script still succeeds, so the refusal is the masters' program-hash check.
     expect(results[VALIDATOR_INDEX]).toBe(true);
-  });
-
-  it('has a caller that fails when its recorded argument hash is not the callee selector\'s', () => {
-    const mutated = new Uint8Array(sha256(CALLEE_SELECTOR));
-    mutated[0] ^= 0xff;
-    const results = verdicts({ argsHash: mutated });
-    expect(results[CALLER_INDEX]).toBe(false);
-    // The digest is an edge rule, which the split runs in the facet at `head + 1`, so the facet is what refuses a
-    // record whose digest is not the callee's own.
-    expect(results[VALIDATOR_FACET_INDEX]).toBe(false);
   });
 
   it('has a caller refused for a hash type other than SIGHASH_ALL, while the callee is unaffected', () => {

@@ -203,27 +203,22 @@ describe('a proxied call whose append publishes no element', () => {
     expect(created[0]!.output.lockingBytecode)
       .toStrictEqual(chunkRecordLockingBytecode(deployment.proxy.categoryId, 'posts', 'Post[]'));
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
-  });
 
-  it('refuses a run the record declares narrower than the one the deployment holds, naming both widths', async () => {
-    // The same entry's append, then an entry that pops: the record the pop writes declares a value of one chunk
-    // where the deployment's run is two, and a run laid at the narrower width is not the run the body reads.
-    const { network, artifacts, deployment, funding } = await deployed();
-    const call = (functionName: string, args: readonly unknown[]): Promise<unknown> => callPerCallProxyEntry({
+    // An entry that pops: the record the pop writes declares a value of one chunk where the run is now two, and a
+    // run laid at the narrower width is not the run the body reads.
+    await expect(callPerCallProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
       implementationCategoryId: deployment.implementation.categoryId,
-      functionName,
-      args: args as never,
+      functionName: 'drop',
+      args: [],
       callerUtxo: funding.callUtxo,
       callerLockingBytecode: funding.deployerLock,
       funder: funding.signature.unlockP2PKH(),
       changeAddress: funding.changeAddress,
       vm: compositionMachine(),
-    });
-    await call('post', [7n, TITLE]);
-    await expect(call('drop', [])).rejects.toThrow(
+    })).rejects.toThrow(
       /writes dynamic "posts" \d+ byte\(s\), which is 1 chunk\(s\), fewer than the 2 chunk\(s\) the deployment holds/,
     );
   });

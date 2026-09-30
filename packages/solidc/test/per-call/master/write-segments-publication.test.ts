@@ -103,16 +103,13 @@ function segmentOf(artifact: { readonly composition?: unknown }, write: Publishe
 }
 
 describe('the segment each write of a per-call entry lands in, as an artifact publishes it', () => {
-  it('publishes no single fact for an entry whose writes land in different segments', () => {
-    // The entry writes one record the batch's own source order does not place, so one fact cannot state them all.
-    expect(publishedWrites(mappingThenSized, 'Ledger', 'move').single).toBeUndefined();
-  });
-
   it('names the batch\'s segment and the run\'s last segment for a mapping node and a sized field', () => {
     // The mapping write precedes the entry's one call, and the run the sized field grows is pinned at the end.
     expect(segmentOf(mappingThenSized, { collection: 'balances' })).toBe(0);
     expect(segmentOf(mappingThenSized, { variable: 'names' })).toBe('last');
     expect(segmentOf(mappingThenSized, { record: 0 })).toBe('last');
+    // The entry writes one record the batch's own source order does not place, so one fact cannot state them all.
+    expect(publishedWrites(mappingThenSized, 'Ledger', 'move').single).toBeUndefined();
   });
 
   it('publishes the same facts whichever of the two writes the source makes first', () => {

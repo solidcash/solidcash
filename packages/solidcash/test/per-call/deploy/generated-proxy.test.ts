@@ -137,6 +137,10 @@ describe('a generated proxy', () => {
       .toStrictEqual([`${artifacts.Impl!.contractName}.initialize()`, `${proxy.contractName}.__fallback()`]);
     expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(deployment.initialize.accepted).toBe(true);
+    // The caller offered no coin, so the hop is only derived and nothing is broadcast for it. It spends the proxy's
+    // master, its validator and facet, the implementation's master and the record, then the deployer's own coin.
+    expect(deployment.initialize.broadcast).toBeUndefined();
+    expect(deployment.initialize.transaction.inputs.length).toBe(6);
 
     // The entry computed the state it wrote: the flag set and the version written, with the address still there.
     const written = commitment(artifacts.Impl!.stateLayout!, {
@@ -148,7 +152,8 @@ describe('a generated proxy', () => {
     expect(bytesToHex(deployment.initialize.transaction.outputs[recordIndex]!.token!.nft!.commitment))
       .toBe(bytesToHex(written));
 
-    // The proxy's genesis record carries the implementation's address, read back through the shipped decoder.
+    // The proxy's record still holds what its genesis minted (the implementation's address, nothing initialized),
+    // because the derived hop never ran on chain; read back through the shipped decoder.
     const discovery = await readPerCallDeployment(network, deployment.proxy.categoryId, proxy.stateLayout!);
     expect(discovery.records.length).toBe(1);
     const recordState = new Uint8Array(Buffer.from(discovery.records[0]!.token!.nft!.commitment, 'hex'));

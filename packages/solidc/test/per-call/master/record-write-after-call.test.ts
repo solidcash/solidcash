@@ -240,20 +240,6 @@ function verdict(options: Options = {}): { accepted: boolean; objection?: string
 }
 
 describe('a per-call master whose entry writes its own record after an external call', () => {
-  it('serves the entry rather than refusing it', () => {
-    expect(callerArtifact.composition?.convention).toBe('per-call');
-    expect(callerArtifact.composition?.refusedEntries).toBeUndefined();
-  });
-
-  it('publishes the segment the record write lands in, which is the one the call opened', () => {
-    const entries = (callerArtifact.composition as {
-      readonly stopSites?: {
-        readonly entries?: readonly { readonly functionName?: string; readonly writeSegment?: number | 'last' }[];
-      };
-    } | undefined)?.stopSites?.entries;
-    expect(entries?.find((entry) => entry.functionName === 'Caller.set()')?.writeSegment).toBe(1);
-  });
-
   it('settles the record written in the segment the call opened', () => {
     const outcome = verdict();
     expect(outcome.accepted, outcome.objection).toBe(true);

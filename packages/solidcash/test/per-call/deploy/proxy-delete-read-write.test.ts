@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { bytesToHex, encodeChunkableValueTail } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
@@ -170,6 +171,19 @@ describe('a proxied delete of a sorted-mapping key', () => {
     const deployment = await deploy(PLAIN_SOURCE, funding, key, 'DIGITAL_VIDEO');
     expect(deployment.initialize.accepted).toBe(true);
 
+    // The value the live node the key names carries, read back through the shipped decoders.
+    const classification = buildProxyArtifact(artifacts.Impl!).stateLayout!;
+    const slot = keyToSlotMulti([encoder.encode(key)]);
+    const heldValue = async (): Promise<string | undefined> => {
+      const pools = await readPerCallDeployment(network, deployment.proxy.categoryId, classification);
+      const node = pools.collectionNodes.find((utxo) => utxo.token?.nft?.commitment !== undefined
+        && bytesToHex(decodeEntryCommitment(hexToBin(utxo.token.nft.commitment)).slot) === bytesToHex(slot));
+      return node === undefined
+        ? undefined : bytesToHex(decodeEntryCommitment(hexToBin(node.token!.nft!.commitment)).value);
+    };
+    expect(await heldValue()).toBe(bytesToHex(encodeChunkableValueTail(encoder.encode('DIGITAL_VIDEO'))));
+
+    // The call deletes the key: the node stays in place and takes the value type's default tail.
     const result = await callPerCallProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
@@ -187,13 +201,15 @@ describe('a proxied delete of a sorted-mapping key', () => {
     expect(result.accepted).toBe(true);
     expect(result.broadcast).toBeDefined();
 
-    const slot = keyToSlotMulti([encoder.encode(key)]);
+    // The node is rewritten where it stood, nothing is created, and its commitment is the default's tail.
     const nodeIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
     expect(nodeIds).toHaveLength(1);
+    expect(result.draft.trailingOutputs).toHaveLength(0);
     const written = decodeEntryCommitment(
       Uint8Array.from(result.transaction.outputs[nodeIds[0]!.index]!.token!.nft!.commitment!));
     expect(bytesToHex(written.slot)).toBe(bytesToHex(slot));
     expect(bytesToHex(written.value)).toBe(bytesToHex(encodeChunkableValueTail(new Uint8Array(0))));
+    expect(await heldValue()).toBe(bytesToHex(encodeChunkableValueTail(new Uint8Array(0))));
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 });

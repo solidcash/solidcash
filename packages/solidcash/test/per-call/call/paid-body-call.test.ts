@@ -3,7 +3,7 @@ import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { callPerCallEntry, sendPerCallValue, type PerCallCallResult } from '../../../src/per-call/call/index.js';
 import {
-  addressOf, containerValue, currentCaller, deploy, deployBeside, deployBesideWith,
+  addressOf, containerValue, currentCaller, deploy, deployBeside, deployBesideWith, type Deployed,
 } from './value-harness.js';
 
 /**
@@ -31,11 +31,26 @@ const PAID_BODIES_SOURCE = 'pragma solidcash ^0.13.0;'
 
 const paidBodies = compileStringMulti(PAID_BODIES_SOURCE, { composition: 'per-call' });
 
+let payerRun: Promise<Deployed> | undefined;
+
+/** One Payer serves every case, each recipient deployed beside it: its one deposit covers their sends, 31,001. */
+function payer(): Promise<Deployed> {
+  payerRun ??= (async (): Promise<Deployed> => {
+    const deployed = await deploy(paidBodies.Payer!);
+    // Each call is paid from the caller's largest coin, the last call's change, so one coin carries every case's fees.
+    await deployed.provider.addUtxo(binToHex(deployed.callerLock), {
+      txid: '46'.repeat(31) + 'c1', vout: 0, satoshis: 500_000n,
+    });
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 32_000n });
+    return deployed;
+  })();
+  return payerRun;
+}
+
 describe('a paid receive() that emits or writes a mapping', () => {
   it('lists the event the paid body emits, learned from its own program', async () => {
-    const deployed = await deploy(paidBodies.Payer!);
+    const deployed = await payer();
     const tippedCategory = await deployBeside(deployed, paidBodies.Tipped!, '4e'.repeat(32));
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
 
     const result = await callPerCallEntry({
       ...(await currentCaller(deployed)),
@@ -53,9 +68,8 @@ describe('a paid receive() that emits or writes a mapping', () => {
   });
 
   it('writes the paid body\'s mapping entry, created on the first payment and updated on the next', async () => {
-    const deployed = await deploy(paidBodies.Payer!);
+    const deployed = await payer();
     const bankCategory = await deployBesideWith(deployed, paidBodies.Bank!, [deployed.callerLock], '4f'.repeat(32));
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
     const externals = { Bank: { artifact: paidBodies.Bank!, categoryId: bankCategory } };
     const to = addressOf(paidBodies.Bank!, bankCategory);
 
@@ -98,11 +112,6 @@ const SENDING_BODIES_SOURCE = 'pragma solidcash ^0.13.0;'
   + '     if (msg.value > 5000) { this.transfer(this.first, 1000); }'
   + '     this.transfer(this.second, 500);'
   + '   }'
-  + ' }'
-  + ' contract Payer {'
-  + '   int public paid;'
-  + '   receive() external payable { require(true); }'
-  + '   function pay(bytes to, int amount) { this.paid = this.paid + amount; this.transfer(to, amount); }'
   + ' }';
 
 const sendingBodies = compileStringMulti(SENDING_BODIES_SOURCE, { composition: 'per-call' });
@@ -118,11 +127,10 @@ function paidTo(result: PerCallCallResult, lock: Uint8Array): bigint {
 
 describe('a paid receive() that sends', () => {
   it('forwards what it receives to the users its records name', async () => {
-    const deployed = await deploy(sendingBodies.Payer!);
+    const deployed = await payer();
     const splitterCategory = await deployBesideWith(
       deployed, sendingBodies.Splitter!, [FIRST_LOCK, SECOND_LOCK], '50'.repeat(32),
     );
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
 
     const result = await callPerCallEntry({
       ...(await currentCaller(deployed)),
@@ -136,11 +144,10 @@ describe('a paid receive() that sends', () => {
   });
 
   it('pays out more than it receives from its own containers, and is refused by name when they cannot', async () => {
-    const deployed = await deploy(sendingBodies.Payer!);
+    const deployed = await payer();
     const doublerCategory = await deployBesideWith(deployed, sendingBodies.Doubler!, [FIRST_LOCK], '51'.repeat(32));
     const externals = { Doubler: { artifact: sendingBodies.Doubler!, categoryId: doublerCategory } };
     const to = addressOf(sendingBodies.Doubler!, doublerCategory);
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
     // Before its deposit it holds nothing, so what it sends beyond what it receives has no container to come from.
     await expect(callPerCallEntry({
       ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
@@ -160,13 +167,12 @@ describe('a paid receive() that sends', () => {
   });
 
   it('lists only the send it makes when one of its sends is on a branch not taken', async () => {
-    const deployed = await deploy(sendingBodies.Payer!);
+    const deployed = await payer();
     const tipperCategory = await deployBesideWith(
       deployed, sendingBodies.Tipper!, [FIRST_LOCK, SECOND_LOCK], '53'.repeat(32),
     );
     const externals = { Tipper: { artifact: sendingBodies.Tipper!, categoryId: tipperCategory } };
     const to = addressOf(sendingBodies.Tipper!, tipperCategory);
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
 
     // A branch taken makes every send, as the splitter's do.
     const skipped = await callPerCallEntry({
@@ -176,5 +182,6 @@ describe('a paid receive() that sends', () => {
     expect(paidTo(skipped, FIRST_LOCK)).toBe(0n);
     expect(paidTo(skipped, SECOND_LOCK)).toBe(500n);
     expect(containerValue(skipped, tipperCategory)).toBe(2_500n);
+
   });
 });

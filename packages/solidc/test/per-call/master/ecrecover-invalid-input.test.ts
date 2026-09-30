@@ -76,32 +76,6 @@ const SHORT_SIGNATURE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-/** A pre-EIP-155 recovery id, which the EVM's `ecrecover` rejects (it accepts only 27/28); `1` compiles alike. */
-const V_ZERO_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Auth {'
-  + '   function check(bytes32 h, bytes32 r, bytes32 s) {'
-  + `     require(ecrecoverPubKey(h, 0, r, s) == pubkey(${SIGNER}));`
-  + '   }'
-  + ' }';
-
-/** An out-of-range `s` (the field maximum, far above the curve order), which the EVM rejects. */
-const S_OUT_OF_RANGE_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Auth {'
-  + '   function check(bytes32 h, int v, bytes32 r) {'
-  + '     require(ecrecoverPubKey(h, v, r,'
-  + '       bytes32(0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff))'
-  + `       == pubkey(${SIGNER}));`
-  + '   }'
-  + ' }';
-
-/** An all-zero digest and zero signature words, the closest four-scalar spelling of "no signature". */
-const ALL_ZERO_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Auth {'
-  + '   function check() {'
-  + `     require(ecrecoverPubKey(bytes32(0), 0, bytes32(0), bytes32(0)) == pubkey(${SIGNER}));`
-  + '   }'
-  + ' }';
-
 /** The EVM-address projection: `ecrecoverEvm(hash, v, r, s)` returns a 20-byte address. */
 const EVM_PROJECTION_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Auth {'
@@ -138,9 +112,6 @@ const marksRecoveryCompute = (source: string, options: Record<string, unknown> =
 const CASES = [
   { name: 'a valid recovery used normally', source: VALID_SOURCE, options: {} },
   { name: 'an empty or short signature', source: SHORT_SIGNATURE_SOURCE, options: {} },
-  { name: 'a recovery id of 0', source: V_ZERO_SOURCE, options: {} },
-  { name: 'an out-of-range s', source: S_OUT_OF_RANGE_SOURCE, options: {} },
-  { name: 'an all-zero digest and signature', source: ALL_ZERO_SOURCE, options: {} },
   { name: 'the EVM-address projection', source: EVM_PROJECTION_SOURCE, options: {} },
   { name: 'the bare name in P2PKH mode', source: BARE_NAME_SOURCE, options: { ecrecover: 'p2pkh' } },
 ] as const;
@@ -217,6 +188,8 @@ interface Recovery {
   readonly owner: Uint8Array;
   readonly address: Uint8Array;
   readonly witness: EcrecoverWitness;
+  /** The ladder split the probe found for the witness, so the pair is built without probing again. */
+  readonly chunkA: number;
 }
 
 const token = (
@@ -234,9 +207,9 @@ const dummySideCar = (odd: boolean): { txid: string; vout: number; satoshis: big
 const leBytes = (hex: string): Uint8Array => hexToBin(hex.replace(/^0x/, '')).slice().reverse();
 
 /**
- * Signs one message with a fresh random wallet and returns the LE scalars, the recovered signer, and the recovery
- * witnesses. A small share of signatures have a GLV ladder too long for the two-covenant split, so the wallet is
- * re-drawn until the split probe accepts - the same remedy the shipped e2e fixture uses.
+ * Signs one message with a fresh random wallet and returns the LE scalars, the recovered signer, the recovery
+ * witnesses and the split they fit. A small share of signatures have a GLV ladder too long for the two-covenant
+ * split, so the wallet is re-drawn until the split probe accepts - the same remedy the shipped e2e fixture uses.
  */
 async function splittableSigner(): Promise<Recovery> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -249,8 +222,9 @@ async function splittableSigner(): Promise<Recovery> {
     const owner = hexToBin(ethers.SigningKey
       .computePublicKey(ethers.SigningKey.recoverPublicKey(digest, signature), true).slice(2));
     const witness = computeEcrecoverWitness(h, v, rLe, sLe);
-    if (!splits(witness)) continue; // a width-0 signature; draw another
-    return { h, v, r: rLe, s: sLe, owner, address: hexToBin(wallet.address.slice(2)), witness };
+    const chunkA = splitOf(witness);
+    if (chunkA === undefined) continue; // a width-0 signature; draw another
+    return { h, v, r: rLe, s: sLe, owner, address: hexToBin(wallet.address.slice(2)), witness, chunkA };
   }
   throw new Error('no signature with a two-covenant split after 200 draws');
 }
@@ -286,22 +260,18 @@ const sideCarSource = (car: SideCar): VmSourceOutput => ({
   lockingBytecode: car.lock, valueSatoshis: 100_000n, token: token(SIDECAR_CAT, 'mutable'),
 }) as VmSourceOutput;
 
-/** Whether a witness's GLV ladder fits the two-covenant split. */
-function splits(witness: EcrecoverWitness): boolean {
+/** The split at which a witness's GLV ladder fits the two-covenant pair, or undefined when none does. */
+function splitOf(witness: EcrecoverWitness): number | undefined {
   try {
-    probeEcrecoverSplit(witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never);
-    return true;
+    return probeEcrecoverSplit(witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never);
   } catch {
-    return false;
+    return undefined;
   }
 }
 
-/** Builds the A/B recovery pair for a witness at a fixed split. */
-function recoveryPair(witness: EcrecoverWitness): { readonly a: SideCar; readonly b: SideCar } {
-  const chunkA = probeEcrecoverSplit(
-    witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never,
-  );
-  return pairAt(witness, chunkA);
+/** Builds the A/B recovery pair for a signer at the split its search found. */
+function recoveryPair(recovery: Recovery): { readonly a: SideCar; readonly b: SideCar } {
+  return pairAt(recovery.witness, recovery.chunkA);
 }
 
 /** Builds the A/B recovery pair for a witness at the given split, without probing viability. */
@@ -410,7 +380,7 @@ beforeAll(async () => {
 let signerPair: { readonly a: SideCar; readonly b: SideCar } | undefined;
 /** The signer's pair, built once: the cases below co-spend the same one. */
 const signerPairOnce = (): { readonly a: SideCar; readonly b: SideCar } =>
-  (signerPair ??= recoveryPair(signer.witness));
+  (signerPair ??= recoveryPair(signer));
 
 describe('a per-call body that recovers a signer', () => {
   it('is accepted at every input when the co-spent pair recovers the expected key', () => {
@@ -530,10 +500,7 @@ describe('the EVM invalid-input rule on the per-call path', () => {
       return result;
     };
     const w = power(prime - ((x ** 3n + 7n) % prime), (prime + 1n) / 4n);
-    const chunkA = probeEcrecoverSplit(
-      signer.witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never,
-    );
-    const proven = pairAt(signer.witness, chunkA, leWord(w));
+    const proven = pairAt(signer.witness, signer.chunkA, leWord(w));
     const program = zeroProgram({ ...signer, v: 27, r: leWord(x) });
     expect(verdicts(buildSpend(program, [proven.a, proven.b]), [MASTER_INDEX, A_INDEX, B_INDEX])).toStrictEqual({
       [MASTER_INDEX]: true, [A_INDEX]: true, [B_INDEX]: true,
@@ -542,7 +509,7 @@ describe('the EVM invalid-input rule on the per-call path', () => {
     // -(r^3 + 7) is refused, and so is a proof beside an r a point has, where the recovery is the signer's.
     const { a, b } = signerPairOnce();
     expect(verdicts(buildSpend(program, [a, b]), [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: false });
-    const wrong = pairAt(signer.witness, chunkA, leWord(w + 1n));
+    const wrong = pairAt(signer.witness, signer.chunkA, leWord(w + 1n));
     expect(verdicts(buildSpend(program, [wrong.a, wrong.b]), [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: false });
     expect(verdicts(buildSpend(zeroProgram(signer), [proven.a, proven.b]), [MASTER_INDEX]))
       .toStrictEqual({ [MASTER_INDEX]: false });

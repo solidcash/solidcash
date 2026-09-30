@@ -8,7 +8,9 @@ import {
   PerCallCallError, callPerCallEntry, sendPerCallValue, type PerCallCallResult,
 } from '../../../src/per-call/call/index.js';
 import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import { addressOf, callerOf, containerValue, currentCaller, deploy, deployBeside } from './value-harness.js';
+import {
+  addressOf, callerOf, containerValue, currentCaller, deploy, deployBeside, type Deployed,
+} from './value-harness.js';
 
 /**
  * Value carried by a call into a deployed per-call contract (spec 4b), through the shipped path.
@@ -395,10 +397,34 @@ const BRANCH_SOURCE = 'pragma solidcash ^0.13.0;'
 
 const branch = compileStringMulti(BRANCH_SOURCE, { composition: 'per-call' });
 
+/** The Till the branch cases share, and the Vault and the Jar deployed beside it. */
+interface Branching {
+  readonly deployed: Deployed;
+  readonly vaultCategory: string;
+  readonly jarCategory: string;
+}
+
+let branching: Promise<Branching> | undefined;
+
+/** One Till serves every branch case: its one deposit covers their sends, 29,000 in all, and none reads its balance. */
+function branchingTill(): Promise<Branching> {
+  branching ??= (async (): Promise<Branching> => {
+    const deployed = await deploy(branch.Till!);
+    const vaultCategory = await deployBeside(deployed, branch.Vault!, '4c'.repeat(32));
+    const jarCategory = await deployBeside(deployed, branch.Jar!, '4d'.repeat(32));
+    // Each call is paid from the caller's largest coin, the last call's change, so one coin carries every case's fees.
+    await deployed.provider.addUtxo(binToHex(deployed.callerLock), {
+      txid: '46'.repeat(31) + 'c1', vout: 0, satoshis: 500_000n,
+    });
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 30_000n });
+    return { deployed, vaultCategory, jarCategory };
+  })();
+  return branching;
+}
+
 describe('an entry that sends on a branch', () => {
   it('lists nothing when the branch with its only send is not taken', async () => {
-    const deployed = await deploy(branch.Till!);
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const { deployed } = await branchingTill();
 
     // A send on a branch taken is the control of the refusal case below.
     const skipped = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'payIf', args: [0n] });
@@ -409,8 +435,7 @@ describe('an entry that sends on a branch', () => {
   });
 
   it('reports the body\'s own refusal when it stops before any send', async () => {
-    const deployed = await deploy(branch.Till!);
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const { deployed } = await branchingTill();
 
     const refused = await callPerCallEntry({
       ...(await currentCaller(deployed)), functionName: 'payCapped', args: [60_000n],
@@ -426,8 +451,7 @@ describe('an entry that sends on a branch', () => {
   });
 
   it('lists the sends made in order when an earlier one is on a branch not taken', async () => {
-    const deployed = await deploy(branch.Till!);
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const { deployed } = await branchingTill();
 
     const one = await callPerCallEntry({
       ...(await currentCaller(deployed)), functionName: 'split', args: [0n, 5_000n],
@@ -443,9 +467,7 @@ describe('an entry that sends on a branch', () => {
   });
 
   it('runs no frame of a contract it pays on a branch not taken', async () => {
-    const deployed = await deploy(branch.Till!);
-    const vaultCategory = await deployBeside(deployed, branch.Vault!, '4b'.repeat(32));
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const { deployed, vaultCategory } = await branchingTill();
     const externals = { Vault: { artifact: branch.Vault!, categoryId: vaultCategory } };
     const to = addressOf(branch.Vault!, vaultCategory);
 
@@ -459,23 +481,21 @@ describe('an entry that sends on a branch', () => {
   });
 
   it('pays the contract whose call the body made when an earlier contract\'s is on a branch not taken', async () => {
-    const deployed = await deploy(branch.Till!);
-    const firstCategory = await deployBeside(deployed, branch.Vault!, '4c'.repeat(32));
-    const secondCategory = await deployBeside(deployed, branch.Jar!, '4d'.repeat(32));
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const { deployed, vaultCategory, jarCategory } = await branchingTill();
 
     const result = await callPerCallEntry({
       ...(await currentCaller(deployed)),
       functionName: 'payEither',
-      args: [addressOf(branch.Vault!, firstCategory), addressOf(branch.Jar!, secondCategory), 8_000n],
+      args: [addressOf(branch.Vault!, vaultCategory), addressOf(branch.Jar!, jarCategory), 8_000n],
       externals: {
-        Vault: { artifact: branch.Vault!, categoryId: firstCategory },
-        Jar: { artifact: branch.Jar!, categoryId: secondCategory },
+        Vault: { artifact: branch.Vault!, categoryId: vaultCategory },
+        Jar: { artifact: branch.Jar!, categoryId: jarCategory },
       },
     });
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.completed.map((frame) => frame.functionName)).toStrictEqual(['Jar.__receive()', 'Till.payEither()']);
-    expect(containerValue(result, firstCategory)).toBe(0n);
-    expect(containerValue(result, secondCategory)).toBe(8_000n);
+    expect(containerValue(result, vaultCategory)).toBe(0n);
+    expect(containerValue(result, jarCategory)).toBe(8_000n);
+
   });
 });

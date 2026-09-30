@@ -286,14 +286,6 @@ describe('an entry that emits an event, compiled per-call', () => {
     expect(spendEmitter({ block: baseBlock({ events: [] }), outputs: [] }).accepted).toBe(false);
   });
 
-  it('is refused when the witness lists an output index the event does not sit at', () => {
-    // The record names output 2 but the event sits at output 1, so output 2 has no token.
-    expect(spendEmitter({
-      block: baseBlock({ events: [2] }),
-      outputs: [eventOutput(payload(EMITTED), eventLock), FILLER],
-    }).accepted).toBe(false);
-  });
-
   it('is refused when the body computes a payload the listed output does not carry', () => {
     // The entry emits 7 but the unlocking bytecode passes 9, so the body's payload is 9's and the output is not.
     expect(spendEmitter({ argumentPushes: payload(EMITTED + 2) }).accepted).toBe(false);

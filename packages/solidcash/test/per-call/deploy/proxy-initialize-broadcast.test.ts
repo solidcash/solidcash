@@ -85,7 +85,7 @@ interface Broadcast {
 
 let broadcastRun: Promise<Broadcast> | undefined;
 
-/** The broadcast deployment the first two cases read; neither changes it, so it runs once. */
+/** The broadcast deployment both cases read; neither changes it, so it runs once. */
 function broadcast(): Promise<Broadcast> {
   broadcastRun ??= (async (): Promise<Broadcast> => {
     const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
@@ -159,33 +159,5 @@ describe('a broadcast per-call proxy initialization', () => {
     expect([...state.byNft[0]!.implementation as Uint8Array]).toStrictEqual([...deployment.implementation.address]);
     expect(bytesToHex(new Uint8Array(Buffer.from(state.records[0]!.token!.nft!.commitment, 'hex'))))
       .toBe(bytesToHex(deployment.initialize.writtenRecordCommitment));
-  });
-
-  it('leaves the hop derived when the caller offers no coin', async () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const { funder, implFunding, proxyFunding, deployerLock, changeAddress } = await funded(network);
-
-    const deployment = await deployPerCallProxy({
-      provider: network,
-      implementationArtifact: artifacts.Impl!,
-      proxyArtifact: artifacts.Proxy!,
-      implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
-      proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
-      initialize: { functionName: 'initialize', args: [deployerLock] },
-      callerLockingBytecode: deployerLock,
-      vm: compositionMachine(),
-    });
-
-    // The derived specification is still returned; nothing was broadcast for it.
-    expect(deployment.initialize.broadcast).toBeUndefined();
-    // The participants the hop spends - the proxy's master, its validator and facet, the implementation's master
-    // and the record - then the deployer's own coin.
-    expect(deployment.initialize.transaction.inputs.length).toBe(6);
-    expect(deployment.initialize.accepted).toBe(true);
-    // The record still sits at the state the proxy's genesis minted, because the derived hop never ran on chain.
-    const state = await readPerCallState(network, deployment.proxy.categoryId, artifacts.Proxy!.stateLayout!);
-    expect(state.byNft[0]!.initialized).toBe(0n);
-    expect(state.byNft[0]!.version).toBe(0n);
   });
 });

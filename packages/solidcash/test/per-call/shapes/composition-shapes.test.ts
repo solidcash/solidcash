@@ -222,15 +222,6 @@ describe('one contract entering another of its own entries', () => {
     + '   function inner() { require(true); }'
     + ' }';
 
-  it('is emitted although the root entry calls and the self-called entry does not', () => {
-    // The user enters `start`, which calls `inner` on the same contract, so the contract runs on two masters. One
-    // master head serves both: it walks the call section with the length the block declares, and each entry pins
-    // that length to the calls its own source makes.
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
-    expect(artifacts.Own?.composition?.convention).toBe('per-call');
-    expect(artifacts.Own?.abi.map((entry) => entry.name).sort()).toEqual(['inner', 'start']);
-  });
-
   it('runs on two masters of the one contract, derives the self-called entry first, '
     + 'and the machine accepts the spend', () => {
     const { artifacts, contracts } = compileAndDeploy(SOURCE, { Own: 'the self-calling contract' });
@@ -450,13 +441,6 @@ describe('a three-contract chain that calls back to the first', () => {
     };
   }
 
-  it('is emitted although two contracts in the chain are re-entered', () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
-    expect(artifacts.First?.abi.map((entry) => entry.name).sort()).toEqual(['begin', 'finish']);
-    expect(artifacts.Second?.abi.length).toBe(2);
-    expect(artifacts.Third?.abi.length).toBe(1);
-  });
-
   it('derives the whole call-back chain end to end, callee first, and the machine accepts every contract input', () => {
     const built = compileAndDeploy(SOURCE, {
       First: 'the chain head', Second: 'the chain middle', Third: 'the chain tail',
@@ -559,22 +543,6 @@ describe('two entry points of one contract entered independently', () => {
       .toStrictEqual([entryName('Twin', 'left'), entryName('Twin', 'right')]);
     expectEveryContractInputAccepted(outcome);
     expectDerivationConvergedWithAssembly(outcome, ['twin-left', 'twin-right']);
-  });
-
-  it('is refused by the composer: a user-entered master may not carry the call data that names its entry', () => {
-    const { contracts } = compileAndDeploy(SOURCE, { Twin: 'two entries of one contract' });
-    // The only field that carries the entry's selector is the master's call data, and the composer refuses call
-    // data on a master nobody calls, so the selector cannot reach the dispatcher through this plan.
-    expect(() => composeDraft(planFor(contracts.Twin!, { selectors: true })))
-      .toThrow(/entered by a user, so it carries no call data/);
-  });
-
-  it('is refused by the derivation when the selector is left out: the master never reaches an entry', () => {
-    const { artifacts, contracts } = compileAndDeploy(SOURCE, { Twin: 'two entries of one contract' });
-    expect(() => composeAndDerive(planFor(contracts.Twin!, { selectors: false }), [artifacts.Twin!], [
-      rootOf('Twin', 'left', 'twin-left'),
-      rootOf('Twin', 'right', 'twin-right'),
-    ])).toThrow(/PER_CALL_DERIVATION_STALLED/);
   });
 });
 

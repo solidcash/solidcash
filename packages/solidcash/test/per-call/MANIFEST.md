@@ -22,35 +22,39 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 613 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 586 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 14 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
-| `packages/solidcash/test/per-call/validator/` | `solidcash` | 97 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 170 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
-| `packages/solidcash/test/per-call/reads/` | `solidcash` | 44 |
+| `packages/solidcash/test/per-call/validator/` | `solidcash` | 92 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 169 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 56 |
+| `packages/solidcash/test/per-call/reads/` | `solidcash` | 40 |
 | `packages/solidcash/test/per-call/reverts/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 146 |
-| `packages/solidcash/test/per-call/call/` | `solidcash` | 108 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 140 |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 116 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 113 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 109 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 100 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 93 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 39 |
-| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 10 |
+| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 9 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | 26 |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 3 |
 
-Total: 1816 checks (115 + 659 + 1040 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
-twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 659 is the four rows above it (89 files; 24.8 s warm at `3958af44c` plus
-the checked-literal cases),
-`solidcash` 1040 (1037 passed, three skipped; 167 files; 137.7 s warm at `520a21d9c`) is the
-seventeen rows above it,
+Total: 1736 checks (115 + 632 + 987 + 2), with four more cases that run under
+`PER_CALL_FULL=1`: three in `primitives/many-masters.test.ts` (the nine-entry composition and its refusal, which
+`shapes/deep-arbitration.test.ts` covers by default, and the twenty-four-master composition, which takes about
+twenty-eight seconds to derive), and the shipped data contract's clock-stamped append
+(`call/proxy-proxied-callee-element-clock.test.ts`), which deploys the project's compiled `MarketplaceDataV1`
+behind its proxy and takes about three and a half minutes. The package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 632 is the four rows above it (89 files; 19 to 21 s over `82276d325`),
+`solidcash` 987 (980 passed, seven skipped; 166 files; 125 to 139 s over `82276d325`, before `call/hop-trace` and
+its four cases joined, where the copies before the seventh prune took 280 to 308 s back to back) is the seventeen
+rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
@@ -142,14 +146,14 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   the record keeps the implementation's address. `proxy-initialize-write.test.ts` refuses a second call offered the
   record the first one left, beside a control that the same plan offered the state the entry expects is accepted,
   and a proxy whose record does not declare the implementation's fields, by name.
-- **`solidcash/test/per-call/frames/`** — the master prologue and the witness-block reader, evaluated in the BCH-2026
-  virtual machine against real transactions, and, in `composition-spend.test.ts`, one composed transaction driven
-  from source to verdict: shipped compile, shipped deployment, composer layout and assembly, derivation, and the
-  machine's acceptance of the caller, its callee and the validator, twice on the same bytes, with two mutated
-  controls refused. `round-trip-composition.test.ts` derives the two-contract round trip the design's worked
-  example uses end to end: the layout places the two masters of
-  the re-entered contract, the validator and the callee; the shipped host fills every published stop site, callee
-  first (`A.k`, then `B.g`, then `A.f`); the machine accepts all four contract inputs of the assembled transaction,
+- **`solidcash/test/per-call/frames/`** — the witness-block reader, evaluated in the BCH-2026 virtual machine
+  against real transactions, and, in `composition-spend.test.ts`, one composed transaction driven from source to
+  verdict: shipped compile, shipped deployment, composer layout and assembly, derivation, and the machine's
+  acceptance of the caller, its callee and the validator, twice on the same bytes, with a caller that does not
+  recreate its own master refused. `round-trip-composition.test.ts` derives the two-contract round trip the
+  design's worked example uses end to end: the layout places the two masters of the re-entered contract, the
+  validator and the callee; the shipped host fills every published stop site, callee first (`A.k`, then `B.g`,
+  then `A.f`); the machine accepts all four contract inputs of the assembled transaction,
   twice with the same verdict; and the validator's own derivation walks all eleven checks and derives the order the
   spec states for the shape. Controls refused: a re-entered master presenting another contract's address, and a
   block that declares a call its entry's source does not make. `round-trip-stateful.test.ts` carries the same shape
@@ -310,10 +314,10 @@ listed under the table, and none of those is claimed anywhere else.
 | A second signed user offered as the origin reference | `origin-reference.test.ts` (two cases) |
 | A root frame whose `sender` is rewritten while a validator covers the edge | `caller-lock-binding.test.ts` (one case, refused on the caller's own input while the validator and callee still accept) |
 | Part of a covered contract left unsettled | `validator/script.test.ts` (one case) |
-| A validator transcript or a covered witness block the shipped program cannot read | `validator/script.test.ts` (nine cases) and `validator-transcript.test.ts` (a block with a trailing byte or cut short) |
+| A validator transcript or a covered witness block the shipped program cannot read | `validator/script.test.ts` (eight cases) and `validator-transcript.test.ts` (a block with a trailing byte or cut short) |
 | A validator output missing, not recreated, or carrying less value, or no master of its own category | `validator-recreation.test.ts` (missing, not recreated) and `validator/script.test.ts` (two cases) |
 | A record the validator settles written back lighter, even by exactly its frame's listed send (T39) | `validator/script.test.ts` (one case) |
-| A transcript listing masters that point elsewhere, are duplicated or are missing, and roots that are duplicated, missing or extra | `validator/script.test.ts` (twelve cases, the two-root composition accepted beside them) |
+| A transcript listing masters that point elsewhere, are duplicated or are missing, and roots that are duplicated, missing or extra | `validator/script.test.ts` (eleven cases, the two-root composition accepted beside them) |
 | A forged call edge in either direction: callee, caller, frame kind, origin, value, sender, target, self, result, argument digest, an unreached master, or a master called twice | `validator/script.test.ts` (thirteen cases) |
 | A contract settled twice, or a read-only frame changing a record, emitting or paying an output | `validator/script.test.ts` (settled twice, paying) and `validator-settlement.test.ts` (changing a record, emitting) |
 | A read-only frame whose call carries value or names a frame that is not read-only | `validator-read-only-calls.test.ts` (three cases) |

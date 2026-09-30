@@ -6,7 +6,6 @@ import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { satoshiContainerLockingBytecode } from '../../../src/per-call/deploy/index.js';
 import { callPerCallEntry, sendPerCallValue, type PerCallCallResult } from '../../../src/per-call/call/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -168,29 +167,11 @@ function indexOf(compositionValue: Composition, id: string): number {
   return placed.index;
 }
 
-/** The contract's category, read off the validator's own token. */
-function categoryHex(compositionValue: Composition): string {
-  const validator = compositionValue.result.draft.layout.participants.find((placed) => placed.kind === 'validator');
-  if (validator === undefined) throw new Error('the layout has no validator');
-  const token = compositionValue.sourceOutputs[validator.index]?.token;
-  if (token === undefined) throw new Error('the validator input carries no token');
-  return binToHex(token.category);
-}
-
 /** The output index the master's block lists for its one send. */
 function sendIndex(compositionValue: Composition): number {
   const sends = compositionValue.result.draft.blockOf(MASTER_ID).sends;
   expect(sends).toHaveLength(1);
   return sends[0]!;
-}
-
-/** The output index whose lock is a container of the contract. */
-function containerIndex(compositionValue: Composition): number {
-  const lock = satoshiContainerLockingBytecode(categoryHex(compositionValue));
-  const index = compositionValue.transaction.outputs
-    .findIndex((output) => binToHex(output.lockingBytecode) === binToHex(lock));
-  expect(index).toBeGreaterThanOrEqual(0);
-  return index;
 }
 
 /**
@@ -252,47 +233,14 @@ describe('the output a listed send names', () => {
     expect(verdicts.filter((verdict) => verdict.id !== MASTER_ID).every((verdict) => verdict.accepted)).toBe(true);
   });
 
-  it('refuses a named output whose amount the body did not compute', () => {
-    // The value the body computed for the send is moved to the contract's own container output and the named send
-    // output is left at zero. The index names the same shape of output, so the movement is invisible to the
-    // validator's conservation rule (the container gains exactly what the send loses); the body's own amount pin is
-    // what refuses.
-    const compositionValue = composition();
-    const index = sendIndex(compositionValue);
-    const container = containerIndex(compositionValue);
-    const transaction = rebuilt(compositionValue, ({ transaction: draft }) => {
-      draft.outputs[index] = { ...draft.outputs[index]!, valueSatoshis: 0n };
-      draft.outputs[container] = {
-        ...draft.outputs[container]!, valueSatoshis: draft.outputs[container]!.valueSatoshis + AMOUNT,
-      };
-    });
-
-    const verdicts = machineVerdicts(transaction, compositionValue.sourceOutputs, compositionValue.participants);
-    expect(verdicts.find((verdict) => verdict.id === MASTER_ID)!.accepted).toBe(false);
-  });
-
-  it('refuses when an extra output is inserted where the named index points', () => {
-    // The body also binds the listed index to the frame's own container: the output one before it must be a
-    // container of the contract. An output inserted at the named index — so the send's own output shifts one later
-    // while the block still lists the same index — is a different output than the body computed there.
-    const compositionValue = composition();
-    const index = sendIndex(compositionValue);
-    const stranger = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x77));
-    const transaction = rebuilt(compositionValue, ({ transaction: draft }) => {
-      draft.outputs.splice(index, 0, { lockingBytecode: stranger, valueSatoshis: AMOUNT } as VmOutput);
-    });
-
-    const verdicts = machineVerdicts(transaction, compositionValue.sourceOutputs, compositionValue.participants);
-    expect(verdicts.find((verdict) => verdict.id === MASTER_ID)!.accepted).toBe(false);
-  });
-
   it('accepts the index naming another output that is already exactly what the body computed', () => {
     // What the index is free to be, and all it is free to be: an output that already carries the computed lock and
     // amount, at the position the frame's own container immediately precedes. A duplicate of the send is placed
     // there, funded out of the caller's own change, and the block re-lists the send at it. Recipient and amount are
     // exactly what the accepted spend paid and the contract's container grew by nothing, so the builder gains
-    // nothing. Together with the refusals above this pins the property: the index is bound by the container it
-    // follows and by the lock, amount and empty token the body computed at it, and by nothing else.
+    // nothing. Together with the lock refusal above, and the value and container refusals a compiled master gives
+    // in `solidc/test/per-call/master/send-output.test.ts`, this pins the property: the index is bound by the
+    // container it follows and by the lock, amount and empty token the body computed at it, and by nothing else.
     const compositionValue = composition();
     const original = sendIndex(compositionValue);
     const output = compositionValue.transaction.outputs[original]!;

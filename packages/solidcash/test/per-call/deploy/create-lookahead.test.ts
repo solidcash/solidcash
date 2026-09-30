@@ -136,6 +136,7 @@ describe('predicting a create address from reserved genesis UTXOs', () => {
         try { lookahead.getCreateAddress(2); return undefined; } catch (thrown) { return thrown as Error; }
       })();
       expect(error?.name).toBe('CreateAddressError');
+      expect(error?.message).toMatch(/2 genesis-eligible UTXO\(s\) are reserved/);
     } finally {
       lookahead.release();
     }

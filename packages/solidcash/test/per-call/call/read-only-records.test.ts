@@ -142,6 +142,21 @@ async function allowanceNodes(deployed: Deployed): Promise<readonly string[]> {
   return (deployment.nodesByCollection.get('allowance') ?? []).map((utxo) => utxo.token!.nft!.commitment);
 }
 
+let gateRun: Promise<Deployed> | undefined;
+
+/**
+ * One Gate, granted `HOLDER_LOCK` 500, serves the Gate cases: none grants again, and the first case's pass is the
+ * deployment's first.
+ */
+function grantedGate(): Promise<Deployed> {
+  gateRun ??= (async (): Promise<Deployed> => {
+    const deployed = await deploy(gate);
+    expect((await call(deployed, 'grant', [HOLDER_LOCK, 500n])).accepted).toBe(true);
+    return deployed;
+  })();
+  return gateRun;
+}
+
 /** The slot a key's node carries. */
 function slotOf(lock: Uint8Array): string {
   return binToHex(keyToSlotMulti([encodeFunctionArgument(lock, 'address') as Uint8Array]));
@@ -149,8 +164,7 @@ function slotOf(lock: Uint8Array): string {
 
 describe('an entry that reads a mapping key it does not write', () => {
   it('reads the key beside the data record it writes, and keeps the key\'s node', async () => {
-    const deployed = await deploy(gate);
-    expect((await call(deployed, 'grant', [HOLDER_LOCK, 500n])).accepted).toBe(true);
+    const deployed = await grantedGate();
     const granted = await allowanceNodes(deployed);
 
     const passed = await call(deployed, 'pass', [HOLDER_LOCK, 400n]);
@@ -162,8 +176,7 @@ describe('an entry that reads a mapping key it does not write', () => {
   });
 
   it('reads a key the list does not hold beside its predecessor, as the default', async () => {
-    const deployed = await deploy(gate);
-    await call(deployed, 'grant', [HOLDER_LOCK, 500n]);
+    const deployed = await grantedGate();
     const nodes = await allowanceNodes(deployed);
     expect(nodes.some((node) => binToHex(decodeEntryCommitment(Uint8Array.from(Buffer.from(node, 'hex'))).slot)
       === slotOf(STRANGER_LOCK))).toBe(false);
@@ -175,8 +188,7 @@ describe('an entry that reads a mapping key it does not write', () => {
   });
 
   it('reads the key in an entry that writes nothing, and is refused when it grants less', async () => {
-    const deployed = await deploy(gate);
-    await call(deployed, 'grant', [HOLDER_LOCK, 500n]);
+    const deployed = await grantedGate();
     const checked = await call(deployed, 'check', [HOLDER_LOCK, 500n]);
     expect(checked.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     const refused = await call(deployed, 'check', [HOLDER_LOCK, 501n]);

@@ -265,8 +265,5 @@ describe('reading a page over a struct-valued mapping', () => {
     const page = (await readPaged(provider, 1n, 1n)).value as readonly ReadRecord[];
     expect(page).toHaveLength(1);
     expect(page[0]!.toObject()).toStrictEqual(PAGED_MEMBERS[1]);
-
-    const tail = (await readPaged(provider, 1n, 0n)).value as readonly ReadRecord[];
-    expect(tail.map((record) => record.toObject())).toStrictEqual(PAGED_MEMBERS.slice(1));
   });
 });

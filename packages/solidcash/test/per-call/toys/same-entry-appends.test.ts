@@ -336,6 +336,28 @@ function verdictAt(draft: ReturnType<typeof createComposedDerivationHost>['draft
   return vm.stateSuccess(state) === true ? 'accepted' : `refused: ${String(state.error)}`;
 }
 
+let composed: {
+  readonly three: ReturnType<typeof build>;
+  readonly draft: ReturnType<typeof createComposedDerivationHost>['draft'];
+  readonly derived: ReturnType<typeof deriveDepthFirst>;
+} | undefined;
+/**
+ * The three appends over a one-element run, derived once: the compose case reads the draft, and the refusal, the
+ * file's last case, rewrites a declaration in it.
+ */
+function composedThree(): NonNullable<typeof composed> {
+  if (composed === undefined) {
+    const three = build([7n], APPENDS.map((append) => append.item));
+    const { host, draft } = createComposedDerivationHost({
+      vm: compositionMachine(),
+      artifacts: [three.artifacts.Hub!, three.artifacts.Log!],
+      plan: three.plan,
+    });
+    composed = { three, draft, derived: deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host) };
+  }
+  return composed;
+}
+
 describe('one entry appending to one log three times', () => {
   it('publishes one call site per call, so the callee runs on one master per append', () => {
     const { artifacts } = compileAndDeploy(toySource(APPENDS), { Hub: HUB_LABEL, Log: LOG_LABEL });
@@ -408,13 +430,7 @@ describe('one entry appending to one log three times', () => {
     // own segment against the view it declares, so the value grows one element at a time even though the
     // transaction's chunk input holds the value it spent and its chunk outputs the value the last frame wrote.
     // The last append crosses 120 bytes, so the transaction creates a second chunk beside the kept one.
-    const three = build([7n], APPENDS.map((append) => append.item));
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(),
-      artifacts: [three.artifacts.Hub!, three.artifacts.Log!],
-      plan: three.plan,
-    });
-    const derived = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
+    const { three, draft, derived } = composedThree();
     expect(derived.completed.map((frame) => frame.master)).toStrictEqual(['log-1', 'log-2', 'log-3', 'hub-1']);
     expect(verdictAt(draft, 'log-1')).toBe('accepted');
     expect(verdictAt(draft, 'log-2')).toBe('accepted');
@@ -486,14 +502,7 @@ describe('one entry appending to one log three times', () => {
   it('refuses a run whose declared close is not the one the frame computed', () => {
     // The control for the accept above: the body computes the run its append writes and closes the segment
     // against the view the segment declares, so a declaration rewritten to a value no frame computed is refused.
-    const three = build([7n], APPENDS.map((append) => append.item));
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(),
-      artifacts: [three.artifacts.Hub!, three.artifacts.Log!],
-      plan: three.plan,
-    });
-    deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
-
+    const { draft } = composedThree();
     const record = draft.blockOf('log-1').segments[0]!;
     record[record.length - 1]!.viewOut = chunkOf(0, itemsBytes([7n, 99n]));
 

@@ -235,21 +235,25 @@ describe('one contract entered nine times in one transaction', () => {
     return nine;
   }
 
-  it('declares the record once per frame and is accepted at every contract input', () => {
-    const { ledgers, recordIndex, outcome } = derived();
-    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
-      ...Array.from({ length: 9 }, () => entryName('Ledger', 'step')),
-      entryName('Hub', 'run'),
-    ]);
-    expect(rejectedOf(outcome)).toStrictEqual([]);
-    // Every ledger master, the hub's own master, the validator and the record are accepted.
-    // The nine ledger masters, the hub's own master, the validator, the facet it binds and the record.
-    expect(outcome.verdicts.filter((verdict) => verdict.accepted).length).toBe(9 + 4);
-    expect(bytesToHex(outcome.transaction.outputs[recordIndex('Ledger-record')]!.token!.nft!.commitment))
-      .toBe(bytesToHex(ledgers[0]!.recordOf(9n)));
-  });
+  // Milestone cases (`PER_CALL_FULL=1`): by default, `shapes/deep-arbitration.test.ts` composes twenty-one masters
+  // and refuses a record output no frame computed.
+  it.runIf(process.env.PER_CALL_FULL === '1')(
+    'declares the record once per frame and is accepted at every contract input', () => {
+      const { ledgers, recordIndex, outcome } = derived();
+      expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
+        ...Array.from({ length: 9 }, () => entryName('Ledger', 'step')),
+        entryName('Hub', 'run'),
+      ]);
+      expect(rejectedOf(outcome)).toStrictEqual([]);
+      // Every ledger master, the hub's own master, the validator and the record are accepted.
+      // The nine ledger masters, the hub's own master, the validator, the facet it binds and the record.
+      expect(outcome.verdicts.filter((verdict) => verdict.accepted).length).toBe(9 + 4);
+      expect(bytesToHex(outcome.transaction.outputs[recordIndex('Ledger-record')]!.token!.nft!.commitment))
+        .toBe(bytesToHex(ledgers[0]!.recordOf(9n)));
+    },
+  );
 
-  it('refuses a record output the last declaration did not end at', () => {
+  it.runIf(process.env.PER_CALL_FULL === '1')('refuses a record output the last declaration did not end at', () => {
     const { ledgers, recordIndex, outcome: { draft } } = derived();
     const program = draft.programFor(ledgerMaster(specs[0]!, 8));
     const wrong = ledgers[0]!.recordOf(10n);

@@ -94,6 +94,14 @@ async function deploy(): Promise<Deployed> {
   };
 }
 
+let deployedRun: Promise<Deployed> | undefined;
+
+/** The deployment both cases share: the refusal broadcasts nothing, and it refuses whatever the counter holds. */
+function sharedDeployment(): Promise<Deployed> {
+  deployedRun ??= deploy();
+  return deployedRun;
+}
+
 /** Calls `bump` with one argument through the shipped call path. */
 async function bump(deployed: Deployed, by: bigint): ReturnType<typeof callPerCallEntry> {
   return callPerCallEntry({
@@ -111,7 +119,7 @@ async function bump(deployed: Deployed, by: bigint): ReturnType<typeof callPerCa
 
 describe('calling an entry on a deployed per-call contract', () => {
   it('derives the root frame, accepts every participant and broadcasts the write', async () => {
-    const deployed = await deploy();
+    const deployed = await sharedDeployment();
     const result = await bump(deployed, 3n);
 
     // Every participant — the master, the validator and the record — is accepted by the machine.
@@ -148,9 +156,11 @@ describe('calling an entry on a deployed per-call contract', () => {
   });
 
   it('refuses a call the entry\'s own require rejects, and broadcasts nothing', async () => {
-    const deployed = await deploy();
+    const shared = await sharedDeployment();
+    const callerUtxo = { txid: '44'.repeat(31) + 'c2', vout: 0, satoshis: 200_000n };
+    await shared.provider.addUtxo(binToHex(shared.callerLock), callerUtxo);
     // `bump(20)` leaves the counter past the entry's own `require(this.counter <= 10)`.
-    const result = await bump(deployed, 20n);
+    const result = await bump({ ...shared, callerUtxo }, 20n);
 
     expect(result.accepted).toBe(false);
     // The refusing master names the machine's objection rather than being reported as accepted.

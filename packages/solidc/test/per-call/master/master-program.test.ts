@@ -189,13 +189,10 @@ const relaxed = false;
 interface SpendOptions {
   readonly sender?: Uint8Array;
   readonly self?: Uint8Array;
-  readonly value?: bigint;
   readonly kind?: number;
   readonly callerRef?: number;
   readonly originRef?: number;
   readonly validatorRef?: number;
-  readonly outputRecreates?: boolean;
-  readonly outputValue?: bigint;
   /** Spend from a caller that is not the transaction's first P2PKH input, with a decoy lock at index 0. */
   readonly decoyCaller?: boolean;
   /** The hash type the caller signs with; a value other than the two accepted ones is refused. */
@@ -231,7 +228,7 @@ function evaluateSpend(options: SpendOptions = {}): boolean {
     validatorRef: options.validatorRef ?? 0xffff,
     sender: options.sender ?? OWNER_LOCK,
     self: options.self ?? address,
-    value: options.value ?? 0n,
+    value: 0n,
     retval: new Uint8Array(0),
     calls: [],
     segments: [[]],
@@ -248,16 +245,11 @@ function evaluateSpend(options: SpendOptions = {}): boolean {
     valueSatoshis: 20_000n,
     token: { category: CATEGORY, amount: 0n, nft: { capability: 'minting' as const, commitment: new Uint8Array(0) } },
   };
-  const masterOutput = options.outputRecreates === false
-    ? {
-      lockingBytecode: OWNER_LOCK,
-      valueSatoshis: 20_000n,
-    }
-    : {
-      lockingBytecode: lock,
-      valueSatoshis: options.outputValue ?? 20_000n,
-      token: { category: CATEGORY, amount: 0n, nft: { capability: 'minting' as const, commitment: new Uint8Array(0) } },
-    };
+  const masterOutput = {
+    lockingBytecode: lock,
+    valueSatoshis: 20_000n,
+    token: { category: CATEGORY, amount: 0n, nft: { capability: 'minting' as const, commitment: new Uint8Array(0) } },
+  };
 
   const decoyLock = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(3));
   const callerUnlocking = options.callerUnlockBare === true
@@ -340,10 +332,6 @@ describe('a per-call master evaluated in the BCH-2026 virtual machine', () => {
     expect(evaluateSpend({ kind: 1 })).toBe(false);
   });
 
-  it('refuses a nonzero msg.value', () => {
-    expect(evaluateSpend({ value: 1n })).toBe(false);
-  });
-
   it('refuses a validator reference on a standalone master', () => {
     expect(evaluateSpend({ validatorRef: 0 })).toBe(false);
   });
@@ -352,17 +340,11 @@ describe('a per-call master evaluated in the BCH-2026 virtual machine', () => {
     expect(evaluateSpend({ self: encodeLockingBytecodeP2sh32(hash256(new Uint8Array([9, 9, 9]))) })).toBe(false);
   });
 
-  it('refuses an output that does not recreate the master', () => {
-    expect(evaluateSpend({ outputRecreates: false })).toBe(false);
-  });
-
-  it('refuses an output worth less than the master held', () => {
-    expect(evaluateSpend({ outputValue: 19_999n })).toBe(false);
-  });
-
   it('refuses a caller reference that is the master itself', () => {
     expect(evaluateSpend({ callerRef: 1 })).toBe(false);
   });
+  // The recreation refusals are `solidcash/test/per-call/hostile/master-recreation.test.ts`'s, and a nonzero value's
+  // is `value-receive.test.ts`'s.
 });
 
 describe('a stateful per-call master', () => {

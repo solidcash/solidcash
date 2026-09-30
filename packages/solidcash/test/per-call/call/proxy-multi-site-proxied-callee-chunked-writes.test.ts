@@ -180,35 +180,8 @@ describe('a hop whose proxied callee appends to a chunked mapping', () => {
     ]);
     // Each reach carries its own chunk run past the frames' participants.
     expect(result.draft.trailingOutputs.length).toBeGreaterThanOrEqual(4);
-  });
 
-  it('reads the appended value back through the shipped reader', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployAll(network);
-
-    await callPerCallProxyEntry({
-      provider: network,
-      implementationArtifact: outer,
-      proxyArtifact: buildProxyArtifact(outer),
-      proxyCategoryId: funded.outerProxyCategoryId,
-      implementationCategoryId: funded.outerImplementationCategoryId,
-      functionName: 'run',
-      args: [false, 2n],
-      externals: {
-        IStore: {
-          artifact: store,
-          categoryId: funded.storeProxyCategoryId,
-          proxyArtifact: buildProxyArtifact(store),
-          implementationCategoryId: funded.storeImplementationCategoryId,
-        },
-      },
-      callerUtxo: funded.callCoin,
-      callerLockingBytecode: funded.deployerLock,
-      funder: funded.funder,
-      changeAddress: funded.changeAddress,
-      vm: compositionMachine(),
-    });
-
+    // Each reach's append reads back through the shipped reader: one element, of the kind that site pushed.
     for (const [id, kind] of [[10n, 1n], [20n, 2n], [100n, 3n], [101n, 3n]] as const) {
       const read = await readPerCallEntry({
         provider: network,
@@ -232,5 +205,4 @@ describe('a hop whose proxied callee appends to a chunked mapping', () => {
       expect(kindRead.value).toBe(kind);
     }
   });
-
 });

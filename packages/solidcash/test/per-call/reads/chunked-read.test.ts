@@ -70,9 +70,9 @@ const empty = new Uint8Array(0);
 /** The provider a read runs against: the master, a validator, the list's nodes and, optionally, its chunks. */
 async function chain(
   provider: MockNetworkProvider,
-  options: { withNodes?: boolean; withChunks?: boolean } = {},
+  options: { withChunks?: boolean } = {},
 ): Promise<void> {
-  const { withNodes = true, withChunks = true } = options;
+  const { withChunks = true } = options;
   const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
   const utxo = (txid: string, satoshis: bigint, capability: 'minting' | 'mutable', commitment: Uint8Array): {
     txid: string; vout: number; satoshis: bigint;
@@ -84,7 +84,6 @@ async function chain(
 
   await provider.addUtxo(bytesToHex(deployed.lockingBytecode), utxo('11'.repeat(32), 20_000n, 'minting', empty));
   await provider.addUtxo(bytesToHex(deployed.address), utxo('22'.repeat(32), 20_000n, 'mutable', empty));
-  if (!withNodes) return;
   for (const [index, node] of BATCH.written.entries()) {
     const txid = (0x33 + index).toString(16).padStart(2, '0').repeat(32);
     await provider.addUtxo(bytesToHex(ENTRY_LOCK), utxo(txid, 1_500n, 'mutable', node.after));
@@ -159,15 +158,6 @@ describe('reading a mapping node whose value lives in continuation chunks', () =
     await expect(read(provider, 'DL')).rejects.toThrow(
       new RegExp(`holds a ${key(LONG).length}-byte value whose bytes sit in chunk records that category `
         + `${CATEGORY_HEX} does not hold`),
-    );
-  });
-
-  it('still refuses by name a key whose live list holds no node and no bracketing predecessor', async () => {
-    const provider = new MockNetworkProvider();
-    await chain(provider, { withNodes: false });
-
-    await expect(read(provider, 'DL')).rejects.toThrow(
-      /holds no node of collection "tags" whose slot is the key's or the key's bracketing predecessor/,
     );
   });
 

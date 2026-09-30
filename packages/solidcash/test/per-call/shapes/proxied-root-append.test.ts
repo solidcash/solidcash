@@ -14,7 +14,6 @@ import {
   type StateLayout,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import { seededCategory, REAL_VALIDATOR_PROGRAM } from '../../../../solidc/test/per-call/master/validator-input.js';
 import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -26,7 +25,7 @@ import {
 import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
 import {
   chunkRecordId, createComposedDerivationHost, layOutChunkRun, participant,
-  planChunkRun, readPublishedStopSites, reportCompositionRefusal,
+  planChunkRun, reportCompositionRefusal,
   type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { layoutWithFacets } from './harness.js';
@@ -69,8 +68,8 @@ import {
  * The whole shipped path runs: the compiler, `deployMaster`, `buildProxyArtifact` for both proxies, the composer,
  * the derivation and the BCH-2026 machine.
  *
- * One deviation from the shape this file names is pinned rather than worked around: the token pull's low-level call
- * is refused by the compiler by name, and is asserted below with the shipped code's own objection.
+ * The shape's token pull, a low-level call the compiler lowers to the typed call, is pinned in
+ * `edges/low-level-token-call-lowering.test.ts`.
  *
  * The read-only hop is driven against the second contract at its own address. A read-only frame makes no calls, and
  * a generated proxy's fallback is a delegate hop, so the read of a contract *behind* its proxy is not settled here.
@@ -853,49 +852,6 @@ describe('a proxied root reading a second contract once per tag', () => {
     expect(outcome.transaction.outputs[built.recordIndex]!.token!.nft!.commitment)
       .toStrictEqual(readRecordOf(built.total));
     expect(built.total).toBe(21n);
-  });
-});
-
-describe('the token pull and the shapes that stay open', () => {
-  const TOKEN_SOURCE = 'pragma solidcash ^0.13.0;'
-    + ' interface IToken { function transfer(address to, int amount); function balanceOf(address a) returns (int); }'
-    + ' contract Puller {'
-    + '   function checkLength(address token) { require(token.code.length > 0); require(true); }'
-    + '   function readBalance(address token, address who) returns (int) {'
-    + '     int b = IToken(token).balanceOf(who); require(b >= 0); return b; }'
-    + ' }';
-
-  it('serves the token\'s code-length gate and a balance read, compiling every body', () => {
-    expect(publishedRefusals(compileStringMulti(TOKEN_SOURCE, { composition: 'per-call' }))).toStrictEqual([]);
-  });
-
-  it('lowers the low-level token pull whose payload is held in a local, to the typed call it denotes', () => {
-    // The payload is built by `abi.encodeCall` into a local and invoked through `address(token).call`. The method
-    // the payload names is static, so the body compiles as the typed call and publishes the call site the
-    // spelled-out typed call publishes.
-    const local = 'pragma solidcash ^0.13.0;'
-      + ' interface IToken { function transfer(address to, int amount); }'
-      + ' contract Puller {'
-      + '   function pull(address token, address to, int amount) {'
-      + '     bytes data = abi.encodeCall(IToken.transfer, (to, amount));'
-      + '     (bool ok, bytes ret) = address(token).call(data);'
-      + '     require(ok);'
-      + '   }'
-      + ' }';
-    const typed = 'pragma solidcash ^0.13.0;'
-      + ' interface IToken { function transfer(address to, int amount); }'
-      + ' contract Puller {'
-      + '   function pull(address token, address to, int amount) {'
-      + '     IToken(token).transfer(to, amount);'
-      + '     require(true);'
-      + '   }'
-      + ' }';
-    const lowered = compileStringMulti(local, { composition: 'per-call' });
-    expect(publishedRefusals(lowered)).toStrictEqual([]);
-    const published = readPublishedStopSites(lowered.Puller!);
-    const spelled = readPublishedStopSites(compileStringMulti(typed, { composition: 'per-call' }).Puller!);
-    expect(published.entries.find((entry) => entry.functionName === 'Puller.pull()'))
-      .toStrictEqual(spelled.entries.find((entry) => entry.functionName === 'Puller.pull()'));
   });
 });
 

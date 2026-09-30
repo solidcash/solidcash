@@ -13,15 +13,14 @@ import { layoutWithFacets } from '../shapes/harness.js';
 /**
  * A `pure` callee reached as a read-only frame, with a fixed-size array on both boundaries.
  *
- * The caller's entry calls the callee's `pure` entry with an array value the source states at compile time, so the
- * site folds one digest and the callee carries one call data. The array value itself is the shipped encoder's
- * output, so the callee's element reads and the caller's record agree by construction. The pair below runs the
- * whole path — compile, deploy, compose, derive, the BCH-2026 machine — and asserts on the composer's own block,
- * the order the derivation completed in, and the array decoded out of the caller's call record.
+ * The caller's entry calls the callee's `pure` entry with an array it fills at run time, and the callee carries one
+ * call data. The array value itself is the shipped encoder's output, so the callee's element reads and the caller's
+ * record agree by construction. The pair below runs the whole path (compile, deploy, compose, derive, the BCH-2026
+ * machine) and asserts on the composer's own block, the order the derivation completed in, and the array decoded out
+ * of the caller's call record.
  *
- * The read-only frame is admitted for a compile-time array value and for one the caller builds at run time alike:
- * the site's digest is computed from the value the code holds, and the callee reading the elements it was handed is
- * what shows that digest is the wire's.
+ * The site's digest is computed from the value the code holds, and the callee reading the elements it was handed is
+ * what shows that digest is the wire's. A value the source states at compile time is `fixed-array-calls.test.ts`'s.
  */
 
 const CALLER_LABEL = 'static frame caller';
@@ -126,10 +125,6 @@ function driveArgument(argumentExpression: string, declarations = ''): void {
 }
 
 describe('a pure callee reached as a static frame', () => {
-  it('carries a fixed-size array argument in and its result back out, accepted at every contract input', () => {
-    driveArgument(`hex"${hexOf(ARGUMENT)}"`);
-  });
-
   it('carries a fixed-size array the caller builds at run time, accepted at every contract input', () => {
     // The argument is a local the caller fills element by element, so the site's digest is over a value the code
     // holds at run time rather than one the source states; the callee reading the elements it was sent is the proof

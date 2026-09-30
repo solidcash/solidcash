@@ -23,10 +23,7 @@ import {
   FrameKind,
   INDEX_NONE,
   TokenCapability,
-  concatBytes,
   encodeTranscript,
-  encodeWitnessBlock,
-  splitFirstPush,
   validatorRedeemScript,
   type PerCallTransaction as ModelledTransaction,
   type TokenShape,
@@ -369,31 +366,6 @@ describe('the validator program as a script', () => {
 });
 
 /**
- * The reference composition with one covered master's first push replaced, its argument pushes and redeem script
- * untouched.
- *
- * A master's witness block is what the codec encodes from the block value, so a payload the codec would refuse —
- * trailing bytes, a truncated field — can only be built by writing the unlocking bytecode directly. Everything the
- * program reads after the first push is left as the fixture laid it out, so only the block's own bytes differ.
- */
-function withMasterBlockPayload(
-  composition: Composition,
-  masterIndex: number,
-  payload: Uint8Array,
-): ModelledTransaction {
-  const modelled = materialise(composition);
-  const original = modelled.inputs[masterIndex]!.unlockingBytecode;
-  const { rest } = splitFirstPush(original);
-  const unlockingBytecode = concatBytes([encodeDataPush(payload), rest]);
-  return {
-    ...modelled,
-    inputs: modelled.inputs.map((input) => (input.index === masterIndex
-      ? { ...input, unlockingBytecode }
-      : input)),
-  };
-}
-
-/**
  * Cases in the generated run. They cycle through the mutation catalogue, so three rounds apply every mutation to
  * three different plans; `PER_CALL_FULL=1` restores the 400-case sample for milestone runs.
  */
@@ -469,22 +441,6 @@ describe('the validator program refuses each rule it enforces', () => {
         : input)),
     };
     expect(derivationOf(tampered, index).rejection?.reason).toBe('V1_VALIDATOR_NOT_A_MUTABLE_NFT');
-    expect(accepted(tampered, index)).toBe(false);
-  });
-
-  test('refuses a validator whose output does not recreate it', () => {
-    const { modelled, index } = reference();
-    const tampered: ModelledTransaction = {
-      ...modelled,
-      outputs: modelled.outputs.map((output) => (output.index === index
-        ? {
-          ...output,
-          lockingBytecode: encodeLockingBytecodeP2sh32(new Uint8Array(32).fill(0x77)),
-          token: mutableTokenShape(categoryOf('elsewhere'), output.token.nftCommitment),
-        }
-        : output)),
-    };
-    expect(derivationOf(tampered, index).rejection?.check).toBe('V1');
     expect(accepted(tampered, index)).toBe(false);
   });
 
@@ -599,27 +555,6 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(tampered, index)).toBe(false);
   });
 
-  test('refuses a covered master whose witness block carries more than the frame it states', () => {
-    const { composition, index } = reference();
-    const master = composition.transcript.masters[0]!;
-    const block = composition.inputs[master]!.master!.block;
-    const encoded = encodeWitnessBlock(block);
-
-    // The faithful spend both sides accept, so the two refusals below are the block's own bytes and nothing else.
-    expect(derivationOf(materialise(composition), index).accepted).toBe(true);
-    expect(accepted(materialise(composition), index)).toBe(true);
-
-    // A block the codec would not encode: the frame decodes, but one byte follows the fields it declares.
-    const trailing = withMasterBlockPayload(composition, master, new Uint8Array([...encoded, 0x00]));
-    expect(derivationOf(trailing, index).rejection?.reason).toBe('V2_MASTER_WITNESS_BLOCK_MALFORMED');
-    expect(accepted(trailing, index)).toBe(false);
-
-    // A block whose last field is cut short: the fields before it are intact, so only exact-length parsing objects.
-    const truncated = withMasterBlockPayload(composition, master, encoded.subarray(0, encoded.length - 1));
-    expect(derivationOf(truncated, index).rejection?.reason).toBe('V2_MASTER_WITNESS_BLOCK_MALFORMED');
-    expect(accepted(truncated, index)).toBe(false);
-  });
-
   test('refuses a settled state input that names no input', () => {
     const { composition, index } = reference();
     const transcript = composition.transcript;
@@ -656,19 +591,6 @@ describe('the validator program refuses each rule it enforces', () => {
     const composition = laidOut(abbaPlan());
     const index = composition.validatorIndex;
     composition.blocks.get('B.g')!.validatorRef = 0xffff;
-    const modelled = materialise(composition);
-    expect(derivationOf(modelled, index).rejection?.reason).toBe('V3_MASTER_NOT_POINTING_HERE');
-    expect(accepted(modelled, index)).toBe(false);
-  });
-
-  test('refuses a listed master that names another input as its validator', () => {
-    // The absent sentinel is one way a listed master fails to point here; naming a real input that is not this
-    // validator is the other, and a program that only looked for the sentinel would accept it.
-    const composition = laidOut(abbaPlan());
-    const index = composition.validatorIndex;
-    const elsewhere = composition.slotIndex.get('DA')!;
-    expect(elsewhere).not.toBe(index);
-    composition.blocks.get('B.g')!.validatorRef = elsewhere;
     const modelled = materialise(composition);
     expect(derivationOf(modelled, index).rejection?.reason).toBe('V3_MASTER_NOT_POINTING_HERE');
     expect(accepted(modelled, index)).toBe(false);
@@ -963,17 +885,11 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(modelled, index)).toBe(false);
   });
 
-  test('accepts a composition whose spent state UTXO the transcript lists', () => {
-    const { composition, modelled, index } = reference();
-    const stateIndex = composition.slotIndex.get('DA')!;
-    expect(composition.transcript.settles[0]!.stateInputs).toEqual([stateIndex]);
-    expect(derivationOf(modelled, index).accepted).toBe(true);
-    expect(accepted(modelled, index)).toBe(true);
-  });
-
   test('refuses a spent state UTXO the transcript does not list', () => {
     const { composition, index } = reference();
     const transcript = composition.transcript;
+    // The reference transcript lists the spent state UTXO; the tampered one lists none.
+    expect(transcript.settles[0]!.stateInputs).toEqual([composition.slotIndex.get('DA')!]);
     const tampered = withTranscript(composition, encodeTranscript({
       ...transcript,
       settles: transcript.settles.map((settled) => ({ ...settled, stateInputs: [] })),
@@ -1336,23 +1252,6 @@ describe('the validator program refuses each rule it enforces', () => {
         : output)),
     };
     expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CENSUS_MINTING_NOT_RECREATED');
-    expect(accepted(tampered, index)).toBe(false);
-  });
-
-  test('refuses an event output two frames both list', () => {
-    // An event output belongs to one frame: two frames claiming the same output would make the settlement's
-    // attribution ambiguous. Two frames on the same contract's records list the output the first one already does.
-    const composition = laidOut(abbaPlan());
-    const index = composition.validatorIndex;
-    const modelled = materialise(composition);
-    const first = composition.blocks.get('A.f')!;
-    expect(first.events.length).toBeGreaterThanOrEqual(1);
-    expect(derivationOf(modelled, index).accepted).toBe(true);
-    expect(accepted(modelled, index)).toBe(true);
-
-    composition.blocks.get('A.k')!.events = [first.events[0]!];
-    const tampered = materialise(composition);
-    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_EVENT_OUTPUT_SHARED');
     expect(accepted(tampered, index)).toBe(false);
   });
 

@@ -130,6 +130,28 @@ describe('the pool a per-call deployment funds', () => {
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.accepted).toBe(true);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+
+    // Each reach derives the callee's implementation entry, then the proxy fallback that entered it; the four
+    // reaches come first, then the entry that made them and the fallback that entered it.
+    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual([
+      `${inner.contractName}.note()`,
+      `${inner.contractName}Proxy.__fallback()`,
+      `${inner.contractName}.note()`,
+      `${inner.contractName}Proxy.__fallback()`,
+      `${inner.contractName}.tick()`,
+      `${inner.contractName}Proxy.__fallback()`,
+      `${inner.contractName}.tick()`,
+      `${inner.contractName}Proxy.__fallback()`,
+      `${outer.contractName}.run()`,
+      `${outer.contractName}Proxy.__fallback()`,
+    ]);
+    // The guarded site the caller's argument leaves untaken places nothing, so the entry ran four calls.
+    expect(result.draft.blockOf('implementation-master').calls).toHaveLength(4);
+    // Each reach's own call data reaches its own implementation input: the two unconditional calls and the two
+    // loop turns all differ.
+    const implMasters = ['callee-impl-master-2', 'callee-impl-master-4', 'callee-impl-master-6', 'callee-impl-master-8'];
+    const callData = implMasters.map((master) => binToHex(result.draft.unlockingBytecodeOf(master)));
+    expect(new Set(callData).size).toBe(callData.length);
   });
 
   it('funds exactly the pool a caller names, and the planner refuses a reach past it', async () => {

@@ -222,25 +222,17 @@ function read(
 }
 
 describe('a read that reaches another contract\'s implementation at its proxy address', () => {
-  it('returns the value the callee computed, with nothing broadcast', async () => {
-    const provider = await chain(7n);
-    const before = transactionCount(provider);
-    const result = await read(provider, 'peek');
-
-    expect(result.accepted).toBe(true);
-    expect(result.value).toBe(7n);
-    expect(result.retval).toStrictEqual(encodeResultList([encodeIntegerValue(7n)]));
-    // The read is a local evaluation: the provider's transaction count does not move.
-    expect(transactionCount(provider)).toBe(before);
-  });
-
   it('returns a callee read once, then a second contract read once', async () => {
     // Two call sites, two callees, one frame each: the entry's own computation is over both results.
     const provider = await chain(7n);
+    const before = transactionCount(provider);
     const result = await read(provider, 'mix');
 
     expect(result.accepted).toBe(true);
     expect(result.value).toBe(14n);
+    expect(result.retval).toStrictEqual(encodeResultList([encodeIntegerValue(14n)]));
+    // The read is a local evaluation: the provider's transaction count does not move.
+    expect(transactionCount(provider)).toBe(before);
   });
 
   it('returns one callee read twice beside a length read: the read runs one frame per call', async () => {

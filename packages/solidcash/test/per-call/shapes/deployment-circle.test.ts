@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import {
   FrameKind, buildPushdataCommitment, type Artifact, type StateValue,
 } from '@solidcash/utils';
@@ -7,9 +7,7 @@ import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import {
-  Contract, Signer, SignatureTemplate, StatefulContract, TransactionBuilder,
-} from '../../../src/index.js';
+import { Signer, StatefulContract, TransactionBuilder } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import {
@@ -20,29 +18,26 @@ import {
   CreateLookahead, deployMaster, readPerCallDeployment, readPerCallState,
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../../../src/per-call/deploy/index.js';
-import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { DEFAULT_MASTER_POOL_SIZE } from '../../../src/per-call/deploy/index.js';
 import {
-  composeDraft, createComposedDerivationHost, deriveComposition, participant,
+  createComposedDerivationHost, deriveComposition, participant,
   type CompositionDraft, type CompositionDraftPlan,
 } from '../../../src/per-call/composer/index.js';
-import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
-import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { master, token as tokenOf } from './harness.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 import { layoutWithFacets } from './harness.js';
 
 /**
- * A deployment: four contracts at predicted addresses, a proxy pair, and a token.
+ * A deployment: four contracts at predicted addresses, and a token.
  *
  * Four stateful contracts have records that point at one another in a circle, so every address has to be known
- * before the first of them is deployed; a pair is deployed behind the built-in forwarder in three transactions
- * each; and a token's balances are moved by a few transfers and approves.
+ * before the first of them is deployed, and a token's balances are moved by a few transfers and approves. The
+ * shape's proxy pair, deployed behind the built-in forwarder, is `deploy/proxy-initialize-broadcast.test.ts`'s.
  *
  * Everything runs the shipped path: the addresses are reserved and predicted through `CreateLookahead`, the
- * deployments are `StatefulContract.deploy` (which routes a per-call artifact to the per-call genesis), the proxy
- * pair is `deployPerCallProxy`, the calls are the shipped composer plus derivation rebuilt on the outpoints the
- * chain holds, and every state read is `readPerCallState`/`readPerCallDeployment`.
+ * deployments are `StatefulContract.deploy` (which routes a per-call artifact to the per-call genesis), the calls
+ * are the shipped composer plus derivation rebuilt on the outpoints the chain holds, and every state read is
+ * `readPerCallState`/`readPerCallDeployment`.
  */
 
 const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
@@ -70,27 +65,6 @@ const TOKEN_SOURCE = 'pragma solidcash ^0.13.0;'
   + '     this.balance = this.balance + amount;'
   + '     require(true);'
   + '   }'
-  + ' }';
-
-// The implementation and the forwarder declare the same records; the initializer writes two of them through the
-// proxy, which is how the delegate hop is shown to reach the implementation's own body.
-const PROXY_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Impl {'
-  + '   address public implementation;'
-  + '   uint public initialized;'
-  + '   int public version;'
-  + '   function initialize(address expected) {'
-  + '     require(msg.sender == expected);'
-  + '     require(this.initialized == 0);'
-  + '     this.initialized = 1;'
-  + '     this.version = 7;'
-  + '   }'
-  + ' }'
-  + ' contract Proxy {'
-  + '   address public implementation;'
-  + '   uint public initialized;'
-  + '   int public version;'
-  + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
   + ' }';
 
 const CIRCLE = ['Alpha', 'Beta', 'Gamma', 'Delta'] as const;
@@ -256,8 +230,6 @@ async function statefulCallPlan(options: {
   readonly entry: string;
   readonly args?: readonly FunctionArgument[];
   readonly dispatches?: boolean;
-  /** Set to carry call data without the dispatcher flag, which is the plan the composer refuses. */
-  readonly callData?: boolean;
   readonly state: Readonly<Record<string, StateValue>>;
   readonly userLock: Uint8Array;
   readonly funding: Utxo;
@@ -296,7 +268,7 @@ async function statefulCallPlan(options: {
       },
       frame: { kind: FrameKind.ROOT, sender: options.userLock, self: deployed.address, value: 0n },
       enteredBy: 'user', origin: 'user',
-      ...(options.dispatches === true || options.callData === true
+      ...(options.dispatches === true
         ? { argumentPushes: argumentPushes(options.artifact, options.entry, options.args ?? []) }
         : {}),
       segments: [segment],
@@ -471,63 +443,6 @@ describe('a deployment whose addresses are predicted before anything is deployed
   });
 });
 
-describe('two contracts deployed behind the built-in proxy', () => {
-  it('broadcasts three transactions per pair and the initialize reaches its implementation', async () => {
-    const artifacts = compileStringMulti(PROXY_SOURCE, { composition: 'per-call' });
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const signature = new SignatureTemplate(alicePriv);
-    const deployer = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
-    const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
-
-    /** One deployment's own funding: both geneses at the deployer, and the caller's coin at the deployer's lock. */
-    const deployPair = async (ids: { readonly impl: string; readonly proxy: string; readonly caller: string }):
-    Promise<Awaited<ReturnType<typeof deployPerCallProxy>>> => {
-      const implFunding = { txid: ids.impl, vout: 0, satoshis: 500_000n };
-      const proxyFunding = { txid: ids.proxy, vout: 0, satoshis: 500_000n };
-      const callerUtxo = { txid: ids.caller, vout: 0, satoshis: 100_000n };
-      await network.addUtxo(deployer.address, implFunding);
-      await network.addUtxo(deployer.address, proxyFunding);
-      await network.addUtxo(binToHex(deployerLock), callerUtxo);
-      // The hops broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
-      await fundShippedFacets(network);
-      return deployPerCallProxy({
-        provider: network,
-        implementationArtifact: artifacts.Impl!,
-        proxyArtifact: artifacts.Proxy!,
-        implementationDeploy: { fundingUtxo: implFunding, funder: deployer.unlock.spend(alicePub, signature),
-          changeAddress: deployer.address },
-        proxyDeploy: { fundingUtxo: proxyFunding, funder: deployer.unlock.spend(alicePub, signature),
-          changeAddress: deployer.address },
-        initialize: { functionName: 'initialize', args: [deployerLock] },
-        callerLockingBytecode: deployerLock,
-        callerFunding: { utxo: callerUtxo, funder: signature.unlockP2PKH() },
-        vm: compositionMachine(),
-      });
-    };
-
-    const deployment = await deployPair({
-      impl: '11'.repeat(31) + 'ee', proxy: '22'.repeat(31) + 'dd', caller: '33'.repeat(31) + 'cc',
-    });
-
-    // Three broadcast transactions: both geneses and the initialize hop, all on the mock chain.
-    const txids = new Set([
-      deployment.implementation.tx.txid, deployment.proxy.tx.txid, deployment.initialize.broadcast!.txid,
-    ]);
-    expect(txids.size).toBe(3);
-    for (const txid of txids) expect(await network.getRawTransaction(txid)).toMatch(/^[0-9a-f]+$/);
-
-    // The initialize frame reached its implementation: the entry wrote the implementation's own fields through
-    // the proxy's own record, and both hops are accepted.
-    expect(deployment.initialize.accepted).toBe(true);
-    expect(deployment.initialize.completed.map((frame) => frame.functionName))
-      .toStrictEqual(['Impl.initialize()', 'Proxy.__fallback()']);
-    const state = await readState(network, deployment.proxy.categoryId, artifacts.Proxy!);
-    expect(state.initialized).toBe(1n);
-    expect(state.version).toBe(7n);
-    expect([...(state.implementation as Uint8Array)]).toStrictEqual([...deployment.implementation.address]);
-  });
-});
-
 describe('a token deployment and its transfers and approves', () => {
   it('settles four calls and reads the balances back through the shipped readers', async () => {
     const d = await deployments();
@@ -569,70 +484,5 @@ describe('a token deployment and its transfers and approves', () => {
     expect(now.totalSupply).toBe(60n);
     expect(now.allowance).toBe(25n);
     expect(now.balance).toBe(40n);
-  });
-});
-
-describe('the refusals the shape meets', () => {
-  it('refuses a user-entered master that carries call data without a dispatcher', async () => {
-    const d = await deployments();
-    const built = await statefulCallPlan({
-      provider: d.provider, artifact: d.tokenArtifact, categoryId: d.tokenCategory, entry: 'approve',
-      args: [40n], callData: true,
-      state: { ...(await readState(d.provider, d.tokenCategory, d.tokenArtifact)), allowance: 40n },
-      userLock: d.userLock, funding: d.funding[5]!,
-    });
-    const refusal = (() => {
-      try { composeDraft(built.plan); return undefined; } catch (error) { return error as Error; }
-    })();
-    expect(refusal?.name).toBe('PerCallEncodingError');
-    expect(refusal?.message).toBe('"call-master" is entered by a user, so it carries no call data');
-  });
-
-  it('refuses a create address beyond the coins that were reserved', async () => {
-    const { signer } = await fundedSigner(2, 0xd1);
-    const artifacts = compileStringMulti(CIRCLE_SOURCE, { composition: 'per-call' });
-    const lookahead = CreateLookahead.open({ signer, artifact: artifacts.Alpha! });
-    try {
-      await lookahead.reserve(2);
-      const error = (() => {
-        try { lookahead.getCreateAddress(2); return undefined; } catch (thrown) { return thrown as Error; }
-      })();
-      expect(error?.name).toBe('CreateAddressError');
-      expect(error?.message).toMatch(/2 genesis-eligible UTXO\(s\) are reserved/);
-      expect(error?.message).toMatch(/contract-creation\.md/);
-    } finally {
-      lookahead.release();
-    }
-  });
-
-  it('refuses a proxy that does not declare the implementation\'s record fields', async () => {
-    const artifacts = compileStringMulti(PROXY_SOURCE, { composition: 'per-call' });
-    const mismatched = compileStringMulti(
-      'pragma solidcash ^0.13.0;'
-      + ' contract Other {'
-      + '   address public implementation;'
-      + '   int public extra;'
-      + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
-      + ' }',
-      { composition: 'per-call' },
-    );
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const signature = new SignatureTemplate(alicePriv);
-    const deployer = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
-    const refusal = await deployPerCallProxy({
-      provider: network,
-      implementationArtifact: artifacts.Impl!,
-      proxyArtifact: mismatched.Other!,
-      implementationDeploy: { fundingUtxo: { txid: '11'.repeat(31) + 'ee', vout: 0, satoshis: 500_000n },
-        funder: deployer.unlock.spend(alicePub, signature), changeAddress: deployer.address },
-      proxyDeploy: { fundingUtxo: { txid: '22'.repeat(31) + 'dd', vout: 0, satoshis: 500_000n },
-        funder: deployer.unlock.spend(alicePub, signature), changeAddress: deployer.address },
-      initialize: { functionName: 'initialize', args: [new Uint8Array(25).fill(0x22)] },
-      callerLockingBytecode: new Uint8Array(25).fill(0x22),
-      vm: compositionMachine(),
-    }).then(() => undefined, (error: Error) => error);
-
-    expect(refusal?.name).toBe('PerCallProxyDeployError');
-    expect(refusal?.message).toMatch(/must declare the same record fields/);
   });
 });

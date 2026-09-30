@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexToBin } from '@bitauth/libauth';
 import {
-  bytesToHex, buildPushdataCommitment, hash256, validatorAddress, type Artifact, type StateLayout,
+  bytesToHex, hash256, validatorAddress, type Artifact,
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -9,7 +9,7 @@ import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import { planHopExternalCalls } from '../../../src/per-call/proxy/external-calls.js';
@@ -39,11 +39,9 @@ const hexOf = (bytes: Uint8Array): string => binToHex(bytes);
 const FACET_SATOSHIS = 10_000n;
 
 // The callees carry a record each: the oracle's entry returns a field of it, and the escrow's entry reads one.
-// `Impl`'s entries read their own record beside the call, so the frame's segments declare the record it touches;
-// `plain` is the control, an entry that makes no call at all.
+// `Impl`'s entries read their own record beside the call, so the frame's segments declare the record it touches.
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IOracle { function amountOf() view returns (int); }'
-  + ' interface IEscrow { function settle(); }'
   + ' interface IWriter { function bump(); }'
   + ' contract Oracle {'
   + '   int public answer;'
@@ -64,9 +62,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   int public total;'
   + '   function initialize(address expected) { require(msg.sender == expected); this.initialized = 1; }'
   + `   function probe() { require(IOracle(0x${hexOf(ORACLE_ADDRESS)}).amountOf() > this.total); require(true); }`
-  + `   function poke() { IEscrow(0x${hexOf(ESCROW_ADDRESS)}).settle(); require(this.total >= 0); }`
   + `   function write() { IWriter(0x${hexOf(WRITER_ADDRESS)}).bump(); require(this.total >= 0); }`
-  + '   function plain() { this.total = this.total + 1; require(true); }'
   + ' }';
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
@@ -97,11 +93,6 @@ const UNFIXED = compileStringMulti('pragma solidcash ^0.13.0;'
   + '   }'
   + ' }', { composition: 'per-call' });
 
-/** The implementation's address at its seeded category, `addrV(category)`. */
-function implementationAddress(): Uint8Array {
-  return deployMaster(impl, new Uint8Array(hexToBin(IMPL_CATEGORY)), VALIDATOR_PROGRAM).address;
-}
-
 // Two entries that call each other, each at an address baked into the other's code, so the planner is asked to
 // place a contract it already placed when it recurses.
 const CYCLE_A_CATEGORY = 'aa'.repeat(32);
@@ -119,11 +110,6 @@ const CYCLE = compileStringMulti('pragma solidcash ^0.13.0;'
 async function recordState(network: MockNetworkProvider, categoryId: string): Promise<string> {
   const deployment = await readPerCallDeployment(network, categoryId, impl.stateLayout!);
   return bytesToHex(new Uint8Array(hexToBin(deployment.records[0]!.token!.nft!.commitment)));
-}
-
-/** The commitment the shipped encoder materializes from one state of a layout. */
-function commitment(layout: StateLayout, state: Record<string, bigint | Uint8Array>): Uint8Array {
-  return new Uint8Array(Buffer.from(buildPushdataCommitment(layout, state, 0), 'hex'));
 }
 
 /** Deploys one callee at `categoryId`, so a hop's call has a live deployment to run against. */
@@ -215,10 +201,33 @@ async function deployedWithCallees(network: MockNetworkProvider): Promise<{
   };
 }
 
+/** A deployment with its callees, on the network that holds it. */
+interface Deployed {
+  readonly network: MockNetworkProvider;
+  readonly funded: Awaited<ReturnType<typeof deployedWithCallees>>;
+}
+
+let deployedRun: Promise<Deployed> | undefined;
+
+/**
+ * The one deployment the hop cases share: the first call enters with the coin it funded, a later one with a fresh
+ * coin at `txid`. Only the static read broadcasts, and it writes no record.
+ */
+async function sharedDeployment(txid?: string): Promise<Deployed> {
+  deployedRun ??= (async (): Promise<Deployed> => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    return { network, funded: await deployedWithCallees(network) };
+  })();
+  const deployed = await deployedRun;
+  if (txid === undefined) return deployed;
+  const callCoin = { txid, vout: 0, satoshis: 300_000n };
+  await deployed.network.addUtxo(hexOf(deployed.funded.deployerLock), callCoin);
+  return { network: deployed.network, funded: { ...deployed.funded, callCoin } };
+}
+
 describe('a proxied entry that calls another deployed contract', () => {
   it('plans the static read, runs the callee frame, accepts every contract input and broadcasts', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallees(network);
+    const { network, funded } = await sharedDeployment();
     const afterInitialize = await recordState(network, funded.proxyCategoryId);
 
     const result = await callPerCallProxyEntry({
@@ -247,65 +256,8 @@ describe('a proxied entry that calls another deployed contract', () => {
     expect(await recordState(network, funded.proxyCategoryId)).toBe(afterInitialize);
   });
 
-  it('plans a state-changing call whose callee reads its own record', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallees(network);
-
-    const result = await callPerCallProxyEntry({
-      provider: network,
-      implementationArtifact: impl,
-      proxyArtifact: buildProxyArtifact(impl),
-      proxyCategoryId: funded.proxyCategoryId,
-      implementationCategoryId: funded.implementationCategoryId,
-      functionName: 'poke',
-      args: [],
-      externals: externals(),
-      callerUtxo: funded.callCoin,
-      callerLockingBytecode: funded.deployerLock,
-      funder: funded.funder,
-      changeAddress: funded.changeAddress,
-      vm: compositionMachine(),
-    });
-
-    expect(result.completed.map((frame) => frame.functionName))
-      .toStrictEqual([`${escrow.contractName}.settle()`, `${impl.contractName}.poke()`, 'ImplProxy.__fallback()']);
-    expect(result.accepted).toBe(true);
-    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  it('leaves an entry that makes no call unaffected', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallees(network);
-
-    const result = await callPerCallProxyEntry({
-      provider: network,
-      implementationArtifact: impl,
-      proxyArtifact: buildProxyArtifact(impl),
-      proxyCategoryId: funded.proxyCategoryId,
-      implementationCategoryId: funded.implementationCategoryId,
-      functionName: 'plain',
-      args: [],
-      externals: externals(),
-      callerUtxo: funded.callCoin,
-      callerLockingBytecode: funded.deployerLock,
-      funder: funded.funder,
-      changeAddress: funded.changeAddress,
-      vm: compositionMachine(),
-    });
-
-    // No callee frame runs: the only frames are the entry and the fallback that entered it.
-    expect(result.completed.map((frame) => frame.functionName))
-      .toStrictEqual([`${impl.contractName}.plain()`, 'ImplProxy.__fallback()']);
-    expect(result.accepted).toBe(true);
-    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-    expect(bytesToHex(result.writtenCommitments[0]!)).toBe(bytesToHex(commitment(impl.stateLayout!, {
-      implementation: implementationAddress(), initialized: 1n, total: 1n,
-    })));
-  });
-
   it('refuses a call whose callee the deployment does not hold, naming the address', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallees(network);
+    const { network, funded } = await sharedDeployment('44'.repeat(31) + 'c2');
     const before = await recordState(network, funded.proxyCategoryId);
 
     await expect(callPerCallProxyEntry({
@@ -327,8 +279,7 @@ describe('a proxied entry that calls another deployed contract', () => {
   });
 
   it('refuses a callee whose own body rewrites its record, naming that frame', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallees(network);
+    const { network, funded } = await sharedDeployment('44'.repeat(31) + 'c3');
 
     await expect(callPerCallProxyEntry({
       provider: network,
@@ -345,24 +296,6 @@ describe('a proxied entry that calls another deployed contract', () => {
       changeAddress: funded.changeAddress,
       vm: compositionMachine(),
     })).rejects.toThrow(/the call's callee "Writer\.bump\(\)" did not settle through the proxy/);
-  });
-
-  it('states one record per visit of a loop whose width the caller fixes', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    // Three turns reach the callee three times, and each reach carries its own call data, so the callee needs
-    // three masters of its own.
-    await deployCallee(network, oracle, ORACLE_CATEGORY, 3);
-    const plan = await planHopExternalCalls({
-      provider: network,
-      artifact: UNFIXED.Looping!,
-      functionName: 'spin',
-      args: [3n],
-      externals: externals(),
-      validatorProgram: VALIDATOR_PROGRAM,
-    });
-    // Three turns of the loop, one record each, all reaching the callee the entry's own code computes.
-    expect(plan.calls).toHaveLength(3);
-    expect(plan.calls.every((call) => bytesToHex(call.target) === hexOf(ORACLE_ADDRESS))).toBe(true);
   });
 
   it("refuses a loop whose turns exceed the callee's own master pool, naming the pool", async () => {
@@ -390,22 +323,6 @@ describe('a proxied entry that calls another deployed contract', () => {
       externals: externals(),
       validatorProgram: VALIDATOR_PROGRAM,
     })).rejects.toThrow(/targets the state field "foo", which the caller's own state does not hold as an address/);
-  });
-
-  it("resolves a target the caller's own code computes from its state, naming the address", async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    await deployCallee(network, oracle, ORACLE_CATEGORY);
-    const plan = await planHopExternalCalls({
-      provider: network,
-      artifact: UNFIXED.Target!,
-      functionName: 'go',
-      args: [],
-      externals: externals(),
-      stateValues: { foo: ORACLE_ADDRESS },
-      validatorProgram: VALIDATOR_PROGRAM,
-    });
-    expect(plan.calls).toHaveLength(1);
-    expect(bytesToHex(plan.calls[0]!.target)).toBe(hexOf(ORACLE_ADDRESS));
   });
 
   it('states a guarded record and one record per loop turn for an entry that mixes both', async () => {

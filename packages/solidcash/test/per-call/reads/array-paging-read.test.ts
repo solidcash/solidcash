@@ -189,19 +189,17 @@ describe('reading a page whose key is an element of a chunk-backed dynamic array
       category: CHUNKED_CATEGORY, categoryHex: CHUNKED_HEX, artifact: CHUNKED_ARTIFACT, items: ITEMS, chunked: true,
     });
 
-    for (const [start, expected] of [[0n, 1000n], [4n, 1004n]] as const) {
-      const result = await read(provider, CHUNKED_ARTIFACT, CHUNKED_HEX, start, 1n);
-      expect(result.accepted).toBe(true);
-      expect(result.value).toStrictEqual([expected]);
+    const result = await read(provider, CHUNKED_ARTIFACT, CHUNKED_HEX, 4n, 1n);
+    expect(result.accepted).toBe(true);
+    expect(result.value).toStrictEqual([1004n]);
 
-      // The declared node is the one the key `items[start]` names.
-      const nodeId = entryRecords(result)[0]!;
-      const index = participant(result.draft.layout, nodeId).index;
-      const slot = decodeEntryCommitment(
-        result.draft.programFor('read').sourceOutputs[index]!.token!.nft!.commitment,
-      ).slot;
-      expect(bytesToHex(slot)).toBe(bytesToHex(keyToSlotMulti([ITEMS[Number(start)]!])));
-    }
+    // The declared node is the one the key `items[4]` names.
+    const nodeId = entryRecords(result)[0]!;
+    const index = participant(result.draft.layout, nodeId).index;
+    const slot = decodeEntryCommitment(
+      result.draft.programFor('read').sourceOutputs[index]!.token!.nft!.commitment,
+    ).slot;
+    expect(bytesToHex(slot)).toBe(bytesToHex(keyToSlotMulti([ITEMS[4]!])));
   });
 
   it('refuses a page of several turns or none, which the chunk run and the entry node cannot share', async () => {

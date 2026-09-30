@@ -97,10 +97,26 @@ async function deployedWithCallerCoin(network: MockNetworkProvider): Promise<{
   };
 }
 
+/** A deployment behind the generated proxy, on the network that holds it. */
+interface Deployed {
+  readonly network: MockNetworkProvider;
+  readonly funded: Awaited<ReturnType<typeof deployedWithCallerCoin>>;
+}
+
+let deployedRun: Promise<Deployed> | undefined;
+
+/** One deployment serves every case: each hop is refused before anything is broadcast, so the call coin stays live. */
+function sharedDeployment(): Promise<Deployed> {
+  deployedRun ??= (async (): Promise<Deployed> => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    return { network, funded: await deployedWithCallerCoin(network) };
+  })();
+  return deployedRun;
+}
+
 describe('a hop whose implementation entry refuses', () => {
   it('names the entry\'s own message rather than the opcode the implementation frame stopped on', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallerCoin(network);
+    const { network, funded } = await sharedDeployment();
     const before = await recordState(network, funded.proxyCategoryId);
 
     await expect(callPerCallProxyEntry({
@@ -123,8 +139,7 @@ describe('a hop whose implementation entry refuses', () => {
   });
 
   it('names the entry and the failing line for a bare guard', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallerCoin(network);
+    const { network, funded } = await sharedDeployment();
 
     await expect(callPerCallProxyEntry({
       provider: network,
@@ -143,8 +158,7 @@ describe('a hop whose implementation entry refuses', () => {
   });
 
   it('carries the values the entry\'s custom error was raised with', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallerCoin(network);
+    const { network, funded } = await sharedDeployment();
 
     const refused = await callPerCallProxyEntry({
       provider: network,

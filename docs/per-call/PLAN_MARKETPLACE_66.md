@@ -1709,8 +1709,10 @@ risk. Take the slices in order, each with its own tests.
   - **Parallel items beside the ladder** (handoff 2026-09-30, `HANDOFF_PARALLEL.md`): seven items off the ladder's
     critical path or ahead of it, each with its lane, the point it is done and what it must coordinate; claim one
     here before starting. **Claimed by the parallel worker**: a walls-ahead probe of a call argument that reads the
-    entry's own earlier write (the post's event data), in `test/per-call/ahead/`. **Landed by the parallel
-    worker**: PW5, PW1 step 1 with the reporter half of step 2, PW9 (log row "a call in the right operand of && or
+    entry's own earlier write (the post's event data), in `test/per-call/ahead/`; the per-call clock on the mock
+    (`oracle/blockOracleUpdater.ts`, which finds no per-call proxy target); and a patch, not a landing, for the
+    hop dropping a callee's key read beside its batch (`docs/per-call/patches/`, for the ladder stream to take).
+    **Landed by the parallel worker**: PW5, PW1 step 1 with the reporter half of step 2, PW9 (log row "a call in the right operand of && or
     ||"), and PW2 (log rows "walls ahead", "walls ahead, second pass" and "walls ahead, the job updates", and the
     scoreboard's "Walls ahead" table); the settle-loop half of PW1 is the ladder stream's.
     **Landed by the second worker, 2026-09-30**: PW3's compiler half (`c3cf75d69`: an entry that writes nothing

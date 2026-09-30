@@ -6412,6 +6412,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ROLL, loc);
         this.emit(Op.OP_DROP, loc);
         this.emit(Op.OP_ENDIF, loc);
+      } else if (this.compilerOptions.messageBusProxyForwardEnvelope === true
+        && this.compilerOptions.messageBusKernel === true
+        && this.getStackIndex('__internal__proxyMasterIndex', true) >= 0) {
+        this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', loc);
+        this.emit(Op.OP_0, loc);
+        this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emit(Op.OP_DEPTH, loc);
+        this.emit(Op.OP_1SUB, loc);
+        this.emit(Op.OP_ROLL, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.emit(Op.OP_ENDIF, loc);
       }
     }
 

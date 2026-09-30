@@ -1,11 +1,12 @@
 /* eslint-disable max-len */
 import {
-  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstructions,
+  bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstructions,
   encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
   vmNumberToBigInt, type AuthenticationProgramStateCommon, type Output, type Transaction,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
+import { scriptToBytecode } from '@solidcash/utils';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { rememberPreparedCovenantValidation } from '../network/createPreparedTxVerifier.js';
@@ -688,6 +689,73 @@ const assertCanonicalMessageEnvelopePush = (
   const rootUnlocker = builder.inputs[0]?.unlocker;
   const rootEnvelopeLocation = rootUnlocker && isContractUnlocker(rootUnlocker)
     ? rootUnlocker.contract.artifact.messageBus?.atomicMessageBus?.messageEnvelope : undefined;
+  const rootBlock = assembly.blocks[0];
+  const executorOffset = rootBlock?.blockLayout.slots.find((slot) => slot.kind === 'lowLevelCall')?.offset;
+  const executorUnlocker = executorOffset === undefined ? undefined : builder.inputs[executorOffset]?.unlocker;
+  const executorEnvelopeLocation = executorUnlocker && isContractUnlocker(executorUnlocker)
+    ? executorUnlocker.contract.artifact.messageBus?.atomicMessageBus?.messageEnvelope : undefined;
+  if (executorEnvelopeLocation?.region === 'proxy-forward') {
+    if (!rootBlock || rootBlock.base !== 0 || executorOffset === undefined || executorOffset < 1
+      || !rootUnlocker || !isContractUnlocker(rootUnlocker)
+      || rootUnlocker.abiFunction?.name !== '__forward'
+      || !executorUnlocker || !isContractUnlocker(executorUnlocker)
+      || getMessageBusEnvelopeTransport(executorUnlocker.contract.artifact) !== 'proxy-forward') {
+      throw new Error('messageBus: V5 proxy-forward envelope has no authenticated root proxy/executor pair');
+    }
+    for (const block of assembly.blocks) {
+      const routeOffset = block.blockLayout.slots.find((slot) => slot.kind === 'lowLevelCall')?.offset ?? 0;
+      const unlocker = builder.inputs[block.base + routeOffset]?.unlocker;
+      if (!unlocker || !isContractUnlocker(unlocker)
+        || getMessageBusEnvelopeTransport(unlocker.contract.artifact) !== 'proxy-forward') {
+        throw new Error('messageBus: V5 proxy-forward envelope cannot mix participant transports');
+      }
+    }
+    const root = transaction.inputs[0]?.unlockingBytecode ?? new Uint8Array();
+    const maximumInputBytes = builder.provider.consensusLimits?.maximumInputBytes ?? 10_000;
+    const indexPush = scriptToBytecode([bigIntToVmNumber(BigInt(executorOffset))]);
+    if (root.length > maximumInputBytes || root.length < indexPush.length + 4
+      || binToHex(root.slice(0, indexPush.length)) !== binToHex(indexPush)
+      || root[indexPush.length] !== 0x4d) {
+      throw new Error('messageBus: V5 proxy input 0 must pin its executor and a PUSHDATA2 forward payload');
+    }
+    const forward = readPush(root, indexPush.length);
+    const outerLength = root[indexPush.length + 1] | (root[indexPush.length + 2] << 8);
+    const payload = forward?.data;
+    if (!forward || !payload || outerLength !== payload.length || payload.length < 7
+      || binToHex(payload.slice(0, 4)) !== '53434231' || payload[4] !== 0x4d) {
+      throw new Error('messageBus: V5 proxy input 0 has no canonical SCB1 forward payload');
+    }
+    const envelopeLength = payload[5] | (payload[6] << 8);
+    const envelope = payload.slice(7);
+    if (envelopeLength !== envelope.length || envelope.length < ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES) {
+      throw new Error('messageBus: V5 proxy input 0 has no canonical L3C1 envelope');
+    }
+    decodeAtomicMessageEnvelope(envelope);
+    const redeem = readPush(root, forward.nextOffset);
+    if (!redeem || redeem.nextOffset !== root.length) {
+      throw new Error('messageBus: V5 proxy input 0 has a non-canonical __forward frame');
+    }
+    const executor = transaction.inputs[executorOffset]?.unlockingBytecode ?? new Uint8Array();
+    if (executor.length > maximumInputBytes || executor.length < payload.length + 1
+      || executor[0] !== 4 || binToHex(executor.slice(1, payload.length + 1)) !== binToHex(payload)) {
+      throw new Error('messageBus: V5 proxy forward payload does not match its SCB1 executor prefix');
+    }
+    const carrier = readPush(executor, 5);
+    const batch = carrier && readPush(executor, carrier.nextOffset);
+    if (!carrier || binToHex(carrier.data) !== binToHex(envelope)
+      || !batch || !isCanonicalCompilerRouteEnvelope(batch.data)
+      || !readPush(executor, batch.nextOffset)) {
+      throw new Error('messageBus: V5 proxy executor envelope must precede canonical batch and reserve');
+    }
+    for (const inputIndex of assembly.verifierInputs) {
+      const verifierUnlock = transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array();
+      const redundant = firstPush(verifierUnlock);
+      if (redundant && binToHex(redundant) === binToHex(envelope)) {
+        throw new Error(`messageBus: V5 verifier input ${inputIndex} redundantly carries the root envelope`);
+      }
+    }
+    return;
+  }
   if (rootEnvelopeLocation?.region === 'root-route') {
     if (!rootUnlocker || !isContractUnlocker(rootUnlocker)
       || getMessageBusEnvelopeTransport(rootUnlocker.contract.artifact) !== 'root-route'

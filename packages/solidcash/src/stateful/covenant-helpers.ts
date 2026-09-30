@@ -80,6 +80,11 @@ export function assertMessageBusCapability(artifact: Artifact): MessageBusVerifi
     && (envelopeLocation as Record<string, unknown>).region === 'root-route'
     && (envelopeLocation as Record<string, unknown>).canonicalInput === 'root-participant-master'
     && (envelopeLocation as Record<string, unknown>).unlockingPush === 1;
+  const proxyForwardEnvelope = envelopeLocation && typeof envelopeLocation === 'object'
+    && !Array.isArray(envelopeLocation)
+    && (envelopeLocation as Record<string, unknown>).region === 'proxy-forward'
+    && (envelopeLocation as Record<string, unknown>).canonicalInput === 'root-proxy-master'
+    && (envelopeLocation as Record<string, unknown>).unlockingPush === 1;
   const programTransport = (replacement.verifierProgram as { envelopeTransport?: unknown } | undefined)
     ?.envelopeTransport;
   if (replacement.selector !== '53434231'
@@ -96,7 +101,8 @@ export function assertMessageBusCapability(artifact: Artifact): MessageBusVerifi
     || (atomic as Record<string, unknown>).maximumParticipants !== ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS
     || (atomic as Record<string, unknown>).maximumRows !== ATOMIC_MESSAGE_BUS_MAX_ROWS
     || !(legacyEnvelope && programTransport === undefined
-      || rootEnvelope && programTransport === 'root-route')
+      || rootEnvelope && programTransport === 'root-route'
+      || proxyForwardEnvelope && programTransport === 'proxy-forward')
     || !route || typeof route !== 'object' || Array.isArray(route)
     || (route as Record<string, unknown>).selector !== '53434231'
     || !Array.isArray((route as Record<string, unknown>).inputs)
@@ -113,9 +119,12 @@ export function assertMessageBusCapability(artifact: Artifact): MessageBusVerifi
 }
 
 /** The declared carrier is part of the verifier program, not a caller-selected compose option. */
-export function getMessageBusEnvelopeTransport(artifact: Artifact): 'participant-verifiers' | 'root-route' {
+export function getMessageBusEnvelopeTransport(
+  artifact: Artifact,
+): 'participant-verifiers' | 'root-route' | 'proxy-forward' {
   const program = assertMessageBusCapability(artifact);
-  return program.envelopeTransport === 'root-route' ? 'root-route' : 'participant-verifiers';
+  return program.envelopeTransport === 'root-route' || program.envelopeTransport === 'proxy-forward'
+    ? program.envelopeTransport : 'participant-verifiers';
 }
 
 export function getMessageBusVerifierProgram(contract: Contract<any, any>): MessageBusVerifierProgram {
@@ -477,7 +486,7 @@ export function createMessageBusVerifierUnlocker(
   const covenantScript = buildMessageBusVerifierCovenantScript(
     program, getMessageBusVerifierMaximumScriptBytes(contract.provider),
   );
-  const rootRouteEnvelope = getMessageBusEnvelopeTransport(executionArtifact) === 'root-route';
+  const rootRouteEnvelope = getMessageBusEnvelopeTransport(executionArtifact) !== 'participant-verifiers';
   const abiInputs: AbiInput[] = [
     { name: '__internal__densityReserve', type: 'bytes' },
     ...program.inputs,

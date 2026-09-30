@@ -59,7 +59,7 @@ export interface CompilerOptions {
     /** @deprecated Compatibility with pre-merge split artifacts. */
     splitLifecycle?: true;
     /** The verifier reads the one canonical envelope from the root route instead of its own unlocker. */
-    envelopeTransport?: 'root-route';
+    envelopeTransport?: 'root-route' | 'proxy-forward';
   };
   enforceFunctionParameterTypes?: boolean;
   enforceLocktimeGuard?: boolean;
@@ -142,6 +142,8 @@ export interface CompilerOptions {
   messageBusGraphContext?: boolean;
   /** Opt in to the root-route envelope carrier; omitted preserves verifier-local V1–4 transport. */
   messageBusRootEnvelope?: boolean;
+  /** Opt in to the root proxy's authenticated forward payload as the canonical envelope carrier. */
+  messageBusProxyForwardEnvelope?: boolean;
   /**
    * Select the message-bus calling convention (`packages/solidc/docs/message-bus-kernel.md`).
    * Omitted or `true` uses the kernel row loop. `false` is a temporary compatibility escape hatch for
@@ -1779,6 +1781,10 @@ export interface Artifact {
         region: 'root-route';
         canonicalInput: 'root-participant-master';
         unlockingPush: 1;
+      } | {
+        region: 'proxy-forward';
+        canonicalInput: 'root-proxy-master';
+        unlockingPush: 1;
       };
       maximumParticipants: typeof ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS;
       maximumRows: typeof ATOMIC_MESSAGE_BUS_MAX_ROWS;
@@ -1822,7 +1828,7 @@ export interface Artifact {
       /** @deprecated Compatibility with pre-merge split artifacts. */
       splitLifecycle?: true;
       /** The verifier reads the one canonical envelope from the root route instead of its own unlocker. */
-      envelopeTransport?: 'root-route';
+      envelopeTransport?: 'root-route' | 'proxy-forward';
     };
     /**
      * Published resource-fold plans: published multi-row chunkable fold plans. Compose fills leading/complete witnesses via

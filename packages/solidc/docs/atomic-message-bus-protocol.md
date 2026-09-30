@@ -62,8 +62,18 @@ comparison. The manifest codec, participant/verifier/fee slot layout, and verifi
 unchanged. The different verifier program produces a different covenant address, so existing verifier NFTs are
 not silently migrated. Composer and preflight require all participants to advertise the same transport; V5
 verifiers also reject legacy envelope pushes in every verifier slot, preventing a co-spent legacy participant
-from authenticating a private manifest. This initial transport is for direct-root atomic compositions only;
-proxy roots and standalone input-0 SCB1 routes require a separate carrier design.
+from authenticating a private manifest. This transport is for direct-root atomic compositions; standalone
+input-0 SCB1 routes do not gain an atomic carrier by enabling it.
+
+An independent opt-in proxy-root transport (`messageBusProxyForwardEnvelope: true`) uses the existing baked
+`__forward(bytes)` proxy without changing its bytecode. Input 0 forwards `SCB1 || PUSHDATA2(L3C1 envelope)`;
+the root implementation input starts with the identical bytes after its selector push. The proxy covenant checks
+the complete forwarded prefix, and every V5 verifier independently parses the canonical input-0 frame and
+compares it with that executor prefix. The root verifier also requires the delegate index to lie inside its
+authenticated participant block. Only these two root inputs carry the envelope; verifier unlockings omit it.
+The SDK rejects mixed transports and malformed proxy/executor pairs. This mode is opt-in, cannot be combined
+with `messageBusRootEnvelope`, and likewise changes the verifier covenant address; existing NFTs are not
+silently migrated.
 
 SDK-only effect/return derivation probes temporarily use state-input outpoint index `ffffffff`, which cannot name a
 real transaction output. The route skips its final binding check only for that impossible probe outpoint; the SDK restores

@@ -1,8 +1,9 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import {
   AbiFunction,
   Artifact,
   asmToScript,
+  bytecodeToScript,
   countOpcodes,
   generateContractBytecodeScript,
   hash256,
@@ -83,19 +84,24 @@ export function kernelRouteDensityReserveBytes(accessStreams: FunctionArgument |
 /** Attach the V5 canonical manifest to the root compiler-route frame, without changing its ABI arguments. */
 export function withCompilerRouteMessageEnvelope(
   unlocker: ContractUnlocker, messageEnvelope: Uint8Array, maximumInputBytes: number,
+  executorInputIndex = 0,
 ): ContractUnlocker {
   const capability = unlocker.contract.artifact.messageBus;
   const envelopeLocation = capability?.atomicMessageBus?.messageEnvelope as
     | { region?: string; canonicalInput?: string; unlockingPush?: number } | undefined;
-  if (capability?.verifierProgram?.envelopeTransport !== 'root-route'
-    || envelopeLocation?.region !== 'root-route'
-    || envelopeLocation.canonicalInput !== 'root-participant-master'
+  const directRoot = executorInputIndex === 0;
+  const transport = directRoot ? 'root-route' : 'proxy-forward';
+  const canonicalInput = directRoot ? 'root-participant-master' : 'root-proxy-master';
+  if (capability?.verifierProgram?.envelopeTransport !== transport
+    || envelopeLocation?.region !== transport
+    || envelopeLocation.canonicalInput !== canonicalInput
     || envelopeLocation.unlockingPush !== 1
+    || !Number.isSafeInteger(executorInputIndex) || executorInputIndex < 0
     || !Number.isSafeInteger(maximumInputBytes) || maximumInputBytes < 1
     || messageEnvelope.length < 1
     || messageEnvelope.length > 0xffff
     || messageEnvelope.length > ConsensusBch2026.maximumStackItemLength) {
-    throw new Error('messageBus: root-route envelope requires a supported V5 artifact and bounded carrier');
+    throw new Error('messageBus: compiler-route envelope requires a supported V5 artifact and bounded carrier');
   }
   // The selector is a fixed push4 at bytes 0..4. Inserting exactly one PUSHDATA2 at byte 5 leaves the
   // historical positional batch and reserve pushes, followed by the ABI frame, in their original order.
@@ -107,8 +113,8 @@ export function withCompilerRouteMessageEnvelope(
   return {
     ...unlocker,
     generateUnlockingBytecode(options): Uint8Array {
-      if (options.inputIndex !== 0) {
-        throw new Error('messageBus: V5 root-route envelope must occupy input 0');
+      if (options.inputIndex !== executorInputIndex) {
+        throw new Error(`messageBus: V5 route envelope must occupy input ${executorInputIndex}`);
       }
       const ordinary = unlocker.generateUnlockingBytecode(options);
       if (ordinary.length < 5 || ordinary[0] !== 4
@@ -125,6 +131,59 @@ export function withCompilerRouteMessageEnvelope(
       result.set(ordinary.slice(0, 5), 0);
       result.set(carrier, 5);
       result.set(ordinary.slice(5), 5 + carrier.length);
+      return result;
+    },
+  };
+}
+
+/** Mirror the root executor's SCB1 + envelope prefix in an unchanged baked proxy's `__forward(bytes)` arg. */
+export function withProxyForwardMessageEnvelope(
+  unlocker: ContractUnlocker, messageEnvelope: Uint8Array, maximumInputBytes: number,
+  executorInputIndex: number,
+): ContractUnlocker {
+  const inputs = unlocker.abiFunction?.inputs ?? [];
+  const maximumStackItemBytes = unlocker.contract.provider.consensusLimits?.maximumStackItemBytes
+    ?? ConsensusBch2026.maximumStackItemLength;
+  if (unlocker.abiFunction?.name !== '__forward'
+    || inputs.length !== 2 || inputs[0]?.name !== 'input' || inputs[0].type !== 'bytes'
+    || inputs[1]?.name !== '__internal__delegateInputIndex' || inputs[1].type !== 'bigint'
+    || !Number.isSafeInteger(executorInputIndex) || executorInputIndex < 1
+    || !Number.isSafeInteger(maximumInputBytes) || maximumInputBytes < 1
+    || messageEnvelope.length < 1 || messageEnvelope.length > 0xffff
+    || messageEnvelope.length + 7 > Math.min(
+      maximumStackItemBytes, ConsensusBch2026.maximumStackItemLength,
+    )) {
+    throw new Error('messageBus: proxy-forward envelope requires a bounded baked __forward(bytes) frame');
+  }
+  const payload = new Uint8Array(7 + messageEnvelope.length);
+  payload.set([0x53, 0x43, 0x42, 0x31, 0x4d,
+    messageEnvelope.length & 0xff, messageEnvelope.length >>> 8]);
+  payload.set(messageEnvelope, 7);
+  const expectedIndex = scriptToBytecode([bigIntToVmNumber(BigInt(executorInputIndex))]);
+  let cachedOrdinary: Uint8Array | undefined;
+  let cachedForward: Uint8Array | undefined;
+  return {
+    ...unlocker,
+    generateUnlockingBytecode(options): Uint8Array {
+      if (options.inputIndex !== 0) {
+        throw new Error('messageBus: proxy-forward envelope must occupy input 0');
+      }
+      const ordinary = unlocker.generateUnlockingBytecode(options);
+      if (ordinary === cachedOrdinary && cachedForward !== undefined) return cachedForward;
+      const frame = bytecodeToScript(ordinary);
+      if (frame.length !== 3 || !(frame[1] instanceof Uint8Array)
+        || binToHex(frame[1]) !== '53434231' || !(frame[2] instanceof Uint8Array)
+        || binToHex(scriptToBytecode([frame[0]!])) !== binToHex(expectedIndex)) {
+        throw new Error('messageBus: proxy-forward root must pin SCB1 to its actual executor input');
+      }
+      const result = scriptToBytecode([frame[0]!, payload, frame[2]]);
+      if (result.length > maximumInputBytes) {
+        throw new Error(
+          `messageBus: proxy-forward carrier requires ${result.length} unlocking-bytecode bytes; maximum is ${maximumInputBytes}`,
+        );
+      }
+      cachedOrdinary = ordinary;
+      cachedForward = result;
       return result;
     },
   };

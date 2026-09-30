@@ -15,7 +15,7 @@ export interface MessageBusVerifierProgram {
   /** @deprecated Read support for artifacts emitted before lifecycle authority was generalized to merge. */
   splitLifecycle?: true;
   /** V5: read the one authenticated envelope from the root compiler-route input, not this unlocking stack. */
-  envelopeTransport?: 'root-route';
+  envelopeTransport?: 'root-route' | 'proxy-forward';
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -33,7 +33,8 @@ export function assertMessageBusVerifierProgram(program: unknown): asserts progr
       && typeof input.type === 'string' && input.type.length > 0)
     || (results !== undefined && (!Array.isArray(results) || results.length !== 3
       || !results.every((result) => isRecord(result) && result.type === 'bytes32')))
-    || (envelopeTransport !== undefined && envelopeTransport !== 'root-route')
+    || (envelopeTransport !== undefined && envelopeTransport !== 'root-route'
+      && envelopeTransport !== 'proxy-forward')
     || !Array.isArray(functions) || functions.length === 0
     || !functions.every((fn) => isRecord(fn)
       && Number.isSafeInteger(fn.id)
@@ -120,7 +121,8 @@ export function buildMessageBusVerifierCovenantScript(
   if (new Set(program.functions.map((fn) => fn.id)).size !== program.functions.length) {
     throw new Error('message bus verifier program contains duplicate function identifiers');
   }
-  const rootRouteEnvelope = program.envelopeTransport === 'root-route';
+  const rootRouteEnvelope = program.envelopeTransport === 'root-route'
+    || program.envelopeTransport === 'proxy-forward';
   const script: Script = [
     // The SDK calculates one covered-bytecode density reserve after encoding the real arguments, padding each
     // verifier to a common byte floor. Dropping an unlocking push is substantially cheaper than embedding

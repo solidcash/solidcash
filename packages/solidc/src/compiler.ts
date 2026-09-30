@@ -952,6 +952,9 @@ function markConstructorCapturedHelperGraphEffects(ast: Ast): void {
 
 
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
+  if (options.messageBusRootEnvelope === true && options.messageBusProxyForwardEnvelope === true) {
+    throw new Error('messageBusRootEnvelope and messageBusProxyForwardEnvelope are mutually exclusive');
+  }
   const messageBusMode: MessageBusMode = options.__messageBusVerifierProgram
     ? 'required'
     : options.messageBus === false ? 'disabled'
@@ -2959,6 +2962,7 @@ function detachedVerifierLockKey(source: string, options: CompilerOptions, lifec
     options.chainId ?? '',
     options.messageBusKernel ?? '',
     options.messageBusRootEnvelope ?? '',
+    options.messageBusProxyForwardEnvelope ?? '',
     options.enforceFinalRequire ?? '',
     options.allowUnsafeOperations ?? '',
     source,
@@ -2969,7 +2973,7 @@ function extractMessageBusVerifierProgram(
   ast: Ast,
   traversal: GenerateTargetTraversal,
   script: ReturnType<typeof bytecodeToScript>,
-  rootEnvelopeTransport = false,
+  envelopeTransport?: 'root-route' | 'proxy-forward',
 ): MessageBusVerifierProgram | undefined {
   const verifierFunction = ast.contract.functions.find((fn) => fn.name === MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM)
     ?? ast.contract.functions.find((fn) => fn.name === '__message_bus_verify_atomic');
@@ -3044,7 +3048,7 @@ function extractMessageBusVerifierProgram(
   const verifierFunctionIds = [...requiredVerifierIds].sort((a, b) => a - b);
   return {
     verifyFunctionId: verifierFunction.functionId,
-    ...(rootEnvelopeTransport && { envelopeTransport: 'root-route' as const }),
+    ...(envelopeTransport && { envelopeTransport }),
     inputCount: verifierFunction.parameters.length,
     inputs: verifierFunction.parameters.map((parameter) => ({
       name: parameter.name,
@@ -3072,9 +3076,10 @@ const detachedVerifierProgramCache = new Map<string, MessageBusVerifierProgram>(
 
 function compileDetachedMessageBusVerifier(
   source: string, compilerOptions: CompilerOptions, lifecycle = false,
+  envelopeTransport?: 'root-route' | 'proxy-forward',
 ): MessageBusVerifierProgram {
   const memoKey = `${lifecycle ? 'L' : '-'}\x00${compilerOptions.chunkedArrays ?? true}\x00`
-    + `${compilerOptions.rootFileId ?? ''}\x00${source}`;
+    + `${compilerOptions.rootFileId ?? ''}\x00${envelopeTransport ?? ''}\x00${source}`;
   const memoized = detachedVerifierProgramCache.get(memoKey);
   if (memoized !== undefined) {
     // Refresh recency for the small bound below.
@@ -3082,7 +3087,9 @@ function compileDetachedMessageBusVerifier(
     detachedVerifierProgramCache.set(memoKey, memoized);
     return structuredClone(memoized);
   }
-  const program = compileDetachedMessageBusVerifierUncached(source, compilerOptions, lifecycle);
+  const program = compileDetachedMessageBusVerifierUncached(
+    source, compilerOptions, lifecycle, envelopeTransport,
+  );
   if (detachedVerifierProgramCache.size >= 8) {
     const oldest = detachedVerifierProgramCache.keys().next().value as string | undefined;
     if (oldest !== undefined) detachedVerifierProgramCache.delete(oldest);
@@ -3092,7 +3099,8 @@ function compileDetachedMessageBusVerifier(
 }
 
 function compileDetachedMessageBusVerifierUncached(
-  source: string, compilerOptions: CompilerOptions, lifecycle = false, unrollDeepReplace = true,
+  source: string, compilerOptions: CompilerOptions, lifecycle = false,
+  envelopeTransport?: 'root-route' | 'proxy-forward', unrollDeepReplace = true,
 ): MessageBusVerifierProgram {
   const started = Date.now();
   const chunkedArrays = compilerOptions.chunkedArrays ?? true;
@@ -3120,8 +3128,7 @@ function compileDetachedMessageBusVerifierUncached(
     ast.contract.parameters.length,
   );
   const program = extractMessageBusVerifierProgram(
-    ast, traversal, optimisationResult.script,
-    compilerOptions.messageBusRootEnvelope === true && compilerOptions.messageBusKernel === true,
+    ast, traversal, optimisationResult.script, envelopeTransport,
   );
   if (!program) {
     throw new Error('single-pass bind: detached verifier emit did not produce verifierProgram');
@@ -3139,7 +3146,9 @@ function compileDetachedMessageBusVerifierUncached(
     messageBusVerifierLockingBytecode(compactProgram, compilerOptions.maximumInputBytes);
   } catch (error) {
     if (unrollDeepReplace && error instanceof MessageBusVerifierCapacityError) {
-      return compileDetachedMessageBusVerifierUncached(source, compilerOptions, lifecycle, false);
+      return compileDetachedMessageBusVerifierUncached(
+        source, compilerOptions, lifecycle, envelopeTransport, false,
+      );
     }
     throw error;
   }
@@ -10535,7 +10544,25 @@ function synthesizeMessageBusRoute(
   // direct-root unlocker shifts its batch push; nonroot participants retain the historical two-item prefix.
   const rootEnvelopeTransport = compilerOptions.messageBusRootEnvelope === true
     && compilerOptions.messageBusKernel === true;
-  const routeBatchPushOffset = rootEnvelopeTransport ? `bigint __message_bus_push_at = 5;
+  const proxyForwardEnvelopeTransport = compilerOptions.messageBusProxyForwardEnvelope === true
+    && compilerOptions.messageBusKernel === true && isDelegateRoute;
+  const sharedEnvelopeTransport = rootEnvelopeTransport || proxyForwardEnvelopeTransport;
+  if (proxyForwardEnvelopeTransport && (kernelUpgradeMode || kernelV2SignatureFence)) {
+    throw new Error('proxy-forward envelope transport does not yet support upgrade or detached-signature routes');
+  }
+  const routeBatchPushOffset = proxyForwardEnvelopeTransport ? `bigint __message_bus_push_at = 5;
+          if (__internal__proxyMasterIndex == 0) {
+            require(this.activeInputIndex > 0 && __message_bus_unlock.length >= 16
+              && __message_bus_unlock.slice(5, 6) == hex"4d");
+            bigint __message_bus_envelope_length = int(bytes.concat(
+              __message_bus_unlock.slice(6, 8), hex"00"
+            ));
+            require(__message_bus_envelope_length >= 256
+              && 8 + __message_bus_envelope_length < __message_bus_unlock.length
+              && __message_bus_unlock.slice(8, 12) == hex"4c334331");
+            __message_bus_push_at = 8 + __message_bus_envelope_length;
+          }`
+    : rootEnvelopeTransport ? `bigint __message_bus_push_at = 5;
           if (this.activeInputIndex == 0) {
             require(__message_bus_unlock.length >= 8
               && __message_bus_unlock.slice(5, 6) == hex"4d");
@@ -10686,7 +10713,55 @@ function synthesizeMessageBusRoute(
     ? 'callManifest.slice(0, 8) == hex"4c33425553340000"' : 'false';
   const atomicManifestOutputIdentityExpression = compilerOptions.messageBusKernel === true
     ? `(${atomicManifestV2Expression} || ${atomicManifestV4Expression})` : 'false';
-  const atomicEnvelopeReader = rootEnvelopeTransport ? `
+  const atomicEnvelopeReader = proxyForwardEnvelopeTransport ? `
+        bytes proxyUnlock = tx.inputs[0].unlockingBytecode;
+        require(proxyUnlock.length >= 20);
+        bigint proxyIndexOpcode = int(bytes.concat(proxyUnlock.slice(0, 1), hex"00"));
+        bigint proxyExecutorIndex;
+        bigint proxyPayloadPushAt;
+        if (proxyIndexOpcode >= 81 && proxyIndexOpcode <= 96) {
+          proxyExecutorIndex = proxyIndexOpcode - 80;
+          proxyPayloadPushAt = 1;
+        } else {
+          require(proxyIndexOpcode >= 1 && proxyIndexOpcode <= 3
+            && proxyUnlock.length > 1 + proxyIndexOpcode);
+          proxyExecutorIndex = int(bytes.concat(
+            proxyUnlock.slice(1, 1 + proxyIndexOpcode), hex"00"
+          ));
+          require(proxyExecutorIndex > 16
+            && ((proxyExecutorIndex <= 127 && proxyIndexOpcode == 1)
+              || (proxyExecutorIndex > 127 && proxyExecutorIndex <= 32767 && proxyIndexOpcode == 2)
+              || (proxyExecutorIndex > 32767 && proxyIndexOpcode == 3)));
+          proxyPayloadPushAt = 1 + proxyIndexOpcode;
+        }
+        require(proxyExecutorIndex > 0 && proxyExecutorIndex < tx.inputs.length
+          && proxyUnlock.slice(proxyPayloadPushAt, proxyPayloadPushAt + 1) == hex"4d");
+        bigint proxyPayloadLength = int(bytes.concat(
+          proxyUnlock.slice(proxyPayloadPushAt + 1, proxyPayloadPushAt + 3), hex"00"
+        ));
+        bigint proxyPayloadAt = proxyPayloadPushAt + 3;
+        require(proxyPayloadLength >= 263
+          && proxyPayloadAt + proxyPayloadLength < proxyUnlock.length);
+        bytes proxyPayload = proxyUnlock.slice(proxyPayloadAt, proxyPayloadAt + proxyPayloadLength);
+        require(proxyPayload.slice(0, 5) == hex"534342314d");
+        bigint messageEnvelopeLength = int(bytes.concat(proxyPayload.slice(5, 7), hex"00"));
+        require(messageEnvelopeLength >= 256 && messageEnvelopeLength + 7 == proxyPayloadLength);
+        bytes callManifest = proxyPayload.slice(15, proxyPayloadLength);
+        require(proxyPayload.slice(7, 15) == bytes.concat(
+          hex"4c334331", toPaddedBytes(callManifest.length, 4)
+        ));
+        bytes executorUnlock = tx.inputs[proxyExecutorIndex].unlockingBytecode;
+        require(executorUnlock.length >= proxyPayloadLength + 1
+          && executorUnlock.slice(0, 1) == hex"04"
+          && executorUnlock.slice(1, proxyPayloadLength + 1) == proxyPayload);
+        bigint proxyRedeemAt = proxyPayloadAt + proxyPayloadLength;
+        require(proxyUnlock.slice(proxyRedeemAt, proxyRedeemAt + 1) == hex"4d");
+        bigint proxyRedeemLength = int(bytes.concat(
+          proxyUnlock.slice(proxyRedeemAt + 1, proxyRedeemAt + 3), hex"00"
+        ));
+        require(proxyRedeemLength >= 256
+          && proxyRedeemAt + 3 + proxyRedeemLength == proxyUnlock.length);`
+    : rootEnvelopeTransport ? `
         bytes unlocking = tx.inputs[0].unlockingBytecode;
         require(unlocking.length >= 16 && unlocking.slice(0, 6) == hex"04534342314d");
         bigint messageEnvelopeLength = int(bytes.concat(unlocking.slice(6, 8), hex"00"));
@@ -10985,6 +11060,10 @@ function synthesizeMessageBusRoute(
         }
         // Participant prefix || one artifact-specialized verifier per participant || one fee input.
         require(activeMembership == 1 && expectedBase + participantCount + 1 == tx.inputs.length);
+        ${proxyForwardEnvelopeTransport ? `if (activeInputIndex == 0) {
+          require(activeBase == 0 && proxyExecutorIndex > activeBase
+            && proxyExecutorIndex < activeBase + activeBlockSize);
+        }` : ''}
         require(!(${atomicManifestV2Expression}) || replacementIdentityCount > 0);
         ${kernelLifecycleHandlers.size > 0 ? lifecycleDerivation : ''}
         bytes bindingDigest = sha256(bytes.concat(
@@ -11046,7 +11125,7 @@ function synthesizeMessageBusRoute(
         bytes participantBoundaries = hex"";
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
           participantBoundaries = bytes.concat(participantBoundaries, hex"0000");
-          ${rootEnvelopeTransport ? `// Legacy verifiers each carry an L3C1 first push. The envelope is >=256 bytes
+          ${sharedEnvelopeTransport ? `// Legacy verifiers each carry an L3C1 first push. The envelope is >=256 bytes
           // and below the stack-item limit, so consensus minimal-push rules require PUSHDATA2 (0x4d).
           // Forbid that frame in every verifier slot; no co-spent participant may authenticate a private graph.
           bytes verifierUnlock = tx.inputs[expectedBase + participant].unlockingBytecode;
@@ -11782,14 +11861,14 @@ function synthesizeMessageBusRoute(
           ${bindingDigestGraphValues}
         ));`}
         ${useBoundRoute ? compactAtomicBinder : inlinedAtomicVerifierBody}
-        ${rootEnvelopeTransport ? '' : `bytes expectedEnvelopeHash = sha256(bytes.concat(
+        ${sharedEnvelopeTransport ? '' : `bytes expectedEnvelopeHash = sha256(bytes.concat(
           hex"4c334331", toPaddedBytes(callManifest.length, 4), callManifest
         ));`}
         return ${lifecycleReturnTransport
-    ? rootEnvelopeTransport
+    ? sharedEnvelopeTransport
       ? 'bytes.concat(bindingDigest, bytes.concat(tx.outputs[activeVerifierOutput].nftCommitment, hex"0000").slice(38, 40))'
       : 'bytes.concat(bindingDigest, expectedEnvelopeHash, bytes.concat(tx.outputs[activeVerifierOutput].nftCommitment, hex"0000").slice(38, 40))'
-    : rootEnvelopeTransport ? 'bindingDigest' : 'bytes.concat(bindingDigest, expectedEnvelopeHash)'};
+    : sharedEnvelopeTransport ? 'bindingDigest' : 'bytes.concat(bindingDigest, expectedEnvelopeHash)'};
       }
   `;
   // A local caller route authenticates msg.sender from the co-spent caller
@@ -11815,9 +11894,9 @@ function synthesizeMessageBusRoute(
             __internal__graphSettlementBoundary, __internal__graphCompletionPositions,
             __internal__graphSettlementTable`}
           );
-          ${kernelLifecycleHandlers.size > 0 ? `require(__internal__atomicBindingDigest.length == ${rootEnvelopeTransport ? 34 : 66});
+          ${kernelLifecycleHandlers.size > 0 ? `require(__internal__atomicBindingDigest.length == ${sharedEnvelopeTransport ? 34 : 66});
             bigint __message_bus_active_lifecycle_code = int(
-              __internal__atomicBindingDigest.slice(${rootEnvelopeTransport ? '32, 34' : '64, 66'})
+              __internal__atomicBindingDigest.slice(${sharedEnvelopeTransport ? '32, 34' : '64, 66'})
             );
             if (__message_bus_active_lifecycle_code == -32767) {
               __message_bus_active_lifecycle_mode = 3;
@@ -12255,7 +12334,7 @@ function synthesizeMessageBusRoute(
       ) internal view returns (bytes) {
         ${atomicEnvelopeReader}
         ${inlinedAtomicVerifierBody}
-        return ${rootEnvelopeTransport
+        return ${sharedEnvelopeTransport
     ? kernelLifecycleHandlers.size > 0
       ? 'bytes.concat(bindingDigest, bytes.concat(tx.outputs[activeVerifierOutput].nftCommitment, hex"0000").slice(38, 40))'
       : 'bindingDigest'
@@ -14484,6 +14563,11 @@ function compileResolvedAst(
   let singlePassVerifierProgram: MessageBusVerifierProgram | undefined;
   const singlePassVerifierSource = (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource
     ?? (mergedCompilerOptions as InternalCompilerOptions).__messageBusSignatureVerifierSource;
+  const verifierEnvelopeTransport = mergedCompilerOptions.messageBusKernel !== true ? undefined
+    : mergedCompilerOptions.messageBusRootEnvelope === true ? 'root-route'
+      : mergedCompilerOptions.messageBusProxyForwardEnvelope === true
+        && ast.contract.functions.some((fn) => fn.messageBusRoute === true
+          && fn.modifiers.includes(FunctionModifier.DELEGATE)) ? 'proxy-forward' : undefined;
   if ((mergedCompilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true
     && !mergedCompilerOptions.__messageBusVerifierProgram
     && singlePassVerifierSource) {
@@ -14500,7 +14584,7 @@ function compileResolvedAst(
     } else {
       try {
         singlePassVerifierProgram = compileDetachedMessageBusVerifier(
-          singlePassVerifierSource, mergedCompilerOptions, verifierLifecycle,
+          singlePassVerifierSource, mergedCompilerOptions, verifierLifecycle, verifierEnvelopeTransport,
         );
       } catch (error) {
         throwProfile(error);
@@ -15324,9 +15408,7 @@ function compileResolvedAst(
     ? mergedCompilerOptions.__messageBusVerifierProgram
       ?? singlePassVerifierProgram
       ?? extractMessageBusVerifierProgram(
-        ast, traversal, optimisationResult.script,
-        mergedCompilerOptions.messageBusRootEnvelope === true
-          && mergedCompilerOptions.messageBusKernel === true,
+        ast, traversal, optimisationResult.script, verifierEnvelopeTransport,
       )
     : undefined;
   if (detachedVerifierProgram && mergedCompilerOptions.messageBusKernel === true
@@ -15340,6 +15422,7 @@ function compileResolvedAst(
     detachedVerifierProgram = compileDetachedMessageBusVerifier(
       specializedSource, mergedCompilerOptions,
       messageBusVerifierLifecycleSources.has(singlePassVerifierSource),
+      verifierEnvelopeTransport,
     );
     messageBusSignatureVerifierSource.set(detachedVerifierProgram, singlePassVerifierSource);
   }
@@ -15530,6 +15613,12 @@ function compileResolvedAst(
             canonicalInput: 'root-participant-master' as const,
             unlockingPush: 1 as const,
           }
+          : extractedVerifierProgram?.envelopeTransport === 'proxy-forward'
+            ? {
+              region: 'proxy-forward' as const,
+              canonicalInput: 'root-proxy-master' as const,
+              unlockingPush: 1 as const,
+            }
           : {
             region: 'participant-verifiers' as const,
             canonicalInput: 'final-participant-verifier' as const,

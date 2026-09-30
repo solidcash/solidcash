@@ -26,7 +26,7 @@ import type {
 } from '../interfaces.js';
 import { isContractUnlocker } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { Contract, withCompilerRouteMessageEnvelope } from '../Contract.js';
+import { Contract, withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope } from '../Contract.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
 import {
   decodeAuthenticatedProducerResultVector, evalComputedKey, isCanonicalEvmScalarReturnVector,
@@ -271,10 +271,10 @@ export async function assembleAtomicComposition(
     if (envelopeTransport === undefined || envelopeTransports.some((value) => value !== envelopeTransport)) {
       throw new Error('messageBus: all participants must use the same canonical envelope transport');
     }
-    const rootMessageEnvelope = envelopeTransport === 'root-route'
+    const rootMessageEnvelope = envelopeTransport === 'root-route' || envelopeTransport === 'proxy-forward'
       ? encodeAtomicMessageEnvelope(graph.callManifest) : undefined;
-    if (envelopeTransport === 'root-route' && graph.layout.participantInputs[0] !== 0) {
-      throw new Error('messageBus: V5 root-route envelope requires participant 0 at input 0');
+    if (rootMessageEnvelope && graph.layout.participantInputs[0] !== 0) {
+      throw new Error('messageBus: V5 root envelope requires participant 0 at input 0');
     }
 
     // A computed argument may read any authenticated graph value: nested return bytes, an effect output,
@@ -1687,6 +1687,22 @@ export async function assembleAtomicComposition(
         }
         rootInput.unlocker = withCompilerRouteMessageEnvelope(
           rootInput.unlocker, rootMessageEnvelope!, provider.consensusLimits?.maximumInputBytes ?? 10_000,
+        );
+      } else if (envelopeTransport === 'proxy-forward' && participant.participant === 0) {
+        const executorOffset = participant.executionKind === 1 ? participant.executorOffset : null;
+        const proxyInput = local.inputs[0];
+        const executorInput = executorOffset === null ? undefined : local.inputs[executorOffset];
+        if (executorOffset === null || executorOffset < 1
+          || !proxyInput || !isContractUnlocker(proxyInput.unlocker)
+          || !executorInput || !isContractUnlocker(executorInput.unlocker)) {
+          throw new Error('messageBus: V5 proxy-forward root requires a proxy master and SCB1 executor');
+        }
+        const maximumInputBytes = provider.consensusLimits?.maximumInputBytes ?? 10_000;
+        executorInput.unlocker = withCompilerRouteMessageEnvelope(
+          executorInput.unlocker, rootMessageEnvelope!, maximumInputBytes, executorOffset,
+        );
+        proxyInput.unlocker = withProxyForwardMessageEnvelope(
+          proxyInput.unlocker, rootMessageEnvelope!, maximumInputBytes, executorOffset,
         );
       }
       for (let localIndex = 0; localIndex < local.inputs.length; localIndex++) {

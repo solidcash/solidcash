@@ -392,6 +392,12 @@ verifier program has a new covenant address, so existing deployments need new ve
 mixed transports and roots that cannot carry the envelope. This mode does not yet support proxy roots or
 standalone input-0 SCB1 batches.
 
+`messageBusProxyForwardEnvelope: true` separately enables an authenticated envelope for atomic compositions
+rooted at a baked `__forward(bytes)` proxy. The proxy forwards the SCB1 selector and envelope to its co-spent
+implementation; the verifier checks both root frames and removes the repeated verifier-envelope pushes. The
+existing proxy bytecode is unchanged, but the opt-in verifier program has a new address. The two envelope
+options are mutually exclusive. This does not admit direct-only participants into a kernel graph.
+
 ---
 
 ## 8. Tests (kernel toys)

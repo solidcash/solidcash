@@ -527,13 +527,16 @@ export function finalizeAtomicInvocationGraph(
     return actualSize;
   });
   const layout = atomicMessageBusPhysicalLayout(spans);
-  // A root-carried envelope and the historical final-verifier carrier are different on-chain covenants.
-  // Every participant must verify the same physical carrier; a mixed graph has no common authenticated view.
-  const rootCarriedEnvelope = plan.participants[0].artifact.messageBus?.atomicMessageBus
-    ?.messageEnvelope.region === 'root-route';
+  // Every participant must verify the exact same physical carrier. Treat a missing descriptor as unsupported;
+  // proxy-forward, direct root-route, and historical verifier-local transports are distinct covenants.
+  const envelopeTransport = plan.participants[0].artifact.messageBus?.atomicMessageBus
+    ?.messageEnvelope.region;
+  if (envelopeTransport !== 'participant-verifiers'
+    && envelopeTransport !== 'root-route' && envelopeTransport !== 'proxy-forward') {
+    throw new Error('messageBus: root participant has no supported atomic envelope transport');
+  }
   const mismatchedEnvelopeTransport = plan.participants.findIndex((participant) => (
-    (participant.artifact.messageBus?.atomicMessageBus?.messageEnvelope.region === 'root-route')
-      !== rootCarriedEnvelope
+    participant.artifact.messageBus?.atomicMessageBus?.messageEnvelope.region !== envelopeTransport
   ));
   if (mismatchedEnvelopeTransport >= 0) {
     throw new Error(

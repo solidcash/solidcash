@@ -554,8 +554,8 @@ lands it removes the claim line.
   built-in on a contract receiver compiled as the built-in (`73265877c`, `2aa73362e`); a long mapping value's chunk
   taken as a data record by the deployment classifier (`82493523a`); and a constructor's struct-literal mapping value,
   which crashed the genesis rather than being refused by name (`25173d5a3`). Handed over through the table: the hop's
-  walls, with a patch for the delegate frame declaring records its entry does not name
-  (`docs/per-call/patches/hop-implementation-records.diff`), and the per-call clock that never moves
+  walls, with a patch for the delegate frame declaring records its entry does not name (applied in `184d88c25`),
+  and the per-call clock that never moves
   (`oracle/blockOracleUpdater.ts`). Beyond PW8 on `post job 1`'s own path stand PW10's `view` reads through the data
   proxy, the token pull's allowance read beside its balances batch, which the hop drops (`job-updates.test.ts`), and,
   as last probed, two reaches of one mapping node (`publishJobPost`'s `balanceOf(msg.sender)` beside

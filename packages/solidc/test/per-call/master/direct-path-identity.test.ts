@@ -5,7 +5,9 @@ import { compileString } from '../../../src/compiler.js';
 /**
  * The `direct` convention is the shipped one, and the per-call work must not move it. Every case below pins the
  * artifact bytecode it produced before the per-call modules existed: a second compile without the option, and a
- * hash of the emitted ASM. The per-call convention may add artifacts, but it may not change this one.
+ * hash of the emitted ASM. The per-call convention may add artifacts, but it may not change this one. The pins moved
+ * once, by the user's decision: an integer literal beside a bounded operand now takes its type, so `x + 1` carries
+ * the range check Solidity gives it on every path.
  */
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -27,9 +29,9 @@ const SENDER_CONTRACT = 'pragma solidcash ^0.13.0;'
 
 const CASES = [
   { name: 'a stateful contract with a signature check', source: STATE_CONTRACT,
-    pinnedSha256: '4ffabba94e511f524df81f8e113f0026a1bea707b95c2a50f775001e10075bc2' },
+    pinnedSha256: '74a96bf9f5f50e469cd718e20b7a45b5663964bf30c53b6ee25d91987c00f61a' },
   { name: 'a stateful contract that reads msg.sender', source: SENDER_CONTRACT,
-    pinnedSha256: '16c96a6b8ed907363499960af8482b18711c00d0c5fe1a116ad96d1fa8eda970' },
+    pinnedSha256: '37e73f9ca61e8a4ffd8a4239f6a47d2b7f05b7c6378cd40a21bface38a9ebb4a' },
 ] as const;
 
 describe('the direct convention is unchanged', () => {

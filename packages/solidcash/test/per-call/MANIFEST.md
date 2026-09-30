@@ -22,7 +22,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 604 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 613 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 14 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
@@ -45,9 +45,10 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | 26 |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 3 |
 
-Total: 1807 checks (115 + 650 + 1040 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1816 checks (115 + 659 + 1040 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 650 is the four rows above it (87 files; 22.3 s warm at `520a21d9c`),
+`vitest.per-call.config.ts`: `solidc` 659 is the four rows above it (89 files; 24.8 s warm at `3958af44c` plus
+the checked-literal cases),
 `solidcash` 1040 (1037 passed, three skipped; 167 files; 137.7 s warm at `520a21d9c`) is the
 seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.

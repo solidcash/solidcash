@@ -1922,6 +1922,9 @@ export class SliceNode extends ExpressionNode {
 }
 
 export class BinaryOpNode extends ExpressionNode {
+  // Written in source or desugared from it: an integer literal operand takes the bounded operand's type.
+  sourceArithmetic?: boolean;
+
   constructor(
     public left: ExpressionNode,
     public operator: BinaryOperator,

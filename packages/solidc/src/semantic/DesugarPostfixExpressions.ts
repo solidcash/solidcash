@@ -462,7 +462,7 @@ export default class DesugarPostfixExpressions extends AstTraversal {
     const binop = isInc ? BinaryOperator.PLUS : BinaryOperator.MINUS;
     const one = (): IntLiteralNode => { const n = new IntLiteralNode(1n); n.location = operand.location; return n; };
     const sum = (read: ExpressionNode): BinaryOpNode => {
-      const b = new BinaryOpNode(read, binop, one()); b.location = operand.location; return b;
+      const b = new BinaryOpNode(read, binop, one()); b.location = operand.location; b.sourceArithmetic = true; return b;
     };
     let stmt: StatementNode | undefined;
     if (operand instanceof IdentifierNode) {

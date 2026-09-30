@@ -2627,7 +2627,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.right.type = node.left.type;
     }
 
-    const resType = resultingTypeForBinaryOp(node.operator, node.left.type!, node.right.type!);
+    const resType = resultingTypeForBinaryOp(node.operator, node.left.type!, node.right.type!, node.sourceArithmetic);
     if (!resType) {
       throw new UnequalTypeError(node);
     }

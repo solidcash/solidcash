@@ -138,10 +138,12 @@ v <= type.max   (OP_LESSTHANOREQUAL,    OP_VERIFY)
 
 If either fails, the script fails (a failed `require`-style verification) rather than silently wrapping.
 
-**Arithmetic intermediates are not checked per operation.** Because the VM has one big-number type,
-intermediate results do not overflow at 256 bits (only at the ~10,000-byte stack-element limit). The bound is
-checked when the result is stored back into a bounded slot. This matches Solidity's observable behavior for
-the common `a = b + c` pattern while avoiding redundant per-op checks.
+**A bounded arithmetic result is checked where it is computed**, as Solidity checks each operation. An integer
+literal beside a bounded operand takes that operand's type, as Solidity converts it, so `x - 1` on a `uint256` is
+checked exactly like `x - y` and reverts below zero. `bigint` arithmetic is not checked: the VM has one big-number
+type, so its intermediates do not overflow at 256 bits (only at the ~10,000-byte stack-element limit). Two lowerings
+that rebuild a sum still leave a literal step unchecked: a tail-recursive `return f(n - 1) + 1`, and a counter loop
+the message-bus kernel folds.
 
 **`unchecked { ... }`** replaces the range check with wraparound into the type's range (modulo 2^N), matching
 Solidity's `unchecked`:

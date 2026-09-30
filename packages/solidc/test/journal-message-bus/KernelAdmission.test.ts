@@ -3644,7 +3644,7 @@ describe('required kernel admission', () => {
         value: {
           transferIndex: 0,
           amount: {
-            kind: 'binary', operator: '+', resultType: 'int',
+            kind: 'binary', operator: '+', resultType: 'int256',
             left: { kind: 'handlerInput', inputIndex: 0, resultType: 'int256' },
             right: { kind: 'intLiteral', value: '1000', resultType: 'int' },
           },
@@ -3720,7 +3720,7 @@ describe('required kernel admission', () => {
         value: {
           transferIndex: 0,
           amount: {
-            kind: 'binary', operator: '+', resultType: 'int',
+            kind: 'binary', operator: '+', resultType: 'int256',
             left: { kind: 'handlerInput', inputIndex: 1, resultType: 'int256' },
             right: { kind: 'intLiteral', value: '1000', resultType: 'int' },
           },
@@ -4244,9 +4244,9 @@ describe('required kernel admission', () => {
     const site = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize')
       ?.childDeployments?.[0];
     expect(site).toMatchObject({
-      constructorArgs: [{ kind: 'cast', operand: { kind: 'binary', operator: '+' } }],
-      salt: { kind: 'cast', resultType: 'bytes32', operand: { kind: 'cast', operand: { kind: 'binary' } } },
-      genesisState: { fields: [{ name: 'stored', value: { kind: 'cast', operand: { kind: 'binary' } } }] },
+      constructorArgs: [{ kind: 'binary', operator: '+' }],
+      salt: { kind: 'cast', resultType: 'bytes32', operand: { kind: 'binary' } },
+      genesisState: { fields: [{ name: 'stored', value: { kind: 'binary' } }] },
     });
   });
 
@@ -4264,8 +4264,8 @@ describe('required kernel admission', () => {
     const sites = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize')
       ?.childDeployments ?? [];
     expect(sites).toHaveLength(2);
-    expect(sites.map((site) => (site.constructorArgs[0] as any).operand?.right?.value)).toEqual(['1', '2']);
-    expect(sites.map((site) => (site.genesisState?.fields[0].value as any).operand?.right?.value))
+    expect(sites.map((site) => (site.constructorArgs[0] as any).right?.value)).toEqual(['1', '2']);
+    expect(sites.map((site) => (site.genesisState?.fields[0].value as any).right?.value))
       .toEqual(['1', '2']);
   });
 
@@ -4280,7 +4280,7 @@ describe('required kernel admission', () => {
       }`, KERNEL);
     const sites = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize')
       ?.childDeployments ?? [];
-    expect(sites.map((site) => (site.constructorArgs[0] as any).operand?.right?.value)).toEqual(['1', '2']);
+    expect(sites.map((site) => (site.constructorArgs[0] as any).right?.value)).toEqual(['1', '2']);
   });
 
   it('does not reinterpret an unsupported local shadow as the same-named handler input', () => {
@@ -4710,7 +4710,7 @@ describe('required kernel admission', () => {
           {
             collection: 'keyed', valueType: 'Cell',
             value: { kind: 'aggregate', resultType: 'Cell', elements: [
-              { kind: 'cast', resultType: 'int32' },
+              { kind: 'binary', resultType: 'int32' },
               { kind: 'boolLiteral', value: false },
             ] },
           },
@@ -8102,7 +8102,7 @@ describe('required kernel admission', () => {
         amountRecipe: {
           kind: 'conditional', resultType: 'int256',
           condition: { kind: 'handlerInput', inputIndex: 0 },
-          ifTrue: { kind: 'cast', operand: { kind: 'binary', operator: '+' } },
+          ifTrue: { kind: 'binary', operator: '+' },
           ifFalse: { kind: 'handlerInput', inputIndex: 3 },
         },
       }],

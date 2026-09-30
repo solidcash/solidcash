@@ -487,9 +487,10 @@ describe('bytes state-var element write (data[i] = v)', () => {
   it('is byte-identical to the hand-written slice+concat reassignment', () => {
     const sugar = compileString('contract C { bytes data; function f(uint256 i, bytes1 v) external { data[i] = v; require(true); } }',
       { solidityImportCompat: true });
+    // The sugar's `i + 1` is compiler-built and unchecked; the source's own `i + 1` would be range-checked.
     const hand = compileString('contract C { bytes data;'
       + ' function f(uint256 i, bytes1 v) external {'
-      + ' data = data.slice(0, i) + v + data.slice(i + 1, data.length); require(true); } }',
+      + ' data = data.slice(0, i) + v + data.slice(bigint(i) + 1, data.length); require(true); } }',
     { solidityImportCompat: true });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
@@ -516,7 +517,7 @@ describe('bytes element compound write (data[i] |= v / &=)', () => {
       { solidityImportCompat: true });
     const h = compileString('contract C { bytes data;'
       + ' function f(uint256 i, bytes1 v) external {'
-      + ' data = data.slice(0, i) + (data[i] | v) + data.slice(i + 1, data.length); require(true); } }',
+      + ' data = data.slice(0, i) + (data[i] | v) + data.slice(bigint(i) + 1, data.length); require(true); } }',
     { solidityImportCompat: true });
     expect(s.bytecode).toBe(h.bytecode);
   });

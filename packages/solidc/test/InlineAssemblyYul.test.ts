@@ -597,9 +597,11 @@ describe('Yul packed storage slots', () => {
       'contract C(){uint128 a;uint64 b;uint32 c;uint32 d;function f()returns(uint256 w){assembly{w:=sload(0)}}}',
       { solidityImportCompat: true, messageBus: false },
     );
+    // Yul arithmetic is unchecked; `bigint` factors keep the source's sum unchecked too.
     const direct = compileString(
       'contract C(){uint128 a;uint64 b;uint32 c;uint32 d;function f()returns(uint256 w){'
-      + `w=uint256(this.a)+uint256(this.b)*${POW(128)}+uint256(this.c)*${POW(192)}+uint256(this.d)*${POW(224)};}}`,
+      + `w=uint256(this.a)+uint256(this.b)*bigint(${POW(128)})+uint256(this.c)*bigint(${POW(192)})`
+      + `+uint256(this.d)*bigint(${POW(224)});}}`,
       { solidityImportCompat: true, messageBus: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);

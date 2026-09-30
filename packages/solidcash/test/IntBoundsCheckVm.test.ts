@@ -52,6 +52,40 @@ describe('bounded integer overflow guard (VM)', () => {
     accepts('int256', 2n ** 255n - 1n, 0n);           // int256 max
   });
 
+  // A literal beside a bounded operand takes its type, as Solidity converts it, so the result is checked the same.
+  const spendWith = (type: string, expression: string, a: bigint): TransactionBuilder => {
+    const provider = createTestProvider();
+    const src = `pragma solidity ^0.8.7;
+      contract C {
+        function f(${type} a) public pure {
+          ${type} c = ${expression};
+          require(c == c, "n");
+          require(true, "n");
+        }
+      }`;
+    const contract = new Contract(compileString(src, { solidityImportCompat: true }), [], { provider });
+    const utxo = randomUtxo();
+    provider.addUtxo(contract.address, utxo);
+    return new TransactionBuilder({ provider })
+      .addInput(utxo, contract.unlock.f(a))
+      .addOutput({ to: contract.address, amount: 10000n });
+  };
+
+  it('checks a result beside an integer literal, which takes the bounded operand\'s type', () => {
+    const verdict = (type: string, expression: string, a: bigint): boolean => {
+      try {
+        verifyTransaction(spendWith(type, expression, a));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    expect([verdict('uint8', 'a + 1', 254n), verdict('uint8', 'a + 1', 255n)]).toStrictEqual([true, false]);
+    expect([verdict('uint256', 'a - 1', 1n), verdict('uint256', 'a - 1', 0n)]).toStrictEqual([true, false]);
+    expect([verdict('uint256', '1 - a', 1n), verdict('uint256', '1 - a', 2n)]).toStrictEqual([true, false]);
+    expect([verdict('int8', 'a - 1', -127n), verdict('int8', 'a - 1', -128n)]).toStrictEqual([true, false]);
+  });
+
   it('rejects out-of-range signed results', () => {
     rejects('int8', -128n, -1n);          // -129 underflows int8
     rejects('int8', 127n, 1n);            // 128 overflows int8

@@ -28,12 +28,9 @@ describe('late fixed BCH transfer descriptor fence', () => {
       recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
     });
     expect(transfer?.amountRecipe).toMatchObject({
-      kind: 'cast',
-      operand: {
-        kind: 'binary', operator: '+',
-        left: { kind: 'handlerInput', inputIndex: 1 },
-        right: { kind: 'intLiteral', value: '1' },
-      },
+      kind: 'binary', operator: '+',
+      left: { kind: 'handlerInput', inputIndex: 1 },
+      right: { kind: 'intLiteral', value: '1' },
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
       eligible: true,

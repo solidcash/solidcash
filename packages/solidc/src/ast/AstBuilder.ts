@@ -257,6 +257,13 @@ const COMPOUND_OPS: Record<string, BinaryOperator> = {
   '<<=': BinaryOperator.SHIFT_LEFT, '>>=': BinaryOperator.SHIFT_RIGHT,
 };
 
+// Arithmetic the source wrote, directly or as a compound/increment: its literal operands take the bounded type.
+function sourceBinaryOp(left: ExpressionNode, operator: BinaryOperator, right: ExpressionNode): BinaryOpNode {
+  const node = new BinaryOpNode(left, operator, right);
+  node.sourceArithmetic = true;
+  return node;
+}
+
 // One ordered segment of an lvalue chain: a `.member` (or `.value`), or an `[index]` key. Interleaved order is
 // preserved (alternating chains like `m[i].arr[j]` depend on it). The key is a THUNK yielding a FRESH node per
 // call (read + write nodes must not share instances). Consumed by buildLvalueAssign.
@@ -3546,7 +3553,7 @@ export default class AstBuilder
         ? new IntLiteralNode(1n)
         : this.visit(expressionCtx!) as ExpressionNode;
       right.location = (op === '++' || op === '--') ? location : right.location;
-      const binaryOp = new BinaryOpNode(left, binaryOperator, right);
+      const binaryOp = sourceBinaryOp(left, binaryOperator, right);
       binaryOp.location = location;
       rhs = binaryOp;
     }
@@ -3570,7 +3577,7 @@ export default class AstBuilder
       rhs = this.visit(expressionCtx!) as ExpressionNode;
       if (op === '=') return rhs;
     }
-    const binaryOp = new BinaryOpNode(read, COMPOUND_OPS[op], rhs);
+    const binaryOp = sourceBinaryOp(read, COMPOUND_OPS[op], rhs);
     binaryOp.location = location;
     return binaryOp;
   }
@@ -3849,7 +3856,7 @@ export default class AstBuilder
             read.location = target.location;
             const one = new IntLiteralNode(1n);
             one.location = expression.location;
-            const next = new BinaryOpNode(
+            const next = sourceBinaryOp(
               read, increment ? BinaryOperator.PLUS : BinaryOperator.MINUS, one,
             );
             next.location = expression.location;
@@ -4699,7 +4706,7 @@ export default class AstBuilder
     const left = this.visit(ctx._left);
     const operator = ctx._op.text as BinaryOperator;
     const right = this.visit(ctx._right);
-    const binaryOp = new BinaryOpNode(left, operator, right);
+    const binaryOp = sourceBinaryOp(left, operator, right);
     binaryOp.location = Location.fromCtx(ctx);
     return binaryOp;
   }
@@ -8642,7 +8649,7 @@ export default class AstBuilder
         if (pushAssignOp && pushAssignOp !== '=') {
           const arrayType = this.resolvePushReceiverArrayType(lv);
           if (!arrayType) throw new ParseError('Compound assignment to .push() requires an array receiver', loc);
-          value = stamp(new BinaryOpNode(
+          value = stamp(sourceBinaryOp(
             createDefaultValueExpression(arrayType.elementType, loc),
             pushAssignOp.slice(0, -1) as BinaryOperator,
             value,
@@ -8989,7 +8996,7 @@ export default class AstBuilder
               value.location = loc;
             } else {
               const zero = createDefaultValueExpression(arrayType.elementType, loc);
-              value = new BinaryOpNode(zero, BinaryOperator.MINUS, one);
+              value = sourceBinaryOp(zero, BinaryOperator.MINUS, one);
               value.location = loc;
             }
             if (pushLv.segs.length === 0) {
@@ -9330,7 +9337,7 @@ export default class AstBuilder
     // Compound `op=`: the new byte is the old byte `data[i]` combined with v under the base operator.
     const newByte = op === '='
       ? value
-      : stamp(new BinaryOpNode(stamp(new ArrayAccessNode(read(), indexFn())), COMPOUND_OPS[op], value));
+      : stamp(sourceBinaryOp(stamp(new ArrayAccessNode(read(), indexFn())), COMPOUND_OPS[op], value));
     const cat1 = stamp(new BinaryOpNode(prefix, BinaryOperator.PLUS, newByte));
     const cat2 = stamp(new BinaryOpNode(cat1, BinaryOperator.PLUS, suffix));
     if (isState) {

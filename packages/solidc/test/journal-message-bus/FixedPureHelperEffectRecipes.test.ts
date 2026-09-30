@@ -57,7 +57,7 @@ describe('pure helper fixed BCH effect recipes', () => {
       eligible: true,
       transfers: [{
         recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
-        amountRecipe: { kind: 'cast', operand: { kind: 'binary', operator: '+' } },
+        amountRecipe: { kind: 'binary', operator: '+', resultType: 'uint256' },
       }],
     });
   });
@@ -149,11 +149,8 @@ describe('pure helper fixed BCH effect recipes', () => {
       transfers: [{
         recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
         amountRecipe: {
-          kind: 'cast', resultType: 'uint256',
-          operand: {
-            kind: 'binary', operator: '+',
-            right: { kind: 'intLiteral', value: '1' },
-          },
+          kind: 'binary', operator: '+', resultType: 'uint256',
+          right: { kind: 'intLiteral', value: '1' },
         },
       }],
     });

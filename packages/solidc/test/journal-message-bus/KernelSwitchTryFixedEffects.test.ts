@@ -174,7 +174,7 @@ describe('kernel switch and try fixed effects', () => {
       transfers: [{
         condition: {
           kind: 'binary', operator: '==',
-          left: { kind: 'cast', expression: { kind: 'binary', operator: '+' } },
+          left: { kind: 'binary', operator: '+' },
           right: { kind: 'literal', value: '1' },
         },
       }],
@@ -240,8 +240,8 @@ describe('kernel switch and try fixed effects', () => {
       }),
     ]);
     expect(sites.map((site) => site.constructorArgs?.[0])).toEqual([
-      expect.objectContaining({ kind: 'cast', operand: expect.objectContaining({ kind: 'binary', operator: '+' }) }),
-      expect.objectContaining({ kind: 'cast', operand: expect.objectContaining({ kind: 'binary', operator: '+' }) }),
+      expect.objectContaining({ kind: 'binary', operator: '+', resultType: 'int256' }),
+      expect.objectContaining({ kind: 'binary', operator: '+', resultType: 'int256' }),
       expect.objectContaining({ kind: 'handlerInput', inputIndex: 1 }),
     ]);
   });
@@ -310,7 +310,7 @@ describe('kernel switch and try fixed effects', () => {
     expect(local).toMatchObject({
       eligible: true,
       childDeployments: [
-        { constructorArgs: [{ kind: 'cast', operand: { kind: 'binary', operator: '+' } }] },
+        { constructorArgs: [{ kind: 'binary', operator: '+' }] },
         { constructorArgs: [{ kind: 'handlerInput', inputIndex: 1 }] },
       ],
     });

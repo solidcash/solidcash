@@ -114,7 +114,7 @@ lands it removes the claim line.
   hands over; the reproducer is `master/loop-upsert-segment.test.ts` (the fixture's own shape, still refused wherever
   its node record is declared), `write-segments-publication.test.ts:142`, and the source lines above.
 - **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder stream
-  has taken the published facts. Met: 7 contracts / 0 refusals, `solidc/test/per-call/master` 613 in 83 files (the ledger guard included).
+  has taken the published facts. Met: 7 contracts / 0 refusals, `solidc/test/per-call/master` 610 in 82 files.
 - **Coordination**: high (the ladder stream wrote `support.ts` and owns `proxy/**`); agree the split first.
 
 ### PW4. The owed proxy-binding guard (soundness)
@@ -223,7 +223,7 @@ lands it removes the claim line.
   fixture's own shape, the machine's refusals, and its segment control) and that conformance guard. **PW3's status is
   ledger row D5** (`docs/per-call/DECISIONS.md`), met on the item's own Done-when: the three refusals are gone from
   the published census (7 contracts,
-  0 refusals, `{SCRATCH}/census2-head.log`, `BUILD=0`, `COMPILE=0`), the master tests pass (613 in 83 files, the ledger guard included), and the
+  0 refusals, `{SCRATCH}/census2-head.log`, `BUILD=0`, `COMPILE=0`), the master tests pass (610 in 82 files), and the
   published facts are in the ladder stream's hands. Two shapes are recorded as refused **by name** rather than
   served, and neither is one of the item's three: a **per-key** value array (`balances[workers[i]] = amounts[i]`,
   the reorder is not licensed there), and a loop whose **body makes the call**, which needs the hop's callee-frame

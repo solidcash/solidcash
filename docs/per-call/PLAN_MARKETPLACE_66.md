@@ -2255,180 +2255,27 @@ its authorization are the live rows of `DECISIONS.md`, which every other per-cal
 | 2026-09-27 | c44994de8 | per-call | the multi-record settlement | 114 + 277 + 343 | A segment can now settle every record it declares, which is what a mapping write needs: an insert declares the predecessor it relinks and the node it creates. The chain's identity is the record's index, so the walk sweeps one index at a time over the block carrying three values and no table, and the pass count is a run-time value the body need not be unrolled for. Every rule the single-record walk established is preserved (the spent commitment starts the chain, each declaration carries on, the last is what the transaction writes, the value floor, the census with its validator exception), and a chain may now also begin at an output — a record created by one declaration and read back by a later one chains through the same registers. The tests drive the emitted walk over real transactions: two records chained across two segments, two in one segment each chaining independently, a kept record beside a created one, three declarations of one record, a deletion beside a chain that carries on, and each control refused. Two bugs found in the way are worth recording: `OP_UNTIL` exits when its condition is *true*, so all three loops were initially inverted, and `OP_BEGIN` is a do-while, so a segment declaring no record ran its declaration body once. |
 ## Deviations
 
-- **PW3's varying-key loop-upsert shape is served for one and two turns, and the third chained insert is the wall
-  (landed 2026-09-30, `18bd5bda5`).** The per-call lane's plan now declares the loop's per-turn records where the
-  emitted coordinate reads them: the turns derived by `planCallLoopWrites` become the plan's `written` list (one
-  entry per minted node, chained through the node the previous turn created) rather than the batch's per-target
-  groups, and the emitter names them by declared ordinal. Five causes were fixed: the ordinal's base and the sign of
-  its `add` (`-(perCallEntryOffset(slot))` with the counter subtracted, where the landed piece-3 arm used
-  `-(perCallRecordsBeforeGroups() + 1)` and added); the four out-side `emitVerifySortedValueOutput` calls in the loop
-  body not passing `topIsDeclaredOrdinal`, so a negative ordinal went into the coordinate walk and selected an
-  unrelated record (measured operands `128:0000…` against `65:7ba2e719…`); the pending-flush mints
-  (`emitSortedFlushPendingNormal`, `emitSortedFlushPendingRepoint`) still emitting the direct convention's trailing
-  band; the segment-close kept check not exempting the loop's own records; and the plan's per-insert repetition of a
-  shared predecessor. **Measured through the shipped path** (`deployStatefulContract` + `callPerCallEntry`,
-  `compositionMachine()`): a literal-bool body and a parameter-value body over one- and two-element arrays are
-  accepted by every participant (`{SCRATCH}/pw3-final2-solidcash.log`: call + conformance 141 passed / 4 skipped;
-  `{SCRATCH}/pw3-final2-solidc-master.log`: master 610 passed), and the varying-key guard's accept/refused-mutation
-  pair is `conformance/loop-upsert-settlement.test.ts` (`:126`, with the mutation refused in the same case). **The "third turn" wall was mis-attributed, and no count wall exists** (`e2c583612`, same day): with keys whose
-  slot values ascend in the caller's array order, three and four turns settle for both bodies -
-  `call/loop-turns.test.ts` drives a three-element array to a machine accept and
-  `conformance/loop-upsert-settlement.test.ts` carries a three-element varying-key accept beside its refused
-  mutation (9 cases green in those two files at this revision). What remains is a **descending arrival**: the
-  plan builds a gap's chain in slot order (`planMappingBatch`'s `nextOf` sorts by `bytesToSlotValue`) while the
-  body chains in the caller's array order, so a turn whose key sits below the pending one co-spends a
-  predecessor the plan never declared - measured at the loop's own `OP_EQUALVERIFY` as `key(5) -> key(1)` on
-  the computed side against `key(5) -> key(6)` on the declared side (`{SCRATCH}/three-turn-localize.log`). That
-  **is served now** (`2149801f7`, same day), and the fix is on the plan side rather than in the emitter: for a loop
-  whose value is invariant (one literal or one scalar parameter), `planCallLoopWrites` orders its derived turns by
-  slot and `orderLoopKeyArgs` hands the frame the key array in that order - the same semantics-preserving reorder
-  the direct convention already makes (`loadCreateBuilderSortedInsertLoops`) - so the frame's order and the body's
-  chain agree. Two- and three-element descending arrays settle for both bodies with a refused mutation
-  (`conformance/loop-upsert-settlement.test.ts`, `call/loop-turns.test.ts`: 12 cases green, re-run by the
-  coordinator at `{SCRATCH}/parent-verify-descending.log`). The named refusal still fires where the reorder is not
-  licensed: a **per-key** value array (`balances[workers[i]] = amounts[i]`), whose array is not the SDK's to permute,
-  and a repeated slot, which `planMappingBatch` refuses independently of order. The entry still publishes no write-segment fact; that is now stated as by design, with its reason, at
-  `solidc/test/per-call/master/write-segments-publication.test.ts:142`.
-- **Why the fixture's own entry still publishes no fact, stated from the source (2026-09-30).**
-  `.marketplace/contracts/MarketplaceV1.sol:474-497` shows the shape: inside ONE loop iteration the body writes
-  `whitelistWorkers[jobId_][allowedWorkers_[i]] = true` and then calls `publishJobEvent(...)`. So the write's segment
-  is decided by a call *inside* the loop body, which is the `callFreeNestedBlocks` refusal
-  (`packages/solidc/src/per-call/master/support.ts:722` returns undefined for any loop whose body reaches a call):
-  no compile-time walk can place a write whose segment a run-time call decides. Two consequences worth separating,
-  because they are different blockers: (a) the **loop protocol** is served - a loop upsert with no call in its body
-  settles for one and two turns, and (for keys ascending by slot value) for three and four, through the shipped path
-  (`call/loop-turns.test.ts`, `conformance/loop-upsert-settlement.test.ts`); (b) the **fixture's variant**, whose
-  loop body makes the call, needs the hop's callee-frame planning before its per-turn records can be declared in the
-  segments the loop's iterations open - `callPerCallEntry` refuses it for that reason (`entry "move" makes 1 external
-  call(s), whose callee frames this call path does not plan yet`), which is PW1/PW2's lane and explicitly outside
-  this objective. So `updateJobWhitelist` publishing `writeSegments` undefined is the (a)+(b) combination, not an
-  unserved loop protocol, and the census read-back records it as such.
-- **Superseded (kept for the record): the shape was not served.** The fixture's
-  `MarketplaceV1.updateJobWhitelist` upserts a mapping whose key is an element of a caller-supplied array, inside a
-  loop whose body also makes the entry's call. Measured by `solidc/test/per-call/master/loop-upsert-segment.test.ts`,
-  which drives that shape itself: the compiler serves the body and publishes no write fact; the entry's block layout
-  reserves no `entry` slot for the mapping, so it is not a verified batch and no frame segment states where the
-  upsert's records are declared; and the machine refuses the well-formed spend wherever the node record is declared -
-  the segment the loop's own path reached, the last segment, both, and an insert - with `Program failed an
-  OP_VERIFY operation.` at an instruction inside the upsert's own emitted code (an unmapped region of the program),
-  while the same head with the loop removed is accepted and the same head with a parameter key settles under the
-  machine's own segment control. **The shipped call path refuses it too, on the frame it plans itself**:
-  `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` drives the entry through the shipped deploy
-  and call path (no hand-built witness) and the machine answers `no source message (Program failed an OP_VERIFY
-  operation.)`, while the same mapping written once from a parameter settles on that same path. So the shape is a
-  compiler-side wall (the run-time-loop upsert body does not settle), not something a write fact can state: no
-  segment declares its records. Compiler-half shapes PW3 lists are published and pinned, the census shows no
-  refusals, and the loop shape itself is served and accepted when its key is the frame's and the body makes no call
-  (`conformance/loop-upsert-settlement.test.ts`); **at that revision the varying-key variant was the open one** (ledger
-  row D2, since SUPERSEDED-by D5 - `docs/per-call/DECISIONS.md` carries the current status). Serving it needed the
-  collection declared in the frame's layout and the per-turn operands derived — compiler code generation plus the
-  ladder stream's `proxy/**` planning. (The first two steps of that sequence were written, measured and reverted the
-  same day: with the per-call `entry` slot published and the emitter addressing the frame's base, the master's
-  failure moves from `OP_VERIFY` to the no-record sentinel — `requested index: -32767` — and the shipped path refuses
-  by name, `writes mapping "balances" at N turn(s) of "workers", a run-time loop whose per-turn records a call does
-  not declare yet` (the count is derived from the artifact's own loop facts), so the accept
-  waits on the SDK's per-turn node planning; a hand-built witness cannot supply the nodes without re-implementing the
-  plan that lays them.) **The authorization for the layout plus the per-call planning is ledger row D2**
-  (`docs/per-call/DECISIONS.md`, SUPERSEDED-by D5 for the item's status), so the three-commit sequence above was the
-  plan of record and landed as one sequence with the census held at 0 refusals (a partial landing would have moved
-  `blockSize` and what the shipped path does with the entry without making it settle). The naming below is kept for
-  the record:
-  both reproducers committed (`solidc/test/per-call/master/loop-upsert-segment.test.ts`,
-  `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`). **Scoped 2026-09-30** by a read-only
-  investigation: the emitter's run-time-loop body addresses its per-turn record from the *direct* convention's
-  co-spent band (`emitSortedUpsertLoopBody`/`emitTrailingWriteInputBase`), while a per-call frame parks its records'
-  base, so the master reads another participant and its `OP_EQUALVERIFY` fails. Three commits would serve it, each
-  leaving the census at 0 refusals and the per-call suite green: the per-call layout's `entry` slot for this shape
-  plus the published fact; the frame-relative per-turn coordinate in the emitter (the paged-read arithmetic already
-  carries it); and the SDK planning one node per turn, mirroring its own read path. About 4-6 days compiler and 4-6
-  days SDK; the compiler-only loop-beside-a-call step is about 1-1.5 days and its proof is that
-  `master/loop-upsert-segment.test.ts`'s two refusals become an accept beside a one-segment-later refusal.
-  **Measured, for all three varying-key variants** (a loop beside a call, a loop whose body makes the call, a loop
-  with no call): each publishes no `entryAccesses` at all (the artifact's own filter drops an in-loop access), no
-  `sortedBatchInfo`, and `{blockSize: 1, slots: [master]}` for its `blockLayout`, with only `sortedUpsertLoopInfo`
-  naming the collection — while the same loop over a parameter key publishes `entryAccesses`, a `conditional` entry
-  slot, `sortedBatchInfo` and `writeSegment: 1`. So the artifact, the layout, the emitter and the SDK would have to
-  change together, and a write fact published on its own would state a segment that declares nothing. Two further
-  measurements: the in-loop access is published under the artifact's `entryLoopWrites`, which **no per-call code
-  reads** (only `packages/solidcash/src/stateful/**` does); and a loop whose body makes the call is refused by
-  `callPerCallEntry` for the callee-frame reason even when its key is the frame's own
-  (`entry "move" makes 1 external call(s), whose callee frames this call path does not plan yet`), so the fixture's
-  `updateJobWhitelist` sits behind the hop's callee-frame planning as well as the varying key.
-- **PW3 was never narrowed, and its status is ledger row D5** (`docs/per-call/DECISIONS.md`). One round's handoff
-  wording placed the fixture's `updateJobWhitelist` shape beyond the item's Done-when for a while; that sentence was
-  added by `87b092627` and withdrawn by `c612e351b`
-  (`git log -S "outside PW3" -- docs/per-call/HANDOFF_PARALLEL.md`), and the item's Done-when line itself was never
-  changed: it is byte-identical at `1ec400927` and at HEAD ("the three refusals are gone from the published census,
-  the master tests pass, and the ladder stream has taken the published facts"), with only a status sentence appended.
-  What D5 now decides, with its provenance, is that PW3 is met on that Done-when and that the fixture's call-in-loop
-  shape is handed to the ladder stream; the loop protocol itself is served and is this lane's landing. The same
-  `c612e351b` reconciled the record's other contradiction: the Deviations text no longer says G2's row 13 is left
-  unticked, which contradicted the ticked checklist at section 6 (`:1016`) and the Log row that says all nine G2
-  boxes are ticked.
-- **Each publication shape has its machine verdict, and the loop shape's is an accept.** A body that writes nothing
-  of its own must declare its own record kept, and the machine refuses the same record declared changed where the
-  code never touches it (`solidcash/test/per-call/hostile/unwritten-record-change.test.ts`, whose `touch` entry is
-  exactly "one call, no write of its own"). A batch write beside a dynamic append settles with the machine accepting
-  the well-formed spend and refusing three mutations of it (`solidc/test/per-call/master/insert-beside-append.test.ts`).
-  A runtime-loop upsert whose key the frame holds **is accepted by the machine on the shipped path** and the same
-  spend with one byte of the record it wrote changed is refused
-  (`solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`: `:93-96` asserts
-  `{ accepted: true, objections: '' }` for the loop upsert, `:110-121` refuses the mutated spend, and `:124-129`
-  refuses the varying key beside them — a reader who cites `:86-97` is reading the revision before `fddae17aa`),
-  which is the accept/refuse pair for that shape; the machine's own segment control for such a record accepts the declaration at the write's segment and
-  refuses it one segment later (`solidc/test/per-call/master/loop-upsert-segment.test.ts`). **That harness carries the
-  accept itself now**, so the file whose subject is which segment declares a loop upsert's records answers both sides:
-  its third describe, `the run-time-loop upsert the shipped path settles, its machine verdict`, takes the shipped
-  compile, the shipped deploy and `callPerCallEntry` for the served body, asserts `{ accepted: true, objections: [] }`,
-  changes one byte of the commitment the loop wrote and asserts `vm.stateSuccess(...)` is not true for the accepted
-  participant (9/9 green in that file, `{SCRATCH}/round-verify-segment.log`). **The varying-key variant has an
-  accepted spend now too** (`18bd5bda5`, 2026-09-30): the per-call lane's plan declares one node per turn and the
-  emitted per-turn coordinate reads it there, so `conformance/loop-upsert-settlement.test.ts`'s varying-key case is
-  a machine accept of the well-formed spend beside a refusal of one of the records the loop wrote being changed, and
-  `call/loop-turns.test.ts` settles a two-element array the same way. What is still refused - with no accepted spend
-  - is a loop of **three or more** chained inserts, which both bodies reach and the two-element pins name in their
-  comments; that is the open wall, not the shape.
-- **A loop upsert beside a call is served for a fixed record and refused for a mapping node (measured 2026-09-30).**
-  `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts` drives the shape through the shipped proxy
-  path with the callee it calls deployed: the entry makes one external call and the loop that follows upserts the
-  entry's own record. The artifact publishes `writeSegment: 1` and `writeSegments: [{record: 0, segment: 1}]` (the
-  segment the call opened, which the loop's turns run in), the hop settles it, the machine accepts the well-formed
-  spend with no objection from any participant, the record holds the value the loop's last turn computed, and the
-  same spend with one byte of that record changed is refused by the participant that guards the record
-  (`proxy-record-0`) and by the validator. The loop **before** the call publishes `segment: 0` for the same body and
-  settles too, so the fact a builder reads is the segment the code before the loop reached. The *mapping node* of the
-  same shape — a collection the artifact does publish a verified batch for, keyed by a parameter, which is the served
-  variant when the body makes no call — is refused in both source orders with `Program failed an OP_VERIFY
-  operation.` inside the upsert body, pinned beside the accept in that same file: a chain node's per-turn operands
-  are not the fixed record the loop's own code addresses. That was PW3's other open shape at that revision (ledger row
-  D2, SUPERSEDED-by D5; `docs/per-call/DECISIONS.md` carries the current status).
-- **The varying-key compiler half was written and measured; the SDK half is the whole remainder (2026-09-30).** Three
-  per-call-only edits (28 lines: the layout's `entry` slot for an in-loop access, the artifact's in-loop access
-  publication, and the frame-relative per-turn coordinate in `emitSortedUpsertLoopBody`/`pushIdx` and the
-  `runtimeLoopEntry` arm of `emitEntryInputIndex`) were applied, built and measured on the fixture's own varying-key
-  entry through the shipped call path. With them the artifact publishes
-  `{blockSize: 2, slots: [master, {kind: 'entry', conditional: true}]}` and
-  `entryAccesses [{slotIndex: 0, keyParams: ["arridx(id:workers,id:i)"], operations: ["write"]}]`, and the shipped
-  path then refuses by name before the machine is asked: `entry "move" touches mapping "balances" as write outside a
-  sorted batch, which a call does not plan` (`packages/solidcash/src/per-call/call/entry-records.ts:374`). The edits
-  were reverted rather than landed, because alone they move that body's `blockSize` and change its refusal without
-  making it settle — the sequence lands whole or not at all. The remaining work is the per-call composer's
-  run-time-loop record protocol, which exists only in the kernel lane (`stateful/**`: `KernelEntryJournal.ts`,
-  `stb-materialize-runtime-loop-trailing.ts`); `grep -rn sortedUpsertLoopInfo packages/solidcash/src/per-call` is
-  empty. Evidence: `{SCRATCH}/compiler-half-attempt.diff`, `{SCRATCH}/probe-varying.log`. **The coordinator decided on
-  2026-09-30, on that measurement, to hand the remaining SDK protocol to the ladder stream** — it owns
-  `per-call/proxy/**`, `per-call/read.ts` and the composer's records — with this stream's compiler half kept as the
-  saved patch that lands with it. PW3's item closes on that split and `HANDOFF_PARALLEL.md`'s PW3 section records it.
-- **PW3's fixture census was read back with this round's compiler.** `node --max-old-space-size=8192
-  packages/testing/dist/cli.js compile --jobs 4` over the fixture project, at HEAD `87b092627`, reporting `Compiled
-  9 Solidity source(s) in 0 compiler job(s) (9 cache hit(s)) -> 7 artifact(s)`, so the artifacts are the compiler's
-  own current output (`.marketplace/artifacts/solidcash/*.json`, written 2026-09-30 12:54). Read back from every
-  artifact's `composition.refusedEntries`: **0 refusals across all seven contracts**, so the handoff's done-when
-  ("the three refusals are gone from the published census") holds; `MarketplaceV1.postThreadMessage()` publishes
-  `writeSegments: []`, `MarketplaceV1.refund()` publishes its batch at segment 2 and its run at `last`, and
-  `MarketplaceV1.updateJobWhitelist()` publishes nothing for the reason above. The capture is
-  `{SCRATCH}/pw3-census.log`; the read-back ran while the ladder stream's own run was in flight, which is why an
-  earlier record called it corroboration rather than gating.
+- **PW3's shapes: what is served, what is refused by name, and where each verdict lives.** Served and pinned: an
+  entry that writes nothing of its own (`hostile/unwritten-record-change.test.ts`), a runtime-loop upsert beside a
+  call (`conformance/loop-upsert-beside-call.test.ts`, accept + refused mutation), a batch write beside a dynamic run
+  in another segment (`master/insert-beside-append.test.ts` at master level, with the shipped hop keeping a named
+  refusal for that body family), and the loop upsert itself for one to four turns in any key order, ascending or
+  descending (`conformance/loop-upsert-settlement.test.ts`, `master/write-shape-publication.test.ts` - which carries
+  the shipped-path verdict for the body it publishes - and `master/loop-upsert-segment.test.ts`). Refused by name,
+  and neither is one of PW3's three: a **per-key** value array (`balances[workers[i]] = amounts[i]`), whose array the
+  SDK may not permute, and a loop whose **body makes the call**. The second is the fixture's own
+  `updateJobWhitelist`: the write and `publishJobEvent(...)` share one loop iteration
+  (`.marketplace/contracts/MarketplaceV1.sol:474-497`), so the write's segment is decided at run time and
+  `callFreeNestedBlocks` (`packages/solidc/src/per-call/master/support.ts:722`) refuses to place it - and
+  `callPerCallEntry` refuses the body for the callee-frame reason, which is the hop's callee-frame planning.
+- **PW3's status, and the record-integrity facts behind it, are ledger row D5** (`docs/per-call/DECISIONS.md`). Its
+  Done-when is met - the three refusals are gone from the published census (7 contracts / 0 refusals,
+  `{SCRATCH}/census2-head.log`, `BUILD=0`, `COMPILE=0`; `postThreadMessage` publishes an empty list, `refund` its
+  batch and its run, `updateJobWhitelist` no fact for the reason above) and `solidc/test/per-call/master` is 610 in
+  82 files. Two corrections stand in the record: the item's Done-when line was never changed (byte-identical at
+  `1ec400927` and HEAD; the sentence that placed the shape beyond it lived only between `87b092627` and
+  `c612e351b`), and the fixture's key-variant work is complete for invariant-value loops in any order while the
+  call-in-loop shape is handed over rather than served.
 - **The `{SCRATCH}` directory was pruned during the 2026-09-29/30 round.** `/tmp/grok-goal-53d72d2bcc11/implementer`
   disappeared between run 14 and the write-segment landing, taking the raw ladder logs (`ladder/m1-run-*.log`), the
   compile logs and the census scripts the Log rows name as `{SCRATCH}/...`. The durable record survives and is what
@@ -3186,3 +3033,4 @@ writing frame computed, with a record output no frame computed refused by the va
 | 2026-09-30 | `354ccf998`, `17697ac0e` | per-call | the two landings measured on the fixture: the proxy wall is behind us and the next one is a nested-key loop write | 1 passed \| 2 failed (of 3 filtered), 525.2 s for compile + run | **Filtered run on the committed base** (`-t 'post job 1\|post job with invalid deadline\|remove mece tag'`, the fixture recompiled from scratch: 9 sources, 7 artifacts, 0 cache hits, exit 0): `mece tags > remove mece tag` **passes** (403.4 s, the deployment inside it) — the stall the proxied-return landing caused is gone, and with it the whole proxy family's regression. The two job-posting titles stop one wall further in, on the same planner refusal: `the implementation's "publishJobPost" entry writes 1 mapping entry(ies) across 0 sorted batch(es), and this hop plans one batch to one collection`. That is the write `whitelistWorkers[jobs.length - 1][allowedWorkers_[i]] = true` — a **nested-key write inside a run-time loop** — and the artifact publishes it in `entryAccesses` (a `keySources` `arridx(id:allowedWorkers_, id:counter)` beside `valueSource: "lit:true"`) while `sortedUpsertLoops` is **empty**. This is PW3's family (`updateJobWhitelist` is the same shape), and the machine is what refuses the declarations for it, so it is handed to the worker who owns the loop rows; the SDK side is the hop's write planner, which currently refuses any write a batch does not cover. |
 | 2026-09-30 | (this row's commit) | per-call | coordinator decisions: PW3 met with the fixture shape handed to the ladder stream, and PW7's composed half stays scoped | n/a (record only) | **Two decisions, asked and answered this session.** (1) **PW3 stands met on its own Done-when**, and the fixture's `updateJobWhitelist` - a varying-key loop upsert whose loop body also calls `publishJobEvent` in the same iteration (`.marketplace/contracts/MarketplaceV1.sol:474-497`) - is **handed to the ladder stream** as a pinned reproducer, because what remains for it is the hop's callee-frame planning and not the loop protocol: the protocol is served for any key order when the body makes no call (one to four turns, ascending or descending, each with a refused mutation), and the call-in-loop body is refused by `callPerCallEntry` for the callee-frame reason. The alternative readings put to the coordinator were keeping PW3 open here and crossing into the excluded hop lane; both were declined. (2) **PW7's composed-transaction half stays scoped as recorded** - the chunk row certifies the shipped encoders' arithmetic, the blocker is the read-modify-write of one long value in one frame, and the resolving change is named in the row - rather than spending a round resolving it now or handing it to the composer lane. Both answers are recorded in `HANDOFF_PARALLEL.md`'s PW3 and PW7 items with the question each answered. |
 | 2026-09-30 | (this row's commit) | per-call | one decision ledger, and a guard that fails when a status sentence goes stale | solidc `test/per-call/master/decisions-ledger.test.ts` 3/3, and 1/3 when a violation is injected | **The structural cause of the recurring contradiction is removed.** PW3's status was written as an append-only series of decision paragraphs across `HANDOFF_PARALLEL.md` (three), this plan (Deviations and Log) and the goal plan, with no supersession, so each round's reconciliation left another stale copy and the next verifier found a different one. The status and the authorization now live in **one ledger**, `docs/per-call/DECISIONS.md`: one row per decision with the question asked, the answer verbatim, its **provenance** (D4 and D5 cite `chat_history.jsonl:530`, this session's `ask_user_question` tool result, tool call id `call_00_v8PauXmjzlY22P4sZrp02281`), and a status of `live` or `SUPERSEDED-by <id>`. D5 (live) records PW3 met on its Done-when with the fixture's call-in-loop shape handed to the ladder stream; D2 (SUPERSEDED-by D5) held the earlier reading. Every other document now **points** at a row id rather than restating a decision: this plan's Deviations say so and its Log carries a note that its rows are dated history, and the handoff's three decision paragraphs are replaced by pointers. **The convention is guarded mechanically**: `decisions-ledger.test.ts` parses the ledger (every id once, every `SUPERSEDED-by` an existing row, exactly one live row for PW3 and for PW7, non-empty provenance on each live row), fails on a line outside the ledger that names PW3 and carries a superseded phrasing - proven by injecting `PW3 stays in PW3 and its box stays unticked.` into the handoff and watching it fail with that line named (`{SCRATCH}/ledger-probe.log`, 1 failed / 2 passed), then restoring; the exemptions are the Log table (dated history) and a `git log -S` quotation (evidence about the past). |
+| 2026-09-30 | (this row's commit) | per-call | the PW7 first-title profile re-taken, and the status narration collapsed to the ledger | solidc `test/per-call/master` 613 in 83 files; the profile run 8m37s wall | **The profile element of the PW7 criterion, measured again at HEAD** (`{SCRATCH}/audit-pw7-profile.log`): `yarn vitest run --config vitest.marketplace.config.ts --no-file-parallelism -t 'transfer owner'` reports `admin > transfer owner` at **498.2 s** and `admin > non owner cannot transfer owner` at **2.6 s**, wall **8m37s** for the filtered run - the same shape as the earlier 455.1 s reading, so the first title's cost is the fixture deployment and not the composition. The proposals stand: a persisted fixture snapshot would skip nearly all of a filtered run, and the filter must name the title as the fixture spells it. **Also in this commit, a documentation cleanup with no behaviour change**: the handoff's PW3 item and this plan's PW3 Deviations block were collapsed from 455 lines of narration to 61 lines of facts plus pointers, with the per-round measurements left where they belong (the dated Log rows above) and the current status in `DECISIONS.md` instead of restated. Nothing in the compiler or SDK changed, and `test/per-call/master` is 613 in 83 files with the ledger guard in place. |

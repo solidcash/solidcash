@@ -81,6 +81,26 @@ const STRUCT_BIO = 'b'.repeat(30);
 const CALLER_TXID = '33'.repeat(31) + 'cc';
 const SECOND_CALLER_TXID = '44'.repeat(31) + 'bb';
 
+/**
+ * A write inside a run-time loop: each turn writes one key of a nested mapping.
+ *
+ * The inner key is an element of the array the call itself carries, so the loop's width is a fact of the call
+ * rather than of the body, and the outer key is a value the entry's own state fixes. This is the shape a body
+ * makes of a per-job whitelist, and the artifact publishes the access without any sorted batch for it.
+ */
+const LOOP_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   uint256 public openedAt;'
+  + '   uint256 public closedAt;'
+  + '   uint256 public revision;'
+  + '   uint256 public rate;'
+  + '   mapping(uint256 => mapping(address => bool)) allowed;'
+  + '   function initialize(address[] workers) {'
+  + '     this.revision = 1;'
+  + '     for (int i = 0; i < workers.length; i++) { this.allowed[this.revision][workers[i]] = true; }'
+  + '   }'
+  + ' }';
+
 interface Funding {
   readonly network: MockNetworkProvider;
   readonly signature: SignatureTemplate;
@@ -360,5 +380,17 @@ describe('a proxied initialize that writes a sorted mapping', () => {
     expect(bytesToHex(written.slot)).toBe(bytesToHex(keyToSlotMulti([who])));
     expect(bytesToHex(written.value)).toBe(bytesToHex(encodeFunctionArgument(2n, 'uint256') as Uint8Array));
     expect(result.broadcast).toBeDefined();
+  });
+
+  // The wall the job posting entry stops on: a write inside a run-time loop. The artifact publishes the access
+  // (a key whose second component is an element of the caller's array, and the first a value its own state fixes)
+  // and no sorted batch for it, so the hop's batch planner has nothing to plan and refuses by name. Pinned here so
+  // the shape has a target on the hop's own path; the loop's records are the collection's, and the direct call path
+  // already settles a run-time-loop upsert (conformance/loop-upsert-settlement.test.ts).
+  it('pins the nested-key write a run-time loop makes, which no sorted batch covers', async () => {
+    const who = encodeLockingBytecodeP2pkh(alicePkh);
+    await expect(deploy(LOOP_SOURCE, [[who]])).rejects.toThrow(
+      /writes 1 mapping entry\(ies\) across 0 sorted batch\(es\)/,
+    );
   });
 });

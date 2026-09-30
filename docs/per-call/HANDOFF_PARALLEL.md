@@ -7,11 +7,17 @@ lands it removes the claim line.
 
 ## Where the ladder stands
 
-- Last full ladder: 17/66 (run 16, `a62c78ef8` plus the write-segment landing). All 17 are class (a); the five
-  composition groups are at zero: (d) repeated callee 0/23, (e) fan-in 0/11, `approveResult` re-entry 0/3,
-  `arbitrate` re-entry 0/5.
-- The ladder stream is on L3, #18 `post job 1`: the wall is the second reach of a mapping-writing callee, treated as
-  the class-(d) capability (22 further titles hang on it). Evidence: `PER_CALL_HOP_TRACE=1` traces in `{SCRATCH}`.
+- Last full ladder: 17/66 (run 17, `f22ecc5ff`). Run 18 (the strict matchers) was killed by its `timeout 5400`
+  wrapper after 50 of 66 titles, so it carries no count; a full ladder now needs `timeout 10800`. All 17 are class
+  (a); the five composition groups are at zero: (d) repeated callee 0/23, (e) fan-in 0/11, `approveResult` re-entry
+  0/3, `arbitrate` re-entry 0/5.
+- The ladder stream is on L3, #18 `post job 1`. The wall has moved twice this round: the hop's plan-time refusal
+  (three reaches of one token entry all writing one mapping key, because two of the three sites are gated on an
+  earlier call's result) is **gone** — such a site is now planned as no visit and re-planned from what the earlier
+  call returned (`f2e34600d`) — and the title now stops on the entry's **own** `require(meceCount == 1, "Exactly one
+  MECE tag is required")`, whose count comes from a value a **proxied** callee returned. That is PW8, and it is the
+  critical path for the 24 titles. Evidence: `{SCRATCH}/ladder/probe-postjob1-r29.log` (the targeted run) and
+  `probe-postjob1-trace-r29.log` (`PER_CALL_HOP_TRACE=1`).
 - Coordinator directions (log rows `f85b9d3d3`, `912ff9400`): strict `revertedWith`/`withArgs` for per-call contracts
   before M1 is claimed (the count is expected to drop), and a full ladder at the next checkpoint. Both are the
   ladder stream's.
@@ -262,6 +268,37 @@ lands it removes the claim line.
   to the ladder stream (the harness and the fixture are its files).
 - **Done when**: the 4.5 rows are recorded, and the proposals are in the Log with their measured effect.
 - **Size**: half a day to a day. **Coordination**: none (read-only).
+
+### PW8. A proxied callee's return reaches its caller (the ladder's critical path)
+
+- **Why**: after the planned-arms landing, the targeted title gets all the way to the implementation entry's own
+  `require(meceCount == 1, "Exactly one MECE tag is required")` (`MarketplaceV1.publishJobPost`, line 259) and fails
+  there. That count is built from `bytes(marketplaceData.meceTags(tag)).length` — a `STATIC` call to
+  `MarketplaceDataV1Proxy.__fallback()` whose delegate leg runs `MarketplaceDataV1.meceTags()`. The trace shows the
+  *implementation* frame's value learned and accepted (`HOPTRACE stop callee=callee-impl-master-2
+  reason=learned-retval`, then `reason=accepted`), and the caller then failing on the value it recorded for the
+  **proxy** frame. This is the shape the parallel worker already recorded as "a value a proxied store returns reaches
+  its caller empty", now measured on the ladder's own title; the same wall holds the other 23 titles.
+- **What the model requires**: `packages/solidc/src/per-call/validator/checks.ts:299` —
+  `if (!bytesEqual(calleeBlock.retval, call.result)) check('V5','V5_RETVAL_MISMATCH', callee)`. The callee block the
+  caller records is the proxy's `__fallback` frame, so **that frame's `retval` must be the bytes the implementation
+  frame recorded**, i.e. the value encoded by the implementation entry's own declared return encoding. Two facts
+  block the current shape: `placeProxiedCallee` plans the proxy frame `returns: false`, and the generated fallback
+  cannot record the value — a void entry must record nothing (`GenerateTargetTraversal.ts:35590-35606`, the
+  `OP_SIZE` vs `0` check) while declaring it `returns (bytes)` re-encodes the delegate's bytes (pushdata framing, or
+  a one-byte `bool`), so the two never compare equal.
+- **Do**: give the generated proxy's fallback a frame that records the delegate's result **verbatim**, with no
+  re-encoding — the smallest compiler notion of a raw retval, or one generated facade method per implementation
+  entry typed to that entry's declared return — and plan the proxy leg with that return, threading the value the
+  implementation frame's own close hands back. Files: `packages/solidcash/src/per-call/proxy/generate.ts` and
+  `packages/solidcash/src/per-call/proxy/external-calls.ts` (the hop), plus the compiler's retval emission.
+- **Done when**: a proxied callee's return reaches its caller through the shipped hop (a focused case in
+  `test/per-call/call/` beside a control where the implementation returns nothing), and the fixture's `meceTags` read
+  answers the value the implementation entry returned — measured by re-running `-t 'post job 1'` (~7 minutes with the
+  deployment) beside `-t 'mece tags > remove mece tag'`.
+- **Size**: a day or two. **Coordination**: the compiler half is `GenerateTargetTraversal.ts`/`proxy/generate.ts`,
+  which the second worker is in; the ladder stream holds the hop's planning and will take whichever half the worker
+  does not.
 
 ## Not for now
 

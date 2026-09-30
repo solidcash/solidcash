@@ -17,6 +17,7 @@ import {
   type PerCallProxyCallResult,
 } from '../../../src/per-call/proxy/index.js';
 import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { readPerCallEntry } from '../../../src/per-call/read/index.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh } from '../../fixture/vars.js';
@@ -400,7 +401,8 @@ async function deployFanIn(worker: Worker): Promise<Deployed> {
     implementationCategoryId: journalDeployment.implementation.categoryId,
   };
 
-  // The arbitrator's fee is its own hop: a proxied initialize that writes two collections stops at its broadcast.
+  // The arbitrator's fee is its own hop, as when a proxied initialize writing two collections stopped at its
+  // broadcast; that initialize settles now (pinned below).
   const enlisted = await callPerCallProxyEntry({
     provider: network,
     implementationArtifact: journal,
@@ -508,11 +510,11 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
     ]);
   });
 
-  it('setup: a store initialize that inserts into two collections stops at its broadcast', async () => {
+  it('setup: a store initialize that inserts into two collections settles and registers both', async () => {
     const { journal } = compiled();
     const { network, funder, creatorFunder, creatorLock, changeAddress, hopCoins } = await fundedNetwork();
     const judgeLock = encodeLockingBytecodeP2pkh(bobPkh);
-    const deploying = deployPerCallProxy({
+    const deployed = await deployPerCallProxy({
       provider: network,
       implementationArtifact: journal,
       proxyArtifact: buildProxyArtifact(journal),
@@ -529,9 +531,14 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
       vm: compositionMachine(),
     });
 
-    // Why the flows register the arbitrator in a hop of its own: one insert into each of two collections.
-    // Owner: the SDK proxy deploy, the initialize hop's broadcast (`broadcastHop` in proxy/deploy.ts).
-    await expect(deploying).rejects.toThrow(/Duplicate input detected: [0-9a-f]{64}:\d+ is already included at input/);
+    // One insert into each of two collections, which spent one empty head twice at the broadcast until the hop
+    // looked each head up at its own collection's lock (225b23731).
+    expect(deployed.initialize.broadcast).toBeDefined();
+    const read = (functionName: string, who: Uint8Array): Promise<unknown> => readPerCallEntry({
+      provider: network, artifact: journal, categoryId: deployed.proxy.categoryId, functionName, args: [who],
+      vm: compositionMachine(),
+    }).then((answer) => answer.value);
+    expect([await read('isMember', creatorLock), await read('feeOf', judgeLock)]).toStrictEqual([true, FEE]);
   });
 
   it('take: stops at the note that carries the count an earlier call returned', async () => {

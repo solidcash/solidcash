@@ -7,6 +7,7 @@ import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import * as composer from '../../../src/per-call/composer/index.js';
 import {
@@ -302,14 +303,17 @@ function lineOf(needle: string, after = 'pragma'): number {
 /** Where the escrow's and the dispute contract's own refusals are reported: their entries' lines. */
 const REFUND_LINE = lineOf('function refund(', 'contract Vault');
 const CHALLENGE_LINE = lineOf('function challenge(', 'contract Panel');
+/** Where the allowlist update's failing read of the task array is reported: its own line or its modifier's. */
+const ALLOWED_READ_LINES = [lineOf('function setAllowed('), lineOf('"not creator"')];
 
 /**
- * The hop's refusal of an entry whose run-time loop writes `allowlist`: the artifact publishes each loop write as an
- * entry access with a `sortedUpsertLoopInfo` row and no sorted batch, and the hop's write planner plans batches only.
+ * The hop's refusal of an allowlist loop whose body also makes the store call: the hop plans the loop's write, and
+ * the artifact publishes no segment for it (no write fact, pinned first), so it cannot be placed beside the calls.
+ * Owner: the SDK hop (`proxy/deploy.ts`, `resolvedWriteSegment`), the call-in-loop shape handed to the ladder stream.
  */
-function unbatchedWrites(entry: string, count: number): string {
-  return `the implementation's "${entry}" entry writes ${count} mapping entry(ies) across 0 sorted batch(es), and this `
-    + 'hop plans one batch to one collection';
+function unplacedLoopWrite(entry: string): string {
+  return `the implementation's "${entry}" entry writes a mapping record beside an external call, and the segment `
+    + 'that write lands in is not fixed by the entry\'s own source, so the hop cannot declare it';
 }
 
 type ArtifactMap = ReturnType<typeof compileStringMulti>;
@@ -629,22 +633,40 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       world = await deployWorld(0n);
     }, 600_000);
 
-    it('posting with an allowlist (20) is refused for its loop\'s write, which no sorted batch covers', async () => {
-      const outcome = await enter(world, 'Desk', 'post', [TITLE, 100n, CAROL_LOCK, [BOB_LOCK]], CREATOR);
-      // The two notes at `notes[id]` no longer stop the plan (the reach check covers fixed-width values only), and
-      // the loop's upsert is refused before anything is derived. Owner: the SDK hop's write planner
-      // (`proxy/entry-writes.ts`, `planHopMappingBatches` plans `sortedBatchInfo` only; the direct call path plans
-      // `sortedUpsertLoopInfo`, `call/entry-records.ts`, `planCallLoopWrites`).
-      expectRefused(outcome, unbatchedWrites('post', 1));
-      expect(outcome.draft).toBeUndefined();
-    }, 300_000);
+    it('posting with an allowlist (20) stops in its frame: the loop\'s key is planned at the task before the push',
+      async () => {
+        const outcome = await enter(world, 'Desk', 'post', [TITLE, 100n, CAROL_LOCK, [BOB_LOCK]], CREATOR);
+        // The store reads' `true` reaches the root (PW8), the two notes no longer stop the plan (547db26d7), and the
+        // loop's write is planned (225b23731), its fixed key `tasks.length - 1` read from the records before the
+        // transaction: the plan spends the node `grant` wrote for task 0, where the body pushes task 1 and writes
+        // there. Owner: the SDK hop's loop plan (`proxy/entry-writes.ts`, `planHopLoopBatch`, keys from
+        // `call/entry-records.ts`, `planCallLoopWrites`, over the live state).
+        const line = unnamedRefusalLine(outcome, 'post');
+        expect(line).toBeGreaterThanOrEqual(lineOf('function post('));
+        expect(line).toBeLessThan(lineOf('function open('));
+        const draft = outcome.draft!;
+        expect(draft.blockOf('implementation-master').calls.slice(0, 2).map((call) => binToHex(call.result)))
+          .toStrictEqual(['51', '51']);
+        const planned = (id: Uint8Array): boolean => draft.layout.participants
+          .some((placed) => placed.id === `mapping-node-${binToHex(keyToSlotMulti([id, BOB_LOCK]))}`);
+        expect([planned(new Uint8Array(0)), planned(Uint8Array.of(1))]).toStrictEqual([true, false]);
+      }, 300_000);
 
-    it('posting without an allowlist (18) is refused the same way, for a loop its arguments never run', async () => {
+    it('posting without an allowlist (18) stops at its push, its loop running no turn', async () => {
       const outcome = await enter(world, 'Desk', 'post', [TITLE, 100n, CAROL_LOCK, []], CREATOR);
-      // The loop's write is published whatever the arguments, and it is planned before the store reads, whose value
-      // now reaches the root (`postUnlisted` below). Owner: the SDK hop's write planner, as with an allowlist.
-      expectRefused(outcome, unbatchedWrites('post', 1));
-      expect(outcome.draft).toBeUndefined();
+      // The store reads' `true` reaches the root and the frame declares the records `postUnlisted` declares, which
+      // settles below; `post`'s block layout also publishes the loop's conditional entry slot, which a plan with no
+      // turn leaves unstated, and the frame fails an unnamed check at its push. Owner: the SDK hop's loop plan
+      // (`proxy/entry-writes.ts`, `planHopLoopBatch`) beside the compiler's conditional loop slot.
+      const line = unnamedRefusalLine(outcome, 'post');
+      expect(line).toBeGreaterThanOrEqual(lineOf('function post('));
+      expect(line).toBeLessThan(lineOf('function open('));
+      const draft = outcome.draft!;
+      const byIndex = new Map(draft.layout.participants.map((placed) => [placed.index, placed.id]));
+      expect(draft.blockOf('implementation-master').segments[0]!.map((entry) => byIndex.get(entry.in)))
+        .toStrictEqual(['proxy-record-0', 'proxy-record-1', 'dynamic-chunk-tasks-0']);
+      expect(compiled().Desk!.abi.find((entry) => entry.name === 'post')!.blockLayout!.slots.at(-1))
+        .toStrictEqual({ kind: 'entry', offset: 3, slotIndex: 0, conditional: true });
     }, 300_000);
 
     it('a thread message from the creator (47) stops at its first read of the task array', async () => {
@@ -682,27 +704,26 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       ]);
     }, 300_000);
 
-    it('an allowlist update from a non-creator (30) is refused for its loop writes, before "not creator"', async () => {
+    it('an allowlist update from a non-creator (30) is refused for its loop write, before "not creator"', async () => {
       const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [BOB_LOCK], []], WORKER);
-      // Refused before anything is derived, so the task read it stopped at before is not reached. Owner: the SDK
-      // hop's write planner, as posting.
-      expectRefused(outcome, unbatchedWrites('setAllowed', 2));
+      // Refused before anything is derived, so the task read it stopped at before is not reached. Owner: the SDK hop,
+      // as `unplacedLoopWrite` names.
+      expectRefused(outcome, unplacedLoopWrite('setAllowed'));
       expect(outcome.draft).toBeUndefined();
     }, 300_000);
 
     it('an allowlist update adding a worker (20, 30) is refused the same way', async () => {
       const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [ALICE_LOCK], []], CREATOR);
-      // Owner: the SDK hop's write planner. The loop's call site is no longer reached.
-      expectRefused(outcome, unbatchedWrites('setAllowed', 2));
+      // Owner: the SDK hop, as above. The loop's call site is no longer reached.
+      expectRefused(outcome, unplacedLoopWrite('setAllowed'));
       expect(outcome.stalls).toStrictEqual([]);
     }, 300_000);
 
     it('with the task read stepped around, the allowlist loop is refused the same way', async () => {
       const outcome = await enter(world, 'Desk', 'setAllowedOnly', [TASK, [ALICE_LOCK], []], CREATOR);
-      // The upsert the body's own code refused (PW3's wall) is refused up front: the artifact now publishes the
-      // loop's writes as entry accesses, which the write planner covers only by a sorted batch. Owner: the SDK hop's
-      // write planner, as posting.
-      expectRefused(outcome, unbatchedWrites('setAllowedOnly', 2));
+      // The upsert the body's own code refused (PW3's wall) is planned by the hop now, and refused where it lands
+      // beside the loop's store calls. Owner: the SDK hop, as above.
+      expectRefused(outcome, unplacedLoopWrite('setAllowedOnly'));
       expect(outcome.draft).toBeUndefined();
     }, 300_000);
 
@@ -779,10 +800,11 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       });
     }, 300_000);
 
-    it('an allowlist update of a closed task (30) is refused for its loop writes, before "not open"', async () => {
+    it('an allowlist update of a closed task (30) stops at the task read, before its own "not open"', async () => {
       const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [], []], CREATOR);
-      // Empty lists run no turn; the loop writes are published all the same. Owner: the SDK hop's write planner.
-      expectRefused(outcome, unbatchedWrites('setAllowed', 2));
+      // Empty lists run no turn and plan no call, so the loop write is placed and the read `onlyCreator` makes of
+      // the array the entry never writes fails first. Owner: the SDK hop, as the thread message.
+      expect(ALLOWED_READ_LINES).toContain(unnamedRefusalLine(outcome, 'setAllowed'));
     }, 300_000);
 
     it('with the allowlist loop stepped around, posting (18) settles and stores the task', async () => {

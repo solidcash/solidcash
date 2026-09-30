@@ -101,7 +101,7 @@ strictFieldAccess = false,
   };
   const solidityImportCompat = artifactUsesSolidityAbi(artifact);
   // The type the artifact's own declarations give a read: a struct field through its struct, a state variable
-  // through the state layout, an element through its array's type.
+  // through the state layout, an element through its array's type, an array literal through its first element.
   const declaredType = (candidate: ExternalCallExpression): string => {
     const published = inferredType(candidate);
     if (published) return published;
@@ -116,15 +116,22 @@ strictFieldAccess = false,
     if (candidate.kind === 'arrayAccess' && candidate.left) {
       return declaredType(candidate.left).match(/^(.*)\[\d*\]$/)?.[1] ?? '';
     }
+    if (candidate.kind === 'array' && candidate.args?.length) {
+      const element = declaredType(candidate.args[0]!);
+      return element ? `${element}[${candidate.args.length}]` : '';
+    }
     return '';
   };
-  // The compiler publishes a struct field read inside `abi.encodePacked` with no type (it serializes before type
-  // checking), and an imported-Solidity body packs an `address` as its 20-byte identity, so such a field is packed
-  // by its declared type rather than as the locking bytecode it stores.
-  const packedFieldType = (candidate: ExternalCallExpression | undefined): string => {
-    if (!solidityImportCompat || candidate?.kind !== 'field') return '';
+  // The compiler publishes a read inside `abi.encodePacked` with no type when it serializes the read before type
+  // checking, and an imported-Solidity body packs by the declared type (`emitEvmPackedValue`): an integer at its
+  // natural width big-endian, an `address` as its 20-byte identity. Such a read is packed by that type rather than
+  // by its value's shape: an integer field, element or state variable, and an address field.
+  const packedReadType = (candidate: ExternalCallExpression | undefined): string => {
+    if (!solidityImportCompat || candidate === undefined) return '';
+    if (candidate.kind !== 'field' && candidate.kind !== 'arrayAccess' && candidate.kind !== 'state') return '';
     const type = declaredType(candidate);
-    return type === 'address' || type === 'address payable' ? type : '';
+    if (/^u?int\d+$/.test(type)) return type;
+    return candidate.kind === 'field' && (type === 'address' || type === 'address payable') ? type : '';
   };
   const isStandardLockingBytecode = (locking: Uint8Array): boolean => (
     locking.length === 0
@@ -483,7 +490,7 @@ strictFieldAccess = false,
     if (values.some((value) => value === undefined)) return undefined;
     const parts = values.map((value, index) => asBytes(
       value as FunctionArgument,
-      expression.fields?.[index] || inferredType(expression.args?.[index]!) || packedFieldType(expression.args?.[index]),
+      expression.fields?.[index] || inferredType(expression.args?.[index]!) || packedReadType(expression.args?.[index]),
       expression.args?.[index],
     ));
     return parts.every((part): part is Uint8Array => part !== undefined) ? concat(parts) : undefined;

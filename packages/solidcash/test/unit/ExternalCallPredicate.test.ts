@@ -29,6 +29,9 @@ type PredicateEvaluator = {
     artifact: Artifact,
     state?: Record<string, unknown>,
     inputs?: readonly { type: string }[],
+    returns?: ReadonlyMap<string, FunctionArgument>,
+    occurrenceIndex?: number,
+    stateIncludesPriorWrites?: boolean,
   ) => FunctionArgument | undefined;
   _resolveExternalArgs: (
     sources: ArgSource[],
@@ -337,6 +340,76 @@ describe('compiler-published external-call predicate evaluation', () => {
       ...schema, compiler: { ...schema.compiler, options: { ...schema.compiler.options, solidityImportCompat: false } },
     } as unknown as Artifact;
     expect(evaluator._evaluateExternalExpression(index, [], native, state, [])).toEqual(lockingBytecode);
+  });
+
+  it('packs Solidity integer reads published untyped at their declared width, big-endian', () => {
+    const schema = {
+      ...artifact,
+      structs: [
+        {
+          name: 'Terms',
+          fields: [
+            { name: 'amount', type: 'uint256' }, { name: 'maxTime', type: 'uint32' }, { name: 'delta', type: 'int16' },
+          ],
+        },
+        { name: 'Job', fields: [{ name: 'terms', type: 'Terms' }, { name: 'amounts', type: 'uint256[5]' }] },
+      ],
+      stateLayout: {
+        ...artifact.stateLayout!,
+        variables: [
+          { name: 'jobs', type: 'Job[]', nftIndex: 0, fieldIndex: 0 },
+          { name: 'count', type: 'uint256', nftIndex: 0, fieldIndex: 1 },
+        ],
+      },
+    } as unknown as Artifact;
+    const state = {
+      count: 1001n,
+      jobs: [{ terms: { amount: 3000n, maxTime: 86_401n, delta: -2n }, amounts: [0n, 7000n, 0n, 0n, 0n] }],
+    };
+    const literal = (value: string): ExternalCallExpression => ({ kind: 'literal', type: 'bigint', value });
+    const job: ExternalCallExpression = { kind: 'arrayAccess', left: { kind: 'state', name: 'jobs' }, right: literal('0') };
+    const terms: ExternalCallExpression = { kind: 'field', name: 'terms', expression: job };
+    const packed = (value: ExternalCallExpression): ExternalCallExpression => ({
+      kind: 'abiEncodePacked', fields: [''], args: [value],
+    });
+    const hexOf = (value: FunctionArgument | undefined): string => binToHex(value as Uint8Array);
+    const evaluate = (value: ExternalCallExpression, target = schema): string => hexOf(
+      evaluator._evaluateExternalExpression(packed(value), [], target, state, []),
+    );
+    const word = (value: string): string => value.padStart(64, '0');
+
+    // A nested field at its width, `uint32` at four bytes and a signed field in two's complement.
+    expect(evaluate({ kind: 'field', name: 'amount', expression: terms })).toBe(word('0bb8'));
+    expect(evaluate({ kind: 'field', name: 'maxTime', expression: terms })).toBe('00015181');
+    expect(evaluate({ kind: 'field', name: 'delta', expression: terms })).toBe('fffe');
+    // An element of an array field, and a state variable.
+    const amounts: ExternalCallExpression = { kind: 'field', name: 'amounts', expression: job };
+    expect(evaluate({ kind: 'arrayAccess', left: amounts, right: literal('1') })).toBe(word('1b58'));
+    expect(evaluate({ kind: 'state', name: 'count' })).toBe(word('03e9'));
+    // An array literal's element, typed by its first element.
+    const array: ExternalCallExpression = { kind: 'array', args: [source(0), literal('2')] };
+    expect(hexOf(evaluator._evaluateExternalExpression(
+      packed({ kind: 'arrayAccess', left: array, right: literal('0') }), [1234n], schema, state, [{ type: 'uint256' }],
+    ))).toBe(word('04d2'));
+    // An element of an earlier call's `uint256[5]` result, as `arbitrate` packs `amounts[i]`.
+    const result: ExternalCallExpression = {
+      kind: 'producerResult', callsiteId: 1, sourceCallsiteId: 1, resultIndex: 0, type: 'uint256[5]',
+    };
+    const returns = new Map<string, FunctionArgument>([
+      [JSON.stringify(result), [800n, 200n, 0n, 0n, 10n] as unknown as FunctionArgument],
+    ]);
+    expect(hexOf(evaluator._evaluateExternalExpression(
+      packed({ kind: 'arrayAccess', left: result, right: literal('0') }), [], schema, state, [], returns,
+    ))).toBe(word('0320'));
+    // Beside prior writes too, a narrow read keeps its width rather than a 32-byte word.
+    expect(hexOf(evaluator._evaluateExternalExpression(
+      packed({ kind: 'field', name: 'maxTime', expression: terms }), [], schema, state, [], undefined, 0, true,
+    ))).toBe('00015181');
+    // A native body packs by `IntType.byteWidth`, little-endian: an untyped read there keeps its old packing.
+    const native = {
+      ...schema, compiler: { ...schema.compiler, options: { ...schema.compiler.options, solidityImportCompat: false } },
+    } as unknown as Artifact;
+    expect(evaluate({ kind: 'field', name: 'amount', expression: terms }, native)).toBe(`b80b${'00'.repeat(30)}`);
   });
 
   it('packs typed Solidity integers at natural width in big-endian order', () => {

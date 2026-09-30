@@ -108,11 +108,14 @@ lands it removes the claim line.
   state them; the machine refuses the well-formed spend wherever its node record is declared (segment 0, the last
   segment, both, and an insert: `Program failed an OP_VERIFY operation.`), and it refuses it on the frame the shipped
   call path plans **itself** (`conformance/loop-upsert-settlement.test.ts`), while the same loop over a key the frame
-  holds settles on that path. So the open part is the varying key: a per-turn node is a run-time target the
+  holds settles on that path when the entry's body makes no call (with a call beside the loop the chain node is
+  refused, measured above). So the open part is the varying key: a per-turn node is a run-time target the
   run-time-loop machinery settles, which this stream's `proxy/**` lane and the frame's layout would have to carry.
   Pinned reproducers:
   `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the fixture's own shape, the machine's refusals, and the
-  segment control) and `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` (the shipped call path).
+  segment control), `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` (the shipped call path) and
+  `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts` (the loop upsert beside a call: the fixed
+  record's accept and refused mutation, and the chain node's refusal beside them).
 - **What serving the open variant needs, scoped (2026-09-30, a read-only investigation).** The emitter's run-time-loop
   body addresses its per-turn record as the *direct* convention's co-spent band (`input[activeInput + blockSize +
   turn]`, `GenerateTargetTraversal.ts`'s `emitSortedUpsertLoopBody` / `emitTrailingWriteInputBase`), while a per-call

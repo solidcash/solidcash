@@ -239,7 +239,13 @@ lands it removes the claim line.
   (`entryReadRecords`/`layReadNodes`). (3) With the coordinate known, a frame that declares a plain update view at
   the node the turn reads still fails the body's own comparison (`Program failed an OP_VERIFY operation.`), so the
   remainder of piece 2 is the record **contents** - the run-time loop's transition views, which the body proves -
-  rather than the coordinate. Evidence: `{SCRATCH}/offset-experiment.log`, `{SCRATCH}/offset-suites.log`.
+  rather than the coordinate. Evidence: `{SCRATCH}/offset-experiment.log`, `{SCRATCH}/offset-suites.log`. (4) The
+  offset itself is now a number rather than a formula to re-derive: instrumenting `perCallEntryOffset` on the
+  fixture's varying-key body prints `{dataNftCount: 0, compact: 0, earlier: 0, batched: 0, perCall: true,
+  probe: 1}` - **the turn's node must sit one past the frame's declared base** (`base + 1 + turn`), which is the
+  read path's own convention and the reason a frame that declares only the node at the base reads the neighbouring
+  participant. So piece 2's declaration is `[one record at the base, turn 0's node, turn 1's node, ...]` with the
+  loop's transition views - the shape of the list is settled; what the records carry is not.
 - **SDK half, piece 1 landed**: the per-call lane derives the turns of a run-time-loop mapping write from the
   artifact's own facts. `planCallLoopWrites` (`packages/solidcash/src/per-call/call/entry-records.ts`) reads each
   `sortedUpsertLoopInfo` entry - the collection, `varyingArrayParam`, `valueScalarParam`, the operation - finds the

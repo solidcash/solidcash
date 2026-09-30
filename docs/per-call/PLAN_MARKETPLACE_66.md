@@ -1645,6 +1645,11 @@ risk. Take the slices in order, each with its own tests.
     reads the create sentinel and drops the proof-input comparison), but the composed `implementation-master` fails
     an `OP_VERIFY` before the body's insert runs — not the splice verification, which was ruled out by no-opping it.
     One agent is finding the failing invariant, on the SDK side if the placement is wrong.
+  - **Claimed by the parallel worker, from `148b793e5`:** G1 / S0, the conformance suite: the 21 reference contexts
+    of `probes/this-call-msg-sender/ref.sol`, run in `@ethereumjs/evm` and through the shipped per-call call path and
+    compared by role, in `solidcash/test/per-call/conformance/`. The single-contract rows (internal and self calls,
+    `try`, the origin checks) first; each cross-contract row is recorded as served or refused by name, with no work
+    on the hop's side. Files: the new conformance directory only.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

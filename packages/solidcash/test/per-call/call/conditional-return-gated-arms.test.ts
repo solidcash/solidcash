@@ -19,9 +19,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * `Root.run` calls the token-like callee once, and only if that call's `bool` result is false does it call the
  * callee twice more — both arms writing the same mapping key the first call wrote. At run time the callee returns
  * true, so the arms never run. The compiler still publishes three call sites: the first with no published
- * condition, and the two arms each conditional on the first site's result. Because the hop cannot evaluate a
- * condition that reads an earlier call's result, it plans one reach per site, and all three reaches write the same
- * mapping key.
+ * condition, and the two arms each conditional on the first site's result. The hop plans the first site, learns
+ * that it returned true, and re-plans with the two arms decided against that result, so it states exactly the one
+ * call the execution makes rather than all three.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -152,11 +152,15 @@ async function callRun(
 }
 
 describe('an entry whose later call is gated on an earlier call\'s result', () => {
-  it('refuses the plan because every site the compiler publishes is planned as a reach', async () => {
+  it('settles the call the earlier result decides and broadcasts it', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployChains(network);
-    await expect(callRun(network, funded)).rejects.toThrow(
-      /entry "Token\.approve\(\)" 3 times.*write collection "_allowances" at the same key/,
-    );
+    const result = await callRun(network, funded);
+    expect(result.accepted).toBe(true);
+    expect(result.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(result.broadcast).toBeDefined();
+    // The plan states exactly the one call the run makes: the two arms the earlier result did not take are planned
+    // as no visit, so no frame is declared for a call the execution never reaches.
+    expect(result.draft.blockOf('implementation-master').calls).toHaveLength(1);
   });
 });

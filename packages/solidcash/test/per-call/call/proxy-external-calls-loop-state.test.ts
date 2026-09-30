@@ -206,7 +206,9 @@ describeShipped('solving a call site from the caller\'s own facts', () => {
     const facade = loadArtifact(FACADE);
     const data = loadArtifact(DATA);
     const token = loadArtifact(TOKEN);
-    // The entry's ten sites reach the two contracts five times each, so each contract's pool holds five masters.
+    // The entry's ten published sites reach the two contracts; two of them are gated on an earlier call's result,
+    // which this pass does not hold, so it plans the eight the caller's own facts fix: five of the data manager and
+    // three of the token. Each contract's pool holds five masters, enough for the reaches this pass can state.
     const dataDeployment = await seedDeployment(network, data, DATA_CATEGORY, undefined, 5);
     await seedDeployment(network, token, TOKEN_CATEGORY, undefined, 5);
 
@@ -228,15 +230,14 @@ describeShipped('solving a call site from the caller\'s own facts', () => {
       validatorProgram: VALIDATOR_PROGRAM,
     });
 
-    // The entry that used to be refused now plans: ten reaches, one master each, five of them of each contract.
-    expect(plan.calls).toHaveLength(10);
-    expect(plan.callees).toHaveLength(10);
+    // Eight reaches, one master each; every reach names a master of its own, so no master serves two reaches.
+    expect(plan.calls).toHaveLength(8);
+    expect(plan.callees).toHaveLength(8);
     const perContract = new Map<string, number>();
     for (const callee of plan.callees) {
       perContract.set(callee.contract, (perContract.get(callee.contract) ?? 0) + 1);
     }
-    expect([...perContract.values()].sort((left, right) => left - right)).toStrictEqual([5, 5]);
-    // Every reach names a master of its own: no master serves two reaches.
+    expect([...perContract.values()].sort((left, right) => left - right)).toStrictEqual([3, 5]);
     expect(new Set(plan.calls.map((call) => call.callee)).size).toBe(plan.calls.length);
   });
 
@@ -273,17 +274,18 @@ describeShipped('solving a call site from the caller\'s own facts', () => {
       validatorProgram: VALIDATOR_PROGRAM,
     });
 
-    // Ten reaches: the five into the proxied callee place a fallback and a delegate frame each, and the five into
-    // the direct callee place one master each.
-    expect(plan.calls).toHaveLength(10);
+    // Eight reaches: the five into the proxied callee place a fallback and a delegate frame each, and the three the
+    // caller's own facts fix into the direct callee place one master each. The two sites gated on an earlier call's
+    // result are not stated in a pass that does not hold it.
+    expect(plan.calls).toHaveLength(8);
     const perContract = new Map<string, number>();
     for (const callee of plan.callees) {
       perContract.set(callee.contract, (perContract.get(callee.contract) ?? 0) + 1);
     }
     expect(perContract.get(dataProxy.contractName)).toBe(5);
     expect(perContract.get(data.contractName)).toBe(5);
-    expect(perContract.get(token.contractName)).toBe(5);
-    expect(plan.callees).toHaveLength(15);
+    expect(perContract.get(token.contractName)).toBe(3);
+    expect(plan.callees).toHaveLength(13);
     // Every reach names a master of its own, and no two reaches share one.
     expect(new Set(plan.calls.map((call) => call.callee)).size).toBe(plan.calls.length);
   });

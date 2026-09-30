@@ -75,6 +75,7 @@ import {
   requireSatisfiableReachWrites,
   type HopCallee,
   type HopCalleeRecord,
+  type HopExternalPlan,
   type PerCallProxyExternal,
 } from './external-calls.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
@@ -784,18 +785,7 @@ export async function deployPerCallProxy(
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
   // values, the proxy's own address for `address(this)`, and the deployer's lock for `msg.sender`.
-  const externalPlan = await planHopExternalCalls({
-    provider, artifact: implementationArtifact, functionName: options.initialize.functionName,
-    args: options.initialize.args ?? [], externals: options.externals ?? {}, validatorProgram,
-    stateValues: deploymentStateValues(proxyArtifact.stateLayout!, proxy.categoryId, deployment),
-    selfAddress: proxyMaster.address,
-    senderAddress: options.callerLockingBytecode,
-  });
-  // Every reach's own write was planned on its own; the reaches are checked together here, before anything is
-  // settled, so a shape whose reaches cannot share one transaction is refused by name rather than derived into a
-  // transaction the network rejects.
-  requireSatisfiableReachWrites(externalPlan.callees);
-  const settled = await settleHop({
+  const settleWithPlan = (externalPlan: HopExternalPlan): Promise<SettledHop> => settleHop({
     vm,
     proxyArtifact,
     implementationArtifact,
@@ -836,6 +826,17 @@ export async function deployPerCallProxy(
       callerLockingBytecode: options.callerLockingBytecode,
       entry: options.initialize,
     }),
+  });
+  const { externalPlan, settled } = await planAndSettleHop({
+    plan: (externalReturns) => planHopExternalCalls({
+      provider, artifact: implementationArtifact, functionName: options.initialize.functionName,
+      args: options.initialize.args ?? [], externals: options.externals ?? {}, validatorProgram,
+      stateValues: deploymentStateValues(proxyArtifact.stateLayout!, proxy.categoryId, deployment),
+      selfAddress: proxyMaster.address,
+      senderAddress: options.callerLockingBytecode,
+      externalReturns,
+    }),
+    settle: settleWithPlan,
   });
   const {
     draft, program, verdicts, accepted, writtenCommitments, writtenEventCommitments, retval,
@@ -928,6 +929,8 @@ interface SettledHop {
   readonly writtenEventCommitments: readonly Uint8Array[];
   /** The bytes the implementation frame recorded in its `retval`, which a returning entry's own body computed. */
   readonly retval: Uint8Array;
+  /** What each settled callee frame's own body returned, keyed by the master the plan placed it under. */
+  readonly calleeRetvals: ReadonlyMap<string, Uint8Array>;
   /** The entry's own writes as the settled plan states them, whose participant ids the broadcast reads back. */
   readonly entryWrites?: HopEntryWrites;
 }
@@ -1469,8 +1472,84 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     verdicts, accepted: verdicts.every((verdict) => verdict.accepted),
     writtenCommitments, writtenEventCommitments: writtenEvents,
     retval: learnedRetval ?? new Uint8Array(0),
+    calleeRetvals,
     ...(entryWrites === undefined ? {} : { entryWrites }),
   };
+}
+
+/**
+ * The result each planned call produced, keyed by the callsite that made it.
+ *
+ * A caller's condition reads an earlier call's result by its callsite id, and the result is exactly what the
+ * callee frame's own `retval` carries once it is settled, decoded the way the callee's entry declares its returns.
+ * A producer whose site the plan stated no call for, or whose frame recorded nothing the entry declares, is left
+ * out: the hop does not fabricate a result for a call it did not place.
+ */
+function producedCallResults(
+  externalPlan: HopExternalPlan, settled: SettledHop,
+): Map<number, FunctionArgument> {
+  const results = new Map<number, FunctionArgument>();
+  for (const callsiteId of externalPlan.conditionalProducers) {
+    const site = externalPlan.callsiteIds.indexOf(callsiteId);
+    if (site < 0) continue;
+    const base = externalPlan.callBases[site];
+    if (base === undefined || base < 0) continue;
+    const call = externalPlan.calls[base];
+    if (call === undefined) continue;
+    const callee = externalPlan.callees.find((candidate) => candidate.master === call.callee);
+    const retval = settled.calleeRetvals.get(call.callee);
+    if (callee === undefined || retval === undefined) continue;
+    const entry = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
+    const values = decodeReturnValues(
+      retval, entry?.outputs ?? [], structDefinitionsOf(callee.artifact),
+      entry?.resultEncoding, callee.artifact.enums,
+    );
+    if (values.length === 0) continue;
+    results.set(callsiteId, (values.length === 1 ? values[0] : values) as FunctionArgument);
+  }
+  return results;
+}
+
+/** True when two plans state the same calls for the same sites, so nothing a further pass learns can move them. */
+function samePlannedSites(left: HopExternalPlan, right: HopExternalPlan): boolean {
+  return left.calls.length === right.calls.length
+    && left.callBases.length === right.callBases.length
+    && left.callsiteIds.length === right.callsiteIds.length
+    && left.callBases.every((base, index) => base === right.callBases[index])
+    && left.callsiteIds.every((id, index) => id === right.callsiteIds[index]);
+}
+
+/**
+ * Plans a hop's external calls and settles it, re-planning while an arm's condition waits on an earlier result.
+ *
+ * An arm gated on an earlier call's result cannot be planned before that call is settled: the plan states the
+ * sites the caller's own facts fix, the settle learns what each callee frame returned, and the next pass decides
+ * the gated arms from those results. The loop stops when a pass's results leave the plan's sites unchanged, so the
+ * plan that is settled is the one the execution's own arms imply; a plan that never stops changing is refused by
+ * name rather than settled. A hop whose conditions read no earlier result is planned and settled exactly once.
+ */
+async function planAndSettleHop(options: {
+  readonly plan: (externalReturns: ReadonlyMap<number, FunctionArgument>) => Promise<HopExternalPlan>;
+  readonly settle: (externalPlan: HopExternalPlan) => Promise<SettledHop>;
+}): Promise<{ readonly externalPlan: HopExternalPlan; readonly settled: SettledHop }> {
+  let externalPlan = await options.plan(new Map());
+  for (let pass = 0; ; pass += 1) {
+    // Every reach's own write was planned on its own; the reaches are checked together here, before any frame of
+    // this plan is settled, so a shape whose reaches cannot share one transaction is refused by name rather than
+    // derived into a transaction the network rejects.
+    requireSatisfiableReachWrites(externalPlan.callees);
+    const settled = await options.settle(externalPlan);
+    if (externalPlan.conditionalProducers.length === 0) return { externalPlan, settled };
+    const next = await options.plan(producedCallResults(externalPlan, settled));
+    if (samePlannedSites(next, externalPlan)) return { externalPlan, settled };
+    if (pass >= externalPlan.conditionalProducers.length) {
+      throw new PerCallProxyDeployError(
+        `the entry's arms an earlier call's result decides did not settle: the hop re-planned `
+        + `${pass + 1} time(s) without its sites stopping`,
+      );
+    }
+    externalPlan = next;
+  }
 }
 
 /**
@@ -2555,18 +2634,7 @@ export async function callPerCallProxyEntry(
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
   // values, the proxy's own address for `address(this)`, and the caller's lock for `msg.sender`.
-  const externalPlan = await planHopExternalCalls({
-    provider, artifact: implementationArtifact, functionName: options.functionName,
-    args: options.args ?? [], externals: options.externals ?? {}, validatorProgram,
-    stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
-    selfAddress: proxyMaster.address,
-    senderAddress: options.callerLockingBytecode,
-  });
-  // Every reach's own write was planned on its own; the reaches are checked together here, before anything is
-  // settled, so a shape whose reaches cannot share one transaction is refused by name rather than derived into a
-  // transaction the network rejects.
-  requireSatisfiableReachWrites(externalPlan.callees);
-  const settled = await settleHop({
+  const settleWithPlan = (externalPlan: HopExternalPlan): Promise<SettledHop> => settleHop({
     vm,
     proxyArtifact,
     implementationArtifact,
@@ -2606,6 +2674,17 @@ export async function callPerCallProxyEntry(
       callerLockingBytecode: options.callerLockingBytecode,
       entry: { functionName: options.functionName, args: options.args ?? [] },
     }),
+  });
+  const { externalPlan, settled } = await planAndSettleHop({
+    plan: (externalReturns) => planHopExternalCalls({
+      provider, artifact: implementationArtifact, functionName: options.functionName,
+      args: options.args ?? [], externals: options.externals ?? {}, validatorProgram,
+      stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
+      selfAddress: proxyMaster.address,
+      senderAddress: options.callerLockingBytecode,
+      externalReturns,
+    }),
+    settle: settleWithPlan,
   });
 
   const broadcast = await broadcastHop({

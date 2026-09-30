@@ -783,20 +783,32 @@ function entryReadRecords(
     );
   }
   const turns = readTurns(frame, live, paged, arrayed);
-  if (arrayed !== undefined && live !== undefined && isChunkBacked(frame, arrayed.array) && turns !== 1) {
-    // A chunk-backed array's chunk run sits at the layout width past the record block, one coordinate past the
-    // entry slot's own node: the entry's first turn must sit between the array's record and its run, and a second
-    // turn (or none) would move the run off the coordinate the emitted body addresses. So only a one-turn page over
-    // a chunk-backed array is composed; any other is refused rather than composed into a frame the machine rejects.
+  const chunkBacked = arrayed !== undefined && live !== undefined && isChunkBacked(frame, arrayed.array);
+  // A chunk-backed array's chunk run sits at the layout width past the record block, one coordinate past the
+  // entry slot's own node: the entry's first turn must sit between the array's record and its run, and a second
+  // turn would move the run off the coordinate the emitted body addresses. A page of several turns is therefore
+  // refused rather than composed into a frame the machine rejects.
+  //
+  // A page of no turns still has to hold the entry slot's record, because the emitted body addresses the run from
+  // that coordinate. An empty array has no element to name, so no node can stand there and the page is refused; a
+  // non-empty array's last element names a node the entry's own index never reaches, which keeps the frame's
+  // coordinates where the emitted body reads them and lets the entry's own body decide the page it asked for.
+  const namelessTurn = chunkBacked && turns === 0 && live!.length > 0;
+  if (chunkBacked && turns !== 1 && !namelessTurn) {
     throw new PerCallReadError(
-      `entry "${frame.entry.name}" reads "${arrayed.array}" at ${turns} turn(s), but a chunk-backed array's chunk `
+      `entry "${frame.entry.name}" reads "${arrayed!.array}" at ${turns} turn(s), but a chunk-backed array's chunk `
       + 'run shares the fixed record band with the entry slot\'s own turn, so exactly one turn can be composed',
     );
   }
+  const keyType = collection.keyTypes?.[0] ?? collection.keyType;
   const reads: EntryRead[] = [];
   const declared = new Set<string>();
+  if (namelessTurn) {
+    const element = live![live!.length - 1]!;
+    const key = encodeFunctionArgument(element, keyType, structDefinitionsOf(frame.artifact)) as Uint8Array;
+    reads.push(readRecordOf(frame, deployment, locatedNode(frame, deployment, collection, key)));
+  }
   for (let turn = 0; turn < turns; turn += 1) {
-    const keyType = collection.keyTypes?.[0] ?? collection.keyType;
     const key = paged !== undefined
       ? pagedKeyAt(label!, paged.counter, frame.args, frame.entry.inputs, turn)
       : arrayElementKeyAt(frame, arrayed!, live!, keyType, turn);

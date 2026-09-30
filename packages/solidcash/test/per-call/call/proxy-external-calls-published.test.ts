@@ -232,6 +232,28 @@ function oddBytes(width: number): Uint8Array {
   return Uint8Array.from({ length: width }, (_unused, index) => ((index * 37) + 11) & 0xff);
 }
 
+/**
+ * True when a published condition reads an earlier call's result.
+ *
+ * Such a condition is not fixed by the caller's own facts: the hop states none of its visits in a pass that does
+ * not hold that result, and only a later pass with the learned results decides it. A single-pass plan therefore
+ * leaves these sites out.
+ */
+function conditionReadsProducerResult(condition: unknown): boolean {
+  let found = false;
+  const visit = (value: unknown): void => {
+    if (found || value === null || typeof value !== 'object') return;
+    const kind = (value as { readonly kind?: string }).kind;
+    if (kind === 'producerResult' || kind === 'externalCall') { found = true; return; }
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      if (Array.isArray(child)) child.forEach(visit);
+      else visit(child);
+    }
+  };
+  visit(condition);
+  return found;
+}
+
 /** A value of `type` a call or a state field is given so every published condition can hold. */
 function syntheticValue(type: string): FunctionArgument {
   const array = type.match(/^(.*)\[(?:\d*)\]$/);
@@ -354,11 +376,22 @@ describePublished('the plan against the shipped published call table', () => {
     };
     const stated = plan.calls.map((call) => calleeOf(call.callee));
 
-    // The plan's calls are the published calls, one-to-one and in the same interface/method order.
-    expect(plan.calls).toHaveLength(published.length);
-    expect(stated.map((call) => call.entry)).toStrictEqual(published.map((call) => call.functionName));
-    expect(stated.map((call) => call.contract)).toStrictEqual(published.map((call) =>
+    // A site whose published condition reads an earlier call's result is not fixed by the caller's own facts: this
+    // pass states none of its visits, and only a later pass that holds the learned result states them. The plan's
+    // calls are otherwise the published calls, one-to-one and in the same interface/method order.
+    const routing = row.externalCalls ?? [];
+    const gated = published.filter((_call, index) => conditionReadsProducerResult(routing[index]?.condition));
+    const fixed = published.filter((_call, index) => !conditionReadsProducerResult(routing[index]?.condition));
+    expect(gated.length).toBeGreaterThan(0);
+
+    expect(plan.calls).toHaveLength(fixed.length);
+    expect(stated.map((call) => call.entry)).toStrictEqual(fixed.map((call) => call.functionName));
+    expect(stated.map((call) => call.contract)).toStrictEqual(fixed.map((call) =>
       externals[call.interfaceName]!.artifact.contractName));
+    // Every published site still has a base, `-1` for the ones this pass states no reach for.
     expect(plan.callBases).toHaveLength(published.length);
+    published.forEach((_call, index) => {
+      expect(plan.callBases[index]! < 0).toBe(conditionReadsProducerResult(routing[index]?.condition));
+    });
   });
 });

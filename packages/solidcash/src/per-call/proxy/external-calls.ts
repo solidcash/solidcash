@@ -66,6 +66,7 @@ import type NetworkProvider from '../../network/NetworkProvider.js';
 import {
   findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName,
 } from '../../stateful/deployment-registry.js';
+import { externalReturnsForCallsites } from '../../stateful/external-returns-for-callsites.js';
 import type { DraftCall } from '../composer/draft.js';
 import { readPublishedStopSites } from '../composer/index.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
@@ -194,6 +195,16 @@ export interface HopExternalPlan {
   readonly calls: readonly DraftCall[];
   /** For each published call site of the implementation's entry, the position of its first call in `calls`. */
   readonly callBases: readonly number[];
+  /** The callsite id of each published call site, parallel to `callBases`, or `-1` for a site that publishes none. */
+  readonly callsiteIds: readonly number[];
+  /**
+   * The callsite ids an entry's own condition reads a result from.
+   *
+   * A condition over one of these is not fixed by the caller's own facts, so the plan states none of its visits
+   * until that result is learned and the hop is planned again with it. The list is what tells a caller whether a
+   * further planning pass can change the plan, and its length bounds how many passes are worth taking.
+   */
+  readonly conditionalProducers: readonly number[];
   readonly callees: readonly HopCallee[];
   /** The live UTXO of every callee participant, keyed by the id the plan places it under. */
   readonly utxos: ReadonlyMap<string, Utxo>;
@@ -287,6 +298,57 @@ function conditionReadsWrittenState(
   return false;
 }
 
+/** Every `producerResult`/`externalCall` node a condition reads, at any nesting depth. */
+function producerCallsitesOf(condition: ExternalCallExpression): readonly number[] {
+  const found: number[] = [];
+  const visit = (value: unknown): void => {
+    if (value === null || typeof value !== 'object') return;
+    const node = value as { readonly kind?: string; readonly callsiteId?: number };
+    if ((node.kind === 'producerResult' || node.kind === 'externalCall')
+      && typeof node.callsiteId === 'number') found.push(node.callsiteId);
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      if (Array.isArray(child)) child.forEach(visit);
+      else visit(child);
+    }
+  };
+  visit(condition);
+  return found;
+}
+
+/**
+ * True when a condition reads an earlier call's result, which the caller's own facts do not fix.
+ *
+ * A condition over such a result cannot be decided when the site is resolved: the answer is whatever that call
+ * returned, which only a run of that call produces. The site is therefore planned as no visit until the result is
+ * known, and a later planning pass with the learned results is what decides it.
+ */
+function conditionReadsProducerResult(condition: ExternalCallExpression): boolean {
+  return producerCallsitesOf(condition).length > 0;
+}
+
+/**
+ * The earlier calls' results, keyed the way the expression evaluator reads them, for one condition.
+ *
+ * The evaluator resolves a `producerResult` node by the JSON of the node itself, and the shared binder is what
+ * turns a callsite-keyed map of results into that form. A condition that reads no producer, or one whose results
+ * the hop has not learned, yields no map and the condition stays unevaluated.
+ */
+function conditionExternalReturns(
+  condition: ExternalCallExpression,
+  routing: readonly ExternalCallAbi[],
+  results: ReadonlyMap<number, FunctionArgument> | undefined,
+): ReadonlyMap<string, FunctionArgument> | undefined {
+  if (results === undefined || results.size === 0) return undefined;
+  try {
+    const bound = externalReturnsForCallsites(
+      [{ kind: 'expression', expression: condition }], results, routing,
+    );
+    return bound.size === 0 ? undefined : bound;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * How many records one published site fills.
  *
@@ -303,15 +365,27 @@ function conditionReadsWrittenState(
  * facts do not fix: the plan states the record and the execution is what skips it. A condition whose state the
  * entry's own body rewrites is not fixed by the incoming facts either: an earlier statement in the same frame can
  * make it hold, so the plan states the record rather than dropping a call the body takes.
+ *
+ * A condition over an earlier call's result is the exception: the caller's own facts do not fix it, but a later
+ * planning pass does, because the result is learned when that call is settled. Such a site fills nothing in the
+ * pass that does not yet hold the result, so the arm the run does not take is never planned and the plan states
+ * exactly the calls the execution makes.
  */
 function occurrenceCountOf(
   row: ExternalCallAbi, args: readonly FunctionArgument[], resolver: CallResolver, where: string,
   artifact: Artifact, writtenState: HopWrittenState,
+  routing: readonly ExternalCallAbi[],
+  producerResults: ReadonlyMap<number, FunctionArgument> | undefined,
 ): number {
   if ((row.occurrence ?? 'once') !== 'loop') {
     if (row.condition === undefined || row.condition === null) return 1;
     if (conditionReadsWrittenState(row.condition, artifact, writtenState)) return 1;
-    return resolver.evaluate(row.condition, 0) === false ? 0 : 1;
+    const holds = resolver.evaluate(
+      row.condition, 0, undefined, conditionExternalReturns(row.condition, routing, producerResults),
+    );
+    if (holds === false) return 0;
+    if (holds === undefined && conditionReadsProducerResult(row.condition)) return 0;
+    return 1;
   }
   const domain = row.iterationDomain;
   if (domain === undefined) return derivedOccurrenceCountOf(row, args, where);
@@ -529,6 +603,13 @@ interface PlanContext {
   /** Callee frames in placement order; a slot is reserved before the callee's own calls are planned. */
   readonly callees: HopCallee[];
   readonly utxos: Map<string, Utxo>;
+  /**
+   * The results an earlier planning pass learned, keyed by the publishing artifact and its callsite ids.
+   *
+   * A condition gated on an earlier call's result is decided from these on the next pass; absent leaves every such
+   * condition undecided for this pass.
+   */
+  readonly producerResults?: { readonly artifact: Artifact; readonly values: ReadonlyMap<number, FunctionArgument> };
 }
 
 /** The deployment a call reaches: the caller's named externals first, then the provider's registrations. */
@@ -571,14 +652,20 @@ async function planEntryCalls(
   ctx: PlanContext,
   caller: HopCallInputs,
   enteredBy: number | null,
-): Promise<{ readonly calls: DraftCall[]; readonly callBases: number[] }> {
+): Promise<{ readonly calls: DraftCall[]; readonly callBases: number[]; readonly callsiteIds: number[] }> {
   const identity = `${caller.artifact.contractName}.${caller.functionName}()`;
   const published = readPublishedStopSites(caller.artifact).entries
     .find((entry) => entry.functionName === identity);
-  if (published === undefined || published.calls.length === 0) return { calls: [], callBases: [] };
+  if (published === undefined || published.calls.length === 0) {
+    return { calls: [], callBases: [], callsiteIds: [] };
+  }
   const routing = routingOf(caller.artifact, caller.functionName);
   const resolver = makeCallResolver(caller);
   const writtenState = entryWrittenState(caller.artifact, caller.functionName);
+  // The results of earlier calls are only meaningful within the contract that published them: the callsite ids in
+  // a condition name that artifact's own call sites, so a callee's condition never sees another contract's results.
+  const producerResults = ctx.producerResults?.artifact === caller.artifact
+    ? ctx.producerResults.values : undefined;
 
   // Pass one: resolve every site of this entry from the caller's own facts, so the plan is refused for its own
   // shape before any live record is read.
@@ -593,7 +680,7 @@ async function planEntryCalls(
     }
     const where = `the call to "${row.interfaceName}.${row.functionName}"`;
     const count = occurrenceCountOf(
-      row, caller.args, resolver, where, caller.artifact, writtenState,
+      row, caller.args, resolver, where, caller.artifact, writtenState, routing, producerResults,
     );
     // A site the caller's own facts give no visits fills no record: it reaches no callee, so nothing is placed
     // for it and its target and arguments need not resolve.
@@ -604,6 +691,11 @@ async function planEntryCalls(
       ? { ...row, addressLiteral: call.target }
       : row;
     const target = resolveCallTarget(effective, caller, resolver, 0);
+    // A target the source names as the zero address has no deployment to place a callee on. The hop states no
+    // record for the site and lets the entry's own body decide: a body that guards the call never reaches it and
+    // is settled on its own refusal, while one that does reach it stalls on the record the hop never filled rather
+    // than reaching a contract it did not name.
+    if (target === undefined) return undefined;
     const external = resolveExternal(ctx, row, target);
     const entry = entryRowOf(external.artifact, row.functionName);
     // A body the compiler refused publishes no call sites, so the hop could declare no record for it and would
@@ -639,7 +731,9 @@ async function planEntryCalls(
   // calls from the values that deployment holds, and place its frames.
   const calls: DraftCall[] = [];
   const callBases: number[] = [];
-  for (const site of sites) {
+  const callsiteIds: number[] = [];
+  for (const [index, site] of sites.entries()) {
+    callsiteIds.push(routing[index]!.callsiteId ?? -1);
     if (site === undefined) {
       callBases.push(-1);
       continue;
@@ -654,7 +748,7 @@ async function planEntryCalls(
     }
     await placeCalleeMasters(ctx, caller, enteredBy, external, entry, resolved, calls, where);
   }
-  return { calls, callBases };
+  return { calls, callBases, callsiteIds };
 }
 
 /** The live deployment a category names, read once however many sites reach it. */
@@ -1208,6 +1302,24 @@ export interface HopExternalPlanOptions {
   /** The frame's own `msg.sender`. */
   readonly senderAddress?: Uint8Array;
   readonly constructorArgs?: readonly FunctionArgument[];
+  /**
+   * The results a previous planning pass learned, keyed by the entry's own callsite ids.
+   *
+   * A condition that reads an earlier call's result is stated as no visit until that result is known; supplying it
+   * here decides the condition, so a site whose arm the run takes gains its visits. Absent leaves every such
+   * condition undecided, which is the first pass.
+   */
+  readonly externalReturns?: ReadonlyMap<number, FunctionArgument>;
+}
+
+/** The callsite ids an entry's own conditions read a result from, in published order. */
+function conditionalProducerCallsites(artifact: Artifact, functionName: string): readonly number[] {
+  const found = new Set<number>();
+  for (const row of routingOf(artifact, functionName)) {
+    if (row.condition === undefined || row.condition === null) continue;
+    for (const id of producerCallsitesOf(row.condition)) found.add(id);
+  }
+  return [...found];
 }
 
 /**
@@ -1232,6 +1344,8 @@ export async function planHopExternalCalls(
     records: new Map(),
     callees: [],
     utxos: new Map(),
+    ...(options.externalReturns === undefined || options.externalReturns.size === 0
+      ? {} : { producerResults: { artifact: options.artifact, values: options.externalReturns } }),
   };
   const root = await planEntryCalls(ctx, {
     artifact: options.artifact,
@@ -1242,5 +1356,12 @@ export async function planHopExternalCalls(
     ...(options.senderAddress === undefined ? {} : { senderAddress: options.senderAddress }),
     ...(options.constructorArgs === undefined ? {} : { constructorArgs: options.constructorArgs }),
   }, null);
-  return { calls: root.calls, callBases: root.callBases, callees: ctx.callees, utxos: ctx.utxos };
+  return {
+    calls: root.calls,
+    callBases: root.callBases,
+    callsiteIds: root.callsiteIds,
+    conditionalProducers: conditionalProducerCallsites(options.artifact, options.functionName),
+    callees: ctx.callees,
+    utxos: ctx.utxos,
+  };
 }

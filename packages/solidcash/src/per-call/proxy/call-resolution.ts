@@ -87,6 +87,7 @@ export interface CallResolver {
     expression: ExternalCallExpression,
     occurrence: number,
     bindings?: ReadonlyMap<string, FunctionArgument>,
+    externalReturns?: ReadonlyMap<string, FunctionArgument>,
   ): FunctionArgument | undefined;
 }
 
@@ -109,6 +110,17 @@ function addressBytes(value: FunctionArgument | undefined): Uint8Array | undefin
     }
   }
   return undefined;
+}
+
+/**
+ * True when a resolved argument names the zero address: an empty or all-zero byte string.
+ *
+ * Nothing can sit at the zero address, so it is never a deployment the hop could place a callee on. Unlike a value
+ * the resolver cannot state at all, it is a value the caller's own facts do name, which is why the two are read
+ * apart.
+ */
+function isZeroAddress(value: FunctionArgument | undefined): boolean {
+  return value instanceof Uint8Array && value.every((byte) => byte === 0);
 }
 
 /**
@@ -184,9 +196,10 @@ export function makeCallResolver(inputs: HopCallInputs): CallResolver {
     expression: ExternalCallExpression,
     occurrence: number,
     bindings?: ReadonlyMap<string, FunctionArgument>,
+    externalReturns?: ReadonlyMap<string, FunctionArgument>,
   ): FunctionArgument | undefined => evaluateExternalExpression(
     host, expression, [...inputs.args], inputs.artifact, inputs.stateValues, callerInputs,
-    undefined, occurrence, false, inputs.selfAddress, bindings,
+    externalReturns, occurrence, false, inputs.selfAddress, bindings,
   );
 
   return {
@@ -196,15 +209,16 @@ export function makeCallResolver(inputs: HopCallInputs): CallResolver {
 }
 
 /**
- * The address one call reaches.
+ * The address one call reaches, or `undefined` when its own source names the zero address.
  *
  * The routing names it one of four ways: a literal the compiler baked in, a state field the entry holds, an
  * `addressSource` (a forwarded parameter, a cast, a computation over the entry's own state), or the named
- * `addressParam` a caller forwards. A target no route names is refused by name.
+ * `addressParam` a caller forwards. A target no route names is refused by name; a target the route names as the
+ * zero address is reported as `undefined`, because nothing can sit there and the hop states no callee for it.
  */
 export function resolveCallTarget(
   row: ExternalCallAbi, inputs: HopCallInputs, resolver: CallResolver, occurrence: number,
-): Uint8Array {
+): Uint8Array | undefined {
   const where = `the call to "${row.interfaceName}.${row.functionName}"`;
   if (row.addressLiteral !== undefined && row.addressLiteral.length > 0) {
     return new Uint8Array(hexToBin(row.addressLiteral));
@@ -218,7 +232,9 @@ export function resolveCallTarget(
     );
   }
   if (row.addressSource !== undefined) {
-    const bytes = addressBytes(resolver.resolve(row.addressSource, occurrence));
+    const resolved = resolver.resolve(row.addressSource, occurrence);
+    if (isZeroAddress(resolved)) return undefined;
+    const bytes = addressBytes(resolved);
     if (bytes !== undefined) return bytes;
     throw new PerCallProxyDeployError(
       `${where} computes its target from a "${row.addressSource.kind}" source the hop cannot resolve to an address`,
@@ -304,8 +320,15 @@ export function resolvePublishedCall(
 ): ResolvedCall {
   const calleeEntry = entryRowOf(calleeArtifact, row.functionName);
   const { pushes, values } = resolveCallArguments(row, calleeArtifact, calleeEntry, resolver, occurrence);
+  const target = resolveCallTarget(row, inputs, resolver, occurrence);
+  if (target === undefined) {
+    // A site whose target names the zero address is stated for nothing, so no caller reaches here for one.
+    throw new PerCallProxyDeployError(
+      `the call to "${row.interfaceName}.${row.functionName}" names the zero address, so the hop states no callee`,
+    );
+  }
   return {
-    target: resolveCallTarget(row, inputs, resolver, occurrence),
+    target,
     argumentPushes: pushes,
     argumentValues: values,
     kind: frameKindOf(calleeEntry),

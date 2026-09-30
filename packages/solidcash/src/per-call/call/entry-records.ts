@@ -32,6 +32,7 @@ import {
   scriptToBytecode,
   type AbiFunction,
   type Artifact,
+  type StateValue,
 } from '@solidcash/utils';
 import {
   encodeFunctionArgument, isSignatureTemplateArray,
@@ -182,6 +183,13 @@ interface KeyResolutionContext {
   readonly functionName: string;
   readonly args: readonly FunctionArgument[];
   readonly callerLockingBytecode: Uint8Array;
+  /**
+   * The state the frame reads, when the caller holds a decoded view of it.
+   *
+   * A key the artifact publishes as a state read — `state:<name>`, or a dynamic array's length — is the frame's own
+   * on-chain value, so a caller that has read the deployment hands that view over and the key resolves against it.
+   */
+  readonly state?: Readonly<Record<string, StateValue>>;
 }
 
 /** Resolves one access's key(s) from the frame's own arguments, its sender, or a compile-time expression. */
@@ -303,17 +311,21 @@ export function planCallLoopWrites(
     const escaped = counter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(`id:${escaped}(?![\\w$])`, 'g');
     const labels = varying.access.keyParams.map((_param, index) => keyLabel(varying.access, index));
+    const structs = request.artifact.structs ?? request.artifact.stateLayout?.structs;
     const derived = elements.map((_element, source): { source: number; keys: readonly Uint8Array[] } => ({
       source,
       keys: labels.map((label): Uint8Array => {
-        const resolved = evalComputedKey(label.replace(pattern, `lit:${source}`), args, visible, undefined, undefined);
-        if (resolved === undefined) {
-          throw new PerCallCallRecordError(
-            `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${source} of "${arrayName}" `
-            + `under a key the frame's arguments do not determine (${label})`,
-          );
-        }
-        return resolved;
+        const resolved = evalComputedKey(
+          label.replace(pattern, `lit:${source}`), args, visible, request.state, undefined);
+        if (resolved !== undefined) return resolved;
+        // A key the loop's own turn does not vary is published as the bare parameter it takes, which the frame's
+        // arguments carry directly, exactly as a batch's target key is resolved by its declared name.
+        const byName = encodedArgument(fn, args, label, structs);
+        if (byName !== undefined) return byName;
+        throw new PerCallCallRecordError(
+          `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${source} of "${arrayName}" `
+          + `under a key the frame's arguments do not determine (${label})`,
+        );
       }),
     }));
     // The emitted body chains a turn's insert in the gap its pending predecessor opened, so it reaches the node it

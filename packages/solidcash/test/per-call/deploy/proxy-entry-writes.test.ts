@@ -13,8 +13,9 @@ import { DEFAULT_MASTER_POOL_SIZE, readPerCallDeployment } from '../../../src/pe
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { bytesToSlotValue } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
-import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { alicePkh, alicePriv, alicePub, bobPkh } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
@@ -82,11 +83,14 @@ const CALLER_TXID = '33'.repeat(31) + 'cc';
 const SECOND_CALLER_TXID = '44'.repeat(31) + 'bb';
 
 /**
- * A write inside a run-time loop: each turn writes one key of a nested mapping.
+ * A write inside a run-time loop over the call's own array, under a key the call also carries.
  *
- * The inner key is an element of the array the call itself carries, so the loop's width is a fact of the call
- * rather than of the body, and the outer key is a value the entry's own state fixes. This is the shape a body
- * makes of a per-job whitelist, and the artifact publishes the access without any sorted batch for it.
+ * Each turn writes one key of a nested mapping, so the loop's width is a fact of the call rather than of the body,
+ * and the artifact publishes the access with no sorted batch for it. This is the shape a body makes of a per-job
+ * whitelist: an outer key the call names, an inner key per element of the array it also carries.
+ *
+ * The initialize entry writes the collection once, as a deployment does: a per-call deployment mints the empty head
+ * of every sorted collection it declares, and the first write splices through it.
  */
 const LOOP_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Impl {'
@@ -94,10 +98,15 @@ const LOOP_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   uint256 public closedAt;'
   + '   uint256 public revision;'
   + '   uint256 public rate;'
+  + '   mapping(string => string) tags;'
   + '   mapping(uint256 => mapping(address => bool)) allowed;'
-  + '   function initialize(address[] workers) {'
-  + '     this.revision = 1;'
-  + '     for (int i = 0; i < workers.length; i++) { this.allowed[this.revision][workers[i]] = true; }'
+  + '   function initialize() {'
+  + '     this.revision = 7;'
+  + '     this.tags["DV"] = "DIGITAL_VIDEO";'
+  + '     this.allowed[1][msg.sender] = true;'
+  + '   }'
+  + '   function allow(uint256 jobId, address[] workers) {'
+  + '     for (int i = 0; i < workers.length; i++) { this.allowed[jobId][workers[i]] = true; }'
   + '   }'
   + ' }';
 
@@ -382,15 +391,53 @@ describe('a proxied initialize that writes a sorted mapping', () => {
     expect(result.broadcast).toBeDefined();
   });
 
-  // The wall the job posting entry stops on: a write inside a run-time loop. The artifact publishes the access
-  // (a key whose second component is an element of the caller's array, and the first a value its own state fixes)
-  // and no sorted batch for it, so the hop's batch planner has nothing to plan and refuses by name. Pinned here so
-  // the shape has a target on the hop's own path; the loop's records are the collection's, and the direct call path
-  // already settles a run-time-loop upsert (conformance/loop-upsert-settlement.test.ts).
-  it('pins the nested-key write a run-time loop makes, which no sorted batch covers', async () => {
-    const who = encodeLockingBytecodeP2pkh(alicePkh);
-    await expect(deploy(LOOP_SOURCE, [[who]])).rejects.toThrow(
-      /writes 1 mapping entry\(ies\) across 0 sorted batch\(es\)/,
-    );
+  // A write the body performs in a run-time loop over the array the call itself carries: the artifact publishes the
+  // access and no sorted batch for it, so the hop plans the loop's turns from the call's own arguments and the state
+  // the deployment holds, one node per turn.
+  it('serves the nested-key write a run-time loop makes, one node per turn', async () => {
+    const workers = [encodeLockingBytecodeP2pkh(alicePkh), encodeLockingBytecodeP2pkh(bobPkh)];
+    const { deployment, network, artifacts, funding } = await deploy(LOOP_SOURCE, [], true);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'allow',
+      args: [7n, workers],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+
+    // One node per turn: its slot is the key's, the key being the job id the call carries and the element of the
+    // array it also carries. The plan chains them in slot order.
+    const revision = encodeFunctionArgument(7n, 'uint256') as Uint8Array;
+    const expected = workers
+      .map((worker) => keyToSlotMulti([revision, worker]))
+      .sort((left, right) => (bytesToSlotValue(left) < bytesToSlotValue(right) ? -1 : 1));
+    const trailing = result.draft.trailingOutputs;
+    expect(trailing).toHaveLength(expected.length);
+    trailing.forEach((output, position) => {
+      expect(bytesToHex(decodeEntryCommitment(output.output.token!.nft!.commitment).slot))
+        .toBe(bytesToHex(expected[position]!));
+    });
+
+    // The node the list's own gap holds is relinked to the lowest of the new keys: it is the spent node the frame
+    // declares, recreated in place at the relinked commitment, and the hop is broadcast.
+    const predecessor = result.draft.layout.participants
+      .find((placed) => placed.id.startsWith('mapping-head-') || placed.id.startsWith('mapping-node-'));
+    expect(predecessor).toBeDefined();
+    const relinked = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[predecessor!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(relinked.nextKey)).toBe(bytesToHex(expected[0]!));
+    expect(result.broadcast).toBeDefined();
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 });

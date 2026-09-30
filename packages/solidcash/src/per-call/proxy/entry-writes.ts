@@ -81,9 +81,11 @@ import {
   dynamicValueRecords, layOutChunkRun, planChunkRun, type ChunkRunPlan,
 } from '../composer/chunk-plan.js';
 import {
-  layOutMappingBatch, mappingValueChunkLock, planMappingBatch,
-  type MappingBatchPlan, type MappingBatchRecord, type MappingNodePlacement, type MappingWrittenNode,
+  layOutMappingBatch, layOutMappingWritten, mappingValueChunkLock, planMappingBatch,
+  type MappingBatchPlan, type MappingBatchRecord, type MappingNodePlacement, type MappingNodePlacements,
+  type MappingWrittenNode,
 } from '../composer/mapping-plan.js';
+import { planCallLoopWrites, type CallLoopWritePlan } from '../call/entry-records.js';
 import { PerCallProxyDeployError } from './errors.js';
 
 /** The participant id a hop's layout holds for a collection's empty head sentinel. */
@@ -142,6 +144,14 @@ interface HopMappingBatch {
   readonly collection: string;
   readonly signature: string;
   readonly plan: MappingBatchPlan;
+  /**
+   * True when the writes are the turns of a run-time loop the entry's own source runs.
+   *
+   * The loop's body mints one node per turn and chains the inserts of one gap by re-pointing the node it created
+   * the turn before, so each node is declared once, in mint order: the plan's `written` list. A verified batch
+   * instead declares a record per target group, a target's predecessor standing again for every insert in its gap.
+   */
+  readonly loopWritten?: boolean;
   /** The nodes the batch spends, in write order, each with the id the hop's block holds it under. */
   readonly spent: readonly { readonly slot: Uint8Array; readonly before: Uint8Array; readonly id: string }[];
   /** Every key the batch writes, with the node an insert splices through. */
@@ -199,6 +209,13 @@ export interface HopLiveDeployment {
   readonly chunks: readonly Utxo[];
   /** Each sorted collection's own node UTXOs, keyed by collection name. */
   readonly nodesByCollection: ReadonlyMap<string, readonly Utxo[]>;
+  /**
+   * The deployment's own state, decoded through the layout the frame's declaration names.
+   *
+   * A key the artifact publishes as a state read — `state:<name>`, or an array's length — is the value the frame
+   * itself reads, so it is resolved against the deployment's records exactly as the entry's own read of them.
+   */
+  readonly state?: Readonly<Record<string, StateValue>>;
 }
 
 /** The coordinates a hop's entry writes need to be placed: the layout, the created region and the writer. */
@@ -625,6 +642,12 @@ function planHopMappingBatches(request: HopEntryWritesRequest): readonly HopMapp
     || accesses.some((access) => access.operations.some((operation) => operation !== 'read'));
   if (!writesSomething) return [];
   if (batches.length === 0) {
+    // A write the body performs in a run-time loop over its own call's array is published as an access with no
+    // batch: the loop's turns are the frame's own arguments, so it is planned the way the call path plans it, from
+    // the artifact's own statement of the shape. An array the hop's arguments do not carry is left to the refusal
+    // below, which names the batch this module plans rather than guessing at the loop.
+    const loop = planHopLoopBatch(request, fn, accesses);
+    if (loop !== undefined) return [loop];
     throw new PerCallProxyDeployError(
       `the implementation's "${request.functionName}" entry writes ${accesses.length} mapping entry(ies) across `
       + '0 sorted batch(es), and this hop plans one batch to one collection',
@@ -650,36 +673,132 @@ function planHopMappingBatch(
   accesses: NonNullable<AbiFunction['entryAccesses']>,
   batch: NonNullable<AbiFunction['sortedBatchInfo']>[number],
 ): HopMappingBatch {
-  const collection = request.artifact.stateLayout?.collections
-    ?.find((candidate) => candidate.name === batch.collection);
+  const collection = requireHopCollection(request, batch.collection);
+  const ordered = orderedAccesses(fn, accesses, batch);
+  return planHopCollectionBatch(request, fn, collection, ordered.map((access) => ({
+    access,
+    keys: access.keyParams.map((_param, index) => resolveHopKey(request, fn, access, index)),
+  })));
+}
+
+/** The collection the artifact publishes under a name, or a refusal naming the entry that writes it. */
+function requireHopCollection(request: HopEntryWritesRequest, name: string): ArtifactCollection {
+  const collection = request.artifact.stateLayout?.collections?.find((candidate) => candidate.name === name);
   if (collection === undefined || collection.sorted !== true) {
     throw new PerCallProxyDeployError(
-      `the implementation's "${request.functionName}" entry writes mapping "${batch.collection}", which the `
-      + 'artifact does not publish as a sorted collection',
+      `the implementation's "${request.functionName}" entry writes mapping "${name}", which the artifact does not `
+      + 'publish as a sorted collection',
     );
   }
-  const ordered = orderedAccesses(fn, accesses, batch);
+  return collection;
+}
+
+/** Resolves one access's key(s) from the frame's own arguments, its sender, or a compile-time expression. */
+function resolveHopKey(
+  request: HopEntryWritesRequest,
+  fn: AbiFunction,
+  access: NonNullable<AbiFunction['entryAccesses']>[number],
+  index: number,
+): Uint8Array {
+  const args = [...(request.args ?? [])];
+  const visible = visibleInputs(fn);
+  const structs = request.artifact.structs ?? request.artifact.stateLayout?.structs;
+  const source = access.keySources?.[index];
+  if (source?.kind === 'msgSender') return request.callerLockingBytecode;
+  const label = source?.expressionLabel ?? source?.paramName ?? access.keyParams[index];
+  // A key that names the frame's own caller is that caller's lock, whichever way the artifact serialized it: an
+  // imported interface publishes `msg.sender` as an expression label rather than as the `msgSender` kind.
+  if (label !== undefined && CALLER_VALUE_LABELS.has(label)) return request.callerLockingBytecode;
+  const evaluated = evalComputedKey(label, args, visible, request.liveDeployment?.state, undefined);
+  if (evaluated !== undefined) return evaluated;
+  const byName = encodedArgument(fn, args, label ?? '', structs);
+  if (byName !== undefined) return byName;
+  throw new PerCallProxyDeployError(
+    `the implementation's "${request.functionName}" entry writes mapping "${access.collection}" at a key this `
+    + `hop cannot resolve from its call data (${label ?? '<unnamed>'})`,
+  );
+}
+
+/** One target of a collection's write: the access it came from, and the key(s) it writes under. */
+interface HopTargetWrite {
+  readonly access: NonNullable<AbiFunction['entryAccesses']>[number];
+  readonly keys: readonly Uint8Array[];
+  /** The value the artifact states for a loop turn; absent for a batch, whose value the body computes. */
+  readonly value?: Uint8Array;
+}
+
+/**
+ * Plans the turns of the run-time loop the entry's own source writes a collection in, when that is its write.
+ *
+ * The turns and their keys are the call path's own planning (`planCallLoopWrites`): the artifact states the array
+ * the loop walks, and each turn's key is the published label with the loop's counter replaced by the turn's index.
+ * An array the hop's own arguments do not carry leaves this `undefined`, and the caller refuses by name.
+ */
+function planHopLoopBatch(
+  request: HopEntryWritesRequest,
+  fn: AbiFunction,
+  accesses: NonNullable<AbiFunction['entryAccesses']>,
+): HopMappingBatch | undefined {
+  const written = accesses.find((access) => access.operations.some((operation) => operation !== 'read'));
+  if (written === undefined) return undefined;
+  let loops: readonly CallLoopWritePlan[] | undefined;
+  try {
+    loops = planCallLoopWrites({
+      artifact: request.artifact,
+      functionName: request.functionName,
+      args: request.args ?? [],
+      callerLockingBytecode: request.callerLockingBytecode,
+      ...(request.liveDeployment?.state === undefined ? {} : { state: request.liveDeployment.state }),
+    });
+  } catch {
+    // The call path refuses the shape by its own name; the hop's own refusal below names what this module plans.
+    return undefined;
+  }
+  const loop = (loops ?? []).find((candidate) => candidate.collection === written.collection);
+  if (loop === undefined) return undefined;
+  const collection = requireHopCollection(request, loop.collection);
+  // A chunkable value's node tail states the value's byte length, so the run of chunk records its write takes has
+  // to be sized from the value itself. A loop stores its value per turn, which the hop does not compute.
+  if (collection.chunkableValue === true) {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${request.functionName}" entry writes mapping "${collection.name}" in a run-time loop `
+      + 'over its own call data, whose values chunk, so the run of chunk records the write takes cannot be sized '
+      + 'from the call',
+    );
+  }
+  return planHopCollectionBatch(request, fn, collection, loop.turns.map((turn) => ({
+    access: written,
+    keys: turn.keys,
+    value: loopStoredValue(loop),
+  })), loop);
+}
+
+/**
+ * The value a run-time loop's turns store, when the artifact publishes it as one literal.
+ *
+ * The plan's commitments are its structure, so a value the source states is stated exactly as the body computes it;
+ * a value the body derives per turn is left to the one-byte placeholder that fixes only the plan's shape.
+ */
+function loopStoredValue(loop: CallLoopWritePlan): Uint8Array {
+  if (loop.valueBool !== undefined) return loop.valueBool ? Uint8Array.from([1]) : new Uint8Array(0);
+  if (loop.valueConst !== undefined) {
+    return encodeFunctionArgument(BigInt(loop.valueConst), 'bigint') as Uint8Array;
+  }
+  return new Uint8Array(1);
+}
+
+/** Plans the writes of one collection, one target per write, whether the body batches them or loops over them. */
+function planHopCollectionBatch(
+  request: HopEntryWritesRequest,
+  fn: AbiFunction,
+  collection: ArtifactCollection,
+  targets: readonly HopTargetWrite[],
+  loop?: CallLoopWritePlan,
+): HopMappingBatch {
   const visible = visibleInputs(fn);
   const args = [...(request.args ?? [])];
   const structs = request.artifact.structs ?? request.artifact.stateLayout?.structs;
   const keyTypes = collection.keyTypes ?? [collection.keyType];
-
-  const resolveKey = (access: NonNullable<AbiFunction['entryAccesses']>[number], index: number): Uint8Array => {
-    const source = access.keySources?.[index];
-    if (source?.kind === 'msgSender') return request.callerLockingBytecode;
-    const label = source?.expressionLabel ?? source?.paramName ?? access.keyParams[index];
-    // A key that names the frame's own caller is that caller's lock, whichever way the artifact serialized it: an
-    // imported interface publishes `msg.sender` as an expression label rather than as the `msgSender` kind.
-    if (label !== undefined && CALLER_VALUE_LABELS.has(label)) return request.callerLockingBytecode;
-    const evaluated = evalComputedKey(label, args, visible, undefined, undefined);
-    if (evaluated !== undefined) return evaluated;
-    const byName = encodedArgument(fn, args, label ?? '', structs);
-    if (byName !== undefined) return byName;
-    throw new PerCallProxyDeployError(
-      `the implementation's "${request.functionName}" entry writes mapping "${access.collection}" at a key this `
-      + `hop cannot resolve from its call data (${label ?? '<unnamed>'})`,
-    );
-  };
   const chunkable = collection.chunkableValue === true;
   const resolution: ValueResolutionContext = {
     fn, args, structs, callerLockingBytecode: request.callerLockingBytecode,
@@ -688,13 +807,17 @@ function planHopMappingBatch(
     ...(request.liveDeployment === undefined ? {} : { liveDeployment: request.liveDeployment }),
   };
 
-  const writes = ordered.map((access) => {
+  const writes = targets.map(({ access, keys, value }) => {
     if (keyTypes.length !== access.keyParams.length) {
       throw new PerCallProxyDeployError(
         `the implementation's "${request.functionName}" entry writes mapping "${access.collection}" with `
         + `${access.keyParams.length} key(s), which the collection's ${keyTypes.length} key type(s) do not cover`,
       );
     }
+    // A loop's value is stated where the artifact publishes it, and is otherwise the body's to compute: one byte
+    // fixes only the plan's structure. A loop over a chunkable collection is refused above, where the run of chunk
+    // records its write takes can no longer be sized.
+    if (loop !== undefined) return { keys: [...keys], value: value ?? new Uint8Array(1) };
     const written = access.operations.filter((operation) => operation !== 'read');
     const isDelete = written.length === 1 && written[0] === 'delete';
     if (written.length !== 1 || (written[0] !== 'write' && !isDelete)) {
@@ -708,15 +831,13 @@ function planHopMappingBatch(
     // the run the default takes has to be stated: an inline default is the empty value's own tail, which is one
     // record with no chunks.
     if (isDelete) {
-      const keys = access.keyParams.map((_param, index) => resolveKey(access, index));
-      return { keys, value: new Uint8Array(0) };
+      return { keys: [...keys], value: new Uint8Array(0) };
     }
     // A chunkable collection's node tail states the value's byte length, so its run has to be sized from the value
     // itself: a value the artifact's source does not determine is refused by name rather than sized approximately.
     // A value the source does determine is stated outright, and a value past the inline limit also takes the run of
     // chunk records.
     if (chunkable) {
-      const keys = access.keyParams.map((_param, index) => resolveKey(access, index));
       // A whole value the artifact states is stated outright; a push that states only its element is joined with
       // the node's live value, because the run of chunk records its length names has to be planned before the body
       // runs. Anything else is refused by name rather than sized by guessing.
@@ -728,12 +849,12 @@ function planHopMappingBatch(
           + 'source the artifact does not publish, so this hop cannot tell whether the write needs value chunks',
         );
       }
-      return { keys, value: raw };
+      return { keys: [...keys], value: raw };
     }
     // The value is the body's to compute, so a one-byte placeholder fixes only the plan's structure: the slots, the
     // successor links and which targets are inserts. Every commitment that depends on the value is left unstated
     // and learned from the body's own close.
-    return { keys: access.keyParams.map((_param, index) => resolveKey(access, index)), value: new Uint8Array(1) };
+    return { keys: [...keys], value: new Uint8Array(1) };
   });
 
   // A body that reads a value the node's tail cannot hold takes the value itself from its frame's block, one slot
@@ -741,9 +862,10 @@ function planHopMappingBatch(
   // joined across its continuation chunks exactly as the field read is.
   const valueWitnesses = new Map<number, Uint8Array>();
   if (chunkable && request.liveDeployment !== undefined) {
-    for (const access of ordered) {
+    for (const access of targets.map((target) => target.access)
+      .filter((access, index, all) => all.indexOf(access) === index)) {
       if (access.slotIndex === undefined || !access.operations.includes('read')) continue;
-      const keys = access.keyParams.map((_param, index) => resolveKey(access, index));
+      const keys = access.keyParams.map((_param, index) => resolveHopKey(request, fn, access, index));
       const node = liveNode(collection, keyToSlotMulti([...keys]), request.liveDeployment);
       const commitment = node?.token?.nft?.commitment;
       if (commitment === undefined) continue;
@@ -792,19 +914,25 @@ function planHopMappingBatch(
   // keeps its own value, so its end view is stated by the planner. The candidates are read from the plan the
   // inventory fixed, before a created head is marked as one: the head's relink is structural — it is the target
   // slot — so it is the planner's to state rather than the body's to compute.
-  const targets = new Set(planned.groups.map((group) => bytesToHex(group.slot)));
+  const writtenSlots = new Set(planned.groups.map((group) => bytesToHex(group.slot)));
   const learningSlots: Uint8Array[] = [];
   const learningCandidates: Uint8Array[] = [];
   const learned = new Set<string>();
-  for (const group of planned.groups) {
-    for (const record of group.records) {
-      const key = bytesToHex(record.slot);
-      if (learned.has(key)) continue;
-      if (record.existed && !targets.has(key)) continue;
-      learned.add(key);
-      learningSlots.push(record.slot);
-      learningCandidates.push(record.viewOut);
-    }
+  // A loop's segment declares one record per node, in the order its turns mint them; a batch declares a record per
+  // target group. Either way the value-dependent nodes are the created ones and the targets, in that declaration
+  // order, which is the order the body closes them in and the derivation learns them.
+  const declared = loop === undefined
+    ? planned.groups.flatMap((group) => group.records)
+    : planned.written.map((node) => ({
+      slot: node.slot, existed: node.existed, viewIn: node.before, viewOut: node.after,
+    }));
+  for (const record of declared) {
+    const key = bytesToHex(record.slot);
+    if (learned.has(key)) continue;
+    if (record.existed && !writtenSlots.has(key)) continue;
+    learned.add(key);
+    learningSlots.push(record.slot);
+    learningCandidates.push(record.viewOut);
   }
   const plan = createsHead ? withCreatedHead(planned) : planned;
   // The key each write targets, and the node it splices through when the list did not hold it. The plan's groups
@@ -828,6 +956,7 @@ function planHopMappingBatch(
     collection: collection.name,
     signature: collection.signature,
     plan,
+    ...(loop === undefined ? {} : { loopWritten: true }),
     spent,
     targets: writeTargets,
     learningSlots,
@@ -1424,13 +1553,19 @@ function layEntryWrites(
     placements.set(bytesToHex(node.slot), { out: context.createdBase + position });
   });
   const chunkPosition = new Map(plan.chunks.map((chunk, position) => [chunkKey(chunk.slot, chunk.index), position]));
-  const entries = layOutMappingBatch(withLearnedViews(plan, learnedBySlot), {
+  const nodePlacements: MappingNodePlacements = {
     placementOf: (slot) => placements.get(bytesToHex(slot)),
     chunkOutputOf: (slot, index) => {
       const position = chunkPosition.get(chunkKey(slot, index));
       return position === undefined ? undefined : chunkBase + position;
     },
-  });
+  };
+  // A batch's segment declares a record per target group; a run-time loop's declares one per node, in the order its
+  // turns mint them, which is the plan's own `written` list.
+  const laid = withLearnedViews(plan, learnedBySlot);
+  const entries = batch.loopWritten === true
+    ? layOutMappingWritten(laid, nodePlacements)
+    : layOutMappingBatch(laid, nodePlacements);
   // A value-dependent node's end view is the body's to compute; every other node keeps the planner's own.
   const writtenOf = (slot: Uint8Array): Uint8Array =>
     learnedBySlot.get(bytesToHex(slot)) ?? afterBySlot.get(bytesToHex(slot))!;

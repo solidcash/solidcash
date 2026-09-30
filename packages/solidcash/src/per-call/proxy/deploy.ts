@@ -56,7 +56,7 @@ import {
   type DraftMaster, type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
 import { readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
-import { frameDataRecordIndices } from '../call/entry-records.js';
+import { frameDataRecordIndices, orderLoopKeyArgs } from '../call/entry-records.js';
 import { eventLockingBytecode, eventSentinel } from '../deploy/genesis.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import {
@@ -705,10 +705,18 @@ export async function deployPerCallProxy(
   // accesses and their stated values, so their commitments are declared outright rather than learned. A collection
   // the entry writes has no record until then, so the proxy's genesis seeds its empty head; the implementation
   // artifact is where that collection is published.
+  // A run-time loop's key array is handed to the frame in the order the emitted body walks it, so the plan's
+  // per-turn nodes are the ones the body reaches; the caller's call data carries that same array.
+  const initializeArgs = orderLoopKeyArgs({
+    artifact: implementationArtifact,
+    functionName: options.initialize.functionName,
+    args: options.initialize.args ?? [],
+    callerLockingBytecode: options.callerLockingBytecode,
+  });
   const entryWrites = hopEntryWrites({
     artifact: implementationArtifact,
     functionName: options.initialize.functionName,
-    ...(options.initialize.args === undefined ? {} : { args: options.initialize.args }),
+    ...(initializeArgs.length === 0 ? {} : { args: initializeArgs }),
     callerLockingBytecode: options.callerLockingBytecode,
   });
   // A sorted collection the entry writes has no node until it does, so the proxy's genesis seeds its empty head;
@@ -824,13 +832,13 @@ export async function deployPerCallProxy(
       validatorAmount: recordAmount,
       recordAmounts: recordCommitments.map(() => recordAmount),
       callerLockingBytecode: options.callerLockingBytecode,
-      entry: options.initialize,
+      entry: { functionName: options.initialize.functionName, args: initializeArgs },
     }),
   });
   const { externalPlan, settled } = await planAndSettleHop({
     plan: (externalReturns) => planHopExternalCalls({
       provider, artifact: implementationArtifact, functionName: options.initialize.functionName,
-      args: options.initialize.args ?? [], externals: options.externals ?? {}, validatorProgram,
+      args: initializeArgs, externals: options.externals ?? {}, validatorProgram,
       stateValues: deploymentStateValues(proxyArtifact.stateLayout!, proxy.categoryId, deployment),
       selfAddress: proxyMaster.address,
       senderAddress: options.callerLockingBytecode,
@@ -2349,15 +2357,20 @@ function participantUtxo(
     collectionNodes: readonly Utxo[];
   },
   id: string,
+  /** The lock the participant's own source carries, which tells two collections' nodes apart. */
+  lockingBytecode?: Uint8Array,
 ): Utxo | undefined {
+  const sameLock = (node: Utxo): boolean => lockingBytecode === undefined
+    || (node.lockingBytecode !== undefined && bytesToHex(node.lockingBytecode) === bytesToHex(lockingBytecode));
   const nftIndex = recordIndexOfRecord(id);
   if (nftIndex !== undefined) return pools.records[nftIndex];
   const headCollection = mappingHeadCollection(id);
   if (headCollection !== undefined) {
     // The genesis minted the collection's empty head, and no write has moved it yet, so the live node carrying the
-    // empty list's own commitment is the one the hop spends.
+    // empty list's own commitment, at that collection's own lock, is the one the hop spends. Every collection's
+    // empty head carries the same commitment, so the lock is what tells one collection's head from another's.
     const head = bytesToHexText(headSentinelCommitment());
-    return pools.collectionNodes.find((node) => node.token?.nft?.commitment === head);
+    return pools.collectionNodes.find((node) => node.token?.nft?.commitment === head && sameLock(node));
   }
   const nodeSlot = mappingNodeSlot(id);
   if (nodeSlot !== undefined) {
@@ -2365,7 +2378,7 @@ function participantUtxo(
     const slot = bytesToHex(nodeSlot);
     return pools.collectionNodes.find((node) => {
       const commitment = node.token?.nft?.commitment;
-      return commitment !== undefined
+      return commitment !== undefined && sameLock(node)
         && bytesToHex(decodeEntryCommitment(new Uint8Array(hexToBin(commitment))).slot) === slot;
     });
   }
@@ -2426,7 +2439,8 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
       ? await provider.getUtxosForLockingBytecode(source.lockingBytecode)
       : [];
     const real = options.spentUtxos?.get(placed.id)
-      ?? participantUtxo(placed.id === IMPLEMENTATION_MASTER_ID ? implementationPools : proxyPools, placed.id)
+      ?? participantUtxo(placed.id === IMPLEMENTATION_MASTER_ID ? implementationPools : proxyPools, placed.id,
+        source.lockingBytecode)
       ?? facetUtxos.find((utxo) => utxo.satoshis === source.valueSatoshis)
       ?? facetUtxos[0];
     if (real === undefined) {
@@ -2597,6 +2611,18 @@ export async function callPerCallProxyEntry(
       `category ${options.proxyCategoryId} holds no proxy master or no validator, which a call is admitted by`,
     );
   }
+  // A run-time loop's key array is handed to the frame in the order the emitted body walks it, exactly as the
+  // direct call path hands it over: the plan declares the loop's nodes in slot order, so an array that descends
+  // would otherwise plan per-turn nodes the body cannot reach. A key the artifact publishes as a state read is
+  // resolved against the deployment's own records, so the permutation is the one the frame will walk.
+  const args = orderLoopKeyArgs({
+    artifact: implementationArtifact,
+    functionName: options.functionName,
+    args: options.args ?? [],
+    callerLockingBytecode: options.callerLockingBytecode,
+    state: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools) as
+      Readonly<Record<string, StateValue>>,
+  });
   const implementationPools = await readPerCallDeployment(
     provider, options.implementationCategoryId, implementationArtifact.stateLayout!);
   const implementationMasterUtxo = implementationPools.masters[0];
@@ -2632,13 +2658,17 @@ export async function callPerCallProxyEntry(
   const writesRequest = {
     artifact: implementationArtifact,
     functionName: options.functionName,
-    ...(options.args === undefined ? {} : { args: options.args }),
+    ...(args.length === 0 ? {} : { args }),
     callerLockingBytecode: options.callerLockingBytecode,
     liveDeployment: {
       category: proxyCategory,
       recordCommitments,
       chunks: [...proxyPools.chunks, ...proxyPools.collectionNodes],
       nodesByCollection: proxyPools.nodesByCollection,
+      // A key the entry's write publishes as a state read is the value the delegate frame itself reads on the
+      // proxy's own records, so those records are decoded into the same view its data slots carry.
+      state: deploymentStateValues(proxyArtifact.stateLayout!, options.proxyCategoryId, proxyPools) as
+        Readonly<Record<string, StateValue>>,
     },
   } as const;
   // An entry whose element the artifact cannot state still writes the value's byte length into the record, so the
@@ -2687,13 +2717,13 @@ export async function callPerCallProxyEntry(
       validatorAmount: validatorUtxo.satoshis,
       recordAmounts,
       callerLockingBytecode: options.callerLockingBytecode,
-      entry: { functionName: options.functionName, args: options.args ?? [] },
+      entry: { functionName: options.functionName, args },
     }),
   });
   const { externalPlan, settled } = await planAndSettleHop({
     plan: (externalReturns) => planHopExternalCalls({
       provider, artifact: implementationArtifact, functionName: options.functionName,
-      args: options.args ?? [], externals: options.externals ?? {}, validatorProgram,
+      args, externals: options.externals ?? {}, validatorProgram,
       stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
       selfAddress: proxyMaster.address,
       senderAddress: options.callerLockingBytecode,

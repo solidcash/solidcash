@@ -773,7 +773,9 @@ async function deploymentOf(
 }
 
 /** The live deployment a frame's own writes are planned against, as `hopEntryWrites` states it. */
-function liveDeploymentOf(categoryId: string, deployment: PerCallDeploymentSet): HopLiveDeployment {
+function liveDeploymentOf(
+  categoryId: string, deployment: PerCallDeploymentSet, layout: StateLayout,
+): HopLiveDeployment {
   return {
     category: hexToBin(categoryId),
     recordCommitments: deployment.records.map((record) => {
@@ -787,6 +789,9 @@ function liveDeploymentOf(categoryId: string, deployment: PerCallDeploymentSet):
     }),
     chunks: [...deployment.chunks, ...deployment.collectionNodes],
     nodesByCollection: deployment.nodesByCollection,
+    // A key the artifact publishes as a state read is the value the frame itself reads, so the deployment's own
+    // records are decoded into the same view the frame's data slots carry.
+    state: deploymentStateValues(layout, categoryId, deployment) as Readonly<Record<string, StateValue>>,
   };
 }
 
@@ -867,7 +872,9 @@ function calleeReadNodes(options: {
   }
   // A chunkable collection's node tail holds only a digest past the inline limit, so the body takes the value
   // itself from its frame's block: the joined value is that witness, assembled from the deployment's own chunks.
-  const live = liveDeploymentOf(options.categoryId, options.deployment);
+  const live = liveDeploymentOf(
+    options.categoryId, options.deployment,
+    options.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 });
   return slots.map((slot): HopCalleeReadNode => {
     let node: ReturnType<typeof readEntryNode>;
     try {
@@ -1004,7 +1011,7 @@ async function placeCalleeMasters(
   const records = calleeRecordSet(ctx, contract, categoryId, layout, deployment);
   const stateValues = deploymentStateValues(layout, categoryId, deployment);
   const category = hexToBin(categoryId);
-  const live = liveDeploymentOf(categoryId, deployment);
+  const live = liveDeploymentOf(categoryId, deployment, layout);
   for (const [occurrence, call] of resolved.entries()) {
     const calleeIndex = ctx.callees.length;
     const master = `callee-master-${calleeIndex + 1}`;
@@ -1133,7 +1140,7 @@ async function placeProxiedCallee(
   const stateValues = deploymentStateValues(proxyLayout, external.categoryId, proxyDeployment);
   // A delegate frame runs on the proxy's records, so a write its entry makes lands at the proxy's category and is
   // planned against the proxy's own live records and collection nodes.
-  const live = liveDeploymentOf(external.categoryId, proxyDeployment);
+  const live = liveDeploymentOf(external.categoryId, proxyDeployment, proxyLayout);
   // Whether the entry the proxy forwards to returns a value, which the fallback frame records in its own `retval`.
   const returnsValue = (entry.outputs ?? []).length > 0;
   for (const [occurrence, call] of resolved.entries()) {

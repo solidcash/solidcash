@@ -464,30 +464,70 @@ export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBat
  * with no input, and a chunk with no output, are refused by name.
  */
 export function layOutMappingBatch(plan: MappingBatchPlan, placements: MappingNodePlacements): RecordEntry[] {
-  const chunks = plan.chunks.map((chunk): RecordEntry => {
+  return [
+    ...plan.groups.flatMap((group) => group.records.map((record) => layOutNodeRecord(record, placements))),
+    ...layOutValueChunks(plan, placements),
+  ];
+}
+
+/**
+ * Lays a plan's records in the order the body's own run-time loop mints them, one declaration per node.
+ *
+ * A loop writes each node it touches once, in the order its turns mint them — the target of an update, or a
+ * predecessor and the node it inserts — chaining inserts in one gap by re-pointing the node it created the turn
+ * before. That is the plan's `written` list, which is exactly what its segment declares; a verified batch declares
+ * a record per target group instead, its predecessor standing again for every insert in its gap.
+ */
+export function layOutMappingWritten(plan: MappingBatchPlan, placements: MappingNodePlacements): RecordEntry[] {
+  // A node's pre-state is what the first group that declares it continues from: a node the hop creates in its own
+  // transaction from a predecessor no input carries — the empty list's head — keeps that predecessor as its view,
+  // which is the pre-state the body's own read of it is proved against.
+  const viewInOf = new Map<string, Uint8Array>();
+  for (const group of plan.groups) {
+    for (const record of group.records) {
+      const key = bytesToHex(record.slot);
+      if (!viewInOf.has(key)) viewInOf.set(key, record.viewIn);
+    }
+  }
+  return [
+    ...plan.written.map((node) => layOutNodeRecord({
+      slot: node.slot,
+      existed: node.existed,
+      viewIn: viewInOf.get(bytesToHex(node.slot)) ?? node.before,
+      viewOut: node.after,
+    }, placements)),
+    ...layOutValueChunks(plan, placements),
+  ];
+}
+
+/** One node's record: a spent node names its input and the output it is recreated at, a created one its output. */
+function layOutNodeRecord(record: MappingBatchRecord, placements: MappingNodePlacements): RecordEntry {
+  if (!record.existed) {
+    return {
+      in: INDEX_NONE,
+      out: requireWrittenOutput(placements, record.slot, INDEX_NONE),
+      viewIn: record.viewIn,
+      viewOut: record.viewOut,
+    };
+  }
+  const input = requireSpentInput(placements, record.slot);
+  return {
+    in: input,
+    out: requireWrittenOutput(placements, record.slot, input),
+    viewIn: record.viewIn,
+    viewOut: record.viewOut,
+  };
+}
+
+/** The long values' chunk records, each created at the output the layout gives it. */
+function layOutValueChunks(plan: MappingBatchPlan, placements: MappingNodePlacements): RecordEntry[] {
+  return plan.chunks.map((chunk): RecordEntry => {
     const out = placements.chunkOutputOf?.(chunk.slot, chunk.index);
     if (out === undefined || out === INDEX_NONE || !Number.isInteger(out) || out < 0) {
       throw mappingChunkOutputUnavailable(chunk.slot, chunk.index);
     }
     return { in: INDEX_NONE, out, viewIn: CREATE_VIEW_IN, viewOut: chunk.commitment };
   });
-  return [...plan.groups.flatMap((group) => group.records.map((record): RecordEntry => {
-    if (!record.existed) {
-      return {
-        in: INDEX_NONE,
-        out: requireWrittenOutput(placements, record.slot, INDEX_NONE),
-        viewIn: record.viewIn,
-        viewOut: record.viewOut,
-      };
-    }
-    const input = requireSpentInput(placements, record.slot);
-    return {
-      in: input,
-      out: requireWrittenOutput(placements, record.slot, input),
-      viewIn: record.viewIn,
-      viewOut: record.viewOut,
-    };
-  })), ...chunks];
 }
 
 /** The lock a long value's chunks sit at: the collection's value-chunk covenant, salted with the slot and the root. */

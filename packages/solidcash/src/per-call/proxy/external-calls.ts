@@ -50,6 +50,7 @@ import {
   parsePushdataCommitment,
   unpackFixedWidthArray,
   validatorAddress,
+  VALUE_INLINE_LIMIT,
   type ArgSource,
   type Artifact,
   type ExternalCallAbi,
@@ -75,7 +76,7 @@ import {
   entryRowOf, makeCallResolver, resolveCallTarget, resolvePublishedCall,
   type AbiEntryRow, type CallResolver, type HopCallInputs, type ResolvedCall,
 } from './call-resolution.js';
-import { hopEntryWrites, type HopEntryWrites, type HopLiveDeployment } from './entry-writes.js';
+import { hopEntryWrites, joinedNodeValue, type HopEntryWrites, type HopLiveDeployment } from './entry-writes.js';
 import { readEntryNode } from '../call/entry-records.js';
 import { PerCallProxyDeployError } from './errors.js';
 
@@ -112,6 +113,16 @@ export interface HopCalleeReadNode {
   readonly collection: string;
   /** The collection's canonical signature, which derives the covenant lock the node sits at. */
   readonly signature: string;
+  /** The entry-access slot the node is read at, which is its value-witness slot. */
+  readonly slotIndex: number;
+  /**
+   * The whole value the node holds, when it crosses the inline limit and the body reads it by witness.
+   *
+   * A chunkable value past the inline limit keeps only its digest in the node's tail, so the body takes the value
+   * itself from its frame's block, one slot per entry access that reads one. Absent for a value the tail holds
+   * inline — the body never reaches the witness — and for a key the list does not hold.
+   */
+  readonly value?: Uint8Array;
   readonly commitment: Uint8Array;
   readonly utxo: Utxo;
 }
@@ -648,6 +659,9 @@ function calleeReadNodes(options: {
       + 'entry slot, which this hop does not declare a node for',
     );
   }
+  // A chunkable collection's node tail holds only a digest past the inline limit, so the body takes the value
+  // itself from its frame's block: the joined value is that witness, assembled from the deployment's own chunks.
+  const live = liveDeploymentOf(options.categoryId, options.deployment);
   return slots.map((slot): HopCalleeReadNode => {
     let node: ReturnType<typeof readEntryNode>;
     try {
@@ -666,10 +680,27 @@ function calleeReadNodes(options: {
         + `cannot declare: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+    const collection = options.artifact.stateLayout?.collections
+      ?.find((candidate) => candidate.name === node.collection);
+    const tail = node.commitment.slice(64);
+    const length = tail.length < 4 ? 0 : new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
+    let value: Uint8Array | undefined;
+    if (node.present && collection?.chunkableValue === true && length > VALUE_INLINE_LIMIT) {
+      value = joinedNodeValue(collection, node.commitment, live);
+      if (value === undefined) {
+        throw new PerCallProxyDeployError(
+          `the callee "${options.artifact.contractName}.${options.functionName}()" reads a mapping node of `
+          + `collection "${node.collection}" whose ${length}-byte value this hop cannot reassemble from the `
+          + "deployment's chunk records, so it cannot witness the body's read",
+        );
+      }
+    }
     return {
       id: `mapping-read-${node.collection}-${bytesToHex(node.slot)}`,
       collection: node.collection,
       signature: node.signature,
+      slotIndex: slot.slotIndex!,
+      ...(value === undefined ? {} : { value }),
       commitment: node.commitment,
       utxo: node.utxo,
     };

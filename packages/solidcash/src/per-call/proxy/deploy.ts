@@ -1432,6 +1432,29 @@ function calleeDeclaredRecords(
 }
 
 /**
+ * The long mapping values a callee frame reads from its own block, one per value-witness slot.
+ *
+ * A body that reads a value its node's tail cannot hold takes the value itself from its frame's block, so the
+ * frame's witness block declares the whole value the hop joined from the deployment's chunks. The frame's own
+ * writes already state theirs; the nodes the frame only reads add theirs here, and the two lists overlay by slot.
+ */
+function calleeValueWitnesses(
+  callee: HopCallee, laidWrites: LaidHopEntryWrites | undefined,
+): readonly Uint8Array[] | undefined {
+  const bySlot = new Map<number, Uint8Array>();
+  for (const node of callee.readNodes) {
+    if (node.value !== undefined) bySlot.set(node.slotIndex, node.value);
+  }
+  const written = laidWrites?.values;
+  if (bySlot.size === 0) return written;
+  const length = Math.max(written?.length ?? 0, Math.max(...bySlot.keys()) + 1);
+  return Array.from({ length }, (_unused, slot) => {
+    const read = bySlot.get(slot);
+    return read !== undefined && read.length > 0 ? read : written?.[slot] ?? new Uint8Array(0);
+  });
+}
+
+/**
  * The records of one category the hop's callee frames declare, each named once.
  *
  * A delegate frame's records are its owner's, and the two frames may name different subsets, so a category's
@@ -1816,6 +1839,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         `the callee's "${callee.functionName}" entry`,
       ));
     }
+    const valueWitnesses = calleeValueWitnesses(callee, laidCalleeWrites?.laid);
     return {
       master: callee.master,
       contract: callee.contract,
@@ -1839,7 +1863,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       // A frame that makes k calls closes k + 1 segments, each declaring its own records kept and the one the
       // frame writes in.
       segments,
-      ...(laidCalleeWrites?.laid.values === undefined ? {} : { values: laidCalleeWrites.laid.values }),
+      ...(valueWitnesses === undefined ? {} : { values: valueWitnesses }),
       events: [],
       sends: [],
       argumentPushes,

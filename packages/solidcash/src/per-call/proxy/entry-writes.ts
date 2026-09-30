@@ -369,7 +369,7 @@ function nodeKey(label: string, context: ValueResolutionContext): Uint8Array | u
 }
 
 /** One collection as the artifact's state layout publishes it. */
-type ArtifactCollection = NonNullable<NonNullable<Artifact['stateLayout']>['collections']>[number];
+export type ArtifactCollection = NonNullable<NonNullable<Artifact['stateLayout']>['collections']>[number];
 
 /** The lock a value's continuation chunks sit at: the collection's own value-chunk covenant, salted with the node. */
 function valueChunkLock(
@@ -390,7 +390,7 @@ function valueChunkLock(
  * length is the authority: the chunks are joined and the result truncated to it, so a set that does not account
  * for the whole value is refused rather than read short.
  */
-function joinedNodeValue(
+export function joinedNodeValue(
   collection: ArtifactCollection,
   commitment: Uint8Array,
   deployment: HopLiveDeployment,

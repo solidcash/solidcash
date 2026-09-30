@@ -246,6 +246,17 @@ lands it removes the claim line.
   read path's own convention and the reason a frame that declares only the node at the base reads the neighbouring
   participant. So piece 2's declaration is `[one record at the base, turn 0's node, turn 1's node, ...]` with the
   loop's transition views - the shape of the list is settled; what the records carry is not.
+- **Stating the literal value removes the derivation stall and moves the wall to the machine (2026-09-30).** The
+  batch plan marks *every* target record a learning candidate (`valueDependent` is true for a target however its
+  value was computed), so the derivation was asked for a hand-back per node and the loop's close supplied none. With
+  the value stated - the artifact publishes `valueConst: "1"` for the fixture's `= true`, and the plan then declares
+  the end views itself - the stall is gone and the machine **evaluates the frame**, refusing it with
+  `frame "master" of Ledger.move() at line 1: no source message (Program failed an OP_VERIFY operation.)` for one turn
+  and for two (`{SCRATCH}/stated-value-probe.log`). So the remaining wall for the literal shape is the declaration
+  the body compares against itself - its per-turn coordinate and its output side - and no longer the hand-back; the
+  parameter-value shape still needs the loop's journal stream, since its views cannot be stated. The wiring is kept
+  at `{SCRATCH}/entry-records-stated-value.ts` for the next attempt and is not landed (the parameter-value shape
+  would degrade from a named refusal to a stall).
 - **The fixture's own value is a literal, and that does not unblock it (2026-09-30).** `updateJobWhitelist` stores
   `true` under every key (`whitelistWorkers[jobId][w] = true`), and the artifact says so: its `sortedUpsertLoopInfo`
   publishes `valueConst: "1"` (measured on a neutral replica, `{SCRATCH}/literal-probe.log`). So the plan can state

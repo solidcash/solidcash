@@ -11063,7 +11063,7 @@ function synthesizeMessageBusRoute(
             participantSizes.slice(__message_bus_row_owner * 2, __message_bus_row_owner * 2 + 2), hex"00"
           ));
           bigint targetSlot = participantBase + targetOffset;
-          bigint sourceSlot = sourceOffset == 65535 ? 65535 : int(bytes.concat(
+          bigint sourceSlot = int(bytes.concat(
             participantBases.slice(__message_bus_row_owner * 2, __message_bus_row_owner * 2 + 2), hex"00"
           )) + sourceOffset;
           if (kind == 0) {
@@ -11078,7 +11078,7 @@ function synthesizeMessageBusRoute(
               require(parent == 65535 && depth == 0 && sourceOffset == 65535 && __message_bus_row_owner == consumer);
               rootSubtreeEnd = subtreeEnd;
             } else {
-              require(parent < invocationRows && depth >= 1 && depth <= 7);
+              require(parent < invocationRows && depth <= 7);
               require(__message_bus_row_owner == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
               require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")) + 1);
               require(sourceOffset < ownerSize);
@@ -11091,8 +11091,7 @@ function synthesizeMessageBusRoute(
               ${kernelDeploymentSelectorRegistration}
             }
           } else {
-            require((kind == 1 || kind == 2 || kind == 3 || kind == 4 || kind == 5 || kind == 6)
-              && invocationRows > 0);
+            require(invocationRows > 0);
             effectsStarted = 1;
             require(__message_bus_row_owner == consumer && sourceOffset == targetOffset && targetOffset < participantSize);
             require(int(bytes.concat(callManifest.slice(cursor + 3, cursor + 5), hex"00"))
@@ -11275,8 +11274,6 @@ function synthesizeMessageBusRoute(
               }
               if (resourceMode == 0 || resourceMode == 5) {
                 require(tx.inputs[sourceSlot].value == tx.outputs[targetSlot].value);
-              }
-              if (resourceMode == 0 || resourceMode == 5) {
                 activeResourceEndpoints = activeResourceEndpoints + 2;
               } else {
                 activeResourceEndpoints = activeResourceEndpoints + 1;

@@ -88,7 +88,7 @@ lands it removes the claim line.
   or whose write the lowering settles after the calls — publishes **the segment its write lands in** (one call puts
   it at segment 1, two at segment 2), which the machine's own segment control accepts at that segment and refuses one
   segment later (`solidc/test/per-call/master/loop-upsert-segment.test.ts`).
-  **Handed to the ladder stream, and outside PW3's done-when from here on**: the fixture's `updateJobWhitelist`, a
+  **Open, pending the coordinator's decision**: the fixture's `updateJobWhitelist`, a
   *varying-key* upsert whose loop body also makes the entry's call. It is not a verified batch at all — the entry's
   block layout reserves no `entry` slot for the collection — so no segment declares its records and no write fact can
   state them; the machine refuses the well-formed spend wherever its node record is declared (segment 0, the last
@@ -98,11 +98,20 @@ lands it removes the claim line.
   stream's `proxy/**` lane runs on, not a write fact. Pinned reproducers:
   `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the fixture's own shape, the machine's refusals, and the
   segment control) and `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` (the shipped call path).
-- **Done when**: the refusals the publication shapes carried are gone from the published census (read back
-  2026-09-30 with this round's compiler: seven contracts, **0 refusals**, `postThreadMessage` publishing
-  `writeSegments: []` and `refund` its batch and its run), the master tests pass, and the ladder stream has taken the
-  published facts. The varying-key call-in-loop upsert is the ladder stream's from here, with its reproducers named
-  above; it is not part of this done-when.
+- **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder
+  stream has taken the published facts. **Status 2026-09-30: two of the three shapes are done.** The census read back
+  with this round's compiler shows seven contracts and **0 refusals**, `postThreadMessage` publishes
+  `writeSegments: []` and `refund` its batch and its run, the master tests pass, and the facts are in the ladder
+  stream's hands. **The third shape is open, not done**: the fixture's `updateJobWhitelist` (a varying-key upsert
+  whose loop body also calls) still publishes no write fact, and the compiler cannot state one for it — the entry's
+  block layout reserves no `entry` slot for the collection, so nothing declares those records, and the machine
+  refuses the well-formed spend on the frame the shipped call path plans itself
+  (`conformance/loop-upsert-settlement.test.ts`), while the same mapping written once from a parameter settles on
+  that path. Serving it needs the collection declared in the frame's layout and the per-turn operands derived, which
+  is compiler code generation plus the ladder stream's `proxy/**` planning — **the coordinator's decision on who
+  takes it is what this item now waits for**. Reproducers: `solidc/test/per-call/master/loop-upsert-segment.test.ts`
+  (the fixture's own shape, the machine's refusals, the segment control) and
+  `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` (the shipped call path).
 - **Size**: 1-2 days. **Coordination**: high (the ladder stream wrote this code; the second worker edits
   `support.ts`); agree the split before starting.
 
@@ -178,8 +187,9 @@ lands it removes the claim line.
   the upsert body's own emitted code, before any record is read - and the shipped call path refuses it on the frame
   it plans itself (`conformance/loop-upsert-settlement.test.ts`), while the same mapping written once from a
   parameter settles there. The reproducers are `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the
-  fixture's own shape, the machine's refusals, and its segment control) and that conformance guard. **The shape
-  leaves PW3 and is this stream's**; PW3's done-when is narrowed to the publication shapes and the census.
+  fixture's own shape, the machine's refusals, and its segment control) and that conformance guard. **PW3 stays
+  open for this shape** until the coordinator decides who takes it (`HANDOFF_PARALLEL.md`'s PW3 item waits on that
+  decision).
 - **PW4 - landed** (`a723cdfba`, `cfecf35b7`). The attack table cites `hostile/delegate-callee-mutation.test.ts`: the
   faithful forwarded hop is accepted, and a callee that is a second deployed contract's master is refused
   `V5_DELEGATE_TARGET_MISMATCH` off chain and by the facet's edge rule on chain.

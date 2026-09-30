@@ -32183,6 +32183,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!frame || frame.eventWidth === 0 || !this.stack.includes(GRAPH_EVENT_SITE)) return;
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     const covered = new Set(this.pendingEmits.map((pendingEmit) => pendingEmit.emitIndex));
+    if (frame.sites > 8 && covered.size === 0) {
+      // A kernel route can reserve hundreds of event windows while invoking an emitting handler at only a
+      // handful of rows. Walk the reached-site bitmap and bind each unowned window with one copy of the proof,
+      // rather than embedding one proof (and an increasingly large 1<<site literal) per reserved output.
+      // A route with its own pending emits retains the per-ordinal path below so those exact slots stay covered.
+      this.emitPickCompilerRouteFrameValue(GRAPH_EVENT_SITE, locationData); // [mask]
+      this.emit(Op.OP_0, locationData); // [mask, site]
+      this.emit(Op.OP_BEGIN, locationData);
+      this.emit(Op.OP_OVER, locationData); // [mask, site, mask]
+      this.emit(Op.OP_2, locationData);
+      this.emit(Op.OP_MOD, locationData);
+      this.emit(Op.OP_NOT, locationData);
+      this.emit(Op.OP_IF, locationData); // [mask, site]
+      for (let member = 0; member < frame.eventWidth; member += 1) {
+        this.emitBlockSlotIndex('event', frame.eventBase, locationData, 2); // [mask, site, base]
+        this.emit(Op.OP_OVER, locationData); // [mask, site, base, site]
+        if (frame.eventWidth > 1) {
+          this.emit(encodeInt(BigInt(frame.eventWidth)), locationData);
+          this.emit(Op.OP_MUL, locationData);
+        }
+        if (member > 0) {
+          this.emit(encodeInt(BigInt(member)), locationData);
+          this.emit(Op.OP_ADD, locationData);
+        }
+        this.emit(Op.OP_ADD, locationData); // [mask, site, output index]
+        this.emitNotTakenEventAtComputedIndex(locationData);
+      }
+      this.emit(Op.OP_ENDIF, locationData);
+      this.emit(Op.OP_1ADD, locationData); // [mask, next site]
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_2, locationData);
+      this.emit(Op.OP_DIV, locationData);
+      this.emit(Op.OP_SWAP, locationData); // [remaining mask, next site]
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(encodeInt(BigInt(frame.sites)), locationData);
+      this.emit(Op.OP_NUMEQUAL, locationData);
+      this.emit(Op.OP_UNTIL, locationData);
+      this.emit(Op.OP_2DROP, locationData);
+      return;
+    }
     for (let ordinal = 0; ordinal < frame.sites * frame.eventWidth; ordinal += 1) {
       if (covered.has(ordinal)) continue;
       this.emitGraphFrameSlotUnowned(ordinal, locationData);

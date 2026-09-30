@@ -10,7 +10,7 @@ import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import * as composer from '../../../src/per-call/composer/index.js';
 import { PerCallProxyDeployError, buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
 import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { aliceAddress, alicePkh, alicePriv, alicePub, bobAddress, bobPkh, bobPriv } from '../../fixture/vars.js';
@@ -27,7 +27,8 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * error names that leg and carries neither the draft nor the report; the draft is reached here by spying on the
  * composer. Its report holds the failing frame's own reason, unless a callee the entry never reaches refuses first.
  *
- * The registry is plain because a value a proxied callee returns reaches its caller empty (pinned last).
+ * The registry is plain; a value a proxied callee returns reaches its caller since PW8, and that read settles
+ * (pinned last).
  */
 
 const txid = (seed: string): string => `${seed.repeat(31)}c4`;
@@ -297,6 +298,27 @@ async function refusedCall(
   throw new Error(`Desk.${functionName} settled`);
 }
 
+/** Calls a `Desk` entry through its proxy and returns the settled hop. */
+function settledCall(
+  caller: Caller, functionName: string, args: readonly FunctionArgument[],
+): Promise<PerCallProxyCallResult> {
+  return callPerCallProxyEntry({
+    provider: deployed.network,
+    implementationArtifact: compiled.desk,
+    proxyArtifact: buildProxyArtifact(compiled.desk),
+    proxyCategoryId: deployed.deskProxyCategoryId,
+    implementationCategoryId: deployed.deskImplementationCategoryId,
+    functionName,
+    args,
+    externals: deployed.externals,
+    callerUtxo: caller.coin,
+    callerLockingBytecode: caller.lock,
+    funder: caller.funder,
+    changeAddress: caller.address,
+    vm: compositionMachine(),
+  });
+}
+
 /** The stall the settle catches when the entry's frame stops before call `call`, counted from zero. */
 function stalledAt(call: number): string {
   return `PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.post() filled no witness at site ${call} `
@@ -439,17 +461,15 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('a revert after calls through
     expect(participants.some((placed) => placed.id === `mapping-node-${slot}`)).toBe(true);
   });
 
-  it('a value a proxied store returns reaches its caller empty', async () => {
-    const refused = await refusedCall(deployed.alice, 'peek', []);
-    // Not step 2: the store's delegate frame returns true, and the generated fallback keeps it from the caller.
-    expect(refused.error).toBeInstanceOf(PerCallProxyDeployError);
-    expect(refused.error.message).toContain(
-      `frame "implementation-master" of Desk.peek() at line ${lineOf('"journal closed"')}: journal closed (`);
-    expect(refused.broadcasts).toBe(0);
-    const { draft } = refused;
+  it('a value a proxied store returns reaches its caller, and the read settles', async () => {
+    const result = await settledCall(deployed.alice, 'peek', []);
+    // The generated fallback returns the delegate's bytes (PW8), so the store's `true` passes the entry's check.
+    expect(result.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    const { draft } = result;
     expect(binToHex(draft.blockOf('callee-impl-master-2').retval)).toBe('51');
     expect(binToHex(draft.blockOf('callee-master-1').calls[0]!.result)).toBe('51');
-    expect(binToHex(draft.blockOf('callee-master-1').retval)).toBe('');
-    expect(binToHex(draft.blockOf('implementation-master').calls[0]!.result)).toBe('');
+    expect(binToHex(draft.blockOf('callee-master-1').retval)).toBe('51');
+    expect(binToHex(draft.blockOf('implementation-master').calls[0]!.result)).toBe('51');
   });
 });

@@ -13,8 +13,7 @@ import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import * as composer from '../../../src/per-call/composer/index.js';
 import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
+  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
 } from '../../../src/per-call/proxy/index.js';
 import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
@@ -35,9 +34,11 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * append alone; an isolated field of the source's own in place of the key; a record the entry does not name ahead
  * of one it does). The direct call path declares the entry's own records the same way.
  *
- * A second wall, reported beside it: a proxied store's `view` read whose value the root ignores derives every frame,
- * the validator refuses the store proxy's STATIC frame for its DELEGATE leg (V10), and the hop broadcasts anyway,
- * so the mock rejects it with a raw script failure rather than the hop refusing it by name.
+ * A second wall, reported beside it and now gone: a proxied store's `view` read whose value the root ignores enters
+ * the store's proxy as a STATIC frame whose fallback forwards as a DELEGATE leg, which V10 refused; since PW10 the
+ * validator admits that leg and the read settles, as its non-`view` control does. What that refusal also showed
+ * stands untested here: the hop broadcasts without reading its own verdicts (`proxy/deploy.ts`,
+ * `callPerCallProxyEntry`), so a refused derivation reaches the network as a raw script failure.
  *
  * Each case is pinned where it stands today, beside a control that settles. The file runs only under
  * `PER_CALL_AHEAD=1`.
@@ -506,18 +507,13 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a proxied store read 
     return { chain, journal, desk };
   }
 
-  it('derives every frame, the validator refuses the static frame\'s delegate leg, and the hop broadcasts', async () => {
+  it('the view read\'s static frame forwards as a delegate leg, which the validator admits, and it settles', async () => {
     const { chain, journal, desk } = await readWorld(true);
     const outcome = await enter(chain, desk, 'peek', [ALICE_LOCK], { IJournal: externalOf(journal) });
-    const draft = outcome.draft!;
-    // Every frame's own program accepts the derived transaction.
-    expect(composer.reportCompositionRefusal({
-      draft, artifacts: [desk.artifact, buildProxyArtifact(desk.artifact), journal.artifact,
-        buildProxyArtifact(journal.artifact)], vm: compositionMachine(),
-    }).accepted).toBe(true);
-    // The read enters the store's proxy as a STATIC frame, whose fallback forwards as a DELEGATE leg, and the
-    // validator refuses that pair. Owner: the validator rule (`solidc/src/per-call/validator/checks.ts`,
-    // `checkV10`, and the spec's V10: a static frame makes only STATIC calls).
+    // V10 admits a DELEGATE leg under a STATIC frame and keeps the read-only rule on its subtree (PW10:
+    // `solidc/src/per-call/validator/checks.ts`, `checkV10`, and the emitted program's reachability gate).
+    expectSettled(outcome);
+    const draft = outcome.result!.draft;
     const staticFrame = draft.layout.participants.find((placed) => placed.kind === 'master'
       && draft.blockOf(placed.id).kind === FrameKind.STATIC)!;
     expect(staticFrame.contract).toBe('JournalProxy');
@@ -526,18 +522,8 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a proxied store read 
     const decision = decideValidator(modelOf(draft), {
       validatorTemplate: VALIDATOR_PROGRAM, validatorInputIndex: validator.index,
     });
-    expect(decision.rejection).toMatchObject({
-      check: 'V10', reason: 'V10_STATIC_NON_STATIC_CALL', index: staticFrame.index,
-    });
-    // The hop broadcasts without reading its own verdicts, so the network, not the hop, refuses it, and by a raw
-    // script failure at the validator's facet. Owner: the SDK hop (`proxy/deploy.ts`, `callPerCallProxyEntry` calls
-    // `broadcastHop` whatever `settled.accepted` says).
-    const facet = draft.layout.participants.find((placed) => placed.kind === 'facet')!;
-    expect(outcome.error).toBeDefined();
-    expect(outcome.error).not.toBeInstanceOf(PerCallProxyDeployError);
-    expect(outcome.error!.message).toBe('mandatory-script-verify-flag-failed (Unable to verify transaction: error in '
-      + `evaluating input index ${facet.index}: Program failed an OP_VERIFY operation.)`);
-    expect(outcome.coinLive).toBe(true);
+    expect(decision.accepted).toBe(true);
+    expect(decision.rejection).toBeUndefined();
   }, 300_000);
 
   it('the same read of an entry declared without view is a CALL frame, and settles and broadcasts', async () => {

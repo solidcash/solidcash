@@ -30,8 +30,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * start from the hand-planned replica (`shapes/deep-arbitration.test.ts`), whose loop turns as often as the vault's
  * read returned; the token keeps balances per holder, as the marketplace's does.
  *
- * Pinned as it stands: the first wall of the flow, then the next one with the loop's count moved into the
- * claimer's own record. Both are the SDK hop's (`src/per-call/proxy/**`), so the replica is a reproducer.
+ * Pinned as it stands: the first wall of the flow; with the loop's count moved into the claimer's own record, the
+ * next (every turn credits one holder); and with one turn, the vault's guard behind it. All three are the SDK hop's
+ * (`src/per-call/proxy/**`), so the replica is a reproducer.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -66,9 +67,10 @@ const TURNS = 5;
 
 /**
  * The contracts, with the payout loop bounded by `bound`: `count`, what the vault's `STATIC` read returned (the
- * flow), or `this.turns`, the claimer's own record (the flow with its first wall stepped around).
+ * flow), or `this.turns`, the claimer's own record (the flow with its first wall stepped around); `turns` is that
+ * record's value and the payout the judge requires.
  */
-function source(bound: 'count' | 'this.turns'): string {
+function source(bound: 'count' | 'this.turns', turns = TURNS): string {
   const vaultAddress = addressOf(VAULT_CATEGORY);
   const judgeAddress = addressOf(JUDGE_CATEGORY);
   return [
@@ -109,7 +111,7 @@ function source(bound: 'count' | 'this.turns'): string {
     'contract Claimer {',
     '  int public floor;',
     '  int public turns;',
-    `  constructor() { this.floor = 1; this.turns = ${TURNS}; }`,
+    `  constructor() { this.floor = 1; this.turns = ${turns}; }`,
     '  function claim() returns (int) {',
     `    int flag = IJudge(0x${judgeAddress}).readFlag();`,
     '    require(flag == 1);',
@@ -135,7 +137,7 @@ function source(bound: 'count' | 'this.turns'): string {
     `    uint16[5] shares = IVault(0x${vaultAddress}).settle(hex"${XS_WIRE}", hex"${YS_WIRE}");`,
     '    this.settled = 1;',
     `    int paid = IClaimer(0x${addressOf(CLAIMER_CATEGORY)}).claim();`,
-    `    require(paid == ${TURNS});`,
+    `    require(paid == ${turns});`,
     '    return shares;',
     '  }',
     '  function readFlag() view returns (int) { return this.settled; }',
@@ -172,11 +174,12 @@ function source(bound: 'count' | 'this.turns'): string {
 type ArtifactMap = ReturnType<typeof compileStringMulti>;
 const compiled = new Map<string, ArtifactMap>();
 /** Each variant is compiled once, and only when a case runs it. */
-function artifactsFor(bound: 'count' | 'this.turns'): ArtifactMap {
-  let found = compiled.get(bound);
+function artifactsFor(bound: 'count' | 'this.turns', turns = TURNS): ArtifactMap {
+  const variant = `${bound}/${turns}`;
+  let found = compiled.get(variant);
   if (found === undefined) {
-    found = compileStringMulti(source(bound), { composition: 'per-call' });
-    compiled.set(bound, found);
+    found = compileStringMulti(source(bound, turns), { composition: 'per-call' });
+    compiled.set(variant, found);
   }
   return found;
 }
@@ -338,7 +341,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS7): a deep 80-20 ar
     expect(await rootRecords(network, deployed, flow)).toStrictEqual(before);
   });
 
-  it('with the turn count in the claimer\'s record, plans all 24 masters and stops at the vault\'s guard', async () => {
+  it('with the turn count in the claimer\'s record, plans 24 masters and is refused: its turns write one key', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const stepped = artifactsFor('this.turns');
     const deployed = await deployAll(network, stepped);
@@ -376,10 +379,24 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS7): a deep 80-20 ar
     const transfers = plan.callees.flatMap((callee, index) => (callee.contract === 'Token' ? [index] : []));
     expect(transfers.map((index) => depthOf(plan.callees, index))).toStrictEqual([4, 4, 4, 4, 4]);
 
-    // The settle learns each transfer's write (each on its own, though all five credit one holder) and each read,
-    // then stops at `setClaimed`: the hop declares every callee's record at its live commitment, so the flag
-    // `settle` wrote earlier in the transaction reads as unset. Owner: the SDK hop (`proxy/deploy.ts`, the callee
-    // frames `buildHopPlan` declares kept).
+    // All five transfers credit one holder, whose fixed-width node each reach would recreate, so the plan is refused
+    // before any frame is settled. Owner: the SDK hop planner (`proxy/external-calls.ts`,
+    // `requireSatisfiableReachWrites`, which `proxy/deploy.ts`, `planAndSettleHop`, runs before the settle).
+    await expect(run(network, deployed, stepped)).rejects.toThrow('the hop reaches the entry "Token.transfer()" '
+      + `${TURNS} times, and ${TURNS} of them write collection "balances" at the same key`);
+    expect(await rootRecords(network, deployed, stepped)).toStrictEqual(before);
+  });
+
+  it('with one turn in the claimer\'s record, the settle stops at the vault\'s guard', async () => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const stepped = artifactsFor('this.turns', 1);
+    const deployed = await deployAll(network, stepped);
+    const before = await rootRecords(network, deployed, stepped);
+
+    // One transfer passes the reach check. The settle learns its write and each read, then stops at `setClaimed`:
+    // the hop declares every callee's record at its live commitment, so the flag `settle` wrote earlier in the
+    // transaction reads as unset. Owner: the SDK hop (`proxy/deploy.ts`, the callee frames `buildHopPlan` declares
+    // kept).
     await expect(run(network, deployed, stepped)).rejects.toThrow(
       /the call's callee "Vault\.setClaimed\(\)" did not settle through the proxy: .* at line \d+: not settled/,
     );

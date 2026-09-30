@@ -1,18 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { validatorAddress, type Artifact } from '@solidcash/utils';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { decodePushdataValue, validatorAddress, type Artifact, type StateValue } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import * as composer from '../../../src/per-call/composer/index.js';
 import {
   PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
   type PerCallProxyCallResult,
 } from '../../../src/per-call/proxy/index.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { deploymentStateValues, type PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv, carolPkh, carolPriv } from '../../fixture/vars.js';
@@ -32,9 +33,10 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * post's own writes and its first note, without the store reads and the allowlist loop) and `grant` (the allowlist
  * entry, with no call). Both settle and broadcast, and so does `close`, the close without its timeout arm.
  *
- * Each entry is pinned where it stands today; `greet`, `setAllowedOnly` and `refuseOnce` are the same entries with
- * their first wall stepped around (no task read, no second note), and a second deployment whose escrow and dispute
- * contract accept escrow 0 shows what stands behind their reverts. The file runs only under `PER_CALL_AHEAD=1`.
+ * Each entry is pinned where it stands today. Beside them, `greet` and `setAllowedOnly` drop the task read,
+ * `refuseOnce` the refund arm's note and `postUnlisted` the allowlist loop, each a wall its entry met; a second
+ * deployment whose escrow and dispute contract accept escrow 0 shows what stands behind their reverts. The file runs
+ * only under `PER_CALL_AHEAD=1`.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -175,6 +177,23 @@ const SOURCE = [
   '    publishNote(id, Note(0, abi.encodePacked(msg.sender), bytes(title), 0));',
   '  }',
   '  function grant(int id, address who) { this.allowlist[id][who] = true; }',
+  '  function postUnlisted(string title, int amount, address arbiter) {',
+  '    require(bytes(title).length > 0 && bytes(title).length < 255, "title too short or long");',
+  '    require(amount > 0, "amount must be greater than 0");',
+  '    if (arbiter != address(0)) {',
+  '      require(IJournal(this.journal).isArbiter(arbiter), "arbitrator not registered");',
+  '      require(arbiter != msg.sender, "arbitrator and job creator can not be the same person");',
+  '    }',
+  '    require(IJournal(this.journal).isMember(msg.sender), "not registered");',
+  '    this.tasks.push();',
+  '    int id = this.tasks.length - 1;',
+  '    this.tasks[id].gated = false;',
+  '    this.tasks[id].roles.creator = msg.sender;',
+  '    this.tasks[id].title = title;',
+  '    this.tasks[id].amount = amount;',
+  '    this.tasks[id].roles.arbiter = arbiter;',
+  '    publishNote(id, Note(0, abi.encodePacked(msg.sender), bytes(title), 0));',
+  '  }',
   '  function close(int id) onlyCreator(id) {',
   '    require(this.tasks[id].state == 0, "not open");',
   '    this.tasks[id].state = 2;',
@@ -283,12 +302,15 @@ function lineOf(needle: string, after = 'pragma'): number {
 /** Where the escrow's and the dispute contract's own refusals are reported: their entries' lines. */
 const REFUND_LINE = lineOf('function refund(', 'contract Vault');
 const CHALLENGE_LINE = lineOf('function challenge(', 'contract Panel');
-/** Where the allowlist update's failing read of the task array is reported: its own line or its modifier's. */
-const ALLOWED_READ_LINES = [lineOf('function setAllowed('), lineOf('"not creator"')];
 
-/** The planner's refusal of two store reaches that write the task's one note key (the class-(d) capability). */
-const TWO_NOTE_REACHES = 'the hop reaches the entry "Journal.publish()" 2 times, and 2 of them write collection "notes" '
-  + 'at the same key; the compiled entry writes one node per key';
+/**
+ * The hop's refusal of an entry whose run-time loop writes `allowlist`: the artifact publishes each loop write as an
+ * entry access with a `sortedUpsertLoopInfo` row and no sorted batch, and the hop's write planner plans batches only.
+ */
+function unbatchedWrites(entry: string, count: number): string {
+  return `the implementation's "${entry}" entry writes ${count} mapping entry(ies) across 0 sorted batch(es), and this `
+    + 'hop plans one batch to one collection';
+}
 
 type ArtifactMap = ReturnType<typeof compileStringMulti>;
 let compiledRun: ArtifactMap | undefined;
@@ -448,6 +470,40 @@ function publishedFacts(functionName: string): Record<string, unknown> {
   };
 }
 
+/** A note the store emitted: its task id, its kind and its data bytes. */
+interface Posted { readonly id: bigint; readonly kind: bigint; readonly data: string }
+
+/** The notes the store emitted in a settled hop: its outputs whose commitment decodes exactly as the event's payload. */
+function postedNotes(world: World, result: PerCallProxyCallResult): Posted[] {
+  const journal = compiled().Journal!;
+  const [idType, noteType] = journal.events![0]!.parameters.map((parameter) => parameter.type);
+  const structs = journal.structs ?? journal.stateLayout?.structs;
+  const posted: Posted[] = [];
+  for (const output of result.transaction.outputs) {
+    const commitment = output.token?.nft?.commitment;
+    if (commitment === undefined || binToHex(output.token!.category) !== world.journal.proxy) continue;
+    try {
+      const id = decodePushdataValue(commitment, 0, idType!, structs);
+      const note = decodePushdataValue(commitment, id.bytesConsumed, noteType!, structs);
+      if (id.bytesConsumed + note.bytesConsumed !== commitment.length) continue;
+      const fields = note.value as Record<string, StateValue>;
+      posted.push({
+        id: BigInt(id.value as bigint), kind: BigInt(fields.kind as bigint), data: binToHex(fields.data as Uint8Array),
+      });
+    } catch {
+      // A record or node of the store's own category, which is not an event payload.
+    }
+  }
+  return posted;
+}
+
+/** The root proxy's task array as its records hold it, parsed with the shipped decoder. */
+async function tasksOf(world: World): Promise<readonly Record<string, unknown>[]> {
+  const layout = buildProxyArtifact(compiled().Desk!).stateLayout!;
+  const pools = await readPerCallDeployment(world.network, world.desk.proxy, layout);
+  return deploymentStateValues(layout, world.desk.proxy, pools).tasks as readonly Record<string, unknown>[];
+}
+
 /**
  * Deploys the escrow and the dispute contract plain with `escrows` escrows, then the store and the root behind
  * generated proxies; registers the creator and the worker as members and the arbiter, opens the task with the
@@ -573,24 +629,22 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       world = await deployWorld(0n);
     }, 600_000);
 
-    it('posting with an allowlist (20) is refused for two store reaches writing one note key', async () => {
+    it('posting with an allowlist (20) is refused for its loop\'s write, which no sorted batch covers', async () => {
       const outcome = await enter(world, 'Desk', 'post', [TITLE, 100n, CAROL_LOCK, [BOB_LOCK]], CREATOR);
-      // The created note and the allowlist note both append to `notes[id]`, so the plan is refused before anything
-      // settles. Owner: the SDK hop planner (`proxy/external-calls.ts`, `requireSatisfiableReachWrites`).
-      expectRefused(outcome, TWO_NOTE_REACHES);
+      // The two notes at `notes[id]` no longer stop the plan (the reach check covers fixed-width values only), and
+      // the loop's upsert is refused before anything is derived. Owner: the SDK hop's write planner
+      // (`proxy/entry-writes.ts`, `planHopMappingBatches` plans `sortedBatchInfo` only; the direct call path plans
+      // `sortedUpsertLoopInfo`, `call/entry-records.ts`, `planCallLoopWrites`).
+      expectRefused(outcome, unbatchedWrites('post', 1));
       expect(outcome.draft).toBeUndefined();
     }, 300_000);
 
-    it('posting without an allowlist (18) stops at the store\'s read, whose value reaches the root empty', async () => {
+    it('posting without an allowlist (18) is refused the same way, for a loop its arguments never run', async () => {
       const outcome = await enter(world, 'Desk', 'post', [TITLE, 100n, CAROL_LOCK, []], CREATOR);
-      // The store's frame returns true, and the generated fallback keeps it from the caller (revert-after-calls
-      // pins the same). Owner: the SDK proxy generator (`proxy/generate.ts`, the fallback returns nothing).
-      expectRefused(outcome, entryRefusal('post', lineOf('"arbitrator not registered"'), 'arbitrator not registered'));
-      const draft = outcome.draft!;
-      expect(binToHex(draft.blockOf('callee-impl-master-2').retval)).toBe('51');
-      expect(binToHex(draft.blockOf('callee-master-1').calls[0]!.result)).toBe('51');
-      expect(binToHex(draft.blockOf('callee-master-1').retval)).toBe('');
-      expect(binToHex(draft.blockOf('implementation-master').calls[0]!.result)).toBe('');
+      // The loop's write is published whatever the arguments, and it is planned before the store reads, whose value
+      // now reaches the root (`postUnlisted` below). Owner: the SDK hop's write planner, as with an allowlist.
+      expectRefused(outcome, unbatchedWrites('post', 1));
+      expect(outcome.draft).toBeUndefined();
     }, 300_000);
 
     it('a thread message from the creator (47) stops at its first read of the task array', async () => {
@@ -615,52 +669,59 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
         .toBe(false);
     }, 300_000);
 
-    it('with the task read stepped around, the creator\'s message stops at the store read', async () => {
-      const outcome = await enter(world, 'Desk', 'greet', [TASK, HASH, BOB_LOCK], CREATOR);
-      // The next wall is posting's: the store's `true` reaches the root empty. Owner: the SDK proxy generator.
-      expectRefused(outcome, entryRefusal('greet', lineOf('"not registered"', 'function greet('), 'not registered'));
-    }, 300_000);
-
-    it('an allowlist update from a non-creator (30) stops at the task read, before its own "not creator"', async () => {
-      const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [BOB_LOCK], []], WORKER);
-      // Owner: the SDK hop, as the thread message: `onlyCreator` reads the array the entry never writes.
-      expect(ALLOWED_READ_LINES).toContain(unnamedRefusalLine(outcome, 'setAllowed'));
-      expect(outcome.draft!.layout.participants.some((placed) => placed.id.startsWith('dynamic-chunk-tasks-')))
-        .toBe(false);
-      expect(reportOf(outcome).refusals.find((refusal) => refusal.master === 'implementation-master')?.reason.message)
-        .toBeUndefined();
-    }, 300_000);
-
-    it('an allowlist update adding a worker (20, 30) stops at the same read', async () => {
-      const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [ALICE_LOCK], []], CREATOR);
-      // Owner: the SDK hop. The loop's own site is repeated, which the stall names.
-      expect(ALLOWED_READ_LINES).toContain(unnamedRefusalLine(outcome, 'setAllowed'));
-      expect(outcome.stalls).toStrictEqual([
-        'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.setAllowed() filled no witness at site 0 '
-        + '(call 0) (the call runs in a loop, so the published sites describe the source rather than this execution)',
+    it('with the task read stepped around, the creator\'s message settles and the store posts its note', async () => {
+      const settled = expectSettled(await enter(world, 'Desk', 'greet', [TASK, HASH, BOB_LOCK], CREATOR));
+      // The generated fallback returns its delegate's bytes (PW8), so the store's `true` is the entry's call result.
+      expect(binToHex(settled.draft.blockOf('implementation-master').calls[0]!.result)).toBe('51');
+      expect(settled.completed.map((frame) => frame.functionName)).toStrictEqual([
+        'Journal.isMember()', 'JournalProxy.__fallback()', 'Journal.publish()', 'JournalProxy.__fallback()',
+        'Desk.greet()', 'DeskProxy.__fallback()',
+      ]);
+      expect(postedNotes(world, settled)).toStrictEqual([
+        { id: TASK, kind: 18n, data: `${binToHex(HASH)}${binToHex(BOB_LOCK)}` },
       ]);
     }, 300_000);
 
-    it('with the task read stepped around, the allowlist loop stops at its own upsert', async () => {
-      const outcome = await enter(world, 'Desk', 'setAllowedOnly', [TASK, [ALICE_LOCK], []], CREATOR);
-      // No write fact names the varying-key upsert, so the hop lays no node for it and the body's own upsert code
-      // refuses: PW3's wall, pinned in `solidc/test/per-call/master/loop-upsert-segment.test.ts`. Owner: compiler.
-      expect([lineOf('for (uint i = 0;', 'function setAllowedOnly('),
-        lineOf('this.allowlist[id][allowed[i]] = true;', 'function setAllowedOnly(')])
-        .toContain(unnamedRefusalLine(outcome, 'setAllowedOnly'));
-    }, 300_000);
-
-    it('a refusal from a non-arbiter (64) is refused for two note reaches, not its own "not arbitrator"', async () => {
-      const outcome = await enter(world, 'Desk', 'refuse', [TASK], CREATOR);
-      // The refund arm's note reads the array the entry rewrites, so it is planned beside the refusal's note.
-      // Owner: the SDK hop planner, as posting with an allowlist.
-      expectRefused(outcome, TWO_NOTE_REACHES);
+    it('an allowlist update from a non-creator (30) is refused for its loop writes, before "not creator"', async () => {
+      const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [BOB_LOCK], []], WORKER);
+      // Refused before anything is derived, so the task read it stopped at before is not reached. Owner: the SDK
+      // hop's write planner, as posting.
+      expectRefused(outcome, unbatchedWrites('setAllowed', 2));
       expect(outcome.draft).toBeUndefined();
     }, 300_000);
 
-    it('the arbiter\'s refusal of an open task (64) is refused the same way', async () => {
-      // Owner: the SDK hop planner, as above.
-      expectRefused(await enter(world, 'Desk', 'refuse', [TASK], ARBITER), TWO_NOTE_REACHES);
+    it('an allowlist update adding a worker (20, 30) is refused the same way', async () => {
+      const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [ALICE_LOCK], []], CREATOR);
+      // Owner: the SDK hop's write planner. The loop's call site is no longer reached.
+      expectRefused(outcome, unbatchedWrites('setAllowed', 2));
+      expect(outcome.stalls).toStrictEqual([]);
+    }, 300_000);
+
+    it('with the task read stepped around, the allowlist loop is refused the same way', async () => {
+      const outcome = await enter(world, 'Desk', 'setAllowedOnly', [TASK, [ALICE_LOCK], []], CREATOR);
+      // The upsert the body's own code refused (PW3's wall) is refused up front: the artifact now publishes the
+      // loop's writes as entry accesses, which the write planner covers only by a sorted batch. Owner: the SDK hop's
+      // write planner, as posting.
+      expectRefused(outcome, unbatchedWrites('setAllowedOnly', 2));
+      expect(outcome.draft).toBeUndefined();
+    }, 300_000);
+
+    it('a refusal from a non-arbiter (64) reports the escrow\'s revert, not its own "not arbitrator"', async () => {
+      const outcome = await enter(world, 'Desk', 'refuse', [TASK], CREATOR);
+      // The two note reaches no longer stop the plan, so `refuse` meets `refuseOnce`'s wall: the refund arm is planned
+      // and settled first, and the escrow refuses escrow 0. Owner: the SDK hop (`proxy/external-calls.ts`,
+      // `occurrenceCountOf`; `deploy.ts`, `settleCallees` first).
+      expectRefused(outcome, calleeRefusal('Vault.refund', 'callee-master-5', REFUND_LINE, 'no escrow'));
+      expect(outcome.stalls).toStrictEqual([]);
+      expect(reportOf(outcome).refusals.find((refusal) => refusal.master === 'implementation-master')?.reason)
+        .toStrictEqual({ line: lineOf('"not arbitrator"'), message: 'not arbitrator' });
+    }, 300_000);
+
+    it('the arbiter\'s refusal of an open task (64) reports the same', async () => {
+      // Owner: the SDK hop, as above.
+      const outcome = await enter(world, 'Desk', 'refuse', [TASK], ARBITER);
+      expectRefused(outcome, calleeRefusal('Vault.refund', 'callee-master-5', REFUND_LINE, 'no escrow'));
+      expect(reportOf(outcome).innermost?.master).toBe('callee-master-5');
     }, 300_000);
 
     it('with the arm\'s note stepped around, a non-arbiter\'s refusal (64) reports the escrow\'s revert', async () => {
@@ -684,9 +745,15 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       expect(closed.draft.layout.participants.some((placed) => placed.id === 'dynamic-chunk-tasks-0')).toBe(true);
     }, 600_000);
 
-    it('the arbiter\'s refusal of a closed task (63) is refused for two note reaches', async () => {
-      // Owner: the SDK hop planner, as above; the entry's own "job in invalid state" is not reached.
-      expectRefused(await enter(world, 'Desk', 'refuse', [TASK], ARBITER), TWO_NOTE_REACHES);
+    it('the arbiter\'s refusal of a closed task (63) reports the escrow\'s revert', async () => {
+      const outcome = await enter(world, 'Desk', 'refuse', [TASK], ARBITER);
+      // Owner: the SDK hop, as above. The entry's own reason is in the report, below the callee's.
+      expectRefused(outcome, calleeRefusal('Vault.refund', 'callee-master-5', REFUND_LINE, 'no escrow'));
+      const report = reportOf(outcome);
+      expect(report.innermost?.master).toBe('callee-master-5');
+      expect(report.refusals.find((refusal) => refusal.master === 'implementation-master')?.reason).toStrictEqual({
+        line: lineOf('"job in invalid state"', 'function refuse('), message: 'job in invalid state',
+      });
     }, 300_000);
 
     it('with the arm\'s note stepped around, the refusal of a closed task (63) reports the escrow\'s revert', async () => {
@@ -712,10 +779,25 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       });
     }, 300_000);
 
-    it('an allowlist update of a closed task (30) stops at the task read, before its own "not open"', async () => {
+    it('an allowlist update of a closed task (30) is refused for its loop writes, before "not open"', async () => {
       const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [], []], CREATOR);
-      // No call is planned for empty lists; the read fails all the same. Owner: the SDK hop, as above.
-      expect(ALLOWED_READ_LINES).toContain(unnamedRefusalLine(outcome, 'setAllowed'));
+      // Empty lists run no turn; the loop writes are published all the same. Owner: the SDK hop's write planner.
+      expectRefused(outcome, unbatchedWrites('setAllowed', 2));
+    }, 300_000);
+
+    it('with the allowlist loop stepped around, posting (18) settles and stores the task', async () => {
+      // Run last: it appends a second task. The store reads' `true` reaches the root (PW8).
+      const settled = expectSettled(await enter(world, 'Desk', 'postUnlisted', [TITLE, 100n, CAROL_LOCK], CREATOR));
+      expect(settled.draft.blockOf('implementation-master').calls.map((call) => binToHex(call.result)))
+        .toStrictEqual(['51', '51', '']);
+      const tasks = await tasksOf(world);
+      expect(tasks).toHaveLength(2);
+      const task = tasks[1]!;
+      const roles = task.roles as Readonly<Record<string, Uint8Array>>;
+      expect([task.state, task.gated, task.title, task.amount]).toStrictEqual([0n, false, TITLE, 100n]);
+      expect([binToHex(roles.creator!), binToHex(roles.arbiter!)])
+        .toStrictEqual([binToHex(ALICE_LOCK), binToHex(CAROL_LOCK)]);
+      expect(postedNotes(world, settled)).toStrictEqual([{ id: 1n, kind: 0n, data: binToHex(utf8ToBin(TITLE)) }]);
     }, 300_000);
   });
 
@@ -728,6 +810,11 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
     it('with the arm\'s note stepped around, a non-arbiter\'s refusal (64) reports its own reason', async () => {
       const outcome = await enter(world, 'Desk', 'refuseOnce', [TASK], CREATOR);
       expectRefused(outcome, entryRefusal('refuseOnce', lineOf('"not arbitrator"'), 'not arbitrator'));
+    }, 300_000);
+
+    it('a non-arbiter\'s refusal (64) reports its own reason, as its stepped-around form does', async () => {
+      const outcome = await enter(world, 'Desk', 'refuse', [TASK], CREATOR);
+      expectRefused(outcome, entryRefusal('refuse', lineOf('"not arbitrator"'), 'not arbitrator'));
     }, 300_000);
 
     it('with the arm\'s note stepped around, the arbiter\'s refusal of an open task (64) stops at call 1', async () => {
@@ -743,6 +830,19 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       expect(calls.map((call) => call.calleeRef === composer.UNFILLED_CALLEE_REF)).toStrictEqual([false, false, true]);
     }, 300_000);
 
+    it('the arbiter\'s refusal of an open task (64) stops at call 1 the same way', async () => {
+      const outcome = await enter(world, 'Desk', 'refuse', [TASK], ARBITER);
+      // As above, with both of the skipped arm's calls stated as the third and fourth records. Owner: the SDK hop.
+      const line = unnamedRefusalLine(outcome, 'refuse');
+      expect(line).toBeGreaterThanOrEqual(lineOf('function refuse('));
+      expect(line).toBeLessThan(lineOf('function refuseOnce('));
+      expect(outcome.stalls.at(-1)).toBe('PER_CALL_DERIVATION_STALLED: master "implementation-master" of '
+        + 'Desk.refuse() filled no witness at site 1 (call 1)');
+      const calls = outcome.draft!.blockOf('implementation-master').calls;
+      expect(calls.map((call) => call.calleeRef === composer.UNFILLED_CALLEE_REF))
+        .toStrictEqual([false, false, true, true]);
+    }, 300_000);
+
     it('closing the task settles', async () => {
       expectSettled(await enter(world, 'Desk', 'close', [TASK], CREATOR));
     }, 600_000);
@@ -750,6 +850,12 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
     it('with the arm\'s note stepped around, the refusal of a closed task (63) reports its own reason', async () => {
       const outcome = await enter(world, 'Desk', 'refuseOnce', [TASK], ARBITER);
       expectRefused(outcome, entryRefusal('refuseOnce', lineOf('"job in invalid state"', 'function refuseOnce('),
+        'job in invalid state'));
+    }, 300_000);
+
+    it('the refusal of a closed task (63) reports its own reason', async () => {
+      const outcome = await enter(world, 'Desk', 'refuse', [TASK], ARBITER);
+      expectRefused(outcome, entryRefusal('refuse', lineOf('"job in invalid state"', 'function refuse('),
         'job in invalid state'));
     }, 300_000);
 

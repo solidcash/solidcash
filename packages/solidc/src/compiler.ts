@@ -63,6 +63,7 @@ import {
   type KernelAdmissionReason,
 } from './admission-decision.js';
 import { normalizeKernelAdmissionReason } from './kernel-admission-catalog.js';
+import { deduplicateMessageBusVerifierStackSuffix } from './messageBusVerifierDedup.js';
 
 /** Survives binder rebuild: span-based analysis from the admission ladder. */
 let pendingSpanAdmissionAnalysis: AdmissionDecisionSet | undefined;
@@ -3131,18 +3132,19 @@ function compileDetachedMessageBusVerifierUncached(
   // by verifyFunctionId, while diagnostics and existing tooling expect the canonical verifier name.
   const verify = program.functions.find((fn) => fn.id === program.verifyFunctionId);
   if (verify?.name === MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM) verify.name = '__message_bus_verify_atomic';
+  const compactProgram = deduplicateMessageBusVerifierStackSuffix(program);
   try {
     // Definition bytecode is embedded in the verifier covenant, not merely in this detached mini-contract.
     // Favor lower operation density when it fits; preserve the proven compact lowering for larger shapes.
-    messageBusVerifierLockingBytecode(program, compilerOptions.maximumInputBytes);
+    messageBusVerifierLockingBytecode(compactProgram, compilerOptions.maximumInputBytes);
   } catch (error) {
     if (unrollDeepReplace && error instanceof MessageBusVerifierCapacityError) {
       return compileDetachedMessageBusVerifierUncached(source, compilerOptions, lifecycle, false);
     }
     throw error;
   }
-  profileLog('singlePass:verifier', started, { functions: program.functions.length });
-  return program;
+  profileLog('singlePass:verifier', started, { functions: compactProgram.functions.length });
+  return compactProgram;
 }
 
 export function assertNoReservedMessageBusSelector(

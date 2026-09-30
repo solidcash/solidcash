@@ -20,13 +20,13 @@ import { fundShippedFacets } from '../../../../solidcash/test/per-call/shapes/ha
  * the list. This file pins the first two: an entry that makes a call and writes nothing, and an entry whose mapping
  * write and dynamic run land in different segments.
  *
- * **This file is the publication pin and drives no machine by design**; the machine verdicts for the shapes it
- * publishes live where the shipped path can be driven, and are, at this revision:
- * `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts:94` - `the machine accepts the
- * run-time-loop upsert, and refuses the record it wrote being changed`, asserting
- * `{ accepted: true, objections: '' }` at `:99` and refusing the mutated spend at `:124` - and, for the same
- * shape beside a call, `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts:217` (accept at
- * `:221`) with the mutation refused at `:238` and the refusing participant named at `:272`.
+ * The publication facts are this file's subject, and the machine verdict they are read for is taken here too: the
+ * last case deploys the body the fourth case publishes and calls it through the shipped call path, asserting that
+ * the machine accepts the well-formed spend and refuses the same spend with one byte of the written record changed
+ * (imports are relative because the shipped deploy and call path live in the SDK, as they do in the sibling harness
+ * `loop-upsert-segment.test.ts`). The same accept/refuse pair beside a call is
+ * `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts:217` (accept at `:221`, the mutation refused
+ * at `:238`, the refusing participant named at `:272`).
  */
 
 /** One write as the artifact publishes it. */

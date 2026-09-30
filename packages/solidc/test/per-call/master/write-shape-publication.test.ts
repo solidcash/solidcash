@@ -10,6 +10,14 @@ import { compileStringMulti } from '../../../src/compiler.js';
  * publishes one fact per write, and a body that writes one record in one segment publishes the single fact beside
  * the list. This file pins the first two: an entry that makes a call and writes nothing, and an entry whose mapping
  * write and dynamic run land in different segments.
+ *
+ * **This file is the publication pin and drives no machine by design**; the machine verdicts for the shapes it
+ * publishes live where the shipped path can be driven, and are, at this revision:
+ * `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts:94` - `the machine accepts the
+ * run-time-loop upsert, and refuses the record it wrote being changed`, asserting
+ * `{ accepted: true, objections: '' }` at `:99` and refusing the mutated spend at `:124` - and, for the same
+ * shape beside a call, `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts:217` (accept at
+ * `:221`) with the mutation refused at `:238` and the refusing participant named at `:272`.
  */
 
 /** One write as the artifact publishes it. */

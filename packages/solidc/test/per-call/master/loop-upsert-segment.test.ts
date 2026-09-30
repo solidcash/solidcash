@@ -33,7 +33,11 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
  *
  * The runtime-loop upsert whose *key the frame holds* is a different shape, and the machine accepts it: its
  * well-formed spend is settled, with the record it wrote changed refused beside it, on the shipped path in
- * `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` (`:93-96`, `:110-121`). This file's verdicts
+ * `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`: the case at `:94` asserts
+ * `{ accepted: true, objections: '' }` at `:99` and refuses the record it wrote being changed at `:124` - a
+ * citation of `:86-97` reads the revision before `fddae17aa` - and the same shape through the proxy path is at
+ * `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts:217`/`:221`, its mutation refused at
+ * `:238`. This file's verdicts
  * are about the varying key: the frame the shipped call path plans declares no record for its collection, which the
  * machine reads as the no-record sentinel, and a declaration the frame does carry puts the turn's coordinate on
  * another participant's UTXO.

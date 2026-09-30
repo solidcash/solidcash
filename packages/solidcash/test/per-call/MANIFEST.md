@@ -44,7 +44,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | 75 |
 | `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2 |
-| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 87, under `PER_CALL_AHEAD=1` |
+| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 98, under `PER_CALL_AHEAD=1` |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 3 |
 
 Total: 1736 checks (115 + 632 + 987 + 2), with four more cases that run under
@@ -316,8 +316,9 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   owner. `fan-in.test.ts` (MS3), `reentry-payout.test.ts` (MS4), `origin-gated-payout.test.ts` (MS5),
   `time-gated-challenge.test.ts` (MS6), `deep-arbitration.test.ts` (MS7), `revert-after-calls.test.ts` (MS10),
   `job-threads-and-refusals.test.ts` (L4: posting, thread messages, allowlists and refusals), `job-updates.test.ts`
-  (L4: updates, closing, reopening and withdrawing) and `block-oracle-beside-array.test.ts` (records an entry does
-  not name, and a `view` read of a proxied store). The directory runs only under `PER_CALL_AHEAD=1`.
+  (L4: updates, closing, reopening and withdrawing), `call-argument-from-own-write.test.ts` (a call argument read
+  from the entry's own write) and `block-oracle-beside-array.test.ts` (records an entry does not name, and a `view`
+  read of a proxied store). The directory runs only under `PER_CALL_AHEAD=1`.
 
 ## Which refusals cover which attack
 

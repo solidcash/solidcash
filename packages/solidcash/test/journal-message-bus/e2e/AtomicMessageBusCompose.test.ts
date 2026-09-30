@@ -233,7 +233,15 @@ const mutateAuthenticatedFrame = (
     .map((input, index) => ({ input, index }))
     .filter(({ input }) => input.token?.nft?.commitment.startsWith('4c335631'))
     .map(({ index }) => index);
-  const inputIndex = messageEnvelopeTarget ? verifierIndices[verifierIndices.length - 1] ?? -1 : 0;
+  const rootInstructions = messageEnvelopeTarget
+    ? decodeAuthenticationInstructions(builder.buildLibauthTransaction().inputs[0].unlockingBytecode)
+    : [];
+  const rootEnvelope = rootInstructions[1];
+  const rootCarriesEnvelope = rootEnvelope !== undefined && 'data' in rootEnvelope
+    && binToHex(rootEnvelope.data).startsWith('4c334331');
+  const inputIndex = messageEnvelopeTarget
+    ? rootCarriesEnvelope ? 0 : verifierIndices[verifierIndices.length - 1] ?? -1
+    : 0;
   if (inputIndex < 0) throw new Error('test could not locate a deployed message bus verifier input');
   const original = builder.inputs[inputIndex].unlocker!;
   builder.inputs[inputIndex] = {
@@ -1294,7 +1302,7 @@ describe('messageBus.compose atomic transaction', () => {
       }
     }`, {
       forceStateful: true, messageBus: true, messageBusGraphContext: true,
-      suppressWarnings: true,
+      messageBusRootEnvelope: true, suppressWarnings: true,
     });
     expect(calleeArtifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
       .toMatchObject({ eligible: true });
@@ -1388,7 +1396,7 @@ describe('messageBus.compose atomic transaction', () => {
         }
       }
     `, {
-      forceStateful: true, messageBus: true, suppressWarnings: true,
+      forceStateful: true, messageBus: true, messageBusRootEnvelope: true, suppressWarnings: true,
     });
     const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
@@ -1412,6 +1420,22 @@ describe('messageBus.compose atomic transaction', () => {
     const hostileEvent = await composition.build();
     mutateAuthenticatedFrame(hostileEvent, '', 'messageEnvelope-event');
     expect(vmRejects(hostileEvent)).toBe(true);
+    for (const [field, byteIndex] of [['domain', 8], ['declared length', 12]] as const) {
+      const hostileCarrier = await composition.build();
+      const original = hostileCarrier.inputs[0].unlocker!;
+      hostileCarrier.inputs[0] = {
+        ...hostileCarrier.inputs[0],
+        unlocker: {
+          generateLockingBytecode: () => original.generateLockingBytecode(),
+          generateUnlockingBytecode: (options) => {
+            const changed = original.generateUnlockingBytecode(options).slice();
+            changed[byteIndex] ^= 1;
+            return changed;
+          },
+        },
+      };
+      expect(vmRejects(hostileCarrier), `V5 root carrier ${field}`).toBe(true);
+    }
     const oversizedInputs = built.buildLibauthTransaction().inputs
       .map((input, index) => ({ index, bytes: input.unlockingBytecode.length }))
       .filter(({ bytes }) => bytes > ConsensusBch2026.maximumBytecodeLength);

@@ -26,6 +26,8 @@ slots. The SDK derives all absolute indices; application code supplies none.
 
 ## Message envelope
 
+The verifier-input transport below remains the default for deployed V1–V4 artifacts.
+
 Every verifier unlocking bytecode carries the same call manifest as its first canonical `PUSHDATA2` push (the minimum
 two-participant message envelope is already larger than 255 bytes). Arguments follow in
 reverse ABI order, followed by the verifier redeem program:
@@ -50,6 +52,18 @@ Each verifier also receives an inert density-reserve push. The SDK sizes this re
 verifier's actual program arguments and message envelope, bringing its unlocking bytecode to a 9,000-byte floor.
 Larger arguments displace reserve bytes rather than accumulating a fixed 2,048-byte pad. Finalized VM and byte
 preflight remain authoritative if a verifier needs more computation or the transaction approaches relay size.
+
+An opt-in root-route transport (`messageBusRootEnvelope: true`) carries one canonical envelope in the direct
+root's input-0 SCB1 unlocking frame, immediately after the five-byte selector push and before the batch and
+reserve pushes. Every V5 verifier reads that exact `PUSHDATA2` carrier, proves its `L3C1` domain and declared
+manifest length, and returns only its binding digest (plus a lifecycle suffix where applicable). V5 verifier
+unlockings omit their own envelope pushes; their covenants no longer perform the redundant local-envelope hash
+comparison. The manifest codec, participant/verifier/fee slot layout, and verifier NFT commitment format stay
+unchanged. The different verifier program produces a different covenant address, so existing verifier NFTs are
+not silently migrated. Composer and preflight require all participants to advertise the same transport; V5
+verifiers also reject legacy envelope pushes in every verifier slot, preventing a co-spent legacy participant
+from authenticating a private manifest. This initial transport is for direct-root atomic compositions only;
+proxy roots and standalone input-0 SCB1 routes require a separate carrier design.
 
 SDK-only effect/return derivation probes temporarily use state-input outpoint index `ffffffff`, which cannot name a
 real transaction output. The route skips its final binding check only for that impossible probe outpoint; the SDK restores

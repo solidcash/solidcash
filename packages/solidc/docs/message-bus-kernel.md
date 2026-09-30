@@ -384,6 +384,14 @@ Kernel artifacts should not require `_r${row}` route inputs. Row arguments stay 
 aligned `_rows` array per handler parameter because committing them into the manifest would be circular. Return `position` in
 the manifest remains the logical row index; only redeem bytecode becomes a loop.
 
+`messageBusRootEnvelope: true` is an opt-in transport for direct-root atomic compositions whose duplicated
+verifier-input envelopes would breach BCH's 10,000-byte input-script limit. It does not change the manifest
+wire codec or the default V1–V4 transport. The root SCB1 input carries the one canonical envelope after its
+selector; all verifier programs read that input and their unlockers omit the envelope copy. The changed
+verifier program has a new covenant address, so existing deployments need new verifier NFTs. The SDK rejects
+mixed transports and roots that cannot carry the envelope. This mode does not yet support proxy roots or
+standalone input-0 SCB1 batches.
+
 ---
 
 ## 8. Tests (kernel toys)

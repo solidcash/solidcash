@@ -16,6 +16,8 @@ import {
 import type { BalancedAssembly, BalancedAssemblyOptions } from '../stateful/balancedBlocks.js';
 import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import { isContractUnlocker } from '../interfaces.js';
+import { getMessageBusEnvelopeTransport } from '../stateful/covenant-helpers.js';
 import { assertGraphTrailingCapacity, type GraphTrailingRegion } from './graph.js';
 import { ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES, decodeAtomicMessageEnvelope } from './atomic.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
@@ -679,10 +681,54 @@ export const convergeMessageBusFixedStateOutputs = (
   builder: TransactionBuilder,
 ): MessageBusComputedResourceConvergence => convergeMessageBusMutableResourceOutputs(builder, false);
 
-/** Enforce the physical encoding assumed by the generated final-verifier loader. */
+/** Enforce the physical carrier encoding selected by the artifact's generated verifier. */
 const assertCanonicalMessageEnvelopePush = (
-  transaction: Transaction, assembly: BalancedAssembly,
+  builder: TransactionBuilder, transaction: Transaction, assembly: BalancedAssembly,
 ): void => {
+  const rootUnlocker = builder.inputs[0]?.unlocker;
+  const rootEnvelopeLocation = rootUnlocker && isContractUnlocker(rootUnlocker)
+    ? rootUnlocker.contract.artifact.messageBus?.atomicMessageBus?.messageEnvelope : undefined;
+  if (rootEnvelopeLocation?.region === 'root-route') {
+    if (!rootUnlocker || !isContractUnlocker(rootUnlocker)
+      || getMessageBusEnvelopeTransport(rootUnlocker.contract.artifact) !== 'root-route'
+      || assembly.blocks[0]?.base !== 0) {
+      throw new Error('messageBus: V5 root-route envelope has no authenticated input-0 participant');
+    }
+    for (const block of assembly.blocks) {
+      const unlocker = builder.inputs[block.base]?.unlocker;
+      if (!unlocker || !isContractUnlocker(unlocker)
+        || getMessageBusEnvelopeTransport(unlocker.contract.artifact) !== 'root-route') {
+        throw new Error('messageBus: V5 root-route envelope cannot mix participant transports');
+      }
+    }
+    const root = transaction.inputs[0]?.unlockingBytecode ?? new Uint8Array();
+    const maximumInputBytes = builder.provider.consensusLimits?.maximumInputBytes ?? 10_000;
+    if (root.length > maximumInputBytes || root.length < 8 || root[0] !== 4
+      || binToHex(root.slice(1, 5)) !== '53434231' || root[5] !== 0x4d) {
+      throw new Error('messageBus: V5 input 0 must begin with SCB1 and a bounded OP_PUSHDATA2 envelope');
+    }
+    const carrier = readPush(root, 5);
+    const declaredLength = root[6] | (root[7] << 8);
+    if (!carrier || declaredLength !== carrier.data.length
+      || carrier.nextOffset !== 8 + declaredLength
+      || carrier.data.length < ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES) {
+      throw new Error('messageBus: V5 input 0 has no canonical root-route envelope');
+    }
+    decodeAtomicMessageEnvelope(carrier.data);
+    const batch = readPush(root, carrier.nextOffset);
+    if (!batch || !isCanonicalCompilerRouteEnvelope(batch.data)
+      || !readPush(root, batch.nextOffset)) {
+      throw new Error('messageBus: V5 root-route envelope must precede the canonical batch and reserve');
+    }
+    for (const inputIndex of assembly.verifierInputs) {
+      const verifierUnlock = transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array();
+      const redundant = firstPush(verifierUnlock);
+      if (redundant && binToHex(redundant) === binToHex(carrier.data)) {
+        throw new Error(`messageBus: V5 verifier input ${inputIndex} redundantly carries the root envelope`);
+      }
+    }
+    return;
+  }
   const unlockingBytecode = transaction.inputs[assembly.verifierInput]?.unlockingBytecode ?? new Uint8Array();
   const messageEnvelope = firstPush(unlockingBytecode);
   if (unlockingBytecode[0] !== 0x4d || messageEnvelope === undefined
@@ -3018,11 +3064,16 @@ const readPush = (
 /** Atomic graph-verifier unlocks place their L3V1 envelope in the first push. */
 const firstPush = (bytecode: Uint8Array): Uint8Array | undefined => readPush(bytecode, 0)?.data;
 
-/** A compiler route unlock starts with push4(SCB1), followed by its canonical batch blob. */
+/** A compiler route unlock starts with push4(SCB1); V5 root frames insert the L3C1 carrier before the batch. */
 const compilerRouteEnvelope = (bytecode: Uint8Array): Uint8Array | undefined => {
   const selector = readPush(bytecode, 0);
   if (!selector || binToHex(selector.data) !== '53434231') return undefined;
-  return readPush(bytecode, selector.nextOffset)?.data;
+  const first = readPush(bytecode, selector.nextOffset);
+  if (!first) return undefined;
+  const rootCarrier = bytecode[selector.nextOffset] === 0x4d
+    && first.data.length >= ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES
+    && binToHex(first.data.slice(0, 4)) === '4c334331';
+  return rootCarrier ? readPush(bytecode, first.nextOffset)?.data : first.data;
 };
 
 /** Validate the framing shared by canonical v1 and v2 route batches without interpreting typed arguments. */
@@ -3640,7 +3691,7 @@ export const preflightMessageBusTransaction = (
   });
   const transaction = builder.buildLibauthTransaction();
   logComposedTransactionLayout(builder, transaction, 'finalized');
-  assertCanonicalMessageEnvelopePush(transaction, assembly);
+  assertCanonicalMessageEnvelopePush(builder, transaction, assembly);
   evaluateEveryInput(builder, transaction);
   // Byte rules LAST, so a transaction that cannot execute reports its semantic cause rather than whichever
   // relay observation happens to be true of it as well. A transaction refused by the VM is broken regardless
@@ -3699,7 +3750,7 @@ export async function sendPreflightedMessageBusTransaction(
   const assembly = requireMessageBusBlockAssembly(builder);
   const raw = builder.build();
   const transaction = decodeTransactionUnsafe(hexToBin(raw));
-  assertCanonicalMessageEnvelopePush(transaction, assembly);
+  assertCanonicalMessageEnvelopePush(builder, transaction, assembly);
   evaluateEveryInput(builder, transaction);
   // The byte gate reads the DECODED broadcast bytes, not a re-derived shape, so it judges exactly what
   // `sendRawTransaction` is about to receive. This is the last thing between the composer and the network.

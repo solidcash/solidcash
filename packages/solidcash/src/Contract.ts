@@ -80,6 +80,56 @@ export function kernelRouteDensityReserveBytes(accessStreams: FunctionArgument |
   );
 }
 
+/** Attach the V5 canonical manifest to the root compiler-route frame, without changing its ABI arguments. */
+export function withCompilerRouteMessageEnvelope(
+  unlocker: ContractUnlocker, messageEnvelope: Uint8Array, maximumInputBytes: number,
+): ContractUnlocker {
+  const capability = unlocker.contract.artifact.messageBus;
+  const envelopeLocation = capability?.atomicMessageBus?.messageEnvelope as
+    | { region?: string; canonicalInput?: string; unlockingPush?: number } | undefined;
+  if (capability?.verifierProgram?.envelopeTransport !== 'root-route'
+    || envelopeLocation?.region !== 'root-route'
+    || envelopeLocation.canonicalInput !== 'root-participant-master'
+    || envelopeLocation.unlockingPush !== 1
+    || !Number.isSafeInteger(maximumInputBytes) || maximumInputBytes < 1
+    || messageEnvelope.length < 1
+    || messageEnvelope.length > 0xffff
+    || messageEnvelope.length > ConsensusBch2026.maximumStackItemLength) {
+    throw new Error('messageBus: root-route envelope requires a supported V5 artifact and bounded carrier');
+  }
+  // The selector is a fixed push4 at bytes 0..4. Inserting exactly one PUSHDATA2 at byte 5 leaves the
+  // historical positional batch and reserve pushes, followed by the ABI frame, in their original order.
+  const carrier = new Uint8Array(3 + messageEnvelope.length);
+  carrier[0] = 0x4d;
+  carrier[1] = messageEnvelope.length & 0xff;
+  carrier[2] = messageEnvelope.length >>> 8;
+  carrier.set(messageEnvelope, 3);
+  return {
+    ...unlocker,
+    generateUnlockingBytecode(options): Uint8Array {
+      if (options.inputIndex !== 0) {
+        throw new Error('messageBus: V5 root-route envelope must occupy input 0');
+      }
+      const ordinary = unlocker.generateUnlockingBytecode(options);
+      if (ordinary.length < 5 || ordinary[0] !== 4
+        || binToHex(ordinary.slice(1, 5)) !== '53434231') {
+        throw new Error('messageBus: V5 root input 0 must use the SCB1 compiler route');
+      }
+      const length = ordinary.length + carrier.length;
+      if (length > maximumInputBytes) {
+        throw new Error(
+          `messageBus: V5 root carrier requires ${length} unlocking-bytecode bytes; maximum is ${maximumInputBytes}`,
+        );
+      }
+      const result = new Uint8Array(length);
+      result.set(ordinary.slice(0, 5), 0);
+      result.set(carrier, 5);
+      result.set(ordinary.slice(5), 5 + carrier.length);
+      return result;
+    },
+  };
+}
+
 // Large generated contracts can carry multi-megabyte ASM listings. Stateful deployment and proxy wiring create
 // several Contract instances from the exact same artifact (withCategory, logical-address attachment, delegates).
 // Parsing that immutable listing for every instance retains enormous duplicate instruction/data graphs. Cache only

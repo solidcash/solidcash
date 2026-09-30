@@ -58,6 +58,8 @@ export interface CompilerOptions {
     lifecycle?: true;
     /** @deprecated Compatibility with pre-merge split artifacts. */
     splitLifecycle?: true;
+    /** The verifier reads the one canonical envelope from the root route instead of its own unlocker. */
+    envelopeTransport?: 'root-route';
   };
   enforceFunctionParameterTypes?: boolean;
   enforceLocktimeGuard?: boolean;
@@ -138,6 +140,8 @@ export interface CompilerOptions {
   // still need per-row logical callers when one composed transaction reaches them from different parents.
   // Omitted preserves the compact local-caller route used by standalone batching.
   messageBusGraphContext?: boolean;
+  /** Opt in to the root-route envelope carrier; omitted preserves verifier-local V1–4 transport. */
+  messageBusRootEnvelope?: boolean;
   /**
    * Select the message-bus calling convention (`packages/solidc/docs/message-bus-kernel.md`).
    * Omitted or `true` uses the kernel row loop. `false` is a temporary compatibility escape hatch for
@@ -1766,11 +1770,15 @@ export interface Artifact {
       domain: typeof ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
       /** Atomic callManifest wire versions accepted by this artifact's verifier program. */
       protocolVersions?: readonly (1 | 2 | 3 | 4)[];
-      /** The final verifier input carries the canonical frame authenticated by every participant binder. */
+      /** Physical carrier for the canonical frame authenticated by every participant binder. */
       messageEnvelope: {
         region: 'participant-verifiers';
         canonicalInput: 'final-participant-verifier';
         unlockingPush: 0;
+      } | {
+        region: 'root-route';
+        canonicalInput: 'root-participant-master';
+        unlockingPush: 1;
       };
       maximumParticipants: typeof ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS;
       maximumRows: typeof ATOMIC_MESSAGE_BUS_MAX_ROWS;
@@ -1813,6 +1821,8 @@ export interface Artifact {
       lifecycle?: true;
       /** @deprecated Compatibility with pre-merge split artifacts. */
       splitLifecycle?: true;
+      /** The verifier reads the one canonical envelope from the root route instead of its own unlocker. */
+      envelopeTransport?: 'root-route';
     };
     /**
      * Published resource-fold plans: published multi-row chunkable fold plans. Compose fills leading/complete witnesses via

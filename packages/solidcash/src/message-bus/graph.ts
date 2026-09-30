@@ -527,6 +527,19 @@ export function finalizeAtomicInvocationGraph(
     return actualSize;
   });
   const layout = atomicMessageBusPhysicalLayout(spans);
+  // A root-carried envelope and the historical final-verifier carrier are different on-chain covenants.
+  // Every participant must verify the same physical carrier; a mixed graph has no common authenticated view.
+  const rootCarriedEnvelope = plan.participants[0].artifact.messageBus?.atomicMessageBus
+    ?.messageEnvelope.region === 'root-route';
+  const mismatchedEnvelopeTransport = plan.participants.findIndex((participant) => (
+    (participant.artifact.messageBus?.atomicMessageBus?.messageEnvelope.region === 'root-route')
+      !== rootCarriedEnvelope
+  ));
+  if (mismatchedEnvelopeTransport >= 0) {
+    throw new Error(
+      `messageBus: participant ${mismatchedEnvelopeTransport} uses a different atomic envelope transport`,
+    );
+  }
   const outputIdentityV2 = plan.participants.some((participant) =>
     participant.outputLockingBytecode !== undefined
       && participant.outputLockingBytecode.toLowerCase() !== participant.lockingBytecode.toLowerCase());

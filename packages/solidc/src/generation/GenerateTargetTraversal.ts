@@ -6390,7 +6390,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Message-bus unlocking bytecode retains its positional batch copy and historical reserved slot below the
-    // ordinary ABI argument stack. Normalize the physical frame immediately after declaring the parameters:
+    // ordinary ABI argument stack. A root-carried atomic envelope adds one more positional item only to the
+    // direct root at input zero. Normalize the physical frame immediately after declaring the parameters:
     // journal pre-allocation, parameter validation, and delegate setup all address that frame.
     if (this.isCompilerMessageBusRoute(node)) {
       const loc = { location: node.location, positionHint: PositionHint.START };
@@ -6399,6 +6400,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_1SUB, loc);
         this.emit(Op.OP_ROLL, loc);
         this.emit(Op.OP_DROP, loc);
+      }
+      if (this.compilerOptions.messageBusRootEnvelope === true
+        && this.compilerOptions.messageBusKernel === true) {
+        this.emit(Op.OP_INPUTINDEX, loc);
+        this.emit(Op.OP_0, loc);
+        this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emit(Op.OP_DEPTH, loc);
+        this.emit(Op.OP_1SUB, loc);
+        this.emit(Op.OP_ROLL, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.emit(Op.OP_ENDIF, loc);
       }
     }
 

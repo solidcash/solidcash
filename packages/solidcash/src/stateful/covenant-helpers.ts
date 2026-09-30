@@ -68,6 +68,20 @@ export function assertMessageBusCapability(artifact: Artifact): MessageBusVerifi
   const replacement = capability as Record<string, unknown>;
   const atomic = replacement.atomicMessageBus;
   const route = replacement.route;
+  const envelopeLocation = atomic && typeof atomic === 'object' && !Array.isArray(atomic)
+    ? (atomic as Record<string, unknown>).messageEnvelope : undefined;
+  const legacyEnvelope = envelopeLocation && typeof envelopeLocation === 'object'
+    && !Array.isArray(envelopeLocation)
+    && (envelopeLocation as Record<string, unknown>).region === 'participant-verifiers'
+    && (envelopeLocation as Record<string, unknown>).canonicalInput === 'final-participant-verifier'
+    && (envelopeLocation as Record<string, unknown>).unlockingPush === 0;
+  const rootEnvelope = envelopeLocation && typeof envelopeLocation === 'object'
+    && !Array.isArray(envelopeLocation)
+    && (envelopeLocation as Record<string, unknown>).region === 'root-route'
+    && (envelopeLocation as Record<string, unknown>).canonicalInput === 'root-participant-master'
+    && (envelopeLocation as Record<string, unknown>).unlockingPush === 1;
+  const programTransport = (replacement.verifierProgram as { envelopeTransport?: unknown } | undefined)
+    ?.envelopeTransport;
   if (replacement.selector !== '53434231'
     || (replacement.convention !== 'kernel-row-loop' && replacement.convention !== 'legacy-unroll')
     || !Number.isSafeInteger(replacement.maximumRows) || (replacement.maximumRows as number) < 1
@@ -81,11 +95,8 @@ export function assertMessageBusCapability(artifact: Artifact): MessageBusVerifi
     || (atomic as Record<string, unknown>).domain !== ATOMIC_MESSAGE_BUS_DOMAIN_HEX
     || (atomic as Record<string, unknown>).maximumParticipants !== ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS
     || (atomic as Record<string, unknown>).maximumRows !== ATOMIC_MESSAGE_BUS_MAX_ROWS
-    || !(atomic as Record<string, unknown>).messageEnvelope
-    || typeof (atomic as Record<string, unknown>).messageEnvelope !== 'object'
-    || (atomic as { messageEnvelope: Record<string, unknown> }).messageEnvelope.region !== 'participant-verifiers'
-    || (atomic as { messageEnvelope: Record<string, unknown> }).messageEnvelope.canonicalInput !== 'final-participant-verifier'
-    || (atomic as { messageEnvelope: Record<string, unknown> }).messageEnvelope.unlockingPush !== 0
+    || !(legacyEnvelope && programTransport === undefined
+      || rootEnvelope && programTransport === 'root-route')
     || !route || typeof route !== 'object' || Array.isArray(route)
     || (route as Record<string, unknown>).selector !== '53434231'
     || !Array.isArray((route as Record<string, unknown>).inputs)
@@ -99,6 +110,12 @@ export function assertMessageBusCapability(artifact: Artifact): MessageBusVerifi
   if (!program) throw new Error(`Contract '${artifact.contractName}' publishes no message bus verifier program`);
   assertMessageBusVerifierProgram(program);
   return program;
+}
+
+/** The declared carrier is part of the verifier program, not a caller-selected compose option. */
+export function getMessageBusEnvelopeTransport(artifact: Artifact): 'participant-verifiers' | 'root-route' {
+  const program = assertMessageBusCapability(artifact);
+  return program.envelopeTransport === 'root-route' ? 'root-route' : 'participant-verifiers';
 }
 
 export function getMessageBusVerifierProgram(contract: Contract<any, any>): MessageBusVerifierProgram {
@@ -460,14 +477,16 @@ export function createMessageBusVerifierUnlocker(
   const covenantScript = buildMessageBusVerifierCovenantScript(
     program, getMessageBusVerifierMaximumScriptBytes(contract.provider),
   );
+  const rootRouteEnvelope = getMessageBusEnvelopeTransport(executionArtifact) === 'root-route';
   const abiInputs: AbiInput[] = [
     { name: '__internal__densityReserve', type: 'bytes' },
     ...program.inputs,
-    { name: 'messageEnvelope', type: 'bytes' },
+    ...(!rootRouteEnvelope ? [{ name: 'messageEnvelope', type: 'bytes' }] : []),
   ];
+  const argumentsWithEnvelope = rootRouteEnvelope ? verifierArgs : [...verifierArgs, messageEnvelope];
   const create = (densityReserve: Uint8Array): ContractUnlocker => createCovenantContractUnlocker(
     contract, `MessageBusVerifier_${categoryId.slice(0, 8)}`, covenantScript, abiInputs,
-    [densityReserve, ...verifierArgs, messageEnvelope], 'p2sh32',
+    [densityReserve, ...argumentsWithEnvelope], 'p2sh32',
   );
   const createSized = (minimumBytes: number): ContractUnlocker => {
     if (!Number.isSafeInteger(minimumBytes) || minimumBytes < 0) {

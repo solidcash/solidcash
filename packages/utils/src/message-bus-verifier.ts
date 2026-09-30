@@ -14,6 +14,8 @@ export interface MessageBusVerifierProgram {
   lifecycle?: true;
   /** @deprecated Read support for artifacts emitted before lifecycle authority was generalized to merge. */
   splitLifecycle?: true;
+  /** V5: read the one authenticated envelope from the root compiler-route input, not this unlocking stack. */
+  envelopeTransport?: 'root-route';
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -22,7 +24,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 /** Validate verifier-program JSON before it is allowed to determine a covenant address. */
 export function assertMessageBusVerifierProgram(program: unknown): asserts program is MessageBusVerifierProgram {
   if (!isRecord(program)) throw new Error('message bus verifier program must be an object');
-  const { verifyFunctionId, inputCount, inputs, results, functions } = program;
+  const { verifyFunctionId, inputCount, inputs, results, functions, envelopeTransport } = program;
   if (!Number.isSafeInteger(verifyFunctionId)
     || !Number.isSafeInteger(inputCount) || typeof inputCount !== 'number' || inputCount < 1
     || !Array.isArray(inputs) || inputs.length !== inputCount
@@ -31,6 +33,7 @@ export function assertMessageBusVerifierProgram(program: unknown): asserts progr
       && typeof input.type === 'string' && input.type.length > 0)
     || (results !== undefined && (!Array.isArray(results) || results.length !== 3
       || !results.every((result) => isRecord(result) && result.type === 'bytes32')))
+    || (envelopeTransport !== undefined && envelopeTransport !== 'root-route')
     || !Array.isArray(functions) || functions.length === 0
     || !functions.every((fn) => isRecord(fn)
       && Number.isSafeInteger(fn.id)
@@ -117,13 +120,15 @@ export function buildMessageBusVerifierCovenantScript(
   if (new Set(program.functions.map((fn) => fn.id)).size !== program.functions.length) {
     throw new Error('message bus verifier program contains duplicate function identifiers');
   }
+  const rootRouteEnvelope = program.envelopeTransport === 'root-route';
   const script: Script = [
     // The SDK calculates one covered-bytecode density reserve after encoding the real arguments, padding each
     // verifier to a common byte floor. Dropping an unlocking push is substantially cheaper than embedding
     // unreachable bytes in every redeemed covenant script.
     Op.OP_DROP,
-    // Unlocking stack: <messageEnvelope> <verify arguments...>. The verifier consumes only its arguments, leaving the
-    // messageEnvelope. Never park it on the altstack: compiled verifier frames use that stack internally.
+    // Legacy unlocking stack: <messageEnvelope> <verify arguments...>. V5 has only the arguments: the compiled
+    // program loads and authenticates the one root-route envelope. Never park the legacy envelope on the altstack:
+    // compiled verifier frames use that stack internally.
     ...program.functions.flatMap((fn): Script => [
       hexToBin(fn.bytecode), encodeInt(BigInt(fn.id)), Op.OP_DEFINE,
     ]),
@@ -131,20 +136,23 @@ export function buildMessageBusVerifierCovenantScript(
     Op.OP_INVOKE,
 
     ...(program.lifecycle === true || program.splitLifecycle === true ? [
-      // Lifecycle-capable verifiers return bindingDigest || envelopeHash || uint16 lifecycle code. Zero selects
-      // an ordinary row, split uses its positive count, and merge uses its negative count.
-      encodeInt(32n), Op.OP_SPLIT, encodeInt(32n), Op.OP_SPLIT,
-      Op.OP_SIZE, encodeInt(2n), Op.OP_NUMEQUALVERIFY,
-      Op.OP_TOALTSTACK, Op.OP_ROT, Op.OP_SHA256, Op.OP_EQUALVERIFY,
+      // V5 returns bindingDigest || uint16 lifecycle code; legacy also carries envelopeHash. In both formats,
+      // zero selects an ordinary row, split uses its positive count, and merge uses its negative count.
+      ...(rootRouteEnvelope
+        ? [encodeInt(32n), Op.OP_SPLIT, Op.OP_SIZE, encodeInt(2n), Op.OP_NUMEQUALVERIFY, Op.OP_TOALTSTACK]
+        : [encodeInt(32n), Op.OP_SPLIT, encodeInt(32n), Op.OP_SPLIT,
+          Op.OP_SIZE, encodeInt(2n), Op.OP_NUMEQUALVERIFY,
+          Op.OP_TOALTSTACK, Op.OP_ROT, Op.OP_SHA256, Op.OP_EQUALVERIFY]),
       Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT, encodeInt(6n), Op.OP_SPLIT, Op.OP_DROP,
       Op.OP_DUP, encodeInt(4n), Op.OP_SPLIT, Op.OP_DROP,
       MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, Op.OP_EQUALVERIFY,
       Op.OP_SWAP, Op.OP_CAT, Op.OP_FROMALTSTACK, Op.OP_CAT, Op.OP_TOALTSTACK,
     ] : [
-      // Ordinary verifier programs retain the original exact 64-byte result and covenant bytecode. Keeping the
-      // split-count transport out of this path preserves both deployed compatibility and operation-cost density.
-      encodeInt(32n), Op.OP_SPLIT,
-      Op.OP_ROT, Op.OP_SHA256, Op.OP_EQUALVERIFY,
+      // Legacy ordinary programs retain their exact 64-byte result and covenant bytecode. V5 instead checks
+      // that the root-carrier program returned precisely one 32-byte binding digest.
+      ...(rootRouteEnvelope
+        ? [Op.OP_SIZE, encodeInt(32n), Op.OP_NUMEQUALVERIFY]
+        : [encodeInt(32n), Op.OP_SPLIT, Op.OP_ROT, Op.OP_SHA256, Op.OP_EQUALVERIFY]),
       Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT, encodeInt(6n), Op.OP_SPLIT, Op.OP_DROP,
       Op.OP_DUP, encodeInt(4n), Op.OP_SPLIT, Op.OP_DROP,
       MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, Op.OP_EQUALVERIFY,

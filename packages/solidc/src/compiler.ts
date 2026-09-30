@@ -2957,6 +2957,7 @@ function detachedVerifierLockKey(source: string, options: CompilerOptions, lifec
     options.ecrecover ?? '',
     options.chainId ?? '',
     options.messageBusKernel ?? '',
+    options.messageBusRootEnvelope ?? '',
     options.enforceFinalRequire ?? '',
     options.allowUnsafeOperations ?? '',
     source,
@@ -2967,6 +2968,7 @@ function extractMessageBusVerifierProgram(
   ast: Ast,
   traversal: GenerateTargetTraversal,
   script: ReturnType<typeof bytecodeToScript>,
+  rootEnvelopeTransport = false,
 ): MessageBusVerifierProgram | undefined {
   const verifierFunction = ast.contract.functions.find((fn) => fn.name === MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM)
     ?? ast.contract.functions.find((fn) => fn.name === '__message_bus_verify_atomic');
@@ -3041,6 +3043,7 @@ function extractMessageBusVerifierProgram(
   const verifierFunctionIds = [...requiredVerifierIds].sort((a, b) => a - b);
   return {
     verifyFunctionId: verifierFunction.functionId,
+    ...(rootEnvelopeTransport && { envelopeTransport: 'root-route' as const }),
     inputCount: verifierFunction.parameters.length,
     inputs: verifierFunction.parameters.map((parameter) => ({
       name: parameter.name,
@@ -3115,7 +3118,10 @@ function compileDetachedMessageBusVerifierUncached(
     traversal.requires,
     ast.contract.parameters.length,
   );
-  const program = extractMessageBusVerifierProgram(ast, traversal, optimisationResult.script);
+  const program = extractMessageBusVerifierProgram(
+    ast, traversal, optimisationResult.script,
+    compilerOptions.messageBusRootEnvelope === true && compilerOptions.messageBusKernel === true,
+  );
   if (!program) {
     throw new Error('single-pass bind: detached verifier emit did not produce verifierProgram');
   }
@@ -10523,10 +10529,20 @@ function synthesizeMessageBusRoute(
         MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix))).length,
     }));
   }
-  // Compiler-route unlockers publish the canonical batch as the first positional item after the selector for
-  // both direct and delegate execution. The ordinary (reverse-pushed) ABI frame follows that positional prefix,
-  // so hidden execution context cannot move this authentication boundary.
-  const routeBatchPushOffset = 'bigint __message_bus_push_at = 5;';
+  // V5 carries the one canonical envelope in root input 0, immediately after the SCB1 selector. Only that
+  // direct-root unlocker shifts its batch push; nonroot participants retain the historical two-item prefix.
+  const rootEnvelopeTransport = compilerOptions.messageBusRootEnvelope === true
+    && compilerOptions.messageBusKernel === true;
+  const routeBatchPushOffset = rootEnvelopeTransport ? `bigint __message_bus_push_at = 5;
+          if (this.activeInputIndex == 0) {
+            require(__message_bus_unlock.length >= 8
+              && __message_bus_unlock.slice(5, 6) == hex"4d");
+            bigint __message_bus_envelope_length = int(bytes.concat(
+              __message_bus_unlock.slice(6, 8), hex"00"
+            ));
+            require(__message_bus_envelope_length >= 8);
+            __message_bus_push_at = 8 + __message_bus_envelope_length;
+          }` : 'bigint __message_bus_push_at = 5;';
   // Atomic manifests identify a participant by its covenant master. Direct routes execute on that master;
   // delegate routes execute on a co-spent implementation input and authenticate the owning master separately.
   // Keep membership, category, and verifier-digest binding on the common participant identity.
@@ -10668,6 +10684,21 @@ function synthesizeMessageBusRoute(
     ? 'callManifest.slice(0, 8) == hex"4c33425553340000"' : 'false';
   const atomicManifestOutputIdentityExpression = compilerOptions.messageBusKernel === true
     ? `(${atomicManifestV2Expression} || ${atomicManifestV4Expression})` : 'false';
+  const atomicEnvelopeReader = rootEnvelopeTransport ? `
+        bytes unlocking = tx.inputs[0].unlockingBytecode;
+        require(unlocking.length >= 16 && unlocking.slice(0, 6) == hex"04534342314d");
+        bigint messageEnvelopeLength = int(bytes.concat(unlocking.slice(6, 8), hex"00"));
+        require(messageEnvelopeLength >= 8 && 8 + messageEnvelopeLength <= unlocking.length);
+        bytes callManifest = unlocking.slice(16, 8 + messageEnvelopeLength);
+        require(unlocking.slice(8, 16) == bytes.concat(
+          hex"4c334331", toPaddedBytes(callManifest.length, 4)
+        ));`
+    : `
+        bytes unlocking = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
+        require(unlocking.slice(0, 1) == hex"4d");
+        bigint messageEnvelopeLength = int(bytes.concat(unlocking.slice(1, 3), hex"00"));
+        bytes messageEnvelope = unlocking.slice(3, 3 + messageEnvelopeLength);
+        bytes callManifest = messageEnvelope.slice(8, messageEnvelope.length);`;
   const lifecycleSelectorBranches = [...kernelLifecycleHandlers].map(([fn, kind], index) => {
     const decodedParameters = fn.parameters
       .map((parameter, parameterIndex) => ({ parameter, parameterIndex }))
@@ -11013,6 +11044,12 @@ function synthesizeMessageBusRoute(
         bytes participantBoundaries = hex"";
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
           participantBoundaries = bytes.concat(participantBoundaries, hex"0000");
+          ${rootEnvelopeTransport ? `// Legacy verifiers each carry an L3C1 first push. The envelope is >=256 bytes
+          // and below the stack-item limit, so consensus minimal-push rules require PUSHDATA2 (0x4d).
+          // Forbid that frame in every verifier slot; no co-spent participant may authenticate a private graph.
+          bytes verifierUnlock = tx.inputs[expectedBase + participant].unlockingBytecode;
+          require(verifierUnlock.slice(0, 1) != hex"4d"
+            || verifierUnlock.slice(3, 7) != hex"4c334331");` : ''}
         }
         bigint activeSettlementBoundary = 0;
         bigint invocationRows = 0;
@@ -11736,23 +11773,21 @@ function synthesizeMessageBusRoute(
         bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
         bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
       ) internal view returns (bytes) {
-        bytes unlocking = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
-        require(unlocking.slice(0, 1) == hex"4d");
-        bigint messageEnvelopeLength = int(bytes.concat(unlocking.slice(1, 3), hex"00"));
-        bytes messageEnvelope = unlocking.slice(3, 3 + messageEnvelopeLength);
-        bytes callManifest = messageEnvelope.slice(8, messageEnvelope.length);
+        ${atomicEnvelopeReader}
         ${!useBoundRoute ? '' : `bytes bindingDigest = sha256(bytes.concat(
           sha256(callManifest), toPaddedBytes(activeInputIndex, 2),
           toPaddedBytes(expectedLocalRows, 2), sha256(localBatch)
           ${bindingDigestGraphValues}
         ));`}
         ${useBoundRoute ? compactAtomicBinder : inlinedAtomicVerifierBody}
-        bytes expectedEnvelopeHash = sha256(bytes.concat(
+        ${rootEnvelopeTransport ? '' : `bytes expectedEnvelopeHash = sha256(bytes.concat(
           hex"4c334331", toPaddedBytes(callManifest.length, 4), callManifest
-        ));
+        ));`}
         return ${lifecycleReturnTransport
-    ? 'bytes.concat(bindingDigest, expectedEnvelopeHash, bytes.concat(tx.outputs[activeVerifierOutput].nftCommitment, hex"0000").slice(38, 40))'
-    : 'bytes.concat(bindingDigest, expectedEnvelopeHash)'};
+    ? rootEnvelopeTransport
+      ? 'bytes.concat(bindingDigest, bytes.concat(tx.outputs[activeVerifierOutput].nftCommitment, hex"0000").slice(38, 40))'
+      : 'bytes.concat(bindingDigest, expectedEnvelopeHash, bytes.concat(tx.outputs[activeVerifierOutput].nftCommitment, hex"0000").slice(38, 40))'
+    : rootEnvelopeTransport ? 'bindingDigest' : 'bytes.concat(bindingDigest, expectedEnvelopeHash)'};
       }
   `;
   // A local caller route authenticates msg.sender from the co-spent caller
@@ -11778,9 +11813,9 @@ function synthesizeMessageBusRoute(
             __internal__graphSettlementBoundary, __internal__graphCompletionPositions,
             __internal__graphSettlementTable`}
           );
-          ${kernelLifecycleHandlers.size > 0 ? `require(__internal__atomicBindingDigest.length == 66);
+          ${kernelLifecycleHandlers.size > 0 ? `require(__internal__atomicBindingDigest.length == ${rootEnvelopeTransport ? 34 : 66});
             bigint __message_bus_active_lifecycle_code = int(
-              __internal__atomicBindingDigest.slice(64, 66)
+              __internal__atomicBindingDigest.slice(${rootEnvelopeTransport ? '32, 34' : '64, 66'})
             );
             if (__message_bus_active_lifecycle_code == -32767) {
               __message_bus_active_lifecycle_mode = 3;
@@ -12011,18 +12046,18 @@ function synthesizeMessageBusRoute(
         } else {
           require(__message_bus_upgrade_position == rowCount - 1);
           require(__internal__upgradeBytecode != tx.inputs[this.activeInputIndex].lockingBytecode);
-          bytes __message_bus_upgrade_envelope = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
-          require(__message_bus_upgrade_envelope.length >= 19
-            && (__message_bus_upgrade_envelope.slice(11, 19) == hex"4c33425553320000"
-              || __message_bus_upgrade_envelope.slice(11, 19) == hex"4c33425553340000"));
+          bytes __message_bus_upgrade_envelope = tx.inputs[${rootEnvelopeTransport ? '0' : 'tx.inputs.length - 2'}].unlockingBytecode;
+          require(__message_bus_upgrade_envelope.length >= ${rootEnvelopeTransport ? 24 : 19}
+            && (__message_bus_upgrade_envelope.slice(${rootEnvelopeTransport ? '16, 24' : '11, 19'}) == hex"4c33425553320000"
+              || __message_bus_upgrade_envelope.slice(${rootEnvelopeTransport ? '16, 24' : '11, 19'}) == hex"4c33425553340000"));
         }`
     : ''}
         ${kernelV2SignatureFence
     ? `if (__message_bus_signature_count > 0
           && tx.inputs[this.activeInputIndex].outpointIndex != 4294967295) {
-          bytes __message_bus_signature_envelope = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
-          require(__message_bus_signature_envelope.length < 19
-            || __message_bus_signature_envelope.slice(11, 19) != hex"4c33425553320000");
+          bytes __message_bus_signature_envelope = tx.inputs[${rootEnvelopeTransport ? '0' : 'tx.inputs.length - 2'}].unlockingBytecode;
+          require(__message_bus_signature_envelope.length < ${rootEnvelopeTransport ? 24 : 19}
+            || __message_bus_signature_envelope.slice(${rootEnvelopeTransport ? '16, 24' : '11, 19'}) != hex"4c33425553320000");
         }`
     : ''}
         ${!graphExecutionContext ? ''
@@ -12216,18 +12251,16 @@ function synthesizeMessageBusRoute(
         bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
         bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
       ) internal view returns (bytes) {
-        bytes unlocking = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
-        require(unlocking.slice(0, 1) == hex"4d");
-        bigint messageEnvelopeLength = int(bytes.concat(unlocking.slice(1, 3), hex"00"));
-        bytes messageEnvelope = unlocking.slice(3, 3 + messageEnvelopeLength);
-        bytes callManifest = messageEnvelope.slice(8, messageEnvelope.length);
+        ${atomicEnvelopeReader}
         ${inlinedAtomicVerifierBody}
-        return bytes.concat(
-          bindingDigest,
+        return ${rootEnvelopeTransport
+    ? kernelLifecycleHandlers.size > 0
+      ? 'bytes.concat(bindingDigest, bytes.concat(tx.outputs[activeVerifierOutput].nftCommitment, hex"0000").slice(38, 40))'
+      : 'bindingDigest'
+    : `bytes.concat(bindingDigest,
           sha256(bytes.concat(hex"4c334331", toPaddedBytes(callManifest.length, 4), callManifest))
           ${kernelLifecycleHandlers.size > 0
-    ? ', bytes.concat(tx.outputs[activeVerifierOutput].nftCommitment, hex"0000").slice(38, 40)' : ''}
-        );
+    ? ', bytes.concat(tx.outputs[activeVerifierOutput].nftCommitment, hex"0000").slice(38, 40)' : ''})`};
       }
       function __invoke_message_bus_verifier_program() public {
         bytes got = ${MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM}(
@@ -15288,7 +15321,11 @@ function compileResolvedAst(
     && ast.contract.functions.some((fn) => fn.messageBusRoute)
     ? mergedCompilerOptions.__messageBusVerifierProgram
       ?? singlePassVerifierProgram
-      ?? extractMessageBusVerifierProgram(ast, traversal, optimisationResult.script)
+      ?? extractMessageBusVerifierProgram(
+        ast, traversal, optimisationResult.script,
+        mergedCompilerOptions.messageBusRootEnvelope === true
+          && mergedCompilerOptions.messageBusKernel === true,
+      )
     : undefined;
   if (detachedVerifierProgram && mergedCompilerOptions.messageBusKernel === true
     && singlePassVerifierSource) {
@@ -15485,11 +15522,17 @@ function compileResolvedAst(
         domain: ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
         protocolVersions: mergedCompilerOptions.messageBusKernel === true && detachedVerifierProgram
           ? [1, 2, 4] : mergedCompilerOptions.messageBusKernel === true ? [1, 2] : [1],
-        messageEnvelope: {
-          region: 'participant-verifiers',
-          canonicalInput: 'final-participant-verifier',
-          unlockingPush: 0,
-        },
+        messageEnvelope: extractedVerifierProgram?.envelopeTransport === 'root-route'
+          ? {
+            region: 'root-route' as const,
+            canonicalInput: 'root-participant-master' as const,
+            unlockingPush: 1 as const,
+          }
+          : {
+            region: 'participant-verifiers' as const,
+            canonicalInput: 'final-participant-verifier' as const,
+            unlockingPush: 0 as const,
+          },
         maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
         maximumRows: ATOMIC_MESSAGE_BUS_MAX_ROWS,
       },

@@ -26,7 +26,7 @@ import type {
 } from '../interfaces.js';
 import { isContractUnlocker } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { Contract } from '../Contract.js';
+import { Contract, withCompilerRouteMessageEnvelope } from '../Contract.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
 import {
   decodeAuthenticatedProducerResultVector, evalComputedKey, isCanonicalEvmScalarReturnVector,
@@ -46,7 +46,8 @@ import { tryParseEventCommitment } from '../stateful/StateReader.js';
 import {
   createDestroyDataNftUnlocker, createMessageBusVerifierUnlocker, getDataNftAddress,
   getDynamicChunkAddress,
-  getEntryNftLockingBytecode, getMessageBusVerifierLockingBytecodeForArtifact,
+  getEntryNftLockingBytecode, getMessageBusEnvelopeTransport,
+  getMessageBusVerifierLockingBytecodeForArtifact,
 } from '../stateful/covenant-helpers.js';
 import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
 import { peekBuilderBuildId } from '../stateful/StatefulContract.js';
@@ -263,6 +264,18 @@ export async function assembleAtomicComposition(
     eventLockingBytecodes,
     predOutClaimsSlot,
   } = ctx;
+
+    const envelopeTransports = plan.participants.map((participant) =>
+      getMessageBusEnvelopeTransport(participant.artifact));
+    const envelopeTransport = envelopeTransports[0];
+    if (envelopeTransport === undefined || envelopeTransports.some((value) => value !== envelopeTransport)) {
+      throw new Error('messageBus: all participants must use the same canonical envelope transport');
+    }
+    const rootMessageEnvelope = envelopeTransport === 'root-route'
+      ? encodeAtomicMessageEnvelope(graph.callManifest) : undefined;
+    if (envelopeTransport === 'root-route' && graph.layout.participantInputs[0] !== 0) {
+      throw new Error('messageBus: V5 root-route envelope requires participant 0 at input 0');
+    }
 
     // A computed argument may read any authenticated graph value: nested return bytes, an effect output,
     // participant span, or an absolute transaction coordinate. Cache only within the exact finalized graph
@@ -1667,6 +1680,15 @@ export async function assembleAtomicComposition(
           };
         }
       }
+      if (envelopeTransport === 'root-route' && participant.participant === 0) {
+        const rootInput = local.inputs[0];
+        if (!rootInput || !isContractUnlocker(rootInput.unlocker)) {
+          throw new Error('messageBus: V5 root participant has no compiler-route master unlocker');
+        }
+        rootInput.unlocker = withCompilerRouteMessageEnvelope(
+          rootInput.unlocker, rootMessageEnvelope!, provider.consensusLimits?.maximumInputBytes ?? 10_000,
+        );
+      }
       for (let localIndex = 0; localIndex < local.inputs.length; localIndex++) {
         const input = local.inputs[localIndex];
         registerAggregateInput(input, participant.participant, localIndex, 'participant block');
@@ -1752,7 +1774,7 @@ export async function assembleAtomicComposition(
     if (!spansMatch) return { builder: aggregate, actualSizes, incompleteDynamicChunks };
 
     const verifierDomain = binToHex(MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN);
-    const messageEnvelope = encodeAtomicMessageEnvelope(graph.callManifest);
+    const messageEnvelope = rootMessageEnvelope ?? encodeAtomicMessageEnvelope(graph.callManifest);
     const callManifest = encodeAtomicMessageBusCallManifest(graph.callManifest);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RETURN_VECTOR === '1') {

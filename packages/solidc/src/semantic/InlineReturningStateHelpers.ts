@@ -93,6 +93,21 @@ import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
  */
 const PREFIX = '__rh';
 
+/** A source branch can guard later statements only when its taken arm cannot fall through. */
+const definitelyReturns = (statement: StatementNode): boolean => {
+  if (statement instanceof ReturnNode) return true;
+  if (statement instanceof BlockNode) {
+    const last = statement.statements?.at(-1);
+    return last !== undefined && definitelyReturns(last);
+  }
+  if (statement instanceof BranchNode) {
+    return statement.elseBlock !== undefined
+      && definitelyReturns(statement.ifBlock)
+      && definitelyReturns(statement.elseBlock);
+  }
+  return false;
+};
+
 const captureCallsiteActivationInNode = (
   value: Node,
   conditions: readonly { expression: ExpressionNode; negated: boolean }[],
@@ -108,6 +123,21 @@ const captureCallsiteActivationInNode = (
         negated,
       }));
     }
+  }
+  if (value instanceof BlockNode) {
+    let fallthroughConditions = conditions;
+    for (const statement of value.statements ?? []) {
+      captureCallsiteActivationInNode(statement, fallthroughConditions, seen);
+      if (definitelyReturns(statement)) break;
+      if (statement instanceof BranchNode && !statement.elseBlock
+        && definitelyReturns(statement.ifBlock)) {
+        fallthroughConditions = [
+          ...fallthroughConditions,
+          { expression: statement.condition, negated: true },
+        ];
+      }
+    }
+    return;
   }
   if (value instanceof BranchNode) {
     captureCallsiteActivationInNode(value.condition, conditions, seen);

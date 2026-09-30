@@ -996,7 +996,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       if (us > 0 && map.has(name.slice(0, us))) return map.get(name.slice(0, us))! + name.slice(us);
       return map.get(name) ?? name;
     };
-    this.walk(root, (n) => {
+    const renameNode = (n: Node): void => {
       if (n instanceof IdentifierNode) {
         n.name = rn(n.name);
       } else if (n instanceof FieldAccessNode) {
@@ -1017,6 +1017,14 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         const nm = (n as unknown as { name?: unknown }).name;
         if (typeof nm === 'string') (n as unknown as { name: string }).name = rn(nm);
       }
+    };
+    this.walk(root, (n) => {
+      renameNode(n);
+      // Source activation snapshots are plain-object metadata, so the executable-AST walker deliberately skips
+      // them. Rename their copied expressions with the same bindings as the inlined statements they describe.
+      const snapshots = (n as { sourceActivationConditions?: readonly { expression: ExpressionNode }[] })
+        .sourceActivationConditions;
+      for (const snapshot of snapshots ?? []) this.walk(snapshot.expression, renameNode);
     });
   }
 

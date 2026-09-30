@@ -410,6 +410,109 @@ describe('Release 0 shared invocation analysis', () => {
     expect(JSON.stringify(fn.externalCalls?.[2].condition)).not.toContain('"callsiteId":1');
   });
 
+  it('publishes early-return fallthrough guards for later external calls', () => {
+    const artifact = compileString(`pragma solidity >=0.8.0;
+      interface ISink { function publish(uint256 value) external; }
+      contract EarlyReturnCall() {
+        ISink sink;
+        function run(uint256 n) public {
+          if (n <= 10) return;
+          if (n == 11) return;
+          sink.publish(n - 10);
+          require(n > 11);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+    });
+    const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
+    expect(fn.externalCalls?.[0]).toMatchObject({
+      occurrence: 'conditional',
+      condition: {
+        kind: 'binary',
+        operator: '&&',
+        left: {
+          kind: 'unary', operator: '!',
+          expression: { kind: 'binary', operator: '<=' },
+        },
+        right: {
+          kind: 'unary', operator: '!',
+          expression: { kind: 'binary', operator: '==' },
+        },
+      },
+    });
+  });
+
+  it('preserves early-return call guards when an external-call helper is inlined', () => {
+    const artifact = compileString(`pragma solidity >=0.8.0;
+      interface IProbe { function balance() external returns (uint256); }
+      interface ISink { function publish(uint256 value) external; }
+      contract InlinedEarlyReturnCall() {
+        IProbe probe;
+        ISink sink;
+        function update(uint256 n) private {
+          if (n <= 10) return;
+          uint256 available = probe.balance();
+          if (available == 0) return;
+          sink.publish(n - 10);
+        }
+        function run(uint256 n) public {
+          update(n);
+          require(n >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+    });
+    const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
+    const call = fn.externalCalls?.find((candidate) => candidate.functionName === 'publish');
+    expect(call?.condition).toMatchObject({ kind: 'binary', operator: '&&' });
+    expect(JSON.stringify(call?.condition)).toContain('producerResult');
+  });
+
+  it('resolves a state-array read in an early-return call guard', () => {
+    const artifact = compileString(`pragma solidity >=0.8.0;
+      interface ISink { function publish(uint256 value) external; }
+      contract StateArrayGuard() {
+        uint256[] limits;
+        ISink sink;
+        function run(uint256 n) public {
+          if (n <= limits[0]) return;
+          sink.publish(n);
+          require(n > 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+    });
+    const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
+    expect(fn.externalCalls?.[0].condition).toMatchObject({
+      kind: 'unary', operator: '!',
+      expression: {
+        kind: 'binary', operator: '<=',
+        right: { kind: 'arrayAccess', left: { kind: 'state', name: 'limits' } },
+      },
+    });
+  });
+
+  it('keeps an early-return guard on a call through a struct field', () => {
+    const artifact = compileString(`pragma solidity >=0.8.0;
+      interface IProbe { function balanceOf(address account) external returns (uint256); }
+      contract FieldTargetGuard() {
+        struct Pool { IProbe token; uint256 limit; }
+        Pool[] pools;
+        function run(uint256 n) public {
+          if (n <= pools[0].limit) return;
+          uint256 balance = pools[0].token.balanceOf(address(this));
+          require(balance >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+    });
+    const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
+    expect(fn.externalCalls?.[0].condition).toMatchObject({
+      kind: 'unary', operator: '!',
+      expression: { kind: 'binary', operator: '<=' },
+    });
+  });
+
   it('publishes nested returning-helper branches as an exact external argument', () => {
     const artifact = compileString(`pragma solidity >=0.8.0;
       library Arithmetic {

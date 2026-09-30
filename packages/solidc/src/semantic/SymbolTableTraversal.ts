@@ -8939,6 +8939,16 @@ export default class SymbolTableTraversal extends AstTraversal {
           };
         }
         if (expression instanceof IdentifierNode) {
+          // Source activation predicates are snapshotted before symbol resolution. Their cloned identifiers do
+          // not acquire a definition when the executable branch is rewritten, so recover an unshadowed contract
+          // state/collection name here instead of publishing an unevaluable local identifier.
+          if ((this.stateVariableMap.has(expression.name) || this.collectionMap.has(expression.name))
+            && (expression.definition === undefined
+              || expression.definition.definition instanceof StateVariableNode)
+            && !this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name)
+            && !this.hasLocalDeclaration(this.currentFunction?.body, expression.name)) {
+            return { kind: 'state', name: expression.name };
+          }
           const type = expression.type ?? expression.definition?.type ?? this.symbolTables[0].get(expression.name)?.type;
           return { kind: 'identifier', name: expression.name, ...(type && { type: type.toString() }) };
         }
@@ -9567,6 +9577,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
     return undefined;
+  }
+
+  private hasLocalDeclaration(node: Node | undefined, name: string, seen: Set<Node> = new Set()): boolean {
+    if (!node || seen.has(node)) return false;
+    seen.add(node);
+    if (node instanceof VariableDefinitionNode && node.name === name) return true;
+    for (const [key, value] of Object.entries(node)) {
+      if (['definition', 'symbolTable', 'resolvedFunction', 'referencedContract', 'sourceActivationConditions']
+        .includes(key)) continue;
+      if (value instanceof Node && this.hasLocalDeclaration(value, name, seen)) return true;
+      if (Array.isArray(value)
+        && value.some((item) => item instanceof Node && this.hasLocalDeclaration(item, name, seen))) return true;
+    }
+    return false;
   }
 
   // Trace a loop-array variable through the inliner's single-assignment SSA alias bindings (`__rh<N>_x` from
@@ -11786,6 +11810,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               // options (those arrive via the MethodCall path), so none are threaded here.
               const callNode = new ExternalFunctionCallNode(calleeName, visitedVar, methodName, parameters);
               callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
+              callNode.sourceActivationConditions = node.sourceActivationConditions;
               callNode.callInfo = {
                 interfaceName: calleeName,
                 functionName: methodName,
@@ -14882,6 +14907,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         );
         callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
+        callNode.sourceActivationConditions = node.sourceActivationConditions;
         callNode.callMode = callMode;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
@@ -15018,6 +15044,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         );
         callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
+        callNode.sourceActivationConditions = node.sourceActivationConditions;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
         // Same-address varying-method pointer (`f = cond ? IC(a).x : IC(a).y; v = f(args)`): carry the runtime
@@ -15167,6 +15194,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const callNode = new ExternalFunctionCallNode(calleeName, visitedVar, node.methodName, parameters);
         callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
+        callNode.sourceActivationConditions = node.sourceActivationConditions;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
         // Same-address varying-method pointer: carry + resolve the runtime selector (`cond ? a.selector :
@@ -15227,6 +15255,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const callNode = new ExternalFunctionCallNode(calleeName, addressExpr, node.methodName, parameters);
         callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
+        callNode.sourceActivationConditions = node.sourceActivationConditions;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
         if (callNode.callOptions?.value) {

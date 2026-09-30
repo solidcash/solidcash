@@ -26,7 +26,7 @@ import {
 import {
   sourceMapToLocationData, type Artifact, type ErrorDefinitionAbi, type RequireStatement, type RevertArgumentSource,
 } from '@solidcash/utils';
-import type { CompositionDraft } from './draft.js';
+import { UNFILLED_CALLEE_REF, type CompositionDraft } from './draft.js';
 
 type VirtualMachine = ReturnType<typeof createVirtualMachineBch2026>;
 
@@ -279,6 +279,15 @@ function frameDepths(draft: CompositionDraft): ReadonlyMap<string, number> {
   return depths;
 }
 
+/**
+ * Whether a frame refused only on a call reference the derivation never filled: a frame the execution did not reach
+ * fails reading it as an input index, not on a reason of its own source.
+ */
+function readsUnfilledReference(draft: CompositionDraft, refusal: RefusedFrame): boolean {
+  return refusal.objection.includes('invalid transaction input index')
+    && draft.blockOf(refusal.master).calls.some((call) => call.calleeRef === UNFILLED_CALLEE_REF);
+}
+
 export interface CompositionRefusalOptions {
   readonly draft: CompositionDraft;
   /** Every contract in the composition, whose error ABIs and debug metadata the reasons are read from. */
@@ -325,8 +334,10 @@ export function reportCompositionRefusal(options: CompositionRefusalOptions): Co
     });
   }
 
+  // The innermost is looked for among the frames the execution reached, and among all only when none was.
+  const reached = refusals.filter((refusal) => !readsUnfilledReference(draft, refusal));
   let innermost: RefusedFrame | undefined;
-  for (const refusal of refusals) {
+  for (const refusal of reached.length > 0 ? reached : refusals) {
     if (innermost === undefined || refusal.depth > innermost.depth) innermost = refusal;
   }
   return { accepted: refusals.length === 0, refusals, ...(innermost === undefined ? {} : { innermost }) };

@@ -309,26 +309,26 @@ function reportOf(draft: composer.CompositionDraft): composer.CompositionRefusal
 }
 
 /**
- * Today's refusal: the reporter's innermost frame is a store proxy leg that no attempt reached, which refuses reading
- * the input its unfilled delegate reference names. The error carries no draft, no report and no error arguments.
+ * The refusal names `frame`, the innermost frame the execution reached: a store proxy leg no attempt reached, which
+ * refuses reading the input its unfilled delegate reference names, is passed over. The error still carries no draft,
+ * no report and no error arguments.
  */
-function expectUnreachedLeg(refused: Refused, prefix: string, leg: string): composer.CompositionRefusal {
+function expectReported(refused: Refused, prefix: string, frame: string): composer.CompositionRefusal {
   const { error } = refused;
   expect(error).toBeInstanceOf(PerCallProxyDeployError);
   expect(error.message.startsWith(`${prefix} did not settle through the proxy: `)).toBe(true);
-  expect(error.message).toContain(`frame "${leg}" of JournalProxy.__fallback() at line `);
-  expect(error.message).toContain(': no source message (Program attempted to read from an invalid transaction input '
-    + 'index.');
-  expect(error.message).toContain(`requested index: ${UNFILLED_INDEX}.)`);
+  expect(error.message).toContain(`frame "${frame}" of `);
+  expect(error.message).not.toContain(`requested index: ${UNFILLED_INDEX}`);
   expect(error.errorArgs).toBeUndefined();
   expect('draft' in error || 'report' in error).toBe(false);
   expect(refused.broadcasts).toBe(0);
 
   // The message is the reporter's innermost frame on the last draft, so that draft is the one the refusal read.
   const report = reportOf(refused.draft);
-  expect(report.innermost?.master).toBe(leg);
+  expect(report.innermost?.master).toBe(frame);
   expect(error.message).toContain(composer.describeInnermost(report.innermost));
-  expect(refused.draft.blockOf(leg).calls[0]!.calleeRef).toBe(composer.UNFILLED_CALLEE_REF);
+  const unreached = report.refusals.filter((refusal) => refusal.objection.includes(`requested index: ${UNFILLED_INDEX}`));
+  expect(unreached.every((refusal) => refusal.master !== frame)).toBe(true);
   return report;
 }
 
@@ -343,55 +343,56 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('a revert after calls through
     deployed = await deployAll();
   }, 600_000);
 
-  it('a check before any call names the first store leg', async () => {
+  it('a check before any call reports the entry\'s own reason', async () => {
     const refused = await refusedCall(deployed.alice, 'post', [0n, 100n, 7n, BOB_LOCK, compiled.coinAddress]);
-    // Step 2 reports the evaluated frame's own reason: "name too short or long".
-    const report = expectUnreachedLeg(refused, 'the implementation\'s "post" entry', 'callee-master-1');
+    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
+    expect(refused.error.message).toContain(': name too short or long (Program failed an OP_VERIFY operation.)');
     expect(refused.stalls).toStrictEqual([stalledAt(0)]);
     expect(reasonOf(report, 'implementation-master'))
       .toStrictEqual({ line: lineOf('"name too short or long"'), message: 'name too short or long' });
   });
 
-  it('a check after a store write and a registry read names the last store leg', async () => {
+  it('a check after a store write and a registry read reports the entry\'s own reason', async () => {
     const refused = await refusedCall(deployed.alice, 'post', [5n, 100n, 7n, ALICE_LOCK, compiled.coinAddress]);
-    // Step 2 reports "referee is the poster".
-    const report = expectUnreachedLeg(refused, 'the implementation\'s "post" entry', 'callee-master-8');
+    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
+    expect(refused.error.message).toContain(': referee is the poster (Program failed an OP_VERIFY operation.)');
     expect(refused.stalls).toStrictEqual([stalledAt(2)]);
     expect(reasonOf(report, 'implementation-master'))
       .toStrictEqual({ line: lineOf('"referee is the poster"'), message: 'referee is the poster' });
   });
 
-  it('a check on the coin argument after a token read names the last store leg', async () => {
+  it('a check on the coin argument after a token read reports the entry\'s own reason', async () => {
     const refused = await refusedCall(deployed.alice, 'post', [5n, 100n, 7n, BOB_LOCK, compiled.rosterAddress]);
-    // Step 2 reports "invalid coin".
-    const report = expectUnreachedLeg(refused, 'the implementation\'s "post" entry', 'callee-master-8');
+    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
+    expect(refused.error.message).toContain(': invalid coin (Program failed an OP_VERIFY operation.)');
     expect(refused.stalls).toStrictEqual([stalledAt(3)]);
     expect(reasonOf(report, 'implementation-master'))
       .toStrictEqual({ line: lineOf('"invalid coin"'), message: 'invalid coin' });
   });
 
-  it('a check after the state-changing token call names the last store leg', async () => {
+  it('a check after the state-changing token call reports the entry\'s own reason', async () => {
     const refused = await refusedCall(deployed.alice, 'post', [5n, 100n, 0n, BOB_LOCK, compiled.coinAddress]);
-    // Step 2 reports "method too short or long".
-    const report = expectUnreachedLeg(refused, 'the implementation\'s "post" entry', 'callee-master-8');
+    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
+    expect(refused.error.message).toContain(': method too short or long (Program failed an OP_VERIFY operation.)');
     expect(refused.stalls).toStrictEqual([stalledAt(4)]);
     expect(reasonOf(report, 'implementation-master'))
       .toStrictEqual({ line: lineOf('"method too short or long"'), message: 'method too short or long' });
   });
 
-  it('a check on a registry read after state-changing calls names the last store leg', async () => {
+  it('a check on a registry read after state-changing calls reports the entry\'s own reason', async () => {
     const refused = await refusedCall(deployed.bob, 'post', [5n, 100n, 7n, ALICE_LOCK, compiled.coinAddress]);
-    // Step 2 reports "not a member".
-    const report = expectUnreachedLeg(refused, 'the implementation\'s "post" entry', 'callee-master-8');
+    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
+    expect(refused.error.message).toContain(': not a member (Program failed an OP_VERIFY operation.)');
     expect(refused.stalls).toStrictEqual([stalledAt(5)]);
     expect(reasonOf(report, 'implementation-master'))
       .toStrictEqual({ line: lineOf('"not a member"'), message: 'not a member' });
   });
 
-  it('a revert inside the third token call is refused at the callee, naming the first store leg', async () => {
+  it('a revert inside the third token call reports the callee\'s custom error, without its arguments', async () => {
     const refused = await refusedCall(deployed.alice, 'post', [5n, 1500n, 7n, BOB_LOCK, compiled.coinAddress]);
-    // Step 2 reports the callee's custom error and passes its arguments as `errorArgs`.
-    const report = expectUnreachedLeg(refused, 'the call\'s callee "Coin.transferFrom()"', 'callee-master-1');
+    // The settle loop still throws without `errorArgs`; the report carries them (the ladder stream's hook).
+    const report = expectReported(refused, 'the call\'s callee "Coin.transferFrom()"', 'callee-master-7');
+    expect(refused.error.message).toContain(': revert ShortBalance(address, int256, int256)');
     // The callees are settled before the entry's frame is derived, so no derivation stalled.
     expect(refused.stalls).toStrictEqual([]);
     const reason = reasonOf(report, 'callee-master-7');
@@ -401,20 +402,21 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('a revert after calls through
     expect(reason?.arguments).toStrictEqual([`0x${binToHex(ALICE_LOCK)}`, 1000n, 1500n]);
   });
 
-  it('a check before any call, beside a reverting callee it never reaches, is refused at that callee', async () => {
+  it('a check before any call, beside a reverting callee it never reaches, still reports that callee', async () => {
     const refused = await refusedCall(deployed.alice, 'post', [0n, 1500n, 7n, BOB_LOCK, compiled.coinAddress]);
-    // The entry stops at its first check, so step 2 reports "name too short or long", not the callee's revert.
-    const report = expectUnreachedLeg(refused, 'the call\'s callee "Coin.transferFrom()"', 'callee-master-1');
+    // The entry stops at its first check, so the EVM reports "name too short or long": the callees are settled first
+    // (the ladder stream's settle loop), so the callee's revert is thrown before the entry is derived.
+    const report = expectReported(refused, 'the call\'s callee "Coin.transferFrom()"', 'callee-master-7');
     expect(reasonOf(report, 'implementation-master'))
       .toStrictEqual({ line: lineOf('"name too short or long"'), message: 'name too short or long' });
     expect(reasonOf(report, 'callee-master-7')?.error?.name).toBe('ShortBalance');
   });
 
-  it('a check between calls, beside a reverting callee it never reaches, is not in the draft', async () => {
+  it('a check between calls, beside a reverting callee it never reaches, still reports that callee', async () => {
     const refused = await refusedCall(deployed.alice, 'post', [5n, 1500n, 0n, BOB_LOCK, compiled.coinAddress]);
-    // Step 2 reports "method too short or long": the callees settle before the entry's frame is derived, so this
+    // The EVM reports "method too short or long": the callees settle before the entry's frame is derived, so this
     // draft holds only the unreached callee's revert, and the entry has to be derived before a callee is reported.
-    const report = expectUnreachedLeg(refused, 'the call\'s callee "Coin.transferFrom()"', 'callee-master-1');
+    const report = expectReported(refused, 'the call\'s callee "Coin.transferFrom()"', 'callee-master-7');
     expect(refused.stalls).toStrictEqual([]);
     const entry = report.refusals.find((refusal) => refusal.master === 'implementation-master');
     expect(entry?.reason.message).toBeUndefined();

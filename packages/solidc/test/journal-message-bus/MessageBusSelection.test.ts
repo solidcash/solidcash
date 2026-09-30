@@ -40,6 +40,21 @@ describe('message-bus compilation selection', () => {
     expect(artifact.compiler.options?.messageBus).toBe(false);
   });
 
+  it('selects the graph route for an interface-typed state receiver', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      contract TypedEdge {
+        int value;
+        ISink sink;
+        function forward(int next) public {
+          sink.note(next);
+          value = next;
+          require(next >= 0);
+        }
+      }`, { optimizeForCompilationSpeed: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus).toBeDefined();
+  });
+
   it('treats explicit true as an opt-in that skips narrowing and builds a graph-free leaf participant', () => {
     const artifact = compileString(STATEFUL_LEAF, { messageBus: true });
     expect(artifact.messageBus).toBeDefined();

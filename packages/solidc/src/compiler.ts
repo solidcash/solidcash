@@ -3862,6 +3862,30 @@ function supportsAtomicMessageBus(ast: Ast, compilerOptions: CompilerOptions): b
  */
 function hasMessageBusGraphEdge(ast: Ast): boolean {
   const interfaceNames = new Set(ast.interfaceDefinitions.map((iface) => iface.name));
+  // A call through an interface-typed variable parses as a namespaced FunctionCallNode (`sink.note`), not a
+  // MethodCallNode. Detect it from declared receiver types before semantic lowering, while allowing a parameter
+  // or local declaration to shadow a same-named contract state variable with an ordinary type.
+  const typedStateReceivers = new Map(ast.contract.stateVariables.map((state) => [
+    state.name, state.type instanceof AddressType && state.type.interfaceName !== undefined,
+  ]));
+  for (const fn of ast.contract.functions) {
+    if (!fn.body) continue;
+    const typedReceivers = new Map(typedStateReceivers);
+    for (const parameter of fn.parameters) typedReceivers.set(parameter.name,
+      parameter.type instanceof AddressType && parameter.type.interfaceName !== undefined);
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof VariableDefinitionNode) typedReceivers.set(node.name,
+        node.type instanceof AddressType && node.type.interfaceName !== undefined);
+    });
+    let hasTypedEdge = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (!(node instanceof FunctionCallNode)) return;
+      const parts = node.identifier.name.split('.');
+      if (parts.length === 2 && typedReceivers.get(parts[0]) === true
+        && !['call', 'staticcall', 'delegatecall'].includes(parts[1])) hasTypedEdge = true;
+    });
+    if (hasTypedEdge) return true;
+  }
   let found = false;
   walkInvocationAst(ast.contract, (node) => {
     if (found) return;

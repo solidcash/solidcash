@@ -847,6 +847,14 @@ function calleeReadNodes(options: {
   readonly senderAddress: Uint8Array | undefined;
   readonly categoryId: string;
   readonly deployment: PerCallDeploymentSet;
+  /**
+   * The layout the deployment's records were minted under, which is not always the artifact's own.
+   *
+   * A frame behind a proxy runs on the proxy's records, and the generated proxy declares the implementation's
+   * fields plus one of its own, so its commitments are read with the proxy's layout rather than the
+   * implementation's. Absent means the deployment's records are the artifact's own.
+   */
+  readonly recordLayout?: StateLayout;
 }): readonly HopCalleeReadNode[] {
   const fn = options.artifact.abi.find((candidate) => candidate.name === options.functionName);
   if (fn === undefined) return [];
@@ -874,7 +882,7 @@ function calleeReadNodes(options: {
   // itself from its frame's block: the joined value is that witness, assembled from the deployment's own chunks.
   const live = liveDeploymentOf(
     options.categoryId, options.deployment,
-    options.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 });
+    options.recordLayout ?? options.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 });
   return slots.map((slot): HopCalleeReadNode => {
     let node: ReturnType<typeof readEntryNode>;
     try {
@@ -927,14 +935,7 @@ function calleeReadNodes(options: {
  * callee's own frame reports its refusal when it is settled, naming the callee, rather than the hop fabricating a
  * plan for a record it cannot place.
  */
-function calleeReadNodesOrNone(options: {
-  readonly artifact: Artifact;
-  readonly functionName: string;
-  readonly args: readonly FunctionArgument[];
-  readonly senderAddress: Uint8Array | undefined;
-  readonly categoryId: string;
-  readonly deployment: PerCallDeploymentSet;
-}): readonly HopCalleeReadNode[] {
+function calleeReadNodesOrNone(options: Parameters<typeof calleeReadNodes>[0]): readonly HopCalleeReadNode[] {
   try {
     return calleeReadNodes(options);
   } catch {
@@ -1188,6 +1189,7 @@ async function placeProxiedCallee(
     const implementationReads = calleeReadNodesOrNone({
       artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
       senderAddress: caller.selfAddress, categoryId: external.categoryId, deployment: proxyDeployment,
+      recordLayout: proxyReadLayout,
     });
     for (const node of implementationReads) ctx.utxos.set(node.id, node.utxo);
     for (const [id, utxo] of implementationWrites?.spentUtxos ?? []) ctx.utxos.set(id, utxo);

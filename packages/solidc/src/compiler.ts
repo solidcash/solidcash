@@ -5157,6 +5157,47 @@ function synthesizeMessageBusRoute(
     node instanceof MethodCallNode
       && node.object instanceof IdentifierNode
       && ['abi', 'bytes', 'string'].includes(node.object.name);
+  const pureLibraryCallCache = new Map<string, boolean>();
+  const pureLibraryCall = (name: string): boolean => {
+    const cached = pureLibraryCallCache.get(name);
+    if (cached !== undefined) return cached;
+    if (!ast.libraryFunctionSignatures.has(name)) {
+      pureLibraryCallCache.set(name, false);
+      return false;
+    }
+    const definitions = ast.freeFunctions.filter((candidate) => candidate.name === name);
+    // A namespaced source call is local only when every overload with that name is a declared, effect-free
+    // pure library function. Unknown namespaces and effectful library helpers stay on the conservative edge path.
+    const local = definitions.length > 0 && definitions.every((candidate) =>
+      candidate.modifiers.includes(FunctionModifier.PURE)
+      && analyseFunctionFootprint(candidate, signatureClosureByName, footprintCache).effects.length === 0);
+    pureLibraryCallCache.set(name, local);
+    return local;
+  };
+  const pureLibraryExtensionCall = (node: Node): boolean => {
+    if (!(node instanceof MethodCallNode)) return false;
+    let collectionName: string | undefined;
+    let keyDepth = 0;
+    if (node.object instanceof MappingAccessNode) {
+      collectionName = node.object.name;
+      keyDepth = node.object.keys.length;
+    } else {
+      let receiver: ExpressionNode = node.object;
+      while (receiver instanceof ArrayAccessNode) {
+        keyDepth += 1;
+        receiver = receiver.array;
+      }
+      if (receiver instanceof IdentifierNode) collectionName = receiver.name;
+    }
+    const collection = collectionName === undefined ? undefined : collectionByName.get(collectionName);
+    if (!collection || keyDepth !== collection.allKeyTypes.length) return false;
+    const valueType = collection.innermostValueType.toString();
+    return contract.usingForDirectives.some((directive) =>
+      directive.libraryName !== undefined && directive.targetTypeName === valueType
+      && pureLibraryCall(`${directive.libraryName}.${node.methodName}`));
+  };
+  const localMethodCall = (node: Node): boolean =>
+    intrinsicNamespaceMethodCall(node) || pureLibraryExtensionCall(node);
   let contractConsumesLowLevelReturn = false;
   for (const candidate of contract.functions) {
     // walkInvocationAst is synchronous; this accumulator does not escape the iteration.
@@ -5662,9 +5703,10 @@ function synthesizeMessageBusRoute(
     const outgoingCall = (node: Node): boolean =>
       node instanceof ExternalFunctionCallNode || contractTypedReceiverCall(node, interfaceReceivers)
       || node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode
-      || (node instanceof MethodCallNode && !intrinsicNamespaceMethodCall(node))
+      || (node instanceof MethodCallNode && !localMethodCall(node))
       || (node instanceof FunctionCallNode && node.identifier.name.includes('.')
-        && !['abi', 'bytes', 'string'].includes(node.identifier.name.split('.')[0]));
+        && !['abi', 'bytes', 'string'].includes(node.identifier.name.split('.')[0])
+        && !pureLibraryCall(node.identifier.name));
     const typedOutgoingCall = (node: Node): boolean =>
       // A lowered function pointer names a synthesized interface but selects its method at runtime. Its
       // graph edge is not the statically typed call proven by this signature-flow policy.
@@ -6228,7 +6270,7 @@ function synthesizeMessageBusRoute(
           // during the following semantic pass. The initial frozen route does
           // not attempt to predict that resolution: reject them conservatively
           // so no later synthetic callee parameters can invalidate this call.
-          if (node instanceof MethodCallNode && !intrinsicNamespaceMethodCall(node)) {
+          if (node instanceof MethodCallNode && !localMethodCall(node)) {
             statefulExternalCall = true;
             methodCallCount += 1;
             if (candidate === fn) directExternalCallsites.add(node);
@@ -6267,7 +6309,7 @@ function synthesizeMessageBusRoute(
             const addressValue = (method === 'transfer' || method === 'send') && node.parameters.length === 1;
             if (parts.length >= 2 && !['call', 'staticcall', 'delegatecall'].includes(method)
               && !addressValue && !contractTypedReceiverCall(node, receivers)
-              && !intrinsicNamespaceMethodCall(node)) {
+              && !pureLibraryCall(node.identifier.name)) {
               statefulExternalCall = true;
               methodCallCount += 1;
               if (candidate === fn) directExternalCallsites.add(node);
@@ -6351,7 +6393,7 @@ function synthesizeMessageBusRoute(
           || statement instanceof AssignNode)) return;
       let containsCall = false;
       walkInvocationAst(statement, (candidate) => {
-        if ((candidate instanceof MethodCallNode && !intrinsicNamespaceMethodCall(candidate))
+        if ((candidate instanceof MethodCallNode && !localMethodCall(candidate))
           || (candidate instanceof ExternalFunctionCallNode
             && (candidate.callInfo?.hasReturnValues || candidate.opaqueReturn))
           || candidate instanceof LowLevelCallNode
@@ -6408,7 +6450,7 @@ function synthesizeMessageBusRoute(
             if (namedInternal) outgoing.add(node.identifier.name);
             const potentiallyExternal = node instanceof ExternalFunctionCallNode
               || node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode
-              || (node instanceof MethodCallNode && !intrinsicNamespaceMethodCall(node))
+              || (node instanceof MethodCallNode && !localMethodCall(node))
               || (node instanceof FunctionCallNode
                 && /\.(call|staticcall|delegatecall)$/.test(node.identifier.name));
             if (!namedInternal && !potentiallyExternal) return;

@@ -2183,7 +2183,12 @@ Titles marked NEVER have not passed on any real compile to date.
   `sortedBatchInfo`, and `{blockSize: 1, slots: [master]}` for its `blockLayout`, with only `sortedUpsertLoopInfo`
   naming the collection — while the same loop over a parameter key publishes `entryAccesses`, a `conditional` entry
   slot, `sortedBatchInfo` and `writeSegment: 1`. So the artifact, the layout, the emitter and the SDK would have to
-  change together, and a write fact published on its own would state a segment that declares nothing.
+  change together, and a write fact published on its own would state a segment that declares nothing. Two further
+  measurements: the in-loop access is published under the artifact's `entryLoopWrites`, which **no per-call code
+  reads** (only `packages/solidcash/src/stateful/**` does); and a loop whose body makes the call is refused by
+  `callPerCallEntry` for the callee-frame reason even when its key is the frame's own
+  (`entry "move" makes 1 external call(s), whose callee frames this call path does not plan yet`), so the fixture's
+  `updateJobWhitelist` sits behind the hop's callee-frame planning as well as the varying key.
 - **Each publication shape has its machine verdict, and the loop shape's is an accept.** A body that writes nothing
   of its own must declare its own record kept, and the machine refuses the same record declared changed where the
   code never touches it (`solidcash/test/per-call/hostile/unwritten-record-change.test.ts`, whose `touch` entry is
@@ -2191,8 +2196,10 @@ Titles marked NEVER have not passed on any real compile to date.
   the well-formed spend and refusing three mutations of it (`solidc/test/per-call/master/insert-beside-append.test.ts`).
   A runtime-loop upsert whose key the frame holds **is accepted by the machine on the shipped path** and the same
   spend with one byte of the record it wrote changed is refused
-  (`solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`), which is the accept/refuse pair for that
-  shape; the machine's own segment control for such a record accepts the declaration at the write's segment and
+  (`solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`: `:93-96` asserts
+  `{ accepted: true, objections: '' }` for the loop upsert, `:110-121` refuses the mutated spend, and `:124-129`
+  refuses the varying key beside them — a reader who cites `:86-97` is reading the revision before `fddae17aa`),
+  which is the accept/refuse pair for that shape; the machine's own segment control for such a record accepts the declaration at the write's segment and
   refuses it one segment later (`solidc/test/per-call/master/loop-upsert-segment.test.ts`). What has no accepted
   spend anywhere is the **varying-key** variant, whose per-turn node no verified batch plans.
 - **PW3's fixture census was read back with this round's compiler.** `node --max-old-space-size=8192

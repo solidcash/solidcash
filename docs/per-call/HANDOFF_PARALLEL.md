@@ -124,7 +124,13 @@ lands it removes the claim line.
   for the varying key: the artifact publishes the access, the layout gives it a slot, the emitter addresses the
   turn's node from the frame's parked base instead of the direct convention's co-spent band, and the SDK plans one
   node per turn. A write fact alone would state a segment that declares nothing, which is why this cannot be
-  published from the compiler half on its own.
+  published from the compiler half on its own. **And the call inside the loop is a second, independent wall for that
+  variant**: measured through the shipped call path, a loop whose body makes the call is refused by
+  `callPerCallEntry` for the callee-frame reason (`entry "move" makes 1 external call(s), whose callee frames this
+  call path does not plan yet`) even when its key is the frame's own, so the fixture's `updateJobWhitelist` needs the
+  hop's callee-frame planning (PW1/PW2's lane) as well as the varying-key handling. The per-call lane consumes none
+  of the artifact's `entryLoopWrites`, the field the in-loop access is published under; only
+  `packages/solidcash/src/stateful/**` reads it.
 - **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder
   stream has taken the published facts. **Status 2026-09-30: two of the three shapes are done.** The census read back
   with this round's compiler shows seven contracts and **0 refusals**, `postThreadMessage` publishes

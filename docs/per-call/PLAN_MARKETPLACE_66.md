@@ -1700,7 +1700,7 @@ risk. Take the slices in order, each with its own tests.
     `try`, the origin checks) first; each cross-contract row is recorded as served or refused by name, with no work
     on the hop's side. Files: the new conformance directory, and the subroutine operands and admission a row finds
     missing (the generation pass, `support.ts` merged onto the implementer's working tree).
-  - **Claimed by the second worker (this one), from `8734368b0`, landed `5bf7f89e7`:** **Y7's exact
+  - **Claimed by the second worker (this one), from `8734368b0`, landed `d88758b41`:** **Y7's exact
     `sweep(t)` spelling** -- a self call whose argument is a **mapping read**,
     `this.transfer(t, this.bal[address(this)])`. The compiler threw rather than emitting the shape: `Found
     parameters (address,int256) in call to function 'transfer' where parameters

@@ -246,6 +246,18 @@ lands it removes the claim line.
   read path's own convention and the reason a frame that declares only the node at the base reads the neighbouring
   participant. So piece 2's declaration is `[one record at the base, turn 0's node, turn 1's node, ...]` with the
   loop's transition views - the shape of the list is settled; what the records carry is not.
+- **Piece 3's mechanism, named from the shipped code (2026-09-30).** The emitter's per-call branch of
+  `emitSortedUpsertLoopBody`'s `pushIdx` addresses the loop's **output** side at the frame's own coordinate
+  (`emitPerCallEntryIndex('out', slotIndex)`), and in a per-call hop that coordinate names a *participant* output -
+  the records a frame creates are trailing outputs, not participants. The batch path already solves exactly this: a
+  created record is addressed by its **position in the segment's declared list**, which
+  `emitDeclaredGroupRecordOrdinal(declaredOrdinal, recordOffset)` (`GenerateTargetTraversal.ts:31196`) emits as the
+  negative index `-(perCallRecordsBeforeGroups() + declaredOrdinal + recordOffset + 1)`, with the batch's own
+  predecessor outputs subtracted, and which the shared close reads as a position rather than a coordinate. So piece 3
+  is: give the loop's `pushIdx` out-side the same treatment with the turn as the runtime addend
+  (`-(beforeGroups + firstCreatedOrdinal + turn + 1)`), and have the plan place the loop's created nodes starting at
+  that ordinal - the one piece of the coordinate the emitter cannot know is the plan's own first-created ordinal,
+  which is why the two halves land together.
 - **Stating the literal value removes the derivation stall and moves the wall to the machine (2026-09-30).** The
   batch plan marks *every* target record a learning candidate (`valueDependent` is true for a target however its
   value was computed), so the derivation was asked for a hand-back per node and the loop's close supplied none. With

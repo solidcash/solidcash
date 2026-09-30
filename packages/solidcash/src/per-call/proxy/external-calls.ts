@@ -75,6 +75,7 @@ import {
   entryRowOf, makeCallResolver, resolveCallTarget, resolvePublishedCall,
   type AbiEntryRow, type CallResolver, type HopCallInputs, type ResolvedCall,
 } from './call-resolution.js';
+import { hopEntryWrites, type HopEntryWrites, type HopLiveDeployment } from './entry-writes.js';
 import { PerCallProxyDeployError } from './errors.js';
 
 /** One contract the caller names for a call an implementation entry makes, keyed by the interface it calls. */
@@ -134,6 +135,15 @@ export interface HopCallee {
   readonly recordOwner?: number;
   /** Every participant of this callee, keyed by the id the plan places it under. */
   readonly utxos: ReadonlyMap<string, Utxo>;
+  /**
+   * The records this frame's own entry writes beyond the records its frame declares, or absent when it writes none.
+   *
+   * A body that writes a sorted mapping touches the collection's node UTXOs rather than a data NFT, and the frame
+   * has to declare them in the segment its write lands in or its own group walk reads a record the segment never
+   * named. The write belongs to the frame, so it is planned against the deployment that frame runs on — the
+   * callee's own for a call frame, the proxy's records for the delegate frame a proxied callee reaches.
+   */
+  readonly entryWrites?: HopEntryWrites;
   /** The calls this callee's own entry makes, in execution order, whose callees are other frames of the plan. */
   readonly calls: readonly DraftCall[];
   /**
@@ -526,6 +536,57 @@ async function deploymentOf(
   return read;
 }
 
+/** The live deployment a frame's own writes are planned against, as `hopEntryWrites` states it. */
+function liveDeploymentOf(categoryId: string, deployment: PerCallDeploymentSet): HopLiveDeployment {
+  return {
+    category: hexToBin(categoryId),
+    recordCommitments: deployment.records.map((record) => {
+      const commitment = record.token?.nft?.commitment;
+      if (commitment === undefined) {
+        throw new PerCallProxyDeployError(
+          `the callee's category ${categoryId} holds a record with no commitment`,
+        );
+      }
+      return new Uint8Array(hexToBin(commitment));
+    }),
+    chunks: [...deployment.chunks, ...deployment.collectionNodes],
+    nodesByCollection: deployment.nodesByCollection,
+  };
+}
+
+/**
+ * The records one callee frame's own entry writes beyond the records its frame declares.
+ *
+ * The frame's `msg.sender` is the caller's own address, which a write keyed by the sender resolves to, and the
+ * deployment is the one that frame runs on: its own records and collection nodes for a call frame, the proxy's for
+ * the delegate frame a proxied callee reaches.
+ *
+ * A write whose source the artifact publishes in a form this planner does not state is left unplanned rather than
+ * refusing the whole hop: the frame is then planned as it was before a callee's writes were stated at all, and the
+ * callee's own frame reports its refusal when it is settled, naming the callee. A shape the planner cannot state is
+ * therefore a callee the hop cannot yet run, not a plan it fabricates.
+ */
+function calleeEntryWrites(
+  artifact: Artifact,
+  functionName: string,
+  args: readonly FunctionArgument[],
+  senderAddress: Uint8Array | undefined,
+  live: HopLiveDeployment,
+): HopEntryWrites | undefined {
+  try {
+    return hopEntryWrites({
+      artifact,
+      functionName,
+      args,
+      callerLockingBytecode: senderAddress ?? new Uint8Array(0),
+      liveDeployment: live,
+      writtenCommitments: live.recordCommitments,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The records a callee contract's masters read, one participant per data NFT, named for the contract.
  *
@@ -595,11 +656,16 @@ async function placeCalleeMasters(
   const records = calleeRecordSet(ctx, contract, categoryId, layout, deployment);
   const stateValues = deploymentStateValues(layout, categoryId, deployment);
   const category = hexToBin(categoryId);
+  const live = liveDeploymentOf(categoryId, deployment);
   for (const [occurrence, call] of resolved.entries()) {
     const calleeIndex = ctx.callees.length;
     const master = `callee-master-${calleeIndex + 1}`;
     const masterUtxo = deployment.masters[base + occurrence]!;
     const deployed = deployMaster(external.artifact, category, ctx.validatorProgram);
+    // The frame's own write is planned from the reach's own call data, so two reaches that pass different values
+    // write different nodes.
+    const writes = calleeEntryWrites(
+      external.artifact, entry.name, call.argumentValues, caller.selfAddress, live);
     const frame: HopCallee = {
       master,
       contract,
@@ -615,6 +681,7 @@ async function placeCalleeMasters(
       selfAddress: deployed.address,
       records,
       utxos: new Map<string, Utxo>([[master, masterUtxo]]),
+      ...(writes === undefined ? {} : { entryWrites: writes }),
       calls: [],
       callBases: [],
       enteredBy,
@@ -698,6 +765,9 @@ async function placeProxiedCallee(
   // them without owning them, so none are placed for the implementation's own category.
   const records = calleeRecordSet(ctx, proxyContract, external.categoryId, proxyLayout, proxyDeployment);
   const stateValues = deploymentStateValues(proxyLayout, external.categoryId, proxyDeployment);
+  // A delegate frame runs on the proxy's records, so a write its entry makes lands at the proxy's category and is
+  // planned against the proxy's own live records and collection nodes.
+  const live = liveDeploymentOf(external.categoryId, proxyDeployment);
   for (const [occurrence, call] of resolved.entries()) {
     const proxyIndex = ctx.callees.length;
     const implementationIndex = proxyIndex + 1;
@@ -732,6 +802,9 @@ async function placeProxiedCallee(
       callBases: [0],
       enteredBy,
     };
+    // The implementation entry's own write is planned from this reach's call data, against the proxy's deployment.
+    const implementationWrites = calleeEntryWrites(
+      external.artifact, entry.name, call.argumentValues, caller.selfAddress, live);
     const implementationBaseFrame: HopCallee = {
       master: implementationMaster,
       contract: implementationContract,
@@ -749,6 +822,7 @@ async function placeProxiedCallee(
       records: [],
       recordOwner: proxyIndex,
       utxos: new Map<string, Utxo>([[implementationMaster, implementationMasterUtxo]]),
+      ...(implementationWrites === undefined ? {} : { entryWrites: implementationWrites }),
       calls: [],
       callBases: [],
       enteredBy: proxyIndex,

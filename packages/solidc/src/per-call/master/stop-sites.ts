@@ -57,8 +57,30 @@ export interface PublishedEntryStopSites {
    * means the entry writes no record, or writes one whose segment the source does not fix.
    */
   readonly writeSegment?: number | 'last';
+  /**
+   * One fact per write the entry makes, each naming the segment that write's records are declared in.
+   *
+   * The fact is published whenever every write's segment is fixed, so a body whose writes do not all land in one
+   * segment still tells a builder where each of them lands. Absent means a write's segment is not fixed, which the
+   * builder refuses by name rather than declaring its records in a guessed segment.
+   */
+  readonly writeSegments?: readonly PublishedWriteSegment[];
   /** The sites in the order the driver reaches them, validated before publication. */
   readonly sites: StopSiteMetadata;
+}
+
+/**
+ * One write of an entry, and the segment its records are declared in.
+ *
+ * Exactly one identity field is set: `record` names one of the entry's own data-NFT records by its record index,
+ * `collection` names the verified mapping a batch write targets, and `variable` names the dynamic value whose run
+ * of chunk records the write occupies.
+ */
+export interface PublishedWriteSegment {
+  readonly record?: number;
+  readonly collection?: string;
+  readonly variable?: string;
+  readonly segment: number | 'last';
 }
 
 /** Every entry of one contract, as published on its artifact. */
@@ -124,7 +146,8 @@ export function entryStopSites(
  * calls themselves. Each call carries its own `repeats` marker, so a fixed call beside a loop keeps a fixed site.
  * An entry that writes a record of its own — a data-NFT field, a dynamic value's record, or a verified mapping's
  * nodes — also publishes the segment that write is declared in, which a builder places the records in rather than
- * declaring them in every segment.
+ * declaring them in every segment. A write whose segment the source does not fix publishes nothing, and so does an
+ * entry whose writes do not all share one segment: each of that entry's writes then names its own segment instead.
  */
 export function publishPerCallStopSites(
   contractName: string,
@@ -133,11 +156,12 @@ export function publishPerCallStopSites(
     readonly calls: readonly MasterCallSite[];
     readonly pathCount?: number;
     readonly writeSegment?: number | 'last';
+    readonly writeSegments?: readonly PublishedWriteSegment[];
   }[],
 ): PublishedPerCallStopSites {
   return {
     version: 1,
-    entries: entries.map(({ entryName, calls, pathCount, writeSegment }) => {
+    entries: entries.map(({ entryName, calls, pathCount, writeSegment, writeSegments }) => {
       const functionName = entryFunctionName(contractName, entryName);
       return {
         functionName,
@@ -149,6 +173,7 @@ export function publishPerCallStopSites(
           selector: binToHex(call.selector),
         })),
         ...(writeSegment === undefined ? {} : { writeSegment }),
+        ...(writeSegments === undefined ? {} : { writeSegments }),
         sites: entryStopSites(functionName, calls, pathCount),
       };
     }),

@@ -34,7 +34,8 @@ import {
   encodeLockingBytecodeP2sh32, hash256, hexToBin,
 } from '@bitauth/libauth';
 import {
-  FrameKind, INDEX_NONE, bytesEqual, bytesToHex, sha256, validatorRedeemScript,
+  FrameKind, INDEX_NONE, buildEntryNftCovenantScript, bytesEqual, bytesToHex, computeCollectionHash,
+  dynamicChunkSignature, sha256, validatorRedeemScript,
   type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
@@ -47,7 +48,7 @@ import { deployStatefulContract } from '../../stateful/sc-deploy.js';
 import { registerDeployment } from '../../stateful/deployment-registry.js';
 import { decodeEntryCommitment, headSentinelCommitment } from '../../stateful/SortedList.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
-import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
+import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails, scriptToLockingBytecode } from '../../utils.js';
 import {
   PerCallComposerError, createComposedDerivationHost, deriveComposition, describeInnermost, facetId,
   layoutTransaction, participant, reportCompositionRefusal, requireLearnedViews, validatorFacetsOf,
@@ -62,7 +63,10 @@ import {
 } from '../deploy/records.js';
 import { decodeReturnValues } from '../read/index.js';
 import { PerCallProxyDeployError } from './errors.js';
-import { hopEntryWrites, mappingHeadCollection, mappingNodeSlot, type HopEntryWrites } from './entry-writes.js';
+import {
+  hopEntryWrites, mappingHeadCollection, mappingNodeSlot,
+  type HopEntryWrites, type LaidHopEntryWrites,
+} from './entry-writes.js';
 import {
   deploymentStateValues,
   planHopExternalCalls,
@@ -245,13 +249,239 @@ function entryName(artifact: Artifact, functionName: string): string {
  * one whose segment the artifact does not publish, which the hop refuses rather than guessing.
  */
 function publishedWriteSegment(artifact: Artifact, functionName: string): number | 'last' | undefined {
+  return publishedStopSiteEntry(artifact, functionName)?.writeSegment;
+}
+
+/** One write of an entry, as the artifact publishes it: named by exactly one identity, with its segment. */
+interface PublishedWrite {
+  readonly record?: number;
+  readonly collection?: string;
+  readonly variable?: string;
+  readonly segment: number | 'last';
+}
+
+/** One entry's published stop sites, in the widened view the compiler attaches the table through. */
+interface PublishedStopSiteEntry {
+  readonly functionName?: string;
+  readonly writeSegment?: number | 'last';
+  readonly writeSegments?: readonly PublishedWrite[];
+}
+
+/** The stop-site entry the artifact publishes for one entry, if it publishes one. */
+function publishedStopSiteEntry(artifact: Artifact, functionName: string): PublishedStopSiteEntry | undefined {
   const entries = (artifact.composition as {
-    readonly stopSites?: {
-      readonly entries?: readonly { readonly functionName?: string; readonly writeSegment?: number | 'last' }[];
-    };
+    readonly stopSites?: { readonly entries?: readonly PublishedStopSiteEntry[] };
   } | undefined)?.stopSites?.entries;
   const identity = entryName(artifact, functionName);
-  return entries?.find((entry) => entry.functionName === identity)?.writeSegment;
+  return entries?.find((entry) => entry.functionName === identity);
+}
+
+/**
+ * The segment each of an entry's own writes declares its records in, as the artifact publishes it per write.
+ *
+ * A body whose writes do not all land in one segment publishes no single `writeSegment`, but every write still
+ * names its own segment here: the record of the entry's own frame by record index, a verified mapping's write by
+ * its collection, and the run of chunk records a dynamic value's write occupies by its variable.
+ */
+function publishedWriteFacts(artifact: Artifact, functionName: string): readonly PublishedWrite[] {
+  return publishedStopSiteEntry(artifact, functionName)?.writeSegments ?? [];
+}
+
+/** The write one of the hop's laid records belongs to, as the artifact publishes its segment. */
+interface LaidWriteIdentity {
+  readonly record?: number;
+  readonly collection?: string;
+  readonly variable?: string;
+}
+
+/** The segment one of the entry's writes declares its records in, or undefined when the artifact states none. */
+function publishedSegmentOfWrite(
+  artifact: Artifact,
+  functionName: string,
+  write: LaidWriteIdentity,
+): number | 'last' | undefined {
+  const fact = publishedWriteFacts(artifact, functionName).find((candidate) =>
+    candidate.record === write.record && candidate.collection === write.collection
+    && candidate.variable === write.variable);
+  // An artifact that publishes one fact for the whole entry states that segment for every write it makes.
+  return fact?.segment ?? publishedWriteSegment(artifact, functionName);
+}
+
+/**
+ * The segment one of the entry's writes lands in, as an index of the frame's own segments.
+ *
+ * A frame that makes `k` calls declares `k + 1` segments, and each write lands in the one its own source fixes: the
+ * count of calls before it, or the last segment the run opens when the epilogue pins what it wrote. A write the
+ * artifact places nowhere beside a call is one the hop cannot declare, and a segment the frame's own count does not
+ * hold is a publication the hop does not follow; both are refused by name rather than declared in a guessed
+ * segment.
+ */
+function resolvedWriteSegment(options: {
+  readonly artifact: Artifact;
+  readonly functionName: string;
+  readonly label: string;
+  readonly what: string;
+  readonly write: LaidWriteIdentity;
+  readonly calls: number;
+}): number {
+  const published = publishedSegmentOfWrite(options.artifact, options.functionName, options.write);
+  if (published === undefined) {
+    // An entry that makes no call has one segment, so a write inside it can only land there.
+    if (options.calls === 0) return 0;
+    throw new PerCallProxyDeployError(
+      `${options.label} ${options.what} beside an external call, and the segment that write lands in is not fixed `
+      + 'by the entry\'s own source, so the hop cannot declare it',
+    );
+  }
+  const at = published === 'last' ? options.calls : published;
+  if (at < 0 || at > options.calls) {
+    throw new PerCallProxyDeployError(
+      `${options.label} publishes segment ${String(at)} for ${options.what}, which the hop's `
+      + `${options.calls + 1} segment(s) do not hold`,
+    );
+  }
+  return at;
+}
+
+/**
+ * The lock a dynamic value's run of chunk records sits at: the value's own collection covenant.
+ *
+ * The run's chunks are entry NFTs of the value's collection, so their lock is the value's own — which is what tells
+ * the records a dynamic write contributes from the nodes and value chunks a sorted batch's write contributes.
+ */
+function dynamicRunLock(category: Uint8Array, variable: string, type: string): Uint8Array {
+  return scriptToLockingBytecode(
+    buildEntryNftCovenantScript(category, computeCollectionHash(dynamicChunkSignature(variable, type))),
+    'p2sh32',
+  );
+}
+
+/** The dynamic value an entry's own write grows, with its declared type, or undefined for an entry that writes none. */
+function dynamicWriteVariable(
+  artifact: Artifact, functionName: string,
+): { readonly variable: string; readonly type: string } | undefined {
+  const variable = artifact.abi.find((candidate) => candidate.name === functionName)?.dynamicWrites?.[0];
+  const declared = variable === undefined
+    ? undefined : artifact.stateLayout?.variables.find((candidate) => candidate.name === variable);
+  return variable === undefined || declared === undefined ? undefined : { variable, type: declared.type };
+}
+
+/** One record an entry's own writes contribute, and the write it belongs to. */
+interface LaidWriteRecord {
+  readonly write: LaidWriteIdentity;
+  /** How a refusal names the write. */
+  readonly what: string;
+  readonly entry: RecordEntry;
+}
+
+/**
+ * The records an entry's own writes contribute, each with the write it belongs to, in the order the plan lays them.
+ *
+ * The plan lays the sorted batch's nodes, then the run of chunk records a dynamic value's write occupies, then the
+ * value chunks a long mapping value takes, and each write is declared in its own segment. A record names its write
+ * by the coordinate it sits at: a batch record is a participant the plan lists under a mapping id, or an output the
+ * write places at the collection's own covenant, while a run's chunk is any other participant, or an output the
+ * value's own collection covenant locks.
+ */
+function laidWriteRecords(options: {
+  readonly laid: LaidHopEntryWrites;
+  readonly writes: HopEntryWrites;
+  readonly indexOf: (id: string) => number;
+  readonly category: Uint8Array;
+  readonly createdBase: number;
+  /** The dynamic value the write grows, when the entry writes one. */
+  readonly dynamicVariable?: string;
+  readonly dynamicType?: string;
+}): readonly LaidWriteRecord[] {
+  const { laid, writes } = options;
+  const runIndices = new Set<number>();
+  for (const id of writes.participantIds) {
+    // The plan lists a sorted batch's nodes under a mapping id; every other participant belongs to the run.
+    if (mappingHeadCollection(id) === undefined && mappingNodeSlot(id) === undefined) {
+      runIndices.add(options.indexOf(id));
+    }
+  }
+  const runLock = options.dynamicVariable === undefined || options.dynamicType === undefined
+    ? undefined : dynamicRunLock(options.category, options.dynamicVariable, options.dynamicType);
+  const isRun = (entry: RecordEntry): boolean => {
+    if (entry.in !== INDEX_NONE) return runIndices.has(entry.in);
+    const output = laid.trailingOutputs[entry.out - options.createdBase];
+    return runLock !== undefined && output !== undefined && bytesEqual(output.lockingBytecode, runLock);
+  };
+  const batch = { write: { collection: writes.collection } as LaidWriteIdentity, what: 'writes a mapping record' };
+  const run = options.dynamicVariable === undefined
+    ? undefined : { write: { variable: options.dynamicVariable }, what: 'writes a run of chunk records' };
+  return laid.entries.map((entry): LaidWriteRecord => {
+    const belongsToRun = isRun(entry);
+    if (belongsToRun && run === undefined) {
+      throw new PerCallProxyDeployError(
+        'the entry lays a run of chunk records and the artifact publishes no dynamic value for it',
+      );
+    }
+    return { ...(belongsToRun ? run! : batch), entry };
+  });
+}
+
+/**
+ * Places the records an entry's own writes contribute in the segments their writes are declared in.
+ *
+ * Each record is declared in its own write's segment, in the order the plan lays the plan's records; every record a
+ * write spends is kept in the segments on either side of it, at the commitment it was spent with before and at the
+ * written one after, so the segments chain into the one transition each write performs.
+ */
+function placeLaidWrites(
+  segments: RecordEntry[][],
+  placed: readonly { readonly at: number; readonly entry: RecordEntry }[],
+): void {
+  segments.forEach((segment, segmentIndex) => {
+    const declared = new Set<number>();
+    for (const { at, entry } of placed) {
+      if (segmentIndex === at) continue;
+      if (entry.in === INDEX_NONE || declared.has(entry.in)) continue;
+      declared.add(entry.in);
+      segment.push(segmentIndex < at
+        ? { in: entry.in, out: entry.in, viewIn: entry.viewIn, viewOut: entry.viewIn }
+        : { in: entry.in, out: entry.in, viewIn: entry.viewOut, viewOut: entry.viewOut });
+    }
+  });
+  for (const { at, entry } of placed) segments[at]!.push(entry);
+}
+
+/**
+ * The segment each of an entry's laid records is declared in, in the order the plan lays them.
+ *
+ * A write's segment is resolved once and its records all take it, so the records reach the segments in the order
+ * the plan declares them and a write the artifact places nowhere is refused once rather than per record. A batch
+ * and the run of chunk records a dynamic write grows have to share one segment: a frame reads the run past the
+ * records its own block declares, and the records a segment declares in front of the run are the position that
+ * read resolves against, so a batch whose records land in another segment leaves the run where the frame's own
+ * close refuses it.
+ */
+function resolveLaidWriteSegments(
+  records: readonly LaidWriteRecord[],
+  segmentOfWrite: (write: LaidWriteIdentity, what: string) => number,
+  label: string,
+): readonly { readonly at: number; readonly entry: RecordEntry }[] {
+  const segments = new Map<string, number>();
+  const placed = records.map(({ write, what, entry }) => {
+    const key = `${String(write.record)}|${String(write.collection)}|${String(write.variable)}`;
+    let at = segments.get(key);
+    if (at === undefined) {
+      at = segmentOfWrite(write, what);
+      segments.set(key, at);
+    }
+    return { at, entry };
+  });
+  const batchAt = records.findIndex(({ write }) => write.collection !== undefined);
+  const runAt = records.findIndex(({ write }) => write.variable !== undefined);
+  if (batchAt >= 0 && runAt >= 0 && placed[batchAt]!.at !== placed[runAt]!.at) {
+    throw new PerCallProxyDeployError(
+      `${label} declares its mapping's records in segment ${placed[batchAt]!.at} and the run of chunk records its `
+      + `dynamic write grows in segment ${placed[runAt]!.at}, and a frame reads the run past the records its own `
+      + 'block declares, so a batch whose records another segment holds leaves the run unreadable',
+    );
+  }
+  return placed;
 }
 
 /**
@@ -575,6 +805,7 @@ export async function deployPerCallProxy(
     entryLabel: entryLabelFor(options.initialize.functionName),
     planFor: (
       writtenCommitments, attemptWrites, entryWriteViews, eventCommitments, implementationRetval, calleeRetvals,
+      calleeWriteViews,
     ) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments, recordLockingBytecode,
@@ -584,6 +815,7 @@ export async function deployPerCallProxy(
       ...(externalPlan.calls.length === 0 ? {} : { calls: externalPlan.calls }),
       ...(externalPlan.callBases.length === 0 ? {} : { callBases: externalPlan.callBases }),
       ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees, calleeRetvals }),
+      ...(calleeWriteViews.size === 0 ? {} : { calleeWriteViews }),
       eventOutputs: hopEventOutputs(
         implementationArtifact, options.initialize.functionName, proxyCategory, eventCommitments,
       ),
@@ -733,6 +965,7 @@ interface SettleHopOptions {
     eventCommitments: readonly Uint8Array[],
     implementationRetval: Uint8Array,
     calleeRetvals: ReadonlyMap<string, Uint8Array>,
+    calleeWriteViews: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>,
   ) => CompositionDraftPlan;
 }
 
@@ -751,11 +984,18 @@ interface SettleHopOptions {
 async function settleCallees(options: {
   readonly vm: Machine;
   readonly artifacts: readonly Artifact[];
-  readonly planFor: (calleeRetvals: ReadonlyMap<string, Uint8Array>) => CompositionDraftPlan;
+  readonly planFor: (
+    calleeRetvals: ReadonlyMap<string, Uint8Array>,
+    calleeWriteViews: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>,
+  ) => CompositionDraftPlan;
   readonly callees: readonly HopCallee[];
   readonly maximumCommitmentBytes: number;
-}): Promise<Map<string, Uint8Array>> {
+}): Promise<{
+  readonly retvals: Map<string, Uint8Array>;
+  readonly writeViews: Map<string, readonly (Uint8Array | undefined)[]>;
+}> {
   const learned = new Map<string, Uint8Array>();
+  const writeViews = new Map<string, readonly (Uint8Array | undefined)[]>();
   const depthOf = (index: number): number => {
     let depth = 1;
     let current = options.callees[index]!.enteredBy;
@@ -773,10 +1013,10 @@ async function settleCallees(options: {
     const placeholder = hopRetvalPlaceholder(callee.contract, callee.entry);
     for (let attempt = 0; attempt < MAXIMUM_HOP_ATTEMPTS; attempt += 1) {
       const candidate = createComposedDerivationHost({
-        vm: options.vm, artifacts: options.artifacts, plan: options.planFor(learned),
+        vm: options.vm, artifacts: options.artifacts, plan: options.planFor(learned, writeViews),
       });
       // A callee that makes calls cannot accept before its own calls are derived, so its subtree is derived first;
-      // a stall there is the callee's own return comparison, which is read below like any other.
+      // a stall there is the callee's own return comparison or one of its own write's declarations, read below.
       if (callee.calls.length > 0) {
         const frame: FrameRequest = {
           contract: callee.contract, functionName: callee.functionName, kind: callee.kind, master: callee.master,
@@ -785,8 +1025,9 @@ async function settleCallees(options: {
           deriveComposition([frame], candidate.host);
           break;
         } catch (error) {
-          // A void callee that makes calls has no return to learn, so a stall in its subtree is its own refusal.
-          if (!callee.returns) throw error;
+          const learnable = callee.returns || (callee.entryWrites?.learningCandidates.length ?? 0) > 0;
+          // A void callee with nothing to learn has no return and no unstated write, so a stall is its refusal.
+          if (!learnable) throw error;
         }
       }
       const program = candidate.draft.programFor(callee.master);
@@ -810,6 +1051,22 @@ async function settleCallees(options: {
         learned.set(callee.master, Uint8Array.from(reading.computed));
         continue;
       }
+      // A record the frame's own write leaves unstated closes against the candidate the plan stated there, so the
+      // value the body computed is read from the same close the return is: whichever operand is the candidate, the
+      // other is what the body wrote, at the candidate's own slot.
+      const candidates = callee.entryWrites?.learningCandidates ?? [];
+      if (reading.ok && candidates.length > 0) {
+        const declaredAt = candidates.findIndex((entry) => bytesEqual(reading.declared, entry));
+        const computedAt = candidates.findIndex((entry) => bytesEqual(reading.computed, entry));
+        const at = declaredAt >= 0 ? declaredAt : computedAt;
+        if (at >= 0) {
+          const views: (Uint8Array | undefined)[] = [...(writeViews.get(callee.master) ?? [])];
+          while (views.length <= at) views.push(undefined);
+          views[at] = Uint8Array.from(declaredAt >= 0 ? reading.computed : reading.declared);
+          writeViews.set(callee.master, views);
+          continue;
+        }
+      }
       const refusal = reportCompositionRefusal({ draft: candidate.draft, artifacts: options.artifacts, vm: options.vm });
       // A delegate frame reads the records of the proxy frame that entered it, so the reading is described against
       // whichever frame declares the records this one runs on.
@@ -823,7 +1080,7 @@ async function settleCallees(options: {
       );
     }
   }
-  return learned;
+  return { retvals: learned, writeViews };
 }
 
 /**
@@ -854,17 +1111,19 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   // computed, so the plan cannot state the caller's records until the callees have answered.
   const artifacts: readonly Artifact[] =
     [proxyArtifact, implementationArtifact, ...(options.callees ?? []).map((callee) => callee.artifact)];
-  const calleeRetvals = options.callees === undefined || options.callees.length === 0
-    ? new Map<string, Uint8Array>()
+  const calleeSettlement = options.callees === undefined || options.callees.length === 0
+    ? { retvals: new Map<string, Uint8Array>(), writeViews: new Map<string, readonly (Uint8Array | undefined)[]>() }
     : await settleCallees({
       vm,
       artifacts,
       callees: options.callees,
       maximumCommitmentBytes: options.maximumCommitmentBytes,
-      planFor: (learned) => options.planFor(
+      planFor: (learned, calleeWriteViews) => options.planFor(
         writtenCommitments, entryWrites, entryWrites?.learningCandidates ?? [],
-        writtenEvents, learnedRetval ?? new Uint8Array(0), learned),
+        writtenEvents, learnedRetval ?? new Uint8Array(0), learned, calleeWriteViews),
     });
+  const calleeRetvals = calleeSettlement.retvals;
+  const calleeWriteViews = calleeSettlement.writeViews;
   let composed: ReturnType<typeof createComposedDerivationHost> | undefined;
   // The derivation an attempt already ran, so a hop that settled inside the loop is not derived a second time:
   // the draft's blocks keep the references the first derivation filled, and a rerun would read them as settled.
@@ -883,7 +1142,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     if (attempt >= maximumAttempts) break;
     const plan = options.planFor(
       writtenCommitments, entryWrites, writtenExtras, writtenEvents, learnedRetval ?? new Uint8Array(0),
-      calleeRetvals);
+      calleeRetvals, calleeWriteViews);
     const candidate = createComposedDerivationHost({ vm, artifacts, plan });
     const implementationProgram = candidate.draft.programFor(IMPLEMENTATION_MASTER_ID);
     const state = vm.evaluate({
@@ -1054,6 +1313,11 @@ interface HopPlanOptions {
   /** For each published call site of the entry, the position of its first call in `calls`, or `-1` for none. */
   readonly callBases?: readonly number[];
   readonly callees?: readonly HopCallee[];
+  /**
+   * The end commitment learned for each callee frame's value-dependent write record, keyed by master, in that
+   * frame's `learningCandidates` order. Absent leaves every candidate at the placeholder the planner stated.
+   */
+  readonly calleeWriteViews?: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>;
   /** The bytes each callee frame's `retval` carries: what a returning callee computed, or its candidate. */
   readonly calleeRetvals?: ReadonlyMap<string, Uint8Array>;
   /** The records the entry's own body writes beyond the data-NFT records, or absent when it writes none. */
@@ -1185,6 +1449,10 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     for (const record of callee.records) {
       if (!block.state.includes(record.id)) block.state.push(record.id);
     }
+    // The nodes the frame's own write spends sit in the same block, after the records it declares.
+    for (const id of callee.entryWrites?.participantIds ?? []) {
+      if (!block.state.includes(id)) block.state.push(id);
+    }
   }
   const blocks: ContractBlock[] = [
     {
@@ -1239,72 +1507,65 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     recordKept.map((_entry, nftIndex) => at(recordAfter, nftIndex)),
   ];
   // A call closes the segment the code before it runs in, so a frame that makes `k` calls declares `k + 1`
-  // segments. A record the entry writes lands in exactly one of them: the segment the entry's own source names,
-  // which the artifact publishes as the count of calls before the write or as the run's last segment when every
-  // call precedes it. The hop declares the write's records there rather than in the segment the frame begins in,
-  // and keeps each record the frame holds in the segments on either side of it.
-  const writeSegment = publishedWriteSegment(implementationArtifact, options.entry.functionName);
-  const writesRecords = writes.some(Boolean) || options.entryWrites !== undefined;
-  if (calls.length > 0 && writesRecords && writeSegment === undefined) {
-    throw new PerCallProxyDeployError(
-      `the implementation's ${entryLabelFor(options.entry.functionName)} writes a record beside an external call, `
-      + 'and the segment that write lands in is not fixed by the entry\'s own source, so the hop cannot declare it',
-    );
-  }
-  // An entry that writes nothing has no write to place, so the published fact is only read where there is one.
-  const writeAt = !writesRecords ? 0 : calls.length === 0 ? 0 : writeSegment === 'last' ? calls.length : writeSegment;
-  if (writeAt === undefined || writeAt < 0 || writeAt > calls.length) {
-    throw new PerCallProxyDeployError(
-      `the implementation's ${entryLabelFor(options.entry.functionName)} publishes segment ${String(writeAt)} for `
-      + `its record write, which the hop's ${calls.length + 1} segment(s) do not hold`,
-    );
-  }
+  // segments. Each write the entry's own source makes lands in one of them — the count of calls before the write,
+  // or the run's last segment when the epilogue pins what it wrote — which the artifact publishes per write. The
+  // hop declares each write's records in its own segment rather than in the segment the frame begins in, and keeps
+  // each record the frame holds in the segments on either side of it.
+  const entryWritesLabel = `the implementation's ${entryLabelFor(options.entry.functionName)}`;
+  const recordWriteAt = writes.map((written, nftIndex) => (written ? resolvedWriteSegment({
+    artifact: implementationArtifact,
+    functionName: options.entry.functionName,
+    label: entryWritesLabel,
+    what: `writes record ${nftIndex}`,
+    write: { record: nftIndex },
+    calls: calls.length,
+  }) : undefined));
   // Each record the entry rewrites is kept at the commitment the proxy spent until the segment its write opens,
   // written in that segment, and kept at the written commitment afterwards: its own code writes it exactly once,
   // in that segment, so any other segment declares it unchanged.
   const implementationSegments: RecordEntry[][] = Array.from(
     { length: calls.length + 1 },
     (_unused, segmentIndex) => recordKept.slice(0, implementationRecords).map((_entry, nftIndex): RecordEntry => {
-      if (!writes[nftIndex]) return recordKept[nftIndex]!;
+      const writeAt = recordWriteAt[nftIndex];
+      if (writeAt === undefined) return recordKept[nftIndex]!;
       if (segmentIndex < writeAt) return recordKept[nftIndex]!;
       return segmentIndex === writeAt ? recordWritten[nftIndex]! : recordAfter[nftIndex]!;
     }),
   );
   // The records the entry's own body writes follow the state records its frame declares, which is the ordinal the
   // body's group walk reads them at. A created node is a trailing output past the events.
+  const createdBase = layout.participantCount + options.eventOutputs.length;
   const laidWrites = options.entryWrites?.lay({
     indexOf: (id) => participant(layout, id).index,
     proxyMasterIndex,
-    createdBase: layout.participantCount + options.eventOutputs.length,
+    createdBase,
     recordAmount: options.validatorAmount,
     category: options.proxyCategory,
     learnedViews: options.entryWriteViews,
   });
-  if (laidWrites !== undefined) {
-    // A mapping node or a value chunk the frame spends is an input the transaction carries from its first segment
-    // on, so the segments on either side of the write declare it kept: at the commitment it was spent with before,
-    // and at the one it is written with after. A record the write creates has no such earlier side.
-    const keptBefore = new Map<number, RecordEntry>();
-    const keptAfter = new Map<number, RecordEntry>();
-    for (const entry of laidWrites.entries) {
-      if (entry.in === INDEX_NONE) continue;
-      if (!keptBefore.has(entry.in)) {
-        keptBefore.set(entry.in, { in: entry.in, out: entry.in, viewIn: entry.viewIn, viewOut: entry.viewIn });
-      }
-      if (!keptAfter.has(entry.in)) {
-        keptAfter.set(entry.in, { in: entry.in, out: entry.in, viewIn: entry.viewOut, viewOut: entry.viewOut });
-      }
-    }
-    for (let segmentIndex = 0; segmentIndex < implementationSegments.length; segmentIndex += 1) {
-      if (segmentIndex === writeAt) continue;
-      implementationSegments[segmentIndex] = [
-        ...implementationSegments[segmentIndex]!,
-        ...(segmentIndex < writeAt ? keptBefore.values() : keptAfter.values()),
-      ];
-    }
-    implementationSegments[writeAt] = [...implementationSegments[writeAt]!, ...laidWrites.entries];
+  if (laidWrites !== undefined && options.entryWrites !== undefined) {
+    const dynamicVariable = dynamicWriteVariable(implementationArtifact, options.entry.functionName);
+    placeLaidWrites(implementationSegments, resolveLaidWriteSegments(
+      laidWriteRecords({
+        laid: laidWrites,
+        writes: options.entryWrites,
+        indexOf: (id) => participant(layout, id).index,
+        category: options.proxyCategory,
+        createdBase,
+        ...(dynamicVariable === undefined ? {} : { dynamicVariable: dynamicVariable.variable }),
+        ...(dynamicVariable === undefined ? {} : { dynamicType: dynamicVariable.type }),
+      }),
+      (write, what) => resolvedWriteSegment({
+        artifact: implementationArtifact,
+        functionName: options.entry.functionName,
+        label: entryWritesLabel,
+        what,
+        write,
+        calls: calls.length,
+      }),
+      entryWritesLabel,
+    ));
   }
-
   const proxyMasterDraft: DraftMaster = {
     master: PROXY_MASTER_ID,
     contract: proxyArtifact.contractName,
@@ -1371,20 +1632,17 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     mastersPerContract.set(callee.contract, (mastersPerContract.get(callee.contract) ?? 0) + 1);
   }
   // A category is settled once, however many reaches produced the masters that read it: the hop's own proxy
-  // category, each category a delegate frame runs on, and each category two or more masters of it are spent under,
-  // which the validator requires settled. A category entered once needs no settlement of its own.
-  const settles: { category: Uint8Array; stateInputs: readonly string[]; createdOutputs?: readonly number[] }[] = [];
-  const settledCategories = new Set<string>();
-  const settle = (category: Uint8Array, stateInputs: readonly string[], createdOutputs?: readonly number[]): void => {
+  // category, each category a delegate frame runs on, each category two or more masters of it are spent under, and
+  // each category a frame's own write touches. The parts a settlement needs are merged, so two reaches of one
+  // contract make one settlement.
+  const settlementOf = new Map<string, { category: Uint8Array; stateInputs: string[]; createdOutputs: number[] }>();
+  const settle = (category: Uint8Array, stateInputs: readonly string[], createdOutputs: readonly number[] = []): void => {
     const key = bytesToHex(category);
-    if (settledCategories.has(key)) return;
-    settledCategories.add(key);
-    settles.push({ category, stateInputs, ...(createdOutputs === undefined ? {} : { createdOutputs }) });
+    const merged = settlementOf.get(key) ?? { category, stateInputs: [], createdOutputs: [] };
+    for (const id of stateInputs) if (!merged.stateInputs.includes(id)) merged.stateInputs.push(id);
+    for (const out of createdOutputs) if (!merged.createdOutputs.includes(out)) merged.createdOutputs.push(out);
+    settlementOf.set(key, merged);
   };
-  settle(options.proxyCategory, [...recordIds, ...entryWriteIds], laidWrites?.createdOutputs);
-  for (const owner of delegateOwnerIndices(callees)) {
-    settle(callees[owner]!.category, callees[owner]!.records.map((record) => record.id));
-  }
   // The records the transaction spends of a category are the ones its record-owning frames place; a category whose
   // masters all run as delegates on another contract's records spends none of its own.
   const spentRecordsOf = (categoryKey: string): string[] => {
@@ -1405,7 +1663,66 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   for (const [key, group] of mastersOfCategory) {
     if (group.count > 1) settle(group.category, spentRecordsOf(key));
   }
-  const calleeMasterDrafts: DraftMaster[] = callees.map((callee) => {
+  // Each callee frame's own write is laid in the block its records sit in — a call frame's own block, a delegate
+  // frame's caller's — and its created records follow the root entry's in the trailing region, so the region's
+  // cursor advances as each frame is laid.
+  let trailingCursor = layout.participantCount + options.eventOutputs.length
+    + (laidWrites?.trailingOutputs.length ?? 0);
+  const calleeWriteRecords = callees.map((callee) => {
+    const writes = callee.entryWrites;
+    if (writes === undefined) return undefined;
+    const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner];
+    const createdBase = trailingCursor;
+    const category = (owner ?? callee).category;
+    const laid = writes.lay({
+      indexOf: (id) => participant(layout, id).index,
+      proxyMasterIndex: participant(layout, (owner ?? callee).master).index,
+      createdBase,
+      recordAmount: (owner ?? callee).records[0]?.satoshis ?? options.validatorAmount,
+      category,
+      learnedViews: options.calleeWriteViews?.get(callee.master) ?? [],
+    });
+    trailingCursor += laid.trailingOutputs.length;
+    // Each of the frame's own writes is declared in its own segment, which the artifact publishes per write.
+    const dynamicVariable = dynamicWriteVariable(callee.artifact, callee.entry);
+    return {
+      laid,
+      records: laidWriteRecords({
+        laid,
+        writes,
+        indexOf: (id) => participant(layout, id).index,
+        category,
+        createdBase,
+        ...(dynamicVariable === undefined ? {} : { dynamicVariable: dynamicVariable.variable }),
+        ...(dynamicVariable === undefined ? {} : { dynamicType: dynamicVariable.type }),
+      }),
+    };
+  });
+  settle(options.proxyCategory, [...recordIds, ...entryWriteIds], laidWrites?.createdOutputs ?? []);
+  for (const owner of delegateOwnerIndices(callees)) {
+    settle(callees[owner]!.category, callees[owner]!.records.map((record) => record.id));
+  }
+  for (const [key, group] of mastersOfCategory) {
+    if (group.count > 1) settle(group.category, spentRecordsOf(key));
+  }
+  // A frame's own write is settled under the category its records sit at: the frame's own for a call frame, its
+  // caller's for the delegate frame a proxied callee reaches. Only a category the hop already settles has one —
+  // the settlement rules reach a settled contract, and settling one the validator does not need is itself refused.
+  callees.forEach((callee, calleePosition) => {
+    const writes = callee.entryWrites;
+    const laid = calleeWriteRecords[calleePosition]?.laid;
+    if (writes === undefined || laid === undefined) return;
+    const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner];
+    const category = (owner ?? callee).category;
+    if (!settlementOf.has(bytesToHex(category))) return;
+    settle(category, writes.participantIds, laid.createdOutputs);
+  });
+  const settles = [...settlementOf.values()].map((entry) => ({
+    category: entry.category,
+    stateInputs: entry.stateInputs,
+    ...(entry.createdOutputs.length === 0 ? {} : { createdOutputs: entry.createdOutputs }),
+  }));
+  const calleeMasterDrafts: DraftMaster[] = callees.map((callee, calleePosition) => {
     // A frame that owns the records it lists places them; a delegate frame reads the records of the proxy frame
     // that entered it, which are the first ones that frame declares.
     const owned = callee.recordOwner === undefined ? callee.records : callees[callee.recordOwner]!.records;
@@ -1419,6 +1736,29 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     // A callee's own sender is the contract that calls it: the caller's own address for a call, and the caller's
     // sender for a delegate frame, which preserves it.
     const sender = calleeSender(callees, proxyMaster.address, callee);
+    // A frame that makes k calls closes k + 1 segments, each declaring its own records kept. Each of the frame's
+    // own writes lands in the segment its source fixes, which the artifact publishes per write: the records it
+    // spends are kept at the commitment they were spent with before that segment and at the written one after it.
+    const laidCalleeWrites = calleeWriteRecords[calleePosition];
+    const segments: RecordEntry[][] = Array.from({ length: callee.calls.length + 1 }, () =>
+      owned.slice(0, declared).map((record, nftIndex): RecordEntry => ({
+        in: indices[nftIndex]!, out: indices[nftIndex]!,
+        viewIn: record.commitment, viewOut: record.commitment,
+      })));
+    if (laidCalleeWrites !== undefined) {
+      placeLaidWrites(segments, resolveLaidWriteSegments(
+        laidCalleeWrites.records,
+        (write, what) => resolvedWriteSegment({
+          artifact: callee.artifact,
+          functionName: callee.entry,
+          label: `the callee's "${callee.functionName}" entry`,
+          what,
+          write,
+          calls: callee.calls.length,
+        }),
+        `the callee's "${callee.functionName}" entry`,
+      ));
+    }
     return {
       master: callee.master,
       contract: callee.contract,
@@ -1439,12 +1779,10 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         ? options.calleeRetvals?.get(callee.master)
           ?? hopRetvalPlaceholder(callee.contract, callee.entry)
         : new Uint8Array(0),
-      // A frame that makes k calls closes k + 1 segments, each declaring its own records kept.
-      segments: Array.from({ length: callee.calls.length + 1 }, () =>
-        owned.slice(0, declared).map((record, nftIndex): RecordEntry => ({
-          in: indices[nftIndex]!, out: indices[nftIndex]!,
-          viewIn: record.commitment, viewOut: record.commitment,
-        }))),
+      // A frame that makes k calls closes k + 1 segments, each declaring its own records kept and the one the
+      // frame writes in.
+      segments,
+      ...(laidCalleeWrites?.laid.values === undefined ? {} : { values: laidCalleeWrites.laid.values }),
       events: [],
       sends: [],
       argumentPushes,
@@ -1508,6 +1846,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         return [masterEntry, ...recordEntries];
       })),
       ...(laidWrites?.inputs ?? {}),
+      // Each callee frame's own write spends the collection nodes it names, which its own block already placed.
+      ...Object.assign({}, ...calleeWriteRecords.map((written) => written?.laid.inputs ?? {})),
     },
     validator: {
       id: VALIDATOR_ID,
@@ -1527,6 +1867,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         },
       })),
       ...(laidWrites?.trailingOutputs ?? []),
+      // Each callee frame's own created records follow the root entry's, in the order the frames are placed.
+      ...calleeWriteRecords.flatMap((written) => written?.laid.trailingOutputs ?? []),
     ],
   };
 }
@@ -1899,6 +2241,7 @@ export async function callPerCallProxyEntry(
     entryLabel: entryLabelFor(options.functionName),
     planFor: (
       writtenCommitments, attemptWrites, entryWriteViews, eventCommitments, implementationRetval, calleeRetvals,
+      calleeWriteViews,
     ) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments,
@@ -1908,6 +2251,7 @@ export async function callPerCallProxyEntry(
       ...(externalPlan.calls.length === 0 ? {} : { calls: externalPlan.calls }),
       ...(externalPlan.callBases.length === 0 ? {} : { callBases: externalPlan.callBases }),
       ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees, calleeRetvals }),
+      ...(calleeWriteViews.size === 0 ? {} : { calleeWriteViews }),
       eventOutputs: hopEventOutputs(implementationArtifact, options.functionName, proxyCategory, eventCommitments),
       recordLockingBytecode: stateRecordLockingBytecode(options.proxyCategoryId),
       recordCategoryHex: options.proxyCategoryId,

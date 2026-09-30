@@ -342,6 +342,7 @@ function fieldValue(label: string, fieldType: string, context: ValueResolutionCo
     : undefined;
 }
 
+
 /** A field label read as a number, for the arithmetic a struct source states over its own fields. */
 function numericFieldValue(label: string, context: ValueResolutionContext): bigint | undefined {
   const value = fieldValue(label, 'bigint', context);
@@ -596,6 +597,9 @@ function planHopMappingBatch(request: HopEntryWritesRequest): HopMappingBatch | 
     const source = access.keySources?.[index];
     if (source?.kind === 'msgSender') return request.callerLockingBytecode;
     const label = source?.expressionLabel ?? source?.paramName ?? access.keyParams[index];
+    // A key that names the frame's own caller is that caller's lock, whichever way the artifact serialized it: an
+    // imported interface publishes `msg.sender` as an expression label rather than as the `msgSender` kind.
+    if (label !== undefined && CALLER_VALUE_LABELS.has(label)) return request.callerLockingBytecode;
     const evaluated = evalComputedKey(label, args, visible, undefined, undefined);
     if (evaluated !== undefined) return evaluated;
     const byName = encodedArgument(fn, args, label ?? '', structs);

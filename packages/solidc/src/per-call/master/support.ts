@@ -68,6 +68,7 @@ import {
   StateArrayPopNode,
   StateArrayPushNode,
   StateAssignNode,
+  StateVariableNode,
   StringLiteralNode,
   SwitchNode,
   TernaryOpNode,
@@ -866,12 +867,32 @@ function entryRecordWritesFollowEveryCall(entry: FunctionDefinitionNode, batchSl
  * segment.
  */
 export function perCallWriteSegment(entry: FunctionDefinitionNode): PerCallWriteSegment | undefined {
-  const batchSlots = new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
-  const facts: (PerCallWriteSegment | undefined)[] = [];
-  const record = (statement: Node, calls: CallRange): void => {
-    if (writesSizedField(statement)) { facts.push('last'); return; }
-    facts.push(calls === undefined || calls.least !== calls.most ? undefined : calls.least);
-  };
+  const batchSlots = perCallBatchSlots(entry);
+  const facts = perCallWriteSteps(entry, batchSlots).map(writeStepSegment);
+  if (facts.length === 0) return undefined;
+  if (facts.every((fact) => fact !== undefined && fact === facts[0])) return facts[0];
+  // The write's own segment is not fixed: every call has to precede it for the run's last segment to be the answer.
+  return entryRecordWritesFollowEveryCall(entry, batchSlots) ? 'last' : undefined;
+}
+
+/** The record slots the entry's verified mapping batch writes: the only mapping writes its own frame declares. */
+function perCallBatchSlots(entry: FunctionDefinitionNode): ReadonlySet<number> {
+  return new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
+}
+
+/** One record write the entry's own source makes, with the calls its own path made before it. */
+interface PerCallWriteStep {
+  readonly statement: Node;
+  /** The calls the path that reaches this write made before it, or undefined when the source does not fix them. */
+  readonly calls: CallRange;
+}
+
+/** The record writes the entry's own source makes, in the order the walk reaches them. */
+function perCallWriteSteps(
+  entry: FunctionDefinitionNode,
+  batchSlots: ReadonlySet<number>,
+): readonly PerCallWriteStep[] {
+  const steps: PerCallWriteStep[] = [];
   const walkBlock = (block: BlockNode | undefined, incoming: CallRange): CallRange => {
     let range = incoming;
     for (const statement of block?.statements ?? []) range = walkStatement(statement, range);
@@ -879,7 +900,7 @@ export function perCallWriteSegment(entry: FunctionDefinitionNode): PerCallWrite
   };
   const walkStatement = (statement: Node, incoming: CallRange): CallRange => {
     if (writesEntryRecord(statement, batchSlots)) {
-      record(statement, incoming);
+      steps.push({ statement, calls: incoming });
       return advanceCallRange(incoming, statement);
     }
     if (statement instanceof BranchNode) {
@@ -903,10 +924,131 @@ export function perCallWriteSegment(entry: FunctionDefinitionNode): PerCallWrite
     return advanceCallRange(incoming, statement);
   };
   walkBlock(entry.body, { least: 0, most: 0 });
-  if (facts.length === 0) return undefined;
-  if (facts.every((fact) => fact !== undefined && fact === facts[0])) return facts[0];
-  // The write's own segment is not fixed: every call has to precede it for the run's last segment to be the answer.
-  return entryRecordWritesFollowEveryCall(entry, batchSlots) ? 'last' : undefined;
+  return steps;
+}
+
+/** The segment one write lands in: the calls before a sized field's write past, or where that write's run is. */
+function writeStepSegment(step: PerCallWriteStep): PerCallWriteSegment | undefined {
+  if (writesSizedField(step.statement)) return 'last';
+  return step.calls === undefined || step.calls.least !== step.calls.most ? undefined : step.calls.least;
+}
+
+/**
+ * One write of an entry, and the segment its records are declared in.
+ *
+ * Exactly one identity is set, naming the write the segment belongs to: `record` is one of the entry's own data-NFT
+ * records, `collection` is the verified mapping a batch write targets, and `variable` is the dynamic value whose
+ * run of chunk records a write occupies. A builder declares each write's records in its own segment.
+ */
+export interface PerCallWriteSegmentFact {
+  readonly record?: number;
+  readonly collection?: string;
+  readonly variable?: string;
+  readonly segment: PerCallWriteSegment;
+}
+
+/**
+ * The segment each of an entry's own writes is declared in, or undefined when any of them is unfixed.
+ *
+ * Code generation places each write in its own segment: a state write lands where its own path's calls put it, the
+ * batch walk reads the one segment its own calls name, and the run of chunk records a dynamic write grows is pinned
+ * by the epilogue in the last segment. A builder places each write's records by the same facts, so a body whose
+ * writes do not all share one segment is served rather than refused. A write the source does not locate — one
+ * behind a call the source does not fix, or inside a loop the walk cannot count — leaves the whole entry unstated,
+ * which is what the builder refuses by name.
+ */
+export function perCallWriteSegments(
+  entry: FunctionDefinitionNode,
+): readonly PerCallWriteSegmentFact[] | undefined {
+  const facts: PerCallWriteSegmentFact[] = [];
+  const admit = (identity: string, fact: PerCallWriteSegmentFact): boolean => {
+    const known = facts.find((candidate) => identityOfWrite(candidate) === identity);
+    if (known !== undefined) return known.segment === fact.segment;
+    facts.push(fact);
+    return true;
+  };
+  const steps = perCallWriteSteps(entry, perCallBatchSlots(entry));
+  // The sorted batch is one write however many targets it names: the derivation reads one segment for all of
+  // them, so a body whose batches the walk does not place in one segment publishes no fact rather than a wrong one.
+  const collections = [...new Set((entry.sortedBatchInfo ?? []).map((batch) => batch.collection))];
+  const batchSegment = perCallBatchWriteSegment(entry)
+    ?? (perCallBatchWriteFollowsEveryCall(entry) ? 'last' : undefined);
+  if (collections.length > 0 && (batchSegment === undefined
+    || !collections.every((collection) => admit(`mapping:${collection}`, { collection, segment: batchSegment })))) {
+    return undefined;
+  }
+  // A batch target the walk does not reach is a write inside a loop or a switch, which the walk cannot place: the
+  // emitter refuses such a body's derivation rather than reading a segment the write does not land in.
+  const reached = new Set(steps
+    .filter((step) => step.statement instanceof MappingAssignNode || step.statement instanceof MappingDeleteNode)
+    .map((step) => (step.statement as MappingAssignNode | MappingDeleteNode).entrySlotIndex));
+  if ([...perCallBatchSlots(entry)].some((slot) => !reached.has(slot))) return undefined;
+  const records = perCallRecordWriteSegments(steps);
+  if (records === undefined) return undefined;
+  for (const [record, segment] of records.segments) {
+    if (!admit(`record:${record}`, { record, segment })) return undefined;
+  }
+  // A dynamic value's bytes live in the run of chunk records the epilogue pins in the last segment, whatever the
+  // source position of the write that grows it.
+  for (const variable of records.variables) {
+    if (!admit(`dynamic:${variable}`, { variable, segment: 'last' })) return undefined;
+  }
+  return facts.length === 0 ? undefined : facts;
+}
+
+/** The identity one published write is keyed by, as `perCallWriteSegments` builds it. */
+function identityOfWrite(fact: PerCallWriteSegmentFact): string {
+  if (fact.record !== undefined) return `record:${fact.record}`;
+  if (fact.collection !== undefined) return `mapping:${fact.collection}`;
+  return `dynamic:${fact.variable}`;
+}
+
+/** The segment each written data record is declared in, and the dynamic values the entry's writes grow. */
+interface PerCallRecordWriteSegments {
+  /** One segment per written data record. */
+  readonly segments: ReadonlyMap<number, PerCallWriteSegment>;
+  /** The dynamic values a write grows, whose run of chunk records the epilogue pins. */
+  readonly variables: readonly string[];
+}
+
+/**
+ * The segment each of the entry's own data records is declared in, or undefined when one is not fixed.
+ *
+ * A record is rebuilt from the fields the body holds where the segment that wrote them closes, so a record whose
+ * every write lands in one segment is declared written there. A write to a field the record only sizes takes the
+ * record with it into the run's last segment wherever the source makes it, because the record is only rebuilt once
+ * the chunk run is written; such a record is declared written there and nowhere else. A record the entry writes in
+ * two segments would have to be declared at both, which states a value between them that no plan knows.
+ */
+function perCallRecordWriteSegments(
+  steps: readonly PerCallWriteStep[],
+): PerCallRecordWriteSegments | undefined {
+  const sized = new Set<number>();
+  const variables = new Set<string>();
+  const segments = new Map<number, Set<PerCallWriteSegment>>();
+  for (const step of steps) {
+    if (step.statement instanceof MappingAssignNode || step.statement instanceof MappingDeleteNode) continue;
+    const stateVariable = (step.statement as { readonly stateVariable?: StateVariableNode }).stateVariable;
+    if (stateVariable === undefined) return undefined;
+    if (stateVariable.isDynamic === true) {
+      sized.add(stateVariable.nftIndex);
+      variables.add(stateVariable.name);
+      continue;
+    }
+    const segment = writeStepSegment(step);
+    if (segment === undefined) return undefined;
+    const forRecord = segments.get(stateVariable.nftIndex) ?? new Set<PerCallWriteSegment>();
+    forRecord.add(segment);
+    segments.set(stateVariable.nftIndex, forRecord);
+  }
+  const written = new Map<number, PerCallWriteSegment>();
+  for (const [record, at] of segments) {
+    if (sized.has(record)) continue;
+    if (at.size !== 1) return undefined;
+    written.set(record, [...at][0]!);
+  }
+  for (const record of sized) written.set(record, 'last');
+  return { segments: written, variables: [...variables] };
 }
 
 /** True for a hidden operand that is neither a frame value nor a sorted-batch operand the master derives. */
@@ -977,6 +1119,14 @@ export interface PerCallEntryCallSites {
    * one whose segment the source does not fix.
    */
   readonly writeSegment?: PerCallWriteSegment;
+  /**
+   * The segment each of the entry's own writes is declared in, one fact per write.
+   *
+   * A body whose writes do not all land in one segment publishes no single `writeSegment`, but each of its writes
+   * still names its own segment here, which is what lets a builder place each write's records in the segment code
+   * generation places them in. Absent means a write's segment is not fixed, which the builder refuses by name.
+   */
+  readonly writeSegments?: readonly PerCallWriteSegmentFact[];
 }
 
 export interface PerCallMasterShapeAssessment {
@@ -1576,12 +1726,14 @@ function derivePerCallMasterCallSites(
       continue;
     }
     const writeSegment = perCallWriteSegment(entry);
+    const writeSegments = perCallWriteSegments(entry);
     entryCalls.push({
       entryName: entry.name,
       calls: derived.calls,
       pathCount: derived.pathCount,
       ...(callsRepeat(entry.body) ? { repeats: true } : {}),
       ...(writeSegment === undefined ? {} : { writeSegment }),
+      ...(writeSegments === undefined ? {} : { writeSegments }),
     });
   }
   // The bound the head holds is how many records the body with the most calls declares, which is a path count

@@ -4,7 +4,7 @@ import { bytesToHex, validatorAddress } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
@@ -140,10 +140,30 @@ async function deployAll(network: MockNetworkProvider): Promise<{
   };
 }
 
-describe('a hop whose proxied callee writes beside a call of its own', () => {
-  it('settles every reach, its own write and its own call, and broadcasts', async () => {
+/** The deployment the cases share, and the chain as it stood when the deployment was done. */
+interface World {
+  readonly network: MockNetworkProvider;
+  readonly funded: Awaited<ReturnType<typeof deployAll>>;
+  readonly snapshot: SnapshotRestorer;
+}
+
+let worldRun: Promise<World> | undefined;
+
+/** One deployment serves both cases, each rewinding the chain to it first, so each writes the keys fresh. */
+async function deployed(): Promise<World> {
+  worldRun ??= (async (): Promise<World> => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployAll(network);
+    return { network, funded, snapshot: await network.takeSnapshot() };
+  })();
+  const world = await worldRun;
+  await world.snapshot.restore();
+  return world;
+}
+
+describe('a hop whose proxied callee writes beside a call of its own', () => {
+  it('settles every reach, its own write and its own call, and broadcasts', async () => {
+    const { network, funded } = await deployed();
 
     const result = await callPerCallProxyEntry({
       provider: network,
@@ -196,8 +216,7 @@ describe('a hop whose proxied callee writes beside a call of its own', () => {
   });
 
   it('settles the guarded reach too when the caller takes it', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployAll(network);
+    const { network, funded } = await deployed();
 
     const result = await callPerCallProxyEntry({
       provider: network,

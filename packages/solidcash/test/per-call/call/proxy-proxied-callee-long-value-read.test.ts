@@ -6,7 +6,7 @@ import {
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
 import { entryRecordLockingBytecode } from '../../../src/per-call/deploy/records.js';
@@ -200,10 +200,30 @@ async function callRun(
   });
 }
 
-describe('a hop whose proxied callee reads a mapping value past the inline limit', () => {
-  it('witnesses the whole node value, settles the reach and broadcasts', async () => {
+/** The deployment the cases share, and the chain as it stood before any profile was seeded. */
+interface World {
+  readonly network: MockNetworkProvider;
+  readonly funded: Awaited<ReturnType<typeof deployBoth>>;
+  readonly snapshot: SnapshotRestorer;
+}
+
+let worldRun: Promise<World> | undefined;
+
+/** One deployment serves both cases, each rewinding the chain to it first and seeding its own profile. */
+async function deployed(): Promise<World> {
+  worldRun ??= (async (): Promise<World> => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployBoth(network);
+    return { network, funded, snapshot: await network.takeSnapshot() };
+  })();
+  const world = await worldRun;
+  await world.snapshot.restore();
+  return world;
+}
+
+describe('a hop whose proxied callee reads a mapping value past the inline limit', () => {
+  it('witnesses the whole node value, settles the reach and broadcasts', async () => {
+    const { network, funded } = await deployed();
     await seedProfile(network, funded.rosterProxyCategoryId, funded.deployerLock, profileValue(funded.deployerLock));
 
     const result = await callRun(network, funded, funded.deployerLock);
@@ -229,8 +249,7 @@ describe('a hop whose proxied callee reads a mapping value past the inline limit
   });
 
   it('refuses when the profile the callee reads names another owner', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployBoth(network);
+    const { network, funded } = await deployed();
     // The caller's own key is in the list, but the profile it holds names another owner, so the body's check
     // fails: the node is present and its value is witnessed, only the entry's own require refuses.
     const other = new Uint8Array(25).fill(0x33);

@@ -3,7 +3,7 @@ import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -176,15 +176,45 @@ function tracedLines(lines: readonly string[]): readonly string[] {
   return lines.filter((line) => line.startsWith('HOPTRACE ')).map((line) => line.trimEnd());
 }
 
-describe('the hop trace', () => {
-  it('lays the callee chain as a proxy fallback plus the implementation entry it delegates to', async () => {
+type Funded = Awaited<ReturnType<typeof deployThroughProxiedCallee>>;
+
+/** The deployment the cases share, and the chain as it stood when the deployment was done. */
+interface World {
+  readonly network: MockNetworkProvider;
+  readonly funded: Funded;
+  readonly snapshot: SnapshotRestorer;
+}
+
+let worldRun: Promise<World> | undefined;
+
+/** One deployment serves every case, each rewinding the chain to it first, so no case reads another's broadcast. */
+async function deployed(): Promise<World> {
+  worldRun ??= (async (): Promise<World> => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployThroughProxiedCallee(network);
-    const lines = await withHopTrace(true, async () => {
-      await callMessage(network, funded, 'runOk');
-    });
+    return { network, funded, snapshot: await network.takeSnapshot() };
+  })();
+  const world = await worldRun;
+  await world.snapshot.restore();
+  return world;
+}
 
-    const traced = tracedLines(lines);
+let settledRun: Promise<readonly string[]> | undefined;
+
+/** The trace of the one `runOk` hop that settles, which the first two cases read. */
+function settledTrace(): Promise<readonly string[]> {
+  settledRun ??= (async (): Promise<readonly string[]> => {
+    const { network, funded } = await deployed();
+    return tracedLines(await withHopTrace(true, async () => {
+      await callMessage(network, funded, 'runOk');
+    }));
+  })();
+  return settledRun;
+}
+
+describe('the hop trace', () => {
+  it('lays the callee chain as a proxy fallback plus the implementation entry it delegates to', async () => {
+    const traced = await settledTrace();
     expect(traced.some((line) => line.includes('plan frame=proxy-master fn=OuterProxy.__fallback() kind=ROOT')))
       .toBe(true);
     expect(traced.some((line) => line.includes('plan frame=implementation-master fn=Outer.runOk() kind=DELEGATE')))
@@ -199,13 +229,7 @@ describe('the hop trace', () => {
   });
 
   it('records each frame\'s call records before and after an attempt, sentinel while unfilled', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployThroughProxiedCallee(network);
-    const lines = await withHopTrace(true, async () => {
-      await callMessage(network, funded, 'runOk');
-    });
-
-    const traced = tracedLines(lines);
+    const traced = await settledTrace();
     // The callee's fallback is settled on its own: its delegate reference is unfilled before the attempt fills it.
     const fallbackAttempt = traced.find((line) =>
       line.startsWith('HOPTRACE attempt callee=callee-master-1 '));
@@ -228,8 +252,7 @@ describe('the hop trace', () => {
   });
 
   it('names the frame the settle evaluated and the frame the refusal reporter named', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployThroughProxiedCallee(network);
+    const { network, funded } = await deployed();
     let message: string | undefined;
     const lines = await withHopTrace(true, async () => {
       message = await callMessage(network, funded, 'run');
@@ -248,11 +271,13 @@ describe('the hop trace', () => {
   });
 
   it('writes nothing when PER_CALL_HOP_TRACE is unset', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployThroughProxiedCallee(network);
+    const { network, funded } = await deployed();
+    let message: string | undefined;
     const lines = await withHopTrace(false, async () => {
-      await callMessage(network, funded, 'run');
+      message = await callMessage(network, funded, 'run');
     });
     expect(lines.filter((line) => line.includes('HOPTRACE'))).toStrictEqual([]);
+    // The untraced hop took the path the traced refusal above did.
+    expect(message).toMatch(/the call's callee "Inner\.pingBad\(\)" did not settle through the proxy/);
   });
 });

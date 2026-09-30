@@ -3,7 +3,7 @@ import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
@@ -195,6 +195,30 @@ async function callRun(options: {
   });
 }
 
+/** The proxied callee seeded with 7 and its caller, and the chain as it stood when both were deployed. */
+interface Proxied {
+  readonly setup: Setup;
+  readonly callee: Awaited<ReturnType<typeof deployProxiedCallee>>;
+  readonly caller: Awaited<ReturnType<typeof deployCaller>>;
+  readonly snapshot: SnapshotRestorer;
+}
+
+let proxiedRun: Promise<Proxied> | undefined;
+
+/** One proxied callee and caller serve the cases that reach it, each rewinding the chain to them first. */
+async function proxied(): Promise<Proxied> {
+  proxiedRun ??= (async (): Promise<Proxied> => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const arranged = await setup(network);
+    const callee = await deployProxiedCallee(arranged, 7n);
+    const caller = await deployCaller(arranged, callee.address, '1a');
+    return { setup: arranged, callee, caller, snapshot: await network.takeSnapshot() };
+  })();
+  const shared = await proxiedRun;
+  await shared.snapshot.restore();
+  return shared;
+}
+
 describe('a hop whose proxied callee returns a value', () => {
   it('generates a proxy whose fallback publishes the delegate bytes as its return', () => {
     const fallback = buildProxyArtifact(data).abi.find((entry) => entry.name === '__fallback');
@@ -202,13 +226,10 @@ describe('a hop whose proxied callee returns a value', () => {
   });
 
   it('carries the integer its entry returned through the proxy leg to the caller', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const setup_ = await setup(network);
-    const callee = await deployProxiedCallee(setup_, 7n);
-    const caller = await deployCaller(setup_, callee.address, '1a');
+    const { setup: arranged, callee, caller } = await proxied();
 
     const result = await callRun({
-      setup: setup_,
+      setup: arranged,
       caller,
       functionName: 'run',
       args: [8n],
@@ -235,13 +256,10 @@ describe('a hop whose proxied callee returns a value', () => {
   });
 
   it('carries a value the entry encodes with a dynamic type', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const setup_ = await setup(network);
-    const callee = await deployProxiedCallee(setup_, 1n);
-    const caller = await deployCaller(setup_, callee.address, '2a');
+    const { setup: arranged, callee, caller } = await proxied();
 
     const result = await callRun({
-      setup: setup_,
+      setup: arranged,
       caller,
       functionName: 'tag',
       args: [],
@@ -262,13 +280,10 @@ describe('a hop whose proxied callee returns a value', () => {
   });
 
   it('still settles when the implementation entry records nothing', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const setup_ = await setup(network);
-    const callee = await deployProxiedCallee(setup_, 1n);
-    const caller = await deployCaller(setup_, callee.address, '3a');
+    const { setup: arranged, callee, caller } = await proxied();
 
     const result = await callRun({
-      setup: setup_,
+      setup: arranged,
       caller,
       functionName: 'poke',
       args: [],

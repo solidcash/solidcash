@@ -3,7 +3,7 @@ import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
 import { planCallLoopWrites } from '../../../src/per-call/call/entry-records.js';
@@ -56,25 +56,46 @@ function outpointHash(seed: number): string {
   return binToHex(bytes);
 }
 
-/** Drives the entry through the shipped deploy and call path with one array, and reports what it answered. */
+/** The deployment the shipped-path cases share, with its caller's coin, and the chain as it stood then. */
+interface Deployed {
+  readonly provider: MockNetworkProvider;
+  readonly categoryId: string;
+  readonly callerUtxo: { txid: string; vout: number; satoshis: bigint };
+  readonly snapshot: SnapshotRestorer;
+}
+
+let deployedRun: Promise<Deployed> | undefined;
+
+/** Deploys the entry's contract through the shipped deployment once; each call rewinds the chain to it first. */
+async function deployed(): Promise<Deployed> {
+  deployedRun ??= (async (): Promise<Deployed> => {
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = { txid: outpointHash(0x30), vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(funder.address, fundingUtxo);
+    await fundShippedFacets(provider);
+    const deployment = await deployStatefulContract(artifact, [], {
+      provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
+    });
+    const callerUtxo = { txid: outpointHash(0x50), vout: 0, satoshis: 200_000n };
+    await provider.addUtxo(binToHex(encodeLockingBytecodeP2pkh(alicePkh)), callerUtxo);
+    return { provider, categoryId: deployment.categoryId, callerUtxo, snapshot: await provider.takeSnapshot() };
+  })();
+  const shared = await deployedRun;
+  await shared.snapshot.restore();
+  return shared;
+}
+
+/** Drives the entry through the shipped call path with one array, and reports what it answered. */
 async function callWorkers(workers: readonly Uint8Array[]):
 Promise<Awaited<ReturnType<typeof callPerCallEntry>>> {
-  const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-  const signature = new SignatureTemplate(alicePriv);
-  const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const fundingUtxo = { txid: outpointHash(0x30), vout: 0, satoshis: 500_000n };
-  await provider.addUtxo(funder.address, fundingUtxo);
-  await fundShippedFacets(provider);
-  const deployment = await deployStatefulContract(artifact, [], {
-    provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
-  });
-  const callerLockingBytecode = encodeLockingBytecodeP2pkh(alicePkh);
-  const callerUtxo = { txid: outpointHash(0x50), vout: 0, satoshis: 200_000n };
-  await provider.addUtxo(binToHex(callerLockingBytecode), callerUtxo);
+  const { provider, categoryId, callerUtxo } = await deployed();
   return callPerCallEntry({
-    provider, artifact, categoryId: deployment.categoryId, functionName: 'move',
+    provider, artifact, categoryId, functionName: 'move',
     args: [workers, 42n] as never,
-    callerUtxo, callerLockingBytecode, funder: signature.unlockP2PKH(), vm: compositionMachine(),
+    callerUtxo, callerLockingBytecode: encodeLockingBytecodeP2pkh(alicePkh),
+    funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),
   });
 }
 

@@ -248,8 +248,11 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
       + '   function viaThisBump() returns (int) { this.bump(); return this.total; }'
       + ' }';
     const token = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+    // One deployment serves both entries, the chain rewound to it before each, so each bumps `total` from zero.
+    const deployed = await deploy(token, CALLER_LOCK);
+    const fresh = await deployed.provider.takeSnapshot();
     for (const entry of ['viaBump', 'viaThisBump']) {
-      const deployed = await deploy(token, CALLER_LOCK);
+      await fresh.restore();
       const result = await callPerCallEntry({
         provider: deployed.provider, artifact: token, categoryId: deployed.categoryId, functionName: entry,
         args: [], callerUtxo: deployed.callerUtxo, callerLockingBytecode: deployed.callerLock,

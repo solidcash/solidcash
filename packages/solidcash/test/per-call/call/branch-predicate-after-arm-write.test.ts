@@ -4,7 +4,7 @@ import { bytesToHex, sha256, type Artifact, type ExternalCallExpression } from '
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
@@ -139,6 +139,25 @@ async function deployShape(): Promise<Deployed> {
   };
 }
 
+/** The deployment the refusal and the acceptance share, and the chain as it stood when it was done. */
+interface Shape {
+  readonly deployed: Deployed;
+  readonly snapshot: SnapshotRestorer;
+}
+
+let shapeRun: Promise<Shape> | undefined;
+
+/** One deployment serves both hops, each rewinding the chain to it first. */
+async function deployedShape(): Promise<Deployed> {
+  shapeRun ??= (async (): Promise<Shape> => {
+    const deployed = await deployShape();
+    return { deployed, snapshot: await deployed.network.takeSnapshot() };
+  })();
+  const shape = await shapeRun;
+  await shape.snapshot.restore();
+  return shape.deployed;
+}
+
 /** `close(0)` through the shipped hop, planned from `implementation`'s published routing. */
 function close(deployed: Deployed, implementation: Artifact): Promise<PerCallProxyCallResult> {
   return callPerCallProxyEntry({
@@ -171,7 +190,7 @@ describe('a call inside a branch whose arm rewrites the field its predicate read
   });
 
   it('refuses the plan the arm-folded predicate implied: the machine requires the call the body makes', async () => {
-    const deployed = await deployShape();
+    const deployed = await deployedShape();
     // The routing the compiler used to publish, `0 == 1`, makes the planner place no call for the site; the frame's
     // own program then makes the call and the machine refuses the plan that states none.
     const folded = JSON.parse(JSON.stringify(root)) as Artifact;
@@ -188,7 +207,7 @@ describe('a call inside a branch whose arm rewrites the field its predicate read
   });
 
   it('accepts the plan the published predicate gives: the arm\'s call is placed and every input accepted', async () => {
-    const deployed = await deployShape();
+    const deployed = await deployedShape();
     const result = await close(deployed, root);
 
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);

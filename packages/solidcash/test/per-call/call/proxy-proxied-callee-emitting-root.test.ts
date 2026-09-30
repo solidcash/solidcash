@@ -3,7 +3,7 @@ import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -128,6 +128,28 @@ async function callRoot(
   });
 }
 
+/** The deployment entered through `initialize(9)`, and the chain as it stood when the deployment was done. */
+interface Initialized {
+  readonly setup: Setup;
+  readonly deployed: Awaited<ReturnType<typeof deployEntering>>;
+  readonly snapshot: SnapshotRestorer;
+}
+
+let initializedRun: Promise<Initialized> | undefined;
+
+/** One `initialize(9)` deployment serves the cases that enter it, each rewinding the chain to it first. */
+async function initialized(): Promise<Initialized> {
+  initializedRun ??= (async (): Promise<Initialized> => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const arranged = await setup(network);
+    const deployed = await deployEntering(arranged, 'initialize', [9n]);
+    return { setup: arranged, deployed, snapshot: await network.takeSnapshot() };
+  })();
+  const shared = await initializedRun;
+  await shared.snapshot.restore();
+  return shared;
+}
+
 describe('a root proxy frame whose implementation entry records nothing', () => {
   it('generates a returning fallback when some implementation entry returns', () => {
     const fallback = buildProxyArtifact(ledger).abi.find((entry) => entry.name === '__fallback');
@@ -135,17 +157,13 @@ describe('a root proxy frame whose implementation entry records nothing', () => 
   });
 
   it('settles a writing initialize through the proxy', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const setup_ = await setup(network);
-    const deployed = await deployEntering(setup_, 'initialize', [9n]);
+    const { deployed } = await initialized();
     expect(deployed.accepted, deployed.objection).toBe(true);
   });
 
   it('carries the value the returning entry computed through the root proxy', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const setup_ = await setup(network);
-    const deployed = await deployEntering(setup_, 'initialize', [9n]);
-    const result = await callRoot(setup_, deployed, 'total', [],
+    const { setup: arranged, deployed } = await initialized();
+    const result = await callRoot(arranged, deployed, 'total', [],
       '6d9f0b2a4c8e0d2f4b6a8c0e2d4f6b8a' + '0c2e4d6f8b0a2c4e6d8f0b2a4c6e8d0f');
     expect(result.accepted, result.objection).toBe(true);
     expect(result.value).toBe(10n);
@@ -170,22 +188,18 @@ describe('a root proxy frame whose implementation entry records nothing', () => 
   });
 
   it('settles a returning entry that also emits, entered as a later root call', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const setup_ = await setup(network);
-    const deployed = await deployEntering(setup_, 'initialize', [9n]);
+    const { setup: arranged, deployed } = await initialized();
     const result = await callRoot(
-      setup_, deployed, 'publish', [4n], '4b6d8f0a2c4e6b8d0f2a4c6e8b0d2f4a' + '6c8e0b2d4f6a8c0e2b4d6f8a0c2e4d6e',
+      arranged, deployed, 'publish', [4n], '4b6d8f0a2c4e6b8d0f2a4c6e8b0d2f4a' + '6c8e0b2d4f6a8c0e2b4d6f8a0c2e4d6e',
     );
     expect(result.accepted).toBe(true);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('settles a void emitting entry entered as a later root call', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const setup_ = await setup(network);
-    const deployed = await deployEntering(setup_, 'initialize', [9n]);
+    const { setup: arranged, deployed } = await initialized();
     const result = await callRoot(
-      setup_, deployed, 'note', [], '8e0d2f4b6a8c0e2d4f6b8a0c2e4d6f8b' + '0a2c4e6d8f0b2a4c6e8d0f2b4a6c8e0e',
+      arranged, deployed, 'note', [], '8e0d2f4b6a8c0e2d4f6b8a0c2e4d6f8b' + '0a2c4e6d8f0b2a4c6e8d0f2b4a6c8e0e',
     );
     expect(result.accepted).toBe(true);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);

@@ -4,7 +4,7 @@ import { FrameKind, bytesToHex } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
@@ -303,10 +303,30 @@ function relayExternals(funded: Awaited<ReturnType<typeof deployRelay>>): Record
   };
 }
 
-describe('a hop whose proxied callee calls a third contract of its own', () => {
-  it("settles the callee chain and the callee's own call, and broadcasts", async () => {
+/** The relay deployment the cases share, and the chain as it stood when the deployment was done. */
+interface Relay {
+  readonly network: MockNetworkProvider;
+  readonly funded: Awaited<ReturnType<typeof deployRelay>>;
+  readonly snapshot: SnapshotRestorer;
+}
+
+let relayRun: Promise<Relay> | undefined;
+
+/** One relay deployment serves both cases, each rewinding the chain to it first. */
+async function deployedRelay(): Promise<Relay> {
+  relayRun ??= (async (): Promise<Relay> => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployRelay(network);
+    return { network, funded, snapshot: await network.takeSnapshot() };
+  })();
+  const relay = await relayRun;
+  await relay.snapshot.restore();
+  return relay;
+}
+
+describe('a hop whose proxied callee calls a third contract of its own', () => {
+  it("settles the callee chain and the callee's own call, and broadcasts", async () => {
+    const { network, funded } = await deployedRelay();
 
     const result = await callPerCallProxyEntry({
       provider: network,
@@ -339,8 +359,7 @@ describe('a hop whose proxied callee calls a third contract of its own', () => {
   });
 
   it('refuses by name a callee entry the compiler refused, which the hop could never declare', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployRelay(network);
+    const { network, funded } = await deployedRelay();
 
     // `Inner.lateWrite` writes its verified mapping, calls out, then writes again, and the compiler refuses it by
     // name: the segment its second write lands in is a fact the derivation does not read. The hop has no call

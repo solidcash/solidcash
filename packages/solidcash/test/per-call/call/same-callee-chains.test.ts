@@ -3,7 +3,7 @@ import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin } from
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
@@ -235,10 +235,33 @@ async function deployChains(network: MockNetworkProvider): Promise<{
   };
 }
 
+type Funded = Awaited<ReturnType<typeof deployChains>>;
+
+/** The deployment the cases share, and the chain as it stood when the deployment was done. */
+interface Chains {
+  readonly network: MockNetworkProvider;
+  readonly funded: Funded;
+  readonly snapshot: SnapshotRestorer;
+}
+
+let chainsRun: Promise<Chains> | undefined;
+
+/** One deployment serves every case, each rewinding the chain to it first, so no case reads another's broadcast. */
+async function deployedChains(): Promise<Chains> {
+  chainsRun ??= (async (): Promise<Chains> => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funded = await deployChains(network);
+    return { network, funded, snapshot: await network.takeSnapshot() };
+  })();
+  const chains = await chainsRun;
+  await chains.snapshot.restore();
+  return chains;
+}
+
 /** Runs one hop of the root entry, with the reaches' keys as its argument. */
 async function callRun(
   network: MockNetworkProvider,
-  funded: Awaited<ReturnType<typeof deployChains>>,
+  funded: Funded,
   args: readonly bigint[],
 ): Promise<Awaited<ReturnType<typeof callPerCallProxyEntry>>> {
   return callPerCallProxyEntry({
@@ -260,8 +283,7 @@ async function callRun(
 
 describe('one entry reaching the same mapping-writing callee three times', () => {
   it('settles three reaches that insert into three gaps beside the other callees, and broadcasts', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployChains(network);
+    const { network, funded } = await deployedChains();
     const { distinctGap, seeds } = keySets();
     // Each reach's key lands in a different gap of the seeded list, so no two reaches share a predecessor.
     expect(distinctGap.map(slotOf)).toStrictEqual(
@@ -275,8 +297,7 @@ describe('one entry reaching the same mapping-writing callee three times', () =>
   });
 
   it('refuses three reaches that insert into one gap, which one predecessor cannot carry', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployChains(network);
+    const { network, funded } = await deployedChains();
     const { sharedGap } = keySets();
     await expect(callRun(network, funded, sharedGap)).rejects.toThrow(
       /entry "Ledger\.move\(\)" 3 times.*insert into collection "held" through the same node.*distinct nodes/,
@@ -284,8 +305,7 @@ describe('one entry reaching the same mapping-writing callee three times', () =>
   });
 
   it('refuses three reaches that write one key, which one node output cannot carry', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployChains(network);
+    const { network, funded } = await deployedChains();
     const { oneKey } = keySets();
     await expect(callRun(network, funded, [oneKey, oneKey, oneKey])).rejects.toThrow(
       /entry "Ledger\.move\(\)" 3 times.*write collection "held" at the same key.*distinct keys/,

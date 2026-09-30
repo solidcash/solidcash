@@ -4,7 +4,7 @@ import { parsePushdataCommitment, type Artifact } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
@@ -197,9 +197,22 @@ describe('an entry that reads a mapping key it does not write', () => {
   });
 });
 
+let wideRun: Promise<{ readonly deployed: Deployed; readonly snapshot: SnapshotRestorer }> | undefined;
+
+/** One Wide serves the Wide cases, each rewinding the chain to the deployment first. */
+async function deployedWide(): Promise<Deployed> {
+  wideRun ??= (async (): Promise<{ readonly deployed: Deployed; readonly snapshot: SnapshotRestorer }> => {
+    const deployed = await deploy(wide);
+    return { deployed, snapshot: await deployed.provider.takeSnapshot() };
+  })();
+  const shared = await wideRun;
+  await shared.snapshot.restore();
+  return shared.deployed;
+}
+
 describe('an entry that touches only a later data record', () => {
   it('writes that record and leaves the first unspent', async () => {
-    const deployed = await deploy(wide);
+    const deployed = await deployedWide();
     const before = await readPerCallDeployment(deployed.provider, deployed.categoryId, wide.stateLayout!);
     const first = before.records[0]!.token!.nft!.commitment;
 
@@ -216,7 +229,7 @@ describe('an entry that touches only a later data record', () => {
   });
 
   it('writes that record beside a mapping key, declaring the first kept ahead of the key\'s group', async () => {
-    const deployed = await deploy(wide);
+    const deployed = await deployedWide();
     const before = await readPerCallDeployment(deployed.provider, deployed.categoryId, wide.stateLayout!);
     const first = before.records[0]!.token!.nft!.commitment;
 
@@ -230,7 +243,7 @@ describe('an entry that touches only a later data record', () => {
   });
 
   it('is read by a view that names only that record', async () => {
-    const deployed = await deploy(wide);
+    const deployed = await deployedWide();
     await call(deployed, 'bump');
     await call(deployed, 'bump');
     const read = await readPerCallEntry({

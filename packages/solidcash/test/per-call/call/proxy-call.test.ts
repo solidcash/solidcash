@@ -4,7 +4,7 @@ import { buildPushdataCommitment, bytesToHex, type StateLayout } from '@solidcas
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
@@ -127,21 +127,25 @@ async function deployedWithCallerCoins(
   };
 }
 
-/** A deployment behind the generated proxy, on the network that holds it. */
+/** A deployment behind the generated proxy, on the network that holds it, and the chain as it stood when done. */
 interface Deployed {
   readonly network: MockNetworkProvider;
   readonly funded: Awaited<ReturnType<typeof deployedWithCallerCoins>>;
+  readonly snapshot: SnapshotRestorer;
 }
 
 let deployedRun: Promise<Deployed> | undefined;
 
-/** The deployment the first two cases share: only the first broadcasts, and the refusal's record check is relative. */
-function sharedDeployment(): Promise<Deployed> {
+/** The deployment the generated proxy's cases share, each rewinding the chain to it first. */
+async function sharedDeployment(): Promise<Deployed> {
   deployedRun ??= (async (): Promise<Deployed> => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    return { network, funded: await deployedWithCallerCoins(network) };
+    const funded = await deployedWithCallerCoins(network);
+    return { network, funded, snapshot: await network.takeSnapshot() };
   })();
-  return deployedRun;
+  const deployed = await deployedRun;
+  await deployed.snapshot.restore();
+  return deployed;
 }
 
 describe('a call into a per-call implementation through its proxy', () => {
@@ -228,8 +232,7 @@ describe('a call into a per-call implementation through its proxy', () => {
     // The generated proxy's fallback consumes the delegated result, so the forwarded call records what the
     // implementation entry computed. The value is the implementation frame's own `retval`: `bump` returns `by * 3`,
     // which is not a field of any record, so only the entry's own answer explains the value the call reports.
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallerCoins(network);
+    const { network, funded } = await sharedDeployment();
 
     const result = await callPerCallProxyEntry({
       provider: network,

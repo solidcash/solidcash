@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
-import { buildPushdataCommitment, bytesToHex } from '@solidcash/utils';
+import { buildPushdataCommitment, bytesToHex, type Artifact } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import type { SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { satoshiContainerLockingBytecode, stateRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
   PerCallCallError, callPerCallEntry, sendPerCallValue, type PerCallCallResult,
@@ -45,9 +46,28 @@ function received(value: bigint): string {
   return buildPushdataCommitment(vault.stateLayout!, { received: value }, 0);
 }
 
+/**
+ * One deployment of `artifact` for the cases that share it: the first deploys it and snapshots the chain, and each
+ * rewinds the chain to that snapshot first, so every case starts from the deployment as it came out.
+ */
+function sharedDeployment(artifact: Artifact): () => Promise<Deployed> {
+  let run: Promise<{ readonly deployed: Deployed; readonly snapshot: SnapshotRestorer }> | undefined;
+  return async (): Promise<Deployed> => {
+    run ??= (async (): Promise<{ readonly deployed: Deployed; readonly snapshot: SnapshotRestorer }> => {
+      const deployed = await deploy(artifact);
+      return { deployed, snapshot: await deployed.provider.takeSnapshot() };
+    })();
+    const shared = await run;
+    await shared.snapshot.restore();
+    return shared.deployed;
+  };
+}
+
+const deployedVault = sharedDeployment(vault);
+
 describe('a value send to a deployed per-call contract', () => {
   it('runs receive() with the value, paid into a container of the contract', async () => {
-    const deployed = await deploy(vault);
+    const deployed = await deployedVault();
     const result = await sendPerCallValue({ ...callerOf(deployed), value: AMOUNT });
 
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -65,7 +85,7 @@ describe('a value send to a deployed per-call contract', () => {
 
 describe('a call to a payable entry carrying value', () => {
   it('reads the value as msg.value, paid into a container of the contract', async () => {
-    const deployed = await deploy(vault);
+    const deployed = await deployedVault();
     const result = await callPerCallEntry({ ...callerOf(deployed), functionName: 'deposit', value: AMOUNT });
 
     expect(result.accepted).toBe(true);
@@ -74,7 +94,7 @@ describe('a call to a payable entry carrying value', () => {
   });
 
   it('is refused by name for an entry that is not payable', async () => {
-    const deployed = await deploy(vault);
+    const deployed = await deployedVault();
     await expect(callPerCallEntry({ ...callerOf(deployed), functionName: 'touch', args: [1n], value: AMOUNT }))
       .rejects.toThrow(PerCallCallError);
     await expect(callPerCallEntry({ ...callerOf(deployed), functionName: 'touch', args: [1n], value: AMOUNT }))
@@ -94,6 +114,7 @@ const WALLET_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 const wallet = compileStringMulti(WALLET_SOURCE, { composition: 'per-call' }).Wallet!;
+const deployedWallet = sharedDeployment(wallet);
 
 /** The value the broadcast pays to the caller's own lock outside its change, which is the last output. */
 function paidToCaller(result: PerCallCallResult, callerLock: Uint8Array): bigint {
@@ -105,7 +126,7 @@ function paidToCaller(result: PerCallCallResult, callerLock: Uint8Array): bigint
 
 describe('an entry that sends, paid from the contract\'s containers', () => {
   it('withdraws what a deposit put in, and keeps the change in a container', async () => {
-    const deployed = await deploy(wallet);
+    const deployed = await deployedWallet();
     const deposit = await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
     expect(deposit.accepted).toBe(true);
 
@@ -124,14 +145,14 @@ describe('an entry that sends, paid from the contract\'s containers', () => {
   });
 
   it('is refused by name when the containers cannot cover the send', async () => {
-    const deployed = await deploy(wallet);
+    const deployed = await deployedWallet();
     await sendPerCallValue({ ...(await currentCaller(deployed)), value: 5_000n });
     await expect(callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'withdraw', args: [10_000n] }))
       .rejects.toThrow(/contract "Wallet" holds 5000 satoshis in its containers, and entry "withdraw" sends 10000 more/);
   });
 
   it('forwards the value a payable entry receives without touching the containers', async () => {
-    const deployed = await deploy(wallet);
+    const deployed = await deployedWallet();
     const forward = await callPerCallEntry({
       ...(await currentCaller(deployed)), functionName: 'forward', value: 7_000n,
     });
@@ -229,10 +250,11 @@ const PAYMENTS_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 const payments = compileStringMulti(PAYMENTS_SOURCE, { composition: 'per-call' });
+const deployedPayer = sharedDeployment(payments.Payer!);
 
 describe('an entry that pays a contract through its receive()', () => {
   it('runs the recipient\'s receive() with the value, paid from the payer\'s containers', async () => {
-    const deployed = await deploy(payments.Payer!);
+    const deployed = await deployedPayer();
     const vaultCategory = await deployBeside(deployed, payments.Vault!, '47'.repeat(32));
     await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
 
@@ -256,7 +278,7 @@ describe('an entry that pays a contract through its receive()', () => {
   });
 
   it('is refused by name when the recipient has no receive(), or is not among the externals', async () => {
-    const deployed = await deploy(payments.Payer!);
+    const deployed = await deployedPayer();
     // Both are refused from the artifacts and the call's externals, before any recipient deployment is read.
     const closedCategory = '48'.repeat(32);
     await expect(callPerCallEntry({

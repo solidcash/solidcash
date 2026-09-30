@@ -7,7 +7,7 @@ import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
 import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -194,11 +194,17 @@ async function deployTwoChains(network: MockNetworkProvider): Promise<{
   };
 }
 
+/** A hop's result, and the trace lines it printed. */
+interface TracedHop {
+  readonly result: PerCallProxyCallResult;
+  readonly traced: readonly string[];
+}
+
 /** The instrumented call one hop's run makes, with the trace captured around it. */
 async function callWithTrace(
   network: MockNetworkProvider,
   funded: Awaited<ReturnType<typeof deployTwoChains>>,
-): Promise<readonly string[]> {
+): Promise<TracedHop> {
   const previous = process.env.PER_CALL_HOP_TRACE;
   process.env.PER_CALL_HOP_TRACE = '1';
   const lines: string[] = [];
@@ -206,8 +212,9 @@ async function callWithTrace(
     lines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
     return true;
   }) as typeof process.stdout.write);
+  let result: PerCallProxyCallResult;
   try {
-    await callPerCallProxyEntry({
+    result = await callPerCallProxyEntry({
       provider: network,
       implementationArtifact: root,
       proxyArtifact: buildProxyArtifact(root),
@@ -227,29 +234,26 @@ async function callWithTrace(
     if (previous === undefined) delete process.env.PER_CALL_HOP_TRACE;
     else process.env.PER_CALL_HOP_TRACE = previous;
   }
-  return lines.filter((line) => line.startsWith('HOPTRACE ')).map((line) => line.trimEnd());
+  return { result, traced: lines.filter((line) => line.startsWith('HOPTRACE ')).map((line) => line.trimEnd()) };
+}
+
+let hopRun: Promise<TracedHop> | undefined;
+
+/**
+ * The one hop both cases read, deployed and run once: the first case reads its result, the second its trace. The
+ * trace only observes the draft (`src/per-call/proxy/hop-trace.ts`), so the traced hop settles as an untraced one.
+ */
+function tracedHop(): Promise<TracedHop> {
+  hopRun ??= (async (): Promise<TracedHop> => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    return callWithTrace(network, await deployTwoChains(network));
+  })();
+  return hopRun;
 }
 
 describe('a hop whose entry reaches two callee chains', () => {
   it('settles the proxied chain and the later value-returning callee, and broadcasts', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployTwoChains(network);
-
-    const result = await callPerCallProxyEntry({
-      provider: network,
-      implementationArtifact: root,
-      proxyArtifact: buildProxyArtifact(root),
-      proxyCategoryId: funded.rootProxyCategoryId,
-      implementationCategoryId: funded.rootImplementationCategoryId,
-      functionName: 'run',
-      args: [1n],
-      externals: funded.externals,
-      callerUtxo: funded.callCoin,
-      callerLockingBytecode: funded.deployerLock,
-      funder: funded.funder,
-      changeAddress: funded.changeAddress,
-      vm: compositionMachine(),
-    });
+    const { result } = await tracedHop();
 
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.accepted).toBe(true);
@@ -257,9 +261,7 @@ describe('a hop whose entry reaches two callee chains', () => {
   });
 
   it('attempts the implementation frame more than once and settles it, past a repeated call site', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployTwoChains(network);
-    const traced = await callWithTrace(network, funded);
+    const { traced } = await tracedHop();
 
     // The entry's first call site is a loop reached once; the caller's own dynamic write and its callees' results are
     // values the plan has to be told, so the frame is attempted once per value and then derived.

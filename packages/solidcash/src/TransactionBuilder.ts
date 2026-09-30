@@ -1287,7 +1287,8 @@ export class TransactionBuilder {
   private async getTxDetails(txid: string, raw: true): Promise<string>;
   private async getTxDetails(txid: string, raw?: true): Promise<TransactionDetails | string> {
     for (let retries = 0; retries < 1200; retries += 1) {
-      await delay(500);
+      // The first lookup runs at once; a provider that has not indexed the transaction yet is retried every 500 ms.
+      if (retries > 0) await delay(500);
       try {
         const hex = await this.provider.getRawTransaction(txid);
 

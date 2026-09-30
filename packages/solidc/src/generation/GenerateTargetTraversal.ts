@@ -29248,9 +29248,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const amtIdx = (): number => this.getStackIndex('(credit_amt)');
     const physicalCommitment = `(kernel_physical_commitment_${this.sortedUpsertLoopJournalAccessStreamIndex})`;
     // Emit `master + blockSize + <persistent counter> + add`, leaving an output/input index on top (U untracked above).
+    // A per-call frame with no sorted batch ahead of the loop creates its records as trailing outputs, so the turn's
+    // output is named by its position in the segment's declared list - the negative ordinal a batch's created record
+    // uses - with the loop's own counter subtracted past the records the frame declares before them.
+    const declaredOut = this.readsRecordsFromFrame
+      && this.batchTargetSlots().length === 0 && this.entrySlots[slotIndex]?.inLoop === true;
     const pushIdx = (counterName: string, add: number, u: number): void => {
       const side = counterName === this.sortedUpsertLoopOutCounterName ? 'out' : 'in';
-      if (this.readsRecordsFromFrame) {
+      const declaredSide = declaredOut && side === 'out';
+      if (declaredSide) {
+        this.emit(encodeInt(BigInt(-(this.perCallRecordsBeforeGroups() + 1))), loc);
+      } else if (this.readsRecordsFromFrame) {
         // The frame's own witness declares the loop's nodes past the slot's coordinate, so the turn's node is the
         // frame's parked base plus that offset, counted by the loop's own counter.
         this.emitPerCallEntryIndex(side, slotIndex, loc);
@@ -29265,7 +29273,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // select a different physical order. They remain active only as separately checked logical cardinalities.
       const routeGlobalPhysicalInput = counterName === this.sortedUpsertLoopCounterName
         && this.kernelJournalFinalOutputCursorReconciliationActive();
-      if (this.sortedUpsertGrouped && !routeGlobalPhysicalInput) {
+      if (this.sortedUpsertGrouped && !routeGlobalPhysicalInput && !declaredSide) {
         const baseName = counterName === this.sortedUpsertLoopOutCounterName
           ? this.sortedUpsertOutputBaseName : this.sortedUpsertInputBaseName;
         this.emit(encodeInt(BigInt(this.getStackIndex(baseName) + u + 1)), loc); this.emit(Op.OP_PICK, loc);
@@ -29273,7 +29281,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (!routeGlobalPhysicalInput) {
         this.emit(encodeInt(BigInt(this.getStackIndex(counterName) + u + 1)), loc); this.emit(Op.OP_PICK, loc);
-        this.emit(Op.OP_ADD, loc);
+        this.emit(declaredSide ? Op.OP_SUB : Op.OP_ADD, loc);
       }
     };
 

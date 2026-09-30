@@ -14,33 +14,35 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * A mapping upsert that runs inside a run-time loop, driven through the shipped call path.
  *
  * The whole point of asking here rather than at a hand-built witness: the shipped path plans the frame's records
- * itself, so what the machine answers is about the entry's own code and not about a test's idea of the block. The
- * loop is the only difference between the two contracts below - one upserts a mapping whose key is an element of a
- * caller-supplied array, the other writes the same mapping once from a parameter - and the loop's own body makes no
- * call, so neither entry reaches a callee frame.
+ * itself, so what the machine answers is about the entry's own code and not about a test's idea of the block.
  *
- * The refusal is the run-time-loop upsert's own: the machine fails an `OP_VERIFY` inside the emitted loop body, at
- * an instruction the artifact's source map does not name, while the same head with the loop removed (or with a
- * parameter key) settles. It is recorded here as the shape's wall: the artifact publishes no write fact for it
- * either (`solidc/test/per-call/master/loop-upsert-segment.test.ts` pins that beside the machine's refusals of every
- * declaration), because the collection is carried by the run-time-loop machinery rather than by a verified batch.
+ * Two bodies are asked. The first writes one key, handed to the body as an argument, once per turn of a loop whose
+ * trip count the execution decides: the shipped path accepts that spend, and the case after it mutates the
+ * transaction the path assembled - the record the entry wrote carries a commitment its code did not compute - and
+ * the machine refuses it. The second body writes a key that is an element of a caller-supplied array, so a different
+ * node per turn: the compiler plans no verified batch for it (the entry's block layout reserves no `entry` slot for
+ * the collection), and the shipped path's own framing of it is refused by the machine with
+ * `Program failed an OP_VERIFY operation.` The two bodies differ only in where the key comes from, which is what
+ * separates the loop upsert the path serves from the one it does not.
  */
 
-const LOOP_SOURCE = 'pragma solidcash ^0.13.0;'
+const FIXED_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Ledger {'
+  + '   mapping(address => uint) balances;'
+  + '   function move(address to, uint amount, int turns) {'
+  + '     for (int i = 0; i < turns; i = i + 1) { balances[to] = amount; }'
+  + '     require(turns > 0);'
+  + '   }'
+  + '   function ping() { require(true); }'
+  + ' }';
+
+const VARYING_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address[] workers, uint amount) {'
   + '     for (int i = 0; i < workers.length; i = i + 1) { balances[workers[i]] = amount; }'
   + '     require(workers.length > 0);'
   + '   }'
-  + '   function ping() { require(true); }'
-  + ' }';
-
-/** The control: the same mapping written once from a parameter, with no loop anywhere in the body. */
-const PLAIN_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Ledger {'
-  + '   mapping(address => uint) balances;'
-  + '   function move(address to, uint amount) { balances[to] = amount; require(amount > 0); }'
   + '   function ping() { require(true); }'
   + ' }';
 
@@ -54,10 +56,10 @@ function outpointHash(seed: number): string {
 /** The address the write names, in the form the shipped encoder takes for an `address`. */
 const KEY = binToHex(new Uint8Array(20).fill(0x44));
 
-/** Drives one entry of one contract through the shipped deploy and call path and reports the machine's answer. */
-async function settled(
-  source: string, entry: string, args: readonly unknown[],
-): Promise<{ readonly accepted: boolean; readonly verdicts: readonly string[] }> {
+type CallResult = Awaited<ReturnType<typeof callPerCallEntry>>;
+
+/** Drives one entry of one contract through the shipped deploy and call path and reports what it answered. */
+async function call(source: string, entry: string, args: readonly unknown[]): Promise<CallResult> {
   const artifact = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signature = new SignatureTemplate(alicePriv);
@@ -71,27 +73,58 @@ async function settled(
   const user = encodeLockingBytecodeP2pkh(alicePkh);
   const callerUtxo = { txid: outpointHash(0x50), vout: 0, satoshis: 200_000n };
   await provider.addUtxo(binToHex(user), callerUtxo);
-  const answered = await callPerCallEntry({
+  return callPerCallEntry({
     provider, artifact, categoryId: deployment.categoryId, functionName: entry, args: args as never,
     callerUtxo, callerLockingBytecode: user, funder: signature.unlockP2PKH(), vm: compositionMachine(),
   });
-  return {
-    accepted: answered.accepted,
-    verdicts: answered.verdicts.filter((verdict) => !verdict.accepted)
-      .map((verdict) => `${verdict.id}: ${String(verdict.objection ?? 'refused')}`),
-  };
 }
 
+/** The verdicts of a refused call, as one line, for the assertion that names the reason. */
+const objectionsOf = (answered: CallResult): string => answered.verdicts
+  .filter((verdict) => !verdict.accepted)
+  .map((verdict) => `${verdict.participant}: ${String(verdict.objection ?? 'refused')}`)
+  .join('; ');
+
+/** The commitment of an output's token, or undefined for one that carries no NFT. */
+const commitmentOf = (output: { readonly token?: { readonly nft?: { readonly commitment?: Uint8Array } } }):
+Uint8Array | undefined => output.token?.nft?.commitment;
+
 describe('a mapping upsert inside a run-time loop, through the shipped call path', () => {
-  it('settles the same mapping written once from a parameter', async () => {
-    const outcome = await settled(PLAIN_SOURCE, 'move', [KEY, 42n]);
-    expect(outcome).toStrictEqual({ accepted: true, verdicts: [] });
+  it('accepts the loop upsert whose key the frame holds, and refuses the record it wrote being changed', async () => {
+    const answered = await call(FIXED_SOURCE, 'move', [KEY, 42n, 2n]);
+    expect({ accepted: answered.accepted, objections: objectionsOf(answered) })
+      .toStrictEqual({ accepted: true, objections: '' });
+
+    // The record the entry wrote is the output whose commitment differs from the input's at the same index.
+    const index = answered.transaction.outputs.findIndex((output, at) =>
+      commitmentOf(output) !== undefined
+      && binToHex(commitmentOf(output)!) !== binToHex(commitmentOf(answered.sourceOutputs[at]!) ?? new Uint8Array()));
+    expect(index).toBeGreaterThanOrEqual(0);
+
+    // The mutated spend: the same transaction with one byte of that commitment changed, so the record no longer
+    // carries the value the entry's own code computed.
+    const committed = commitmentOf(answered.transaction.outputs[index]!)!;
+    const changed = new Uint8Array(committed);
+    changed[changed.length - 1] = (changed[changed.length - 1]! ^ 0x01) & 0xff;
+    const mutated = {
+      ...answered.transaction,
+      outputs: answered.transaction.outputs.map((output, at) => (at === index
+        ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: changed } } }
+        : output)),
+    };
+    const master = answered.verdicts.findIndex((verdict) => verdict.accepted);
+    expect(master).toBeGreaterThanOrEqual(0);
+    const vm = compositionMachine();
+    const state = vm.evaluate({
+      inputIndex: master, sourceOutputs: answered.sourceOutputs, transaction: mutated,
+    });
+    expect(vm.stateSuccess(state)).not.toBe(true);
   });
 
-  it('refuses the loop upsert in the machine, on the frame the shipped path planned itself', async () => {
-    const outcome = await settled(LOOP_SOURCE, 'move', [[KEY], 42n]);
-    expect(outcome.accepted).toBe(false);
-    expect(outcome.verdicts.join('; ')).toMatch(
+  it('refuses the loop upsert whose key varies per turn, on the frame the shipped path planned itself', async () => {
+    const answered = await call(VARYING_SOURCE, 'move', [[KEY], 42n]);
+    expect(answered.accepted).toBe(false);
+    expect(objectionsOf(answered)).toMatch(
       /frame "master" of Ledger\.move\(\) .*no source message \(Program failed an OP_VERIFY operation\.\)/,
     );
   });

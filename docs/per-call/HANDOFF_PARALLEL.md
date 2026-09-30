@@ -87,27 +87,31 @@ lands it removes the claim line.
   **both** (`MarketplaceV1.refund`), and a runtime-loop upsert *beside* a call — a loop whose own body makes none,
   or whose write the lowering settles after the calls — publishes **the segment its write lands in** (one call puts
   it at segment 1, two at segment 2), which the machine's own segment control accepts at that segment and refuses one
-  segment later (`solidc/test/per-call/master/loop-upsert-segment.test.ts`).
-  **Open, pending the coordinator's decision**: the fixture's `updateJobWhitelist`, a
-  *varying-key* upsert whose loop body also makes the entry's call. It is not a verified batch at all — the entry's
+  segment later (`solidc/test/per-call/master/loop-upsert-segment.test.ts`). **That loop shape is served end to end
+  when the key is the frame's**: `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` drives it
+  through the shipped deploy and call path, the machine accepts the spend, and the same case then changes one byte of
+  the record the entry wrote and the machine refuses it.
+  **Open, pending the coordinator's decision**: the fixture's `updateJobWhitelist`, whose key is an **element of a
+  caller-supplied array**, so a different node per turn. It is not a verified batch at all — the entry's
   block layout reserves no `entry` slot for the collection — so no segment declares its records and no write fact can
   state them; the machine refuses the well-formed spend wherever its node record is declared (segment 0, the last
   segment, both, and an insert: `Program failed an OP_VERIFY operation.`), and it refuses it on the frame the shipped
-  call path plans **itself** (`conformance/loop-upsert-settlement.test.ts`), while the same mapping written once from
-  a parameter settles on that path. The wall is the emitted run-time-loop upsert body — the journal machinery this
-  stream's `proxy/**` lane runs on, not a write fact. Pinned reproducers:
+  call path plans **itself** (`conformance/loop-upsert-settlement.test.ts`), while the same loop over a key the frame
+  holds settles on that path. So the open part is the varying key: a per-turn node is a run-time target the
+  run-time-loop machinery settles, which this stream's `proxy/**` lane and the frame's layout would have to carry.
+  Pinned reproducers:
   `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the fixture's own shape, the machine's refusals, and the
   segment control) and `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` (the shipped call path).
 - **Done when**: the three refusals are gone from the published census, the master tests pass, and the ladder
   stream has taken the published facts. **Status 2026-09-30: two of the three shapes are done.** The census read back
   with this round's compiler shows seven contracts and **0 refusals**, `postThreadMessage` publishes
   `writeSegments: []` and `refund` its batch and its run, the master tests pass, and the facts are in the ladder
-  stream's hands. **The third shape is open, not done**: the fixture's `updateJobWhitelist` (a varying-key upsert
-  whose loop body also calls) still publishes no write fact, and the compiler cannot state one for it — the entry's
-  block layout reserves no `entry` slot for the collection, so nothing declares those records, and the machine
+  stream's hands. **The third shape is open, not done**: the fixture's `updateJobWhitelist` writes a **different node
+  per turn** — its key is an element of a caller-supplied array — and that variant still publishes no write fact. The
+  entry's block layout reserves no `entry` slot for the collection, so nothing declares those records, and the machine
   refuses the well-formed spend on the frame the shipped call path plans itself
-  (`conformance/loop-upsert-settlement.test.ts`), while the same mapping written once from a parameter settles on
-  that path. Serving it needs the collection declared in the frame's layout and the per-turn operands derived, which
+  (`conformance/loop-upsert-settlement.test.ts`), while the same loop over a key the frame holds settles on that
+  path. Serving it needs the collection declared in the frame's layout and the per-turn operands derived, which
   is compiler code generation plus the ladder stream's `proxy/**` planning — **the coordinator's decision on who
   takes it is what this item now waits for**. Reproducers: `solidc/test/per-call/master/loop-upsert-segment.test.ts`
   (the fixture's own shape, the machine's refusals, the segment control) and

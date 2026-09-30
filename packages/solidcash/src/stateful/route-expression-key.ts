@@ -159,15 +159,11 @@ export function evalComputedKey(
     }
     m = s.match(/^call:(\w+)\((.*)\)$/);
     if (m) {
+      // Only a hash's single argument is evaluated: a struct literal's argument list is not one value.
+      const hash = { hash160: hash160Sync, ripemd160: ripemd160Sync, sha256: sha256Sync, hash256: hash256Sync }[m[1]];
+      if (hash === undefined) return undefined;
       const inner = encode(evalValue(m[2]));
-      if (!inner) return undefined;
-      switch (m[1]) {
-        case 'hash160': return hash160Sync(inner);
-        case 'ripemd160': return ripemd160Sync(inner);
-        case 'sha256': return sha256Sync(inner);
-        case 'hash256': return hash256Sync(inner);
-        default: return undefined;
-      }
+      return inner === undefined ? undefined : hash(inner);
     }
     return undefined;
   };

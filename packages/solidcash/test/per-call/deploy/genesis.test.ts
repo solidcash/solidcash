@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import {
   buildAnonymousEventNftCovenantScript, buildEntryNftCovenantScript, buildEventNftCovenantScript,
   buildPushdataCommitment, bytesEqual, computeCollectionHash, computeEventNameHash, encodeEventCommitment,
@@ -453,6 +453,23 @@ describe('a per-call genesis whose constructor writes a mapping entry', () => {
       artifact: multi, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN], senderLockingBytecode: OWNER_LOCK,
     })).toThrow(/writes 2 mapping entry\(ies\) across 2 collection\(s\), and this deployment plans one collection/);
+  });
+
+  it('refuses a struct literal as a mapping value, by name', () => {
+    const seeded = compileString(
+      'pragma solidcash ^0.13.0;'
+      + ' struct Terms { address who; int start; }'
+      + ' contract Seeded {'
+      + '   mapping(int => Terms) public terms;'
+      + `   constructor(address who) { this.terms[7] = Terms(0x${binToHex(encodeLockingBytecodeP2pkh(alicePkh))}, 5); }`
+      + '   function touch() { require(true); }'
+      + ' }',
+      { composition: 'per-call' },
+    );
+    expect(() => derivePerCallGenesis({
+      artifact: seeded, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+      provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN], senderLockingBytecode: OWNER_LOCK,
+    })).toThrow(/writes mapping "terms" a value this deployment cannot resolve/);
   });
 });
 

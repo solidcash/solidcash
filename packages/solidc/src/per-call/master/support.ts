@@ -61,6 +61,7 @@ import {
   MappingDeleteNode,
   Node,
   NullaryOpNode,
+  ParameterNode,
   StateAccessNode,
   StateArrayAssignNode,
   StateArrayDeleteNode,
@@ -161,6 +162,10 @@ export function stripFrameParameters(contract: ContractNode): void {
   const functions = [
     contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions,
   ];
+  // The positions each function loses, so an internal call to it drops the arguments those positions took. A call
+  // writes the sender category itself only in a compiler-generated route; any other call leaves it to the hidden
+  // sender context, so its arguments line up with the parameters that are not the category's.
+  const stripped = new Map<FunctionDefinitionNode, ReadonlyMap<number, Set<number>>>();
   for (const fn of functions) {
     if (!fn) continue;
     // The sorted-batch operands and a dynamic value's chunk-run coordinate are derived from the master's own frame,
@@ -169,11 +174,18 @@ export function stripFrameParameters(contract: ContractNode): void {
     const derived = derivableBatchWitnessNames(fn, constants);
     const derivedDynamic = derivableDynamicChunkNames(fn);
     fn.perCallValueWitnessSlots = valueWitnessSlotsOf(fn);
-    fn.parameters = fn.parameters.filter((parameter) =>
+    const kept = (parameter: ParameterNode): boolean =>
       !(derived?.has(parameter.name) ?? false) && !(derivedDynamic?.has(parameter.name) ?? false)
       && !FRAME_PARAMETERS.has(parameter.name) && !RETURN_EVENT_PARAMETERS.has(parameter.name)
       && !isExternalCallParameter(parameter.name)
-      && !VALUE_WITNESS_PARAMETER.test(parameter.name) && !isFoldParameter(parameter.name));
+      && !VALUE_WITNESS_PARAMETER.test(parameter.name) && !isFoldParameter(parameter.name);
+    const lostAt = (parameters: readonly ParameterNode[]): Set<number> =>
+      new Set(parameters.flatMap((parameter, index) => (kept(parameter) ? [] : [index])));
+    const passed = fn.parameters.filter((parameter) => !FRAME_PARAMETERS.has(parameter.name));
+    if (fn.parameters.some((parameter) => !kept(parameter))) {
+      stripped.set(fn, new Map([[fn.parameters.length, lostAt(fn.parameters)], [passed.length, lostAt(passed)]]));
+    }
+    fn.parameters = fn.parameters.filter(kept);
     // A multi-target batch is classified as a dense linear row batch for the direct convention. The per-call master
     // derives the operands itself and settles the batch through the general per-target arm, which reads no rank or
     // row, so a derivable batch is reclassified here before the body is emitted.
@@ -182,6 +194,17 @@ export function stripFrameParameters(contract: ContractNode): void {
         if (batch.slotIndices.length > 1 && batch.linear === true) batch.linear = undefined;
       }
     }
+  }
+  // The semantic pass supplied those arguments at internal calls (a `this.f()` included), so a call would otherwise
+  // push operands its callee no longer declares and leave them under its result.
+  for (const fn of functions) {
+    if (fn?.body === undefined) continue;
+    walkInvocationAst(fn.body, (node) => {
+      if (!(node instanceof FunctionCallNode) || node.resolvedFunction === undefined) return;
+      const lost = stripped.get(node.resolvedFunction)?.get(node.parameters.length);
+      if (lost === undefined) return;
+      node.parameters = node.parameters.filter((_, index) => !lost.has(index));
+    });
   }
 }
 

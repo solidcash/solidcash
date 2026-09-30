@@ -51,7 +51,7 @@ const ROWS: readonly Row[] = [
       + ' function viaInternal() external returns (address) { marker += 1; return _who(); }',
   },
   {
-    label: 'this.g()', entry: 'viaThis', evm: 'A', refusal: /master: frame "master" of A\.viaThis\(\)/,
+    label: 'this.g()', entry: 'viaThis', evm: 'A',
     members: `${WHO} function viaThis() external returns (address) { marker += 1; return this.whoExt(); }`,
   },
   {
@@ -62,7 +62,6 @@ const ROWS: readonly Row[] = [
   },
   {
     label: 'address(this).call(g)', entry: 'viaLowLevelSelf', evm: 'A',
-    refusal: /master: frame "master" of A\.viaLowLevelSelf\(\)/,
     members: `${WHO} function viaLowLevelSelf() external returns (address) { marker += 1;`
       + ' (bool ok, bytes memory r) = address(this).call(abi.encodeCall(IA.whoExt, ())); require(ok);'
       + ' return abi.decode(r, (address)); }',
@@ -76,7 +75,7 @@ const ROWS: readonly Row[] = [
       + ' return abi.decode(r, (address)); }',
   },
   {
-    label: 'try this.g()', entry: 'viaTryThis', evm: 'A', refusal: /master: frame "master" of A\.viaTryThis\(\)/,
+    label: 'try this.g()', entry: 'viaTryThis', evm: 'A',
     members: `${WHO} function viaTryThis() external returns (address) { marker += 1;`
       + ' try this.whoExt() returns (address s) { return s; } catch { return address(0); } }',
   },

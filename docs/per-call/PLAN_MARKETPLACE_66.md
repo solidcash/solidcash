@@ -1721,11 +1721,12 @@ risk. Take the slices in order, each with its own tests.
     (`TypeCheckTraversal.callSiteParameterTypes`); a derived key that is a frame value hashes the item the body's
     own `msg.sender`/`tx.origin` read picks, so a subroutine's write uses the context its caller pushed
     (`GenerateTargetTraversal.frameValueSlotName`); and a body whose batch write would land in a later segment than
-    its own derivation reads is refused by the name of its caller for a call the caller has *already made* when it
-    invokes the body (`support.ts`, `master/subroutine-batch-segment.test.ts`), since a self-call is a subroutine
-    rather than a record and closes no segment; a call the caller makes *after* the invocation leaves the write where
-    the invocation ran, so that shape composes. **Measured**
-    (`toys/identity.test.ts`, 20 cases green; `master/subroutine-batch-segment.test.ts`, 3 cases green): the plan's
+    its own derivation reads is refused by the name of its caller for a call the caller has *already made on any
+    path* when it invokes the body - a call only one arm of a branch takes counts, because that execution reaches
+    the invocation in the later segment (`support.ts`, `master/subroutine-batch-segment.test.ts`) - since a self-call
+    is a subroutine rather than a record and closes no segment; a call the caller makes *after* the invocation leaves
+    the write where the invocation ran, so that shape composes. **Measured**
+    (`toys/identity.test.ts`, 20 cases green; `master/subroutine-batch-segment.test.ts`, 4 cases green): the plan's
     exact spelling and its helper variant compile with no published refusals; the read held in a local and the same
     read passed as an argument publish the same entry access and the same layout slot in both conventions; the
     caller that has called before the invocation is refused by name with its callee, and the caller whose call

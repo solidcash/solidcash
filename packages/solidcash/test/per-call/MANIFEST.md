@@ -35,7 +35,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 143 |
-| `packages/solidcash/test/per-call/call/` | `solidcash` | 144 |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 148 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 11 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 103 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 93 |
@@ -43,18 +43,19 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 9 (6 by default, 3 under `PER_CALL_FULL=1`) |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | 82 |
-| `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2 |
-| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 107, under `PER_CALL_AHEAD=1` |
+| `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2, under `PER_CALL_FULL=1` |
+| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 130, under `PER_CALL_AHEAD=1` |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 10 |
 
-Total: 1878 checks (115 + 664 + 1089 + 10), with four more cases that run under
+Total: 1882 checks (115 + 664 + 1093 + 10), with four more cases that run under
 `PER_CALL_FULL=1`: three in `primitives/many-masters.test.ts` (the nine-entry composition and its refusal, which
 `shapes/deep-arbitration.test.ts` covers by default, and the twenty-four-master composition, which takes about
 twenty-eight seconds to derive), and the shipped data contract's clock-stamped append
 (`call/proxy-proxied-callee-element-clock.test.ts`), which deploys the project's compiled `MarketplaceDataV1`
-behind its proxy and takes about three and a half minutes. The package totals are full-config runs of
+behind its proxy and takes about three and a half minutes; `pw7-measure.test.ts` runs only under `PER_CALL_FULL=1`
+too. The package totals are full-config runs of
 `vitest.per-call.config.ts`: `solidc` 664 is the four rows above it (93 files),
-`solidcash` 1089 is the seventeen rows above it (191 files),
+`solidcash` 1093 is the rows above it from `validator/` down (191 files; refreshed at the eighth prune, `01cfeb172`),
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -310,8 +311,9 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   `cross-contract-identity.test.ts`, each the EVM's answer beside the refusal the per-call path meets by name.
 - **`solidcash/test/per-call/pw7-measure.test.ts`** - a measurement instrument rather than a regression guard: it
   drives the shipped composer and derivation on Y2, Y6 and the vault graph, counts the machine's own evaluations
-  per master, and prints a JSON summary to `PW7_OUT` (default `/tmp/pw7-measure.json`). The twenty-four-master case
-  runs only under `PW7_FULL=1`. The plan's 4.5 rows carry the numbers it produces.
+  per master, and prints a JSON summary to `PW7_OUT` (default `/tmp/pw7-measure.json`). It runs only under
+  `PER_CALL_FULL=1`, and its twenty-four-master case under `PW7_FULL=1` as well. The plan's 4.5 rows carry the
+  numbers it produces.
 - **`solidcash/test/per-call/ahead/`** - walls ahead: neutral replicas of the later groups' flow shapes, deployed
   behind generated proxies and driven through `callPerCallProxyEntry`, each pinned where it stands and, with its
   first wall stepped around, at the next; the scoreboard's "Walls ahead" table in the plan names each wall and its
@@ -319,9 +321,11 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   `time-gated-challenge.test.ts` (MS6), `deep-arbitration.test.ts` (MS7), `revert-after-calls.test.ts` (MS10),
   `job-threads-and-refusals.test.ts` (L4: posting, thread messages, allowlists and refusals), `job-updates.test.ts`
   (L4: updates, closing, reopening and withdrawing), `call-argument-from-own-write.test.ts` (a call argument read
-  from the entry's own write), `packed-address-argument.test.ts` (an address read from a struct field packed into a
-  call argument) and `block-oracle-beside-array.test.ts` (records an entry does not name, and a `view` read of a
-  proxied store). The directory runs only under `PER_CALL_AHEAD=1`.
+  from the entry's own write), `packed-address-argument.test.ts` and `packed-integer-argument.test.ts` (a
+  struct-field address or an integer packed into a call argument), `block-oracle-beside-array.test.ts` (records an
+  entry does not name, and a `view` read of a proxied store) and `read-only-dynamic-records.test.ts` and
+  `hop-callee-read-beside-batch.test.ts` (the acceptance cases of the two hop patches in `docs/per-call/patches/`,
+  pinned where HEAD stands). The directory runs only under `PER_CALL_AHEAD=1`.
 
 ## Which refusals cover which attack
 

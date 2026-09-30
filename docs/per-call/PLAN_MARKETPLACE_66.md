@@ -2168,6 +2168,16 @@ Titles marked NEVER have not passed on any real compile to date.
   (the run-time-loop journal machinery it runs on is theirs), recorded in `HANDOFF_PARALLEL.md`'s PW3 item with that
   item's done-when narrowed to the publication shapes and the census, and with both reproducers committed
   (`solidc/test/per-call/master/loop-upsert-segment.test.ts`, `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`).
+- **The machine verdicts for the two publication shapes PW3 owns are the ones the suite already carries**: a body
+  that writes nothing of its own must declare its own record kept, and the machine refuses the same record declared
+  changed where the code never touches it (`solidcash/test/per-call/hostile/unwritten-record-change.test.ts`, whose
+  `touch` entry is exactly "one call, no write of its own"); a batch write beside a dynamic append settles with the
+  machine accepting the well-formed spend and refusing three mutations of it
+  (`solidc/test/per-call/master/insert-beside-append.test.ts`); and the machine's own segment control for a batch
+  record accepts the declaration at the write's segment and refuses it one segment later
+  (`solidc/test/per-call/master/loop-upsert-segment.test.ts`). No accepted spend exists for a run-time-loop upsert
+  anywhere in the tree - the shipped call path's own framing of one is refused - which is why that shape is the
+  handover recorded above and not a third publication.
 - **PW3's fixture census was read back with this round's compiler.** `node --max-old-space-size=8192
   packages/testing/dist/cli.js compile --jobs 4` over the fixture project, at HEAD `87b092627`, reporting `Compiled
   9 Solidity source(s) in 0 compiler job(s) (9 cache hit(s)) -> 7 artifact(s)`, so the artifacts are the compiler's

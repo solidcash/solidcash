@@ -5,9 +5,11 @@ import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -169,5 +171,194 @@ describe('a hop whose entry calls a contract behind its own proxy', () => {
     expect(callee.calls).toHaveLength(1);
     expect(callee.calls[0]!.kind).toBe(FrameKind.DELEGATE);
     expect(bytesToHex(callee.calls[0]!.target)).toBe(bytesToHex(implementationAddress));
+  });
+});
+
+// A callee that is two contracts *and* calls a third: the proxy leg delegates to the implementation entry, which
+// then reaches a contract of its own. The callee's own call has to be bound before the frame that makes it is
+// settled, exactly as the root hop binds the implementation entry's calls.
+const RELAY_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IPing { function ping(int n); }'
+  + ' interface IInner { function relay(int n); function lateWrite(int id, int v); }'
+  + ' contract Ping { int public last; function ping(int n) { require(n >= this.last); require(true); } }'
+  + ' contract Inner {'
+  + '   address public implementation;'
+  + '   address public leaf;'
+  + '   int public hits;'
+  + '   mapping(int => int) public marks;'
+  + '   function initialize(address target) { this.leaf = target; this.hits = 1; this.marks[1] = 1; require(true); }'
+  + '   function relay(int n) { IPing(this.leaf).ping(n); require(true); }'
+  + '   function lateWrite(int id, int v) {'
+  + '     this.marks[id] = v;'
+  + '     IPing(this.leaf).ping(v);'
+  + '     this.marks[id + 1] = v + 1;'
+  + '     require(true);'
+  + '   }'
+  + ' }'
+  + ' contract Outer {'
+  + '   address public implementation;'
+  + '   address public inner;'
+  + '   function initialize(address target) { this.inner = target; require(true); }'
+  + '   function run(int n) { IInner(this.inner).relay(n); require(true); }'
+  + '   function runLateWrite(int id, int v) { IInner(this.inner).lateWrite(id, v); require(true); }'
+  + ' }';
+
+const relayArtifacts = compileStringMulti(RELAY_SOURCE, { composition: 'per-call' });
+const relayPing = relayArtifacts.Ping!;
+const relayInner = relayArtifacts.Inner!;
+const relayOuter = relayArtifacts.Outer!;
+
+const RELAY_PING_CATEGORY = '5a'.repeat(32);
+const RELAY_INNER_IMPL_CATEGORY = '5b'.repeat(32);
+const RELAY_INNER_PROXY_CATEGORY = '5c'.repeat(32);
+const RELAY_OUTER_IMPL_CATEGORY = '5d'.repeat(32);
+const RELAY_OUTER_PROXY_CATEGORY = '5e'.repeat(32);
+
+/** Deploys the callee's own callee, the proxied callee and the root behind its proxy, and runs both initializes. */
+async function deployRelay(network: MockNetworkProvider): Promise<{
+  readonly outerProxyCategoryId: string;
+  readonly outerImplementationCategoryId: string;
+  readonly innerProxyCategoryId: string;
+  readonly innerImplementationCategoryId: string;
+  readonly deployerLock: Uint8Array;
+  readonly changeAddress: string;
+  readonly callCoin: { txid: string; vout: number; satoshis: bigint };
+  readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
+}> {
+  const signature = new SignatureTemplate(alicePriv);
+  const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
+  const funder = source.unlock.spend(alicePub, signature);
+  const callerFunder = signature.unlockP2PKH();
+  const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
+
+  // The callee's own callee is a plain per-call contract, reached at the address the callee's record holds.
+  const pingFunding = funding(RELAY_PING_CATEGORY);
+  await network.addUtxo(source.address, pingFunding);
+  await deployStatefulContract(relayPing, [], {
+    fundingUtxo: pingFunding, funder, changeAddress: source.address, provider: network, threadCount: 4,
+  });
+
+  for (const txid of [
+    RELAY_INNER_IMPL_CATEGORY, RELAY_INNER_PROXY_CATEGORY, RELAY_OUTER_IMPL_CATEGORY, RELAY_OUTER_PROXY_CATEGORY,
+  ]) await network.addUtxo(source.address, funding(txid));
+  const innerInitCoin = funding('5f'.repeat(32));
+  const outerInitCoin = funding('6a'.repeat(32));
+  const callCoin = funding('6b'.repeat(32));
+  for (const coin of [innerInitCoin, outerInitCoin, callCoin]) {
+    await network.addUtxo(binToHex(deployerLock), coin);
+  }
+  await fundShippedFacets(network);
+
+  // The proxied callee's record holds the address of the contract its own call reaches.
+  const pingMaster = deployMaster(relayPing, hexToBin(RELAY_PING_CATEGORY), VALIDATOR_PROGRAM).address;
+  const innerDeployment = await deployPerCallProxy({
+    provider: network,
+    implementationArtifact: relayInner,
+    proxyArtifact: buildProxyArtifact(relayInner),
+    implementationDeploy: {
+      fundingUtxo: funding(RELAY_INNER_IMPL_CATEGORY), funder, changeAddress: source.address, threadCount: 4,
+    },
+    proxyDeploy: {
+      fundingUtxo: funding(RELAY_INNER_PROXY_CATEGORY), funder, changeAddress: source.address, threadCount: 4,
+    },
+    initialize: { functionName: 'initialize', args: [pingMaster] },
+    callerLockingBytecode: deployerLock,
+    callerFunding: { utxo: innerInitCoin, funder: callerFunder, changeAddress: source.address },
+    vm: compositionMachine(),
+  });
+  expect(innerDeployment.initialize.broadcast).toBeDefined();
+
+  const outerDeployment = await deployPerCallProxy({
+    provider: network,
+    implementationArtifact: relayOuter,
+    proxyArtifact: buildProxyArtifact(relayOuter),
+    implementationDeploy: { fundingUtxo: funding(RELAY_OUTER_IMPL_CATEGORY), funder, changeAddress: source.address },
+    proxyDeploy: { fundingUtxo: funding(RELAY_OUTER_PROXY_CATEGORY), funder, changeAddress: source.address },
+    initialize: { functionName: 'initialize', args: [innerDeployment.proxy.address] },
+    callerLockingBytecode: deployerLock,
+    callerFunding: { utxo: outerInitCoin, funder: callerFunder, changeAddress: source.address },
+    vm: compositionMachine(),
+  });
+  expect(outerDeployment.initialize.broadcast).toBeDefined();
+
+  return {
+    outerProxyCategoryId: outerDeployment.proxy.categoryId,
+    outerImplementationCategoryId: outerDeployment.implementation.categoryId,
+    innerProxyCategoryId: innerDeployment.proxy.categoryId,
+    innerImplementationCategoryId: innerDeployment.implementation.categoryId,
+    deployerLock, changeAddress: source.address, callCoin, funder: callerFunder,
+  };
+}
+
+/** The externals a relay hop names: the callee's own callee, and the callee behind its proxy. */
+function relayExternals(funded: Awaited<ReturnType<typeof deployRelay>>): Record<string, PerCallProxyExternal> {
+  return {
+    IPing: { artifact: relayPing, categoryId: RELAY_PING_CATEGORY },
+    IInner: {
+      artifact: relayInner,
+      categoryId: funded.innerProxyCategoryId,
+      proxyArtifact: buildProxyArtifact(relayInner),
+      implementationCategoryId: funded.innerImplementationCategoryId,
+    },
+  };
+}
+
+describe('a hop whose proxied callee calls a third contract of its own', () => {
+  it("settles the callee chain and the callee's own call, and broadcasts", async () => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funded = await deployRelay(network);
+
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: relayOuter,
+      proxyArtifact: buildProxyArtifact(relayOuter),
+      proxyCategoryId: funded.outerProxyCategoryId,
+      implementationCategoryId: funded.outerImplementationCategoryId,
+      functionName: 'run',
+      args: [7n],
+      externals: relayExternals(funded),
+      callerUtxo: funded.callCoin,
+      callerLockingBytecode: funded.deployerLock,
+      funder: funded.funder,
+      changeAddress: funded.changeAddress,
+      vm: compositionMachine(),
+    });
+
+    // The callee's own callee completes first, then the callee's implementation entry, then the proxy leg that
+    // delegated to it, then the caller's entry and its own fallback.
+    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual([
+      `${relayPing.contractName}.ping()`,
+      `${relayInner.contractName}.relay()`,
+      `${relayInner.contractName}Proxy.__fallback()`,
+      `${relayOuter.contractName}.run()`,
+      `${relayOuter.contractName}Proxy.__fallback()`,
+    ]);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('refuses by name a callee entry the compiler refused, which the hop could never declare', async () => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funded = await deployRelay(network);
+
+    // `Inner.lateWrite` writes its verified mapping, calls out, then writes again, and the compiler refuses it by
+    // name: the segment its second write lands in is a fact the derivation does not read. The hop has no call
+    // records for it, so the plan would settle the frame against a program whose calls stay unbound.
+    await expect(callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: relayOuter,
+      proxyArtifact: buildProxyArtifact(relayOuter),
+      proxyCategoryId: funded.outerProxyCategoryId,
+      implementationCategoryId: funded.outerImplementationCategoryId,
+      functionName: 'runLateWrite',
+      args: [2n, 5n],
+      externals: relayExternals(funded),
+      callerUtxo: funded.callCoin,
+      callerLockingBytecode: funded.deployerLock,
+      funder: funded.funder,
+      changeAddress: funded.changeAddress,
+      vm: compositionMachine(),
+    })).rejects.toThrow(/Inner\.lateWrite\(\)[\s\S]*which the compiler refused/);
   });
 });

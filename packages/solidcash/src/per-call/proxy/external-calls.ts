@@ -203,6 +203,21 @@ function routingOf(artifact: Artifact, functionName: string): readonly ExternalC
 }
 
 /**
+ * The compiler's reason for refusing one entry, or undefined for one it serves.
+ *
+ * A refused entry's body is emitted as one that fails whenever the dispatcher reaches it, and its call sites are
+ * not published. A frame settled on such an entry therefore has no call record to bind, so a hop that reaches one
+ * would settle it against a program whose edge was never declared; naming the refusal is the answer instead.
+ */
+function refusedEntryReason(artifact: Artifact, functionName: string): string | undefined {
+  const identity = `${artifact.contractName}.${functionName}()`;
+  const listed = (artifact.composition as {
+    readonly refusedEntries?: readonly { readonly functionName: string; readonly reason: string }[];
+  } | undefined)?.refusedEntries ?? [];
+  return listed.find((entry) => entry.functionName === identity)?.reason;
+}
+
+/**
  * How many records one published site fills.
  *
  * A `loop` site fills the records its visits do: the domain's recurrence is evaluated against the caller's own
@@ -514,6 +529,16 @@ async function planEntryCalls(
     const target = resolveCallTarget(effective, caller, resolver, 0);
     const external = resolveExternal(ctx, row, target);
     const entry = entryRowOf(external.artifact, row.functionName);
+    // A body the compiler refused publishes no call sites, so the hop could declare no record for it and would
+    // settle its frame against a program whose calls stay unbound. The refusal is named here, before any frame is
+    // placed, exactly as the hop names a refused entry of its own.
+    const refusal = refusedEntryReason(external.artifact, row.functionName);
+    if (refusal !== undefined) {
+      throw new PerCallProxyDeployError(
+        `${where} reaches "${external.artifact.contractName}.${row.functionName}()", which the compiler refused: `
+        + refusal,
+      );
+    }
     const resolved = Array.from({ length: count }, (_unused, occurrence) => (
       resolvePublishedCall(effective, external.artifact, caller, resolver, occurrence)
     ));

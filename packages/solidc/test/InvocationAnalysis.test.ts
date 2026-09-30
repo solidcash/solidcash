@@ -410,6 +410,39 @@ describe('Release 0 shared invocation analysis', () => {
     expect(JSON.stringify(fn.externalCalls?.[2].condition)).not.toContain('"callsiteId":1');
   });
 
+  it('publishes nested returning-helper branches as an exact external argument', () => {
+    const artifact = compileString(`pragma solidity >=0.8.0;
+      library Arithmetic {
+        function sub(uint256 a, uint256 b) internal pure returns (uint256) { return a - b; }
+        function mul(uint256 a, uint256 b) internal pure returns (uint256) { return a * b; }
+        function add(uint256 a, uint256 b) internal pure returns (uint256) { return a + b; }
+      }
+      interface ISink { function publish(uint256 value) external; }
+      contract BranchResultArgument() {
+        using Arithmetic for uint256;
+        uint256 bonusEnd;
+        ISink sink;
+        function multiplier(uint256 from, uint256 to) public view returns (uint256) {
+          if (to <= bonusEnd) return to.sub(from).mul(10);
+          else if (from >= bonusEnd) return to.sub(from);
+          else return bonusEnd.sub(from).mul(10).add(to.sub(bonusEnd));
+        }
+        function run(uint256 from, uint256 to) public {
+          uint256 amount = multiplier(from, to);
+          sink.publish(amount);
+          require(true);
+        }
+      }`, { forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true });
+    const expression = artifact.abi.find((candidate) => candidate.name === 'run')
+      ?.externalCalls?.find((call) => call.functionName === 'publish')?.argSources?.[0].expression;
+    expect(expression?.kind).toBe('ternary');
+    expect(expression?.ifFalse?.kind).toBe('ternary');
+    // Pure-library program bodies use their own bound parameter identifiers; the call argument must not
+    // retain the inliner's unbound result local outside those bodies.
+    expect(JSON.stringify(expression, (key, value) => key === 'statements' ? undefined : value))
+      .not.toContain('"kind":"identifier"');
+  });
+
   // A partially written state-array entry is rebuilt as `T(.., thisField, ..)`: the front end reuses the read
   // node as the rebuilt field's argument, and a later rebuild of another field restates the entry with that same
   // argument. The published argument must be the value the handler wrote, never the read folded back on itself.

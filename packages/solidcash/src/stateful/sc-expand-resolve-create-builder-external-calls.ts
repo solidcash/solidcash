@@ -31,6 +31,7 @@ export interface ExpandResolveCreateBuilderExternalCallsHost {
   }>;
   resolveExternalArgs(...args: any[]): FunctionArgument[] | undefined;
   getExternalRegistryEntry(interfaceName: string): unknown | undefined;
+  getExternalDeploymentByAddressValue(value: string | Uint8Array): unknown | undefined;
   getFullState(): Promise<{ state: Record<string, StateValue> }>;
 }
 
@@ -102,7 +103,23 @@ export async function expandResolveCreateBuilderExternalCalls(
       const ec = externalCalls[eci];
       // Array-element call: the callee instance was already resolved during expansion.
       if (presetResolved?.[eci]) { autoResolved.push(presetResolved[eci]!); continue; }
-      const registered = host.getExternalRegistryEntry(ec.interfaceName);
+      // A state-pinned target need not have been registered under its source interface name (e.g. an
+      // IERC20 value stored in a pool record). Resolve that authenticated address against deployments
+      // first; an interface-name registration is only a fallback when no pinned deployment is available.
+      let pinned: unknown;
+      if (ec.addressSource || ec.addressStateVar) {
+        callerStateSnapshot ??= (await host.getFullState()).state;
+        const address = ec.addressSource
+          ? host.resolveExternalArgs(
+            [ec.addressSource], args, artifact, callerStateSnapshot, abiFunction?.inputs,
+            undefined, 0, false, publicSelfAddress,
+          )?.[0]
+          : callerStateSnapshot[ec.addressStateVar!];
+        if (typeof address === 'string' || address instanceof Uint8Array) {
+          pinned = host.getExternalDeploymentByAddressValue(address);
+        }
+      }
+      const registered = pinned ?? host.getExternalRegistryEntry(ec.interfaceName);
       if (!registered) {
         canAutoResolve = false;
         break;

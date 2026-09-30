@@ -21,6 +21,7 @@ import {
 } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider } from '../test-util.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
+import { expandResolveCreateBuilderExternalCalls } from '../../src/stateful/sc-expand-resolve-create-builder-external-calls.js';
 
 type PredicateEvaluator = {
   _evaluateExternalExpression: (
@@ -538,6 +539,30 @@ describe('conditional external-call topology', () => {
 
     expect(externalCallTargetSourceLockingBytecodeHex(owner, 0, [], resolved))
       .toBe(binToHex(physicalLock));
+  });
+
+  it('auto-resolves a state-pinned callee without an interface-name registration', async () => {
+    const physicalLock = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x58), 0x87);
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const fn = {
+      name: 'run', inputs: [], externalCalls: [{
+        interfaceName: 'IData', functionName: 'ping', requiredDataNftIndices: [], argSources: [],
+        addressSource: { kind: 'expression', expression: { kind: 'state', name: 'target' } },
+      }],
+    } as unknown as Artifact['abi'][number];
+    const resolved = await expandResolveCreateBuilderExternalCalls({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: () => undefined,
+      getExternalDeploymentByAddressValue: (value) =>
+        value instanceof Uint8Array && binToHex(value) === binToHex(physicalLock) ? callee : undefined,
+      getFullState: async () => ({ state: { target: physicalLock } }),
+      resolveExternalArgs: (...args) => (
+        evaluator._resolveExternalArgs as (...values: any[]) => FunctionArgument[] | undefined
+      )(...args),
+    }, fn, [], artifact, undefined, undefined);
+    expect(resolved.resolvedExternalCalls).toEqual([{
+      externalContract: callee, functionName: 'ping', args: [],
+    }]);
   });
 
   it('uses ABI-valid placeholders for inactive fixed route bands', () => {

@@ -18,6 +18,7 @@ import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import type { ExternalCallInfo } from './StatefulContract.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
+import { findDeploymentByAddressValue } from './deployment-registry.js';
 import {
   type ValueChunkProducerPathDisposition,
 } from './ValueChunkProducerIdentity.js';
@@ -237,6 +238,8 @@ const expandedExternal = await expandResolveCreateBuilderExternalCallsImpl(
       host.inner.getExternalTargetEntriesByInterface(interfaceName),
     resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
     getExternalRegistryEntry: (interfaceName) => host.externalRegistry.get(interfaceName),
+    getExternalDeploymentByAddressValue: (value) =>
+      findDeploymentByAddressValue(host.inner.provider, value)?.contract,
     getFullState: () => host.getFullState(),
   },
   abiFunction,

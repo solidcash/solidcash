@@ -8213,21 +8213,45 @@ export default class SymbolTableTraversal extends AstTraversal {
       const branchAssignmentInitializer = (expression: IdentifierNode): ExpressionNode | undefined => {
         const definition = expression.definition?.definition;
         if (!(definition instanceof VariableDefinitionNode) || definition.expression) return undefined;
+        const containsAssignment = (root: Node, seen = new Set<Node>()): boolean => {
+          if (seen.has(root)) return false;
+          seen.add(root);
+          if (root instanceof AssignNode
+            && root.identifier.definition?.definition === definition) return true;
+          for (const [key, child] of Object.entries(root)) {
+            if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+              'referencedContract', 'stateVariable', 'collection', 'sourceCallNode'].includes(key)) continue;
+            if (child instanceof Node && containsAssignment(child, seen)) return true;
+            if (Array.isArray(child) && child.some((item) => item instanceof Node
+              && containsAssignment(item, seen))) return true;
+          }
+          return false;
+        };
         const assignmentIn = (block: BlockNode): ExpressionNode | undefined => {
-          const assignments: AssignNode[] = [];
-          const visit = (statement: Node): boolean => {
-            if (statement instanceof BranchNode || statement instanceof WhileNode
-              || statement instanceof DoWhileNode || statement instanceof TryCatchNode
-              || statement instanceof SwitchNode) return false;
+          const assignments: ExpressionNode[] = [];
+          for (const statement of block.statements ?? []) {
+            if (!containsAssignment(statement)) continue;
             if (statement instanceof AssignNode
-              && statement.identifier.definition?.definition === definition) assignments.push(statement);
-            if (statement instanceof BlockNode) {
-              return (statement.statements ?? []).every((child) => visit(child));
+              && statement.identifier.definition?.definition === definition) {
+              assignments.push(statement.expression);
+            } else if (statement instanceof BlockNode) {
+              const nested = assignmentIn(statement);
+              if (!nested) return undefined;
+              assignments.push(nested);
+            } else if (statement instanceof BranchNode && statement.elseBlock) {
+              const ifValue = assignmentIn(statement.ifBlock);
+              const elseValue = assignmentIn(statement.elseBlock);
+              if (!ifValue || !elseValue) return undefined;
+              const joined = new TernaryOpNode(statement.condition, ifValue, elseValue);
+              joined.type = definition.type;
+              joined.location = statement.location;
+              assignments.push(joined);
+            } else {
+              // A loop, one-sided branch, or other control flow cannot prove a unique value on every path.
+              return undefined;
             }
-            return true;
-          };
-          return (block.statements ?? []).every((statement) => visit(statement))
-            && assignments.length === 1 ? assignments[0].expression : undefined;
+          }
+          return assignments.length === 1 ? assignments[0] : undefined;
         };
         const candidates = (priorStatements ?? []).filter((statement): statement is BranchNode =>
           statement instanceof BranchNode && statement.elseBlock !== undefined);
@@ -8235,27 +8259,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           const ifValue = assignmentIn(branch.ifBlock);
           const elseValue = branch.elseBlock && assignmentIn(branch.elseBlock);
           if (!ifValue || !elseValue) continue;
-          const competing = (priorStatements ?? []).some((statement) => {
-            if (statement === branch) return false;
-            let found = false;
-            const visit = (value: unknown, seen = new Set<object>()): void => {
-              if (found || !(value instanceof Node) || seen.has(value)) return;
-              seen.add(value);
-              if (value instanceof AssignNode
-                && value.identifier.definition?.definition === definition) {
-                found = true;
-                return;
-              }
-              for (const [key, child] of Object.entries(value)) {
-                if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
-                  'referencedContract', 'stateVariable', 'collection', 'sourceCallNode'].includes(key)) continue;
-                if (child instanceof Node) visit(child, seen);
-                else if (Array.isArray(child)) for (const item of child) visit(item, seen);
-              }
-            };
-            visit(statement);
-            return found;
-          });
+          const competing = (priorStatements ?? []).some((statement) =>
+            statement !== branch && containsAssignment(statement));
           if (competing) continue;
           const joined = new TernaryOpNode(branch.condition, ifValue, elseValue);
           joined.type = definition.type;

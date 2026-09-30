@@ -543,11 +543,21 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
+  // A contract/interface receiver's built-in member name (`split`, `slice`, `reverse`, `send`, `transfer`) is its own
+  // method. The AstBuilder / SymbolTable build that call wherever they know the receiver's type; any other such
+  // receiver would silently run the built-in on the target's address instead.
+  private expectNoContractReceiver(node: Node, receiverType: Type | undefined, name: string): void {
+    if (receiverType instanceof AddressType && receiverType.interfaceName) {
+      throw new StructFieldExternalCallError(node, receiverType.interfaceName, name);
+    }
+  }
+
   visitAddressTransferStatement(node: AddressTransferStatementNode): Node {
     node.addressExpression = this.visit(node.addressExpression);
     node.amount = this.visit(node.amount);
 
     const addrType = node.addressExpression.type;
+    this.expectNoContractReceiver(node, addrType, 'transfer');
     if (!(addrType instanceof AddressType && addrType.payable)) {
       throw new TransferArgumentTypeError(
         node, 'address', addrType!, new AddressType(true),
@@ -564,6 +574,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.amount = this.visit(node.amount);
 
     const addrType = node.addressExpression.type;
+    this.expectNoContractReceiver(node, addrType, 'send');
     if (!(addrType instanceof AddressType && addrType.payable)) {
       throw new TransferArgumentTypeError(
         node, 'address', addrType!, new AddressType(true),
@@ -2197,6 +2208,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // into a sub-array. Struct-element arrays use pushdata (not packed offsets) so they are not sliceable this way;
     // bytes/string keep their existing byte-level slice.
     const et = node.element.type;
+    this.expectNoContractReceiver(node, et, 'slice');
     const sliceableArray = et instanceof ArrayType
       && isFixedWidthType(et.elementType) && !(et.elementType instanceof StructType);
     if (!sliceableArray) {
@@ -2796,11 +2808,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.type = node.left.type;
         return node;
       case BinaryOperator.SPLIT:
-        // A contract/interface receiver's `split` is its own method. The AstBuilder builds that call wherever it
-        // knows the receiver's type; any other such receiver would silently split the target's bytes instead.
-        if (node.left.type instanceof AddressType && node.left.type.interfaceName) {
-          throw new StructFieldExternalCallError(node, node.left.type.interfaceName, 'split');
-        }
+        this.expectNoContractReceiver(node, node.left.type, 'split');
         expectAnyOfTypes(node, node.left.type, [new BytesType(), PrimitiveType.STRING]);
         expectInt(node, node.right.type);
         node.type = inferTupleType(node);
@@ -2881,6 +2889,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.type = PrimitiveType.BIGINT;
         return node;
       case UnaryOperator.REVERSE:
+        this.expectNoContractReceiver(node, node.expression.type, 'reverse');
         expectAnyOfTypes(node, node.expression.type, [new BytesType(), PrimitiveType.STRING]);
         // Type is preserved
         node.type = node.expression.type;

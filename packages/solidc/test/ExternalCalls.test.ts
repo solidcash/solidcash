@@ -7,7 +7,7 @@ import {
 import { BinaryOperator } from '../src/ast/Operator.js';
 import { resultArrayOutputOf } from '../src/artifact/Artifact.js';
 import { Symbol } from '../src/ast/SymbolTable.js';
-import { StructFieldExternalCallError } from '../src/Errors.js';
+import { ParseError, StructFieldExternalCallError, UndefinedInterfaceFunctionError } from '../src/Errors.js';
 import { compileStringMulti } from '../src/compiler.js';
 import { hasEffectiveCallValue } from '../src/semantic/branchOps.js';
 import { compileString } from './direct-compile.js';
@@ -1097,5 +1097,303 @@ describe('an interface method named split is called as the interface method', ()
     expect(composition.refusedEntries).toBeUndefined();
     const pay = composition.stopSites!.entries.find((entry) => entry.functionName === 'Payer.pay()')!;
     expect(pay.calls.map((call) => `${call.interfaceName}.${call.functionName}`)).toEqual(['IScale.split']);
+  });
+});
+
+// The other built-in member names follow split: on a contract or interface receiver the name is that type's own
+// method, while each built-in keeps its own receivers (bytes/string, arrays, address payable, tx introspection).
+const externalCallsOf = (artifact: ReturnType<typeof compileString>, name: string): string[] => (artifact.abi
+  .find((entry) => entry.name === name)?.externalCalls ?? []).map((call) => `${call.interfaceName}.${call.functionName}`);
+const SOLIDITY_COMPAT = { solidityImportCompat: true };
+const payCalls = (iface: string, header: string, body: string): string[] => externalCallsOf(compileString(
+  `pragma solidcash ^0.13.0; ${iface} contract Payer(${header}) { function pay(int a) { ${body} } }`,
+), 'pay');
+
+describe('an interface method named slice is called as the interface method', () => {
+  const IFACE = 'interface ISlicer { function slice(int from, int to) external returns (int); }';
+  const NATIVE = `pragma solidcash ^0.13.0;
+    ${IFACE}
+    contract Payer(address target) {
+      function pay(int from, int to) { int r = ISlicer(target).slice(from, to); require(r > 0); }
+      function head(bytes data) { bytes b = data.slice(0, 2); require(b == 0x1234); }
+    }`;
+  const SOLIDITY = `pragma solidity ^0.8.0;
+    ${IFACE}
+    contract Payer {
+      ISlicer slicer;
+      function pay(int from, int to) public returns (int) { return slicer.slice(from, to); }
+      function head(bytes memory data) public pure returns (bytes memory) { return data.slice(0, 2); }
+    }`;
+
+  it.each([
+    ['native', NATIVE, {}],
+    ['Solidity-compatible', SOLIDITY, SOLIDITY_COMPAT],
+  ])('calls ISlicer.slice from the %s spelling and keeps the bytes built-in', (_spelling, source, options) => {
+    const artifact = compileString(source, options);
+    expect(externalCallsOf(artifact, 'pay')).toEqual(['ISlicer.slice']);
+    expect(externalCallsOf(artifact, 'head')).toEqual([]);
+  });
+
+  it('calls slice through a typed name and a bare statement, and at argument counts the built-in lacks', () => {
+    expect(payCalls(IFACE, 'address target', 'ISlicer s = ISlicer(target); int r = s.slice(a, a); require(r > 0);'))
+      .toEqual(['ISlicer.slice']);
+    expect(payCalls(IFACE, 'ISlicer s', 's.slice(a, a); require(a > 0);')).toEqual(['ISlicer.slice']);
+    expect(payCalls('interface ISlicer { function slice() external returns (int); }', 'address target',
+      'int r = ISlicer(target).slice(); require(r > a);')).toEqual(['ISlicer.slice']);
+    expect(payCalls('interface ISlicer { function slice(int a, int b, int c) external returns (int); }',
+      'address target', 'int r = ISlicer(target).slice(a, a, a); require(r > 0);')).toEqual(['ISlicer.slice']);
+  });
+
+  it('keeps a one-argument slice the parse error the bytes built-in has', () => {
+    expect(() => payCalls('interface ISlicer { function slice(int from) external returns (int); }',
+      'address target', 'int r = ISlicer(target).slice(a); require(r > 0);')).toThrow(ParseError);
+  });
+
+  it('calls a declared slice through this rather than slicing the active bytecode', () => {
+    expect(compileString(`pragma solidcash ^0.13.0;
+      contract Slicer {
+        function slice(int from, int to) public returns (int) { return from + to; }
+        function check(int a) { require(this.slice(a, a) == a + a); }
+      }`).contractName).toBe('Slicer');
+  });
+
+  it('refuses a slice on a computed contract receiver rather than slicing its address', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0;
+      interface ISlicer { function slice(uint from, uint to) external returns (bytes memory); }
+      contract Payer { ISlicer[] slicers; function pay(uint i) public { slicers[i].slice(0, 2); } }`,
+    SOLIDITY_COMPAT)).toThrow(StructFieldExternalCallError);
+  });
+});
+
+describe('an interface method named reverse is called as the interface method', () => {
+  const IFACE = 'interface IFlip { function reverse() external returns (int); }';
+  const NATIVE = `pragma solidcash ^0.13.0;
+    ${IFACE}
+    contract Payer(address target) {
+      function pay() { int r = IFlip(target).reverse(); require(r > 0); }
+      function head(bytes2 data) { require(data.reverse() == 0x3412); }
+    }`;
+  const SOLIDITY = `pragma solidity ^0.8.0;
+    ${IFACE}
+    contract Payer {
+      IFlip flip;
+      function pay() public returns (int) { return flip.reverse(); }
+      function head(bytes2 data) public pure returns (bytes2) { return data.reverse(); }
+    }`;
+
+  it.each([
+    ['native', NATIVE, {}],
+    ['Solidity-compatible', SOLIDITY, SOLIDITY_COMPAT],
+  ])('calls IFlip.reverse from the %s spelling and keeps the bytes built-in', (_spelling, source, options) => {
+    const artifact = compileString(source, options);
+    expect(externalCallsOf(artifact, 'pay')).toEqual(['IFlip.reverse']);
+    expect(externalCallsOf(artifact, 'head')).toEqual([]);
+  });
+
+  it('calls reverse through a typed name, a bare statement and a bytes-typed result', () => {
+    expect(payCalls(IFACE, 'IFlip flip', 'int r = flip.reverse(); require(r > a);')).toEqual(['IFlip.reverse']);
+    expect(payCalls(IFACE, 'address target', 'IFlip(target).reverse(); require(a > 0);')).toEqual(['IFlip.reverse']);
+    expect(payCalls('interface IFlip { function reverse() external returns (bytes); }', 'address target',
+      'bytes r = IFlip(target).reverse(); require(r.length > a);')).toEqual(['IFlip.reverse']);
+  });
+
+  it('calls a declared reverse through this rather than reversing the active bytecode', () => {
+    expect(compileString(`pragma solidcash ^0.13.0;
+      contract Flip {
+        function reverse() public returns (int) { return 1; }
+        function check() { require(this.reverse() == 1); }
+      }`).contractName).toBe('Flip');
+  });
+
+  it('refuses a reverse on a computed contract receiver rather than reversing its address', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0;
+      interface IFlip { function reverse() external returns (bytes memory); }
+      contract Payer { mapping(uint => IFlip) flips; function pay(uint i) public { flips[i].reverse(); } }`,
+    SOLIDITY_COMPAT)).toThrow(StructFieldExternalCallError);
+  });
+});
+
+describe('interface methods named push, pop and delete are called as the interface methods', () => {
+  const IFACE = 'interface IStack { function push(int v) external; function pop() external returns (int); }';
+  const NATIVE = `pragma solidcash ^0.13.0;
+    ${IFACE}
+    contract Keeper(IStack stack, address target) {
+      function keep(int v) { stack.push(v); IStack(target).pop(); require(v > 0); }
+      function local(int v) { int[] xs = [1, 2]; xs.push(v); xs.pop(); require(xs.length == 2); }
+    }`;
+  const SOLIDITY = `pragma solidity ^0.8.0;
+    ${IFACE}
+    contract Keeper {
+      IStack stack;
+      address target;
+      int[] xs;
+      function keep(int v) public { stack.push(v); IStack(target).pop(); }
+      function local(int v) public { xs.push(v); xs.pop(); }
+    }`;
+
+  it.each([
+    ['native', NATIVE, {}],
+    ['Solidity-compatible', SOLIDITY, SOLIDITY_COMPAT],
+  ])('calls IStack.push and IStack.pop from the %s spelling and keeps the array built-ins', (_spelling, source, options) => {
+    const artifact = compileString(source, options);
+    expect(externalCallsOf(artifact, 'keep')).toEqual(['IStack.push', 'IStack.pop']);
+    expect(externalCallsOf(artifact, 'local')).toEqual([]);
+  });
+
+  it('calls push and pop through a typed local, this.v and at argument counts the built-ins lack', () => {
+    expect(payCalls(IFACE, 'address target', 'IStack s = IStack(target); s.push(a); require(a > 0);'))
+      .toEqual(['IStack.push']);
+    expect(payCalls(IFACE, 'address target', 'IStack s = IStack(target); s.pop(); require(a > 0);'))
+      .toEqual(['IStack.pop']);
+    expect(payCalls('interface IStack { function push(int a, int b) external returns (int); }', 'address target',
+      'int r = IStack(target).push(a, a); require(r > 0);')).toEqual(['IStack.push']);
+    expect(payCalls('interface IStack { function pop(int a) external returns (int); }', 'IStack s',
+      'int r = s.pop(a); require(r > 0);')).toEqual(['IStack.pop']);
+    expect(externalCallsOf(compileString(`pragma solidity ^0.8.0; ${IFACE}
+      contract Keeper { IStack stack; function keep(int v) public { this.stack.push(v); } }`, SOLIDITY_COMPAT), 'keep'))
+      .toEqual(['IStack.push']);
+  });
+
+  it('calls a declared push through this rather than pushing onto this', () => {
+    expect(compileString(`pragma solidcash ^0.13.0;
+      contract Stack {
+        function push(int v) public { require(v > 0); }
+        function check(int v) { this.push(v); require(v > 1); }
+      }`).contractName).toBe('Stack');
+  });
+
+  it('keeps the parse error for a pop() at the built-in argument count inside an expression', () => {
+    expect(() => payCalls(IFACE, 'address target', 'int r = IStack(target).pop(); require(r > a);')).toThrow(ParseError);
+  });
+
+  it('names delete as an interface method no interface can declare, rather than deleting from the receiver', () => {
+    expect(() => payCalls(IFACE, 'address target', 'IStack(target).delete(a); require(a > 0);'))
+      .toThrow(UndefinedInterfaceFunctionError);
+  });
+});
+
+describe('interface methods named send and transfer are called as the interface methods', () => {
+  const IFACE = 'interface IVault { function transfer(int v) external; function send(int v) external returns (bool); }';
+  const NATIVE = `pragma solidcash ^0.13.0;
+    ${IFACE}
+    contract Payer(IVault vault, address target) {
+      function pay(int v) { IVault(target).transfer(v); bool ok = vault.send(v); require(ok); }
+      function tip(address payable to) { to.transfer(1000); bool ok = to.send(1000); require(ok); }
+    }`;
+  const SOLIDITY = `pragma solidity ^0.8.0;
+    ${IFACE}
+    contract Payer {
+      IVault vault;
+      address target;
+      function pay(int v) public returns (bool) { IVault(target).transfer(v); return vault.send(v); }
+      function tip(address payable to) public returns (bool) { to.transfer(1000); return to.send(1000); }
+    }`;
+
+  it.each([
+    ['native', NATIVE, {}],
+    ['Solidity-compatible', SOLIDITY, SOLIDITY_COMPAT],
+  ])('calls IVault.transfer and IVault.send from the %s spelling and keeps value sends', (_spelling, source, options) => {
+    const artifact = compileString(source, options);
+    expect(externalCallsOf(artifact, 'pay')).toEqual(['IVault.transfer', 'IVault.send']);
+    expect(externalCallsOf(artifact, 'tip')).toEqual([]);
+  });
+
+  it('calls transfer and send through a typed local and a contract param, also on the message-bus route', () => {
+    expect(payCalls(IFACE, 'address target', 'IVault v = IVault(target); v.transfer(a); require(a > 0);'))
+      .toEqual(['IVault.transfer']);
+    expect(payCalls(IFACE, 'address target', 'IVault v = IVault(target); require(v.send(a));'))
+      .toEqual(['IVault.send']);
+    const routed = compileString(`pragma solidcash ^0.13.0; ${IFACE}
+      contract Payer(IVault vault) { int calls; function pay(int a) public { vault.transfer(a); calls = calls + 1; } }`,
+    { messageBus: true });
+    expect(routed.messageBus).toBeDefined();
+    expect(externalCallsOf(routed, 'pay')).toEqual(['IVault.transfer']);
+  });
+
+  it('calls a declared send through this rather than sending to this', () => {
+    expect(compileString(`pragma solidcash ^0.13.0;
+      contract Vault {
+        function send(int v) public returns (bool) { return v > 0; }
+        function check(int v) { require(this.send(v)); }
+      }`).contractName).toBe('Vault');
+  });
+
+  it('refuses a send or transfer on a computed contract receiver rather than paying its address', () => {
+    for (const body of ['vaults[i].transfer(1);', 'require(vaults[i].send(1));']) {
+      expect(() => compileString(`pragma solidity ^0.8.0; ${IFACE}
+        contract Payer { IVault[] vaults; function pay(uint i) public { ${body} } }`, SOLIDITY_COMPAT))
+        .toThrow(StructFieldExternalCallError);
+    }
+  });
+});
+
+describe('interface methods named like the token and code members are called as the interface methods', () => {
+  const IFACE = `interface IToken {
+    function tokenAmount() external returns (int);
+    function tokenCategory() external returns (bytes32);
+    function code() external returns (int);
+  }`;
+  const NATIVE = `pragma solidcash ^0.13.0;
+    ${IFACE}
+    contract Reader(IToken token, address target, address other) {
+      function read() {
+        IToken local = IToken(target);
+        require(token.tokenAmount() > local.code());
+        require(IToken(other).tokenCategory() != 0x00);
+      }
+      function own() {
+        require(tx.inputs[0].tokenAmount > 0);
+        require(tx.outputs[0].tokenCategory == tx.inputs[0].tokenCategory);
+      }
+    }`;
+  const SOLIDITY = `pragma solidity ^0.8.0;
+    ${IFACE}
+    contract Reader {
+      IToken token;
+      IToken other;
+      address target;
+      function read() public returns (int) {
+        require(other.tokenCategory() != 0x00);
+        return token.tokenAmount() + IToken(target).code();
+      }
+      function own(address a) public view returns (uint) { return a.code.length; }
+    }`;
+
+  it.each([
+    ['native', NATIVE, {}],
+    ['Solidity-compatible', SOLIDITY, SOLIDITY_COMPAT],
+  ])('calls the IToken methods from the %s spelling and keeps the built-in members', (_spelling, source, options) => {
+    const artifact = compileString(source, options);
+    expect(externalCallsOf(artifact, 'read').sort())
+      .toEqual(['IToken.code', 'IToken.tokenAmount', 'IToken.tokenCategory']);
+    expect(externalCallsOf(artifact, 'own')).toEqual([]);
+  });
+});
+
+describe('built-in member names on a contract receiver under the per-call convention', () => {
+  it('publishes each call site as the interface method', () => {
+    const composition = compileStringMulti(`pragma solidcash ^0.13.0;
+      interface IBox {
+        function slice(int a, int b) external returns (int);
+        function reverse() external returns (int);
+        function push(int v) external;
+        function transfer(int v) external;
+        function tokenAmount() external returns (int);
+      }
+      contract Payer(IBox box, address target) {
+        function pay(int v) {
+          int r = IBox(target).slice(v, v) + box.reverse() + box.tokenAmount();
+          box.push(r);
+          IBox(target).transfer(v);
+          require(r > 0);
+        }
+      }`, { composition: 'per-call' }).Payer!.composition as {
+      refusedEntries?: unknown[];
+      stopSites?: { entries: { functionName: string; calls: { interfaceName: string; functionName: string }[] }[] };
+    };
+    expect(composition.refusedEntries).toBeUndefined();
+    const pay = composition.stopSites!.entries.find((entry) => entry.functionName === 'Payer.pay()')!;
+    expect(pay.calls.map((call) => `${call.interfaceName}.${call.functionName}`))
+      .toEqual(['IBox.slice', 'IBox.reverse', 'IBox.tokenAmount', 'IBox.push', 'IBox.transfer']);
   });
 });

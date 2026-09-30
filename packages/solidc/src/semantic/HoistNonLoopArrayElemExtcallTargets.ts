@@ -8,7 +8,9 @@ import { AddressType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
-const ADDRESS_METHODS = new Set(['send', 'call', 'staticcall', 'delegatecall']);
+// Address builtins in method-call form: an address `.send(v)` is already an AddressSend (AstBuilder), so a method
+// named `send` is the contract's own method.
+const LOW_LEVEL_CALLS = new Set(['call', 'staticcall', 'delegatecall']);
 
 // A NON-LOOP external-call target that is a PARAM-ROOTED array element `IERC20(path[path.length - 1]).balanceOf(to)`
 // (Router02's fee-on-transfer wrapper reads the last-hop token twice). The collect phase turns an array-access
@@ -45,7 +47,7 @@ export default class HoistNonLoopArrayElemExtcallTargets extends AstTraversal {
       // `IFoo(path[k]).method()` at the function top: the object is a `<typeName>(<arg>)` cast whose arg is a
       // param-rooted array element, and the method is a genuine interface method (not an address builtin). A target
       // read inside a loop belongs to the per-iteration co-spend, so only depth 0 is hoisted.
-      if (depth === 0 && n instanceof MethodCallNode && !ADDRESS_METHODS.has(n.methodName)
+      if (depth === 0 && n instanceof MethodCallNode && !LOW_LEVEL_CALLS.has(n.methodName)
         && n.object instanceof FunctionCallNode && n.object.parameters.length === 1
         && this.typeNames.has(n.object.identifier.name)
         && n.object.parameters[0] instanceof ArrayAccessNode

@@ -404,14 +404,16 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       ? undefined : this.castTransitiveTarget(node.object);
     const pureCallIface = node.inlinedOperatorReceiver && node.object instanceof FunctionCallNode
       ? this.pureInterfaceReturns.get(node.object.identifier.name) : undefined;
-    if (target && !ADDRESS_METHODS.has(node.methodName) && this.isInterfaceMethod(target.iface, node.methodName)) {
+    // Only the low-level calls are address builtins in method-call form: the AstBuilder builds an address `.send(v)`
+    // as an AddressSend, so a method named `send` here is the contract's own method, pinned like any other.
+    if (target && !LOW_LEVEL_CALLS.has(node.methodName) && this.isInterfaceMethod(target.iface, node.methodName)) {
       const localName = this.visitingConstructor
         ? this.captureAtCallSite(target.iface, node.object, node)
         : this.markUsed(target.name, target.iface, target.isPlain, node.object);
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
       node.object.location = loc;
-    } else if (cachedField && !ADDRESS_METHODS.has(node.methodName)
+    } else if (cachedField && !LOW_LEVEL_CALLS.has(node.methodName)
       && this.isInterfaceMethod(cachedField.iface, node.methodName)) {
       // vmap's function-local mapping-entry cache is mutable and declared after the body-top prologue, so capture
       // its current interface field immediately before the call rather than tracing back to the initial state
@@ -426,7 +428,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
       node.object.location = loc;
-    } else if (chain && !ADDRESS_METHODS.has(node.methodName) && this.isInterfaceMethod(chain.iface, node.methodName)) {
+    } else if (chain && !LOW_LEVEL_CALLS.has(node.methodName) && this.isInterfaceMethod(chain.iface, node.methodName)) {
       // `s.field.m()` / `ss[i].field.m()` / `ms[k].field.m()` / `s.a.b.m()`: the target is an interface-typed
       // field reached through a chain of self-pinned STATE (struct fields, array elements, mapping values). Hoist
       // the whole field read into a local so the audited __extaddr_ dispatch pins the co-spend to it - a caller
@@ -441,7 +443,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
       node.object.location = loc;
-    } else if (castChain && !ADDRESS_METHODS.has(node.methodName)
+    } else if (castChain && !LOW_LEVEL_CALLS.has(node.methodName)
       && this.isInterfaceMethod(castChain.iface, node.methodName)) {
       // `IFoo(s.field).m()` / `IFoo(ss[i].field).m()` / `IFoo(ms[k].field).m()`: a plain-`address` field reached
       // through self-pinned STATE, cast to an interface (the cast supplies the callee ABI). Same soundness as the
@@ -455,7 +457,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(castChain.localName);
       node.object.location = loc;
-    } else if (paramField && !ADDRESS_METHODS.has(node.methodName)
+    } else if (paramField && !LOW_LEVEL_CALLS.has(node.methodName)
       && this.isInterfaceMethod(paramField.iface, node.methodName)) {
       // `IFoo(param.field).m()` / `IFoo(param[i].field).m()`: the target is a field/element of a FUNCTION PARAM,
       // cast to an interface. The base is caller-supplied, so this is the sound "caller chooses whom to call"
@@ -468,7 +470,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(paramField.localName);
       node.object.location = loc;
-    } else if (localCastField && !ADDRESS_METHODS.has(node.methodName)
+    } else if (localCastField && !LOW_LEVEL_CALLS.has(node.methodName)
       && this.isInterfaceMethod(localCastField.iface, node.methodName)) {
       // `IFoo(local.addr).m()` where `local` is a single-assignment struct value (including an inliner-created
       // binding of a struct parameter). Capture at the call site: the local is live here and its actual value is
@@ -483,7 +485,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
       node.object.location = loc;
-    } else if (computed && !ADDRESS_METHODS.has(node.methodName)
+    } else if (computed && !LOW_LEVEL_CALLS.has(node.methodName)
       && this.isInterfaceMethod(computed.iface, node.methodName)) {
       // `IFoo(pairFor(factory, a, b)).m()`: an author-written COMPUTED target rooted in params/self-pinned state.
       // Hoist the alias-substituted `IFoo(<computed>)` cast (built + validated by castComputedTarget) into an
@@ -494,7 +496,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(computed.localName);
       node.object.location = loc;
-    } else if (transitive && !ADDRESS_METHODS.has(node.methodName)
+    } else if (transitive && !LOW_LEVEL_CALLS.has(node.methodName)
       && this.isInterfaceMethod(transitive.iface, node.methodName)) {
       // A TRANSITIVE computed target (a leaf is a mid-body single-assign local, e.g. a pinned call-return). Emit the
       // decl right BEFORE this statement (visitBlock flushes pendingMidbodyDecls) so the local is live; the co-spend
@@ -520,7 +522,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
       node.object.location = loc;
-    } else if (pureCallIface && !ADDRESS_METHODS.has(node.methodName)
+    } else if (pureCallIface && !LOW_LEVEL_CALLS.has(node.methodName)
       && this.isInterfaceMethod(pureCallIface, node.methodName)) {
       const localName = this.captureAtCallSite(pureCallIface, node.object, node);
       const loc = node.object.location;

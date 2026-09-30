@@ -469,17 +469,31 @@ export default class SolidCashLexer extends Lexer {
 	  const c = this._input.LA(1);
 	  return !((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95);
 	}
-	// The `.split` op is always a one-argument call `x.split(y)`, so it only wins over a member named `split`
-	// (`escrow.split[i]`, `s.split = ..`, an interface's `split(to, amount)`, `split()` or `split({..})`) when the next
-	// non-space char is `(` and the list it opens holds one positional argument. Skips whitespace before '(', and
-	// comments, strings and nested brackets inside the list.
-	splitOpBoundary(): boolean {
+	// The LA offset of the first non-space char after the token.
+	nextNonSpace(): number {
 	  let i = 1;
 	  let c = this._input.LA(i);
 	  while (c === 32 || c === 9 || c === 13 || c === 10 || c === 12) { i++; c = this._input.LA(i); }
-	  if (c !== 40) return false;
+	  return i;
+	}
+	// A built-in property (`.tokenAmount`, `.code`, ...) is never called, so before an argument list the name is a
+	// plain member (an interface's `tokenAmount()`).
+	propertyOpBoundary(): boolean {
+	  return this.dotOpBoundary() && this._input.LA(this.nextNonSpace()) !== 40;
+	}
+	// A built-in call op (`.split`, `.slice`, `.push`, `.pop`) only wins over a member of the same name in its own
+	// shape: an argument list of min..max positional arguments, or no list at all where the op is usable uncalled
+	// (`data.pop;`, `(data.pop)()`). Any other spelling (`escrow.split[i]`, an interface's `split(to, amount)`,
+	// `slice()`, `pop(x)`, `split({..})`) lexes as `.` + a plain member name. Skips whitespace before '(', and
+	// comments, strings and nested brackets inside the list.
+	callOpBoundary(uncalled: boolean, min: number, max: number): boolean {
+	  if (!this.dotOpBoundary()) return false;
+	  let i = this.nextNonSpace();
+	  if (this._input.LA(i) !== 40) return uncalled;
 	  let depth = 0;
+	  let count = 0;
 	  let empty = true;
+	  let c: number;
 	  for (i++; (c = this._input.LA(i)) !== -1; i++) {
 	    if (c === 32 || c === 9 || c === 13 || c === 10 || c === 12) continue;
 	    if (c === 47 && this._input.LA(i + 1) === 47) {
@@ -491,7 +505,13 @@ export default class SolidCashLexer extends Lexer {
 	      i++;
 	      continue;
 	    }
-	    if (depth === 0 && (c === 41 || c === 44 || (empty && c === 123))) return c === 41 && !empty;
+	    if (depth === 0 && (c === 41 || c === 44 || (empty && c === 123))) {
+	      // `({..})`, `(,` and a trailing comma are never a built-in's list.
+	      if (empty && (c !== 41 || count > 0)) return false;
+	      if (c === 44) { count++; empty = true; continue; }
+	      const args = empty ? 0 : count + 1;
+	      return args >= min && args <= max;
+	    }
 	    empty = false;
 	    if (c === 34 || c === 39) {
 	      const quote = c;
@@ -577,28 +597,28 @@ export default class SolidCashLexer extends Lexer {
 	private DotPush_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 2:
-			return this.dotOpBoundary();
+			return this.callOpBoundary(true, 0, 1);
 		}
 		return true;
 	}
 	private DotPop_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 3:
-			return this.dotOpBoundary();
+			return this.callOpBoundary(true, 0, 0);
 		}
 		return true;
 	}
 	private DotSplit_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 4:
-			return this.splitOpBoundary();
+			return this.callOpBoundary(false, 1, 1);
 		}
 		return true;
 	}
 	private DotSlice_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 5:
-			return this.dotOpBoundary();
+			return this.callOpBoundary(false, 1, 2);
 		}
 		return true;
 	}
@@ -612,70 +632,70 @@ export default class SolidCashLexer extends Lexer {
 	private DotCode_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 7:
-			return this.dotOpBoundary();
+			return this.propertyOpBoundary();
 		}
 		return true;
 	}
 	private DotCodehash_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 8:
-			return this.dotOpBoundary();
+			return this.propertyOpBoundary();
 		}
 		return true;
 	}
 	private DotLockingBytecode_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 9:
-			return this.dotOpBoundary();
+			return this.propertyOpBoundary();
 		}
 		return true;
 	}
 	private DotTokenCategory_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 10:
-			return this.dotOpBoundary();
+			return this.propertyOpBoundary();
 		}
 		return true;
 	}
 	private DotNftCommitment_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 11:
-			return this.dotOpBoundary();
+			return this.propertyOpBoundary();
 		}
 		return true;
 	}
 	private DotTokenAmount_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 12:
-			return this.dotOpBoundary();
+			return this.propertyOpBoundary();
 		}
 		return true;
 	}
 	private DotOutpointTransactionHash_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 13:
-			return this.dotOpBoundary();
+			return this.propertyOpBoundary();
 		}
 		return true;
 	}
 	private DotOutpointIndex_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 14:
-			return this.dotOpBoundary();
+			return this.propertyOpBoundary();
 		}
 		return true;
 	}
 	private DotUnlockingBytecode_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 15:
-			return this.dotOpBoundary();
+			return this.propertyOpBoundary();
 		}
 		return true;
 	}
 	private DotSequenceNumber_sempred(localctx: RuleContext, predIndex: number): boolean {
 		switch (predIndex) {
 		case 16:
-			return this.dotOpBoundary();
+			return this.propertyOpBoundary();
 		}
 		return true;
 	}

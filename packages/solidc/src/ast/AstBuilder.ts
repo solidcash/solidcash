@@ -137,7 +137,6 @@ import type {
   BlockStatementContext,
   TimeOpStatementContext,
   ArrayContext,
-  UnaryOpContext,
   LiteralExpressionContext,
   RequireStatementContext,
   PragmaDirectiveContext,
@@ -148,7 +147,6 @@ import type {
   ConsoleParameterContext,
   StatementContext,
   RequireMessageContext,
-  SliceContext,
   DoWhileStatementContext,
   LoopStatementContext,
   StateVariableDeclarationContext,
@@ -228,7 +226,7 @@ import {
   IdentifierContext, PostfixOpContext, PrefixOpContext, ThisExprContext,
   FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext, LegacyCallOptionCallContext,
   FunctionTypeContext, StructDefinitionContext, GroupedExpressionContext,
-  ConstructedExpressionContext, BinaryOpContext,
+  ConstructedExpressionContext, BinaryOpContext, SliceContext, UnaryOpContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location, withSourceFile } from './Location.js';
@@ -4368,6 +4366,16 @@ export default class AstBuilder
       }
     }
 
+    // A contract/interface-typed name's `send(x)` / `transfer(x)` is its own method (isContractMemberCall), built as
+    // the member call `(x).m(..)` gets, which compiles like `x.m(..)`: the namespaced spelling is the value send.
+    const member = identifiers.length === 2 ? identifiers[1].getText() : undefined;
+    if ((member === 'send' || member === 'transfer') && parameters.length === 1
+      && this.isContractTypedName(identifiers[0].getText())) {
+      const receiver = new IdentifierNode(identifiers[0].getText());
+      receiver.location = Location.fromToken(identifiers[0].symbol);
+      return this.buildMethodCall(ctx, receiver, member, parameters, undefined, false, true);
+    }
+
     // `erc7201(id)` (ERC-7201 / EIP-7201 namespaced storage slot): fold to the SPEC-CONFORMANT slot,
     // keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~bytes32(uint256(0xff)), as a uint256 - byte-identical to
     // Ethereum. Literal ids fold at parse time; runtime string/bytes expressions lower to the specification's
@@ -4619,10 +4627,13 @@ export default class AstBuilder
     return tupleIndexOp;
   }
 
-  visitSlice(ctx: SliceContext): SliceNode {
-    const element = this.visit(ctx._element);
-    const start = this.visit(ctx._start);
-    const end = this.visit(ctx._end);
+  visitSlice(ctx: SliceContext): ExpressionNode {
+    const element = this.visit(ctx._element) as ExpressionNode;
+    const start = this.visit(ctx._start) as ExpressionNode;
+    const end = this.visit(ctx._end) as ExpressionNode;
+    if (this.isContractMemberCall(ctx._element, 'slice')) {
+      return this.buildContractMemberCall(ctx, ctx._element, element, 'slice', [start, end]);
+    }
     const slice = new SliceNode(element, start, end);
     slice.location = Location.fromCtx(ctx);
     return slice;
@@ -4664,9 +4675,12 @@ export default class AstBuilder
     return unaryOp;
   }
 
-  visitUnaryOp(ctx: UnaryOpContext): UnaryOpNode | IntLiteralNode {
+  visitUnaryOp(ctx: UnaryOpContext): ExpressionNode {
     const operator = ctx._op.text as UnaryOperator;
     let expression = this.visit(ctx.expression());
+    if (operator === UnaryOperator.REVERSE && this.isContractMemberCall(ctx.expression(), 'reverse')) {
+      return this.buildContractMemberCall(ctx, ctx.expression(), expression as ExpressionNode, 'reverse', []);
+    }
     // `.length`/`.reverse()` on an element storage-pointer alias must inspect the aliased collection, not a
     // nonexistent runtime local. Scalar unary operators are intentionally left alone.
     if ((operator === UnaryOperator.SIZE || operator === UnaryOperator.REVERSE)
@@ -4710,38 +4724,57 @@ export default class AstBuilder
     const left = this.visit(ctx._left);
     const operator = ctx._op.text as BinaryOperator;
     const right = this.visit(ctx._right);
-    if (operator === BinaryOperator.SPLIT) {
-      const call = this.buildContractSplitCall(ctx, left, right);
-      if (call) return call;
+    if (operator === BinaryOperator.SPLIT && this.isContractMemberCall(ctx._left, 'split')) {
+      return this.buildContractMemberCall(ctx, ctx._left, left as ExpressionNode, 'split', [right as ExpressionNode]);
     }
     const binaryOp = sourceBinaryOp(left, operator, right);
     binaryOp.location = Location.fromCtx(ctx);
     return binaryOp;
   }
 
-  // The receiver's type decides `recv.split(x)`: on a receiver known here to be contract/interface-typed (a cast
-  // `I(a)`, `this.v`, a name declared with that type, or `this` in a contract declaring `split`) it is that type's own
-  // method, built as the member call any other method name gets; otherwise it is the bytes/string built-in.
-  private buildContractSplitCall(
-    ctx: BinaryOpContext, receiver: ExpressionNode, argument: ExpressionNode,
-  ): ExpressionNode | undefined {
-    if (ctx._left.getText() === 'this') {
-      if (!this.currentContractFunctionNames.has('split')) return undefined;
-      return this.buildMethodCall(ctx, receiver, 'split', [argument], undefined, true);
+  // The receiver's type decides a built-in member name (`split`, `slice`, `reverse()`, `push`, `pop`, `delete`, `send`,
+  // `transfer`): it is the receiver type's own method on a receiver known here to be contract/interface-typed (a cast
+  // `I(a)`, `this.v` or `C.v`, or a name declared with that type) and on `this` in a contract declaring it; otherwise
+  // it is the built-in. Decided from the parse tree, before the receiver is visited.
+  private isContractMemberCall(receiverCtx: ParseTree, name: string): boolean {
+    const receiver = unwrapParens(receiverCtx);
+    if (receiver instanceof ThisExprContext) {
+      if (receiver.getText() === 'this') return this.currentContractFunctionNames.has(name);
+      return isThisState(receiver) && this.stateInterfaceReceivers.has(receiver.Identifier(0).getText());
     }
-    const contractCast = receiver instanceof FunctionCallNode && receiver.parameters.length === 1
-      && this.contractInterfaceNames.has(receiver.identifier.name);
-    if (contractCast || (receiver instanceof StateAccessNode && this.stateInterfaceReceivers.has(receiver.name))) {
-      return this.buildMethodCall(ctx, receiver, 'split', [argument], undefined, false);
+    if (receiver instanceof FieldAccessContext) {
+      const qualifier = unwrapParens(receiver.expression());
+      return qualifier instanceof IdentifierContext && qualifier.getText() === this.currentContractName
+        && this.stateInterfaceReceivers.has(receiver.memberName().getText().slice(1));
     }
-    if (!(receiver instanceof IdentifierNode)) return undefined;
-    const local = this.localSimpleTypeKeys.has(receiver.name) || this.localStructTypes.has(receiver.name);
-    const contractTyped = local ? this.localInterfaceReceivers.has(receiver.name)
-      : this.contractInterfaceParams.has(receiver.name) || this.stateInterfaceReceivers.has(receiver.name);
-    if (!contractTyped) return undefined;
-    const identifier = new IdentifierNode(`${receiver.name}.split`);
+    if (receiver instanceof FunctionCallExpressionContext) {
+      const call = receiver.functionCall();
+      const callee = call.Identifier_list();
+      return receiver.expressionList_list().length === 0 && callee.length === 1 && !call.callOptions()
+        && call.expressionList()?.callArgument_list().length === 1 && this.contractInterfaceNames.has(callee[0].getText());
+    }
+    return receiver instanceof IdentifierContext && this.isContractTypedName(receiver.anyIdentifier().getText());
+  }
+
+  // Whether a name is declared with a contract/interface type: a local, a contract param or a state variable.
+  private isContractTypedName(name: string): boolean {
+    const local = this.localSimpleTypeKeys.has(name) || this.localStructTypes.has(name);
+    return local ? this.localInterfaceReceivers.has(name)
+      : this.contractInterfaceParams.has(name) || this.stateInterfaceReceivers.has(name);
+  }
+
+  // `receiver.name(args)` for an isContractMemberCall receiver, built as the member call any other method name gets:
+  // a name receiver's call is the namespaced `x.name(args)` its other methods parse as.
+  private buildContractMemberCall(
+    ctx: ParserRuleContext, receiverCtx: ParseTree, receiver: ExpressionNode, name: string, args: ExpressionNode[],
+  ): ExpressionNode {
+    if (!(receiver instanceof IdentifierNode)) {
+      const isThis = unwrapParens(receiverCtx)?.getText() === 'this';
+      return this.buildMethodCall(ctx, receiver, name, args, undefined, isThis, true);
+    }
+    const identifier = new IdentifierNode(`${receiver.name}.${name}`);
     identifier.location = receiver.location;
-    const call = new FunctionCallNode(identifier, [argument]);
+    const call = new FunctionCallNode(identifier, args);
     call.location = Location.fromCtx(ctx);
     return call;
   }
@@ -7291,6 +7324,7 @@ export default class AstBuilder
     const callOpts = this.parseCallOptions(ctx.callOptions());
     let callee = this.buildMethodCall(
       ctx, object, methodName, this.buildCallArguments(lists[0]), callOpts, ctx.expression().getText() === 'this',
+      methodName === 'send' && this.isContractMemberCall(ctx.expression(), methodName),
     );
     for (const argsCtx of lists.slice(1)) {
       const node = new IndirectCallNode(callee, this.buildCallArguments(argsCtx));
@@ -7307,6 +7341,7 @@ export default class AstBuilder
     parameters: ExpressionNode[],
     callOpts: CallOptions | undefined,
     isThisReceiver: boolean,
+    contractMember = false,
   ): ExpressionNode {
     if (callOpts?.value && (methodName === 'staticcall' || methodName === 'delegatecall')) {
       throw new ParseError(
@@ -7331,8 +7366,8 @@ export default class AstBuilder
       }
     }
 
-    // .send(amount) on an address produces AddressSendExpressionNode
-    if (methodName === 'send' && parameters.length === 1) {
+    // .send(amount) on an address produces AddressSendExpressionNode; a contract member `send` is that method.
+    if (methodName === 'send' && parameters.length === 1 && !contractMember) {
       if (callOpts?.value) {
         throw new ParseError(
           "'{value}' call option is not applicable to '.send()' - the amount is already specified as the argument",
@@ -8987,6 +9022,17 @@ export default class AstBuilder
     // `receiver.push(v)` / `.pop()` / `.delete(v)` tails: reconstruct the receiver (rawName, isThis, mapping keys,
     // struct array-field member) from the parsed LHS and dispatch to the array/mapping builder.
     if (ctx.DotPush_list().length > 0 || ctx.DotPop() || ctx.DotDelete()) {
+      // A plain tail on a contract/interface receiver (isContractMemberCall) is the receiver type's own method.
+      const tailMethod = ctx.DotPop() ? 'pop' : ctx.DotDelete() ? 'delete' : 'push';
+      if (ctx.DotPush_list().length <= 1 && !ctx._pushField && !ctx._pushAssignOp
+        && this.isContractMemberCall(lhsCtx, tailMethod)) {
+        const receiver = this.visit(lhsCtx) as ExpressionNode;
+        const argCtx = ctx.DotDelete() ? ctx.expression(1) : ctx.pushArgument()?.expression();
+        const args = argCtx ? [this.visit(argCtx) as ExpressionNode] : [];
+        return this.callStatement(
+          this.buildContractMemberCall(ctx, lhsCtx, receiver, tailMethod, args), Location.fromCtx(ctx),
+        );
+      }
       // `getStorageBytes().push(v)` for a zero-arg, side-effect-free helper that returns one direct state
       // variable by storage reference. The helper is a compile-time alias, so mutate its known target directly.
       if (ctx.DotPush_list().length === 1 && lhsCtx instanceof FunctionCallExpressionContext) {
@@ -9145,15 +9191,13 @@ export default class AstBuilder
       || lhsCtx instanceof MethodCallNamedContext) {
       return this.buildCallStatement(lhsCtx);
     }
-    // Otherwise a bare expression, computed and dropped: a pure value or a side-effect-free access. A contract-typed
-    // `recv.split(x);` was built as its method call (buildContractSplitCall), so it is that call's statement.
+    // Otherwise a bare expression, computed and dropped: a pure value or a side-effect-free access. A contract member
+    // `recv.split(x);` / `.slice(a, b);` / `.reverse();` was built as its method call (isContractMemberCall), so it
+    // is that call's statement.
     const expression = this.visit(lhsCtx) as ExpressionNode;
-    if (lhsCtx instanceof BinaryOpContext
+    if ((lhsCtx instanceof BinaryOpContext || lhsCtx instanceof SliceContext || lhsCtx instanceof UnaryOpContext)
       && (expression instanceof FunctionCallNode || expression instanceof MethodCallNode)) {
-      const call = expression instanceof FunctionCallNode
-        ? new FunctionCallStatementNode(expression) : new MethodCallStatementNode(expression);
-      call.location = Location.fromCtx(lhsCtx);
-      return call;
+      return this.callStatement(expression, Location.fromCtx(lhsCtx));
     }
     const node = new ExpressionStatementNode(expression);
     node.location = Location.fromCtx(ctx);
@@ -9226,13 +9270,7 @@ export default class AstBuilder
   // visited and wrapped by node kind (FunctionCall / MethodCall -> the matching statement node; a dropped value
   // like `.send`'s bool -> ExpressionStatement).
   private buildCallStatement(lhsCtx: ExpressionContext): StatementNode {
-    const wrap = (n: ExpressionNode): StatementNode => {
-      const s = n instanceof FunctionCallNode ? new FunctionCallStatementNode(n)
-        : n instanceof MethodCallNode ? new MethodCallStatementNode(n)
-          : new ExpressionStatementNode(n);
-      s.location = Location.fromCtx(lhsCtx);
-      return s;
-    };
+    const wrap = (n: ExpressionNode): StatementNode => this.callStatement(n, Location.fromCtx(lhsCtx));
     // `a.call(d)` / `a.staticcall(d)` / `a.delegatecall(d)` on a simple identifier parse as a namespaced
     // FunctionCall (`a.call`), not a MethodCall, so match the low-level routing here too (no call options - the
     // `a.call{value:}(d)` form is a MethodCall, handled below).
@@ -9303,13 +9341,23 @@ export default class AstBuilder
         const node = new TransferStatementNode(callArgs[0], callArgs[1]);
         node.location = loc; return node;
       }
-      if (recvCtx.getText() !== 'this' && callArgs.length === 1 && ctx.callOptions() === null) {
+      if (recvCtx.getText() !== 'this' && callArgs.length === 1 && ctx.callOptions() === null
+        && !this.isContractMemberCall(recvCtx, method)) {
         const node = new AddressTransferStatementNode(this.visit(recvCtx) as ExpressionNode, callArgs[0]);
         node.inlinedLibraryEffect = this.parsingLibraryFunction;
         node.location = loc; return node;
       }
     }
     return wrap(this.visit(lhsCtx) as ExpressionNode);
+  }
+
+  // A call used as a statement: a function/method call's own statement node, else a dropped value (`.send`'s bool).
+  private callStatement(call: ExpressionNode, location: Location): StatementNode {
+    const statement = call instanceof FunctionCallNode ? new FunctionCallStatementNode(call)
+      : call instanceof MethodCallNode ? new MethodCallStatementNode(call)
+        : new ExpressionStatementNode(call);
+    statement.location = location;
+    return statement;
   }
 
   visitPrefixIncDecStatement(ctx: PrefixIncDecStatementContext): StatementNode {

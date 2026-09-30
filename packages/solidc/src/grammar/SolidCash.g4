@@ -7,17 +7,31 @@ dotOpBoundary(): boolean {
   const c = this._input.LA(1);
   return !((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95);
 }
-// The `.split` op is always a one-argument call `x.split(y)`, so it only wins over a member named `split`
-// (`escrow.split[i]`, `s.split = ..`, an interface's `split(to, amount)`, `split()` or `split({..})`) when the next
-// non-space char is `(` and the list it opens holds one positional argument. Skips whitespace before '(', and
-// comments, strings and nested brackets inside the list.
-splitOpBoundary(): boolean {
+// The LA offset of the first non-space char after the token.
+nextNonSpace(): number {
   let i = 1;
   let c = this._input.LA(i);
   while (c === 32 || c === 9 || c === 13 || c === 10 || c === 12) { i++; c = this._input.LA(i); }
-  if (c !== 40) return false;
+  return i;
+}
+// A built-in property (`.tokenAmount`, `.code`, ...) is never called, so before an argument list the name is a
+// plain member (an interface's `tokenAmount()`).
+propertyOpBoundary(): boolean {
+  return this.dotOpBoundary() && this._input.LA(this.nextNonSpace()) !== 40;
+}
+// A built-in call op (`.split`, `.slice`, `.push`, `.pop`) only wins over a member of the same name in its own
+// shape: an argument list of min..max positional arguments, or no list at all where the op is usable uncalled
+// (`data.pop;`, `(data.pop)()`). Any other spelling (`escrow.split[i]`, an interface's `split(to, amount)`,
+// `slice()`, `pop(x)`, `split({..})`) lexes as `.` + a plain member name. Skips whitespace before '(', and
+// comments, strings and nested brackets inside the list.
+callOpBoundary(uncalled: boolean, min: number, max: number): boolean {
+  if (!this.dotOpBoundary()) return false;
+  let i = this.nextNonSpace();
+  if (this._input.LA(i) !== 40) return uncalled;
   let depth = 0;
+  let count = 0;
   let empty = true;
+  let c: number;
   for (i++; (c = this._input.LA(i)) !== -1; i++) {
     if (c === 32 || c === 9 || c === 13 || c === 10 || c === 12) continue;
     if (c === 47 && this._input.LA(i + 1) === 47) {
@@ -29,7 +43,13 @@ splitOpBoundary(): boolean {
       i++;
       continue;
     }
-    if (depth === 0 && (c === 41 || c === 44 || (empty && c === 123))) return c === 41 && !empty;
+    if (depth === 0 && (c === 41 || c === 44 || (empty && c === 123))) {
+      // `({..})`, `(,` and a trailing comma are never a built-in's list.
+      if (empty && (c !== 41 || count > 0)) return false;
+      if (c === 44) { count++; empty = true; continue; }
+      const args = empty ? 0 : count + 1;
+      return args >= min && args <= max;
+    }
     empty = false;
     if (c === 34 || c === 39) {
       const quote = c;
@@ -1347,25 +1367,26 @@ HexStringLiteral
     ;
 
 // Dotted introspection/member/method ops, each gated so it only matches at an identifier boundary (so e.g.
-// `.values` lexes as `.` + `values`, not `.value` + `s`, and a field named `pushCount` is not `.push`+`Count`).
-// See dotOpBoundary in @lexer::members.
+// `.values` lexes as `.` + `values`, not `.value` + `s`, and a field named `pushCount` is not `.push`+`Count`),
+// and the call ops and properties also only in their built-in call shape. See @lexer::members.
 DotValue : '.value' {this.dotOpBoundary()}? ;
 DotLength : '.length' {this.dotOpBoundary()}? ;
-DotPush : '.push' {this.dotOpBoundary()}? ;
-DotPop : '.pop' {this.dotOpBoundary()}? ;
-DotSplit : '.split' {this.splitOpBoundary()}? ;
-DotSlice : '.slice' {this.dotOpBoundary()}? ;
+DotPush : '.push' {this.callOpBoundary(true, 0, 1)}? ;
+DotPop : '.pop' {this.callOpBoundary(true, 0, 0)}? ;
+DotSplit : '.split' {this.callOpBoundary(false, 1, 1)}? ;
+// `x.slice(a)` also stays the built-in token, so it keeps failing as a slice missing its end.
+DotSlice : '.slice' {this.callOpBoundary(false, 1, 2)}? ;
 DotDelete : '.delete' {this.dotOpBoundary()}? ;
-DotCode : '.code' {this.dotOpBoundary()}? ;
-DotCodehash : '.codehash' {this.dotOpBoundary()}? ;
-DotLockingBytecode : '.lockingBytecode' {this.dotOpBoundary()}? ;
-DotTokenCategory : '.tokenCategory' {this.dotOpBoundary()}? ;
-DotNftCommitment : '.nftCommitment' {this.dotOpBoundary()}? ;
-DotTokenAmount : '.tokenAmount' {this.dotOpBoundary()}? ;
-DotOutpointTransactionHash : '.outpointTransactionHash' {this.dotOpBoundary()}? ;
-DotOutpointIndex : '.outpointIndex' {this.dotOpBoundary()}? ;
-DotUnlockingBytecode : '.unlockingBytecode' {this.dotOpBoundary()}? ;
-DotSequenceNumber : '.sequenceNumber' {this.dotOpBoundary()}? ;
+DotCode : '.code' {this.propertyOpBoundary()}? ;
+DotCodehash : '.codehash' {this.propertyOpBoundary()}? ;
+DotLockingBytecode : '.lockingBytecode' {this.propertyOpBoundary()}? ;
+DotTokenCategory : '.tokenCategory' {this.propertyOpBoundary()}? ;
+DotNftCommitment : '.nftCommitment' {this.propertyOpBoundary()}? ;
+DotTokenAmount : '.tokenAmount' {this.propertyOpBoundary()}? ;
+DotOutpointTransactionHash : '.outpointTransactionHash' {this.propertyOpBoundary()}? ;
+DotOutpointIndex : '.outpointIndex' {this.propertyOpBoundary()}? ;
+DotUnlockingBytecode : '.unlockingBytecode' {this.propertyOpBoundary()}? ;
+DotSequenceNumber : '.sequenceNumber' {this.propertyOpBoundary()}? ;
 
 Identifier
     : [a-zA-Z_$] [a-zA-Z0-9_$]*

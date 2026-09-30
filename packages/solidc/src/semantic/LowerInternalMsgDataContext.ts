@@ -27,6 +27,14 @@ const CONTEXT = '__internal__msgData';
  * resolution rather than guessed from the pre-semantic AST.
  */
 export default class LowerInternalMsgDataContext extends AstTraversal {
+  /**
+   * @param forwardsCallerData an entry passes its own msg.data, the per-call frame's call data, rather than the
+   * encoding of its parameters, unless a self-call reaches it: only that encoding states the call data then.
+   */
+  constructor(private readonly forwardsCallerData = false) {
+    super();
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
@@ -73,8 +81,20 @@ export default class LowerInternalMsgDataContext extends AstTraversal {
       this.replaceMsgData(fn.body);
     }
 
+    const selfCalled = new Set<string>();
+    for (const fn of node.functions) {
+      this.walk(fn.body, (child) => {
+        if (child instanceof FunctionCallNode && child.fromThisCall) selfCalled.add(child.identifier.name);
+      });
+    }
     for (const caller of node.functions) {
-      this.rewriteCalls(caller.body, caller, unique, tainted);
+      this.rewriteCalls(caller.body, caller, unique, tainted, selfCalled);
+    }
+    // A per-call fallback and receive() read msg.data from the frame, so their calls forward it too.
+    if (this.forwardsCallerData) {
+      for (const caller of [node.fallbackDef, node.receiveDef]) {
+        if (caller) this.rewriteCalls(caller.body, caller, unique, tainted, selfCalled);
+      }
     }
     return node;
   }
@@ -116,13 +136,15 @@ export default class LowerInternalMsgDataContext extends AstTraversal {
     caller: FunctionDefinitionNode,
     unique: Map<string, FunctionDefinitionNode>,
     tainted: Set<string>,
+    selfCalled: ReadonlySet<string>,
   ): void {
     if (!node) return;
     if (node instanceof FunctionCallNode && tainted.has(node.identifier.name)
       && unique.get(node.identifier.name)) {
       const value = tainted.has(caller.name)
         ? new IdentifierNode(CONTEXT)
-        : this.entryData(caller, node);
+        : this.forwardsCallerData && !selfCalled.has(caller.name)
+          ? new NullaryOpNode(NullaryOperator.MSG_DATA) : this.entryData(caller, node);
       value.location = node.location;
       node.parameters.push(value);
     }
@@ -130,9 +152,11 @@ export default class LowerInternalMsgDataContext extends AstTraversal {
       if (key === 'type' || key === 'symbolTable' || key === 'location'
         || key === 'resolvedFunction' || key === 'definition' || key === 'namedOverloadCandidates') continue;
       const value = (node as unknown as Record<string, unknown>)[key];
-      if (value instanceof Node) this.rewriteCalls(value, caller, unique, tainted);
+      if (value instanceof Node) this.rewriteCalls(value, caller, unique, tainted, selfCalled);
       else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) this.rewriteCalls(item, caller, unique, tainted);
+        for (const item of value) {
+          if (item instanceof Node) this.rewriteCalls(item, caller, unique, tainted, selfCalled);
+        }
       }
     }
   }

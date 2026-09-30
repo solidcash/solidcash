@@ -22,7 +22,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 590 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 591 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 14 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
@@ -42,13 +42,13 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 39 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 10 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
-| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 21 |
+| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 26 |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 3 |
 
-Total: 1781 checks (115 + 636 + 1027 + 3), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1787 checks (115 + 637 + 1032 + 3), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 636 is the four rows above it (85 files; 22.3 s warm at `520a21d9c`),
-`solidcash` 1027 (1024 passed, three skipped; 165 files; 137.7 s warm at `520a21d9c`) is the
+`vitest.per-call.config.ts`: `solidc` 637 is the four rows above it (85 files; 22.3 s warm at `520a21d9c`),
+`solidcash` 1032 (1029 passed, three skipped; 165 files; 137.7 s warm at `520a21d9c`) is the
 seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -285,9 +285,10 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   each row its own contract: compiled with solc and run in `@ethereumjs/evm`, and compiled per-call with Solidity
   compatibility and called through the shipped call path by a user's coin, the answers compared by role (the user
   who entered, or the contract). A row the per-call path does not serve yet is pinned with its refusal beside the
-  EVM's answer. The nine single-contract rows so far, and twelve beyond the file where `tx.origin`, `msg.value` or
-  `msg.sig` is read (`self-call-identity.test.ts`); a selector is compared by the function it selects, since the EVM
-  hashes a signature with keccak256 and the per-call dispatcher with SHA-256.
+  EVM's answer. The nine single-contract rows so far, and seventeen beyond the file where `tx.origin`, `msg.value`,
+  `msg.sig` or `msg.data` is read (`self-call-identity.test.ts`); a selector is compared by the function it selects,
+  since the EVM hashes a signature with keccak256 and the per-call dispatcher with SHA-256, and `msg.data` by the
+  digests of two reads, since the EVM's calldata and a frame's call data encode a call apart.
 
 ## Which refusals cover which attack
 

@@ -39,6 +39,14 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + SELF
   + '   receive() external payable { require(msg.data.length == 0); }'
   + ' }';
+/** The same reads through a helper, from an entry, the fallback and `receive()`. */
+const HELPER_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Probe {'
+  + '   function _data() internal returns (bytes) { return msg.data; }'
+  + '   function data(int length) { require(_data().length == length); }'
+  + '   fallback(bytes input) external { require(_data() == input); }'
+  + '   receive() external payable { require(_data().length == 0); }'
+  + ' }';
 /** The control: the same entries without a read of `msg.data`. */
 const PLAIN_SOURCE = `pragma solidcash ^0.13.0; contract Probe { function data(int length) { require(length > 0); }${SELF} }`;
 
@@ -100,6 +108,15 @@ describe('msg.data in a per-call master', () => {
 
   it('is empty for the selector of receive() alone', () => {
     expect(spend(SOURCE, [RECEIVE_SELECTOR])).toBe(true);
+  });
+
+  it('is the same call data read through a helper, from an entry, the fallback and receive()', () => {
+    const data = selectorOf(HELPER_SOURCE, 'data');
+    expect(spend(HELPER_SOURCE, [data, encodeIntegerValue(6n)])).toBe(true);
+    expect(spend(HELPER_SOURCE, [data, encodeIntegerValue(7n)])).toBe(false);
+    // The fallback's input is the frame's call data, so its helper reads the same bytes.
+    expect(spend(HELPER_SOURCE, [MISSING_SELECTOR, encodeIntegerValue(7n)])).toBe(true);
+    expect(spend(HELPER_SOURCE, [RECEIVE_SELECTOR])).toBe(true);
   });
 
   it('is refused by name in a master with one entry, whose user frame carries no selector', () => {

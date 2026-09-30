@@ -13292,7 +13292,9 @@ function compileResolvedAst(
   // parameters so the direct OP_INVOKE lowering does not depend on OP_ACTIVEBYTECODE inside the subroutine.
   if (needsMsgDataContext) ast = ast.accept(new LowerSelfCallMsgData()) as Ast;
   // Internal/private msg.data readers receive the originating entry calldata through a compiler-only parameter.
-  if (needsMsgDataContext) ast = ast.accept(new LowerInternalMsgDataContext()) as Ast;
+  if (needsMsgDataContext) {
+    ast = ast.accept(new LowerInternalMsgDataContext(mergedCompilerOptions.composition === 'per-call')) as Ast;
+  }
   // msg.sig retains the originating public/external selector across internal/private OP_INVOKE calls.
   if (needsMsgSigContext) {
     ast = ast.accept(new LowerInternalMsgSigContext(mergedCompilerOptions.composition === 'per-call')) as Ast;

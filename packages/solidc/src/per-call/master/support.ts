@@ -124,8 +124,8 @@ const VALUE_WITNESS_PARAMETER = /^__internal__valueWitness_(\d+)$/;
  */
 const PROXY_MASTER_WITNESS_PARAMETER = '__internal__proxyMasterIndex';
 
-/** The selector an internal body that reads `msg.sig` takes as an argument its every call site passes. */
-const MSG_SIG_CONTEXT_PARAMETER = '__internal__msgSig';
+/** The selector or call data an internal body that reads `msg.sig` or `msg.data` takes from its every call site. */
+const MESSAGE_CONTEXT_PARAMETERS = new Set(['__internal__msgSig', '__internal__msgData']);
 
 /**
  * The direct convention's fold operands: pushes earlier rows made, their complete form, and the first output of a
@@ -916,7 +916,7 @@ function isUndeclaredHiddenParameter(
   constants: ReadonlySet<string>,
 ): boolean {
   return name.startsWith('__internal__')
-    && name !== MSG_SIG_CONTEXT_PARAMETER
+    && !MESSAGE_CONTEXT_PARAMETERS.has(name)
     && !FRAME_PARAMETERS.has(name)
     && !RETURN_EVENT_PARAMETERS.has(name)
     && !isExternalCallParameter(name)

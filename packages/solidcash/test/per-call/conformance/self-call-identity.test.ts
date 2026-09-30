@@ -168,6 +168,44 @@ const SIG_ROWS: readonly Row[] = [
   },
 ];
 
+/**
+ * Rows beyond the reference file: `msg.data`, which an internal call keeps and a self-call replaces. Each compares
+ * digests of two reads, since the EVM's calldata and a per-call frame's call data encode a call apart.
+ */
+const DATA_ROWS: readonly Row[] = [
+  {
+    label: 'msg.data read in an internal helper', entry: 'dataViaHelper', evm: true,
+    members: 'function _msgData() internal view virtual returns (bytes calldata) { return msg.data; }'
+      + ' function dataViaHelper() external returns (bool) { marker += 1;'
+      + ' return sha256(_msgData()) == sha256(msg.data); }',
+  },
+  {
+    label: 'msg.data inside a public function called internally', entry: 'dataViaPublic', evm: true,
+    members: 'function dataPub() public pure returns (bytes memory) { return msg.data; }'
+      + ' function dataViaPublic() external returns (bool) { marker += 1;'
+      + ' return sha256(dataPub()) == sha256(msg.data); }',
+  },
+  {
+    label: 'msg.data inside this.g() against the caller\'s', entry: 'dataViaThis', evm: false,
+    members: 'function dataExt() external pure returns (bytes memory) { return msg.data; }'
+      + ' function dataViaThis() external returns (bool) { marker += 1;'
+      + ' return sha256(this.dataExt()) == sha256(msg.data); }',
+  },
+  {
+    label: 'msg.data inside this.g() against that call\'s encoding', entry: 'dataIsCall', evm: true,
+    members: 'function dataExt() external pure returns (bytes memory) { return msg.data; }'
+      + ' function dataIsCall() external returns (bool) { marker += 1;'
+      + ' return sha256(this.dataExt()) == sha256(abi.encodeCall(this.dataExt, ())); }',
+  },
+  {
+    label: 'msg.data read by the helper of this.g()', entry: 'dataViaThisHelper', evm: true,
+    members: 'function _msgData() internal view virtual returns (bytes calldata) { return msg.data; }'
+      + ' function dataExt() external view returns (bytes memory) { return _msgData(); }'
+      + ' function dataViaThisHelper() external returns (bool) { marker += 1;'
+      + ' return sha256(this.dataExt()) == sha256(abi.encodeCall(this.dataExt, ())); }',
+  },
+];
+
 /** The row's function whose selector, in the given hash, is the 4-byte answer, or the answer itself. */
 const selected = (row: Row, answer: string, selectorOf: (signature: string) => string): Role =>
   [...row.members.matchAll(/function (\w+)\(\)/g)].map((match) => `${match[1]!}()` as const)
@@ -258,7 +296,7 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly
 }
 
 describe('S0: the single-contract reference rows, the EVM against the per-call path', () => {
-  for (const row of [...ROWS, ...ORIGIN_ROWS, ...VALUE_ROWS, ...SIG_ROWS]) {
+  for (const row of [...ROWS, ...ORIGIN_ROWS, ...VALUE_ROWS, ...SIG_ROWS, ...DATA_ROWS]) {
     it(`${row.label}: the EVM answers ${String(row.evm)}${row.refusal === undefined ? ', and so does per-call' : ''}`,
       async () => {
         expect(await evmAnswer(row)).toBe(row.evm);

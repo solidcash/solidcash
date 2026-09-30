@@ -38759,6 +38759,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       return;
     }
+    // A per-call fallback runs for a selector no body has and receive() for a value send's empty call data, so
+    // their msg.sig is the call data's selector, the EVM's first four calldata bytes: zero when it is empty.
+    if (this.perCallMaster && (this.currentFunction.isFallback || this.currentFunction.isReceive)) {
+      this.emitPerCallCallData(locationData);
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emit(encodeInt(1n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.emit(encodeInt(4n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.emit(Op.OP_ELSE, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.emit(new Uint8Array(4), locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+      return;
+    }
     // An internal function has no selector, so msg.sig cannot be a compile-time constant here (in the EVM it
     // is the calling entry point's selector). Reject cleanly instead of emitting an undefined push.
     if (!this.currentFunction.functionSelector) {

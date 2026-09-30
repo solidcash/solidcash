@@ -15,7 +15,8 @@ import { categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
  * `msg.data` in a per-call master: the frame's call data, the selector's push and the argument pushes, as the EVM's
- * is the calldata; empty for a value send, whose call data is the selector of `receive()` alone.
+ * is the calldata; empty for a value send, whose call data is the selector of `receive()` alone. `msg.sig` in the
+ * fallback and `receive()` is that call data's selector, zero when it is empty.
  */
 
 const CATEGORY = seededCategory('msg data');
@@ -25,6 +26,7 @@ const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
 const OTHER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(7));
 const RECEIVE_SELECTOR = computeFunctionSelector(computeFunctionSignature('__receive', []));
+const MISSING_SELECTOR = computeFunctionSelector('missing()');
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
@@ -103,5 +105,39 @@ describe('msg.data in a per-call master', () => {
   it('is refused by name in a master with one entry, whose user frame carries no selector', () => {
     const sole = 'pragma solidcash ^0.13.0; contract Sole { function only() { require(msg.data.length > 0); } }';
     expect(() => compileString(sole, { composition: 'per-call' })).toThrow(/msg\.data in a master with one entry/);
+  });
+});
+
+type SigBody = 'fallback(bytes input) external' | 'receive() external payable';
+
+/** A contract whose `body` requires `msg.sig`, read directly and through a helper, to be `expected`. */
+const sigSource = (body: SigBody, expected: Uint8Array): string => {
+  const literal = `0x${Buffer.from(expected).toString('hex')}`;
+  return 'pragma solidcash ^0.13.0;'
+    + ' contract Sig {'
+    + '   function only() { require(true); }'
+    + '   function _sig() internal returns (bytes4) { return msg.sig; }'
+    + `   ${body} { require(msg.sig == ${literal} && _sig() == ${literal}); }`
+    + ' }';
+};
+
+describe('msg.sig in a per-call fallback and receive()', () => {
+  const FALLBACK: SigBody = 'fallback(bytes input) external';
+  const RECEIVE: SigBody = 'receive() external payable';
+
+  it('is the selector a call data no body has carries, in the fallback it reaches', () => {
+    expect(spend(sigSource(FALLBACK, MISSING_SELECTOR), [MISSING_SELECTOR, encodeIntegerValue(7n)])).toBe(true);
+    // The fallback's own selector is none the call data carries.
+    const own = selectorOf(sigSource(FALLBACK, MISSING_SELECTOR), '__fallback');
+    expect(spend(sigSource(FALLBACK, own), [MISSING_SELECTOR])).toBe(false);
+  });
+
+  it('is zero in the fallback a value send reaches, its call data empty', () => {
+    expect(spend(sigSource(FALLBACK, new Uint8Array(4)), [RECEIVE_SELECTOR])).toBe(true);
+  });
+
+  it('is zero in receive(), as the EVM reads a value send\'s empty call data', () => {
+    expect(spend(sigSource(RECEIVE, new Uint8Array(4)), [RECEIVE_SELECTOR])).toBe(true);
+    expect(spend(sigSource(RECEIVE, RECEIVE_SELECTOR), [RECEIVE_SELECTOR])).toBe(false);
   });
 });

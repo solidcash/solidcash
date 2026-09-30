@@ -65,6 +65,12 @@ export default class LowerInternalMsgSigContext extends AstTraversal {
       this.replaceMsgSig(fn.body);
     }
     for (const caller of node.functions) this.rewriteCalls(caller.body, caller, unique, tainted);
+    // A per-call fallback and receive() read msg.sig from the call data, so their calls forward it too.
+    if (this.forwardsCallerSelector) {
+      for (const caller of [node.fallbackDef, node.receiveDef]) {
+        if (caller) this.rewriteCalls(caller.body, caller, unique, tainted);
+      }
+    }
     return node;
   }
 

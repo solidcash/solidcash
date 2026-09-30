@@ -1,6 +1,7 @@
 import {
   ContractNode,
   FunctionDefinitionNode,
+  FunctionModifier,
   SourceFileNode,
   Node,
   StatementNode,
@@ -101,7 +102,11 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       // context and turns its external calls into inert ordinary-call nodes. Public entry points and
       // compiler-owned route clones are the same: inlining them into the kernel row loop makes
       // SymbolTableTraversal rewrite `token.transfer` against an unbound `__internal__loopTargets`.
-      if (!fn.graphEmissionHandler && !fn.isEntryPoint && !fn.name.startsWith('__message_bus_')
+      // Imported delegate-library entry points execute in their own co-spent input. Inlining one into a
+      // consumer erases the library call before SynthesizeLibraryDelegateCalls can turn it into a delegatecall,
+      // duplicating the facet's state covenant in the consumer and bypassing the intended split boundary.
+      if (!fn.modifiers.includes(FunctionModifier.DELEGATE)
+        && !fn.graphEmissionHandler && !fn.isEntryPoint && !fn.name.startsWith('__message_bus_')
         && fn.body && this.canDiscardCallResult(fn)
         && (this.makesExternalCall(fn) || this.hasConditionalCollectionAccess(fn))) {
         this.voidExternalCallHelpers.add(fn.name);

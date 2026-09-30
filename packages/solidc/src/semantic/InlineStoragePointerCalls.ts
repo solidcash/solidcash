@@ -1,6 +1,7 @@
 import {
   ContractNode,
   FunctionDefinitionNode,
+  FunctionModifier,
   SourceFileNode,
   Node,
   StatementNode,
@@ -290,6 +291,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // storage, ...)` body behind makes its `table[k]` look like an ordinary local ArrayAssign and loses the
     // declared mapping key type. The substitution below already routes mapping writes to the caller collection.
     for (const fn of this.freeFns) {
+      // A deployed delegate library has its own input and covenant frame. Its public functions are not
+      // storage-pointer helpers in the consumer: SynthesizeLibraryDelegateCalls must lower their calls to
+      // co-spent delegatecalls, including when their bodies emit events or touch collections.
+      if (fn.modifiers.includes(FunctionModifier.DELEGATE)) continue;
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn) || this.hasPhysicalEffects(fn))) {
         this.inlinedFns.add(fn.name);

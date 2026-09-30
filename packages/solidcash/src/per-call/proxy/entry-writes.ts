@@ -20,7 +20,9 @@
  * decoded value, and a field whose node lives in continuation chunks is refused by name. A collection whose values
  * chunk needs the value's byte length to size its run, so a value the source does not determine is refused by
  * name; a value it does determine also takes the run of chunk records the body pins, laid past the created node at
- * the value's own collection covenant.
+ * the value's own collection covenant. A body that pushes into such a mapping publishes the element it appends
+ * rather than the whole value, so the value the node ends at is the node's live value with that element appended: an
+ * element the published recipe does not resolve, and a mutation other than a push, are refused by name.
  *
  * A `delete m[k]` compiles to an in-place write of the value type's default, so that too is one write per target
  * with the target's commitment learned from the body's close.
@@ -88,6 +90,7 @@ const MAPPING_HEAD_PREFIX = 'mapping-head-';
 
 /** The participant id a hop's layout holds for a spent node that is not the empty head. */
 const MAPPING_NODE_PREFIX = 'mapping-node-';
+
 
 /** The collection a hop's participant id names when it is the empty head of one; `undefined` for any other id. */
 export function mappingHeadCollection(id: string): string | undefined {
@@ -645,14 +648,19 @@ function planHopMappingBatch(request: HopEntryWritesRequest): HopMappingBatch | 
     // A value the source does determine is stated outright, and a value past the inline limit also takes the run of
     // chunk records.
     if (chunkable) {
-      const raw = resolveWriteValue(resolution, access);
+      const keys = access.keyParams.map((_param, index) => resolveKey(access, index));
+      // A whole value the artifact states is stated outright; a push that states only its element is joined with
+      // the node's live value, because the run of chunk records its length names has to be planned before the body
+      // runs. Anything else is refused by name rather than sized by guessing.
+      const raw = resolveWriteValue(resolution, access)
+        ?? resolveAppendedMappingValue(request, resolution, collection, access, keys);
       if (raw === undefined) {
         throw new PerCallProxyDeployError(
           `the implementation's "${request.functionName}" entry writes mapping "${access.collection}" a value whose `
           + 'source the artifact does not publish, so this hop cannot tell whether the write needs value chunks',
         );
       }
-      return { keys: access.keyParams.map((_param, index) => resolveKey(access, index)), value: raw };
+      return { keys, value: raw };
     }
     // The value is the body's to compute, so a one-byte placeholder fixes only the plan's structure: the slots, the
     // successor links and which targets are inserts. Every commitment that depends on the value is left unstated
@@ -925,6 +933,83 @@ function appendedElementValue(
   return encodePushdataValue([...elements, element] as StateValue[], type, structs);
 }
 
+/** The live state a hop's deployment holds, keyed by field name, as the entry's own body reads it. */
+function liveStateValues(request: HopEntryWritesRequest): Record<string, unknown> | undefined {
+  const layout = request.artifact.stateLayout;
+  const deployment = request.liveDeployment;
+  if (layout === undefined || deployment === undefined) return undefined;
+  const values: Record<string, unknown> = {};
+  deployment.recordCommitments.forEach((commitment, nftIndex) => {
+    try {
+      Object.assign(values, parsePushdataCommitment(binToHex(commitment), layout, nftIndex));
+    } catch {
+      // A commitment the layout's own decoder does not read states nothing; an expression that names it is refused
+      // by name where it is resolved rather than being assumed here.
+    }
+  });
+  return values;
+}
+
+/**
+ * The whole value the node a key names holds, joined across its continuation chunks.
+ *
+ * A key the list does not hold is the type's empty value, which is what the body's own read of an absent key
+ * splices onto, so that is stated rather than refused. A node whose value cannot be reassembled from the
+ * deployment's own chunks is left unstated here and refused by name at the call site.
+ */
+function liveNodeValue(
+  collection: ArtifactCollection,
+  slot: Uint8Array,
+  request: HopEntryWritesRequest,
+): Uint8Array | undefined {
+  const deployment = request.liveDeployment;
+  if (deployment === undefined) return new Uint8Array(0);
+  const node = liveNode(collection, slot, deployment);
+  const commitment = node?.token?.nft?.commitment;
+  if (node === undefined || commitment === undefined) return new Uint8Array(0);
+  return joinedNodeValue(collection, new Uint8Array(hexToBin(commitment)), deployment);
+}
+
+/**
+ * The whole value an in-place append to a chunkable mapping produces, from the node's live value and the element.
+ *
+ * A body that pushes into a chunkable mapping publishes the element it appends (`storedElementSource`) rather than
+ * the whole value, so the value the node ends at is the one the deployment holds with the element appended. That
+ * is exactly the value the node's tail carries beside the run of chunk records its length names, so stating it is
+ * what sizes the run the frame's own group walk addresses. An element the published recipe does not resolve, or a
+ * live value the hop cannot reassemble, leaves the value unstated.
+ */
+function resolveAppendedMappingValue(
+  request: HopEntryWritesRequest,
+  context: ValueResolutionContext,
+  collection: ArtifactCollection,
+  access: NonNullable<AbiFunction['entryAccesses']>[number],
+  keys: readonly Uint8Array[],
+): Uint8Array | undefined {
+  const stored = access.storedElementSource;
+  if (stored === undefined) return undefined;
+  if (access.arrayMutation !== 'push') {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${request.functionName}" entry mutates mapping "${collection.name}" as `
+      + `"${access.arrayMutation ?? 'indexed'}", and this hop plans only the element an append carries`,
+    );
+  }
+  const elementType = parseArrayTypeString(collection.valueType)?.elementType;
+  if (elementType === undefined || elementType !== stored.elementType) return undefined;
+  const element = resolveAppendedElement(
+    request, context.fn, stored.expression, elementType, liveStateValues(request),
+  );
+  if (element === undefined) return undefined;
+  const live = liveNodeValue(collection, keyToSlotMulti([...keys]), request);
+  if (live === undefined) {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${context.fn.name}" entry appends to mapping "${collection.name}" a value whose live `
+      + "bytes this hop cannot reassemble from the deployment's chunks",
+    );
+  }
+  return appendedElementValue(live, collection.valueType, element, context.structs);
+}
+
 /** The element an append writes, in the raw form the array's element type encodes. */
 function appendedElement(resolved: FunctionArgument, elementType: string): StateValue | undefined {
   // A literal or forwarded string is the only resolved form whose encoding depends on the element type: a string
@@ -948,6 +1033,7 @@ function resolveAppendedElement(
   fn: AbiFunction,
   source: ExternalCallExpression,
   elementType: string,
+  stateValues?: Readonly<Record<string, unknown>>,
 ): StateValue | undefined {
   const visible = visibleInputs(fn);
   const args = [...(request.args ?? [])];
@@ -975,7 +1061,7 @@ function resolveAppendedElement(
       }) as FunctionArgument[] | undefined,
   };
   const resolved = evaluateExternalExpression(
-    host, source, args, request.artifact, undefined, visible,
+    host, source, args, request.artifact, stateValues as Record<string, unknown> | undefined, visible,
   );
   return resolved === undefined ? undefined : appendedElement(resolved, elementType);
 }

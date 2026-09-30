@@ -1745,6 +1745,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         in: indices[nftIndex]!, out: indices[nftIndex]!,
         viewIn: record.commitment, viewOut: record.commitment,
       })));
+
     if (laidCalleeWrites !== undefined) {
       placeLaidWrites(segments, resolveLaidWriteSegments(
         laidCalleeWrites.records,

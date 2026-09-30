@@ -2169,12 +2169,15 @@ Titles marked NEVER have not passed on any real compile to date.
   item's done-when narrowed to the publication shapes and the census, and with both reproducers committed
   (`solidc/test/per-call/master/loop-upsert-segment.test.ts`, `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`).
 - **PW3's fixture census was read back with this round's compiler.** `node --max-old-space-size=8192
-  packages/testing/dist/cli.js compile --jobs 4` over the fixture project: 9 sources, 7 artifacts, **0 refusals** in
-  all seven contracts, so the handoff's done-when ("the three refusals are gone from the published census") holds;
-  `MarketplaceV1.postThreadMessage()` publishes `writeSegments: []`, `MarketplaceV1.refund()` publishes its batch at
-  segment 2 and its run at `last`, and `MarketplaceV1.updateJobWhitelist()` publishes nothing for the reason above.
-  The read-back ran while the ladder stream's own run was in flight, which is why an earlier record called it
-  corroboration rather than gating.
+  packages/testing/dist/cli.js compile --jobs 4` over the fixture project, at HEAD `87b092627`, reporting `Compiled
+  9 Solidity source(s) in 0 compiler job(s) (9 cache hit(s)) -> 7 artifact(s)`, so the artifacts are the compiler's
+  own current output (`.marketplace/artifacts/solidcash/*.json`, written 2026-09-30 12:54). Read back from every
+  artifact's `composition.refusedEntries`: **0 refusals across all seven contracts**, so the handoff's done-when
+  ("the three refusals are gone from the published census") holds; `MarketplaceV1.postThreadMessage()` publishes
+  `writeSegments: []`, `MarketplaceV1.refund()` publishes its batch at segment 2 and its run at `last`, and
+  `MarketplaceV1.updateJobWhitelist()` publishes nothing for the reason above. The capture is
+  `{SCRATCH}/pw3-census.log`; the read-back ran while the ladder stream's own run was in flight, which is why an
+  earlier record called it corroboration rather than gating.
 - **The `{SCRATCH}` directory was pruned during the 2026-09-29/30 round.** `/tmp/grok-goal-53d72d2bcc11/implementer`
   disappeared between run 14 and the write-segment landing, taking the raw ladder logs (`ladder/m1-run-*.log`), the
   compile logs and the census scripts the Log rows name as `{SCRATCH}/...`. The durable record survives and is what

@@ -1963,6 +1963,13 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-27 | c44994de8 | per-call | the multi-record settlement | 114 + 277 + 343 | A segment can now settle every record it declares, which is what a mapping write needs: an insert declares the predecessor it relinks and the node it creates. The chain's identity is the record's index, so the walk sweeps one index at a time over the block carrying three values and no table, and the pass count is a run-time value the body need not be unrolled for. Every rule the single-record walk established is preserved (the spent commitment starts the chain, each declaration carries on, the last is what the transaction writes, the value floor, the census with its validator exception), and a chain may now also begin at an output — a record created by one declaration and read back by a later one chains through the same registers. The tests drive the emitted walk over real transactions: two records chained across two segments, two in one segment each chaining independently, a kept record beside a created one, three declarations of one record, a deletion beside a chain that carries on, and each control refused. Two bugs found in the way are worth recording: `OP_UNTIL` exits when its condition is *true*, so all three loops were initially inverted, and `OP_BEGIN` is a do-while, so a segment declaring no record ran its declaration body once. |
 ## Deviations
 
+- **The `{SCRATCH}` directory was pruned during the 2026-09-29/30 round.** `/tmp/grok-goal-53d72d2bcc11/implementer`
+  disappeared between run 14 and the write-segment landing, taking the raw ladder logs (`ladder/m1-run-*.log`), the
+  compile logs and the census scripts the Log rows name as `{SCRATCH}/...`. The durable record survives and is what
+  the Log rows are checked against: every run's per-test and full-run times are committed in
+  `docs/per-call/probes/LADDER_TIMES.md`, and the counts, walls and exact failure phrases are in the Log rows
+  themselves. A Log row written after this point that cites a `{SCRATCH}` path cites a file created after the prune;
+  rows written before it cite logs that no longer exist but whose content is reproduced in `LADDER_TIMES.md` and the row.
 - **Two of the program's sixty reasons are unreachable in the model's order, and no hostile case can produce them.**
   Every name in `VALIDATOR_PROGRAM_REASONS` is enforced by the shipped program, and the harness's criterion asks each
   to have a hostile case. Counting the names against mentions in the focused tests leaves two without one -

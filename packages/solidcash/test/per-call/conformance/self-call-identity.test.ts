@@ -24,7 +24,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * path does not serve yet is pinned with the refusal it meets, beside the answer the EVM gives.
  */
 
-type Role = 'EOA' | 'A' | boolean;
+type Role = 'EOA' | 'A' | boolean | bigint;
 
 const IA = 'interface IA { function whoExt() external view returns (address); }';
 const WHO = 'function whoExt() external view returns (address) { return msg.sender; }';
@@ -38,6 +38,8 @@ interface Row {
   readonly evm: Role;
   /** The refusal the per-call path meets today, for a row it does not serve yet. */
   readonly refusal?: RegExp;
+  /** The value the user's call carries, in wei on the EVM and in satoshis per-call. */
+  readonly value?: bigint;
 }
 
 const ROWS: readonly Row[] = [
@@ -103,6 +105,25 @@ const ORIGIN_ROWS: readonly Row[] = [
   },
 ];
 
+/** Rows beyond the reference file: where `msg.value` is read, which a self-call does not carry. */
+const PAID = 5_000n;
+const VALUE_ROWS: readonly Row[] = [
+  {
+    label: 'msg.value at the top', entry: 'valueDirect', evm: PAID, value: PAID,
+    members: 'function valueDirect() external payable returns (uint256) { marker += 1; return msg.value; }',
+  },
+  {
+    label: 'msg.value read in an internal helper', entry: 'valueViaHelper', evm: PAID, value: PAID,
+    members: 'function _value() internal view returns (uint256) { return msg.value; }'
+      + ' function valueViaHelper() external payable returns (uint256) { marker += 1; return _value(); }',
+  },
+  {
+    label: 'msg.value inside this.g()', entry: 'valueViaThis', evm: 0n, value: PAID,
+    members: 'function valueExt() external payable returns (uint256) { return msg.value; }'
+      + ' function valueViaThis() external payable returns (uint256) { marker += 1; return this.valueExt(); }',
+  },
+];
+
 const sourceOf = (row: Row): string =>
   `pragma solidity ^0.8.0; ${IA} contract A { uint256 public marker; ${row.members} ${SELF} }`;
 
@@ -126,11 +147,11 @@ async function evmAnswer(row: Row): Promise<Role> {
   const contract = deployed.createdAddress!;
   const iface = new Interface(compiled.abi);
   const called = await evm.runCall({
-    to: contract, caller: eoa, origin: eoa, gasLimit: 30_000_000n,
+    to: contract, caller: eoa, origin: eoa, gasLimit: 30_000_000n, value: row.value ?? 0n,
     data: hexToBin(iface.encodeFunctionData(row.entry, []).slice(2)),
   });
   const [answer] = iface.decodeFunctionResult(row.entry, `0x${binToHex(called.execResult.returnValue)}`);
-  if (typeof answer === 'boolean') return answer;
+  if (typeof answer === 'boolean' || typeof answer === 'bigint') return answer;
   const address = String(answer).toLowerCase();
   return address === eoa.toString() ? 'EOA' : address === contract.toString() ? 'A' : address as never;
 }
@@ -155,18 +176,19 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly
     provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
   });
   const user = encodeLockingBytecodeP2pkh(alicePkh);
-  const call = async (entry: string, txid: string): ReturnType<typeof callPerCallEntry> => {
+  const call = async (entry: string, txid: string, value?: bigint): ReturnType<typeof callPerCallEntry> => {
     const callerUtxo = { txid, vout: 0, satoshis: 300_000n };
     await provider.addUtxo(binToHex(user), callerUtxo);
     return callPerCallEntry({
       provider, artifact: artifact!, categoryId: deployment.categoryId, functionName: entry, args: [],
       callerUtxo, callerLockingBytecode: user, funder: signature.unlockP2PKH(), vm: compositionMachine(),
+      ...(value === undefined ? {} : { value }),
     });
   };
   const self = await call('self', '44'.repeat(32));
   let answered;
   try {
-    answered = await call(row.entry, '45'.repeat(32));
+    answered = await call(row.entry, '45'.repeat(32), row.value);
   } catch (error) {
     return { refusal: String((error as Error).message) };
   }
@@ -176,13 +198,13 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly
   }
   const hexOf = (value: unknown): string => (value instanceof Uint8Array ? binToHex(value) : String(value));
   const [answer] = answered.values;
-  if (typeof answer === 'boolean') return { role: answer };
+  if (typeof answer === 'boolean' || typeof answer === 'bigint') return { role: answer };
   const address = hexOf(answer);
   return { role: address === binToHex(alicePkh) ? 'EOA' : address === hexOf(self.values[0]) ? 'A' : address as never };
 }
 
 describe('S0: the single-contract reference rows, the EVM against the per-call path', () => {
-  for (const row of [...ROWS, ...ORIGIN_ROWS]) {
+  for (const row of [...ROWS, ...ORIGIN_ROWS, ...VALUE_ROWS]) {
     it(`${row.label}: the EVM answers ${String(row.evm)}${row.refusal === undefined ? ', and so does per-call' : ''}`,
       async () => {
         expect(await evmAnswer(row)).toBe(row.evm);

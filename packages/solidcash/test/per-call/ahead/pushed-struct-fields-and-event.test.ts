@@ -17,17 +17,17 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * then emits an event whose payload concatenates most of those fields. The mapping write the entry also holds is
  * behind `allowedWorkers_.length > 0` and is not reached by that call, so no loop is under test here.
  *
- * Measured: this shape **settles** through the shipped hop, on the mock network, with and without the event (45 s
- * for both). So the ladder title's refusal - the frame's own `OP_VERIFY`, with the run it declares for the appended
- * array reported as 2 chunks - is not the append, its field writes or the event by themselves; it is in what the
- * real entry does beside them, which is the calls it makes in the same frame (`ERC20.transferFrom`, the data
- * contract's `userRegistered`) around the append and the mapping write it never reaches.
+ * Measured: the append, its field writes and the event **settle** through the shipped hop, on the mock network
+ * (45 s for the pair). So the title's refusal is not the append by itself. Adding the entry's guarded write -
+ * `if (allowedWorkers.length > 0) { ... }`, which the title's call does not take - refuses, and that case is this
+ * file's wall: it is the same source as the settling one plus one slot, so the two cases together say which
+ * declaration the entry's own code names and the plan does not.
  *
- * The file is kept because it holds that boundary: a wide struct push with every field written and one payload
- * event is served, so a future change that stops serving it is a regression rather than a narrowing of the wall.
+ * The file holds both boundaries: a wide struct push with every field written and one payload event is served, so a
+ * change that stops serving it is a regression; and the guarded write is refused at the entry's own declared-record
+ * walk, with the operands measured beside the case below.
  */
-const TAGS = (): string => 'string[] public tagPool;';
-const SOURCE = (fields: string, event: string): string => 'pragma solidcash ^0.13.0;'
+const SOURCE = (fields: string, event: string, tail = ''): string => 'pragma solidcash ^0.13.0;'
   + ' contract Impl {'
   + '   struct EventData { uint8 type_; bytes who; bytes data_; uint32 timestamp_; }'
   + '   struct Post {'
@@ -47,15 +47,21 @@ const SOURCE = (fields: string, event: string): string => 'pragma solidcash ^0.1
   + '   }'
   + '   address public implementation;'
   + '   Post[] public posts;'
+  + '   mapping(uint256 => mapping(address => bool)) public allowlists;'
   + '   event PostEvent(uint indexed id, EventData data);'
   + '   function initialize() { require(true); }'
+  + '   function setAllowed(uint id, address[] who) internal {'
+  + '     for (uint i = 0; i < who.length; i = i + 1) { this.allowlists[id][who[i]] = true; }'
+  + '   }'
   + '   function publish(string title, bytes32 contentHash, bool multipleApplicants, string[] tags, address token,'
-  + '                    uint amount, uint32 maxTime, string deliveryMethod, address arbitrator) {'
+  + '                    uint amount, uint32 maxTime, string deliveryMethod, address arbitrator,'
+  + '                    address[] allowedWorkers) {'
   + '     require(amount > 0, "amount");'
   + '     this.posts.push();'
   + '     uint id = this.posts.length - 1;'
   + fields
   + event
+  + tail
   + '   }'
   + ' }';
 
@@ -79,6 +85,30 @@ const EVENT = '     emit PostEvent(id, EventData({ type_: uint8(1), who: abi.enc
 
 const WITH_THE_EVENT = SOURCE(FIELD_WRITES, EVENT);
 const WITHOUT_THE_EVENT = SOURCE(FIELD_WRITES, '');
+/**
+ * The same entry with the guarded write the fixture's own entry holds, called with an empty worker list.
+ *
+ * `if (allowedWorkers.length > 0)` is false for the call under test, so the loop's turns never run. The ladder's
+ * first red title is this shape: it appends its element and then writes a worker mapping through a call its own
+ * arguments make false. Measured, in seconds rather than in the title's twenty minutes:
+ *
+ *   frame "implementation-master" of Impl.publish() at line 1: no source message
+ *   (Program failed an OP_VERIFY operation.)
+ *
+ * The failing instruction is the declared-record ordinal walk's `ordinal < count` check (`OP_SWAP OP_1 OP_PICK
+ * OP_3 OP_PICK OP_LESSTHAN OP_VERIFY` in the outlined helper that carries it). Measured at that check: the count
+ * the segment declares is 3 - the plan is `[[3, 3], [65535, 5], [65535, 6]]`, the frame's own record and two
+ * records the transaction creates - and the ordinal the body computed is 3, one past the segment's last record.
+ *
+ * The offset that produces it is slot arithmetic: the body names a created record by the coordinate the loop
+ * computed, and that coordinate is the frame's record base plus the slot's own offset, which counts
+ * `dataNftCount + 1 + every earlier entry slot the frame does not batch`. The guarded write adds an entry slot
+ * (and its loop's trailing records) to the body's layout, so every record after it moves up two positions, while
+ * the plan declares nothing for a loop that takes no turns. The same source without the guarded write settles,
+ * which is what makes this two positions and not the append itself.
+ */
+const GUARDED_WRITE_SKIPPED = SOURCE(FIELD_WRITES, '',
+  '     if (allowedWorkers.length > 0) { setAllowed(id, allowedWorkers); }');
 
 interface Funding {
   readonly implementation: { txid: string; vout: number; satoshis: bigint };
@@ -144,6 +174,7 @@ async function post(source: string, seed: string): Promise<{ accepted: boolean; 
         120n,
         'digital',
         new Uint8Array(0),
+        [] as never,
       ] as never,
       callerUtxo: funded.call,
       callerLockingBytecode: deployerLock,
@@ -166,5 +197,13 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the entry that appends a str
   it('settles them with one payload event', async () => {
     const outcome = await post(WITH_THE_EVENT, '9');
     expect(outcome.accepted, outcome.objection).toBe(true);
+  }, 300_000);
+
+  it('refuses them while the entry holds the guarded write the call does not take', async () => {
+    const outcome = await post(GUARDED_WRITE_SKIPPED, '5');
+    expect(outcome.accepted).toBe(false);
+    // The entry's own declared-record walk names a record its segment does not declare.
+    expect(outcome.objection).toMatch(/did not settle through the proxy: frame "implementation-master" of /);
+    expect(outcome.objection).toMatch(/no source message \(Program failed an OP_VERIFY operation\.\)/);
   }, 300_000);
 });

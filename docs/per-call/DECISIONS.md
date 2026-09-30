@@ -5,11 +5,10 @@ id from here instead of restating a decision; when a decision changes, its row i
 replaces is marked `SUPERSEDED-by <id>`. A status sentence anywhere else is a pointer, not a decision: if the two
 disagree, this file is right and the other one is stale.
 
-Two things are checkable rather than asserted. The **provenance** column names where the answer came from, so a
-reader can tell an authorization from a paraphrase. And
-`packages/solidc/test/per-call/master/decisions-ledger.test.ts` enforces the mechanical half: outside a pointer
-line or this file, a line that names PW3 may not carry a superseded status phrasing, each id appears exactly once,
-every `SUPERSEDED-by` names a row that exists, and each item has exactly one live row.
+What is checkable here is the **provenance** column: it names where each answer came from, so a reader can tell an
+authorization from a paraphrase instead of having to adjudicate one. Nothing mechanical enforces the convention -
+an earlier round added a test that grepped the documents for superseded phrasings, and it was removed as work whose
+subject was prose rather than behaviour.
 
 | id | date | item | question asked | answer | provenance | status |
 | --- | --- | --- | --- | --- | --- | --- |

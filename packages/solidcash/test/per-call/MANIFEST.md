@@ -42,7 +42,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 39 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 9 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
-| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 73 |
+| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 75 |
 | `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2 |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 3 |
 
@@ -300,7 +300,9 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   `paired-event-rows.test.ts` (14), `large-event-rows.test.ts` (13, refused: the call entry point plans no callee
   frames, with a root-frame control served beside it), `time-window-rows.test.ts` (16),
   `dynamic-argument-rows.test.ts` (12), `balance-rows.test.ts` (10), `low-level-return-rows.test.ts` (11) and
-  `custom-error-rows.test.ts` (6).
+  `custom-error-rows.test.ts` (6). Beside them `loop-upsert-settlement.test.ts` pins the wall a run-time-loop
+  mapping upsert meets on the shipped call path (the machine refuses the frame the path planned itself, while the
+  same mapping written once from a parameter settles).
 - **`solidcash/test/per-call/pw7-measure.test.ts`** - a measurement instrument rather than a regression guard: it
   drives the shipped composer and derivation on Y2, Y6 and the vault graph, counts the machine's own evaluations
   per master, and prints a JSON summary to `PW7_OUT` (default `/tmp/pw7-measure.json`). The twenty-four-master case

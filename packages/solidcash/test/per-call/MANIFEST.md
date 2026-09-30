@@ -22,7 +22,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 591 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 597 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 14 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
@@ -38,17 +38,17 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/call/` | `solidcash` | 101 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 113 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 108 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 109 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 39 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 10 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | 26 |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 3 |
 
-Total: 1787 checks (115 + 637 + 1032 + 3), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1794 checks (115 + 643 + 1033 + 3), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 637 is the four rows above it (85 files; 22.3 s warm at `520a21d9c`),
-`solidcash` 1032 (1029 passed, three skipped; 165 files; 137.7 s warm at `520a21d9c`) is the
+`vitest.per-call.config.ts`: `solidc` 643 is the four rows above it (86 files; 22.3 s warm at `520a21d9c`),
+`solidcash` 1033 (1030 passed, three skipped; 165 files; 137.7 s warm at `520a21d9c`) is the
 seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -300,6 +300,7 @@ listed under the table, and none of those is claimed anywhere else.
 | --- | --- |
 | Execute on a non-master UTXO: loose funds at the lock, a foreign category, or the right category without the minting capability | `master-recreation.test.ts` (three cases) |
 | A master drained, duplicated or not recreated in place: output token, category, capability, commitment, lock or value | `master-recreation.test.ts` (six cases) |
+| A record a master settles alone written back with less value, whether its entry writes, reads or never touches it and whether or not it sends, or a mapping node drained (T39) | `solidc/test/per-call/master/record-value-send.test.ts` (six cases) and `shapes/mapping-values.test.ts` (one case) |
 | A forged call edge: a recorded callee that is not the covered callee the call ran, or an argument digest that is not the callee's call data | `call-record.test.ts` (two cases) |
 | A forged or missing event: payload, lock, token presence, capability, output position, or a body that emits a value the output does not carry | `solidc/test/per-call/master/event-output.test.ts` (the compiled entry's refusals) |
 | A state UTXO spent outside settlement, a declared record the transaction does not spend, or a declaration that does not chain from the spent commitment to the written one | `record-census.test.ts` (the undeclared spend) and `solidc/test/per-call/master/record-settlement.test.ts` (three cases) |

@@ -114,7 +114,6 @@ function evaluate(options: WalkOptions): { accepted: boolean; objection?: string
   const program = settlementProgram({
     callCount,
     segmentCount: options.segments.length,
-    sendCount: 0,
   });
   const masterLock = encodeLockingBytecodeP2sh32(hash256(program));
   const block: WitnessBlock = {

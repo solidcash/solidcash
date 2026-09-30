@@ -847,10 +847,7 @@ class HeadEmitter {
   private assertSelfSettlement(): void {
     if (!this.settlesOwnRecords) return;
     const addressPayload = this.addressSlot + placeholderPrefixLength(ADDRESS_SLOT_LENGTH);
-    this.emitBytes(selfSettlementScript({
-      sendCount: this.tailShape.sendCount,
-      addressPayloadOffset: addressPayload,
-    }));
+    this.emitBytes(selfSettlementScript({ addressPayloadOffset: addressPayload }));
   }
 
   /**

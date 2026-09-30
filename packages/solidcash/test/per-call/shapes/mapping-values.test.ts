@@ -12,6 +12,7 @@ import {
   type RecordEntry,
 } from '@solidcash/utils';
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { createUnlockingBytecode, scriptToLockingBytecode } from '../../../src/utils.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
@@ -256,6 +257,20 @@ describe('a string-keyed string mapping set', () => {
     const commitment = outcome.transaction.outputs[built.nodeIndex]!.token!.nft!.commitment;
     expect(bytesToHex(commitment))
       .toBe(bytesToHex(encodeEntryCommitment(SLOT, ZERO_SLOT, encodeChunkableValueTail(SECOND))));
+  });
+
+  it('refuses the node written back with less value than it held (T39)', () => {
+    const built = buildPlan(shape(written.after));
+    const outcome = composeAndDerive(built.plan, [artifacts.SetHub!, artifacts.Tags!], [rootOf('SetHub', 'run', HUB_MASTER)]);
+    const program = outcome.draft.programFor(HUB_MASTER);
+    const drained = program.transaction.outputs.map((output, index) => (index === built.nodeIndex
+      ? { ...output, valueSatoshis: output.valueSatoshis - 1_000n } : output));
+    const vm = compositionMachine();
+    const refusedBy = outcome.contractInputs.filter((input) => vm.stateSuccess(vm.evaluate({
+      inputIndex: input.index, sourceOutputs: program.sourceOutputs,
+      transaction: { ...program.transaction, outputs: drained },
+    })) !== true).map((input) => input.id);
+    expect(refusedBy).toStrictEqual([ENTRY_MASTER]);
   });
 
   it('refuses a close the body did not compute', () => {

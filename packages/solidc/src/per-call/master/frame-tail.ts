@@ -704,18 +704,16 @@ export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
  * several records, and a later segment declaring a record the chain does not already name, are refused rather than
  * settled partly, because only one chain is walked.
  *
- * A listed send does not carry the record that pays it (section 16 gives a send entry only an output index), so the
- * value floor is emitted only when the entry lists no send.
+ * A send is paid from the contract's containers (spec 4b), never from a record, so a record written back keeps at
+ * least the value it held whether or not the entry sends.
  */
 export interface SelfSettlementShape {
-  /** How many sends the entry lists, which decides whether the value floor can be checked. */
-  readonly sendCount: number;
   /** Where the contract address's payload sits in the running script, for the census. */
   readonly addressPayloadOffset: number;
 }
 
 export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
-  const { sendCount, addressPayloadOffset } = shape;
+  const { addressPayloadOffset } = shape;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
   const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
@@ -812,18 +810,16 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
             emit(Opcodes.OP_UTXOTOKENCOMMITMENT);
             copy(3); // viewIn
             emit(Opcodes.OP_EQUALVERIFY);
-            if (sendCount === 0) {
-              // The value floor applies where the record is written back: a kept record keeps what it held.
-              copyNumber(1); // out
-              emit(Opcodes.OP_0, Opcodes.OP_LESSTHAN, Opcodes.OP_NOT);
-              emit(Opcodes.OP_IF);
-              copyAlt(3);
-              emit(Opcodes.OP_OUTPUTVALUE);
-              copyAlt(3);
-              emit(Opcodes.OP_UTXOVALUE);
-              emit(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
-              emit(Opcodes.OP_ENDIF);
-            }
+            // The value floor applies where the record is written back: a kept record keeps what it held.
+            copyNumber(1); // out
+            emit(Opcodes.OP_0, Opcodes.OP_LESSTHAN, Opcodes.OP_NOT);
+            emit(Opcodes.OP_IF);
+            copyAlt(3);
+            emit(Opcodes.OP_OUTPUTVALUE);
+            copyAlt(3);
+            emit(Opcodes.OP_UTXOVALUE);
+            emit(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
+            emit(Opcodes.OP_ENDIF);
             replaceAlt(0, () => emit(Opcodes.OP_1)); // seenIn = 1
           }
           emit(Opcodes.OP_ELSE);

@@ -21,9 +21,14 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * planning refusal over a target that names no contract.
  */
 
-const IMPL_CATEGORY = '4a'.repeat(32);
-const PROXY_CATEGORY = '4b'.repeat(32);
-const TOKEN_CATEGORY = '4e'.repeat(32);
+/** A 32-byte id whose bytes vary and whose reverse is a different value. */
+function id32(lead: string): string {
+  return `${lead.repeat(31)}c4`;
+}
+
+const IMPL_CATEGORY = id32('4a');
+const PROXY_CATEGORY = id32('4b');
+const TOKEN_CATEGORY = id32('4e');
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IERC20 { function balanceOf(address who) returns (uint); }'
@@ -76,8 +81,8 @@ async function deployedWithCallerCoin(network: MockNetworkProvider): Promise<{
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
   const implFunding = { txid: IMPL_CATEGORY, vout: 0, satoshis: 500_000n };
   const proxyFunding = { txid: PROXY_CATEGORY, vout: 0, satoshis: 500_000n };
-  const hopCoin = { txid: '4c'.repeat(32), vout: 0, satoshis: 300_000n };
-  const callCoin = { txid: '4d'.repeat(32), vout: 0, satoshis: 300_000n };
+  const hopCoin = { txid: id32('4c'), vout: 0, satoshis: 300_000n };
+  const callCoin = { txid: id32('4d'), vout: 0, satoshis: 300_000n };
   for (const coin of [implFunding, proxyFunding]) await network.addUtxo(source.address, coin);
   const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
   for (const coin of [hopCoin, callCoin]) await network.addUtxo(binToHex(deployerLock), coin);

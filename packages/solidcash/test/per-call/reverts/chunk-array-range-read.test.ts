@@ -26,6 +26,11 @@ import {
  * that guard is the entry's own, so its reason is what a caller should read rather than a refusal of the read.
  */
 
+/** A 32-byte id whose bytes vary and whose reverse is a different value. */
+function id32(lead: string): string {
+  return `${lead.repeat(31)}c4`;
+}
+
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 
 /** The getter's shape: a loop whose key indexes the chunk-backed array at `start + i`. */
@@ -94,21 +99,21 @@ async function chain(fixture: Fixture, items: readonly Uint8Array[]): Promise<Mo
   const provider = new MockNetworkProvider();
   const deployed = deployMaster(artifact, category, VALIDATOR_PROGRAM);
   await provider.addUtxo(bytesToHex(deployed.lockingBytecode),
-    utxo(categoryHex, '11'.repeat(32), 20_000n, 'minting', empty));
+    utxo(categoryHex, id32('11'), 20_000n, 'minting', empty));
   await provider.addUtxo(bytesToHex(deployed.address),
-    utxo(categoryHex, '22'.repeat(32), 20_000n, 'mutable', empty));
+    utxo(categoryHex, id32('22'), 20_000n, 'mutable', empty));
 
   const records = dynamicValueRecords(
     artifact.stateLayout!, 'items', encodePushdataValue([...items], 'address[]'));
   await provider.addUtxo(bytesToHex(stateRecordLockingBytecode(categoryHex)),
-    utxo(categoryHex, '23'.repeat(32), 1_500n, 'mutable', records.header));
+    utxo(categoryHex, id32('23'), 1_500n, 'mutable', records.header));
   const chunkLock = bytesToHex(chunkRecordLockingBytecode(categoryHex, 'items', 'address[]'));
   for (const [index, chunk] of records.chunks.entries()) {
-    const txid = (0x60 + index).toString(16).padStart(2, '0').repeat(32);
+    const txid = id32((0x60 + index).toString(16).padStart(2, '0'));
     await provider.addUtxo(chunkLock, utxo(categoryHex, txid, 1_000n, 'mutable', chunk));
   }
   for (const [index, node] of mappingNodes(items).written.entries()) {
-    const txid = (0x33 + index).toString(16).padStart(2, '0').repeat(32);
+    const txid = id32((0x33 + index).toString(16).padStart(2, '0'));
     await provider.addUtxo(entryLock, utxo(categoryHex, txid, 1_500n, 'mutable', node.after));
   }
   return provider;

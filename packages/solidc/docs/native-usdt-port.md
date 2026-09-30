@@ -55,10 +55,10 @@ compiler are:
 | --- | --: | --- |
 | `nusdt.scash` | 9,815 | master, token container, first-touch rows |
 | `nusdt_facet.scash` | 7,643 | administration and deposit claims |
-| `nusdt_transfer_facet.scash` | 6,943 | transfer and transferFrom |
+| `nusdt_transfer_facet.scash` | 6,938 | transfer and transferFrom |
 | `nusdt_supply_facet.scash` | 4,526 | issue, redeem, destroyBlackFunds |
 
-The four artifacts sum to **28,927 B**. The monolith remains above 10,000 B and unspendable.
+The four artifacts sum to **28,922 B**. The monolith remains above 10,000 B and unspendable.
 
 Splitting still multiplies the available budget rather than compressing code, and that is still the reason
 the contract exists at all - but the margin is now 2,612 B over the cap, not 22,644 B.

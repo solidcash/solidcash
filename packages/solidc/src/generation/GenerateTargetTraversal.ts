@@ -12909,6 +12909,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR) {
       return this.emitShortCircuitBoolean(node);
     }
+    // Fold literal powers before visiting either operand. Emitting their pushes and only removing them from
+    // the tracker leaves both values on the VM stack, corrupting later parameter and mapping-key reads.
+    if (node.operator === BinaryOperator.POW
+      && node.left instanceof IntLiteralNode && node.right instanceof IntLiteralNode) {
+      if (node.right.value < 0n) throw new NegativeExponentError(node, node.right.value);
+      const locationData = { location: node.location, positionHint: PositionHint.END };
+      this.emit(encodeInt(node.left.value ** node.right.value), locationData);
+      this.pushToStack('(value)');
+      if (node.type instanceof IntType) this.emitIntBoundsCheck(node.type, locationData);
+      if (node.type instanceof FixedType) this.emitFixedBoundsCheck(node.type, locationData);
+      return node;
+    }
     // Integer bitwise (fixed-width two's-complement) when the result is a bounded int.
     if ((node.operator === BinaryOperator.BIT_AND || node.operator === BinaryOperator.BIT_OR
       || node.operator === BinaryOperator.BIT_XOR) && node.type instanceof IntType) {
@@ -12961,17 +12973,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // "at [object Object]". SolidCashError appends the position and both file caveats itself.
         throw new NegativeExponentError(node, node.right.value);
       }
-      // Check if both operands are compile-time constants
-      if (node.left instanceof IntLiteralNode && node.right instanceof IntLiteralNode) {
-        // The literal visitors have already pushed both operands. Drop them in the VM as well as in the
-        // tracker before publishing the folded result; otherwise the operands survive under the result and
-        // redirect every later stack-relative read (including mapping keys in a conditional write).
-        this.emit(Op.OP_2DROP, locationData);
-        this.popFromStack(2);
-        const result = node.left.value ** node.right.value;
-        this.emit(encodeInt(result), locationData);
-        this.pushToStack('(value)');
-      } else {
+      {
         // Runtime paths: guard against negative exponents (Solidity: exponent must be unsigned)
         // Stack: [..., base, exp]
         this.emit(Op.OP_DUP, locationData);

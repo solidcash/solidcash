@@ -72,7 +72,7 @@ contract NativeTetherToken(address initialOwner) {
 
     // ---- Events: byte-for-byte the deployed USDT set ----
     event Transfer(address indexed from, address indexed to, int value);
-    event Approval(address indexed tokenOwner, address indexed spender, int value);
+    event Approval(address indexed tokenOwner, address indexed spender, uint256 value);
     event Pause();
     event Unpause();
     event Issue(int amount);
@@ -94,13 +94,13 @@ contract NativeTetherToken(address initialOwner) {
     // ---- Constants ----
     // USDT's MAX_UINT infinite-allowance sentinel, preserved at full width so
     // that a ported integration passing 2**256-1 still means "infinite".
-    int constant MAX_ALLOWANCE = 2 ** 256 - 1;
+    uint256 constant MAX_ALLOWANCE = type(uint256).max;
 
     // ---- USDT state ----
     public address owner;
     public int totalSupply;
     mapping(address => int) public balances;
-    mapping(address => mapping(address => int)) public allowed;
+    mapping(address => mapping(address => uint256)) public allowed;
     public bool paused;
     mapping(address => bool) public isBlackListed;
     public string name;
@@ -218,13 +218,16 @@ contract NativeTetherToken(address initialOwner) {
         require(!this.frozen[from]);
         require(!this.frozen[to]);
 
-        int currentAllowance = this.allowed[from][spender];
+        uint256 currentAllowance = this.allowed[from][spender];
+        require(value >= 0);
+        uint256 nextAllowance = currentAllowance;
 
         // USDT only decrements finite allowances; MAX_UINT is the infinite sentinel.
         if (currentAllowance < MAX_ALLOWANCE) {
-            require(currentAllowance >= value);
-            this.allowed[from][spender] = currentAllowance - value;
+            require(currentAllowance >= uint256(value));
+            nextAllowance = currentAllowance - uint256(value);
         }
+        this.allowed[from][spender] = nextAllowance;
 
         require(to != from);
         require(this.balances[from] >= value);
@@ -236,7 +239,7 @@ contract NativeTetherToken(address initialOwner) {
     // USDT's approve carries the EIP-20 race-condition guard: a non-zero
     // allowance must be zeroed before it can be changed to another non-zero
     // value. Reproduced verbatim.
-    function approve(address spender, int value) notDeprecated {
+    function approve(address spender, uint256 value) notDeprecated {
         address tokenOwner = msg.sender;
         require(!(value != 0 && this.allowed[tokenOwner][spender] != 0));
         this.allowed[tokenOwner][spender] = value;

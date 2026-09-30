@@ -5,12 +5,12 @@ pragma solidcash >=0.8.0;
 library UsdtTransferFacet {
     event Transfer(address indexed from, address indexed to, int value);
 
-    int constant MAX_ALLOWANCE = 2 ** 256 - 1;
+    uint256 constant MAX_ALLOWANCE = type(uint256).max;
 
     address owner;
     int totalSupply;
     mapping(address => int) balances;
-    mapping(address => mapping(address => int)) allowed;
+    mapping(address => mapping(address => uint256)) allowed;
     bool paused;
     mapping(address => bool) isBlackListed;
     bytes32 name;
@@ -56,11 +56,13 @@ library UsdtTransferFacet {
         require(!this.frozen[to]);
         require(value > 0);
 
-        int currentAllowance = this.allowed[from][spender];
+        uint256 currentAllowance = this.allowed[from][spender];
+        uint256 nextAllowance = currentAllowance;
         if (currentAllowance < MAX_ALLOWANCE) {
-            require(currentAllowance >= value);
-            this.allowed[from][spender] = currentAllowance - value;
+            require(currentAllowance >= uint256(value));
+            nextAllowance = currentAllowance - uint256(value);
         }
+        this.allowed[from][spender] = nextAllowance;
 
         require(to != from);
         require(this.balances[from] >= value);

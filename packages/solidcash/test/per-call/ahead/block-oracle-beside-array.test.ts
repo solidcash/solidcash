@@ -1,0 +1,581 @@
+import { describe, expect, it, vi } from 'vitest';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import { FrameKind, validatorAddress, type Artifact } from '@solidcash/utils';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import {
+  decideValidator, type PerCallTransaction, type TokenShape,
+} from '../../../../solidc/src/per-call/validator/index.js';
+import { Contract, SignatureTemplate } from '../../../src/index.js';
+import type { FunctionArgument } from '../../../src/Argument.js';
+import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import * as composer from '../../../src/per-call/composer/index.js';
+import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import {
+  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
+  type PerCallProxyCallResult,
+} from '../../../src/per-call/proxy/index.js';
+import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import type { Unlocker, Utxo } from '../../../src/interfaces.js';
+import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
+import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
+
+/**
+ * Walls ahead: a proxied root that keeps block-oracle state beside its task array, through the shipped hop.
+ *
+ * Reading `block.timestamp` gives a contract two synthesized fields: the `__block_timestamp` register, packed beside
+ * the contract's own fields, and the oracle owner's key, which the compiler isolates in a data NFT of its own after
+ * every other record. No source entry reads that key, so an entry that appends to the task array publishes a block
+ * layout naming only the array's record, and its body addresses the array's chunk run as the records that follow
+ * the ones it names. The hop's delegate frame declares every record of the implementation's layout instead, so the
+ * key's record sits where the body looks for the run: the append is refused at the entry's own line, after the
+ * close of segment 0 stalls when the entry also calls a store (the post's shape, with the fixture's clock stamp).
+ *
+ * The block oracle is incidental: an isolated field of the source's own stops the append the same way, the clock
+ * alone settles, and a record the entry does not name ahead of one it does moves its first read onto the wrong
+ * record. The direct call path declares the entry's own records and settles that entry.
+ *
+ * A second wall, reported beside it: a proxied store's `view` read whose value the root ignores derives every frame,
+ * the validator refuses the store proxy's STATIC frame for its DELEGATE leg (V10), and the hop broadcasts anyway,
+ * so the mock rejects it with a raw script failure rather than the hop refusing it by name.
+ *
+ * Each case is pinned where it stands today, beside a control that settles. The file runs only under
+ * `PER_CALL_AHEAD=1`.
+ */
+
+/** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
+function category(seed: string): string {
+  const base = '9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4';
+  return `${seed}${base}${base}`.slice(0, 64);
+}
+
+const JOURNAL_IMPL_CATEGORY = category('2f');
+const JOURNAL_PROXY_CATEGORY = category('30');
+const DESK_IMPL_CATEGORY = category('41');
+const DESK_PROXY_CATEGORY = category('52');
+
+/** A per-call contract's address, which its category fixes before anything is deployed. */
+const addressOf = (id: string): Uint8Array => validatorAddress(hexToBin(id), VALIDATOR_PROGRAM);
+
+const ALICE_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
+const TITLE = 'Create a marketplace in solidity';
+
+/** The store the post publishes its note to, stamping the note with the clock as the fixture's data contract does. */
+const JOURNAL_LINES = [
+  'struct Note { uint8 kind; bytes who; bytes data; uint32 at; }',
+  'interface IJournal { function publish(int id, Note note); }',
+  'contract Journal {',
+  '  address public implementation;',
+  '  address public desk;',
+  '  mapping(int => Note[]) notes;',
+  '  event Posted(int indexed id, Note note);',
+  '  function initialize(address hub) { this.desk = hub; require(true); }',
+  '  function publish(int id, Note note) {',
+  '    require(msg.sender == this.desk, "not desk");',
+  '    Note e = note;',
+  '    e.at = uint32(block.timestamp);',
+  '    this.notes[id].push(e);',
+  '    emit Posted(id, e);',
+  '  }',
+  '}',
+];
+
+/** The post's own writes, as the fixture's `publishJobPost` makes them, with or without its clock stamp. */
+function postSource(clock: boolean): string {
+  return [
+    'pragma solidcash ^0.13.0;',
+    ...JOURNAL_LINES,
+    'struct Task { int state; bool gated; address creator; string title; int amount; uint32 at; }',
+    'contract Desk {',
+    '  address public implementation;',
+    '  address public journal;',
+    '  Task[] tasks;',
+    '  function initialize(address j) { this.journal = j; require(true); }',
+    '  function open(string title, int amount, bool gated) {',
+    '    this.tasks.push();',
+    '    int id = this.tasks.length - 1;',
+    '    this.tasks[id].gated = gated;',
+    '    this.tasks[id].creator = msg.sender;',
+    '    this.tasks[id].title = title;',
+    '    this.tasks[id].amount = amount;',
+    ...(clock ? ['    this.tasks[id].at = uint32(block.timestamp);'] : []),
+    '    IJournal(this.journal).publish(id, Note(0, abi.encodePacked(msg.sender), bytes(title), 0));',
+    '  }',
+    '}',
+  ].join('\n');
+}
+
+/** The append alone, with the clock stamp, with an isolated field of its own instead, or with neither. */
+function appendSource(extra: 'clock' | 'spare' | 'none'): string {
+  return [
+    'pragma solidcash ^0.13.0;',
+    'struct Task { int state; address creator; string title; int amount; uint32 at; }',
+    'contract Desk {',
+    '  address public implementation;',
+    '  Task[] tasks;',
+    ...(extra === 'spare' ? ['  uint32 external spare;'] : []),
+    '  function initialize() { require(true); }',
+    '  function open(string title, int amount) {',
+    '    this.tasks.push();',
+    '    int id = this.tasks.length - 1;',
+    '    this.tasks[id].creator = msg.sender;',
+    '    this.tasks[id].title = title;',
+    '    this.tasks[id].amount = amount;',
+    ...(extra === 'clock' ? ['    this.tasks[id].at = uint32(block.timestamp);'] : []),
+    '  }',
+    '}',
+  ].join('\n');
+}
+
+/** The clock stamped into a scalar of the record the entry names, with no run after the records. */
+const CLOCK_ONLY_SOURCE = [
+  'pragma solidcash ^0.13.0;',
+  'contract Desk {',
+  '  address public implementation;',
+  '  uint32 stamp;',
+  '  function initialize() { require(true); }',
+  '  function open() { this.stamp = uint32(block.timestamp); }',
+  '}',
+].join('\n');
+
+/** A counter in the second record: the first holds only addresses the entry never reads. */
+const SECOND_RECORD_SOURCE = [
+  'pragma solidcash ^0.13.0;',
+  'contract Desk {',
+  '  address public implementation;',
+  '  address a;',
+  '  address b;',
+  '  address c;',
+  '  int count;',
+  '  function initialize() { require(true); }',
+  '  function open() {',
+  '    this.count = this.count + 1;',
+  '  }',
+  '}',
+].join('\n');
+
+/** A root that reads a proxied store's registration and ignores the answer; `view` makes the read a STATIC frame. */
+function readSource(view: boolean): string {
+  const isMember = `function isMember(address who)${view ? ' view' : ''} returns (bool)`;
+  return [
+    'pragma solidcash ^0.13.0;',
+    'struct Member { address who; bytes key; string name; int up; }',
+    `interface IJournal { ${isMember}; }`,
+    'contract Journal {',
+    '  address public implementation;',
+    '  address public desk;',
+    '  mapping(address => Member) members;',
+    '  function initialize(address hub) { this.desk = hub; require(true); }',
+    '  function join(bytes key, string name) {',
+    '    require(this.members[msg.sender].key.length == 0, "already registered");',
+    '    this.members[msg.sender] = Member(msg.sender, key, name, 0);',
+    '  }',
+    `  ${isMember} { return this.members[who].key.length > 0; }`,
+    '}',
+    'contract Desk {',
+    '  address public implementation;',
+    '  address public journal;',
+    '  function initialize(address j) { this.journal = j; require(true); }',
+    '  function peek(address who) { IJournal(this.journal).isMember(who); require(true); }',
+    '}',
+  ].join('\n');
+}
+
+/** The 1-based line of the first line of `source` containing `needle`. */
+function lineOf(source: string, needle: string): number {
+  return source.split('\n').findIndex((line) => line.includes(needle)) + 1;
+}
+
+type ArtifactMap = ReturnType<typeof compileStringMulti>;
+const compiledRuns = new Map<string, ArtifactMap>();
+/** A source's contracts, compiled once and only when a case runs. */
+function compiled(source: string): ArtifactMap {
+  let artifacts = compiledRuns.get(source);
+  if (artifacts === undefined) {
+    artifacts = compileStringMulti(source, { composition: 'per-call' });
+    compiledRuns.set(source, artifacts);
+  }
+  return artifacts;
+}
+
+/** A coin a genesis is funded from; its txid becomes the category it mints. */
+function funding(txid: string): Utxo {
+  return { txid, vout: 0, satoshis: 5_000_000n };
+}
+
+/** One mock chain with the deployer's wallet and the coins every genesis and hop is funded from. */
+interface Chain {
+  readonly network: MockNetworkProvider;
+  readonly funder: Unlocker;
+  readonly caller: Unlocker;
+  readonly changeAddress: string;
+  /** Hands out a fresh coin at the caller's lock, distinct from every category. */
+  readonly nextCoin: () => Promise<Utxo>;
+}
+
+async function freshChain(): Promise<Chain> {
+  const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+  const signature = new SignatureTemplate(alicePriv);
+  const wallet = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
+  for (const id of [JOURNAL_IMPL_CATEGORY, JOURNAL_PROXY_CATEGORY, DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY]) {
+    await network.addUtxo(wallet.address, funding(id));
+  }
+  await fundShippedFacets(network);
+  let serial = 0x60;
+  const nextCoin = async (): Promise<Utxo> => {
+    serial += 1;
+    const coin = funding(category(serial.toString(16)));
+    await network.addUtxo(binToHex(ALICE_LOCK), coin);
+    return coin;
+  };
+  return {
+    network, funder: wallet.unlock.spend(alicePub, signature), caller: signature.unlockP2PKH(),
+    changeAddress: wallet.address, nextCoin,
+  };
+}
+
+/** A contract deployed behind its generated proxy, and what a later hop into it names. */
+interface Proxied {
+  readonly artifact: Artifact;
+  readonly proxy: string;
+  readonly implementation: string;
+  readonly address: Uint8Array;
+}
+
+async function deployProxied(
+  chain: Chain, artifact: Artifact, ids: readonly [string, string], args: readonly FunctionArgument[],
+): Promise<Proxied> {
+  const deployment = await deployPerCallProxy({
+    provider: chain.network,
+    implementationArtifact: artifact,
+    proxyArtifact: buildProxyArtifact(artifact),
+    implementationDeploy: { fundingUtxo: funding(ids[0]), funder: chain.funder, changeAddress: chain.changeAddress },
+    proxyDeploy: { fundingUtxo: funding(ids[1]), funder: chain.funder, changeAddress: chain.changeAddress },
+    initialize: { functionName: 'initialize', args: [...args] },
+    callerLockingBytecode: ALICE_LOCK,
+    callerFunding: { utxo: await chain.nextCoin(), funder: chain.caller, changeAddress: chain.changeAddress },
+    vm: compositionMachine(),
+  });
+  expect(deployment.initialize.broadcast).toBeDefined();
+  return {
+    artifact,
+    proxy: deployment.proxy.categoryId,
+    implementation: deployment.implementation.categoryId,
+    address: deployment.proxy.address,
+  };
+}
+
+/** The store as the root's externals name it: its proxy category, with the implementation it runs behind it. */
+function externalOf(store: Proxied): PerCallProxyExternal {
+  return {
+    artifact: store.artifact,
+    categoryId: store.proxy,
+    proxyArtifact: buildProxyArtifact(store.artifact),
+    implementationCategoryId: store.implementation,
+  };
+}
+
+/** What a hop left: its result, or its error with the last draft built and the stalls the settle caught. */
+interface Outcome {
+  readonly result?: PerCallProxyCallResult | PerCallCallResult;
+  readonly error?: Error;
+  readonly draft?: composer.CompositionDraft;
+  readonly stalls: readonly string[];
+  /** Whether the caller's coin is still unspent, i.e. nothing was broadcast from it. */
+  readonly coinLive: boolean;
+}
+
+/** Runs one call and records what it left; `call` enters it through whichever path the case drives. */
+async function observe(chain: Chain, call: (coin: Utxo) => Promise<Outcome['result']>): Promise<Outcome> {
+  const coin = await chain.nextCoin();
+  const hosts = vi.spyOn(composer, 'createComposedDerivationHost');
+  const derivations = vi.spyOn(composer, 'deriveComposition');
+  let result: Outcome['result'];
+  let error: Error | undefined;
+  try {
+    result = await call(coin);
+  } catch (caught) {
+    error = caught as Error;
+  }
+  const last = hosts.mock.results.at(-1);
+  const stalls = derivations.mock.results.filter((entry) => entry.type === 'throw')
+    .map((entry) => String((entry.value as Error).message));
+  hosts.mockRestore();
+  derivations.mockRestore();
+  const live = await chain.network.getUtxosForLockingBytecode(ALICE_LOCK);
+  return {
+    ...(result === undefined ? {} : { result }),
+    ...(error === undefined ? {} : { error }),
+    ...(last?.type === 'return' ? { draft: last.value.draft } : {}),
+    stalls,
+    coinLive: live.some((utxo) => utxo.txid === coin.txid && utxo.vout === coin.vout),
+  };
+}
+
+/** Enters an entry of a proxied contract through the shipped hop. */
+function enter(
+  chain: Chain, target: Proxied, functionName: string, args: readonly FunctionArgument[],
+  externals?: Readonly<Record<string, PerCallProxyExternal>>,
+): Promise<Outcome> {
+  return observe(chain, (coin) => callPerCallProxyEntry({
+    provider: chain.network,
+    implementationArtifact: target.artifact,
+    proxyArtifact: buildProxyArtifact(target.artifact),
+    proxyCategoryId: target.proxy,
+    implementationCategoryId: target.implementation,
+    functionName,
+    args,
+    ...(externals === undefined ? {} : { externals }),
+    callerUtxo: coin,
+    callerLockingBytecode: ALICE_LOCK,
+    funder: chain.caller,
+    changeAddress: chain.changeAddress,
+    vm: compositionMachine(),
+  }));
+}
+
+/** The hop settled: every verdict accepted and the transaction broadcast. */
+function expectSettled(outcome: Outcome): void {
+  expect(outcome.error).toBeUndefined();
+  expect(outcome.result!.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+  expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+  expect(outcome.coinLive).toBe(false);
+}
+
+/** The hop was refused by name before anything was broadcast, with exactly `message`. */
+function expectRefused(outcome: Outcome, message: string): void {
+  expect(outcome.error).toBeInstanceOf(PerCallProxyDeployError);
+  expect(outcome.error!.message).toBe(message);
+  expect(outcome.coinLive).toBe(true);
+}
+
+/** The words the hop refuses the root's entry with when its own frame fails a check the source wrote no message for. */
+function entryRefusal(entry: string, line: number, sizedRun: boolean): string {
+  return `the implementation's "${entry}" entry did not settle through the proxy: frame "implementation-master" of `
+    + `Desk.${entry}() at line ${line}: no source message (Program failed an OP_VERIFY operation.)`
+    + (sizedRun ? ', and the run it declares for dynamic "tasks" is 1 chunk(s), sized from the length the record\'s '
+      + 'own declaration states' : '');
+}
+
+/** The stall the close of the entry's first segment gives, once per attempt the derivation ran. */
+const CLOSE_STALL = 'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.open() filled no witness at '
+  + 'site 1 (close of segment 0)';
+
+/** The data-NFT indices the entry's published block layout names, in the order its body reads them. */
+function namedRecords(artifact: Artifact, functionName: string): number[] {
+  const row = artifact.abi.find((entry) => entry.name === functionName)!;
+  return [...(row.blockLayout?.slots ?? [])].filter((slot) => slot.kind === 'dataNft')
+    .sort((left, right) => left.offset - right.offset).map((slot) => slot.nftIndex!);
+}
+
+/** The inputs the delegate frame's first segment declares ahead of anything else, as the proxy's record ids. */
+function declaredRecords(draft: composer.CompositionDraft): string[] {
+  const byIndex = new Map(draft.layout.participants.map((placed) => [placed.index, placed.id]));
+  return draft.blockOf('implementation-master').segments[0]!
+    .map((entry) => byIndex.get(entry.in) ?? '')
+    .filter((id) => id.startsWith('proxy-record-'));
+}
+
+/** The assembled transaction restated in the shape the validator's decision model reads; it decides nothing. */
+function modelOf(draft: composer.CompositionDraft): PerCallTransaction {
+  const program = draft.programFor(draft.layout.participants.find((placed) => placed.kind === 'master')!.id);
+  type Holder = {
+    readonly token?: { category: Uint8Array; amount: bigint; nft?: { capability: string; commitment: Uint8Array } };
+  };
+  const shape = (holder: Holder): TokenShape => (holder.token === undefined
+    ? { category: new Uint8Array(0), capability: 0, hasNft: false, nftCommitment: new Uint8Array(0), amount: 0n }
+    : {
+      category: holder.token.category,
+      capability: holder.token.nft?.capability === 'minting' ? 2 : (holder.token.nft?.capability === 'mutable' ? 1 : 0),
+      hasNft: holder.token.nft !== undefined,
+      nftCommitment: holder.token.nft?.commitment ?? new Uint8Array(0),
+      amount: holder.token.amount,
+    });
+  return {
+    inputs: program.transaction.inputs.map((input, index) => ({
+      index,
+      value: program.sourceOutputs[index]!.valueSatoshis,
+      lockingBytecode: program.sourceOutputs[index]!.lockingBytecode,
+      unlockingBytecode: input.unlockingBytecode,
+      token: shape(program.sourceOutputs[index]! as Holder),
+      outpointTransactionHash: input.outpointTransactionHash,
+      outpointIndex: input.outpointIndex,
+    })),
+    outputs: program.transaction.outputs.map((output, index) => ({
+      index, value: output.valueSatoshis, lockingBytecode: output.lockingBytecode, token: shape(output as Holder),
+    })),
+  };
+}
+
+describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: block-oracle state beside a task array', () => {
+  it('publishes what the wall stands on: the oracle key alone in the last record, the append naming the first', () => {
+    const desk = compiled(postSource(true)).Desk!;
+    const layout = desk.stateLayout!;
+    expect(layout.dataNftCount).toBe(2);
+    expect(layout.variables.map((variable) => `${variable.name}@${variable.nftIndex}`)).toStrictEqual([
+      'implementation@0', 'journal@0', 'tasks@0', '__block_timestamp@0', '__blockOracleOwner@1',
+    ]);
+    expect(layout.variables.at(-1)!.immutable).toBe(true);
+    // The entry names the record it reads and writes, not the key's.
+    expect(namedRecords(desk, 'open')).toStrictEqual([0]);
+    // Without the clock there is no key, and the one record is all there is.
+    expect(compiled(postSource(false)).Desk!.stateLayout!.dataNftCount).toBe(1);
+  });
+
+  it('the post\'s writes stamped with the clock beside a store call stall at the close of segment 0', async () => {
+    const source = postSource(true);
+    const { Journal, Desk } = compiled(source);
+    const chain = await freshChain();
+    const journal = await deployProxied(chain, Journal!, [JOURNAL_IMPL_CATEGORY, JOURNAL_PROXY_CATEGORY],
+      [addressOf(DESK_PROXY_CATEGORY)]);
+    const desk = await deployProxied(chain, Desk!, [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], [journal.address]);
+    const outcome = await enter(chain, desk, 'open', [TITLE, 100n, true], { IJournal: externalOf(journal) });
+    // The delegate frame declares the key's record beside the one the entry names, where the body looks for the
+    // task's chunk, so the run's close fails on every attempt and the entry is refused at its own line. Owner: the
+    // SDK hop (`proxy/deploy.ts`, `buildHopPlan`: the delegate frame's segments declare every data NFT of the
+    // implementation, `recordKept.slice(0, implementationRecords)`, where a callee frame declares the records its
+    // entry names through `frameDataRecordIndices`).
+    expectRefused(outcome, entryRefusal('open', lineOf(source, 'function open('), true));
+    expect(outcome.stalls).toStrictEqual([CLOSE_STALL, CLOSE_STALL]);
+    expect(declaredRecords(outcome.draft!)).toStrictEqual(['proxy-record-0', 'proxy-record-1']);
+  }, 300_000);
+
+  it('the same post without the clock settles and broadcasts', async () => {
+    const { Journal, Desk } = compiled(postSource(false));
+    const chain = await freshChain();
+    const journal = await deployProxied(chain, Journal!, [JOURNAL_IMPL_CATEGORY, JOURNAL_PROXY_CATEGORY],
+      [addressOf(DESK_PROXY_CATEGORY)]);
+    const desk = await deployProxied(chain, Desk!, [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], [journal.address]);
+    expectSettled(await enter(chain, desk, 'open', [TITLE, 100n, true], { IJournal: externalOf(journal) }));
+  }, 300_000);
+
+  it('the clock-stamped append alone, with no call, is refused at the entry\'s own line', async () => {
+    const source = appendSource('clock');
+    const chain = await freshChain();
+    const desk = await deployProxied(chain, compiled(source).Desk!, [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
+    const outcome = await enter(chain, desk, 'open', [TITLE, 100n]);
+    // An entry that makes no call is read without a derivation, so nothing stalls. Owner: the SDK hop, as above.
+    expectRefused(outcome, entryRefusal('open', lineOf(source, 'function open('), true));
+    expect(outcome.stalls).toStrictEqual([]);
+    expect(namedRecords(desk.artifact, 'open')).toStrictEqual([0]);
+    expect(declaredRecords(outcome.draft!)).toStrictEqual(['proxy-record-0', 'proxy-record-1']);
+  }, 300_000);
+
+  it('an isolated field of the source\'s own in place of the key stops the append the same way', async () => {
+    const source = appendSource('spare');
+    const chain = await freshChain();
+    const desk = await deployProxied(chain, compiled(source).Desk!, [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
+    const outcome = await enter(chain, desk, 'open', [TITLE, 100n]);
+    // No block oracle here: any record the entry does not name, after the ones it does, stands where the run is
+    // read. Owner: the SDK hop, as above.
+    expectRefused(outcome, entryRefusal('open', lineOf(source, 'function open('), false));
+    expect(desk.artifact.stateLayout!.dataNftCount).toBe(2);
+    expect(namedRecords(desk.artifact, 'open')).toStrictEqual([0]);
+  }, 300_000);
+
+  it('the append without the clock settles and broadcasts', async () => {
+    const chain = await freshChain();
+    const desk = await deployProxied(chain, compiled(appendSource('none')).Desk!,
+      [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
+    expectSettled(await enter(chain, desk, 'open', [TITLE, 100n]));
+  }, 300_000);
+
+  it('the clock alone, with no run after the records, settles and broadcasts', async () => {
+    const chain = await freshChain();
+    const desk = await deployProxied(chain, compiled(CLOCK_ONLY_SOURCE).Desk!,
+      [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
+    // The key's record is declared here too, but nothing the body addresses follows it.
+    expect(desk.artifact.stateLayout!.dataNftCount).toBe(2);
+    expect(namedRecords(desk.artifact, 'open')).toStrictEqual([0]);
+    expectSettled(await enter(chain, desk, 'open', []));
+  }, 300_000);
+
+  it('a record the entry does not name ahead of one it does moves its first read onto the wrong record', async () => {
+    const chain = await freshChain();
+    const desk = await deployProxied(chain, compiled(SECOND_RECORD_SOURCE).Desk!,
+      [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
+    const outcome = await enter(chain, desk, 'open', []);
+    // The body reads its one record at the first coordinate of the frame's block, where the hop declared record 0.
+    // Owner: the SDK hop, as above.
+    expectRefused(outcome, entryRefusal('open', lineOf(SECOND_RECORD_SOURCE, 'this.count = this.count + 1;'), false));
+    expect(namedRecords(desk.artifact, 'open')).toStrictEqual([1]);
+    expect(declaredRecords(outcome.draft!)).toStrictEqual(['proxy-record-0', 'proxy-record-1']);
+  }, 300_000);
+
+  it('the same entry through the direct call path, which declares the records the entry names, settles', async () => {
+    const artifact = compiled(SECOND_RECORD_SOURCE).Desk!;
+    const chain = await freshChain();
+    const deployment = await deployStatefulContract(artifact, [], {
+      provider: chain.network, fundingUtxo: funding(DESK_IMPL_CATEGORY), funder: chain.funder,
+      changeAddress: chain.changeAddress,
+    });
+    const outcome = await observe(chain, (coin) => callPerCallEntry({
+      provider: chain.network, artifact, categoryId: deployment.categoryId, functionName: 'open', args: [],
+      callerUtxo: coin, callerLockingBytecode: ALICE_LOCK, funder: chain.caller, changeAddress: chain.changeAddress,
+      vm: compositionMachine(),
+    }));
+    expectSettled(outcome);
+    const block = outcome.result!.draft.blockOf('master');
+    expect(block.segments[0]!.map((entry) => outcome.result!.draft.layout.participants
+      .find((placed) => placed.index === entry.in)?.id)).toStrictEqual(['record-1']);
+  }, 300_000);
+});
+
+describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a proxied store read whose value is ignored', () => {
+  /** Deploys the store and the root behind generated proxies and registers the caller in the store. */
+  async function readWorld(view: boolean): Promise<{ chain: Chain; journal: Proxied; desk: Proxied }> {
+    const { Journal, Desk } = compiled(readSource(view));
+    const chain = await freshChain();
+    const journal = await deployProxied(chain, Journal!, [JOURNAL_IMPL_CATEGORY, JOURNAL_PROXY_CATEGORY],
+      [addressOf(DESK_PROXY_CATEGORY)]);
+    const desk = await deployProxied(chain, Desk!, [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], [journal.address]);
+    const key = Uint8Array.from({ length: 33 }, (_unused, index) => (index * 7 + 3) % 251);
+    expectSettled(await enter(chain, journal, 'join', [key, 'TestUser']));
+    return { chain, journal, desk };
+  }
+
+  it('derives every frame, the validator refuses the static frame\'s delegate leg, and the hop broadcasts', async () => {
+    const { chain, journal, desk } = await readWorld(true);
+    const outcome = await enter(chain, desk, 'peek', [ALICE_LOCK], { IJournal: externalOf(journal) });
+    const draft = outcome.draft!;
+    // Every frame's own program accepts the derived transaction.
+    expect(composer.reportCompositionRefusal({
+      draft, artifacts: [desk.artifact, buildProxyArtifact(desk.artifact), journal.artifact,
+        buildProxyArtifact(journal.artifact)], vm: compositionMachine(),
+    }).accepted).toBe(true);
+    // The read enters the store's proxy as a STATIC frame, whose fallback forwards as a DELEGATE leg, and the
+    // validator refuses that pair. Owner: the validator rule (`solidc/src/per-call/validator/checks.ts`,
+    // `checkV10`, and the spec's V10: a static frame makes only STATIC calls).
+    const staticFrame = draft.layout.participants.find((placed) => placed.kind === 'master'
+      && draft.blockOf(placed.id).kind === FrameKind.STATIC)!;
+    expect(staticFrame.contract).toBe('JournalProxy');
+    expect(draft.blockOf(staticFrame.id).calls.map((call) => call.kind)).toStrictEqual([FrameKind.DELEGATE]);
+    const validator = draft.layout.participants.find((placed) => placed.kind === 'validator')!;
+    const decision = decideValidator(modelOf(draft), {
+      validatorTemplate: VALIDATOR_PROGRAM, validatorInputIndex: validator.index,
+    });
+    expect(decision.rejection).toMatchObject({
+      check: 'V10', reason: 'V10_STATIC_NON_STATIC_CALL', index: staticFrame.index,
+    });
+    // The hop broadcasts without reading its own verdicts, so the network, not the hop, refuses it, and by a raw
+    // script failure at the validator's facet. Owner: the SDK hop (`proxy/deploy.ts`, `callPerCallProxyEntry` calls
+    // `broadcastHop` whatever `settled.accepted` says).
+    const facet = draft.layout.participants.find((placed) => placed.kind === 'facet')!;
+    expect(outcome.error).toBeDefined();
+    expect(outcome.error).not.toBeInstanceOf(PerCallProxyDeployError);
+    expect(outcome.error!.message).toBe('mandatory-script-verify-flag-failed (Unable to verify transaction: error in '
+      + `evaluating input index ${facet.index}: Program failed an OP_VERIFY operation.)`);
+    expect(outcome.coinLive).toBe(true);
+  }, 300_000);
+
+  it('the same read of an entry declared without view is a CALL frame, and settles and broadcasts', async () => {
+    const { chain, journal, desk } = await readWorld(false);
+    const outcome = await enter(chain, desk, 'peek', [ALICE_LOCK], { IJournal: externalOf(journal) });
+    expectSettled(outcome);
+    const draft = outcome.result!.draft;
+    expect(draft.layout.participants.filter((placed) => placed.kind === 'master')
+      .map((placed) => draft.blockOf(placed.id).kind)).not.toContain(FrameKind.STATIC);
+  }, 300_000);
+});

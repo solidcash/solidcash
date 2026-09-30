@@ -238,11 +238,15 @@ function describeFrameRefusalReason(reason: {
  * A refusal that reached the machine reports the innermost frame's own source reason as
  * `frame "<master>" of <entry> at line <n>: <reason> (<objection>)`. A construction or planner failure does not
  * carry that shape, so a harness message that merely mentions a frame is not read as a contract reason.
+ *
+ * A refusal may carry prose after the frame's own description, which a hop appends when a run it declares is
+ * sized from a record's length. The reason is read non-greedily so that a custom error's own parentheses are
+ * part of it rather than mistaken for the machine's objection, and the trailing prose is stepped over.
  */
 function frameReasonFromRefusalMessage(message: string): string | undefined {
   const at = message.indexOf('frame "');
   if (at < 0) return undefined;
-  const match = /^frame "[^"]*" of [^:]+: ([\s\S]*) \(([^()]*)\)$/.exec(message.slice(at));
+  const match = /^frame "[^"]*" of [^:]+: ([\s\S]*?) \(([^()]*)\)(?:,[\s\S]*)?$/.exec(message.slice(at));
   return match?.[1];
 }
 

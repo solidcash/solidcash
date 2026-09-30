@@ -37,6 +37,11 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' require(this.total >= 0); }'
   + '   function withdraw(int by) { if (by > 100) { revert ExceedsLimit(by, 100); } this.total = this.total - by;'
   + ' require(this.total >= 0); }'
+  // An entry whose write grows a dynamic value the artifact states no element for: the hop sizes the run it
+  // declares from the record's own length, and says so after the frame description a refusal is read from.
+  + '   int[] public items;'
+  + '   function overfill(int by) { require(by < 10, "amount too large"); this.items.push();'
+  + ' this.items[this.items.length - 1] = by; }'
   + ' }';
 
 const UNFUNDED_PHRASE =
@@ -73,6 +78,7 @@ function projectHarness(directory: string): ReturnType<typeof createHardhatRunti
 interface LedgerCalls {
   record: (by: bigint) => unknown;
   withdraw: (by: bigint) => unknown;
+  overfill: (by: bigint) => unknown;
 }
 
 /** Deploys the contract behind the generated proxy, the handle a suite calls through. */
@@ -118,6 +124,14 @@ describe('the chai revert matchers and a per-call contract', () => {
     // by the harness's own message, even though it contains the expected text.
     await expect(chaiExpect(calls.record(4n)).to.be.revertedWith(HARNESS_NO_COIN))
       .rejects.toThrow(/before reaching a contract reason/);
+  });
+
+  it('reads a reason the hop reports beside the run it sized', async () => {
+    const { calls } = await deployLedger();
+    // The refusal names the frame's reason, and the hop appends what it sized the entry's declared run at.
+    await chaiExpect(calls.overfill(50n)).to.be.revertedWith('amount too large');
+    await expect(chaiExpect(calls.overfill(50n)).to.be.revertedWith('something else'))
+      .rejects.toThrow(/contract's own reason/);
   });
 
   it('compares custom-error arguments: equal passes, different fails', async () => {

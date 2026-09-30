@@ -20,10 +20,11 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * trip count the execution decides: the shipped path accepts that spend, and the case after it mutates the
  * transaction the path assembled - the record the entry wrote carries a commitment its code did not compute - and
  * the machine refuses it. The second body writes a key that is an element of a caller-supplied array, so a different
- * node per turn: the compiler plans no verified batch for it (the entry's block layout reserves no `entry` slot for
- * the collection), and the shipped path's own framing of it is refused by the machine with
- * `Program failed an OP_VERIFY operation.` The two bodies differ only in where the key comes from, which is what
- * separates the loop upsert the path serves from the one it does not.
+ * node per turn: the per-call layout does declare the collection's `entry` slot and the artifact publishes the
+ * in-loop access, but the call path has no record protocol for a loop's per-turn nodes, so it refuses the write by
+ * name at the seam that planning replaces (`touches mapping "balances" as write outside a sorted batch, which a
+ * call does not plan`). The two bodies differ only in where the key comes from, which is what separates the loop
+ * upsert the path serves from the one it does not yet.
  */
 
 const FIXED_SOURCE = 'pragma solidcash ^0.13.0;'
@@ -123,11 +124,13 @@ describe('a mapping upsert inside a run-time loop, through the shipped call path
     expect(vm.stateSuccess(state)).not.toBe(true);
   });
 
-  it('the machine refuses the loop upsert whose key varies per turn, on the frame the shipped path planned', async () => {
-    const answered = await call(VARYING_SOURCE, 'move', [[KEY], 42n]);
-    expect(answered.accepted).toBe(false);
-    expect(objectionsOf(answered)).toMatch(
-      /frame "master" of Ledger\.move\(\) .*no source message \(Program failed an OP_VERIFY operation\.\)/,
+  it('the shipped path refuses the loop upsert whose key varies per turn, at the protocol it does not plan', async () => {
+    // The refusal is by name now rather than the machine's: the per-call lane has no record protocol for a loop's
+    // per-turn nodes, and the frame the plan builds declares none of them for the collection, which is what
+    // `solidc/test/per-call/master/loop-upsert-segment.test.ts` shows the machine reading as the no-record sentinel
+    // when it is handed such a frame. This named refusal is the seam the per-turn planning replaces.
+    await expect(call(VARYING_SOURCE, 'move', [[KEY], 42n])).rejects.toThrow(
+      /entry "move" touches mapping "balances" as write outside a sorted batch, which a call does not plan/,
     );
   });
 });

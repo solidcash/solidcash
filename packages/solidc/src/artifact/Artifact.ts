@@ -2567,10 +2567,14 @@ function buildFunctionAbiMetadata(
         accesses: descriptor.accesses.map((access) => ({ ...access, key: [...access.key] })),
       })),
     }),
-    ...(func.entryAccesses && func.entryAccesses.some((ea) => !ea.inLoop) && {
+    ...(func.entryAccesses && func.entryAccesses.some((ea) => !ea.inLoop
+      || compilerOptions.composition === 'per-call') && {
       // Loop mapping writes (inLoop) are surfaced via entryLoopWrites, not as fixed entry slots; exclude them
-      // here so the SDK's static-entry path does not allocate a slot / derive them positionally.
-      entryAccesses: func.entryAccesses.filter((ea) => !ea.inLoop).map((ea) => ({
+      // here so the SDK's static-entry path does not allocate a slot / derive them positionally. A per-call frame
+      // declares its records in its witness block instead, where the slot's slotIndex is the coordinate the frame
+      // plans the loop's per-turn nodes from.
+      entryAccesses: func.entryAccesses.filter((ea) => !ea.inLoop
+        || compilerOptions.composition === 'per-call').map((ea) => ({
         slotIndex: ea.slotIndex,
         collection: ea.collection,
         keyParams: ea.keyParams,
@@ -3163,6 +3167,12 @@ export function generateArtifact(
       ...(contract.fallbackDef.functionSelector && { selector: binToHex(contract.fallbackDef.functionSelector) }),
       inputs: [],
       isFallback: true,
+      // A fallback that declares a return publishes it like any other body: a proxy's fallback returns the bytes
+      // its delegate recorded, and a caller that holds only the proxy's artifact reads that fact here.
+      ...(contract.fallbackDef.returnTypes.length > 0 && {
+        outputs: contract.fallbackDef.returnTypes.map((type) => ({ type: abiTypeString(type) })),
+        resultEncoding: externalResultEncoding(contract.fallbackDef.returnTypes, compilerOptions),
+      }),
       ...(contract.fallbackDef.modifiers.length > 0 && {
         modifiers: contract.fallbackDef.modifiers.map((m) => m.toString()),
       }),

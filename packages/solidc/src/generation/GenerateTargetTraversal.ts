@@ -8351,9 +8351,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // B-side: return event covenant verification for entry-point functions with return types. A per-call master
       // settles its entry's return against the witness `retval`, not against a return-event output, and a void
-      // entry settles that the frame recorded nothing.
-      if (!this.functionHasDelegatecall && node.isEntryPoint && !node.graphEmissionHandler
-        && !this.blockEndsWithRevert(node.body)) {
+      // entry settles that the frame recorded nothing. A delegatecall body's own state is the delegate's to
+      // settle, but a proxy fallback's return is its own frame's `retval` even though it forwards the call, so
+      // that body settles its `retval` here like any other per-call entry.
+      const settlesProxyFallbackReturn = this.proxyFallbackRawReturn();
+      if ((!this.functionHasDelegatecall || settlesProxyFallbackReturn) && node.isEntryPoint
+        && !node.graphEmissionHandler && !this.blockEndsWithRevert(node.body)) {
         if (this.perCallMaster) {
           if (this.perCallReturnsValue) this.emitPerCallReturnCheck(node);
         } else if (node.returnTypes.length > 0) {
@@ -13717,6 +13720,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Exception: a `return` inside a loop isn't supported by the raw-return stack cleanup, so keep the
     // event-blob path for such functions (the internal-call subroutine is then unused/spliced).
     if (publishesEntrypointReturn) {
+      if (this.proxyFallbackRawReturn()) {
+        // A proxy's fallback returns the bytes its delegate recorded. Those bytes are already the encoding the
+        // callee frame recorded, so pushdata-encoding them again would frame them twice and the value a caller
+        // reads through the proxy would not be the callee's; the operand is the frame's `retval` verbatim.
+        this.popFromStack();
+        this.pushToStack('__internal__returnBlob');
+        return node;
+      }
       if (evmEntrypointReturn) {
         this.emitEvmAbiEncodeStackValues(returnTypes, locationData);
       } else {
@@ -25844,6 +25855,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // the runtime trailing region, not a fixed `entry[N]` block slot. The counter is incremented only after the
       // write, so every read during this iteration addresses the exact co-spend consumed by the transition body.
       const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+      if (this.readsRecordsFromFrame) {
+        // A per-call frame declares its records in its own witness block and the head parks their base, so the
+        // turn's node sits the slot's own per-call offset past that base, counted by the loop's counter - the
+        // coordinate the paged read of the same collection already uses. The trailing band is the direct
+        // convention's layout of a transaction this frame does not build.
+        this.emitPerCallEntryIndex('in', slotIndex, locationData);
+        this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopCounterName) + extraStackOffset + 1)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(Op.OP_ADD, locationData);
+        return;
+      }
       this.emitTrailingWriteInputBase(blockSize, locationData, undefined, extraStackOffset);
       if (this.sortedUpsertGrouped) {
         this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertInputBaseName) + extraStackOffset + 1)), locationData);
@@ -29227,7 +29249,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const physicalCommitment = `(kernel_physical_commitment_${this.sortedUpsertLoopJournalAccessStreamIndex})`;
     // Emit `master + blockSize + <persistent counter> + add`, leaving an output/input index on top (U untracked above).
     const pushIdx = (counterName: string, add: number, u: number): void => {
-      if (counterName === this.sortedUpsertLoopOutCounterName) {
+      const side = counterName === this.sortedUpsertLoopOutCounterName ? 'out' : 'in';
+      if (this.readsRecordsFromFrame) {
+        // The frame's own witness declares the loop's nodes past the slot's coordinate, so the turn's node is the
+        // frame's parked base plus that offset, counted by the loop's own counter.
+        this.emitPerCallEntryIndex(side, slotIndex, loc);
+      } else if (side === 'out') {
         this.emitTrailingWriteOutputBase(blockSize, loc, undefined, u);
       } else {
         this.emitTrailingWriteInputBase(blockSize, loc, undefined, u);
@@ -35578,6 +35605,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);  // [idx, input_commitment, output_commitment]
       this.emit(Op.OP_EQUALVERIFY, locationData);            // [idx]
     }
+  }
+
+  /**
+   * True when the body being emitted is a proxy fallback returning the bytes its delegate recorded.
+   *
+   * The generated proxy is the shape `isProxyFallbackContract` names: a contract whose only body is a fallback
+   * that forwards the call data it received to an address it holds. Its frame runs the implementation as a
+   * delegate, so the bytes the delegate recorded are already the encoding the callee frame used; pushdata-encoding
+   * them a second time would frame them twice and the value a caller reads through the proxy would not be the
+   * callee's. The rule applies only to the proxy's single unbounded-`bytes` return; every other entry encodes the
+   * value its own body computed.
+   */
+  private proxyFallbackRawReturn(): boolean {
+    if (!this.perCallMaster || !this.perCallProxyFallback) return false;
+    const returnTypes = this.currentFunction?.returnTypes ?? [];
+    return returnTypes.length === 1 && returnTypes[0] instanceof BytesType && returnTypes[0].bound === undefined;
   }
 
   /**

@@ -19,9 +19,10 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
  * Which witness segment declares the records of a run-time-loop mapping upsert, asked of the shipped machine.
  *
  * The entry upserts a mapping in a loop whose trip count the execution decides, and makes one external call beside
- * the loop rather than inside it. The compiler serves the body and publishes no write-segment fact for it, and the
- * entry's block layout reserves no entry slot for the mapping, so nothing tells a builder which segment the upsert's
- * records belong in. This suite puts the question to the machine: the same compiled master is asked for a verdict
+ * the loop rather than inside it. The compiler serves the body, the per-call block layout declares the collection's
+ * own `entry` slot and the artifact publishes the in-loop access beside it, and no write-segment fact is published:
+ * the write follows a loop whose trip count the execution decides, so no one segment the run opens is the answer.
+ * This suite puts the question to the machine: the same compiled master is asked for a verdict
  * with the mapping's node record declared in the segment the entry's own call count names (before the call) and
  * again with it in the last segment the run opens.
  *
@@ -33,7 +34,9 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
  * The runtime-loop upsert whose *key the frame holds* is a different shape, and the machine accepts it: its
  * well-formed spend is settled, with the record it wrote changed refused beside it, on the shipped path in
  * `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` (`:93-96`, `:110-121`). This file's verdicts
- * are about the varying key, whose collection the artifact does not publish an access for at all.
+ * are about the varying key: the frame the shipped call path plans declares no record for its collection, which the
+ * machine reads as the no-record sentinel, and a declaration the frame does carry puts the turn's coordinate on
+ * another participant's UTXO.
  */
 
 const CATEGORY_LEDGER = seededCategory('loop upsert segment ledger');
@@ -284,7 +287,7 @@ const WRITE_SEGMENT = 0;
 const LAST_SEGMENT = 1;
 
 describe('a per-call master whose entry upserts a mapping in a run-time loop beside a call', () => {
-  it('serves the body, publishes no refusal, no write fact and no entry slot for the mapping', () => {
+  it('serves the body, declares the collection its entry slot and publishes the access, with the segment unstated', () => {
     expect(ledger.composition?.convention).toBe('per-call');
     expect(ledger.composition?.refusedEntries).toBeUndefined();
     const entry = ledger.composition!.stopSites.entries.find(
@@ -293,9 +296,20 @@ describe('a per-call master whose entry upserts a mapping in a run-time loop bes
     // No write fact is published for the upsert today, so a builder has no segment to declare its records in.
     expect(entry.writeSegment).toBeUndefined();
     expect(entry.writeSegments).toBeUndefined();
-    // The entry reserves no block-layout slot for the mapping's node.
+    // The per-call layout declares the collection's own slot, which the frame's per-turn nodes are placed from, and
+    // the artifact publishes the in-loop access beside it - the coordinate the SDK's per-turn planning reads. The
+    // direct convention keeps this access out of the fixed slots and carries it in the trailing band instead.
     const move = ledger.abi.find((candidate) => candidate.name === 'move')!;
-    expect(move.blockLayout).toStrictEqual({ blockSize: 1, slots: [{ kind: 'master', offset: 0 }] });
+    expect(move.blockLayout).toStrictEqual({
+      blockSize: 2,
+      slots: [{ kind: 'master', offset: 0 }, { kind: 'entry', offset: 1, slotIndex: 0, conditional: true }],
+    });
+    expect(move.entryAccesses?.map((access) => ({
+      slotIndex: access.slotIndex, collection: access.collection,
+      keyParams: access.keyParams, operations: access.operations,
+    }))).toStrictEqual([{
+      slotIndex: 0, collection: 'balances', keyParams: ['arridx(id:workers,id:i)'], operations: ['write'],
+    }]);
   });
 
   it('accepts the same head with the loop removed, so the frame itself is sound', () => {
@@ -304,6 +318,8 @@ describe('a per-call master whose entry upserts a mapping in a run-time loop bes
   });
 
   it('refuses the run-time-loop upsert with its records in the segment before the call', () => {
+    // The frame's own base is the index of the record its block declares first, so a node declared in the segment
+    // before the call puts the loop's per-turn coordinate on another participant and the body fails its comparison.
     const outcome = verdict(build(loopProgram, loopLock, WORKERS, [NODE_RECORD], WRITE_SEGMENT));
     expect({ accepted: outcome.accepted, objection: outcome.objection }).toStrictEqual({
       accepted: false, objection: 'Program failed an OP_VERIFY operation.',
@@ -311,9 +327,13 @@ describe('a per-call master whose entry upserts a mapping in a run-time loop bes
   });
 
   it('refuses the run-time-loop upsert with its records in the last segment the run opens', () => {
+    // A segment whose list holds no record leaves the sentinel, which no index opcode accepts: the read the body
+    // makes for its turn names no UTXO at all rather than another participant's.
     const outcome = verdict(build(loopProgram, loopLock, WORKERS, [NODE_RECORD], LAST_SEGMENT));
     expect({ accepted: outcome.accepted, objection: outcome.objection }).toStrictEqual({
-      accepted: false, objection: 'Program failed an OP_VERIFY operation.',
+      accepted: false,
+      objection: 'Program attempted to read from an invalid transaction UTXO index. Transaction UTXO count: 5; '
+        + 'requested index: -32767.',
     });
   });
 });
@@ -326,26 +346,40 @@ describe('a per-call master whose entry upserts a mapping in a run-time loop bes
  * the segment the machine reads for a mapping node record rather than leaving it to this suite.
  */
 describe('the fixture\'s own shape: the loop body both upserts the mapping and makes the call', () => {
-  it('serves the body, publishes no write fact and reserves no entry slot for the mapping', () => {
+  it('serves the body, declares the collection its entry slot, and still states no segment for its records', () => {
     expect(insideArtifacts.Ledger!.composition?.refusedEntries).toBeUndefined();
     const entry = insideArtifacts.Ledger!.composition!.stopSites.entries.find(
       (candidate) => candidate.functionName === 'Ledger.move()',
     )!;
-    // A varying key is not one write the walk places, and the mapping has no entry slot in the layout, so no
-    // segment states where its records are declared: the entry publishes nothing rather than a guessed segment.
+    // A varying key is not one write the walk places, so no segment states where its records are declared: the
+    // entry publishes nothing rather than a guessed segment. The collection's slot is declared all the same, which
+    // is the coordinate a per-call frame's per-turn nodes are placed from.
     expect(entry.writeSegment).toBeUndefined();
     expect(entry.writeSegments).toBeUndefined();
     expect(insideArtifacts.Ledger!.abi.find((candidate) => candidate.name === 'move')!.blockLayout)
-      .toStrictEqual({ blockSize: 1, slots: [{ kind: 'master', offset: 0 }] });
+      .toStrictEqual({
+        blockSize: 2,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'entry', offset: 1, slotIndex: 0, conditional: true }],
+      });
   });
 
   it('refuses the well-formed spend wherever the node record is declared', () => {
     // The same head with the loop removed is accepted above, and the same head with a parameter key settles under
-    // the machine's own segment control below, so what refuses these two declarations is the upsert's own code.
-    for (const segment of [0, 1] as const) {
-      expect({ segment, ...verdict(build(insideProgram, insideLock, WORKERS, [NODE_RECORD], segment)) })
-        .toStrictEqual({ segment, accepted: false, objection: 'Program failed an OP_VERIFY operation.' });
-    }
+    // the machine's own segment control below. The frame's base is the record its block declares first, so the
+    // segment the declaration sits in decides what the loop's per-turn coordinate lands on: the record declared in
+    // the segment the loop runs in makes that coordinate name another participant's UTXO (the body fails its
+    // comparison), and a segment whose list holds no record leaves the sentinel, which no index opcode accepts.
+    const objections = ([0, 1] as const).map((segment) => ({
+      segment, ...verdict(build(insideProgram, insideLock, WORKERS, [NODE_RECORD], segment)),
+    }));
+    expect(objections).toStrictEqual([
+      { segment: 0, accepted: false, objection: 'Program failed an OP_VERIFY operation.' },
+      {
+        segment: 1, accepted: false,
+        objection: 'Program attempted to read from an invalid transaction UTXO index. Transaction UTXO count: 5; '
+          + 'requested index: -32767.',
+      },
+    ]);
   });
 });
 

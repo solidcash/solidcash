@@ -15802,9 +15802,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Entries. A loop-write entry (inLoop) has NO fixed slot - its runtime-variable count of outputs sits in the
     // trailing region [blockSize, blockSize+N), indexed by the covenant's runtime counter (emitLoopEntryWrite).
     if (node.entryAccesses) {
+      const perCallLayout = this.compilerOptions.composition === 'per-call';
       for (let i = 0; i < node.entryAccesses.length; i++) {
-        if (node.entryAccesses[i].inLoop) continue;
-        slots.push({ kind: 'entry', offset: offset++, slotIndex: i });
+        const inLoop = node.entryAccesses[i].inLoop === true;
+        if (inLoop && !perCallLayout) continue;
+        slots.push({ kind: 'entry', offset: offset++, slotIndex: i, ...(inLoop ? { conditional: true } : {}) });
       }
     }
 

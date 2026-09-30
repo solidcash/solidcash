@@ -209,28 +209,15 @@ lands it removes the claim line.
   that protocol into `packages/solidcash/src/per-call/call/entry-records.ts` and the composer is what the 4-6 day SDK
   estimate covers, and it is the ladder stream's own code area: `per-call/proxy/**` and `per-call/read.ts` carry live
   uncommitted edits in this tree today.
-- **Decision (coordinator, 2026-09-30)**: the varying-key variant **stays in PW3**, and the collection's `entry` slot
-  in the per-call block layout plus the `packages/solidcash/src/per-call/proxy/**` planning are **authorized**. The
-  work is the three-commit sequence recorded above, executed in the order the scoping note gives
-  (`SymbolTableTraversal.ts`'s per-call layout push, `Artifact.ts`'s in-loop access filter, `perCallWriteSteps`'s
-  fact, then `GenerateTargetTraversal`'s frame-relative per-turn coordinate in `emitSortedUpsertLoopBody` /
-  `pushIdx` and the `runtimeLoopEntry` arm of `emitEntryInputIndex`, then the SDK's per-turn node planning in
-  `packages/solidcash/src/per-call/call/entry-records.ts`). **The first two steps were written, measured and
-  reverted the same day**: with the per-call `entry` slot published (`{blockSize: 2, slots: [master, {kind: 'entry',
-  offset: 1, slotIndex: 0, conditional: true}]}`) and the emitter addressing the frame's own base, the master's
-  failure moves from `Program failed an OP_VERIFY operation.` to a read at the no-record sentinel
-  (`requested index: -32767`) and the shipped path refuses by name (`touches mapping "balances" as write outside a
-  sorted batch, which a call does not plan`), so the accept waits on the SDK's per-turn node planning: the frame's
-  witness declares the collection's nodes at a base the plan chooses, so a hand-built witness cannot supply them
-  without re-implementing that plan. No partial landing: adding the slot without the emission
-  moves `blockSize` for that body, and publishing the access without the SDK's per-turn planning changes what the
-  shipped path does with the entry, so the three land as one sequence with the fixture census held at 0 refusals.
-- **Decision (coordinator, 2026-09-30, revised the same day)**: the varying-key item **stays in this lane and is
-  implemented here, in steps**. The earlier reading of that day handed the SDK protocol to the ladder stream; the
-  coordinator reversed it on the measured boundary, because the per-turn record protocol is this lane's own
-  counterpart to the compiler half and the ladder stream's live edits (`per-call/proxy/**`, `per-call/read.ts`) do
-  not touch it. PW3's item is open in this lane until the fixture's `updateJobWhitelist` shape settles, and its box
-  stays unticked.
+- **PW3's status and the varying-key authorization live in the ledger**, `docs/per-call/DECISIONS.md`: **D5**
+  (live) records that PW3 is met on its own Done-when with the fixture's call-in-loop shape handed to the ladder
+  stream; **D2** (SUPERSEDED-by D5) held the earlier, since-reversed reading. What D2 authorized and still stands is
+  the work itself: the collection's `entry` slot in the per-call block layout, and the per-call planning under
+  `packages/solidcash/src/per-call/**`, with `per-call/proxy/**` and `per-call/read.ts` staying the ladder stream's
+  files. The three-commit sequence the scoping note below records is landed - the compiler half (`aecdbf5ef`), the
+  plan side that declares the loop's per-turn records where the emitted coordinate reads them (`18bd5bda5`), and the
+  declared-ordinal fixes and the key-order reorder (`e2c583612`, `2149801f7`); the measurements are in
+  `PLAN_MARKETPLACE_66.md`'s Deviations.
 - **The compiler half is landed (`aecdbf5ef`)**: three per-call-only edits, 28 lines. `SymbolTableTraversal.ts` gives
   an in-loop access a `{kind: 'entry', conditional: true}` slot in the per-call block layout, `Artifact.ts` publishes
   the in-loop access for per-call, and `GenerateTargetTraversal.ts`'s `runtimeLoopEntry` arm and
@@ -359,20 +346,17 @@ lands it removes the claim line.
 - **Size**: 1-2 days. **Coordination**: high (the ladder stream wrote this code; the second worker edits
   `support.ts`); agree the split before starting.
 
-- **Decision (coordinator, 2026-09-30, this session)**: **PW3 is met on its own Done-when**, and the fixture's
-  `updateJobWhitelist` shape - a varying-key loop upsert whose loop body also calls `publishJobEvent` - is **handed to
-  the ladder stream** as a committed pinned reproducer, because what remains for it is the hop's callee-frame planning
-  and not the loop protocol: the loop protocol is served for any key order when the body makes no call (one, two,
-  three and four turns settle through the shipped path, ascending or descending, with a refused mutation), and
-  `callPerCallEntry` refuses the call-in-loop body for the callee-frame reason (`entry "move" makes 1 external
-  call(s), whose callee frames this call path does not plan yet`). The reproducer to pick up: the source at
+- **PW3's completion is ledger row D5** (`docs/per-call/DECISIONS.md`): met on its own Done-when, with the fixture's
+  `updateJobWhitelist` shape handed to the ladder stream as a pinned reproducer, because what remains for it is the
+  hop's callee-frame planning and not the loop protocol - the protocol is served for any key order when the body
+  makes no call (one to four turns, ascending or descending, each with a refused mutation), and `callPerCallEntry`
+  refuses the call-in-loop body for the callee-frame reason (`entry "move" makes 1 external call(s), whose callee
+  frames this call path does not plan yet`). The reproducer to pick up: the source at
   `.marketplace/contracts/MarketplaceV1.sol:474-497`, the compiler-side pins in
   `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the fixture's own shape, still refused wherever its node
   record is declared) and `write-segments-publication.test.ts:142`, and the SDK pins in
   `solidcash/test/per-call/call/loop-turns.test.ts` / `conformance/loop-upsert-settlement.test.ts` for the half that
-  is served. The question put to the coordinator and the answer taken: whether PW3 stands met with the fixture shape
-  handed over, stays open in this lane, or is served here by crossing into the excluded hop lane - answer, the
-  first.
+  is served.
 
 ### PW4. The owed proxy-binding guard (soundness)
 
@@ -477,15 +461,15 @@ lands it removes the claim line.
   the upsert body's own emitted code, before any record is read - and the shipped call path refuses it on the frame
   it plans itself (`conformance/loop-upsert-settlement.test.ts`), while the same mapping written once from a
   parameter settles there. The reproducers are `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the
-  fixture's own shape, the machine's refusals, and its segment control) and that conformance guard. **PW3's box is
-  ticked at `2149801f7`**, under the coordinator's 2026-09-30 decision that the varying key stays in PW3 (recorded
-  above) and on the item's own Done-when: the three refusals are gone from the published census (7 contracts,
+  fixture's own shape, the machine's refusals, and its segment control) and that conformance guard. **PW3's status is
+  ledger row D5** (`docs/per-call/DECISIONS.md`), met on the item's own Done-when: the three refusals are gone from
+  the published census (7 contracts,
   0 refusals, `{SCRATCH}/census2-head.log`, `BUILD=0`, `COMPILE=0`), the master tests pass (610 in 82 files), and the
   published facts are in the ladder stream's hands. Two shapes are recorded as refused **by name** rather than
   served, and neither is one of the item's three: a **per-key** value array (`balances[workers[i]] = amounts[i]`,
   the reorder is not licensed there), and a loop whose **body makes the call**, which needs the hop's callee-frame
-  planning (PW1/PW2's lane). An earlier round's wording that put the shape "outside PW3's done-when" was withdrawn
-  in `c612e351b`. **That wording was never the item's Done-when**: the Done-when line is
+  planning (PW1/PW2's lane). An earlier round's wording that placed the shape beyond the item's Done-when was
+  withdrawn in `c612e351b`. **That wording was never the item's Done-when**: the Done-when line is
   byte-identical at `1ec400927` and at HEAD ("the three refusals are gone from the published census, the master tests
   pass, and the ladder stream has taken the published facts"), with only a status sentence appended below it
   (`git show 1ec400927:docs/per-call/HANDOFF_PARALLEL.md | grep -n -A2 'Done when'`), so PW3's requirement was

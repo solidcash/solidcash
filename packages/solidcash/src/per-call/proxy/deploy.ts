@@ -1151,9 +1151,8 @@ async function settleCallees(options: {
           + `refs=[${traceCallRefs(candidate.draft, callee.master)}]`);
         hopTrace(`close callee=${callee.master} reason=${attributed}`);
         hopTrace(`reading callee=${callee.master} ${traceReading(reading)}`);
-        hopTrace(`callee=${callee.master} returns=${callee.returns} records=[`
-          + `${callee.records.map((record) => binToHex(record.commitment).slice(0, 20)).join(',')}] retvalCandidate=`
-          + `${binToHex(placeholder).slice(0, 20)}`);
+        hopTrace(`callee=${callee.master} returns=${callee.returns} records=${callee.records.length} `
+          + `retvalCandidate=${binToHex(placeholder).slice(0, 20)}`);
       }
       throw new PerCallProxyDeployError(
         `the call's callee "${callee.functionName}" did not settle through the proxy: ${failing}`,
@@ -1453,6 +1452,13 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   });
   // Every participant is a convention input: the masters, the validator and the proxy's records, each spent under
   // the lock it was minted at.
+  if (trace) {
+    for (const verdict of verdicts) {
+      if (!verdict.accepted) {
+        hopTrace(`verdict id=${verdict.id} index=${verdict.index} objection=${verdict.objection ?? ''}`);
+      }
+    }
+  }
   return {
     draft, program, completed: derived.completed,
     verdicts, accepted: verdicts.every((verdict) => verdict.accepted),

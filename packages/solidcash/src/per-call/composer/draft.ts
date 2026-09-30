@@ -748,7 +748,13 @@ export function composeDraft(
         // A repeated site's own `callIndex` is the position of its call's first record, so its visits fill the
         // records from there on: the n-th visit is the n-th turn of the loop. A body may make fixed calls before
         // the loop, and those occupy the positions below `callIndex`, which the site's own visits must not touch.
+        // The records the site's own loop produced end where the next site's first record begins: a record past
+        // that belongs to a later call the execution reaches after this site, so filling it here would bind a call
+        // this step does not own and leave the site that owns it with a reference already filled.
+        const laterBases = master.callBaseBySite?.filter((candidate) => candidate > base) ?? [];
+        const limit = laterBases.length === 0 ? master.calls.length : Math.min(...laterBases);
         const callIndex = site.repeated === true ? base + visit : base;
+        if (callIndex >= limit) return {};
         const call = master.calls[callIndex];
         // A repeated site's execution may have moved past every record the plan declares, which is what ends the
         // resumption. Any other site names the record it binds, so a plan without it is a plan the composer refuses.

@@ -14,13 +14,15 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * A hop whose entry reaches two chains: a contract behind its own proxy, then a contract whose entry returns a
- * value.
+ * A hop whose entry reaches several callee shapes: a proxied read-only contract reached in a loop, a plain
+ * read-only contract, and a contract whose entry writes a sorted mapping and returns a value.
  *
- * The two reaches are settled deepest first, so the plain callee is settled after the proxied chain's frames. A
- * callee whose own body writes a mapping and returns a value has to be told the value it wrote and the value it
- * returned, each learned from a close its own frame leaves; the settle must derive far enough for the frame's own
- * program to reach those closes.
+ * The loop's call site is the one the compiler publishes as repeated: one site whose records are the turns the
+ * caller's own argument fixes. The reaches are settled deepest first, so the plain callee is settled after the
+ * proxied chain's frames. A callee whose own body writes a mapping and returns a value has to be told the value it
+ * wrote and the value it returned, each learned from a close its own frame leaves; and the caller's own dynamic
+ * write is a value the plan has to be told too. The settle must derive far enough for the frame's own program to
+ * reach all of those closes.
  */
 
 // Categories and coin outpoints: 32-byte values whose bytes are not all the same, distinct per seed.
@@ -33,23 +35,31 @@ function category(seed: string): string {
 const REGISTRY_IMPL_CATEGORY = category('0a');
 const REGISTRY_PROXY_CATEGORY = category('1b');
 const LEDGER_CATEGORY = category('2c');
+const VIEW_CATEGORY = category('2d');
 const ROOT_IMPL_CATEGORY = category('3d');
 const ROOT_PROXY_CATEGORY = category('4e');
 const REGISTRY_INIT_TXID = category('5f');
 const ROOT_INIT_TXID = category('60');
 const CALL_TXID = category('71');
 
-// `Registry` is reached behind its own proxy; `Ledger.move` writes a mapping node and returns a value, so its frame
-// has to learn both the record it wrote and the value it returned. `Root.run` reaches `Registry` first and `Ledger`
-// second, so the plain callee is settled after the proxied chain.
+// `Registry` is reached behind its own proxy in a loop, so its call site is a repeated one; `View.peek` is a plain
+// read-only reach; and `Ledger.move` writes a mapping node and returns a value, so its frame has to learn both the
+// record it wrote and the value it returned. `Root.run` reaches them in that order and then writes its own dynamic
+// array, so the loop's records and the later calls share the caller's one segment.
 const SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' interface IRegistry { function note(); }'
+  + ' interface IRegistry { function note(int i); }'
+  + ' interface IView { function peek() returns (int); }'
   + ' interface ILedger { function move(int by) returns (bool); }'
   + ' contract Registry {'
   + '   address public implementation;'
   + '   int public tags;'
   + '   function initialize() { this.tags = 7; require(this.tags > 0); }'
-  + '   function note() { require(this.tags == 7); }'
+  + '   function note(int i) { require(i >= 0); require(this.tags == 7); }'
+  + ' }'
+  + ' contract View {'
+  + '   int public seen;'
+  + '   function initialize() { this.seen = 5; require(this.seen > 0); }'
+  + '   function peek() returns (int) { return this.seen; }'
   + ' }'
   + ' contract Ledger {'
   + '   int public floor;'
@@ -66,13 +76,24 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Root {'
   + '   address public implementation;'
   + '   address public registry;'
+  + '   address public oracle;'
   + '   address public ledger;'
-  + '   function initialize(address r, address l) { this.registry = r; this.ledger = l; require(true); }'
-  + '   function run() { IRegistry(this.registry).note(); ILedger(this.ledger).move(3); require(true); }'
+  + '   int[] public jobs;'
+  + '   function initialize(address r, address v, address l) {'
+  + '     this.registry = r; this.oracle = v; this.ledger = l; require(true);'
+  + '   }'
+  + '   function run(int n) {'
+  + '     for (int i = 0; i < n; i = i + 1) { IRegistry(this.registry).note(i); }'
+  + '     require(IView(this.oracle).peek() >= 0);'
+  + '     require(ILedger(this.ledger).move(3));'
+  + '     this.jobs.push(1);'
+  + '     require(true);'
+  + '   }'
   + ' }';
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
 const registry = artifacts.Registry!;
+const view = artifacts.View!;
 const ledger = artifacts.Ledger!;
 const root = artifacts.Root!;
 
@@ -102,13 +123,15 @@ async function deployTwoChains(network: MockNetworkProvider): Promise<{
   const callerFunder = signature.unlockP2PKH();
   const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
 
-  // The plain callee is deployed first so its master address can seed the proxied chain's own record and the
+  // The plain callees are deployed first so their master addresses can seed the proxied chain's own record and the
   // caller's.
-  const ledgerFunding = funding(LEDGER_CATEGORY);
-  await network.addUtxo(source.address, ledgerFunding);
-  await deployStatefulContract(ledger, [], {
-    fundingUtxo: ledgerFunding, funder, changeAddress: source.address, provider: network, threadCount: 4,
-  });
+  for (const [artifact, txid] of [[view, VIEW_CATEGORY], [ledger, LEDGER_CATEGORY]] as const) {
+    const coin = funding(txid);
+    await network.addUtxo(source.address, coin);
+    await deployStatefulContract(artifact, [], {
+      fundingUtxo: coin, funder, changeAddress: source.address, provider: network, threadCount: 4,
+    });
+  }
 
   for (const txid of [REGISTRY_IMPL_CATEGORY, REGISTRY_PROXY_CATEGORY, ROOT_IMPL_CATEGORY, ROOT_PROXY_CATEGORY]) {
     await network.addUtxo(source.address, funding(txid));
@@ -136,6 +159,7 @@ async function deployTwoChains(network: MockNetworkProvider): Promise<{
 
   // The plain callee presents its master at its own category, which is the address the caller's entry calls.
   const ledgerAddress = deployMaster(ledger, hexToBin(LEDGER_CATEGORY), VALIDATOR_PROGRAM).address;
+  const viewAddress = deployMaster(view, hexToBin(VIEW_CATEGORY), VALIDATOR_PROGRAM).address;
 
   const rootDeployment = await deployPerCallProxy({
     provider: network,
@@ -143,7 +167,7 @@ async function deployTwoChains(network: MockNetworkProvider): Promise<{
     proxyArtifact: buildProxyArtifact(root),
     implementationDeploy: { fundingUtxo: funding(ROOT_IMPL_CATEGORY), funder, changeAddress: source.address },
     proxyDeploy: { fundingUtxo: funding(ROOT_PROXY_CATEGORY), funder, changeAddress: source.address },
-    initialize: { functionName: 'initialize', args: [registryDeployment.proxy.address, ledgerAddress] },
+    initialize: { functionName: 'initialize', args: [registryDeployment.proxy.address, viewAddress, ledgerAddress] },
     callerLockingBytecode: deployerLock,
     callerFunding: { utxo: rootInitCoin, funder: callerFunder, changeAddress: source.address },
     vm: compositionMachine(),
@@ -164,6 +188,7 @@ async function deployTwoChains(network: MockNetworkProvider): Promise<{
         proxyArtifact: buildProxyArtifact(registry),
         implementationCategoryId: registryDeployment.implementation.categoryId,
       },
+      IView: { artifact: view, categoryId: VIEW_CATEGORY },
       ILedger: { artifact: ledger, categoryId: LEDGER_CATEGORY },
     },
   };
@@ -189,7 +214,7 @@ async function callWithTrace(
       proxyCategoryId: funded.rootProxyCategoryId,
       implementationCategoryId: funded.rootImplementationCategoryId,
       functionName: 'run',
-      args: [],
+      args: [1n],
       externals: funded.externals,
       callerUtxo: funded.callCoin,
       callerLockingBytecode: funded.deployerLock,
@@ -217,7 +242,7 @@ describe('a hop whose entry reaches two callee chains', () => {
       proxyCategoryId: funded.rootProxyCategoryId,
       implementationCategoryId: funded.rootImplementationCategoryId,
       functionName: 'run',
-      args: [],
+      args: [1n],
       externals: funded.externals,
       callerUtxo: funded.callCoin,
       callerLockingBytecode: funded.deployerLock,
@@ -231,15 +256,24 @@ describe('a hop whose entry reaches two callee chains', () => {
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('attempts the later callee more than once and reaches it, since its write is a value the body computes', async () => {
+  it('attempts the implementation frame more than once and settles it, past a repeated call site', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployTwoChains(network);
     const traced = await callWithTrace(network, funded);
 
-    const attempts = traced.filter((line) => line.startsWith('HOPTRACE attempt callee=callee-master-3 '));
+    // The entry's first call site is a loop reached once; the caller's own dynamic write and its callees' results are
+    // values the plan has to be told, so the frame is attempted once per value and then derived.
+    const attempts = traced.filter((line) =>
+      line.startsWith('HOPTRACE attempt entry=implementation-master ')
+      && line.includes('fn=Root.run()'));
     expect(attempts.length).toBeGreaterThan(1);
-    expect(traced.some((line) => line.includes('stop callee=callee-master-3 reason=accepted'))).toBe(true);
-    expect(traced.some((line) => line.includes('plan frame=callee-master-3 fn=Ledger.move() kind=CALL'))).toBe(true);
+    expect(attempts.some((line) => line.includes('n=1 '))).toBe(true);
+    expect(traced.some((line) =>
+      line.includes('stop entry=implementation-master reason=derived')
+      && line.includes('callee-master-4@'))).toBe(true);
+    // The loop's records and the later callees' records are all occupied in the derived frame.
+    expect(traced.some((line) => line.includes('plan frame=callee-master-1 fn=RegistryProxy.__fallback()'))).toBe(true);
+    expect(traced.some((line) => line.includes('plan frame=callee-master-4 fn=Ledger.move() kind=CALL'))).toBe(true);
     expect(traced.every((line) => line.length <= 200)).toBe(true);
   });
 });

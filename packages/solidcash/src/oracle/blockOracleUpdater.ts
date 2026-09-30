@@ -3,11 +3,12 @@ import { ElectrumClient } from '@electrum-cash/network';
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
 import {
   Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
-  buildPushdataCommitment, scriptToBytecode, encodeInt, hash160,
+  buildPushdataCommitment, scriptToBytecode, encodeInt, hash160, type StateVariableInfo,
 } from '@solidcash/utils';
 import { Contract } from '../Contract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { Utxo, Unlocker } from '../interfaces.js';
+import { readPerCallState, type PerCallState } from '../per-call/deploy/records.js';
 import { StatefulContract } from '../stateful/StatefulContract.js';
 import { getContractState, getDataNftAddress } from '../stateful/covenant-helpers.js';
 import { StateReader } from '../stateful/StateReader.js';
@@ -352,32 +353,47 @@ type MockUtxoStorage = {
 };
 
 type OracleTarget = {
-  contract: Contract;
   categoryId: string;
   layout: NonNullable<Artifact['stateLayout']>;
+  /** The direct convention's handle; a per-call target has none, its records are found by category. */
+  contract?: Contract;
 };
 
 function oracleTargetsFromDeployment(deployment: { contract: unknown }): OracleTarget[] {
   const found: OracleTarget[] = [];
   const seen = new Set<string>();
-  const push = (
-    contract: Contract | undefined, categoryId: string | undefined, layout: Artifact['stateLayout'],
-  ): void => {
-    if (!contract || !categoryId || !layout) return;
+  const addTarget = (categoryId: string | undefined, layout: Artifact['stateLayout'], contract?: Contract): void => {
+    if (!categoryId || !layout) return;
     if (!layout.variables.some((variable) => (
       (MOCK_ORACLE_REGISTERS as readonly string[]).includes(variable.name)
     ))) return;
     const key = `${categoryId}:${layout.variables.map((variable) => variable.name).join(',')}`;
     if (seen.has(key)) return;
     seen.add(key);
-    found.push({ contract, categoryId, layout });
+    found.push({ categoryId, layout, ...(contract === undefined ? {} : { contract }) });
+  };
+  // A direct target is read through its handle.
+  const push = (
+    contract: Contract | undefined, categoryId: string | undefined, layout: Artifact['stateLayout'],
+  ): void => {
+    if (contract) addTarget(categoryId, layout, contract);
   };
   const wrapped = deployment.contract as {
     inner?: Contract;
     categoryId?: string;
     implementation?: { inner?: Contract; categoryId?: string };
     proxy?: { inner?: Contract; categoryId?: string };
+    perCallProxy?: unknown;
   };
+  // Per-call: a proxy registers the implementation's artifact beside the proxy's category, whose records hold the
+  // application state (the registers included) under the implementation's layout; a plain deployment registers its
+  // stateful handle.
+  const innerArtifact = wrapped.inner?.artifact;
+  if (innerArtifact?.composition?.convention === 'per-call') {
+    const categoryId = wrapped.perCallProxy === undefined ? wrapped.categoryId : wrapped.proxy?.categoryId;
+    addTarget(categoryId, innerArtifact.stateLayout);
+    return found;
+  }
   const implArtifact = wrapped.implementation?.inner?.artifact;
   // OZ proxy: application state (including __block_timestamp) lives on the proxy category
   // under the implementation layout. The implementation artifact owns `__updateBlockOracle`.
@@ -415,6 +431,36 @@ function replaceMockNftCommitment(
 }
 
 /**
+ * Rewrites a per-call deployment's register records in place: read by category and decoded as its entries read
+ * them, re-encoded with the shipped pushdata encoder. A deployment whose records do not classify is left alone.
+ */
+async function syncPerCallRegisters(
+  provider: NetworkProvider,
+  storage: MockUtxoStorage,
+  target: OracleTarget,
+  touched: readonly StateVariableInfo[],
+  byRegister: Readonly<Record<string, bigint | Uint8Array>>,
+): Promise<number> {
+  const { categoryId, layout } = target;
+  let onChain: PerCallState;
+  try {
+    onChain = await readPerCallState(provider, categoryId, layout);
+  } catch {
+    return 0;
+  }
+  let updated = 0;
+  for (const nftIndex of new Set(touched.map((variable) => variable.nftIndex))) {
+    const next = { ...onChain.byNft[nftIndex] };
+    for (const variable of touched) {
+      if (variable.nftIndex === nftIndex) next[variable.name] = byRegister[variable.name]!;
+    }
+    const commitment = buildPushdataCommitment(layout, next, nftIndex);
+    if (replaceMockNftCommitment(storage, onChain.records[nftIndex]!, commitment)) updated += 1;
+  }
+  return updated;
+}
+
+/**
  * Hardhat `evm_increaseTime` / `mine` analogue: write the mock tip into every deployed
  * contract's `__block_*` registers. Official `syncOnce()` needs a keeper signature the
  * unmodified suites never start; this uses the same field mapping and the live data-NFT
@@ -446,6 +492,10 @@ async function syncMockBlockOracleDeployments(
         (MOCK_ORACLE_REGISTERS as readonly string[]).includes(variable.name)
       ));
       if (touched.length === 0) continue;
+      if (contract === undefined) {
+        updated += await syncPerCallRegisters(provider, storage, target, touched, byRegister);
+        continue;
+      }
       let onChain;
       try {
         const dataNftAddr = getDataNftAddress(contract, categoryId);

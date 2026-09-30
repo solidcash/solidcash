@@ -33,11 +33,11 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * its pause check through an invoked helper, as the fixture's `whenNotPaused` does, so its block names both of the
  * root's records; `mark` is a job writer without it, as the fixture's `deliverResult` is.
  *
- * The clock is the root's own `block.timestamp` register, as in the fixture. A per-call proxy's register is 0 from
- * its genesis on and the mock chain's `evm_increaseTime` does not move it (pinned), so a job posted a day before
- * that clock is written by a plain setup entry, `seed`, with a stamp of minus one day; posting itself settles
- * (pinned). Each deployment holds one job, id 0, with its opening entry, and the creator approves the root on the
- * token first, as the fixture's setup does.
+ * The clock is the root's own `block.timestamp` register, as in the fixture: 0 from a per-call proxy's genesis on,
+ * until the mock chain's `evm_increaseTime` and `evm_mine` write the chain's clock into it (pinned). A job posted a
+ * day before that clock is written by a plain setup entry, `seed`, with a stamp of minus one day; posting itself
+ * settles (pinned). Each deployment holds one job, id 0, with its opening entry, and the creator approves the root on
+ * the token first, as the fixture's setup does.
  *
  * Each entry is pinned where it stands today; one that settles moves its case to every verdict accepted and the
  * broadcast. A last deployment steps the token's allowance read around and pins what stands behind it. The whole
@@ -595,25 +595,29 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): a job updated, c
 
   describe('a job posted through the hop', () => {
     let world: World;
+    /** The clock the mock chain's day wrote into the root's register. */
+    let clock: bigint;
     it('setup: the approval, the store registrations and both proxies settle and broadcast', async () => {
       world = await deployWorld('allowance', undefined);
     }, 900_000);
 
-    it('the clock the root reads is 0, and the mock chain\'s day does not move it', async () => {
+    it('the clock the root reads is 0 at genesis, and the mock chain\'s day writes the chain\'s clock into it', async () => {
+      expect((await deskState(world)).__block_timestamp).toBe(0n);
       const before = world.network.getBlockTime();
       await world.network.send('evm_increaseTime', [Number(DAY)]);
       await world.network.send('evm_mine', []);
       expect(world.network.getBlockTime()).toBe(before + Number(DAY));
-      // Owner: the SDK mock clock (`oracle/blockOracleUpdater.ts`, `oracleTargetsFromDeployment`), which finds no
-      // target in the registration a per-call proxy deployment makes, so no `__block_timestamp` register moves.
-      expect((await deskState(world)).__block_timestamp).toBe(0n);
+      // The mock clock (`oracle/blockOracleUpdater.ts`) rewrites the register in the proxy's own records, where the
+      // implementation's delegate frames read it.
+      clock = (await deskState(world)).__block_timestamp as bigint;
+      expect(clock).toBe(BigInt(world.network.getBlockTime()));
     }, 600_000);
 
     it('posting the job (18) settles, stamped with that clock, and the history read answers its entry', async () => {
       expectSettled(await enter(world, 'Desk', 'post',
         ['Job title', DIGEST, ['LA'], addressOf(COIN_CATEGORY), 100n, 240n, 'IPFS']));
       const posted = await job0(world);
-      expect([posted.state, posted.title, posted.amount, posted.stamp]).toStrictEqual([0n, 'Job title', 100n, 0n]);
+      expect([posted.state, posted.title, posted.amount, posted.stamp]).toStrictEqual([0n, 'Job title', 100n, clock]);
       expect(await entries(world)).toBe(1n);
     }, 1_800_000);
 
@@ -690,21 +694,21 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): a job updated, c
       world = await deployWorld('allowance', job(2n, 0n, 100n));
     }, 900_000);
 
-    it('withdrawing after the mock chain\'s day (40) is refused by the entry\'s own day check', async () => {
-      await world.network.send('evm_increaseTime', [Number(DAY)]);
-      await world.network.send('evm_mine', []);
-      const outcome = await enter(world, 'Desk', 'withdraw', [JOB]);
-      // The day passes on the chain but not in the register the entry reads. Owner: the SDK mock clock, as above.
-      expectRefused(outcome, `the implementation's "withdraw" entry did not settle through the proxy: frame `
-        + `"implementation-master" of Desk.withdraw() at line ${lineOf('"24 hours have not passed yet"')}: 24 hours `
-        + `have not passed yet (Program failed an OP_VERIFY operation.)${SIZED_RUN}`);
-    }, 900_000);
-
     it('reopening (38) stops at a pull its collateral makes unneeded', async () => {
       const outcome = await enter(world, 'Desk', 'reopen', [JOB]);
       // Owner: the SDK hop planner, as the update's pull: planned on a condition that reads the rewritten job.
       expectRefused(outcome, pullRefusal('callee-master-1'));
     }, 900_000);
+
+    it('withdrawing after the mock chain\'s day (40) settles and pays the collateral back', async () => {
+      await world.network.send('evm_increaseTime', [Number(DAY)]);
+      await world.network.send('evm_mine', []);
+      expectSettled(await enter(world, 'Desk', 'withdraw', [JOB]));
+      expect((await job0(world)).owed).toBe(0n);
+      expect([await balanceOf(world, CREATOR), await balanceOf(world, addressOf(DESK_PROXY_CATEGORY))])
+        .toStrictEqual([1000n, 0n]);
+      expect(await entries(world)).toBe(2n);
+    }, 1_800_000);
   });
 
   describe('a job closed a day before the clock, holding its collateral', () => {

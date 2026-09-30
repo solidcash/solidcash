@@ -36,7 +36,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 140 |
 | `packages/solidcash/test/per-call/call/` | `solidcash` | 116 |
-| `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
+| `packages/solidcash/test/per-call/time/` | `solidcash` | 11 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 103 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 93 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 39 |
@@ -289,6 +289,10 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   the one locktime the plan fixed before any derivation ran, the payment's own block is refused by the machine under
   the name of the check, a plan whose locktime is already too early stalls the derivation, a final sequence disables
   the gate, and a genesis whose constructor gates on time is refused by the constructor probe.
+  `block-clock.test.ts` drives the other clock, `block.timestamp`, a register of the contract's own record: the mock
+  chain's `evm_increaseTime` and `evm_mine` write the chain's clock into a proxied per-call contract's record (the
+  proxy's, under the implementation's layout) and into a plain one's beside a direct contract's, and an entry gated a
+  day after its stamp is refused before the day and settles after it.
 - **`solidcash/test/per-call/conformance/`** - the reference contexts of `probes/this-call-msg-sender/ref.sol` (S0),
   each row its own contract: compiled with solc and run in `@ethereumjs/evm`, and compiled per-call with Solidity
   compatibility and called through the shipped call path by a user's coin, the answers compared by role (the user

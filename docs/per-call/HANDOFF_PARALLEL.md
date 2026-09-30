@@ -145,6 +145,31 @@ lands it removes the claim line.
   hop's callee-frame planning (PW1/PW2's lane) as well as the varying-key handling. The per-call lane consumes none
   of the artifact's `entryLoopWrites`, the field the in-loop access is published under; only
   `packages/solidcash/src/stateful/**` reads it.
+- **The compiler half was written and measured (2026-09-30)**, so the split point is exact rather than estimated.
+  Three per-call-only edits, 28 lines: `SymbolTableTraversal.ts`'s layout push gives an in-loop access a
+  `{kind: 'entry', conditional: true}` slot, `Artifact.ts`'s filter publishes the in-loop access for per-call, and
+  `GenerateTargetTraversal.ts`'s `runtimeLoopEntry` arm and `emitSortedUpsertLoopBody`'s `pushIdx` take the frame's
+  parked base plus the slot's per-call offset plus the loop's counter instead of the direct convention's trailing
+  band. Measured with all three in place, on the fixture's own varying-key entry through the shipped call path: the
+  artifact then publishes `blockLayout {blockSize: 2, slots: [master, {kind: 'entry', conditional: true}]}` and
+  `entryAccesses [{slotIndex: 0, collection: "balances", keyParams: ["arridx(id:workers,id:i)"], operations:
+  ["write"]}]` with no write fact, and the shipped path refuses **by name, before the machine is asked**:
+  `entry "move" touches mapping "balances" as write outside a sorted batch, which a call does not plan`
+  (`packages/solidcash/src/per-call/call/entry-records.ts:374`). So the compiler half alone converts a machine-level
+  `OP_VERIFY` refusal into a named SDK refusal and moves that body's `blockSize`: it lands with the SDK half or not
+  at all. The edits are saved at `{SCRATCH}/compiler-half-attempt.diff` and the run at `{SCRATCH}/probe-varying.log`.
+- **What the SDK half is, and why it is the whole remainder.** The per-call lane has no run-time-loop record
+  protocol at all: `grep -rn sortedUpsertLoopInfo packages/solidcash/src/per-call` is empty, and only
+  `packages/solidcash/src/stateful/**` reads it (`StatefulContract.ts`, `KernelEntryJournal.ts` (1890 lines),
+  `stb-materialize-runtime-loop-trailing.ts`, `stb-materialize-trailing-iteration-entries.ts`). The artifact already
+  publishes what the key side needs (`sortedUpsertLoopInfo[0]`: `varyingArrayParam: "workers"`,
+  `valueScalarParam: "amount"`, `op: "set"`), so enumerating the turns mirrors the read path's own paged planning.
+  The record side does not mirror anything: the loop's per-turn **outputs** are not witness-declared records at a
+  frame coordinate (what `emitPerCallEntryIndex` names) but the positions the segment's declared list gives them —
+  the mechanism the batch path already reaches through `emitDeclaredGroupRecordOrdinal`/`batchTargetOrdinal`. Porting
+  that protocol into `packages/solidcash/src/per-call/call/entry-records.ts` and the composer is what the 4-6 day SDK
+  estimate covers, and it is the ladder stream's own code area: `per-call/proxy/**` and `per-call/read.ts` carry live
+  uncommitted edits in this tree today.
 - **Decision (coordinator, 2026-09-30)**: the varying-key variant **stays in PW3**, and the collection's `entry` slot
   in the per-call block layout plus the `packages/solidcash/src/per-call/proxy/**` planning are **authorized**. The
   work is the three-commit sequence recorded above, executed in the order the scoping note gives

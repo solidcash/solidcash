@@ -54,6 +54,8 @@ export async function prepareCreateBuilderDerivePrelude(
     abiFunction: AbiFunction | undefined;
     entryAbiFunction: AbiFunction | undefined;
     args: readonly any[];
+    tokenContainerAbiFunction: AbiFunction | undefined;
+    tokenContainerArgs: readonly any[];
     tokenContainerAccesses: readonly any[] | undefined;
     onChainState: any;
     executionSelfAddress: any;
@@ -74,7 +76,8 @@ export async function prepareCreateBuilderDerivePrelude(
   },
 ): Promise<PrepareCreateBuilderDerivePreludeResult> {
   const {
-    builder, abiFunction, entryAbiFunction, args, tokenContainerAccesses,
+    builder, abiFunction, entryAbiFunction, args, tokenContainerAbiFunction, tokenContainerArgs,
+    tokenContainerAccesses,
     onChainState, executionSelfAddress, overrides, functionName,
     returnAbiFunction, returnEmitOutputIndex, returnMaterializationOutputIndex,
     returnEmitBlockOffset, delegateReturnEventOffset, lowLevelCallUtxoGroups,
@@ -91,8 +94,8 @@ const tokenContainerTransferOps: Array<{
 const runtimeTokenPlan = (abiFunction as MessageBusRuntimeAbiFunction | undefined)
   ?.messageBusTokenContainerTransferPlan;
 const directTokenPlan = runtimeTokenPlan === undefined
-  ? abiFunction?.tokenContainerTransferSites?.map((site) => ({
-    args: args as readonly FunctionArgument[], handler: abiFunction, site,
+  ? tokenContainerAbiFunction?.tokenContainerTransferSites?.map((site) => ({
+    args: tokenContainerArgs as readonly FunctionArgument[], handler: tokenContainerAbiFunction, site,
     outputSlot: site.transferIndex,
   })) : undefined;
 const fixedTokenPlan = runtimeTokenPlan ?? directTokenPlan;
@@ -144,9 +147,9 @@ if (fixedTokenPlan !== undefined) {
   tokenContainerTransferOps.sort((left, right) => (left.outputSlot ?? 0) - (right.outputSlot ?? 0));
 } else if (tokenContainerAccesses) {
   for (const access of tokenContainerAccesses) {
-    const catParamIdx = abiFunction!.inputs.findIndex((inp) => inp.name === access.keyParam);
+    const catParamIdx = tokenContainerAbiFunction!.inputs.findIndex((inp) => inp.name === access.keyParam);
     const catValue = access.keySource === 'own'
-      ? host.categoryId : catParamIdx >= 0 ? args[catParamIdx] : undefined;
+      ? host.categoryId : catParamIdx >= 0 ? tokenContainerArgs[catParamIdx] : undefined;
     const catId = catValue instanceof Uint8Array
       ? binToHex(catValue) : (catValue !== undefined ? String(catValue) : '');
     const ftCount = access.transferCount ?? (access.operations.includes('transfer') ? 1 : 0);

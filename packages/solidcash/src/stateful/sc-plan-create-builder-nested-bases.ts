@@ -95,6 +95,7 @@ export function planCreateBuilderNestedBases(params: {
       .filter((slot) => slot.kind !== 'master' && slot.kind !== 'dataNft');
     if (extras.length === 0
       || !extras.every((slot) => slot.kind === 'event' || slot.kind === 'entry'
+        || slot.kind === 'tokenContainer' || slot.kind === 'tcTransfer'
         || slot.kind === 'returnEvent')) continue;
     const existingCallSlot = abiFunction?.blockLayout?.slots.find((slot) => slot.kind === 'lowLevelCall');
     const callOffset = existingCallSlot?.offset ?? (abiFunction?.blockLayout?.blockSize ?? 1);

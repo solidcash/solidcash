@@ -2154,6 +2154,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const delegateImplementationRelative = this.usesDelegateExecutorBlockBase()
       && new Set<BlockSlotKind>([
         'entry',
+        'tokenContainer',
         'keccakSideCar', 'ecrecoverSideCar',
         'transfer', 'tcTransfer', 'event', 'returnEvent',
       ]).has(kind);
@@ -24361,7 +24362,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (this.usesDelegateExecutorBlockBase()) {
       this.emitDelegateResourceBase(locationData);
-      const offset = this.getBlockSlotOffset('entry', slotIndex);
+      const layoutOffset = this.getBlockSlotOffset('entry', slotIndex);
+      const offset = this.currentContractIsSplitFacet
+        ? layoutOffset - this.countDataNftSlotsBefore(layoutOffset) : layoutOffset;
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
     } else this.emitBlockSlotIndex('entry', slotIndex, locationData, extraStackOffset);
   }
@@ -24400,7 +24403,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         this.emitDelegateResourceBase(locationData);
       }
-      const offset = this.getBlockSlotOffset('entry', slotIndex);
+      const layoutOffset = this.getBlockSlotOffset('entry', slotIndex);
+      const offset = this.currentContractIsSplitFacet
+        ? layoutOffset - this.countDataNftSlotsBefore(layoutOffset) : layoutOffset;
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
     } else this.emitBlockSlotIndex('entry', slotIndex, locationData, extraStackOffset);
     // This coordinate can copy an authenticated proxy anchor from a large live mapping frame. Outlining only a

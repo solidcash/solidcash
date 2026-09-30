@@ -8,6 +8,7 @@ import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js
 import type { DeriveFullTokenContainerTransferOp } from './sc-seed-derive-full-phase2-placeholders.js';
 import { decodeScriptNumber } from './trace-commitment-helpers.js';
 import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
+import { physicalDelegateSlotOffset } from './writer-event-delegate-layout.js';
 
 export type DeriveFullPhase2TransfersHost = {
   parseNftCapability: (catBytes: Uint8Array) => 'none' | 'mutable' | 'minting';
@@ -92,7 +93,9 @@ export function deriveFullPhase2ApplyTransfers(
     const absoluteDelegateSlot = (kind: BlockSlotKind): number | undefined => {
       if (delegatecallInputIndex === undefined) return undefined;
       const offset = delegateFn?.blockLayout?.slots.find((slot) => slot.kind === kind)?.offset;
-      return offset === undefined ? undefined : delegatecallInputIndex + offset;
+      return offset === undefined ? undefined : delegatecallInputIndex + physicalDelegateSlotOffset(
+        delegateFn?.blockLayout, offset, delegateGroup?.externalContract.inner.artifact.delegateOnly === true,
+      );
     };
     const transferOutputBase = absoluteDelegateSlot('transfer') ?? stb.getTransferOutputBase();
     const tcTransferOutputBase = absoluteDelegateSlot('tcTransfer')
@@ -102,11 +105,13 @@ export function deriveFullPhase2ApplyTransfers(
     const satoshiBytecodes = extractVerifiedValuesFromTrace(
       fullTrace2, Op.OP_OUTPUTBYTECODE,
       { min: transferOutputBase, max: transferOutputBase + satoshiTransferCount },
+      false, false, delegatecallInputIndex !== undefined,
     );
     // Satoshi transfer amounts: same output index range
     const satoshiValues = extractVerifiedValuesFromTrace(
       fullTrace2, Op.OP_OUTPUTVALUE,
       { min: transferOutputBase, max: transferOutputBase + satoshiTransferCount },
+      false, false, delegatecallInputIndex !== undefined,
     );
 
     // Satoshi transfers: apply progressively (partial bytecodes + amounts).
@@ -139,9 +144,11 @@ export function deriveFullPhase2ApplyTransfers(
           outputSlot,
           bytecode: extractVerifiedValuesFromTrace(
             fullTrace2, Op.OP_OUTPUTBYTECODE, range,
+            false, false, delegatecallInputIndex !== undefined,
           )[0],
           amount: extractVerifiedValuesFromTrace(
             fullTrace2, Op.OP_OUTPUTTOKENAMOUNT, range,
+            false, false, delegatecallInputIndex !== undefined,
           )[0],
         };
       });
@@ -175,12 +182,15 @@ export function deriveFullPhase2ApplyTransfers(
           outputSlot,
           bytecode: extractVerifiedValuesFromTrace(
             fullTrace2, Op.OP_OUTPUTBYTECODE, range,
+            false, false, delegatecallInputIndex !== undefined,
           )[0],
           commitment: extractVerifiedValuesFromTrace(
             fullTrace2, Op.OP_OUTPUTTOKENCOMMITMENT, range,
+            false, false, delegatecallInputIndex !== undefined,
           )[0],
           category: extractVerifiedValuesFromTrace(
             fullTrace2, Op.OP_OUTPUTTOKENCATEGORY, range,
+            false, false, delegatecallInputIndex !== undefined,
           )[0],
         };
       });

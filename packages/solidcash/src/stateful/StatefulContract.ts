@@ -13378,21 +13378,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     }
 
+    // Delegate forwarders publish the routed handler's mapping metadata through entryAbiFunction,
+    // but their own ABI has no token-container effects. Resolve container inputs from that same
+    // authenticated handler so deposits and withdrawals preserve the routed token category.
+    const tokenContainerAbiFunction = entryAbiFunction?.tokenContainerAccesses?.length
+      ? entryAbiFunction : abiFunction;
+    const tokenContainerArgs = tokenContainerAbiFunction === entryAbiFunction ? entryArgs : args;
     const tokenContainerLoad = await loadCreateBuilderTokenContainersImpl(
       {
         categoryId: this.categoryId,
         inner: this.inner,
       },
       {
-        abiFunction,
-        args,
+        abiFunction: tokenContainerAbiFunction,
+        args: tokenContainerArgs,
         overrides,
         timing,
       },
     );
     const tokenContainers = tokenContainerLoad.tokenContainers;
     const tokenContainerLockingBytecodes = tokenContainerLoad.tokenContainerLockingBytecodes;
-    const tokenContainerAccesses = abiFunction?.tokenContainerAccesses;
+    const tokenContainerAccesses = tokenContainerAbiFunction?.tokenContainerAccesses;
 
     const satoshiContainerLoad = await loadCreateBuilderSatoshiContainerImpl(
       {
@@ -14086,6 +14092,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction,
         entryAbiFunction,
         args,
+        tokenContainerAbiFunction,
+        tokenContainerArgs,
         tokenContainerAccesses,
         onChainState,
         executionSelfAddress,

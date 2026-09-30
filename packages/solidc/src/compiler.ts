@@ -1069,6 +1069,8 @@ export interface SplitCompileOptions extends CompileOptions {
   maxShardBytes?: number;
   /** Split eligible entry points even when the original artifact already fits. Useful for testing/tuning. */
   forceSplit?: boolean;
+  /** Keep named public entry points in the state-owning root instead of delegating them. */
+  rootFunctions?: readonly string[];
 }
 
 // Optional process-wide memoization of pure string compiles (same code+options -> same artifact).
@@ -16732,7 +16734,10 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
 function compileStringSplitUnchecked(
   code: string, compilerOptions: SplitCompileOptions,
 ): SplitArtifactBundle {
-  const { maxShardBytes = MAX_INPUT_BYTESIZE, forceSplit = false, errorListener, ...artifactOptions } = compilerOptions;
+  const {
+    maxShardBytes = MAX_INPUT_BYTESIZE, forceSplit = false, rootFunctions = [], errorListener,
+    ...artifactOptions
+  } = compilerOptions;
   // Budget the whole SPEND, not just the redeem script - but only against the real consensus cap. An explicit
   // `maxShardBytes` is a tuning knob expressed in redeem-script bytes and is honoured literally; the default is
   // the BCH per-input limit, which covers redeem script + constructor arguments + the call's own arguments +
@@ -16766,8 +16771,10 @@ function compileStringSplitUnchecked(
   // leave the forwarding root undeployable (BoringHelperV1).
   const moveReadOnlyEntries = byteSize(baseline) > maxShardBytes;
   const splitFootprintCache = createFootprintAnalysisCache();
+  const rootFunctionNames = new Set(rootFunctions);
   const plans = (baseline.stateLayout
-    ? functions.filter((fn) => isMovableSplitEntry(fn, moveReadOnlyEntries)) : []).map((fn) => ({
+    ? functions.filter((fn) => isMovableSplitEntry(fn, moveReadOnlyEntries)
+      && !rootFunctionNames.has(fn.name)) : []).map((fn) => ({
     name: fn.name,
     closure: collectNamedFunctionClosure(fn, byName),
     footprint: analyseFunctionFootprint(fn, byName, splitFootprintCache),

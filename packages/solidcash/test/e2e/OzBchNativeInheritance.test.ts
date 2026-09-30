@@ -1,11 +1,11 @@
 import {
   beforeAll, describe, expect, it,
 } from 'vitest';
-import { compileFile } from 'solidc';
+import { compileFile, compileFileSplit } from 'solidc';
 import { asmToScript, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../src/interfaces.js';
 import {
-  Contract, SignatureTemplate, Signer, StatefulContract,
+  Contract, SignatureTemplate, Signer, SplitContractBundle, StatefulContract,
 } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
@@ -21,6 +21,7 @@ beforeAll(() => {
   artifact = compileFile(source, {
     solidityImportCompat: true,
     messageBus: false,
+    suppressWarnings: true,
   }) as Artifact;
 });
 
@@ -100,4 +101,68 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
       .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n);
     expect(bearerBalance).toBe(2n);
   });
+
+  it('wraps on the root and withdraws through a split facet within 9 KB shards', async () => {
+    const split = compileFileSplit(source, {
+      solidityImportCompat: true, messageBus: false, maxShardBytes: 9_000,
+      suppressWarnings: true,
+      rootFunctions: ['wrap'],
+    });
+    for (const shard of [split.root, ...Object.values(split.facets)]) {
+      expect(scriptToBytecode(asmToScript(shard.bytecode)).length).toBeLessThan(9_000);
+    }
+    expect(split.manifest.routes.find((route) => route.function === 'wrap')?.target).toBe('root');
+    const withdrawTarget = split.manifest.routes.find((route) => route.function === 'withdraw')?.target;
+    expect(withdrawTarget).not.toBe('root');
+    const facetWithdraw = split.facets[withdrawTarget!]!.abi.find((entry) => entry.name === 'withdraw');
+    expect(facetWithdraw?.tokenContainerAccesses).toHaveLength(1);
+    expect(facetWithdraw?.tokenContainerTransferSites).toHaveLength(1);
+
+    const provider = createTestProvider();
+    const bob = new Signer(bobPriv, provider);
+    const funding = [];
+    for (const byte of ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']) {
+      funding.push(await provider.addUtxo(bob.getAddress(), {
+        txid: byte.repeat(32), vout: 0, satoshis: 1_000_000n,
+      }));
+    }
+    const deployed = await SplitContractBundle.from(split, bob).deploy([], {
+      fundingUtxo: funding[0],
+      facetOverrides: Object.fromEntries(split.manifest.facets.map((facet, index) => [
+        facet.name, { fundingUtxo: funding[index + 1] },
+      ])),
+      initialState: { _totalSupply: 0n, _name: '', _symbol: '' },
+    });
+    const category = deployed.categoryId;
+    await provider.addUtxo(deployed.root.getTokenContainerAddress(category), {
+      txid: 'b1'.repeat(32), vout: 0, satoshis: 1_200n,
+      token: { category, amount: 1_000n },
+    });
+    const bearer = await provider.addUtxo(bob.getAddress(), {
+      txid: 'b2'.repeat(32), vout: 0, satoshis: 100_000n,
+      token: { category, amount: 5n },
+    });
+    await deployed.call.wrap(5n)
+      .addInput(bearer, new SignatureTemplate(bobPriv).unlockP2PKH())
+      .tokenContainerDeposit(category, 5n)
+      .send();
+    expect(await deployed.root.state._balances(addressToLockScript(bob.getAddress()))).toBe(5n);
+    expect((await deployed.root.getState())._totalSupply).toBe(5n);
+    const reserveAfterWrap = await provider.getUtxos(deployed.root.getTokenContainerAddress(category));
+    expect(reserveAfterWrap.find((utxo) => utxo.token?.category === category)?.token?.amount).toBe(1_005n);
+
+    await provider.addUtxo(bob.getAddress(), {
+      txid: 'b3'.repeat(32), vout: 0, satoshis: 500_000n,
+    });
+    await deployed.call.withdraw(bob.getAddress(), 2n).send();
+    expect(await deployed.root.state._balances(addressToLockScript(bob.getAddress()))).toBe(3n);
+    expect((await deployed.root.getState())._totalSupply).toBe(3n);
+    const reserveAfterWithdraw = await provider.getUtxos(deployed.root.getTokenContainerAddress(category));
+    expect(reserveAfterWithdraw.find((utxo) => utxo.token?.category === category)?.token?.amount)
+      .toBe(1_003n);
+    const withdrawn = (await provider.getUtxos(bob.getAddress()))
+      .filter((utxo) => utxo.token?.category === category)
+      .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n);
+    expect(withdrawn).toBe(2n);
+  }, 300_000);
 });

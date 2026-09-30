@@ -28,6 +28,7 @@ import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import {
   groupLayoutTrailingBase,
+  physicalDelegateSlotOffset,
   resolveAbsolutePredOut,
 } from './writer-event-delegate-layout.js';
 import { computedStateWriterGroupIndex } from './writer-group-selection.js';
@@ -209,6 +210,10 @@ export async function fixCreateBuilderDelegateUnlockers(
       .filter((inp) => !inp.name.startsWith('__internal__')).length === group.functionArgs.length)
       ?? bSameName[0];
     if (bFunc) {
+      const batchProofInputOffset = (offset: bigint): bigint => BigInt(masterInputIndex
+        + physicalDelegateSlotOffset(
+          (bFunc as AbiFunction).blockLayout, Number(offset), bArt.delegateOnly === true,
+        ));
       const activeEntryDelegate = entryAbiFunction?.name === group.functionName
         && (group.logicalArtifact ?? bArt).contractName === entryArtifact.contractName
         ? { inputs: entryAbiFunction.inputs, args: entryArgs }
@@ -625,7 +630,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           if (groupInternalValue !== undefined) {
             if (!graphCompilerRoute && /^__internal__vmapBatchProof_\d+$/.test(inp.name)
               && typeof groupInternalValue === 'bigint' && groupInternalValue >= 0n) {
-              return groupInternalValue + BigInt(masterInputIndex);
+              return batchProofInputOffset(groupInternalValue);
             }
             if (/^__internal__vmapBatchPredOut_\d+$/.test(inp.name)
               && typeof groupInternalValue === 'bigint' && groupInternalValue >= 0n) {
@@ -644,7 +649,7 @@ export async function fixCreateBuilderDelegateUnlockers(
             // OP_OUTPUT* consumers take an absolute coordinate and therefore require SDK-side resolution.
             if (!graphCompilerRoute && /^__internal__vmapBatchProof_\d+$/.test(inp.name)
               && typeof value === 'bigint' && value >= 0n) {
-              return value + BigInt(masterInputIndex);
+              return batchProofInputOffset(value);
             }
             if (/^__internal__vmapBatchPredOut_\d+$/.test(inp.name)
               && typeof value === 'bigint' && value >= 0n) {

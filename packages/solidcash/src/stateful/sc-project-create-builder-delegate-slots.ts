@@ -59,7 +59,7 @@ export function projectCreateBuilderDelegateSlots(params: {
     const extra = (gFn?.blockLayout?.slots ?? []).filter((s) => s.kind !== 'master' && s.kind !== 'dataNft');
     const projectableKinds = new Set<BlockSlotKind>([
       'blockhashOracle', 'keccakSideCar', 'ecrecoverSideCar',
-      'entry', 'event', 'returnEvent',
+      'entry', 'tokenContainer', 'tcTransfer', 'event', 'returnEvent',
     ]);
     if (extra.length === 0 || !extra.every((slot) => projectableKinds.has(slot.kind))) continue;
     const existingCallSlot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'lowLevelCall');

@@ -70,7 +70,7 @@ import {
   Ast, AssignNode, AssignmentExpressionNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode,
   ContractReferenceNode, EmitStatementNode,
   ExpressionNode, FieldAccessNode, LiteralNode,
-  FunctionCallNode, FunctionDefinitionNode, InterfaceFunctionNode, InterfaceNode,
+  FunctionCallNode, FunctionDefinitionNode, IndirectCallNode, InterfaceFunctionNode, InterfaceNode,
   ExternalCallMode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode,
   IdentifierNode,
   InstantiationNode,
@@ -3861,14 +3861,64 @@ function supportsAtomicMessageBus(ast: Ast, compilerOptions: CompilerOptions): b
  * A graph-free contract can still be compiled as a leaf participant by explicitly requesting `messageBus: true`.
  */
 function hasMessageBusGraphEdge(ast: Ast): boolean {
+  const { contract } = ast;
+  const functions = [
+    ...contract.functions, contract.constructorDef, contract.fallbackDef, contract.receiveDef,
+  ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+  const byName = new Map<string, FunctionDefinitionNode[]>();
+  for (const fn of functions) (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
+  const reachableNames = new Set<string>();
+  const addClosure = (fn: FunctionDefinitionNode): void => {
+    for (const name of collectNamedFunctionClosure(fn, byName)) reachableNames.add(name);
+  };
+  // Public/external entries, constructor, fallback, and receive can execute. An internal helper only justifies an
+  // automatic route when one of those roots can call it. Name-based closure is deliberately conservative for
+  // overloads: an ambiguous call keeps every same-named helper, never silently drops a real graph edge.
+  for (const fn of functions) {
+    if (fn.isEntryPoint || fn === contract.constructorDef
+      || fn === contract.fallbackDef || fn === contract.receiveDef) addClosure(fn);
+  }
+  // Preserve graph edges in constructor initializers and custom modifiers. They are stored outside `functions`
+  // before expansion; a helper called from one of them must remain in the reachable survey too.
+  const otherMembers: Node[] = [];
+  for (const [key, member] of Object.entries(contract)) {
+    if (key === 'functions' || key === 'constructorDef' || key === 'fallbackDef' || key === 'receiveDef') continue;
+    if (member instanceof Node) otherMembers.push(member);
+    else if (Array.isArray(member)) {
+      for (const item of member) if (item instanceof Node) otherMembers.push(item);
+    }
+  }
+  for (const member of otherMembers) {
+    walkInvocationAst(member, (node) => {
+      if (!(node instanceof FunctionCallNode)) return;
+      for (const fn of byName.get(node.identifier.name) ?? []) addClosure(fn);
+    });
+  }
+  const reachableFunctions = functions.filter((fn) => reachableNames.has(fn.name));
+  // Before semantic resolution a function value or indexed indirect call may target any same-contract helper.
+  // Keep the old conservative survey in that case; narrowing only a statically named closure must never drop a
+  // real graph edge carried by an indirect dispatch.
+  let opaqueLocalDispatch = contract.stateVariables.some((state) => state.type instanceof FunctionType);
+  const checkOpaqueLocalDispatch = (node: Node): void => {
+    if (node instanceof IndirectCallNode
+      || (node instanceof VariableDefinitionNode && node.type instanceof FunctionType)) {
+      opaqueLocalDispatch = true;
+    }
+  };
+  for (const fn of reachableFunctions) {
+    if (fn.parameters.some((parameter) => parameter.type instanceof FunctionType)) opaqueLocalDispatch = true;
+    walkInvocationAst(fn.body, checkOpaqueLocalDispatch);
+  }
+  for (const member of otherMembers) walkInvocationAst(member, checkOpaqueLocalDispatch);
+  const surveyedFunctions = opaqueLocalDispatch ? functions : reachableFunctions;
   const interfaceNames = new Set(ast.interfaceDefinitions.map((iface) => iface.name));
   // A call through an interface-typed variable parses as a namespaced FunctionCallNode (`sink.note`), not a
   // MethodCallNode. Detect it from declared receiver types before semantic lowering, while allowing a parameter
   // or local declaration to shadow a same-named contract state variable with an ordinary type.
-  const typedStateReceivers = new Map(ast.contract.stateVariables.map((state) => [
+  const typedStateReceivers = new Map(contract.stateVariables.map((state) => [
     state.name, state.type instanceof AddressType && state.type.interfaceName !== undefined,
   ]));
-  for (const fn of ast.contract.functions) {
+  for (const fn of surveyedFunctions) {
     if (!fn.body) continue;
     const typedReceivers = new Map(typedStateReceivers);
     for (const parameter of fn.parameters) typedReceivers.set(parameter.name,
@@ -3887,7 +3937,7 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
     if (hasTypedEdge) return true;
   }
   let found = false;
-  walkInvocationAst(ast.contract, (node) => {
+  const checkGraphEdge = (node: Node): void => {
     if (found) return;
     if (node instanceof ExternalFunctionCallNode
       || (node instanceof LowLevelCallStatementNode && node.callMode !== 'delegatecall')
@@ -3897,7 +3947,9 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       || (node instanceof FunctionCallNode && /\.(call|staticcall)$/.test(node.identifier.name))) {
       found = true;
     }
-  });
+  };
+  for (const fn of surveyedFunctions) walkInvocationAst(fn.body, checkGraphEdge);
+  for (const member of otherMembers) walkInvocationAst(member, checkGraphEdge);
   return found;
 }
 

@@ -40,6 +40,24 @@ describe('message-bus compilation selection', () => {
     expect(artifact.compiler.options?.messageBus).toBe(false);
   });
 
+  it('keeps an unreachable foreign-call helper off the default route', () => {
+    const source = `interface ISink { function ping(int amount) external; }
+      contract Simple(address target) {
+        int balance;
+        function set(int next) public { balance = next; require(next >= 0); }
+        function dormant(int next) internal { ISink(target).ping(next); }
+      }`;
+    const automatic = compileString(source, { suppressWarnings: true });
+    const direct = compileString(source, { messageBus: false, suppressWarnings: true });
+    const optedIn = compileString(source, { messageBus: true, suppressWarnings: true });
+
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.bytecode).toBe(direct.bytecode);
+    expect(optedIn.messageBus?.available).toBe(true);
+    expect(optedIn.bytecode).not.toBe(direct.bytecode);
+  });
+
   it('selects the graph route for an interface-typed state receiver', () => {
     const artifact = compileString(`interface ISink { function note(int value) external; }
       contract TypedEdge {

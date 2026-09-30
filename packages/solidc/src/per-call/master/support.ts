@@ -793,6 +793,32 @@ export function perCallBatchWriteFollowsEveryCall(entry: FunctionDefinitionNode)
   return lastCall < firstWrite;
 }
 
+/**
+ * The segment an entry's derived mapping write is declared in, as the artifact publishes it for a builder.
+ *
+ * A fixed number is the count of external calls the entry makes before the write; `'last'` is the last segment the
+ * run opens, which is where a write every call precedes lands. A builder reads the same fact the derivation does
+ * and declares the write's records in that one segment rather than refusing the entry.
+ */
+export type PerCallWriteSegment = number | 'last';
+
+/**
+ * The segment an entry's derived mapping write is declared in, or undefined when the artifact cannot state one.
+ *
+ * The derivation reads the records of the segment the write lands in, so the fact a builder needs is exactly the
+ * value code generation acts on: a fixed count names the write's segment outright, and a write every call precedes
+ * lands in the segment the witness block's own declared call count names. A write a call the source does not fix
+ * follows lands in neither, so it stays unstated and the entry is refused rather than declared in a guessed
+ * segment.
+ */
+export function perCallWriteSegment(entry: FunctionDefinitionNode): PerCallWriteSegment | undefined {
+  const slots = new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
+  if (slots.size === 0) return undefined;
+  const fixed = perCallBatchWriteSegment(entry);
+  if (fixed !== undefined) return fixed;
+  return perCallBatchWriteFollowsEveryCall(entry) ? 'last' : undefined;
+}
+
 /** True for a hidden operand that is neither a frame value nor a sorted-batch operand the master derives. */
 function isUndeclaredHiddenParameter(
   entry: FunctionDefinitionNode,
@@ -853,6 +879,13 @@ export interface PerCallEntryCallSites {
   readonly pathCount?: number;
   /** True when the entry's calls run inside a loop, so one execution reaches a site a number of times. */
   readonly repeats?: boolean;
+  /**
+   * The segment the entry's derived mapping write is declared in, when it writes one and the fact is published.
+   *
+   * A builder declares the write's records in that one segment; absent means the entry writes no such record, or
+   * writes one the artifact cannot place.
+   */
+  readonly writeSegment?: PerCallWriteSegment;
 }
 
 export interface PerCallMasterShapeAssessment {
@@ -1451,11 +1484,13 @@ function derivePerCallMasterCallSites(
       refusals.set(entry.name, derived.reason);
       continue;
     }
+    const writeSegment = perCallWriteSegment(entry);
     entryCalls.push({
       entryName: entry.name,
       calls: derived.calls,
       pathCount: derived.pathCount,
       ...(callsRepeat(entry.body) ? { repeats: true } : {}),
+      ...(writeSegment === undefined ? {} : { writeSegment }),
     });
   }
   // The bound the head holds is how many records the body with the most calls declares, which is a path count

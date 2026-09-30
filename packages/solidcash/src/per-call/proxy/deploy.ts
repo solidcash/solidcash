@@ -233,6 +233,25 @@ function entryName(artifact: Artifact, functionName: string): string {
 }
 
 /**
+ * The segment the entry's derived record write is declared in, as the artifact publishes it.
+ *
+ * The write lands in the segment the entry's own source fixes, and the compiler publishes which that is: a fixed
+ * count of the external calls the entry makes before the write, or `'last'` when every call precedes it. The stop
+ * site table rides on `artifact.composition` outside the frozen placeholder type, so it is read through a widened
+ * view of the artifact the way the compiler attaches it. Absent means the entry writes no such record, or writes
+ * one whose segment the artifact does not publish, which the hop refuses rather than guessing.
+ */
+function publishedWriteSegment(artifact: Artifact, functionName: string): number | 'last' | undefined {
+  const entries = (artifact.composition as {
+    readonly stopSites?: {
+      readonly entries?: readonly { readonly functionName?: string; readonly writeSegment?: number | 'last' }[];
+    };
+  } | undefined)?.stopSites?.entries;
+  const identity = entryName(artifact, functionName);
+  return entries?.find((entry) => entry.functionName === identity)?.writeSegment;
+}
+
+/**
  * The candidate a hop's implementation frame carries for its `retval` before the entry's own return is known.
  *
  * An entry that returns a value compares the blob its own `return` built against the frame's `retval` slot, so the
@@ -1211,13 +1230,21 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     recordKept.map((_entry, nftIndex) => at(recordAfter, nftIndex)),
   ];
   // A call closes the segment the code before it runs in, so a frame that makes `k` calls declares `k + 1`
-  // segments. A record the entry writes beside a call would land in the segment the source fixes, which the
-  // artifact does not publish, so the hop refuses that shape rather than declare the write in every segment.
-  if (calls.length > 0 && (writes.some(Boolean) || options.entryWrites !== undefined)) {
+  // segments. A record the entry writes lands in exactly one of them: the segment the entry's own source names,
+  // which the artifact publishes as the count of calls before the write or as the run's last segment when every
+  // call precedes it. The hop declares the write's records there rather than in the segment the frame begins in.
+  const writeSegment = publishedWriteSegment(implementationArtifact, options.entry.functionName);
+  if (calls.length > 0 && writes.some(Boolean)) {
+    throw new PerCallProxyDeployError(
+      `the implementation's ${entryLabelFor(options.entry.functionName)} rewrites one of the proxy's own records `
+      + 'beside an external call, and the segment that write lands in is not published, so the hop cannot declare '
+      + 'it',
+    );
+  }
+  if (calls.length > 0 && options.entryWrites !== undefined && writeSegment === undefined) {
     throw new PerCallProxyDeployError(
       `the implementation's ${entryLabelFor(options.entry.functionName)} writes a record beside an external call: `
-      + 'which segment the write lands in follows the source order, which the artifact does not publish, so the '
-      + 'hop cannot declare it',
+      + 'the segment the write lands in is not published for the entry, so the hop cannot declare it',
     );
   }
   const implementationSegments: RecordEntry[][] = Array.from(
@@ -1234,7 +1261,18 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     category: options.proxyCategory,
     learnedViews: options.entryWriteViews,
   });
-  if (laidWrites !== undefined) implementationSegments[0] = [...implementationSegments[0]!, ...laidWrites.entries];
+  if (laidWrites !== undefined) {
+    // A body that makes no call has one segment to write in; one that makes calls writes in the segment the
+    // artifact published, whose index is the run's last segment when every call precedes the write.
+    const target = calls.length === 0 ? 0 : writeSegment === 'last' ? calls.length : writeSegment!;
+    if (target < 0 || target > calls.length) {
+      throw new PerCallProxyDeployError(
+        `the implementation's ${entryLabelFor(options.entry.functionName)} publishes segment ${String(target)} for `
+        + `its record write, which the hop's ${calls.length + 1} segment(s) do not hold`,
+      );
+    }
+    implementationSegments[target] = [...implementationSegments[target]!, ...laidWrites.entries];
+  }
 
   const proxyMasterDraft: DraftMaster = {
     master: PROXY_MASTER_ID,

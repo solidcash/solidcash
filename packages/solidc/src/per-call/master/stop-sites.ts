@@ -47,6 +47,14 @@ export interface PublishedEntryStopSites {
   readonly functionName: string;
   /** One record per external call, in call order. */
   readonly calls: readonly PublishedCallSite[];
+  /**
+   * The segment the entry's derived mapping write is declared in, when the entry writes one.
+   *
+   * A fixed number is the count of external calls the entry makes before the write; `'last'` is the last segment
+   * the run opens, which is where a write every call precedes lands. A builder declares the write's records in
+   * that one segment; absent means the entry writes no such record, or writes one whose segment is not published.
+   */
+  readonly writeSegment?: number | 'last';
   /** The sites in the order the driver reaches them, validated before publication. */
   readonly sites: StopSiteMetadata;
 }
@@ -112,6 +120,8 @@ export function entryStopSites(
  * Each entry publishes the calls its own source makes, so a driver that resumes an entry names the callees that
  * entry's sites bind rather than another entry's. The entries share the call count the head fixes, but not the
  * calls themselves. Each call carries its own `repeats` marker, so a fixed call beside a loop keeps a fixed site.
+ * An entry that writes a verified mapping also publishes the segment its records are declared in, which a builder
+ * places them in rather than declaring them in every segment.
  */
 export function publishPerCallStopSites(
   contractName: string,
@@ -119,11 +129,12 @@ export function publishPerCallStopSites(
     readonly entryName: string;
     readonly calls: readonly MasterCallSite[];
     readonly pathCount?: number;
+    readonly writeSegment?: number | 'last';
   }[],
 ): PublishedPerCallStopSites {
   return {
     version: 1,
-    entries: entries.map(({ entryName, calls, pathCount }) => {
+    entries: entries.map(({ entryName, calls, pathCount, writeSegment }) => {
       const functionName = entryFunctionName(contractName, entryName);
       return {
         functionName,
@@ -134,6 +145,7 @@ export function publishPerCallStopSites(
           target: binToHex(call.target),
           selector: binToHex(call.selector),
         })),
+        ...(writeSegment === undefined ? {} : { writeSegment }),
         sites: entryStopSites(functionName, calls, pathCount),
       };
     }),

@@ -227,6 +227,19 @@ lands it removes the claim line.
   per-turn **outputs** by their position in the segment's declared list - the mechanism the batch path already
   reaches through `emitDeclaredGroupRecordOrdinal` / `batchTargetOrdinal` - since a per-call frame's created records
   sit in the transaction's trailing outputs rather than at a frame coordinate.
+- **Piece 2's coordinate measured before it is written (2026-09-30).** Three facts, each taken from the shipped
+  machine rather than read off the code. (1) The frame's record base is the **first record its first segment
+  declares**: a segment declaring none parks the no-index sentinel, and the emitted coordinate is
+  `base + perCallEntryOffset(slot) + turn` - which is why the hand-built frame reads `requested index: -32768` for
+  the varying key (`loop-upsert-segment.test.ts`). (2) The `+1` in `perCallEntryOffset` is **not** a direct-convention
+  leftover: dropping it for a per-call frame with no batch ahead of the slot breaks the shipped read path (9 cases in
+  `test/per-call/reads`, 9 in `test/per-call/call`, 3 in `conformance`, all green again on revert), so a per-call
+  frame's declared list carries one record ahead of its first entry slot and piece 2 has to declare the turns'
+  records **inside** that convention, mirroring the read path's own order and count
+  (`entryReadRecords`/`layReadNodes`). (3) With the coordinate known, a frame that declares a plain update view at
+  the node the turn reads still fails the body's own comparison (`Program failed an OP_VERIFY operation.`), so the
+  remainder of piece 2 is the record **contents** - the run-time loop's transition views, which the body proves -
+  rather than the coordinate. Evidence: `{SCRATCH}/offset-experiment.log`, `{SCRATCH}/offset-suites.log`.
 - **SDK half, piece 1 landed**: the per-call lane derives the turns of a run-time-loop mapping write from the
   artifact's own facts. `planCallLoopWrites` (`packages/solidcash/src/per-call/call/entry-records.ts`) reads each
   `sortedUpsertLoopInfo` entry - the collection, `varyingArrayParam`, `valueScalarParam`, the operation - finds the

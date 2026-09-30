@@ -1631,6 +1631,12 @@ risk. Take the slices in order, each with its own tests.
 - **Claims: work a second worker holds, so a round does not pick it up** (user direction, 2026-09-28: two
   workers in parallel, each in its own scratch copy, landing one commit per item). A claimed item is skipped when
   a round takes the next unticked item; the commit that lands it removes its line here.
+  - **Parallel items beside the ladder** (handoff 2026-09-30, `HANDOFF_PARALLEL.md`): seven items off the ladder's
+    critical path or ahead of it, each with its lane, the point it is done and what it must coordinate; claim one
+    here before starting. **Claimed by the parallel worker**: PW5 (G1's cross-contract rows, under its G1/S0 claim
+    below), PW1 step 1 (the revert-after-calls reproducer; step 2, the hook in the settle loop, only with the ladder
+    stream) and PW2 (walls ahead, in a new `test/per-call/ahead/`). Open: PW3 (once the ladder stream agrees the
+    split), PW4, PW6 and PW7.
   - **The parallel worker's earlier items, done and released** (its active claims are the bullet below). **Done**:
     `MarketplaceV1.takeJob`'s keccak path on the composer side (`447ab2e01`, `55b96c95b`, `101cb6131`), the EVM
     projection's keccak side-car recreating at its own index (`fc52c36aa`), and a delegate frame's side-cars read

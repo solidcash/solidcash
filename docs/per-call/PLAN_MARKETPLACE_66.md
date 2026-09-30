@@ -2169,7 +2169,12 @@ Titles marked NEVER have not passed on any real compile to date.
   refusals, and the loop shape itself is served and accepted when its key is the frame's
   (`conformance/loop-upsert-settlement.test.ts`); **the varying-key variant is the open one**, and `HANDOFF_PARALLEL.md`'s PW3 item stays open for it. Serving it needs the
   collection declared in the frame's layout and the per-turn operands derived — compiler code generation plus the
-  ladder stream's `proxy/**` planning. **The coordinator decided on 2026-09-30: the variant stays in PW3 and the
+  ladder stream's `proxy/**` planning. (The first two steps of that sequence were written, measured and reverted the
+  same day: with the per-call `entry` slot published and the emitter addressing the frame's base, the master's
+  failure moves from `OP_VERIFY` to the no-record sentinel — `requested index: -32767` — and the shipped path refuses
+  by name, `touches mapping "balances" as write outside a sorted batch, which a call does not plan`, so the accept
+  waits on the SDK's per-turn node planning; a hand-built witness cannot supply the nodes without re-implementing the
+  plan that lays them.) **The coordinator decided on 2026-09-30: the variant stays in PW3 and the
   layout plus `proxy/**` work is authorized**, so the three-commit sequence above is the plan of record and lands as
   one sequence with the census held at 0 refusals (a partial landing would move `blockSize` and what the shipped path
   does with the entry without making it settle). The naming below is kept for the record:

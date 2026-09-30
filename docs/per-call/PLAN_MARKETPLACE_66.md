@@ -2053,13 +2053,24 @@ Titles marked NEVER have not passed on any real compile to date.
   beside a call is `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts:217` (accept at `:221`, the
   mutation refused at `:238`, the refusing participant named at `:272`). A citation of
   `loop-upsert-settlement.test.ts:86-97` - an accept at `:86` beside a refusal at `:91` - reads the revision before
-  `fddae17aa`, where that file's accept case had not yet been rewritten to the body the shipped path settles. The
-  **The publication pin now carries the verdict itself**: `solidc/test/per-call/master/write-shape-publication.test.ts`
+  `fddae17aa`, where that file's accept case had not yet been rewritten to the body the shipped path settles. **The
+  publication pin now carries the verdict itself**: `solidc/test/per-call/master/write-shape-publication.test.ts`
   has a second describe whose case deploys the very body its fourth case publishes and calls it through the shipped
   call path (relative SDK imports, as its sibling harness already uses), asserting the machine accepts the well-formed
   spend and refuses the same spend with one byte of the written record changed - so the file that pins the shape's
   publication also carries its accept and its refused mutation. The compiler's varying-key harness
   (`solidc/test/per-call/master/loop-upsert-segment.test.ts`) names the same cases at its head.
+- **And the accepted verdict is now in the varying-key harness itself, where the refusals are (2026-09-30).** Both
+  skeptic readings located the missing accept in `solidc/test/per-call/master/loop-upsert-segment.test.ts`, whose
+  accepts were the head's own controls. It now carries the served shape's verdict too: a third describe,
+  `the run-time-loop upsert the shipped path settles, its machine verdict`, whose single case is
+  `accepts the well-formed spend beside the refusal of the record the loop wrote being changed` - the shipped compile
+  (`compileStringMulti(..., { composition: 'per-call' })`), the shipped deploy and `callPerCallEntry`, the machine's
+  `{ accepted: true, objections: [] }` for the well-formed spend, then one byte of the commitment the loop wrote
+  changed and `vm.stateSuccess(...)` not true for the same participant (`{SCRATCH}/round-verify-segment.log`, 9/9 in
+  that file). So the file whose subject is *which segment declares a run-time-loop upsert's records* now answers both
+  sides in one place: the served loop upsert accepted with its mutation refused, and the varying-key loop upsert
+  refused with its reason.
 
 ## 7. Log (append-only; newest last)
 
@@ -2225,6 +2236,14 @@ Titles marked NEVER have not passed on any real compile to date.
   `callPerCallEntry` for the callee-frame reason even when its key is the frame's own
   (`entry "move" makes 1 external call(s), whose callee frames this call path does not plan yet`), so the fixture's
   `updateJobWhitelist` sits behind the hop's callee-frame planning as well as the varying key.
+- **PW3 was not narrowed: the varying-key shape is open under a coordinator decision, and the box is unticked
+  (reconciled 2026-09-30 in `c612e351b`).** One round's handoff wording put the fixture's `updateJobWhitelist` shape
+  "outside PW3's done-when from here on". That was withdrawn in `c612e351b`: `HANDOFF_PARALLEL.md`'s PW3 item states
+  the shape **stays in PW3** under the coordinator's 2026-09-30 decision that it stays in this lane and is implemented
+  here in steps, and the item's box stays unticked until the fixture shape settles. Nothing in PW3 is recorded as
+  landed for it - only the compiler half of the varying key (`aecdbf5ef`) and the pinned reproducers. The same commit
+  reconciled the record's other contradiction: the Deviations text no longer says G2's row 13 is left unticked, which
+  contradicted the ticked checklist at section 6 (`:1016`) and the Log row that says all nine G2 boxes are ticked.
 - **Each publication shape has its machine verdict, and the loop shape's is an accept.** A body that writes nothing
   of its own must declare its own record kept, and the machine refuses the same record declared changed where the
   code never touches it (`solidcash/test/per-call/hostile/unwritten-record-change.test.ts`, whose `touch` entry is
@@ -2236,8 +2255,13 @@ Titles marked NEVER have not passed on any real compile to date.
   `{ accepted: true, objections: '' }` for the loop upsert, `:110-121` refuses the mutated spend, and `:124-129`
   refuses the varying key beside them — a reader who cites `:86-97` is reading the revision before `fddae17aa`),
   which is the accept/refuse pair for that shape; the machine's own segment control for such a record accepts the declaration at the write's segment and
-  refuses it one segment later (`solidc/test/per-call/master/loop-upsert-segment.test.ts`). What has no accepted
-  spend anywhere is the **varying-key** variant, whose per-turn node no verified batch plans.
+  refuses it one segment later (`solidc/test/per-call/master/loop-upsert-segment.test.ts`). **That harness carries the
+  accept itself now**, so the file whose subject is which segment declares a loop upsert's records answers both sides:
+  its third describe, `the run-time-loop upsert the shipped path settles, its machine verdict`, takes the shipped
+  compile, the shipped deploy and `callPerCallEntry` for the served body, asserts `{ accepted: true, objections: [] }`,
+  changes one byte of the commitment the loop wrote and asserts `vm.stateSuccess(...)` is not true for the accepted
+  participant (9/9 green in that file, `{SCRATCH}/round-verify-segment.log`). What still has no accepted spend
+  anywhere is the **varying-key** variant, whose per-turn node no verified batch plans.
 - **A loop upsert beside a call is served for a fixed record and refused for a mapping node (measured 2026-09-30).**
   `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts` drives the shape through the shipped proxy
   path with the callee it calls deployed: the entry makes one external call and the loop that follows upserts the
@@ -3014,3 +3038,4 @@ writing frame computed, with a record output no frame computed refused by the va
 | 2026-09-30 | `e0b9f171f` | per-call | the fixture's value is a literal, and the derivation still refuses: the blocker is the loop's close | the probe run; suite unchanged | **The artifact publishes `valueConst: "1"` for the fixture's own shape** (`whitelistWorkers[jobId][w] = true`), so the plan can state the written value instead of leaving it to be learned - and the derivation still refuses with `the call's write to mapping "whitelist" did not hand back every node it rewrites, so the frame cannot declare their commitments`, for one turn and for two. The blocker is therefore the run-time loop's close, which hands back its journal's stream rather than one commitment per rewritten node; piece 2's remaining work is to take the minted nodes from that stream, as the kernel lane's `KernelEntryJournal` output layout does, rather than expecting a per-node hand-back. The wiring and the constant-value handling were reverted rather than landed (they swap a named refusal for a derivation stall and settle nothing). Log: `{SCRATCH}/literal-probe.log`. |
 | 2026-09-30 | `25173d5a3` | per-call | stating the literal value clears the derivation stall; the wall moves to the machine's own comparison | the probe run; suite unchanged | **The batch plan asks for a hand-back per target record** (`valueDependent` is true for a target whatever its value), so the loop's close - which hands back its journal stream - could never satisfy it. With the literal stated (`valueConst: "1"` for the fixture's `= true`, so the plan declares the end views itself) the stall is gone: the machine evaluates the frame and refuses it with `frame "master" of Ledger.move() at line 1: no source message (Program failed an OP_VERIFY operation.)`, for one turn and for two. The remaining wall for the literal shape is the declaration the body compares against itself (coordinate and output side); the parameter-value shape still needs the loop's journal stream. Wiring kept at `{SCRATCH}/entry-records-stated-value.ts`, not landed (the parameter-value shape would degrade from a named refusal to a stall). Log: `{SCRATCH}/stated-value-probe.log`. |
 | 2026-09-30 | `5a9f959f4` | per-call | piece 3's emitter half: a loop's per-turn output named by its declared position | shipped-path guards 6/6, compiler pins 14/14, call-lane loop cases 4/4 | **`emitSortedUpsertLoopBody`'s `pushIdx` out side now emits the negative declared-list ordinal for a per-call frame with no batch ahead of the loop and the loop's own entry slot** (`readsRecordsFromFrame` + `batchTargetSlots().length === 0` + `entrySlots[slotIndex].inLoop`): `-(perCallRecordsBeforeGroups() + 1)` with the counter subtracted, so turn `t` names position `perCallRecordsBeforeGroups() + t`, the same base a batch's created records use. The in side is unchanged. Nothing that settles today moves (guards 6/6, pins 14/14, `{SCRATCH}/piece3-emitter.log`); the arm is exercised once the plan declares the loop's created nodes there, which is piece 2's declaration - so the varying-key pins' verdicts are unchanged for now. |
+| 2026-09-30 | (this row's commit) | per-call | the loop-upsert accept moved into the file that pins the refusals, and the two record gaps re-checked | solidc `test/per-call/master` 602 in 81 files; the conformance pair green | **The last rejection's three gaps, each answered at this revision.** (1) *"no machine accept for a run-time-loop upsert"*: the accept is now also in the file both skeptics cite - `solidc/test/per-call/master/loop-upsert-segment.test.ts`'s third describe, `the run-time-loop upsert the shipped path settles, its machine verdict`, whose case drives the shipped compile, the shipped deploy and `callPerCallEntry` for the key-the-frame-holds loop upsert, asserts `{ accepted: true, objections: [] }`, then changes one byte of the commitment the loop wrote and asserts `vm.stateSuccess(...)` is not true - beside the two accepts that already existed (`master/write-shape-publication.test.ts:232`, `conformance/loop-upsert-settlement.test.ts:94`, whose `:86-97` reading is the pre-`fddae17aa` revision). Runs at this revision: that file 9/9, `write-shape-publication` 6/6, the conformance pair 6/6, the whole master directory 602/602 in 81 files (`{SCRATCH}/round-verify-segment.log`, `round-verify-publication.log`, `round-verify-conformance.log`, `round-verify-masterdir.log`). (2) *PW3 narrowed*: the wording that put the varying-key shape "outside PW3's done-when" was withdrawn in `c612e351b`; `HANDOFF_PARALLEL.md`'s PW3 item states the shape stays in PW3 under the coordinator's 2026-09-30 decision, its box is unticked, and only the compiler half and the pinned reproducers are recorded as landed. (3) *row 13's contradiction*: reconciled in the same commit - the Deviations section carries no "row 13 is left unticked" text at this revision, and section 6's checklist (`:1016`) and the 2026-09-30 Log row agree that G2 is ticked for all nine rows. No compiler or SDK source changed this round. |

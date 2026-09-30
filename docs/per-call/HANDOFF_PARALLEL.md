@@ -433,7 +433,18 @@ lands it removes the claim line.
   it plans itself (`conformance/loop-upsert-settlement.test.ts`), while the same mapping written once from a
   parameter settles there. The reproducers are `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the
   fixture's own shape, the machine's refusals, and its segment control) and that conformance guard. **PW3 stays
-  open for this shape** under the coordinator's 2026-09-30 decision that it stays in PW3 (recorded above).
+  open for this shape** under the coordinator's 2026-09-30 decision that it stays in PW3 (recorded above); the item's
+  box is unticked until the fixture shape settles, and an earlier round's wording that put the shape "outside PW3's
+  done-when" was withdrawn in `c612e351b`.
+  **The served loop-upsert shape's machine accept, and where it is pinned** (the criterion that asks each published
+  shape for `well-formed spend accepted, mutated spend refused`): the accept is
+  `solidc/test/per-call/master/loop-upsert-segment.test.ts`'s third describe, `the run-time-loop upsert the shipped
+  path settles, its machine verdict` - shipped compile, shipped deploy, `callPerCallEntry`, `{ accepted: true,
+  objections: [] }`, then one byte of the commitment the loop wrote changed and `vm.stateSuccess(...)` not true - so
+  the compiler-side file that pins the refusals carries the accept beside them; the same pair is
+  `solidc/test/per-call/master/write-shape-publication.test.ts:232` (whose fourth case publishes that body) and
+  `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts:94` (with the mutation refused in the same
+  case). A citation of `loop-upsert-settlement.test.ts:86-97` reads the revision before `fddae17aa`.
 - **PW4 - landed** (`a723cdfba`, `cfecf35b7`). The attack table cites `hostile/delegate-callee-mutation.test.ts`: the
   faithful forwarded hop is accepted, and a callee that is a second deployed contract's master is refused
   `V5_DELEGATE_TARGET_MISMATCH` off chain and by the facet's edge rule on chain.

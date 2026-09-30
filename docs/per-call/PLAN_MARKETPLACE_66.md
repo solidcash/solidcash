@@ -1688,6 +1688,11 @@ risk. Take the slices in order, each with its own tests.
     `try`, the origin checks) first; each cross-contract row is recorded as served or refused by name, with no work
     on the hop's side. Files: the new conformance directory, and the subroutine operands and admission a row finds
     missing (the generation pass, `support.ts` merged onto the implementer's working tree).
+  - **Claimed by the parallel worker:** C13's off-curve half. A per-call body answers the zero address for an `r` in
+    range that no curve point has as its x-coordinate, as the precompile does, proven by a witness `w` with
+    `w^2 = -(r^3 + 7) mod p` that side-car A's pad carries; an honest pad starts with a zero word and keeps today's
+    bind. A recovery at infinity stays open. Files: the recovery body in the generation pass, `composer/recovery.ts`
+    and the side-car builder's pad.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

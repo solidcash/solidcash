@@ -1712,9 +1712,14 @@ risk. Take the slices in order, each with its own tests.
     ahead"); the settle-loop half is the ladder stream's.
     **Landed by the second worker, 2026-09-30**: PW3's compiler half (`c3cf75d69`: an entry that writes nothing
     of its own publishes an empty write list, a write inside a loop whose own body reaches no call is placed, and a
-    runtime-loop upsert beside a call publishes the segment its write lands in; a *varying-key* loop upsert still
-    states nothing and is handed over as `solidc/test/per-call/master/loop-upsert-segment.test.ts`, whose
-    reproducer shows the machine refusing every declaration inside the upsert body's own emitted code), PW4
+    runtime-loop upsert beside a call publishes the segment its write lands in, with a machine accept and a refused
+    mutation on the shipped proxy path (`conformance/loop-upsert-beside-call.test.ts`); a *varying-key* loop upsert
+    still states nothing here, and the coordinator's 2026-09-30 decision **hands its SDK protocol to the ladder
+    stream**, with this worker's compiler half committed as the patch
+    `docs/per-call/patches/pw3-varying-key-compiler-half.diff` (`git apply --check` clean against the tree; it names
+    no SDK file, so it cannot collide with the ladder's live edits). The offer, what the taker owes and the measured
+    boundary are in the handoff's PW3 item; the ladder stream's acceptance is **pending** (their live edits touch no
+    `sortedUpsertLoopInfo`), which the Log's last row records), PW4
     (`a723cdfba`, `cfecf35b7`), PW6's nine row guards (`59fc8077d`, `3d728a8f4`, `2ad01fb71`, `5b852ceff`, with G2
     ticked for the rows that are served) and PW7 (the 4.5 rows and the first title's profile). The `support.ts`
     split was taken as: the write-segment publication was this worker's, the self-call admission beside it stayed

@@ -37,12 +37,13 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 140 |
 | `packages/solidcash/test/per-call/call/` | `solidcash` | 116 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 100 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 103 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 93 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 39 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 9 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
-| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 26 |
+| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 73 |
+| `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2 |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 3 |
 
 Total: 1736 checks (115 + 632 + 987 + 2), with four more cases that run under
@@ -293,7 +294,17 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   EVM's answer. The nine single-contract rows so far, and seventeen beyond the file where `tx.origin`, `msg.value`,
   `msg.sig` or `msg.data` is read (`self-call-identity.test.ts`); a selector is compared by the function it selects,
   since the EVM hashes a signature with keccak256 and the per-call dispatcher with SHA-256, and `msg.data` by the
-  digests of two reads, since the EVM's calldata and a frame's call data encode a call apart.
+  digests of two reads, since the EVM's calldata and a frame's call data encode a call apart. Beside them, one guard
+  per spec-section-23 row the ladder reaches later, each pinning the row's shape served with its observable or
+  refused by name: `view-call-revert-rows.test.ts` (19), `string-mapping-rows.test.ts` (24),
+  `paired-event-rows.test.ts` (14), `large-event-rows.test.ts` (13, refused: the call entry point plans no callee
+  frames, with a root-frame control served beside it), `time-window-rows.test.ts` (16),
+  `dynamic-argument-rows.test.ts` (12), `balance-rows.test.ts` (10), `low-level-return-rows.test.ts` (11) and
+  `custom-error-rows.test.ts` (6).
+- **`solidcash/test/per-call/pw7-measure.test.ts`** - a measurement instrument rather than a regression guard: it
+  drives the shipped composer and derivation on Y2, Y6 and the vault graph, counts the machine's own evaluations
+  per master, and prints a JSON summary to `PW7_OUT` (default `/tmp/pw7-measure.json`). The twenty-four-master case
+  runs only under `PW7_FULL=1`. The plan's 4.5 rows carry the numbers it produces.
 
 ## Which refusals cover which attack
 

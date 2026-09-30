@@ -7,9 +7,11 @@
  * unlocking — it reads its frame out of a witness block, which the direct shape does not carry — so the deployment
  * is routed here when the artifact publishes `composition.convention === 'per-call'`.
  *
- * The genesis transaction is the same shape the convention's pools expect: the master's minting NFT at the master
- * lock, a validator UTXO at `addrV(category)`, one state record per data NFT carrying the commitment the
- * constructor's own frame computed, and one output per event that frame emitted, at the covenant the body rebuilt.
+ * The genesis transaction is the same shape the convention's pools expect: a pool of master UTXOs carrying the
+ * minting NFT at the master lock, a pool of validator UTXOs at `addrV(category)`, one state record per data NFT
+ * carrying the commitment the constructor's own frame computed, and one output per event that frame emitted, at the
+ * covenant the body rebuilt. Both pools default to the composing size and are overridden per contract through the
+ * deployment options.
  * The state comes from `derivePerCallGenesis`, which runs that frame against the BCH-2026 machine; nothing here
  * supplies a commitment the constructor did not compute.
  *
@@ -27,6 +29,7 @@ import { Contract } from '../../Contract.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { derivePerCallGenesis } from './genesis.js';
+import { resolveMasterPoolSize } from './pool.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 
 /** Raised when a per-call deployment cannot be built from the artifact or the options. */
@@ -101,10 +104,17 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   // A state record sits at the data-NFT covenant the category derives, so a composition spends and recreates it
   // under the covenant's own rules rather than at a lock outside them.
   const recordLockingBytecode = stateRecordLockingBytecode(categoryId);
-  const masterCount = options.threadCount ?? 1;
-  if (!Number.isInteger(masterCount) || masterCount < 1) {
-    throw new PerCallDeployError(`threadCount must be a positive integer, got ${masterCount}`);
+  // The pool the caller asked for, or the composing default: a caller that names `threadCount` or `validatorCount`
+  // is authoritative for that count, and the deployment funds exactly the pool it resolved.
+  if (options.threadCount !== undefined
+    && (!Number.isInteger(options.threadCount) || options.threadCount < 1)) {
+    throw new PerCallDeployError(`threadCount must be a positive integer, got ${options.threadCount}`);
   }
+  if (options.validatorCount !== undefined
+    && (!Number.isInteger(options.validatorCount) || options.validatorCount < 1)) {
+    throw new PerCallDeployError(`validatorCount must be a positive integer, got ${options.validatorCount}`);
+  }
+  const pool = resolveMasterPoolSize({ masters: options.threadCount, validators: options.validatorCount });
 
   const { TransactionBuilder } = await import('../../TransactionBuilder.js');
   const builder = new TransactionBuilder({
@@ -113,19 +123,22 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   });
   builder.addInput(options.fundingUtxo, options.funder);
 
-  for (let index = 0; index < masterCount; index += 1) {
+  for (let index = 0; index < pool.masters; index += 1) {
     builder.addOutput({
       to: genesis.master.lockingBytecode,
       amount: masterAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
     });
   }
-  // The validator pool: at least one UTXO at addrV(category), recreated in place by every composition.
-  builder.addOutput({
-    to: genesis.master.address,
-    amount: dataNftAmount,
-    token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
-  });
+  // The validator pool: `pool.validators` UTXOs at addrV(category), recreated in place by every composition, so
+  // the pool bounds how many compositions the contract can root at once.
+  for (let index = 0; index < pool.validators; index += 1) {
+    builder.addOutput({
+      to: genesis.master.address,
+      amount: dataNftAmount,
+      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+    });
+  }
   // The facet pool: one tokenless UTXO per facet the validator program binds, at the facet's own lock. A facet
   // holds no token and pins no category, so a composition spends any UTXO of its code.
   for (const code of perCallValidator.buildValidatorFacets()) {
@@ -201,7 +214,8 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   const finalChange = options.fundingUtxo.satoshis - nonChangeTotal - fee;
   if (finalChange < 0n) {
     throw new PerCallDeployError(
-      `Insufficient funding: ${options.fundingUtxo.satoshis} satoshis provided, but the genesis requires `
+      `Insufficient funding for the pool of ${pool.masters} master(s) and ${pool.validators} validator(s): `
+      + `${options.fundingUtxo.satoshis} satoshis provided, but the genesis requires `
       + `${nonChangeTotal + fee} (outputs ${nonChangeTotal}, fee ${fee}).`,
     );
   }

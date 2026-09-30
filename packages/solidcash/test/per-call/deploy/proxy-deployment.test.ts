@@ -6,7 +6,7 @@ import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
-  deployMaster, readPerCallDeployment, readPerCallState, stateRecordLockingBytecode,
+  DEFAULT_MASTER_POOL_SIZE, deployMaster, readPerCallDeployment, readPerCallState, stateRecordLockingBytecode,
 } from '../../../src/per-call/deploy/index.js';
 import { deployPerCallProxy, proxyRecordParticipantId } from '../../../src/per-call/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -24,7 +24,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * machine is then asked about every participant of the composition.
  *
  * The tests also pin where a per-call deployment mints its records: each sits at the data-NFT covenant its category
- * derives, and the machine accepts the record's own spend under that covenant beside the masters and the validator.
+ * derives, and the machine accepts the record's own spend under that covenant beside the masters and the validator
+ * pool the deployment funds.
  */
 
 // The proxy's records are the implementation's records, so both declare the same fields: the implementation's
@@ -42,6 +43,13 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 const ENTRY = 'initialize';
+
+// A per-call genesis mints the resolved pool first - masters, then validators - followed by the facet pool, the
+// contract's own record, and change. These indices read the default pool the deployment funds.
+const POOL = DEFAULT_MASTER_POOL_SIZE;
+const FACET_OUTPUTS = 1;
+const RECORD_OUTPUT = POOL.masters + POOL.validators + FACET_OUTPUTS;
+const GENESIS_OUTPUTS = RECORD_OUTPUT + 2;
 
 /** The deployed proxy and implementation, driven through the shipped module. */
 async function deployFresh(): Promise<{
@@ -97,9 +105,13 @@ describe('a per-call proxy deployment', () => {
     expect(deployment.implementation.categoryId).toBe(implCategory);
     expect([...deployment.implementation.address]).toStrictEqual([...master.address]);
     expect(deployment.implementation.tx.inputs.length).toBe(1);
-    // master (minting), validator (mutable, empty), the facet pool, the initial-state record, then change.
-    expect(deployment.implementation.tx.outputs.length).toBe(5);
-    const [masterOut, validatorOut, facetOut, recordOut] = deployment.implementation.tx.outputs.map((output) => output!);
+    // The default pool's masters (minting), its validators (mutable, empty), the facet pool, the initial-state
+    // record, then change.
+    expect(deployment.implementation.tx.outputs.length).toBe(GENESIS_OUTPUTS);
+    const masterOut = deployment.implementation.tx.outputs[0]!;
+    const validatorOut = deployment.implementation.tx.outputs[POOL.masters]!;
+    const facetOut = deployment.implementation.tx.outputs[RECORD_OUTPUT - 1]!;
+    const recordOut = deployment.implementation.tx.outputs[RECORD_OUTPUT]!;
     expect(facetOut!.token).toBeUndefined();
     expect([...masterOut!.lockingBytecode]).toStrictEqual([...master.lockingBytecode]);
     expect(masterOut!.token!.nft!.capability).toBe('minting');
@@ -118,8 +130,8 @@ describe('a per-call proxy deployment', () => {
     const proxyLayout = artifacts.Proxy!.stateLayout!;
 
     expect(deployment.proxy.categoryId).toBe(proxyCategory);
-    expect(deployment.proxy.tx.outputs.length).toBe(5);
-    const recordOut = deployment.proxy.tx.outputs[3]!;
+    expect(deployment.proxy.tx.outputs.length).toBe(GENESIS_OUTPUTS);
+    const recordOut = deployment.proxy.tx.outputs[RECORD_OUTPUT]!;
     expect(recordOut.token!.nft!.capability).toBe('mutable');
     // The record the shipped encoder materializes from the implementation's address.
     expect(bytesToHex(recordOut.token!.nft!.commitment)).toBe(
@@ -131,14 +143,14 @@ describe('a per-call proxy deployment', () => {
     const { artifacts, deployment, provider, proxyCategory } = await deploy();
     // The record sits at the data-NFT covenant the category derives, not at the contract's address or the
     // deployer's wallet lock.
-    const recordOut = deployment.proxy.tx.outputs[3]!;
+    const recordOut = deployment.proxy.tx.outputs[RECORD_OUTPUT]!;
     expect([...recordOut.lockingBytecode]).toStrictEqual([...stateRecordLockingBytecode(proxyCategory)]);
     // The covenant pins the record's own category and capability, so it is findable by address and by category.
     const discovery = await readPerCallDeployment(provider, proxyCategory, artifacts.Proxy!.stateLayout!);
     expect(discovery.records.length).toBe(1);
     expect(discovery.records[0]!.token!.nft!.commitment).toBe(bytesToHex(recordOut.token!.nft!.commitment));
-    expect(discovery.masters.length).toBe(1);
-    expect(discovery.validators.length).toBe(1);
+    expect(discovery.masters.length).toBe(POOL.masters);
+    expect(discovery.validators.length).toBe(POOL.validators);
   });
 
   it('reads the implementation\'s address back through the shipped decoder', async () => {
@@ -236,7 +248,7 @@ describe('a per-call proxy deployment', () => {
     expect(transaction.inputs.length).toBe(6);
     expect(transaction.outputs.length).toBe(6);
     // The record is kept: the output carries exactly the commitment the proxy's genesis minted.
-    const proxyRecord = deployment.proxy.tx.outputs[3]!;
+    const proxyRecord = deployment.proxy.tx.outputs[RECORD_OUTPUT]!;
     expect(bytesToHex(transaction.outputs[recordIndex]!.token!.nft!.commitment))
       .toBe(bytesToHex(proxyRecord.token!.nft!.commitment));
   });

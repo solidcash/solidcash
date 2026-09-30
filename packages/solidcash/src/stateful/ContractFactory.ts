@@ -13,6 +13,7 @@ import { getNetworkPrefix } from '../utils.js';
 import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress, resolveLogicalIdentity } from './logical-identity.js';
 import { registerDeployment, registeredPhysicalLockingBytecode } from './deployment-registry.js';
 import { genesisOutpointKey, isReservedGenesisOutpoint } from './genesis-reservations.js';
+import { resolveMasterPoolSize, poolGenesisSatoshis } from '../per-call/deploy/pool.js';
 
 /** Deploy overrides (a trailing object on `factory.deploy(...)` / the 3rd arg of `deployContract`). */
 export interface DeployContractOptions {
@@ -33,6 +34,8 @@ export interface DeployContractOptions {
    */
   salt?: Uint8Array;
   threadCount?: number;
+  /** Number of validator UTXOs a per-call genesis mints; defaults to the composing pool size. */
+  validatorCount?: number;
   /** Number of self-preserved message bus verifier instances created in the genesis transaction. */
   messageBusVerificationInputCount?: number;
   initialBalance?: bigint;
@@ -71,14 +74,23 @@ function normalizeRegisteredAddressArguments<T>(
 // that deploys several contracts runs out of vout-0 coins. Since we control the signer, the deploy step fans one
 // out on demand: it self-sends the signer's spendable balance into a fresh vout-0 output (a plain P2PKH tx, valid
 // on any provider) and uses that. This makes sequential deploys from one account unbounded.
+/**
+ * Select a fresh vout-0 UTXO to fund a token genesis.
+ *
+ * `identityNftCount` counts the category-branded 1200-satoshi outputs a genesis mints for identity anchors and
+ * message bus verifiers. `additionalSatoshis` is a satoshi floor for anything else the genesis carries that the
+ * fixed per-output estimate does not name — a per-call genesis's master and validator pools, for instance. Both
+ * only size the coin the caller is given; the genesis itself refuses funding it cannot cover.
+ */
 export async function selectGenesisFundingUtxo(
   signer: Signer, artifact: Artifact, excludedOutpoints: ReadonlySet<string> = new Set(),
-  identityNftCount = 1,
+  identityNftCount = 1, additionalSatoshis = 0n,
 ): Promise<Utxo> {
   const dataNfts = BigInt(artifact.delegateOnly ? 0 : (artifact.stateLayout?.dataNftCount ?? 1));
   // X149: `bytecode` is an ASM LISTING, so `.length / 2` is half a CHARACTER count and this overpaid.
   const deployFee = BigInt(Math.max(5000, asmToBytecode(artifact.bytecode).length + 2000));
-  const cost = 1200n + 1200n * dataNfts + 1200n * BigInt(identityNftCount) + deployFee + 2400n;
+  const cost = 1200n + 1200n * dataNfts + 1200n * BigInt(identityNftCount) + deployFee + 2400n
+    + additionalSatoshis;
   // A reserved outpoint is one a caller derived a create address from: spending it here would destroy a prediction.
   const excluded = (u: Utxo): boolean => excludedOutpoints.has(genesisOutpointKey(u.txid, u.vout))
     || isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout));
@@ -281,7 +293,16 @@ export class ContractFactory<T extends Artifact = Artifact> {
       }
       const verifierCount = overrides.messageBusVerificationInputCount
         ?? (deployArtifact.messageBus?.verifierProgram ? 1 : 0);
-      fundingUtxo = await selectGenesisFundingUtxo(signer, deployArtifact, new Set(), 1 + verifierCount);
+      // A per-call genesis mints its whole master and validator pool, so the funding selection holds the pool's
+      // outputs (and the validator facets) as a satoshi floor on top of the records and anchors it already counts.
+      let poolSatoshis = 0n;
+      if (deployArtifact.composition?.convention === 'per-call') {
+        const pool = resolveMasterPoolSize({ masters: overrides.threadCount, validators: overrides.validatorCount });
+        poolSatoshis = poolGenesisSatoshis(pool);
+      }
+      fundingUtxo = await selectGenesisFundingUtxo(
+        signer, deployArtifact, new Set(), 1 + verifierCount, poolSatoshis,
+      );
       funder = funder ?? signer.unlockP2PKH();
       changeAddress = changeAddress ?? signer.getAddress();
     }
@@ -320,6 +341,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         addressType: overrides.addressType,
         salt: overrides.salt,
         threadCount: overrides.threadCount,
+        validatorCount: overrides.validatorCount,
         messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
         initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),

@@ -29,7 +29,9 @@ export interface DeployOptions {
   fee?: bigint;            // default 1000n
   maxFee?: bigint;         // maximum allowed fee (throws if exceeded)
   addressType?: AddressType;
-  threadCount?: number;    // number of master minting NFTs (default: 1)
+  threadCount?: number;    // number of master minting NFTs (direct default 1; per-call default 12)
+  /** Number of validator UTXOs at the contract's address; per-call deployments default to the composing size. */
+  validatorCount?: number;
   /**
    * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:
    * the BCH-2026 operation-cost budget is `operationCostBudgetPerByte x unlockingBytecodeLength`, and for

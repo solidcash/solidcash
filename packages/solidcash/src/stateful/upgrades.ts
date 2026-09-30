@@ -9,6 +9,7 @@ import {
 import type {
   PerCallProxyCallerFunding, PerCallProxyDeployHalf, PerCallProxyDeployment,
 } from '../per-call/proxy/deploy.js';
+import { poolGenesisSatoshis, resolveMasterPoolSize } from '../per-call/deploy/pool.js';
 import {
   StatefulContract, StatefulFunctionCall, ContractRunner, type ConnectedStatefulContract,
   type ContractEventName, type EventListener,
@@ -689,7 +690,12 @@ async function perCallGenesisHalf(
   excluded: ReadonlySet<string>,
 ): Promise<PerCallProxyDeployHalf> {
   const { fundingUtxo, funder, changeAddress, initialState: _seed, ...rest } = overrides ?? {};
-  const selected = fundingUtxo ?? await selectGenesisFundingUtxo(signer, artifact, excluded, 1);
+  // The genesis mints the whole pool, so the selection has to hold the pool's outputs too: a caller that states no
+  // size gets the composing default, and one that names a size gets exactly that. The validator facets the genesis
+  // also funds are counted beside it, so a leaner signer is still offered a coin the whole genesis can spend.
+  const pool = resolveMasterPoolSize({ masters: rest.threadCount, validators: rest.validatorCount });
+  const selected = fundingUtxo
+    ?? await selectGenesisFundingUtxo(signer, artifact, excluded, 1, poolGenesisSatoshis(pool));
   return {
     ...rest,
     fundingUtxo: selected,

@@ -9,7 +9,7 @@ import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   mappingValueChunkLock, participant, planMappingBatch, planMappingWrite,
 } from '../../../src/per-call/composer/index.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { DEFAULT_MASTER_POOL_SIZE, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
@@ -230,7 +230,7 @@ describe('a proxied initialize that writes a sorted mapping', () => {
     const pools = await readPerCallDeployment(network, deployment.proxy.categoryId, proxyLayout);
     expect(pools.collectionNodes.map((node) => node.token?.nft?.commitment))
       .toStrictEqual([binToHex(headSentinelCommitment())]);
-    expect(pools.validators).toHaveLength(1);
+    expect(pools.validators).toHaveLength(DEFAULT_MASTER_POOL_SIZE.validators);
     expect(pools.records).toHaveLength(1);
   });
 

@@ -21,6 +21,7 @@ import {
   stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../../../src/per-call/deploy/index.js';
 import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { DEFAULT_MASTER_POOL_SIZE } from '../../../src/per-call/deploy/index.js';
 import {
   composeDraft, createComposedDerivationHost, deriveComposition, participant,
   type CompositionDraft, type CompositionDraftPlan,
@@ -430,8 +431,9 @@ describe('a deployment whose addresses are predicted before anything is deployed
       // ...so the address read back from that category is the predicted one.
       expect([...d.addresses[index]!]).toStrictEqual([...d.predicted[index]!]);
       const found = await readPerCallDeployment(d.provider, d.categories[index]!, layout);
-      expect(found.masters.length).toBe(1);
-      expect(found.validators.length).toBe(1);
+      // The genesis funds the contract's default pools, so the live geometry is the default one.
+      expect(found.masters.length).toBe(DEFAULT_MASTER_POOL_SIZE.masters);
+      expect(found.validators.length).toBe(DEFAULT_MASTER_POOL_SIZE.validators);
       expect(found.records.length).toBe(layout.dataNftCount);
       // The prediction is not off-chain only: a UTXO carrying the minted category sits at the predicted address.
       const atPredicted = await d.provider.getUtxosForLockingBytecode(d.predicted[index]!);

@@ -9,6 +9,8 @@
  */
 
 import { TokenCapability, type Artifact } from '@solidcash/utils';
+import { perCallValidator } from 'solidc';
+import { FACET_SATOSHIS } from '../composer/draft.js';
 import { deployMaster, type DeployedMaster } from './material.js';
 
 /** How many of each pool a deployment creates. */
@@ -17,6 +19,45 @@ export interface MasterPoolSize {
   readonly masters: number;
   /** Validator UTXOs at the contract's address, one per concurrent composition it roots. */
   readonly validators: number;
+}
+
+/**
+ * The pool a composing contract is deployed with when the caller states no size.
+ *
+ * Masters bound how many times one transaction may enter the contract, so the default covers a contract a flow
+ * reaches at a dozen sites; validators bound how many compositions it can root at one time. Both are funded at
+ * deployment, so a deployment states the whole pool up front rather than growing it later.
+ */
+export const DEFAULT_MASTER_POOL_SIZE: MasterPoolSize = { masters: 12, validators: 4 };
+
+/**
+ * The pool a deployment funds: the caller's override per count, the default for whichever it leaves unstated.
+ *
+ * A caller that names a count is authoritative for that one; the other falls back independently. A count below one
+ * is refused here, so a deployment never silently funds a smaller pool than it was asked for.
+ */
+export function resolveMasterPoolSize(override: Partial<MasterPoolSize> = {}): MasterPoolSize {
+  const size = {
+    masters: override.masters ?? DEFAULT_MASTER_POOL_SIZE.masters,
+    validators: override.validators ?? DEFAULT_MASTER_POOL_SIZE.validators,
+  };
+  for (const count of [size.masters, size.validators]) {
+    if (!Number.isInteger(count) || count < 1) {
+      throw new Error(`a pool holds at least one UTXO: got ${count}`);
+    }
+  }
+  return size;
+}
+
+/**
+ * The satoshis a genesis spends on the pools alone, at the output amount a deployment mints them with: every master
+ * and validator UTXO, plus every validator facet the validator program binds. The records, events and chunks a
+ * constructor's frame adds are sized separately; a funding selection adds this floor so the pool's outputs are
+ * funded and a larger pool is not quietly truncated.
+ */
+export function poolGenesisSatoshis(size: MasterPoolSize, outputAmount = 1200n): bigint {
+  const facets = BigInt(perCallValidator.buildValidatorFacets().length);
+  return BigInt(size.masters + size.validators) * outputAmount + facets * FACET_SATOSHIS;
 }
 
 /** What a deployment needs to derive the pools. */

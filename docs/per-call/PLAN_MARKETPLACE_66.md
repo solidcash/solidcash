@@ -1577,6 +1577,13 @@ risk. Take the slices in order, each with its own tests.
   - a toy or replica settles in its own shape. A narrower variant (a loop for separate call statements, a scalar
     rewrite for an array append, fewer turns, no events) is logged as partial and leaves the toy's box and the
     catalog row's status unchanged.
+- [x] **Targeted title runs, not full ladders** (user direction 2026-09-30). A round does not run the
+  66-title ladder for its own sake: it runs the one failing title it is fixing, and when that title turns green it
+  runs the title that precedes it in the file as a regression check. The full ladder is reserved for a milestone
+  (M1/M2), for an explicit request, or for a change so broad that no single title stands for the others -- and
+  then its per-test and full-run times are recorded as before. A targeted run pays the fixture's own deployment
+  either way (about 350 s), so the two runs are what a round costs, not the fifty-minute ladder. The last full
+  ladder on record is run 16 (17/66, 3219.1 s); its wall and times are in section 4.5 and the Log.
 - [x] **Fixture-first while the roots are compiler-bound** (coordinator decision, 2026-09-28; the order returns to
   I2b with the fixture parked at its measured wall - see the note at the end of this bullet). Rounds took the next
   wall the real project reported - the project compile's first failure, then the fixture's own - ahead of the

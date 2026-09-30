@@ -359,6 +359,21 @@ lands it removes the claim line.
 - **Size**: 1-2 days. **Coordination**: high (the ladder stream wrote this code; the second worker edits
   `support.ts`); agree the split before starting.
 
+- **Decision (coordinator, 2026-09-30, this session)**: **PW3 is met on its own Done-when**, and the fixture's
+  `updateJobWhitelist` shape - a varying-key loop upsert whose loop body also calls `publishJobEvent` - is **handed to
+  the ladder stream** as a committed pinned reproducer, because what remains for it is the hop's callee-frame planning
+  and not the loop protocol: the loop protocol is served for any key order when the body makes no call (one, two,
+  three and four turns settle through the shipped path, ascending or descending, with a refused mutation), and
+  `callPerCallEntry` refuses the call-in-loop body for the callee-frame reason (`entry "move" makes 1 external
+  call(s), whose callee frames this call path does not plan yet`). The reproducer to pick up: the source at
+  `.marketplace/contracts/MarketplaceV1.sol:474-497`, the compiler-side pins in
+  `solidc/test/per-call/master/loop-upsert-segment.test.ts` (the fixture's own shape, still refused wherever its node
+  record is declared) and `write-segments-publication.test.ts:142`, and the SDK pins in
+  `solidcash/test/per-call/call/loop-turns.test.ts` / `conformance/loop-upsert-settlement.test.ts` for the half that
+  is served. The question put to the coordinator and the answer taken: whether PW3 stands met with the fixture shape
+  handed over, stays open in this lane, or is served here by crossing into the excluded hop lane - answer, the
+  first.
+
 ### PW4. The owed proxy-binding guard (soundness)
 
 - **Why**: the MANIFEST's attack table lists "a proxied call whose delegate callee is not the implementation the
@@ -494,6 +509,12 @@ lands it removes the claim line.
   the shipped composer and derivation (`edges/events-across-frames.test.ts` settles a callee's payload above 128
   bytes), with what the call entry point does to the same nesting pinned beside it and a root-frame control of the
   same size served there. G2 is ticked for all nine rows.
+- **Decision (coordinator, 2026-09-30, this session)**: the **composed-transaction half of the chunk-output row stays
+  scoped as recorded** rather than resolved now: the row certifies the shipped encoders' arithmetic (1 chunk for one
+  event's append, 27 at the thirtieth, 423 across thirty), the blocker for a composed reading is the read-modify-write
+  of one long value in one frame, and the resolving change is named in the row. The question put to the coordinator:
+  leave it scoped, spend a round resolving it, or hand it to the composer lane - answer, leave it scoped.
+
 - **PW7 - landed** (`12c24e2d9`). The 4.5 rows carry measured numbers (VM evaluations, per-master runs, derive and
   build walls, the twenty-four-master shape, and the chunk outputs per append) and the first title is profiled:
   455.1 s, of which 452.9 s is the fixture deployment.

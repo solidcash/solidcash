@@ -112,13 +112,13 @@ export function observeComposeSemanticEffects(
   ctx: ObserveComposeSemanticEffectsContext,
   claims: ComposeSemanticEffectClaims,
 ): {
-  semanticObservations: SemanticClaimObservation[];
-  derivedEventEffects: AtomicEventSlotEffect[];
-  derivedResourceEffects: AtomicResourceSlotEffect[];
-  derivedValueEffects: AtomicValueSlotEffect[];
-  derivedTokenEffects: AtomicTokenSlotEffect[];
-  derivedSidecarEffects: AtomicSidecarSlotEffect[];
-} {
+    semanticObservations: SemanticClaimObservation[];
+    derivedEventEffects: AtomicEventSlotEffect[];
+    derivedResourceEffects: AtomicResourceSlotEffect[];
+    derivedValueEffects: AtomicValueSlotEffect[];
+    derivedTokenEffects: AtomicTokenSlotEffect[];
+    derivedSidecarEffects: AtomicSidecarSlotEffect[];
+  } {
   // Independent semantic effects share one complete-graph observation pass. Record mutations monotonically,
   // but do not restart until fixed resource/value/token/sidecar/event observations have also been collected;
   // otherwise an earlier provisional class can permanently starve a later class which it needs to pass.

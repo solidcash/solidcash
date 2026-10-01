@@ -85,12 +85,12 @@ export function orderPostBlockTrailingAndReadInputs<T>(
 
 export function buildInputs(
   host: BuildInputsHost,
-entryInputs: UnlockableUtxo[],
-tokenContainerInputs: UnlockableUtxo[],
-satoshiContainerInputs: UnlockableUtxo[],
-externalOutStateInputs: UnlockableUtxo[],
-externalCallInputs: UnlockableUtxo[],
-lowLevelCallInputs: UnlockableUtxo[],
+  entryInputs: UnlockableUtxo[],
+  tokenContainerInputs: UnlockableUtxo[],
+  satoshiContainerInputs: UnlockableUtxo[],
+  externalOutStateInputs: UnlockableUtxo[],
+  externalCallInputs: UnlockableUtxo[],
+  lowLevelCallInputs: UnlockableUtxo[],
 ): UnlockableUtxo[] {
   // Dense (position-indexed) placement keeps the caller's own resources at published slot offsets so
   // `masterInputIndex + slotOffset` reads (entry NFT EQUALVERIFY, etc.) see the right UTXO. Legacy order puts
@@ -598,11 +598,11 @@ lowLevelCallInputs: UnlockableUtxo[],
       // bands lets a caller-identity recreation overwrite a newly inserted mapping node in return probes.
       ...orderPostBlockTrailingAndReadInputs(
         trailingRest,
-      // Read-only co-spends the dense walk did not place in a `readOnlyDataNft` slot. Their OUTPUTS are
-      // materialized unconditionally (`build()` emits one preservation output per read-only UTXO), so leaving
-      // them out of the input list silently unbalances the frame and drops whatever identity they carry - a
-      // `msg.sender`-keyed frame then resolves against nothing. The legacy ordering appends them; do the same
-      // here instead of relying on a slot the published layout may not have.
+        // Read-only co-spends the dense walk did not place in a `readOnlyDataNft` slot. Their OUTPUTS are
+        // materialized unconditionally (`build()` emits one preservation output per read-only UTXO), so leaving
+        // them out of the input list silently unbalances the frame and drops whatever identity they carry - a
+        // `msg.sender`-keyed frame then resolves against nothing. The legacy ordering appends them; do the same
+        // here instead of relying on a slot the published layout may not have.
         host.readOnlyDataNftUtxos.slice(readOnlyIdx),
       ),
       ...gapInputs.slice(gapIdx),

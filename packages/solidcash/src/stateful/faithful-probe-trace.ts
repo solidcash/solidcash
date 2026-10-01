@@ -548,14 +548,14 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
       // OP_INVOKE and OP_UTXOBYTECODE are the two operations that decide a subprogram call: the first shows the
       // operands a caller hands down (the callee consumes them immediately), the second shows which input a
       // participant check resolved to. Both are absent from the production observer set.
-      ? new Set([...PROBE_TRACE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160,
-        Op.OP_INVOKE, Op.OP_UTXOBYTECODE,
-        // `emitPickTrackedFromBottom` is `OP_DEPTH; n; OP_SUB; OP_PICK`, so observing these three names which frame
-        // slot (i.e. which hidden ABI witness) a participant check resolved its coordinate from.
-        Op.OP_PICK, Op.OP_DEPTH, Op.OP_INPUTINDEX])
-      : debugTraceOperationMode === 'project'
-        ? new Set([...PROBE_TRACE_OPCODES, Op.OP_HASH160])
-      : PROBE_TRACE_OPCODES,
+        ? new Set([...PROBE_TRACE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160,
+          Op.OP_INVOKE, Op.OP_UTXOBYTECODE,
+          // `emitPickTrackedFromBottom` is `OP_DEPTH; n; OP_SUB; OP_PICK`, so observing these three names which frame
+          // slot (i.e. which hidden ABI witness) a participant check resolved its coordinate from.
+          Op.OP_PICK, Op.OP_DEPTH, Op.OP_INPUTINDEX])
+        : debugTraceOperationMode === 'project'
+          ? new Set([...PROBE_TRACE_OPCODES, Op.OP_HASH160])
+          : PROBE_TRACE_OPCODES,
     beforeOperation: (unknownState) => {
       const state = unknownState as AuthenticationProgramStateCommon;
       const opcode = state.instructions[state.ip]?.opcode;

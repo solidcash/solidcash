@@ -5,11 +5,11 @@ export function planCompilerTrailingResources(input: {
   dynamicChunkCount: number;
   collectionValueChunkCount: number;
 }): {
-  batchPredecessorBase: number;
-  dynamicChunkBase: number;
-  collectionValueChunkBase: number;
-  end: number;
-} {
+    batchPredecessorBase: number;
+    dynamicChunkBase: number;
+    collectionValueChunkBase: number;
+    end: number;
+  } {
   const counts = [input.trailingBase, input.batchPredecessorCount, input.dynamicChunkCount,
     input.collectionValueChunkCount];
   if (counts.some((count) => !Number.isSafeInteger(count) || count < 0)) {
@@ -42,9 +42,9 @@ export function collectionValuePhysicalBindings<E extends PhysicalGroup, L exten
   externalMaster: (index: number) => number;
   lowLevelMaster: (index: number) => number;
 }): Array<{
-  writeGroup: E; owner: E; executor: E | L;
-  ownerMaster: number; executorMaster: number; start: number;
-}> {
+    writeGroup: E; owner: E; executor: E | L;
+    ownerMaster: number; executorMaster: number; start: number;
+  }> {
   return input.externalGroups.flatMap((writeGroup, writeIndex) => {
     if (!writeGroup.collectionValueWrites?.length) return [];
     const ownerIndex = writeGroup.sharedGroupIndex ?? writeIndex;

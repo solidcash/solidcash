@@ -135,13 +135,13 @@ export function reassertMaterializedBatchPredecessorOutputs(
     const plannedPredecessors = (directParticipant && carrier.delegateCallGroupIndex === undefined
       ? carrier.plannedEntryInserts ?? [] : [])
       .flatMap((planned) => {
-      const input = carrier.blockInputs?.[planned.blockSlot];
-      if (!input?.unlocker || planned.outputBlockSlot < 0 || planned.commitment === undefined) return [];
-      return [{
-        outputBlockSlot: planned.outputBlockSlot,
-        lockingBytecode: input.unlocker.generateLockingBytecode(),
-        commitment: planned.commitment,
-      }];
+        const input = carrier.blockInputs?.[planned.blockSlot];
+        if (!input?.unlocker || planned.outputBlockSlot < 0 || planned.commitment === undefined) return [];
+        return [{
+          outputBlockSlot: planned.outputBlockSlot,
+          lockingBytecode: input.unlocker.generateLockingBytecode(),
+          commitment: planned.commitment,
+        }];
       });
     // Same minting-master gate as token-insert repair: a stale masterIndex writes
     // P' before the real FakeToken block (post two @12) and leaves a balances clone.

@@ -17,6 +17,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   after the final comment cleanup. The full beta gate was **not** invoked because it launches broad test suites;
   static-fence success does not establish a beta-gate pass. The legacy SDK compatibility adapter remains fenced
   separately from kernel planning.
+- 2026-10-01 focused Marketplace checkpoint: after an 11-root iteration compile, the unchanged `take job > take job`
+  title exposed a fused-return alias: a prior `balanceOf` read was provisionally seeded with the later writer's
+  canonical-looking `true` word instead of its own precomputed balance. Two neutral return-ownership/seed
+  regressions and their immediately preceding titles pass; the Marketplace title now passes that mismatch but
+  remains **red** at BCH-2026 preflight input 1352 (`OP_VERIFY`). The iteration artifact context remains stale
+  by design and requires a normal project compile before any merge-readiness claim.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

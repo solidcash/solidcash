@@ -17,6 +17,7 @@ import {
 import {
   decodeEvmInvocationResult, decodeEvmInvocationResultPrefix, encodeEvmInvocationResult,
 } from '../../src/stateful/evm-abi-result.js';
+import { selectPreparedAtomicReturnSeed } from '../../src/stateful/sc-materialize-create-builder-return-emit.js';
 
 const structs: StructDefinitionInfo[] = [{
   name: 'Pair',
@@ -324,6 +325,22 @@ describe('selectMaterializedTailReturnEvents', () => {
     expect(events).toHaveLength(1);
     expect(events[0].identity).toBe('external-call:0:0');
     expect(events[0].commitment).toHaveLength(32);
+  });
+
+  it('keeps a logical read result when its physical carrier becomes a writer', () => {
+    const readResult = new Uint8Array(32);
+    readResult[31] = 7;
+    const writerResult = new Uint8Array(32);
+    writerResult[31] = 1;
+    const carrier = {
+      functionName: 'write', logicalFunctionName: 'write', precomputedReturnCommitment: readResult,
+    };
+    expect(selectPreparedAtomicReturnSeed(carrier, 'read', writerResult)).toEqual(readResult);
+    expect(selectPreparedAtomicReturnSeed(carrier, 'write', writerResult)).toEqual(writerResult);
+    expect(selectPreparedAtomicReturnSeed({ ...carrier, functionName: '__forward', logicalFunctionName: 'read' },
+      'read', writerResult)).toEqual(writerResult);
+    expect(selectPreparedAtomicReturnSeed({ ...carrier, precomputedReturnCommitment: undefined },
+      'read', writerResult)).toBeUndefined();
   });
 
   it('promotes an exact writer probe over its provisional seed', () => {

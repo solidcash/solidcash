@@ -7,8 +7,8 @@ import type { AbiFunction, Artifact, FunctionBlockLayout } from '@solidcash/util
 import type { TransportedContinuationResourceClaim } from './ValueChunkProducerIdentity.js';
 
 /**
- * The in-block return NFT is owned by one logical callsite. A later write fused onto the first
- * FakeToken group copies its layout; the earlier view must not read that writer's success flag.
+ * The in-block return NFT is owned by one logical callsite. A later write fused onto an earlier read
+ * copies its layout; the read must not consume the writer's result.
  */
 /** Structural participant/return-event shape (avoids importing late ExternalCallUtxoGroup). */
 export type InBlockReturnGroup = {
@@ -39,17 +39,17 @@ export function groupOwnsInBlockReturnEvent(
   const logicalOwner = groups[child.fusedReturnGroupIndex ?? groupIdx] ?? child;
   if ((logicalOwner.loopReturnCommitments?.length ?? 0) > 1) return false;
   const writesState = (group: InBlockReturnGroup): boolean => {
-    // Prefer the logical Solidity function. `__forward` is a proxy dispatcher marked
-    // writesState, but the first logical callsite on that master is often a view.
-    const names = [group.logicalFunctionName, group.functionName].filter(
-      (name): name is string => !!name && name !== '__forward',
-    );
+    // A fused group's logical name can describe a later writer, while this group's own function is a view.
+    // Use the source ABI of this callsite first; `__forward` is only a proxy dispatcher, not its effect.
     const abiList = (group.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined) ?? [];
-    return names.some((name) => {
-      const abi = abiList.find((fn) => fn.name === name)
-        ?? (name === group.functionName ? group.compilerRoute?.abiFunction : undefined);
-      return abi?.writesState === true;
-    });
+    const direct = group.functionName === '__forward' ? undefined
+      : abiList.find((fn) => fn.name === group.functionName);
+    if (direct) return direct.writesState === true;
+    const logical = group.logicalFunctionName === '__forward' ? undefined
+      : abiList.find((fn) => fn.name === group.logicalFunctionName);
+    if (logical) return logical.writesState === true;
+    return group.compilerRoute?.abiFunction?.name === group.functionName
+      && group.compilerRoute?.abiFunction?.writesState === true;
   };
   // A state-writing logical callsite owns the physical block's return slot. If a later writer is fused onto the
   // same master, earlier views keep dedicated tails so they cannot read that writer's result. A standalone view

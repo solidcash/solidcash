@@ -1379,10 +1379,11 @@ describe('assignPhysicalReturnIndices', () => {
       group({
         categoryId: 'ft',
         functionName: 'balanceOf',
+        logicalFunctionName: 'approve',
         returnEventInBlock: true,
         fusedReturnGroupIndex: 1,
         blockLayout: tokenLayout,
-        externalContract: { inner: { artifact: { abi: [viewAbi] } } },
+        externalContract: { inner: { artifact: { abi: [viewAbi, { name: 'approve', writesState: true }] } } },
       }),
       group({
         categoryId: 'ft',
@@ -1394,6 +1395,7 @@ describe('assignPhysicalReturnIndices', () => {
     ];
     expect(groupOwnsInBlockReturnEvent(viewing, 0)).toBe(false);
     expect(groupOwnsInBlockReturnEvent(viewing, 1)).toBe(true);
+    expect(logicalReturnGroupIndex(viewing, 0)).toBe(0);
   });
 
   it('materializes rolled loop returns even when pending return events were cleared', () => {

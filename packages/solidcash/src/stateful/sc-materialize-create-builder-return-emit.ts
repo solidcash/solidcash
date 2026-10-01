@@ -24,6 +24,24 @@ export type MaterializeCreateBuilderReturnEmitHost = {
   deriveReturnBlob: (...args: any[]) => Uint8Array | undefined;
 };
 
+/** Select the provisional result for a logical call sharing a physical return carrier. */
+export function selectPreparedAtomicReturnSeed(
+  group: Pick<ExternalCallUtxoGroup,
+  'functionName' | 'logicalFunctionName' | 'compilerRoute' | 'precomputedReturnCommitment'>,
+  functionName: string,
+  eventCommitment?: Uint8Array,
+): Uint8Array | undefined {
+  // A physical carrier may have been retargeted from this read to a later write on the same master. Its event
+  // identity then still has the read's group index but holds the writer's result, which can fit the same ABI word.
+  const physicalMatches = group.functionName === functionName;
+  const routedMatches = (group.functionName === '__forward'
+    || group.functionName === group.compilerRoute?.abiFunction.name)
+    && group.logicalFunctionName === functionName;
+  return physicalMatches || routedMatches
+    ? eventCommitment ?? group.precomputedReturnCommitment
+    : group.precomputedReturnCommitment;
+}
+
 /**
  * When a returnEvent is active, derive/expand the return blob and seed atomic
  * graph nodes with already-authenticated nested return values.
@@ -162,12 +180,15 @@ export async function materializeCreateBuilderReturnEmit(
       const identities = new Set([
         groupIndex,
         logicalReturnGroupIndex(externalCallUtxoGroups, groupIndex),
-        group.fusedReturnGroupIndex,
       ].filter((index): index is number => index !== undefined));
+      // A view sharing a physical master with a writer owns a separate return tail. Its raw fused index
+      // belongs to the writer and may contain a canonical-looking value of the same ABI width.
       const event = returnEvents.find((candidate) => candidate.provisional !== true
       && [...identities].some((index) => candidate.identity === `external-call:${index}`
         || candidate.identity === `external-call:${index}:0`));
       if (!event) continue;
+      const seedCandidate = selectPreparedAtomicReturnSeed(group, node.functionName, event.commitment);
+      if (!seedCandidate) continue;
       const returnArtifact = node.executionArtifact ?? node.contract.inner.artifact;
       const returnFunction = (returnArtifact.abi as readonly AbiFunction[])
         .find((candidate) => candidate.name === node.functionName);
@@ -180,7 +201,7 @@ export async function materializeCreateBuilderReturnEmit(
       );
       const canonicalSeed = returnEncoding === 'evm-abi-v1'
         ? decodeEvmInvocationResult(
-          event.commitment,
+          seedCandidate,
           returnTypes,
           returnArtifact.structs ?? returnArtifact.stateLayout?.structs,
           returnArtifact.enums,
@@ -190,13 +211,13 @@ export async function materializeCreateBuilderReturnEmit(
             let offset = 0;
             for (const type of returnTypes) {
               offset += decodePushdataValue(
-                event.commitment,
+                seedCandidate,
                 offset,
                 type,
                 returnArtifact.structs ?? returnArtifact.stateLayout?.structs,
               ).bytesConsumed;
             }
-            return returnTypes.length > 0 && offset === event.commitment.length;
+            return returnTypes.length > 0 && offset === seedCandidate.length;
           } catch {
             return false;
           }
@@ -211,8 +232,8 @@ export async function materializeCreateBuilderReturnEmit(
           callsiteId: node.callsiteId,
           returnTypes,
           returnEncoding,
-          commitmentBytes: event.commitment.length,
-          commitmentHead: binToHex(event.commitment).slice(0, 32),
+          commitmentBytes: seedCandidate.length,
+          commitmentHead: binToHex(seedCandidate).slice(0, 32),
           canonicalSeed,
         });
       }
@@ -221,7 +242,7 @@ export async function materializeCreateBuilderReturnEmit(
       // canonical-result check. Skipping the seed then publishes the placeholder zero, and a caller that compares
       // the result inside `require` (the OZ `balanceOf(...) > 0` idiom) fails its own covenant. Derive the value
       // from the callee itself in that case - the same recovery the nested-call path already performs.
-      let seedCommitment: Uint8Array | undefined = canonicalSeed ? event.commitment : undefined;
+      let seedCommitment: Uint8Array | undefined = canonicalSeed ? seedCandidate : undefined;
       if (seedCommitment === undefined) {
         const deriveFromCallee = async (): Promise<Uint8Array | undefined> => {
           if (returnTypes.length !== 1) return undefined;

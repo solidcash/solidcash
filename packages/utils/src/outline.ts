@@ -1612,7 +1612,7 @@ export function outlineSharedSpans(
       // path. Replacing the arrays cannot simply be applied everywhere: with the threshold removed, two
       // message-bus kernel tests regress ("threads one route-owned record carrier through each direct
       // journal-aware handler" and "moves the global verifier out of the scalar master and keeps both covenants
-      // deployable") and the MarketplaceV1 bytecode changes, so the small-body rewrite has a semantics this
+      // deployable") and a large integration fixture's bytecode changes, so the small-body rewrite has semantics this
       // consolidated form does not reproduce. Keeping the fallback makes the change provably output-identical.
       if (target.script.length < 200) {
         for (let index = groupStart; index < groupEnd; index += 1) {

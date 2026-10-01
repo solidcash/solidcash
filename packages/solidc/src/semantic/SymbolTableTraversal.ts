@@ -8465,8 +8465,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           // value from application names. Conditional/repeated writes conservatively invalidate this shortcut.
           const directBase = expression.expression instanceof IdentifierNode
             ? expression.expression.name : undefined;
-          // A struct entry read through a local alias (`Job storage j = jobs[id]; j.field`) serializes its base as
-          // that identifier, so the assignment target (`jobs[id].field`) never matched and the recorded argument kept
+          // A struct entry read through a local alias (`Record storage r = records[id]; r.field`) serializes its base as
+          // that identifier, so the assignment target (`records[id].field`) never matched and the recorded argument kept
           // the pre-write state read. Resolve the alias to the access it names for the target comparison only; the
           // published expression keeps its established spelling.
           const aliasInner = (() => {

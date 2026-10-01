@@ -321,7 +321,7 @@ const DEBUG_COMPUTE_BASE = (globalThis as { process?: { env?: Record<string, str
 /**
  * Emit the stack-neutral `OP_DEPTH OP_DROP` site marker. Kept SEPARATE from the record dump on purpose:
  * the marker changes the emitted instruction stream, and a changed stream can change the outliner's decisions -
- * MEASURED: with markers on, the marketplace body that invokes the outlined keccak fragment no longer invokes it
+ * MEASURED: with markers on, a large body that invokes the outlined keccak fragment no longer invokes it
  * at all, so a marker build must never be compared with a shipped build. The record dump alone is
  * codegen-neutral, so `SOLIDC_DEBUG_COMPUTE_BASE=1` without this flag describes the program that ships and the
  * site ordinals in the records stay in emission order.
@@ -5384,7 +5384,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           minimumWindowElements,
           candidateGroupsPerRound,
           undefined,
-          // Two rounds reach the useful fixed point: measured on the marketplace corpus rounds 2-5 recover
+          // Two rounds reach the useful fixed point: measured on a large corpus rounds 2-5 recover
           // 11.3 KB at 34 B/ms against 500+ B/ms for round 0.
           largeBodyOutline ? 1 : 2,
         );
@@ -6394,7 +6394,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Capture the owner ONCE, here, where its depth is exact: the call emitter pushes the argument vector in
         // REVERSE order (`for (i = parameters.length - 1; i >= 0; i--)`), so argument k lands at depth k - the same
         // order this model seeded the parameters in - and nothing else is on the frame yet. Depth 0 would read the
-        // FIRST argument (measured: `publishJobPost` captured `jobId_` and failed an OP_UTXOBYTECODE check).
+        // FIRST argument (observed: an unrelated scalar was captured and failed OP_UTXOBYTECODE).
         // Storage is the ALT stack because no main-stack push can shift its depth; the item stays for the whole
         // body, and every call site drops the leaked copy right after the invoke, before its own alt rotations.
         const ownerDepth = this.getStackIndex(MESSAGE_BUS_OWNER_INPUT, true);
@@ -7235,7 +7235,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       // Dynamic-storage writes: verify trailing chunk outputs (and consume old chunk inputs).
-      // Local dynamic writes on a DELEGATE impl (Marketplace.jobs) must still verify even when the
+      // Local dynamic writes on a DELEGATE implementation must still verify even when the
       // function also contains nested delegatecalls — otherwise only the SDK layout is constrained.
       if (this.pendingDynamicWrites.size > 0
         && (!this.functionHasDelegatecall || this.currentFunctionIsDelegate)) {
@@ -10684,7 +10684,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // the end of the decoder. The side-car OUTPUT read below measures a compute-block base with a top-relative
         // OP_PICK, and every emission in between that depends on the tracked frame must already see the consumed
         // argument gone. Deferring it makes that read select the item immediately above the real base - measured
-        // on the marketplace take-job body, where the participant owner read resolved the dynamic chunk input base
+        // on a nested delegate body, where the participant owner read resolved the dynamic chunk input base
         // (63) instead of the owner (0) and the side-car split an empty item. The ecrecover decoder below already
         // reconciles at its own bind for the same reason.
         this.popFromStack(1);
@@ -34940,7 +34940,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Push the first runtime mapping-write OUTPUT index. Collection-iteration outputs and rewritten predecessors
    * from a fixed sorted batch precede this family. Read-only dynamic chunks that the SDK co-spends at
-   * impl+trailingBase are preserved 1:1 in that same band (updateJobWhitelist: jobs then whitelist P'/NEW),
+   * impl+trailingBase are preserved 1:1 in that same band (read-only chunks then rewritten entry P'/NEW),
    * so their width must shift this base exactly as on the input path. Newly written dynamic chunks still
    * follow runtime mapping entries at the suffix and do not shift this base.
    */
@@ -34971,7 +34971,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     this.emitAddCollectionIterCounts(locationData, extraStackOffset);
-    // Read-only dynamic chunks preserved in the leading trailing band (SDK early-insert / jobs-before-upsert).
+    // Read-only dynamic chunks preserved in the leading trailing band (before entry upserts).
     this.emitAddForeignReadOnlyChunkCounts(locationData, false, extraStackOffset);
     // A fixed-entry batch may insert an invariant entry beside this runtime loop. Its target occupies the fixed
     // entry slot, while each rewritten predecessor is emitted at the start of the trailing output band. The SDK

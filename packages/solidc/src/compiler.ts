@@ -1031,7 +1031,7 @@ function cloneAst(ast: Ast, reason: string): Ast {
  * cannot be shared: every pipeline mutates the AST it is given. The multi-declaration compiler already relies on
  * exactly this pattern inside one root (`cloneAst(probe, 'multi-primary')` - "cloning it (~25ms) is much cheaper
  * than re-lexing large Solidity sources for every imported primary (~650ms+)"). Extending it across roots is the
- * same trade: measured on the marketplace corpus the duplicate parses of shared imports are 944ms of a 19.7s
+ * same trade: measured on a multi-import corpus the duplicate parses of shared imports are 944ms of a 19.7s
  * ten-root compile.
  *
  * The cache holds a pristine snapshot. The parse it returns to the caller is the freshly parsed tree on a miss
@@ -2950,7 +2950,7 @@ function patchPlaceholderVerifierLock(ast: Ast, lock: Uint8Array): void {
  *
  * The pre-codegen verifier compile exists to produce this lock and nothing else: a kernel pass replaces its
  * program with the post-codegen specialized one, and the published program carries only ids, names and
- * bytecode. The lock itself is not root-file dependent - two marketplace roots with different root files and
+ * bytecode. The lock itself is not root-file dependent - two integration roots with different root files and
  * different verifier sources already produced the same lock - so the same route shape recompiled in another
  * root would otherwise repeat a ~0.3s mini-compile for a value it can be handed.
  */

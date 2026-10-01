@@ -6,6 +6,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
 
 - 2026-09-28 integration checkpoint: `grok/message-bus-kernel-beta` contains the `solidcash_v0.13.1` tip and
   builds with `yarn build`. It has **not** been merged back into `solidcash_v0.13.1`.
+- 2026-10-01 focused checkpoint: `yarn build` passes; ESLint reports zero errors or warnings across
+  `packages/solidcash/src` (405 files) and `packages/solidcash/test` (1,004 files). The exact
+  `KernelRepeatedMixedRouteWrite` titles for `Ledger` and `ILedger` each pass, including the alternate
+  direct callee with the same ABI. No comprehensive test suite or beta gate was rerun for this checkpoint.
 - The formal `yarn test:kernel-beta` gate stops at its application-name fence before running tests: the production
   diff since the manifest census still contains application-specific planning names and literals. This requires a
   semantic generalization of the legacy adapter boundary, not a waiver or a test-only rename.
@@ -28,18 +32,17 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   A direct-only mapping-array write previously lost its trailing predecessor to
   nested-call surplus cleanup; that cleanup is now gated by the compiler's fixed entry-slot layout, and both
   mapping-array e2e proofs pass unchanged. The artifact had no message-bus metadata despite the generic
-  `messageBus:` preflight error prefix. The repeated mixed-route BCH-2026 proof still fails at input 2 with
-  `OP_VERIFY`; the merged Chai event/revert test file passes all 14 tests. The kernel admission file still has
-  four failures (685/689 pass): a raw-call rejection-reason mismatch and three child-genesis routes over 10 KB.
+  `messageBus:` preflight error prefix. The merged Chai event/revert test file passes all 14 tests. At that
+  checkpoint, the kernel admission file had four failures (685/689 pass): a raw-call rejection-reason mismatch
+  and three child-genesis routes over 10 KB.
   Cross-contract sorted INSERT with a `msg.sender` key now passes all three VM tests: the progressive probe keeps
   NEW at the fixed entry slot, finalization places P' at the declared trailing slot, and fee change preserves the
   structural funder's excess.
 - The refused-selector compose proof now reaches its intended fail-closed assertion: the SDK accepts the exact
-  kernel 10,000-byte batch ceiling while rejecting altered ceilings. The mixed-route proof remains unresolved.
-  A diagnostic grouped build passed the caller and proxy selector checks, then failed because standalone
-  `forward(...).send()` supplies no atomic manifest at the second-to-last input. `messageBus.compose` supplies that
-  manifest but currently rejects the deliberately direct-only participant, so mixed-participant composition needs
-  a real implementation; neither skipping the verifier nor changing the test to all-kernel is acceptable.
+  kernel 10,000-byte batch ceiling while rejecting altered ceilings. Mixed routed/direct composition now has a
+  V5 opaque-direct-participant path; the focused VM proof passes for both a concrete and interface-typed Ledger
+  call. Its alternate direct callee is selected dynamically from the caller's state, without a bytecode pin.
+  This is focused evidence, not a comprehensive mixed-route regression result.
 - Useful `SOLIDC_*` probes remain available under the [diagnostic policy](kernel-diagnostics.md). Observation-only tracing must leave bytecode unchanged (covered for route-argument tracing). Flags that alter emitted code, witnesses, outlining, or optimisation are experiments, **not production measurements**. The cold gate now strips inherited switches. `SOLIDC_ROUTE_ABI_TAIL` is default-on behavior; `=0` is an A/B escape hatch.
 - Focused self/foreign/proxy compose proofs cover mappings, dynamic values, events, sidecars, returns, and lifecycle operations. These are fixture evidence, not an expanded beta manifest. Fixed-state read-bearing split/merge and modifier-only fixed-state selfdestruct now publish explicit resource topology. Wider dynamic lifecycle layouts and detached `sig` leaves remain fenced.
 - Source-tree build sidecars are removed; authored JavaScript and ambient declarations remain. Build into `dist/`

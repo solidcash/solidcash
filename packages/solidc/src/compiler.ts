@@ -15831,6 +15831,20 @@ function compileResolvedAst(
           if (source?.kind === 'expression') witness.expressionLabel = source.canonical;
         }
       }
+      // Admission inspects the helper closure before constant arguments are folded. A helper's computed
+      // collection key can therefore survive in the provisional witness list even when the emitted handler
+      // never touches an entry (for example, a helper called with a literal false branch guard). The route
+      // still owns the union key parameter, but this handler has no value from which to derive it. Only omit
+      // unresolved expression metadata after the final handler layout proves that it has no entry footprint;
+      // argument/msg.sender witnesses may be checked by the route and must remain published.
+      const hasEntryFootprint = (fn.entryAccesses?.length ?? 0) > 0
+        || (fn.entryLoopWrites?.length ?? 0) > 0
+        || (fn.messageBusPhysicalEntrySlots?.length ?? 0) > 0
+        || fn.blockLayout?.slots.some((slot) => slot.kind === 'entry') === true;
+      if (!hasEntryFootprint && fn.messageBusKeyWitnesses) {
+        fn.messageBusKeyWitnesses = fn.messageBusKeyWitnesses.filter((witness) =>
+          witness.source !== 'expression' || witness.expressionLabel !== undefined);
+      }
     }
     const messageBusRouteFn = ast.contract.functions.find((fn) => fn.messageBusRoute);
     const messageBusMaximumRows = messageBusRouteFn?.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;

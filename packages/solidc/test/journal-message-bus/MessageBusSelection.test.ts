@@ -465,6 +465,43 @@ describe('message-bus compilation selection', () => {
     );
   });
 
+  it('does not publish a computed key for an inactive helper collection write', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Refusal {
+        mapping(uint => mapping(address => bool)) whitelistWorkers;
+        function settle(uint id, bool removeWorker) internal {
+          if (removeWorker) { whitelistWorkers[id][removeWorker ? address(1) : address(0)] = false; }
+        }
+        function refund(uint id) public {
+          settle(id, true);
+          require(true);
+        }
+        function refuse(uint id) public {
+          settle(id, false);
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    const refund = artifact.messageBus?.handlers.find((handler) => handler.name === 'refund');
+    const refuse = artifact.messageBus?.handlers.find((handler) => handler.name === 'refuse');
+    expect(refund?.batchKeyWitnesses?.some((binding) => binding.source === 'expression'
+      && binding.expressionLabel)).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'refuse')?.entryAccesses).toBeUndefined();
+    expect(refuse?.batchKeyWitnesses).toContainEqual(expect.objectContaining({
+      routeInput: '__message_bus_key_whitelistWorkers_0',
+      source: 'argument',
+      inputIndex: 0,
+    }));
+    expect(refuse?.batchKeyWitnesses?.some((binding) => binding.source === 'expression')).toBe(false);
+  });
+
   it('does not taint a typed kernel getter with an unrelated low-level return consumer', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract Registry(address peer) {

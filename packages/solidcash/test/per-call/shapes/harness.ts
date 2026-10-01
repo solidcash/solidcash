@@ -213,7 +213,7 @@ let facetFunding = 0;
 export async function fundShippedFacets(provider: {
   addUtxo(lockingBytecode: string, utxo: {
     readonly txid: string; readonly vout: number; readonly satoshis: bigint;
-  }): Promise<void>;
+  }): Promise<unknown>;
 }): Promise<void> {
   for (const code of perCallValidator.buildValidatorFacets()) {
     facetFunding += 1;
@@ -229,7 +229,7 @@ export async function fundShippedFacets(provider: {
 export interface ShapeOutcome {
   readonly draft: CompositionDraft;
   readonly completed: readonly FrameRequest[];
-  readonly transaction: NonNullable<ReturnType<VirtualMachine['evaluate']>[0]['transaction']>;
+  readonly transaction: NonNullable<Parameters<VirtualMachine['evaluate']>[0]['transaction']>;
   readonly contractInputs: readonly ContractInput[];
   readonly verdicts: readonly {
     readonly index: number;

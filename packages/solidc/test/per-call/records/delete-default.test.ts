@@ -36,7 +36,7 @@ describe('section 20 delete-to-default', () => {
     const boolAssign = compileString(
       'contract C { mapping(int=>bool) m; function f(int k) external { m[k]=false; require(true); } }',
     );
-    expect(boolDelete.debug.bytecode).toBe(boolAssign.debug.bytecode);
+    expect(boolDelete.debug!.bytecode).toBe(boolAssign.debug!.bytecode);
 
     // A value mapping: delete == assign the integer default 0.
     const intDelete = compileString(
@@ -45,7 +45,7 @@ describe('section 20 delete-to-default', () => {
     const intAssign = compileString(
       'contract C { mapping(int=>int) m; function f(int k) external { m[k]=0; require(true); } }',
     );
-    expect(intDelete.debug.bytecode).toBe(intAssign.debug.bytecode);
+    expect(intDelete.debug!.bytecode).toBe(intAssign.debug!.bytecode);
   });
 
   it('the delete upsert writes the default tail and preserves slot and next', () => {

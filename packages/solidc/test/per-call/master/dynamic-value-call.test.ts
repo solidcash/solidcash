@@ -64,8 +64,7 @@ const CALL_WITHOUT_DYNAMIC = 'pragma solidcash ^0.13.0;'
 
 /** The entries one contract's artifact publishes in its ABI, in declaration order. */
 function abiNames(source: string, contract: string): string[] {
-  const artifacts = compileStringMulti(source, { composition: 'per-call' }) as
-    Record<string, { abi: { name: string }[] }>;
+  const artifacts = compileStringMulti(source, { composition: 'per-call' });
   return (artifacts[contract]?.abi ?? []).map((entry) => entry.name);
 }
 

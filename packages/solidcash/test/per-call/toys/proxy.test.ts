@@ -304,7 +304,7 @@ describe('a proxy whose fallback forwards its call data to its implementation', 
     expect(artifacts.Proxy?.composition?.convention).toBe('per-call');
     expect(artifacts.Impl?.composition?.convention).toBe('per-call');
     // The fallback is the proxy's only entry, so it is served rather than refused.
-    expect(artifacts.Proxy?.composition?.refusedEntries).toBeUndefined();
+    expect((artifacts.Proxy?.composition as { refusedEntries?: unknown } | undefined)?.refusedEntries).toBeUndefined();
     expect((artifacts.Proxy?.composition as { stopSites?: unknown } | undefined)?.stopSites).toBeTruthy();
   });
 

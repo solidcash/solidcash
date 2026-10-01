@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import { layoutWithFacets } from './harness.js';
 import {
   FrameKind,
@@ -11,7 +12,7 @@ import {
 } from '@solidcash/utils';
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
-import { createUnlockingBytecode, scriptToLockingBytecode } from '../../../src/utils.js';
+import { createUnlockingBytecode } from '../../../src/utils.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   composeAndDerive,
@@ -87,7 +88,7 @@ const COLLECTION = ARTIFACT.stateLayout!.collections![0]!;
 const ENTRY_REDEEM = scriptToBytecode(
   buildEntryNftCovenantScript(TAGS.category, computeCollectionHash(COLLECTION.signature)),
 );
-const ENTRY_LOCK = scriptToLockingBytecode(ENTRY_REDEEM, 'p2sh32');
+const ENTRY_LOCK = encodeLockingBytecodeP2sh32(hash256(ENTRY_REDEEM));
 /** The entry covenant's `<masterInputIndex> <flag>` unlocking; flag 1 is the write path. */
 const entryUnlock = (masterInputIndex: number, flag: bigint): Uint8Array =>
   createUnlockingBytecode('p2sh32', ENTRY_REDEEM, [
@@ -222,7 +223,7 @@ describe('an entry deleting a node of a string-keyed string mapping', () => {
     // The control for the accept above: the frame closes against the view its own segment declares, so a
     // declaration rewritten to a value no frame wrote is refused rather than resolved.
     const built = buildPlan();
-    built.plan.masters[1]!.segments[0]![0]!.viewOut =
+    (built.plan.masters[1]!.segments[0]![0]! as RecordEntry).viewOut =
       encodeEntryCommitment(SLOT, ZERO_SLOT, titleTail(new TextEncoder().encode('other title')));
     expect(() => composeAndDerive(built.plan, [artifacts.Hub!, ARTIFACT], [ROOT])).toThrow();
   });

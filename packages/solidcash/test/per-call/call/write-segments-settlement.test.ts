@@ -177,7 +177,7 @@ async function deployed(
     callerFunding: { utxo: hopCoin, funder: callerFunder, changeAddress: source.address },
     vm: compositionMachine(),
   });
-  expect(deployment.initialize.accepted, deployment.initialize.objection).toBe(true);
+  expect(deployment.initialize.accepted).toBe(true);
   return {
     proxyCategoryId: deployment.proxy.categoryId,
     implementationCategoryId: deployment.implementation.categoryId,

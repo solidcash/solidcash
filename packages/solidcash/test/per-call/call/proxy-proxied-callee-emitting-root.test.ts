@@ -69,7 +69,7 @@ async function setup(network: MockNetworkProvider): Promise<Setup> {
 /** Deploys the implementation behind its generated proxy, entering `entry` as the user's own root call. */
 async function deployEntering(
   setup_: Setup, entry: string, args: readonly (bigint | Uint8Array | string | boolean)[],
-): Promise<{ readonly accepted: boolean; readonly objection?: string; readonly proxyCategoryId: string;
+): Promise<{ readonly accepted: boolean; readonly proxyCategoryId: string;
   readonly implementationCategoryId: string }> {
   const signature = new SignatureTemplate(alicePriv);
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: setup_.network });
@@ -97,7 +97,6 @@ async function deployEntering(
   });
   return {
     accepted: deployment.initialize.accepted,
-    objection: deployment.initialize.objection,
     proxyCategoryId: deployment.proxy.categoryId,
     implementationCategoryId: deployment.implementation.categoryId,
   };
@@ -158,14 +157,14 @@ describe('a root proxy frame whose implementation entry records nothing', () => 
 
   it('settles a writing initialize through the proxy', async () => {
     const { deployed } = await initialized();
-    expect(deployed.accepted, deployed.objection).toBe(true);
+    expect(deployed.accepted).toBe(true);
   });
 
   it('carries the value the returning entry computed through the root proxy', async () => {
     const { setup: arranged, deployed } = await initialized();
     const result = await callRoot(arranged, deployed, 'total', [],
       '6d9f0b2a4c8e0d2f4b6a8c0e2d4f6b8a' + '0c2e4d6f8b0a2c4e6d8f0b2a4c6e8d0f');
-    expect(result.accepted, result.objection).toBe(true);
+    expect(result.accepted).toBe(true);
     expect(result.value).toBe(10n);
   });
 
@@ -177,14 +176,14 @@ describe('a root proxy frame whose implementation entry records nothing', () => 
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const setup_ = await setup(network);
     const deployed = await deployEntering(setup_, 'note', []);
-    expect(deployed.accepted, deployed.objection).toBe(true);
+    expect(deployed.accepted).toBe(true);
   });
 
   it('settles a returning entry that also emits, entered as the user\'s own initialize', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const setup_ = await setup(network);
     const deployed = await deployEntering(setup_, 'publish', [4n]);
-    expect(deployed.accepted, deployed.objection).toBe(true);
+    expect(deployed.accepted).toBe(true);
   });
 
   it('settles a returning entry that also emits, entered as a later root call', async () => {

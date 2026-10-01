@@ -133,8 +133,8 @@ describe('a call whose occurrence the source does not fix', () => {
     // `master/conditional-call-entry.test.ts`.
     const artifacts = compileStringMulti(CONDITIONAL_CALL, { composition: 'per-call' });
     expect(artifacts.Caller?.composition?.convention).toBe('per-call');
-    const sites = (artifacts.Caller?.composition?.stopSites as { entries: { sites: { sites: StopSite[] } }[] })
-      .entries[0]!.sites.sites;
+    const sites = (artifacts.Caller?.composition as
+      { stopSites: { entries: { sites: { sites: StopSite[] } }[] } } | undefined)!.stopSites.entries[0]!.sites.sites;
     // The site is marked conditional — the arm may skip it — but not repeated: nothing turns.
     expect(sites[0]).toStrictEqual({
       kind: 'call', site: 0, callIndex: 0, descriptor: 0, conditional: true,
@@ -172,8 +172,8 @@ describe('a call whose occurrence the source does not fix', () => {
     // expressible. The machine's own cases for it live in `master/looped-call-entry.test.ts`.
     const artifacts = compileStringMulti(BRANCHED_IN_LOOP_CALL, { composition: 'per-call' });
     expect(artifacts.Caller?.composition?.convention).toBe('per-call');
-    const sites = (artifacts.Caller?.composition?.stopSites as { entries: { sites: { sites: StopSite[] } }[] })
-      .entries[0]!.sites.sites;
+    const sites = (artifacts.Caller?.composition as
+      { stopSites: { entries: { sites: { sites: StopSite[] } }[] } } | undefined)!.stopSites.entries[0]!.sites.sites;
     // The site is marked both ways: the arm can skip an iteration, and the loop decides how many iterations there
     // are, so neither the occurrence nor the number of records is a fact the table can enumerate.
     expect(sites[0]).toStrictEqual({

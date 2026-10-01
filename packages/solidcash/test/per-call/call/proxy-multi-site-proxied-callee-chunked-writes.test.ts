@@ -122,7 +122,7 @@ async function deployAll(network: MockNetworkProvider): Promise<{
     callerFunding: { utxo: outerInitCoin, funder: callerFunder, changeAddress: source.address },
     vm: compositionMachine(),
   });
-  expect(outerDeployment.initialize.accepted, outerDeployment.initialize.objection).toBe(true);
+  expect(outerDeployment.initialize.accepted).toBe(true);
 
   return {
     outerProxyCategoryId: outerDeployment.proxy.categoryId,

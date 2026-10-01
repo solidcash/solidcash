@@ -113,7 +113,7 @@ function verdictOf(sourceText: string, spend: Spend): { accepted: boolean; objec
       argsHash: sha256(SELECTOR),
       result: EMPTY,
     })),
-    segments: Array.from({ length: declaredCalls + 1 }, () => [] as number[]),
+    segments: Array.from({ length: declaredCalls + 1 }, () => []),
     events: [],
     sends: [],
   };

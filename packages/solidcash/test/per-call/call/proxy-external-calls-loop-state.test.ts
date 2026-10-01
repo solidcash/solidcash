@@ -109,7 +109,7 @@ async function seedChunk(
   });
 }
 
-const describeShipped: typeof describe = hasArtifacts ? describe : describe.skip;
+const describeShipped = hasArtifacts ? describe : describe.skip;
 
 describeShipped('solving a call site from the caller\'s own facts', () => {
   const FACADE = 'MarketplaceV1.json';

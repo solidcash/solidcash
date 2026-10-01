@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import { layoutWithFacets } from './harness.js';
 import {
   FrameKind,
@@ -14,7 +15,7 @@ import {
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
-import { createUnlockingBytecode, scriptToLockingBytecode } from '../../../src/utils.js';
+import { createUnlockingBytecode } from '../../../src/utils.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   composeAndDerive,
@@ -120,7 +121,7 @@ function nodeRedeem(contract: DeployedContract, contractName: string): Uint8Arra
 }
 
 const nodeLock = (contract: DeployedContract, contractName: string): Uint8Array =>
-  scriptToLockingBytecode(nodeRedeem(contract, contractName), 'p2sh32');
+  encodeLockingBytecodeP2sh32(hash256(nodeRedeem(contract, contractName)));
 
 /** The node a frame spends at its entry covenant, unlocked on the write path its master authorizes. */
 function nodeInput(contract: DeployedContract, contractName: string, before: Uint8Array, after: Uint8Array,

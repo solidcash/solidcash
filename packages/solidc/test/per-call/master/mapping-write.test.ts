@@ -4,7 +4,7 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import {
-  buildEntryNftCovenantScript, computeCollectionHash, encodeWitnessBlock, scriptToBytecode,
+  buildEntryNftCovenantScript, computeCollectionHash, encodeWitnessBlock,
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
@@ -265,7 +265,7 @@ function evaluateUpdate(options: {
 describe('a per-call master whose entry writes a verified mapping', () => {
   it('publishes a per-call master that derives the write witness from its own frame', () => {
     expect(artifact.composition?.convention).toBe('per-call');
-    expect(scriptToBytecode(deployed.script).length).toBeGreaterThan(0);
+    expect(deployed.script.length).toBeGreaterThan(0);
   });
 
   it('derives the slot from the runtime key and is accepted by the machine', () => {

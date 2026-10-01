@@ -20,6 +20,7 @@ import {
   decideValidator,
   type PerCallTransaction,
   type TokenShape,
+  type ValidatorReasonName,
 } from '../../../src/per-call/validator/index.js';
 import { compositionMachine } from '../machine.js';
 

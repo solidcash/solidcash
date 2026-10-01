@@ -282,7 +282,7 @@ describe('the mapping node of the same shape, through the same path', () => {
     expect(publishedWrites(run.impl, 'move')).toStrictEqual({
       writeSegment: 1, writeSegments: [{ collection: 'balances', segment: 1 }],
     });
-    expect(run.impl.composition?.refusedEntries).toBeUndefined();
+    expect((run.impl.composition as { refusedEntries?: unknown } | undefined)?.refusedEntries).toBeUndefined();
     // `balances` is one the initialize never writes. While the hop minted such a head in the call, the frame was
     // refused inside the upsert body (PW3's reproducer, `OP_VERIFY`); a head is minted only at genesis now, so the
     // turns splice through the head the transaction spends, and every participant accepts.

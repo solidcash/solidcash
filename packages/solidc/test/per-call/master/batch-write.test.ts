@@ -4,7 +4,7 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import {
-  buildEntryNftCovenantScript, computeCollectionHash, encodeWitnessBlock, scriptToBytecode,
+  buildEntryNftCovenantScript, computeCollectionHash, encodeWitnessBlock,
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
@@ -192,7 +192,7 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
 describe('a per-call master whose entry writes two verified-mapping targets', () => {
   it('publishes a per-call master that derives every target from its own frame', () => {
     expect(artifact.composition?.convention).toBe('per-call');
-    expect(scriptToBytecode(deployed.script).length).toBeGreaterThan(0);
+    expect(deployed.script.length).toBeGreaterThan(0);
     const declared = artifact.abi.find((entry) => entry.name === 'set');
     expect(declared?.inputs?.map((input) => input.name)).toStrictEqual(['a', 'b', 'amount']);
   });

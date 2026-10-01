@@ -90,7 +90,7 @@ async function enter(source: string, functionName: string, args: readonly unknow
     vm: compositionMachine(),
   });
   const refusedVerdicts = result.verdicts.filter((verdict) => !verdict.accepted)
-    .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'refused'}`);
+    .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`);
   if (!result.accepted) return { refusal: refusedVerdicts.join('; ') || 'refused' };
   return { answer: [...result.values] };
 }

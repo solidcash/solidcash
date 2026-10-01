@@ -13,7 +13,7 @@ import {
 import { planHopExternalCalls, type PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
 import { readPublishedStopSites } from '../../../src/per-call/composer/index.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
-import type { FunctionArgument } from '../../../src/Argument.js';
+import type { ConstructorArgument } from '../../../src/Argument.js';
 
 /**
  * The planner against the artifacts the compiler actually shipped.
@@ -92,7 +92,7 @@ async function seedDeployment(
   return master;
 }
 
-const describePublished: typeof describe = hasArtifacts ? describe : describe.skip;
+const describePublished = hasArtifacts ? describe : describe.skip;
 
 describePublished('the planner against the shipped published facts', () => {
   const FACADE_CATEGORY = '0a'.repeat(32);
@@ -285,7 +285,7 @@ function conditionReadsProducerResult(condition: unknown): boolean {
 }
 
 /** A value of `type` a call or a state field is given so every published condition can hold. */
-function syntheticValue(type: string): FunctionArgument {
+function syntheticValue(type: string): ConstructorArgument {
   const array = type.match(/^(.*)\[(?:\d*)\]$/);
   if (array !== null) return [syntheticValue(array[1]!)];
   if (type === 'bool') return true;

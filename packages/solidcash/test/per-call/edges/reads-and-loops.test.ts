@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { FrameKind, encodeIntegerValue } from '@solidcash/utils';
+import { FrameKind, encodeIntegerValue, type FrameKindValue } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import {
@@ -48,7 +48,7 @@ describe('a call inside a data-dependent loop', () => {
     const pingSelector = selectorOf(artifacts, 'Cal', 'ping');
     const one = encodeIntegerValue(1n);
     const master = (
-      id: string, contract: string, entry: string, kind: number, sender: Uint8Array, enteredBy: string,
+      id: string, contract: string, entry: string, kind: FrameKindValue, sender: Uint8Array, enteredBy: string,
       calls: DraftMaster['calls'], argumentPushes: readonly Uint8Array[],
     ): DraftMaster => ({
       master: id, contract, functionName: entryName(contract, entry), program: contracts[contract]!.program,
@@ -256,7 +256,10 @@ describe('a static read whose callee reverts', () => {
     const cal = contracts.Cal!;
     const validator = validatorFor(reader.category);
     const selector = selectorOf(artifacts, 'Cal', 'check');
-    const build = (id: string, contract: string, entry: string, kind: number, sender: Uint8Array, enteredBy: string, calls: DraftMaster['calls'], argumentPushes: readonly Uint8Array[], retval: Uint8Array = new Uint8Array(0)): DraftMaster => ({
+    const build = (
+      id: string, contract: string, entry: string, kind: FrameKindValue, sender: Uint8Array, enteredBy: string,
+      calls: DraftMaster['calls'], argumentPushes: readonly Uint8Array[], retval: Uint8Array = new Uint8Array(0),
+    ): DraftMaster => ({
       master: id, contract, functionName: entryName(contract, entry), program: contracts[contract]!.program,
       facts: {
         contract, functionName: entry, kind, callerIsUser: kind === FrameKind.ROOT,

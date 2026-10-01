@@ -25,8 +25,6 @@ import {
   TokenCapability,
   encodeTranscript,
   validatorRedeemScript,
-  type PerCallTransaction as ModelledTransaction,
-  type TokenShape,
 } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/index.js';
@@ -36,6 +34,8 @@ import {
   buildValidatorFacets,
   buildValidatorProgram,
   decideValidator,
+  type PerCallTransaction as ModelledTransaction,
+  type TokenShape,
 } from '../../../../solidc/src/per-call/validator/index.js';
 import {
   categoryOf,

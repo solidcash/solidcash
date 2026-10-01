@@ -104,7 +104,7 @@ function fill(name: 'Caller' | 'Callee'): Uint8Array {
   });
 }
 
-function build(options: Options = {}): Program {
+function build(options: Options = {}): Omit<Program, 'inputIndex'> {
   const callerProgram = fill('Caller');
   const calleeProgram = fill('Callee');
   const validator = validatorSpend(CATEGORY_CALLER, {

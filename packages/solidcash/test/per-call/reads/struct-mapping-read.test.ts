@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import {
-  buildPushdataCommitment, bytesToHex, encodeChunkableValueTail, encodePushdataValue, sha256,
+  buildPushdataCommitment, bytesToHex, encodeChunkableValueTail, encodePushdataValue, sha256, type StateRecord,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -116,7 +116,7 @@ describe('reading a mapping entry whose struct value lives in continuation chunk
 
     // The getter publishes the struct's fields as separate outputs; the read hands back the named record.
     const getter = artifact.abi.find((row) => row.name === 'entries')!;
-    expect(getter.outputs.map((output) => output.type))
+    expect(getter.outputs!.map((output) => output.type))
       .toStrictEqual(STRUCTS!.find((struct) => struct.name === 'Entry')!.fields.map((field) => field.type));
 
     const entry = asRecord(result.value);
@@ -130,7 +130,7 @@ describe('reading a mapping entry whose struct value lives in continuation chunk
     // The record is the one value the read returned, and it carries the typechain-style accessor boundary.
     expect(result.values).toHaveLength(1);
     expect(result.values[0]).toBe(result.value);
-    expect((result.value as { toObject: () => unknown }).toObject()).toStrictEqual({
+    expect((result.value as StateRecord & { toObject: () => unknown }).toObject()).toStrictEqual({
       holder: lockingBytecodeToSolidityAddressPayload(HOLDER_LOCK),
       up: 7n,
       down: 9n,
@@ -225,7 +225,7 @@ function readPaged(
 }
 
 /** One decoded record of a page, as the accessor boundary it carries is read. */
-type ReadRecord = Record<string, unknown> & { toObject: () => Record<string, unknown> };
+type ReadRecord = StateRecord & { toObject: () => Record<string, unknown> };
 
 describe('reading a page over a struct-valued mapping', () => {
   it('returns every turn\'s record in turn order, each carrying the accessor boundary', async () => {
@@ -238,7 +238,7 @@ describe('reading a page over a struct-valued mapping', () => {
 
     // The getter declares one `Member[]` output, so the read's value is the list of records, one per turn.
     expect(result.values).toHaveLength(1);
-    const page = result.value as readonly ReadRecord[];
+    const page = result.value as ReadRecord[];
     expect(Array.isArray(page)).toBe(true);
     expect(page).toHaveLength(PAGED_MEMBERS.length);
 
@@ -262,7 +262,7 @@ describe('reading a page over a struct-valued mapping', () => {
     await pagedChain(provider);
 
     // `getMembers(1, 1)` names the single turn at index 1, whose record is the second the array names.
-    const page = (await readPaged(provider, 1n, 1n)).value as readonly ReadRecord[];
+    const page = (await readPaged(provider, 1n, 1n)).value as ReadRecord[];
     expect(page).toHaveLength(1);
     expect(page[0]!.toObject()).toStrictEqual(PAGED_MEMBERS[1]);
   });

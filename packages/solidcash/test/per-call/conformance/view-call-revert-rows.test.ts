@@ -93,7 +93,7 @@ async function reasonOf(call: () => PerCallFunctionCall): Promise<string> {
   let message = '';
   await call().then(
     (value) => { throw new Error(`the read resolved a value: ${String(value)}`); },
-    (error: Error) => { message = error.message; },
+    (error: unknown) => { message = (error as Error).message; },
   );
   return message;
 }

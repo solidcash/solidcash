@@ -4,7 +4,7 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import {
-  buildEntryNftCovenantScript, buildPushdataCommitment, computeCollectionHash, encodeWitnessBlock, scriptToBytecode,
+  buildEntryNftCovenantScript, buildPushdataCommitment, computeCollectionHash, encodeWitnessBlock,
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
@@ -182,7 +182,7 @@ describe('a per-call master keyed by the frame sender', () => {
 
   it('publishes a per-call master whose write witness is derived from the frame', () => {
     expect(env.artifact.composition?.convention).toBe('per-call');
-    expect(scriptToBytecode(env.deployed.script).length).toBeGreaterThan(0);
+    expect(env.deployed.script.length).toBeGreaterThan(0);
     expect(env.artifact.abi.find((entry) => entry.name === 'set')?.inputs?.map((input) => input.name))
       .toStrictEqual(['amount']);
   });
@@ -206,7 +206,7 @@ describe('a per-call master keyed by a compile-time expression', () => {
 
   it('publishes a per-call master whose write witness is derived from the frame', () => {
     expect(env.artifact.composition?.convention).toBe('per-call');
-    expect(scriptToBytecode(env.deployed.script).length).toBeGreaterThan(0);
+    expect(env.deployed.script.length).toBeGreaterThan(0);
   });
 
   it('derives the key from the compile-time expression and is accepted by the machine', () => {

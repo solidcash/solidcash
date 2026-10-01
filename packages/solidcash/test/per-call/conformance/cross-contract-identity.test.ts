@@ -269,7 +269,9 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Answer; readon
     return { refusal: `compile: ${(error as Error).message}` };
   }
   const target = artifacts[row.target]!;
-  const refused = target.composition?.refusedEntries?.find((entry) => entry.functionName.includes(row.entry));
+  const refused = (target.composition as {
+    readonly refusedEntries?: readonly { readonly functionName: string; readonly reason: string }[];
+  } | undefined)?.refusedEntries?.find((entry) => entry.functionName.includes(row.entry));
   if (refused !== undefined) return { refusal: `${refused.functionName}: ${refused.reason}` };
   const { perCallValidator } = await import('solidc');
   const validatorProgram = perCallValidator.buildValidatorProgram();

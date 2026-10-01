@@ -60,7 +60,7 @@ const keptAt = (index: number, viewIn: Uint8Array, viewOut: Uint8Array): RecordE
 
 interface WalkOptions {
   /** One entry per segment, in execution order. */
-  readonly segments: readonly (readonly RecordEntry[])[];
+  readonly segments: RecordEntry[][];
   /** The commitment the record's state UTXO actually carries. */
   readonly inputCommitment?: Uint8Array;
   /** The commitment the state output actually carries. */

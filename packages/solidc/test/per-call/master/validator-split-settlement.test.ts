@@ -76,7 +76,9 @@ const POKER_RECORD = 8;
 const USER = 9;
 
 type Capability = 'minting' | 'mutable';
-const token = (category: Uint8Array, capability: Capability, commitment = new Uint8Array(0)): VmOutput['token'] =>
+const token = (
+  category: Uint8Array, capability: Capability, commitment: Uint8Array = new Uint8Array(0),
+): VmOutput['token'] =>
   ({ category, amount: 0n, nft: { capability, commitment } });
 
 /** Every contract input's verdict when the Counter record's output carries `written`. */

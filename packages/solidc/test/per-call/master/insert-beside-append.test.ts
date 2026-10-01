@@ -5,7 +5,7 @@ import {
 } from '@bitauth/libauth';
 import {
   buildChunkCommitment, buildEntryNftCovenantScript, buildPushdataCommitment, computeCollectionHash,
-  dynamicChunkSignature, encodePushdataValue, encodeWitnessBlock, scriptToBytecode,
+  dynamicChunkSignature, encodePushdataValue, encodeWitnessBlock,
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
@@ -374,7 +374,7 @@ function evaluateCreatedHead(options: SpendOptions = {}): { accepted: boolean; o
 
 describe('a per-call master whose entry inserts a mapping target beside a dynamic append', () => {  it('publishes a per-call master whose layout puts the dynamic run past the batch group', () => {
     expect(artifact.composition?.convention).toBe('per-call');
-    expect(scriptToBytecode(deployed.script).length).toBeGreaterThan(0);
+    expect(deployed.script.length).toBeGreaterThan(0);
   });
 
   it('settles the insert beside an append that grows a run the deployment holds', () => {

@@ -92,7 +92,7 @@ interface Options {
   readonly segments?: readonly RecordEntry[][];
 }
 
-function build(options: Options): VmProgram {
+function build(options: Options): Omit<VmProgram, 'inputIndex'> {
   const declaredCalls = options.declaredCalls ?? options.trips;
   const fill = (name: string, category: Uint8Array, address: Uint8Array): Uint8Array => {
     const artifact = artifacts[name]!;
@@ -241,10 +241,14 @@ function verdict(options: Options): { accepted: boolean; objection?: string; ip?
 
 describe('a compiled master whose calls repeat reads its own record', () => {
   it('publishes the loop call as a repeated site and refuses no entry', () => {
-    const entry = callerArtifact.composition!.stopSites.entries[0]!;
+    const composition = callerArtifact.composition as {
+      stopSites: { entries: { functionName: string; sites: { sites: { repeated?: boolean }[] } }[] };
+      refusedEntries?: unknown;
+    } | undefined;
+    const entry = composition!.stopSites.entries[0]!;
     expect(entry.functionName).toBe('Caller.go()');
     expect(entry.sites.sites.filter((site) => site.repeated === true)).toHaveLength(1);
-    expect(callerArtifact.composition?.refusedEntries).toBeUndefined();
+    expect(composition?.refusedEntries).toBeUndefined();
   });
 
   it('accepts one turn, over the declaration its own segment carries', () => {

@@ -13,7 +13,7 @@ import {
 } from '../shapes/harness.js';
 import {
   createComposedDerivationHost, deriveComposition, layOutMappingWrites, participant, planMappingWrite,
-  type CompositionDraftPlan, type DraftMaster, type MappingNodePlacement,
+  readPublishedStopSites, type CompositionDraftPlan, type DraftMaster, type MappingNodePlacement,
 } from '../../../src/per-call/composer/index.js';
 
 /**
@@ -239,9 +239,8 @@ function sharedDrive(): ReturnType<typeof drive> {
 describe('one entry inserting, updating and deleting one key in one transaction', () => {
   it('publishes one call site per call, each naming its own method', () => {
     const { artifacts } = compileAndDeploy(SOURCE, { Hub: HUB_LABEL, Ledger: LEDGER_LABEL });
-    const hub = (artifacts.Hub!.composition as {
-      stopSites: { entries: { functionName: string; calls: { functionName: string; selector: string }[]; sites: { sites: unknown[] } }[] };
-    }).stopSites.entries.find((entry) => entry.functionName === entryName('Hub', 'run'))!;
+    const hub = readPublishedStopSites(artifacts.Hub!).entries
+      .find((entry) => entry.functionName === entryName('Hub', 'run'))!;
     expect(hub.calls.map((call) => call.functionName)).toStrictEqual(['insert', 'update', 'remove']);
     expect(new Set(hub.calls.map((call) => call.selector)).size).toBe(3);
     expect(hub.sites.sites).toStrictEqual([

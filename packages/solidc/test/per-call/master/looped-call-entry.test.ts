@@ -102,7 +102,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string; ip?: nu
       argsHash: sha256(CALLEE_CALL_DATA),
       result: EMPTY,
     })),
-    segments: Array.from({ length: declaredCalls + 1 }, () => [] as number[]),
+    segments: Array.from({ length: declaredCalls + 1 }, () => []),
     events: [],
     sends: [],
   };
@@ -221,7 +221,7 @@ describe('an entry whose call runs inside a loop, behind an arm that skips it', 
           argsHash: sha256(new Uint8Array([...selector, ...encodeDataPush(CALL_ARGUMENT)])),
           result: EMPTY,
         })),
-        segments: Array.from({ length: declaredCalls + 1 }, () => [] as number[]),
+        segments: Array.from({ length: declaredCalls + 1 }, () => []),
         events: [],
         sends: [],
       };

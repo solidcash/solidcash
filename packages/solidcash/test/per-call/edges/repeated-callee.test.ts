@@ -22,7 +22,7 @@ import { compositionMachine } from '../../../../solidc/test/per-call/machine.js'
 import { layoutWithFacets } from '../shapes/harness.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  createComposedDerivationHost, deriveDepthFirst, participant,
+  createComposedDerivationHost, deriveDepthFirst, participant, readPublishedStopSites,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
@@ -385,8 +385,7 @@ describe('one entry that calls one callee from a loop', () => {
 describe('the tables and the layout the shape publishes', () => {
   it('publishes one repeated call site for the loop and one record the callee rewrites', () => {
     const run = build(2);
-    const sites = (run.artifacts.Hub!.composition as { stopSites: { entries: { sites: { sites: unknown[] } }[] } })
-      .stopSites.entries[0]!.sites.sites;
+    const sites = readPublishedStopSites(run.artifacts.Hub!).entries[0]!.sites.sites;
     expect(sites).toStrictEqual([
       { kind: 'call', site: 0, callIndex: 0, descriptor: 0, repeated: true },
       { kind: 'segmentClose', site: 1, segmentIndex: 0 },

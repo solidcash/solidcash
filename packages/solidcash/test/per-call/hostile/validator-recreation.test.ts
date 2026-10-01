@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
-import type { PerCallTransaction as ModelledTransaction } from '@solidcash/utils';
+import type { PerCallTransaction as ModelledTransaction } from '../../../../solidc/src/per-call/validator/index.js';
 import { accepted, expectRefusal, reference } from './validator-machine.js';
 import { categoryOf, mutableTokenShape } from '../validator/fixture.js';
 

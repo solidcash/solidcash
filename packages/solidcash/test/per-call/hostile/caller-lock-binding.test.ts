@@ -29,7 +29,7 @@ import {
 
 const OTHER_USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x55));
 
-type VmProgram = ReturnType<ReturnType<typeof machine>['evaluate']>[0];
+type VmProgram = Parameters<ReturnType<typeof machine>['evaluate']>[0];
 
 /** The BCH-2026 machine with the relaxed budget a verdict needs, not a cost profile. */
 function machine(): ReturnType<typeof createVirtualMachineBch2026> {

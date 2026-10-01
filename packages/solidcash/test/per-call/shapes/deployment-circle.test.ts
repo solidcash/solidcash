@@ -135,7 +135,7 @@ async function setUp(): Promise<Deployment> {
     // The initial state seeds each record's `next`: Alpha -> Beta -> Gamma -> Delta, with Delta pointing back at
     // Gamma, so the graph is not yet a circle. The setter call moves Delta's `next` to its `prev`, Alpha's address,
     // which is the link that closes it.
-    const initialStates = [
+    const initialStates: Record<string, Uint8Array>[] = [
       { next: predicted[1]! },
       { next: predicted[2]! },
       { next: predicted[3]! },

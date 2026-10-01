@@ -1,13 +1,15 @@
 /** The shipped validator program run on the BCH-2026 machine, with helpers to lay a composition out and mutate it. */
 import { expect } from 'vitest';
 import { encodeDataPush } from '@bitauth/libauth';
-import { concatBytes, splitFirstPush, type PerCallTransaction as ModelledTransaction, type TokenShape } from '@solidcash/utils';
+import { concatBytes, splitFirstPush } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/index.js';
 import {
   buildValidatorFacets,
   buildValidatorProgram,
   decideValidator,
+  type PerCallTransaction as ModelledTransaction,
+  type TokenShape,
   type ValidatorReasonName,
 } from '../../../../solidc/src/per-call/validator/index.js';
 import { materialise, planComposition, type Composition, type CompositionPlan } from '../validator/fixture.js';

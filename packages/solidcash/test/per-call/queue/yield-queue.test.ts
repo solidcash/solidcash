@@ -65,7 +65,7 @@ interface Fixture {
 }
 
 /** Compiles and deploys the two contracts, funding each master and one input per send. */
-async function fixture(masterTxids: readonly string[], fundingTxids: readonly string[]): Promise<Fixture> {
+async function fixture(masterTxids: Readonly<Record<string, string>>, fundingTxids: readonly string[]): Promise<Fixture> {
   const { artifacts, contracts } = compileAndDeploy(SOURCE, { Alpha: 'yield queue alpha', Beta: 'yield queue beta' });
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   for (const [name, masterTxid] of Object.entries(masterTxids)) {

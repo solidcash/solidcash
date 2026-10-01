@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'vitest';
-import type { PerCallTransaction as ModelledTransaction, TokenShape } from '@solidcash/utils';
+import type {
+  PerCallTransaction as ModelledTransaction, TokenShape,
+} from '../../../../solidc/src/per-call/validator/index.js';
 import { accepted, decisionOf, laidOut } from './validator-machine.js';
 import {
   categoryOf, emptyToken, masterTokenShape, materialise, mutableTokenShape, seedBytes, userLockOf,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import { layoutWithFacets } from './harness.js';
 import {
   FrameKind,
@@ -9,6 +10,7 @@ import {
   encodeIntegerValue,
   encodeResultList,
   scriptToBytecode,
+  type FrameKindValue,
 } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import {
@@ -27,7 +29,7 @@ import {
   encodeEntryCommitment,
   keyToSlotMulti,
 } from '../../../src/stateful/SortedList.js';
-import { createUnlockingBytecode, scriptToLockingBytecode } from '../../../src/utils.js';
+import { createUnlockingBytecode } from '../../../src/utils.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import {
   USER_LOCK,
@@ -152,7 +154,7 @@ function collectionLock(collection: string): NodeCovenant {
   const redeem = scriptToBytecode(
     buildEntryNftCovenantScript(ESCROW_DEPLOYED.category, computeCollectionHash(info.signature)));
   return {
-    lock: scriptToLockingBytecode(redeem, 'p2sh32'),
+    lock: encodeLockingBytecodeP2sh32(hash256(redeem)),
     unlock: (masterInputIndex, flag) => createUnlockingBytecode('p2sh32', redeem, [
       encodeFunctionArgument(flag, 'bigint') as Uint8Array,
       encodeFunctionArgument(BigInt(masterInputIndex), 'bigint') as Uint8Array,
@@ -190,7 +192,7 @@ function buildPlan(locktime: number): {
   const judgeIndex = participant(layout, JUDGE_MASTER).index;
   const participantCount = layout.participantCount;
 
-  const escrowMaster = (entry: 'paidAt' | 'challenge', kind: number): DraftMaster => master({
+  const escrowMaster = (entry: 'paidAt' | 'challenge', kind: FrameKindValue): DraftMaster => master({
     master: entry === 'paidAt' ? PAID_AT_MASTER : CHALLENGE_MASTER,
     contract: 'Escrow', entry, program: ESCROW_DEPLOYED.program,
     facts: {
@@ -455,7 +457,7 @@ function buildSingleRecordPlan(locktime: number): CompositionDraftPlan {
   const challengeIndex = participant(layout, CHALLENGE_MASTER).index;
   const participantCount = layout.participantCount;
 
-  const escrowMaster = (entry: 'paidAt' | 'challenge', kind: number): DraftMaster => master({
+  const escrowMaster = (entry: 'paidAt' | 'challenge', kind: FrameKindValue): DraftMaster => master({
     master: entry === 'paidAt' ? PAID_AT_MASTER : CHALLENGE_MASTER,
     contract: 'Escrow', entry, program: SINGLE_ESCROW.program,
     facts: {

@@ -211,7 +211,7 @@ const compose = (options: Parameters<typeof build>[0] = {}): {
 /** The machine's verdict on the master's own input, with the outputs optionally rewritten. */
 function verdictAt(
   draft: ReturnType<typeof createComposedDerivationHost>['draft'],
-  mutate?: (outputs: readonly VmOutput[]) => readonly VmOutput[],
+  mutate?: (outputs: readonly VmOutput[]) => VmOutput[],
 ): string {
   const program = draft.programFor(MASTER_ID);
   const vm = machine();
@@ -371,7 +371,7 @@ describe('a state whose value lives in chunks', () => {
 
   it('refuses a chunk output whose commitment the body did not compute', () => {
     const { draft, built } = compose();
-    const wrong = (outputs: readonly VmOutput[]): readonly VmOutput[] => outputs.map((output, index) => (index === built.base
+    const wrong = (outputs: readonly VmOutput[]): VmOutput[] => outputs.map((output, index) => (index === built.base
       ? { ...output, token: { category: CATEGORY, amount: 0n, nft: { capability: 'mutable' as const, commitment: new Uint8Array([7]) } } }
       : output));
     expect(verdictAt(draft, wrong)).toContain('refused');
@@ -381,7 +381,7 @@ describe('a state whose value lives in chunks', () => {
     // The same transaction with the chunk output locked by something other than the collection covenant: the body
     // recomputes that address, so the writing is refused although the commitment matches.
     const { draft, built } = compose();
-    const wrong = (outputs: readonly VmOutput[]): readonly VmOutput[] => outputs.map((output, index) => (index === built.base
+    const wrong = (outputs: readonly VmOutput[]): VmOutput[] => outputs.map((output, index) => (index === built.base
       ? { ...output, lockingBytecode: STATE_LOCK }
       : output));
     expect(verdictAt(draft, wrong)).toContain('refused');

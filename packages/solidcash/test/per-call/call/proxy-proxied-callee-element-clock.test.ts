@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { type Artifact } from '@solidcash/utils';
+import { type Artifact, type StateRecord } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -108,7 +108,7 @@ describe('a proxied callee that appends an element stamped with the transaction 
       callerFunding: { utxo: storeInitCoin, funder: callerFunder, changeAddress: source.address },
       vm: compositionMachine(),
     });
-    expect(storeDeployment.initialize.accepted, storeDeployment.initialize.objection).toBe(true);
+    expect(storeDeployment.initialize.accepted).toBe(true);
 
     const outerDeployment = await deployPerCallProxy({
       provider: network,
@@ -121,7 +121,7 @@ describe('a proxied callee that appends an element stamped with the transaction 
       callerFunding: { utxo: outerInitCoin, funder: callerFunder, changeAddress: source.address },
       vm: compositionMachine(),
     });
-    expect(outerDeployment.initialize.accepted, outerDeployment.initialize.objection).toBe(true);
+    expect(outerDeployment.initialize.accepted).toBe(true);
 
     const result = await callPerCallProxyEntry({
       provider: network,
@@ -187,7 +187,7 @@ function loadArtifact(name: string): Artifact {
 }
 
 // Deploying the shipped data contract takes minutes, so the case runs at milestones (`PER_CALL_FULL=1`).
-const describeShipped: typeof describe = hasArtifacts && process.env.PER_CALL_FULL === '1' ? describe : describe.skip;
+const describeShipped = hasArtifacts && process.env.PER_CALL_FULL === '1' ? describe : describe.skip;
 
 describeShipped('the shipped artifact whose append carries the transaction clock', () => {
   const DATA_IMPL_CATEGORY = '0b'.repeat(32);
@@ -253,7 +253,7 @@ describeShipped('the shipped artifact whose append carries the transaction clock
       callerFunding: { utxo: initCoin, funder: callerFunder, changeAddress: source.address },
       vm: compositionMachine(),
     });
-    expect(callerDeployment.initialize.accepted, callerDeployment.initialize.objection).toBe(true);
+    expect(callerDeployment.initialize.accepted).toBe(true);
 
     const dataDeployment = await deployPerCallProxy({
       provider: network,
@@ -270,7 +270,7 @@ describeShipped('the shipped artifact whose append carries the transaction clock
       callerFunding: { utxo: dataInitCoin, funder: callerFunder, changeAddress: source.address },
       vm: compositionMachine(),
     });
-    expect(dataDeployment.initialize.accepted, dataDeployment.initialize.objection).toBe(true);
+    expect(dataDeployment.initialize.accepted).toBe(true);
 
     // The clock the hop's transaction carries: the field the frame's own record holds, which is what the body
     // reads back for `block.timestamp` and what the plan states the appended element's last field from.
@@ -328,7 +328,7 @@ describeShipped('the shipped artifact whose append carries the transaction clock
       vm: compositionMachine(),
     });
     expect(read.accepted, read.objection).toBe(true);
-    const events = read.value as readonly { readonly type_: bigint; readonly timestamp_: bigint }[];
+    const events = read.value as (StateRecord & { readonly type_: bigint; readonly timestamp_: bigint })[];
     expect(events).toHaveLength(1);
     expect(events[0]!.type_).toBe(1n);
     expect(events[0]!.timestamp_).toBe(clock);

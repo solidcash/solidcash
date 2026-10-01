@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import { layoutWithFacets } from './harness.js';
 import {
   FrameKind,
@@ -47,7 +48,7 @@ import {
   headSentinelCommitment,
   keyToSlot,
 } from '../../../src/stateful/SortedList.js';
-import { scriptToLockingBytecode, createUnlockingBytecode } from '../../../src/utils.js';
+import { createUnlockingBytecode } from '../../../src/utils.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 
 /**
@@ -105,7 +106,7 @@ const ENTRY_REDEEM = scriptToBytecode(
     CATEGORY, computeCollectionHash(artifact.stateLayout!.collections![0]!.signature),
   ),
 );
-const ENTRY_LOCK = scriptToLockingBytecode(ENTRY_REDEEM, 'p2sh32');
+const ENTRY_LOCK = encodeLockingBytecodeP2sh32(hash256(ENTRY_REDEEM));
 /** The entry covenant's `<masterInputIndex> <flag>` unlocking, as the data-NFT record's own builder shapes it. */
 const ENTRY_UNLOCK = createUnlockingBytecode('p2sh32', ENTRY_REDEEM, [
   encodeFunctionArgument(1n, 'bigint') as Uint8Array,

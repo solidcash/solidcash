@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import {
   asmToScript, chainCategory, hash256, scriptToBytecode, validatorAddress, validatorTemplateHash,
-  type PerCallTransaction as ModelledTransaction,
 } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
+import type { PerCallTransaction as ModelledTransaction } from '../../../../solidc/src/per-call/validator/index.js';
 import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
 import {
   deployMaster, verifyMasterDeployment, type DeployedMaster,

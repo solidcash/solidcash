@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { PerCallTransaction as ModelledTransaction } from '@solidcash/utils';
+import type { PerCallTransaction as ModelledTransaction } from '../../../../solidc/src/per-call/validator/index.js';
 import { accepted, expectRefusal, laidOut } from './validator-machine.js';
 import { categoryOf, materialise, mutableTokenShape, seedBytes } from '../validator/fixture.js';
 import { abbaPlan } from '../validator/plans.js';

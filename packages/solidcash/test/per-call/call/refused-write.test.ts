@@ -119,7 +119,7 @@ describe('a write whose entry refuses', () => {
     let message = '';
     await calls.add(20n).then(
       () => { throw new Error('the write was accepted'); },
-      (error: Error) => { message = error.message; },
+      (error: unknown) => { message = (error as Error).message; },
     );
     expect(message).toContain('counter overflow');
     expect(message).toContain('Counter.add()');

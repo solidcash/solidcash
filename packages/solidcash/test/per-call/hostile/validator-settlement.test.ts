@@ -25,7 +25,9 @@ describe('the shipped validator program holds read-only frames to their rules', 
     const after = composition.blocks.get('A.go')!.segments[1]!.find((entry) => entry.in === slot)!;
     after.viewIn = changed;
     after.viewOut = changed;
-    composition.outputs[slot]!.token = { ...composition.outputs[slot]!.token, nftCommitment: changed };
+    composition.outputs[slot] = {
+      ...composition.outputs[slot]!, token: { ...composition.outputs[slot]!.token, nftCommitment: changed },
+    };
     expectRefusal(materialise(composition), index, 'V10_STATIC_RECORD_CHANGED');
   });
 

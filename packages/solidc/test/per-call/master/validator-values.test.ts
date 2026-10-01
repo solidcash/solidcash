@@ -57,7 +57,7 @@ const VALIDATOR = 2;
 const RECORD = VALIDATOR + VALIDATOR_INPUT_SPAN;
 const USER = RECORD + 1;
 
-const token = (capability: 'minting' | 'mutable', commitment = new Uint8Array(0)): VmOutput['token'] =>
+const token = (capability: 'minting' | 'mutable', commitment: Uint8Array = new Uint8Array(0)): VmOutput['token'] =>
   ({ category: CATEGORY, amount: 0n, nft: { capability, commitment } });
 const container = (value: bigint): VmOutput => ({ lockingBytecode: CONTAINER_LOCK, valueSatoshis: value });
 const payment = (value: bigint): VmOutput => ({ lockingBytecode: USER_LOCK, valueSatoshis: value });

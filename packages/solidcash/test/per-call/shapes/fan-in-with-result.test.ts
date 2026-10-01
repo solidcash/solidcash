@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
   FrameKind,
@@ -15,6 +16,7 @@ import {
   encodeResultList,
   scriptToBytecode,
   type Artifact,
+  type FrameKindValue,
   type RecordEntry,
 } from '@solidcash/utils';
 import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
@@ -31,7 +33,7 @@ import {
 } from '../../../src/per-call/composer/index.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { bytesToSlotValue, encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { createUnlockingBytecode, scriptToLockingBytecode } from '../../../src/utils.js';
+import { createUnlockingBytecode } from '../../../src/utils.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { layoutWithFacets } from './harness.js';
 import {
@@ -222,7 +224,7 @@ const LEDGER_COLLECTION = built.artifacts.Token!.stateLayout!.collections![0]!;
 const LEDGER_REDEEM = scriptToBytecode(
   buildEntryNftCovenantScript(built.contracts.Token!.category, computeCollectionHash(LEDGER_COLLECTION.signature)),
 );
-const LEDGER_LOCK = scriptToLockingBytecode(LEDGER_REDEEM, 'p2sh32');
+const LEDGER_LOCK = encodeLockingBytecodeP2sh32(hash256(LEDGER_REDEEM));
 
 function ledgerUnlock(masterIndex: number): Uint8Array {
   return createUnlockingBytecode('p2sh32', LEDGER_REDEEM, [
@@ -453,7 +455,7 @@ function buildPlan(): Built {
   };
 
   const tokenMaster = (
-    spec: { master: string; entry: string; kind: number; enteredBy: string; sender: Uint8Array;
+    spec: { master: string; entry: string; kind: FrameKindValue; enteredBy: string; sender: Uint8Array;
       pushes: readonly Uint8Array[]; segments: readonly (readonly RecordEntry[])[]; retval?: Uint8Array },
   ): DraftMaster => ({
     ...master({
@@ -731,7 +733,7 @@ function buildOnePullPlan(order: 'published' | 'written' = 'published'): {
   const ledgerRedeem = scriptToBytecode(buildEntryNftCovenantScript(
     tokenContract.category, computeCollectionHash(ledgerCollection.signature),
   ));
-  const ledgerLock = scriptToLockingBytecode(ledgerRedeem, 'p2sh32');
+  const ledgerLock = encodeLockingBytecodeP2sh32(hash256(ledgerRedeem));
   const unlock = createUnlockingBytecode('p2sh32', ledgerRedeem, [
     encodeFunctionArgument(1n, 'bigint') as Uint8Array,
     encodeFunctionArgument(BigInt(indexOf('pull-1')), 'bigint') as Uint8Array,

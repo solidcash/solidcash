@@ -109,7 +109,7 @@ async function deployBoth(network: MockNetworkProvider): Promise<{
     callerFunding: { utxo: rosterInitCoin, funder: callerFunder, changeAddress: source.address },
     vm: compositionMachine(),
   });
-  expect(rosterDeployment.initialize.accepted, rosterDeployment.initialize.objection).toBe(true);
+  expect(rosterDeployment.initialize.accepted).toBe(true);
 
   const outerDeployment = await deployPerCallProxy({
     provider: network,
@@ -122,7 +122,7 @@ async function deployBoth(network: MockNetworkProvider): Promise<{
     callerFunding: { utxo: outerInitCoin, funder: callerFunder, changeAddress: source.address },
     vm: compositionMachine(),
   });
-  expect(outerDeployment.initialize.accepted, outerDeployment.initialize.objection).toBe(true);
+  expect(outerDeployment.initialize.accepted).toBe(true);
 
   return {
     rosterProxyCategoryId: rosterDeployment.proxy.categoryId,

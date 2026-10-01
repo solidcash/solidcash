@@ -12,7 +12,8 @@ import {
 } from '../shapes/harness.js';
 import {
   createComposedDerivationHost, deriveComposition, layOutMappingWrites, participant, planMappingWrite,
-  type CompositionDraftPlan, type DraftMaster, type MappingNodePlacement,
+  type CompositionDraft, type CompositionDraftPlan, type DerivationResult, type DraftMaster,
+  type MappingNodePlacement, type MappingWritePlan,
 } from '../../../src/per-call/composer/index.js';
 
 /**
@@ -81,7 +82,12 @@ function node(slot: Uint8Array, value: bigint): Uint8Array {
  * to `0`, each in its own frame's segment. The transaction spends `7` and writes `0`, which is the only pair of
  * commitments one node can have in one transaction.
  */
-function drive(): void {
+function drive(): {
+  readonly draft: CompositionDraft;
+  readonly derived: DerivationResult;
+  readonly slot: Uint8Array;
+  readonly transferWrite: MappingWritePlan;
+} {
   const { artifacts, contracts } = compileAndDeploy(SOURCE, {
     Token: TOKEN_LABEL, Vault: VAULT_LABEL, Hub: HUB_LABEL,
   });

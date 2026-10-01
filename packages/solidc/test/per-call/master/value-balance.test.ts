@@ -12,6 +12,7 @@ import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
+import type { PublishedRefusal } from './refused-entry.js';
 
 /**
  * `address(this).balance` in a per-call master (spec 4b): the value of the containers the transaction spends, with
@@ -165,7 +166,7 @@ describe('address(this).balance, compiled per-call', () => {
 
   it('refuses by name a body that reads another address\'s balance', () => {
     const other = compileString(OTHER_SOURCE, { composition: 'per-call' });
-    const refused = other.composition!.refusedEntries ?? [];
+    const refused = (other.composition as { refusedEntries?: PublishedRefusal[] }).refusedEntries ?? [];
     expect(refused.map((entry) => entry.functionName)).toStrictEqual(['Peek.peek()']);
     expect(refused[0]!.reason).toMatch(/reads the balance of an address other than its own/);
   });

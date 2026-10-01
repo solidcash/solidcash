@@ -106,7 +106,7 @@ interface Options {
 const kept = (viewIn: Uint8Array, viewOut: Uint8Array, index = STATE_INDEX): RecordEntry =>
   ({ in: index, out: index, viewIn, viewOut });
 
-function build(options: Options = {}): VmProgram {
+function build(options: Options = {}): Omit<VmProgram, 'inputIndex'> {
   // Which index each role takes. The record sits right after its master by default, and last when a case moves it
   // away from the master that reads it.
   const at = options.recordLast === true

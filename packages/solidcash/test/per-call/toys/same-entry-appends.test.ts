@@ -25,7 +25,7 @@ import {
 } from '../shapes/harness.js';
 import {
   assertCompositionSettlement, createComposedDerivationHost, deriveDepthFirst, layOutChunkRun,
-  participant, planChunkRun, type CompositionDraftPlan, type DraftMaster,
+  participant, planChunkRun, readPublishedStopSites, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
 /**
@@ -361,9 +361,8 @@ function composedThree(): NonNullable<typeof composed> {
 describe('one entry appending to one log three times', () => {
   it('publishes one call site per call, so the callee runs on one master per append', () => {
     const { artifacts } = compileAndDeploy(toySource(APPENDS), { Hub: HUB_LABEL, Log: LOG_LABEL });
-    const hub = (artifacts.Hub!.composition as {
-      stopSites: { entries: { functionName: string; sites: { sites: unknown[] } }[] };
-    }).stopSites.entries.find((entry) => entry.functionName === entryName('Hub', 'go'))!;
+    const hub = readPublishedStopSites(artifacts.Hub!).entries
+      .find((entry) => entry.functionName === entryName('Hub', 'go'))!;
     expect(hub.sites.sites).toStrictEqual([
       { kind: 'call', site: 0, callIndex: 0, descriptor: 0 },
       { kind: 'call', site: 1, callIndex: 1, descriptor: 1 },

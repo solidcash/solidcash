@@ -10,6 +10,9 @@ Run a package's focused suites, or one directory of them, with its per-call conf
     yarn workspace @solidcash/testing vitest run --config vitest.per-call.config.ts [<directory>]
     yarn workspace @solidcash/utils vitest run test/per-call
 
+Vitest does not check types. Check the `solidc` and `solidcash` per-call tests from the repository root with
+`npx tsc -p tsconfig.per-call-tests.json`.
+
 The per-call configs keep transpiled modules on disk between runs (`test.experimental.fsModuleCache`), skip
 per-file isolation and turn on the compiler's deterministic compile cache. Measured at `6f8d4b5ec`: `solidc`
 16.8 s with the package config, 13.3 s on a first run and 7.5 s on a repeat; `solidcash` 56.6 s, 22.1 s and

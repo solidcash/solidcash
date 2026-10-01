@@ -128,16 +128,14 @@ describe('ecrecover on the per-call path is admitted for every input shape', () 
 describe('the direct convention serves the same recovery', () => {
   it('compiles a valid recovery and marks it as recovery compute', () => {
     const artifact = compileString(VALID_SOURCE);
-    const fn = (artifact.abi as { name: string; ecrecoverCompute?: boolean; ecrecoverArgParams?: unknown }[])
-      .find((entry) => entry.name === 'check');
+    const fn = artifact.abi.find((entry) => entry.name === 'check');
     expect(fn?.ecrecoverCompute).toBe(true);
     expect(fn?.ecrecoverArgParams).toEqual([['h', 'v', 'r', 's']]);
   });
 
   it('compiles the bare name once the ecrecover option selects the projection', () => {
     const artifact = compileString(BARE_NAME_SOURCE, { ecrecover: 'p2pkh' });
-    const fn = (artifact.abi as { name: string; ecrecoverCompute?: boolean }[])
-      .find((entry) => entry.name === 'check');
+    const fn = artifact.abi.find((entry) => entry.name === 'check');
     expect(fn?.ecrecoverCompute).toBe(true);
   });
 });
@@ -193,7 +191,7 @@ interface Recovery {
 }
 
 const token = (
-  category: Uint8Array, capability: 'minting' | 'mutable' | 'none', commitment = new Uint8Array(0),
+  category: Uint8Array, capability: 'minting' | 'mutable' | 'none', commitment: Uint8Array = new Uint8Array(0),
 ): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable' | 'none'; commitment: Uint8Array } } =>
   ({ category, amount: 0n, nft: { capability, commitment } });
 

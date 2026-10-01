@@ -100,7 +100,7 @@ async function deployBoth(network: MockNetworkProvider): Promise<{
     callerFunding: { utxo: ledgerInitCoin, funder: callerFunder, changeAddress: source.address },
     vm: compositionMachine(),
   });
-  expect(ledgerDeployment.initialize.accepted, ledgerDeployment.initialize.objection).toBe(true);
+  expect(ledgerDeployment.initialize.accepted).toBe(true);
 
   const outerDeployment = await deployPerCallProxy({
     provider: network,
@@ -113,7 +113,7 @@ async function deployBoth(network: MockNetworkProvider): Promise<{
     callerFunding: { utxo: outerInitCoin, funder: callerFunder, changeAddress: source.address },
     vm: compositionMachine(),
   });
-  expect(outerDeployment.initialize.accepted, outerDeployment.initialize.objection).toBe(true);
+  expect(outerDeployment.initialize.accepted).toBe(true);
 
   return {
     ledgerProxyCategoryId: ledgerDeployment.proxy.categoryId,

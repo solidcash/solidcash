@@ -14,6 +14,7 @@ import {
   CompositionPools,
   participant,
   type CompositionDraftPlan,
+  type DraftInput,
   type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { layoutWithFacets } from '../shapes/harness.js';
@@ -149,7 +150,7 @@ function buildPlan(
     }));
   });
 
-  const inputs: CompositionDraftPlan['inputs'] = {
+  const inputs: Record<string, DraftInput> = {
     [HUB_MASTER]: { source: masterInput(hub) },
     [VALIDATOR_ID]: {
       source: {

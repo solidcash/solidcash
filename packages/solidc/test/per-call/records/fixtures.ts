@@ -37,7 +37,7 @@ export function maskedSha256(key: Uint8Array): Uint8Array {
 }
 
 /** Node layout `slot(32) || next(32) || value tail` (SPEC:1459), concatenated by hand. */
-export function entryCommitment(slot: Uint8Array, next: Uint8Array, value = new Uint8Array()): Uint8Array {
+export function entryCommitment(slot: Uint8Array, next: Uint8Array, value: Uint8Array = new Uint8Array()): Uint8Array {
   return concatBytes(slot, next, value);
 }
 

@@ -123,7 +123,7 @@ function fill(unit: Record<string, Artifact>, name: 'Caller' | 'Callee'): Uint8A
   });
 }
 
-function build(options: Options = {}): Program {
+function build(options: Options = {}): Omit<Program, 'inputIndex'> {
   const unit = options.callerUnit ?? artifacts;
   const callerProgram = fill(unit, 'Caller');
   const calleeProgram = fill(artifacts, 'Callee');

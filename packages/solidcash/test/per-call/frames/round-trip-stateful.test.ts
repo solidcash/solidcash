@@ -490,7 +490,7 @@ describe('a two-contract round trip where both contracts keep records', () => {
     const event = outputs[EVENT_INDEX]!;
 
     expect(outputs.length).toBe(CHANGE_INDEX + 1);
-    expect(event).toStrictEqual(plan.trailingOutputs[0]);
+    expect(event).toStrictEqual(plan.trailingOutputs![0]);
     expect(event.token?.category).toStrictEqual(CATEGORY_A);
     expect(event.token?.nft?.capability).toBe('none');
     expect(event.token?.nft?.commitment)
@@ -614,9 +614,10 @@ describe('a two-contract round trip where both contracts keep records', () => {
     const block = structuredClone(draft.blockOf(A_FIRST)) as WitnessBlock;
     block.segments[0] = [kept(RECORD_A_INDEX, A_SPENT, A_AFTER_K)];
     block.segments[1] = [kept(RECORD_A_INDEX, A_AFTER_K, A_AFTER_K)];
-    model.inputs[participant(draft.layout, A_FIRST).index]!.unlockingBytecode =
+    (model.inputs[participant(draft.layout, A_FIRST).index]! as { unlockingBytecode: Uint8Array }).unlockingBytecode =
       buildMasterUnlockingBytecode(block, master.argumentPushes, master.redeemScript);
-    model.outputs[participant(draft.layout, RECORD_A).index]!.token.nftCommitment = A_AFTER_K;
+    (model.outputs[participant(draft.layout, RECORD_A).index]!.token as { nftCommitment: Uint8Array }).nftCommitment =
+      A_AFTER_K;
 
     const decision = decideValidator(model, {
       validatorTemplate: VALIDATOR_PROGRAM,

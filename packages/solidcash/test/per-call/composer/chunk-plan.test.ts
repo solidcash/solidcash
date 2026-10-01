@@ -112,18 +112,18 @@ describe('the chunk plan', () => {
     expect(record.entry).toStrictEqual({
       in: 7, out: 7, viewIn: plan.spent.chunks[0], viewOut: plan.written.chunks[0],
     });
-    expect(record.input.source.token).toStrictEqual({
+    expect(record.input!.source.token).toStrictEqual({
       category: CATEGORY, amount: 0n, nft: { capability: 'mutable', commitment: plan.spent.chunks[0] },
     });
-    expect(record.input.output?.token?.nft?.commitment).toStrictEqual(plan.written.chunks[0]);
-    expect(record.input.source.lockingBytecode).toStrictEqual(lock);
-    expect(record.input.output?.lockingBytecode).toStrictEqual(lock);
+    expect(record.input!.output?.token?.nft?.commitment).toStrictEqual(plan.written.chunks[0]);
+    expect(record.input!.source.lockingBytecode).toStrictEqual(lock);
+    expect(record.input!.output?.lockingBytecode).toStrictEqual(lock);
     // The covenant's own unlocking bytecode names the writing master, then the flag that takes the write path,
     // then the program the spend is evaluated against.
-    expect(record.input.unlockingBytecode).toStrictEqual(chunkUnlocking('name', 0));
+    expect(record.input!.unlockingBytecode).toStrictEqual(chunkUnlocking('name', 0));
     expect(run.entries).toStrictEqual([record.entry]);
     expect(layOutChunkRun({ plan, category: CATEGORY, base: 7, writer: 3, valueSatoshis: 1_000n })
-      .records[0]!.input.unlockingBytecode).toStrictEqual(chunkUnlocking('name', 3));
+      .records[0]!.input!.unlockingBytecode).toStrictEqual(chunkUnlocking('name', 3));
   });
 
   it('keeps two variables\' collections apart', () => {
@@ -137,7 +137,7 @@ describe('the chunk plan', () => {
     const lockOf = (variable: string): Uint8Array => {
       const plan = planChunkRun({ layout: twoLayout, variable, spent: SPENT, written: WRITTEN });
       return layOutChunkRun({ plan, category: CATEGORY, base: 2, writer: 0, valueSatoshis: 1_000n })
-        .records[0]!.input.source.lockingBytecode;
+        .records[0]!.input!.source.lockingBytecode;
     };
     expect(lockOf('a')).toStrictEqual(covenantLock('a'));
     expect(lockOf('b')).toStrictEqual(covenantLock('b'));

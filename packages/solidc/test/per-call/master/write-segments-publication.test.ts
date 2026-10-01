@@ -18,6 +18,9 @@ interface PublishedWrite {
   readonly segment: number | 'last';
 }
 
+/** The identity a published write is looked up by. */
+type WriteIdentity = Omit<PublishedWrite, 'segment'>;
+
 /** The writes the artifact publishes for one entry, keyed the way a builder reads the table. */
 function publishedWrites(
   artifact: { readonly composition?: unknown },
@@ -93,11 +96,11 @@ const fixedAndSized = compileStringMulti(FIXED_AND_SIZED_SOURCE, { composition: 
 const varyingLoop = compileStringMulti(VARYING_LOOP_SOURCE, { composition: 'per-call' }).Ledger!;
 
 /** The write a published fact names, so the facts can be keyed by the identity a builder looks one up by. */
-const identityOf = (write: PublishedWrite): string => (write.record !== undefined ? `record:${write.record}`
+const identityOf = (write: WriteIdentity): string => (write.record !== undefined ? `record:${write.record}`
   : write.collection !== undefined ? `mapping:${write.collection}` : `dynamic:${String(write.variable)}`);
 
 /** The segment of one published write, or undefined when the entry publishes no such write. */
-function segmentOf(artifact: { readonly composition?: unknown }, write: PublishedWrite): number | 'last' | undefined {
+function segmentOf(artifact: { readonly composition?: unknown }, write: WriteIdentity): number | 'last' | undefined {
   const published = publishedWrites(artifact, 'Ledger', 'move');
   return published.writes?.find((candidate) => identityOf(candidate) === identityOf(write))?.segment;
 }

@@ -76,7 +76,7 @@ interface Spend {
 
 /** Evaluates one compiled entry's own input, and reports the machine's verdict. */
 function verdictOf(
-  artifacts: Record<string, { bytecode: string; composition?: { placeholders: unknown } }>,
+  artifacts: ReturnType<typeof compileStringMulti>,
   entry: string,
   spend: Spend,
   expectedCalls: number,
@@ -85,7 +85,7 @@ function verdictOf(
     const artifact = artifacts[name]!;
     return fillPlaceholders(
       scriptToBytecode(asmToScript(artifact.bytecode)),
-      artifact.composition!.placeholders as never,
+      artifact.composition!.placeholders,
       { category: categorySlotValue(category), contractAddress: address, templateHash: TEMPLATE_HASH },
     );
   };
@@ -114,7 +114,7 @@ function verdictOf(
       argsHash: spend.recordArgsHash ?? sha256(CALLEE_CALL_DATA),
       result: EMPTY,
     })),
-    segments: Array.from({ length: declaredCalls + 1 }, () => [] as number[]),
+    segments: Array.from({ length: declaredCalls + 1 }, () => []),
     events: [],
     sends: [],
   };
@@ -201,7 +201,7 @@ describe('an entry whose call runs only in one arm', () => {
   });
 
   it('refuses a record whose digest is not the call the arm makes', () => {
-    expect(verdictOf(ARTIFACTS, 'once', { take: true, declaredCalls: 1, recordArgsHash: sha256(EMPTY) }).accepted)
+    expect(verdictOf(ARTIFACTS, 'once', { take: true, declaredCalls: 1, recordArgsHash: sha256(EMPTY) }, 1).accepted)
       .toBe(false);
   });
 });

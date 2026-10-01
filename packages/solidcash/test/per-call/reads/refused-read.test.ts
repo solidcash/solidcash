@@ -77,7 +77,7 @@ describe('a read whose entry refuses', () => {
     let message = '';
     await calls.balanceOf(OTHER_LOCK).then(
       () => { throw new Error('the read resolved a value'); },
-      (error: Error) => { message = error.message; },
+      (error: unknown) => { message = (error as Error).message; },
     );
     // The reason comes from the entry's own selector, whose debug metadata names the message. The refusal also
     // names the entry, so a caller can tell which read did not answer.
@@ -90,7 +90,7 @@ describe('a read whose entry refuses', () => {
     let message = '';
     await calls.guarded(OTHER_LOCK).then(
       () => { throw new Error('the read resolved a value'); },
-      (error: Error) => { message = error.message; },
+      (error: unknown) => { message = (error as Error).message; },
     );
     // No message is published for a bare `require`, so the refusal is generic: it names the entry and the failing
     // source line rather than silently succeeding.

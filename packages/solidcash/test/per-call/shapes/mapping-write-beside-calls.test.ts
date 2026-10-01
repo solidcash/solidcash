@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import { layoutWithFacets } from './harness.js';
 import {
   FrameKind,
@@ -12,7 +13,7 @@ import {
   type RecordEntry,
 } from '@solidcash/utils';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
-import { createUnlockingBytecode, scriptToLockingBytecode } from '../../../src/utils.js';
+import { createUnlockingBytecode } from '../../../src/utils.js';
 import { encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   composeAndDerive,
@@ -175,7 +176,7 @@ function buildPlan(entry: Entry, shape: NodeShape): CompositionDraftPlan {
   const redeem = scriptToBytecode(buildEntryNftCovenantScript(arbiter.category,
     computeCollectionHash(artifacts.Arbiter!.stateLayout!.collections![0]!.signature)));
   const nodeSource = {
-    lockingBytecode: scriptToLockingBytecode(redeem, 'p2sh32'), valueSatoshis: 20_000n,
+    lockingBytecode: encodeLockingBytecodeP2sh32(hash256(redeem)), valueSatoshis: 20_000n,
     token: token(arbiter.category, 'mutable', shape.before),
   };
   const validator = validatorFor(arbiter.category);

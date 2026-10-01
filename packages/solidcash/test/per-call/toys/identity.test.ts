@@ -343,7 +343,7 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
     const withHelper = MAPPING_SWEEP_SOURCE.replace(/ }$/, ' function h(int x) private returns (int) { return x + 1; } }');
     for (const source of [MAPPING_SWEEP_SOURCE, withHelper]) {
       const artifacts = compileStringMulti(source, { composition: 'per-call' }) as
-        Record<string, { bytecode?: string }>;
+        Record<string, { bytecode?: string; composition?: unknown }>;
       expect(publishedRefusals(artifacts)).toStrictEqual([]);
       expect(artifacts.Tok!.bytecode!.length).toBeGreaterThan(0);
     }
@@ -360,7 +360,7 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
       const artifacts = compileStringMulti(READ_THROUGH_SELF_SOURCE, { composition }) as
         Record<string, {
           bytecode?: string;
-          abi: { name: string; entryAccesses?: readonly { slotIndex: number; collection: string }[] }[];
+          abi: readonly { name: string; entryAccesses?: readonly { slotIndex: number; collection: string }[] }[];
         }>;
       const row = artifacts.Tok!.abi.find((abi) => abi.name === 'readThrough')!;
       expect(row.entryAccesses!.map((access) => [access.collection, access.slotIndex >= 0]))

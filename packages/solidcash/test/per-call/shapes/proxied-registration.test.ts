@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { layoutWithFacets } from './harness.js';
-import { encodeDataPush } from '@bitauth/libauth';
+import { encodeDataPush, encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import {
   FrameKind,
   buildEntryNftCovenantScript,
@@ -41,7 +41,7 @@ import {
   headSentinelCommitment,
   keyToSlot,
 } from '../../../src/stateful/SortedList.js';
-import { scriptToLockingBytecode, createUnlockingBytecode } from '../../../src/utils.js';
+import { createUnlockingBytecode } from '../../../src/utils.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import {
   USER_LOCK,
@@ -161,7 +161,7 @@ const ENTRY_REDEEM = scriptToBytecode(
     computeCollectionHash(implementationArtifact.stateLayout!.collections![0]!.signature),
   ),
 );
-const ENTRY_LOCK = scriptToLockingBytecode(ENTRY_REDEEM, 'p2sh32');
+const ENTRY_LOCK = encodeLockingBytecodeP2sh32(hash256(ENTRY_REDEEM));
 /** The entry covenant's `<masterInputIndex> <flag>` unlocking, authorized by the proxy's own master. */
 const entryUnlock = (masterInputIndex: number): Uint8Array => createUnlockingBytecode('p2sh32', ENTRY_REDEEM, [
   encodeFunctionArgument(1n, 'bigint') as Uint8Array,

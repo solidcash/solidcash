@@ -4,7 +4,7 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import {
-  computeEventNameHash, encodeArgumentList, encodeIntegerValue, encodeWitnessBlock, scriptToBytecode,
+  computeEventNameHash, encodeArgumentList, encodeIntegerValue, encodeWitnessBlock,
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
@@ -177,7 +177,7 @@ describe('a per-call master whose constructor emits an event', () => {
   it('publishes the constructor as a dispatched body beside its entry', () => {
     expect(artifact.composition?.convention).toBe('per-call');
     expect(artifact.abi.map((entry) => entry.name)).toContain('__construct');
-    expect(scriptToBytecode(deployed.script).length).toBeGreaterThan(0);
+    expect(deployed.script.length).toBeGreaterThan(0);
   });
 
   it('is accepted when the constructor emits the one event the block lists', () => {

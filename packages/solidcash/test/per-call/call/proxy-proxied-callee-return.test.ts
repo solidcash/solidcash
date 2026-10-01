@@ -110,7 +110,7 @@ async function deployProxiedCallee(
     callerFunding: { utxo: initCoin, funder: setup_.funder, changeAddress: source.address },
     vm: compositionMachine(),
   });
-  expect(deployment.initialize.accepted, deployment.initialize.objection).toBe(true);
+  expect(deployment.initialize.accepted).toBe(true);
   return {
     proxyCategoryId: deployment.proxy.categoryId,
     implementationCategoryId: deployment.implementation.categoryId,
@@ -160,7 +160,7 @@ async function deployCaller(setup_: Setup, dataAddress: Uint8Array, seed: string
     callerFunding: { utxo: initCoin, funder: setup_.funder, changeAddress: source.address },
     vm: compositionMachine(),
   });
-  expect(deployment.initialize.accepted, deployment.initialize.objection).toBe(true);
+  expect(deployment.initialize.accepted).toBe(true);
   return {
     proxyCategoryId: deployment.proxy.categoryId,
     implementationCategoryId: deployment.implementation.categoryId,

@@ -192,7 +192,7 @@ describe('a generated proxy', () => {
     expect(deployment.initialize.accepted).toBe(true);
     // The delegate frame's block lists the event, and the payload is what the entry's own body computed.
     const payload = new Uint8Array(Buffer.from(
-      encodeEventCommitment(artifacts.Impl!.events![0]!.parameters, [7n]), 'hex',
+      encodeEventCommitment(artifacts.Impl!.events![0]!.parameters, [7n]),
     ));
     expect(deployment.initialize.writtenEventCommitments.map(bytesToHex)).toStrictEqual([bytesToHex(payload)]);
     const eventIndex = deployment.initialize.draft.trailingOutputs[0]!.index;

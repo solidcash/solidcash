@@ -164,7 +164,7 @@ async function run(solidityImportCompat: boolean, seed: number): Promise<{
   return {
     accepted: answered.accepted,
     objections: answered.verdicts.filter((verdict) => !verdict.accepted)
-      .map((verdict) => `${verdict.participant}: ${String(verdict.objection ?? 'refused')}`),
+      .map((verdict) => `${verdict.id}: ${String(verdict.objection ?? 'refused')}`),
     ...(answered.broadcast === undefined ? {} : { broadcast: answered.broadcast }),
   };
 }

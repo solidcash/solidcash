@@ -201,7 +201,7 @@ describe('a per-call master whose dynamic write shares the frame with a call', (
     // recomputes the chunk and refuses it.
     const program = outcome.draft.programFor(APP_MASTER);
     const outputs = program.transaction.outputs.map((output, index) => index === built.base
-      ? { ...output, token: { ...output.token, nft: { ...output.token!.nft!, commitment: new Uint8Array([7]) } } }
+      ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: new Uint8Array([7]) } } }
       : output);
     const machine = compositionMachine();
     const state = machine.evaluate({

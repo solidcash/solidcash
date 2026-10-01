@@ -1,4 +1,4 @@
-import { asmToScript, hexToBytes, scriptToAsm, scriptToBytecode, type Artifact } from '@solidcash/utils';
+import { asmToScript, bytecodeToAsm, hexToBytes, scriptToBytecode, type Artifact } from '@solidcash/utils';
 
 /**
  * A hand-built artifact carrying the published composition surface.
@@ -39,7 +39,7 @@ export const slotScriptBytes = (): Uint8Array => hexToBytes(SLOT_SCRIPT_HEX);
  * it means anything, and a fixture that skipped that step would let a deployment that reads the program as raw bytes
  * pass its tests while failing on every real artifact.
  */
-export const SLOT_SCRIPT_ASM = scriptToAsm(slotScriptBytes());
+export const SLOT_SCRIPT_ASM = bytecodeToAsm(slotScriptBytes());
 
 /** Assembles an artifact's program the way deployment does. */
 export const programBytesOf = (artifact: Artifact): Uint8Array => scriptToBytecode(asmToScript(artifact.bytecode));
@@ -57,5 +57,5 @@ export function artifactFixture(overrides: Partial<Artifact> = {}): Artifact {
       placeholders: { version: 1, categoryOffset: CATEGORY_OFFSET, addressOffset: ADDRESS_OFFSET },
     },
     ...overrides,
-  };
+  } as Artifact;
 }

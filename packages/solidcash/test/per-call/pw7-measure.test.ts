@@ -44,6 +44,7 @@ import {
   planMappingWrite,
   type CompositionDraft,
   type CompositionDraftPlan,
+  type DraftInput,
   type DraftMaster,
   type MappingNodePlacement,
 } from '../../src/per-call/composer/index.js';
@@ -909,7 +910,7 @@ function driveManyMasters(): {
     }));
   });
 
-  const inputs: CompositionDraftPlan['inputs'] = {
+  const inputs: Record<string, DraftInput> = {
     'hub-1': { source: masterInput(hub) },
     validator: {
       source: {

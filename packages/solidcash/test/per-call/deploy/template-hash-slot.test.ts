@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compositionPlaceholders } from 'solidc';
 import {
-  asmToScript, scriptToAsm, scriptToBytecode, validatorTemplateHash, type Artifact,
+  asmToScript, bytecodeToAsm, scriptToBytecode, validatorTemplateHash, type Artifact,
 } from '@solidcash/utils';
 import { deployMaster, verifyMasterDeployment } from '../../../src/per-call/deploy/index.js';
 
@@ -133,11 +133,11 @@ describe('deploying a master that recognises a validator', () => {
   /** An artifact over a script reserving all three slots, published the way a compiler publishes one. */
   const artifactWithThreeSlots = (): Artifact => {
     const { script } = scriptWith(true);
-    return {
+    const artifact: Partial<Artifact> = {
       contractName: 'Ledger',
       constructorInputs: [],
       abi: [],
-      bytecode: scriptToAsm(script),
+      bytecode: bytecodeToAsm(script),
       source: 'contract Ledger {}',
       composition: {
         convention: 'per-call',
@@ -150,6 +150,7 @@ describe('deploying a master that recognises a validator', () => {
         },
       },
     };
+    return artifact as Artifact;
   };
 
   it('fills the program hash into the reserved slot and verifies the result', () => {

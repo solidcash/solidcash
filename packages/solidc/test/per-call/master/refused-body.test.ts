@@ -177,7 +177,8 @@ describe('a refused call-making entry', () => {
     expect(refusals.map((refused) => refused.functionName)).toStrictEqual(['Feed.pick()']);
     expect(refusals.find((refused) => refused.functionName === 'Feed.pick()')!.reason)
       .toContain('is in a body that switches');
-    const stopSites = refusedCallArtifact.composition?.stopSites as { entries: { calls: unknown[] }[] };
+    const { stopSites } = (refusedCallArtifact.composition as
+      { stopSites: { entries: { calls: unknown[] }[] } } | undefined)!;
     expect(stopSites.entries.flatMap((entry) => entry.calls)).toStrictEqual([]);
   });
 
@@ -226,8 +227,8 @@ describe('a call-making entry the master serves', () => {
     const refusals = publishedRefusals(compileStringMulti(SERVED_CALL_SOURCE, { composition: 'per-call' }) as
       Record<string, { composition?: unknown }>);
     expect(refusals).toStrictEqual([]);
-    const entry = (servedCallArtifact.composition?.stopSites as
-      { entries: { functionName: string; calls: unknown[] }[] }).entries
+    const entry = (servedCallArtifact.composition as
+      { stopSites: { entries: { functionName: string; calls: unknown[] }[] } } | undefined)!.stopSites.entries
       .find((candidate) => candidate.functionName === 'Feed.readBack()')!;
     expect(entry.calls).toHaveLength(1);
   });

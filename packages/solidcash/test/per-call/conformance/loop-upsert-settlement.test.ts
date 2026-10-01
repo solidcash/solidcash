@@ -3,7 +3,7 @@ import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { type Artifact } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { Contract, SignatureTemplate } from '../../../src/index.js';
+import { Contract, SignatureTemplate, type FunctionArgument } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
@@ -124,7 +124,7 @@ async function call(source: string, entry: string, args: readonly unknown[]): Pr
 /** The verdicts of a refused call, as one line, for the assertion that names the reason. */
 const objectionsOf = (answered: CallResult): string => answered.verdicts
   .filter((verdict) => !verdict.accepted)
-  .map((verdict) => `${verdict.participant}: ${String(verdict.objection ?? 'refused')}`)
+  .map((verdict) => `${verdict.id}: ${String(verdict.objection ?? 'refused')}`)
   .join('; ');
 
 /** The commitment of an output's token, or undefined for one that carries no NFT. */
@@ -137,7 +137,9 @@ Uint8Array | undefined => output.token?.nft?.commitment;
  * The order is taken from the shipped planner - the entry's own key hash of the argument as it hands it over -
  * rather than assumed from the address text.
  */
-function ascendingKeys(count: number, source: string = VARYING_SOURCE, tail: readonly unknown[] = [42n]): string[] {
+function ascendingKeys(
+  count: number, source: string = VARYING_SOURCE, tail: readonly FunctionArgument[] = [42n],
+): string[] {
   const artifact = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
   return Array.from({ length: 48 }, (_unused, seed) => binToHex(new Uint8Array(20).fill(seed * 5 + 1)))
     .map((address) => {

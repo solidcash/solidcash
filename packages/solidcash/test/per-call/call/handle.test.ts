@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { HDSigner } from '../../../src/index.js';
+import { HDSigner, type TransactionDetails } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
@@ -116,7 +116,7 @@ describe('the call surface of a deployed per-call contract', () => {
 
     // Awaiting the call sends it; the receipt names the transaction the composition was broadcast as.
     const receipt = await calls.add(4n);
-    expect(receipt.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect((receipt as TransactionDetails).txid).toMatch(/^[0-9a-f]{64}$/);
 
     // The record the call wrote, read back through the shipped deployment reader and decoded with the shipped
     // decoder, holds the value the entry's own body computed.

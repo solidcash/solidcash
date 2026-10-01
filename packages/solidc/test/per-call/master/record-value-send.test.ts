@@ -60,7 +60,7 @@ function verdict(access: Access, sends: boolean, recordOut: bigint): boolean {
   const commitment = (paid: bigint): Uint8Array =>
     hexToBin(buildPushdataCommitment(artifact.stateLayout!, { paid }, 0));
   const after = access === 'writes' ? 5n + AMOUNT : 5n;
-  const token = (capability: 'minting' | 'mutable', bytes = new Uint8Array(0)): VmOutput['token'] =>
+  const token = (capability: 'minting' | 'mutable', bytes: Uint8Array = new Uint8Array(0)): VmOutput['token'] =>
     ({ category: CATEGORY, amount: 0n, nft: { capability, commitment: bytes } });
   // Inputs: the master, its record, the user, then the container a send pays from.
   const block: WitnessBlock = {

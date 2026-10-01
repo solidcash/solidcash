@@ -390,7 +390,7 @@ function mutantAccepted(inputIndex: number): boolean {
 interface VmToken {
   readonly category: Uint8Array;
   readonly amount: bigint;
-  readonly nft: { readonly capability: string; readonly commitment: Uint8Array };
+  readonly nft?: { readonly capability: string; readonly commitment: Uint8Array };
 }
 
 /** The transaction as the validator derivation reads it, built from the same bytes the machine evaluates. */
@@ -398,10 +398,11 @@ function validatorModel(composition: MutantComposition): PerCallTransaction {
   const shape = (held: { readonly token?: VmToken }): TokenShape => {
     const spent = held.token;
     if (spent === undefined) return tokenShape(new Uint8Array(0), TokenCapability.NONE, false);
-    const capability = spent.nft.capability === 'minting' ? TokenCapability.MINTING
-      : spent.nft.capability === 'mutable' ? TokenCapability.MUTABLE : TokenCapability.NONE;
+    const nft = spent.nft!;
+    const capability = nft.capability === 'minting' ? TokenCapability.MINTING
+      : nft.capability === 'mutable' ? TokenCapability.MUTABLE : TokenCapability.NONE;
     return tokenShape(
-      spent.category, capability, spent.nft.capability !== 'none', spent.nft.commitment, spent.amount,
+      spent.category, capability, nft.capability !== 'none', nft.commitment, spent.amount,
     );
   };
   return {

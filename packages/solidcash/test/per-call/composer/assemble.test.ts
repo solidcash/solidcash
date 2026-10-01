@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { INDEX_NONE, decodeTranscript, decodeWitnessBlock, encodeArgumentList, splitFirstPush } from '@solidcash/utils';
 import {
-  assembleComposition, UnresolvedReferenceError, type CompositionPlan, type PlannedMaster,
+  assembleComposition, declaredValidators, UnresolvedReferenceError, type CompositionPlan, type PlannedMaster,
 } from '../../../src/per-call/composer/assemble.js';
 import { assertValidatorCoverage, ValidatorCoverageError } from '../../../src/per-call/composer/need-test.js';
 import { FrameKind } from '@solidcash/utils';
@@ -163,7 +163,7 @@ describe('assembling a composition', () => {
       validator: {
         id: 'validator',
         covers: ['Vault'],
-        redeemScript: Uint8Array.from(plan.validator!.redeemScript),
+        redeemScript: Uint8Array.from(declaredValidators(plan)[0]!.redeemScript),
         settles: [{ category: CATEGORY, stateInputs: ['DA'] }],
       },
     });

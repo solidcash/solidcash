@@ -200,7 +200,7 @@ describe('a plan whose entry emits after its call returns', () => {
   const verdict = (
     draft: ReturnType<typeof createComposedDerivationHost>['draft'],
     master: string,
-    mutate: (outputs: readonly VmOutput[]) => readonly VmOutput[] = (outputs) => outputs,
+    mutate: (outputs: VmOutput[]) => VmOutput[] = (outputs) => outputs,
   ): string => {
     const program = draft.programFor(master);
     const vm = machine();
@@ -215,7 +215,7 @@ describe('a plan whose entry emits after its call returns', () => {
   /** Its own contract's category, as an immutable NFT carrying `commitment`, at the place of output `at`. */
   const ownCategoryImmutable = (
     outputs: readonly VmOutput[], at: number, category: Uint8Array, commitment: Uint8Array,
-  ): readonly VmOutput[] => outputs.map((output, offset) => (offset === at
+  ): VmOutput[] => outputs.map((output, offset) => (offset === at
     ? { ...output, token: { category, amount: 0n, nft: { capability: 'none' as const, commitment } } }
     : output));
 
@@ -240,7 +240,7 @@ describe('a plan whose entry emits after its call returns', () => {
 
     // Output 6 of the spec's set: `A`'s category, immutable, carrying what `A.f` emitted.
     const carried = draft.programFor(A_FIRST).transaction.outputs[eventIndex]!;
-    expect(carried).toStrictEqual(plan.trailingOutputs[0]);
+    expect(carried).toStrictEqual(plan.trailingOutputs![0]);
     expect(carried.token?.category).toStrictEqual(CATEGORY_A);
     expect(carried.token?.nft?.capability).toBe('none');
     expect(carried.token?.nft?.commitment)
@@ -274,7 +274,7 @@ describe('a plan whose entry emits after its call returns', () => {
     const event = artifacts.B!.events![0]!;
     const payload = encodeEventCommitment(event.parameters, [1n]);
 
-    const appended = (outputs: readonly VmOutput[]): readonly VmOutput[] => [
+    const appended = (outputs: readonly VmOutput[]): VmOutput[] => [
       ...outputs, eventOutput(CATEGORY_B, event.signature, payload),
     ];
     expect(verdict(draft, B_MASTER, appended)).toContain('refused');

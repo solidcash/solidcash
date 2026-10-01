@@ -79,7 +79,7 @@ interface Options {
   readonly outputCommitment?: Uint8Array;
 }
 
-function build(options: Options = {}): VmProgram {
+function build(options: Options = {}): Omit<VmProgram, 'inputIndex'> {
   const record = options.recordLast === true ? FAR_RECORD : NEAR_RECORD;
   const declaration = options.declared?.(record)
     ?? { in: record, out: record, viewIn: BEFORE, viewOut: AFTER };

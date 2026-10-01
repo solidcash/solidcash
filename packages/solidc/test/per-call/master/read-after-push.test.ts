@@ -239,7 +239,7 @@ describe('a per-call body that reads a mapping entry after a call that follows i
   const recordOf = (count: bigint): Uint8Array => hexToBin(buildPushdataCommitment(layout, { count }, 0));
   const at = { caller: 0, user: 1, data: 2, node: 3, callee: 4, validator: 5, created: 6 };
   const satoshis = 20_000n;
-  const empty = new Uint8Array(0);
+  const empty: Uint8Array = new Uint8Array(0);
 
   type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
   type VmTransaction = NonNullable<VmProgram['transaction']>;

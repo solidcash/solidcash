@@ -157,7 +157,7 @@ function evaluateSpend(source: string, options: SpendOptions): boolean {
   return vm.stateSuccess(vm.evaluate({ inputIndex: masterIndex, sourceOutputs, transaction })) === true;
 }
 
-interface FrameOptions extends Omit<Partial<SpendOptions>, 'constructorPushes'> {
+interface FrameOptions extends Omit<SpendOptions, 'constructorPushes'> {
   /** The `owner` constructor argument; the caller's lock by default, so `msg.sender` matches. */
   readonly owner?: Uint8Array;
   /** The `expected` constructor argument; the baked `addrX` by default, so `address(this)` matches. */

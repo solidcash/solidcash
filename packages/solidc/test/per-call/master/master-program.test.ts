@@ -53,7 +53,7 @@ const contains = (script: Uint8Array, pattern: readonly number[]): boolean => {
 };
 
 /** Every offset at which `pattern` occurs in `script`, in script order. */
-const offsetsOf = (script: Uint8Array, pattern: readonly number[]): number[] => {
+const offsetsOf = (script: Uint8Array, pattern: Uint8Array): number[] => {
   const offsets: number[] = [];
   for (let index = 0; index + pattern.length <= script.length; index += 1) {
     if (pattern.every((byte, offset) => script[index + offset] === byte)) offsets.push(index);

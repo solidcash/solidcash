@@ -115,7 +115,7 @@ function verdicts(spend: Spend): { caller: Verdict; callee: Verdict; validator: 
       kind: FrameKind.CALL, target: ADDRESS_CALLEE, value: 0n, calleeRef: CALLEE_INDEX,
       argsHash: sha256(callData(spend.calleeArgument)), result: TRUE_RESULT,
     })),
-    segments: Array.from({ length: spend.declaredCalls + 1 }, () => [] as number[]),
+    segments: Array.from({ length: spend.declaredCalls + 1 }, () => []),
     events: [], sends: [],
   };
   const calleeBlock: WitnessBlock = {

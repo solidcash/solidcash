@@ -1,0 +1,535 @@
+--- a/packages/solidcash/src/per-call/proxy/call-resolution.ts
++++ b/packages/solidcash/src/per-call/proxy/call-resolution.ts
+@@ -64,6 +64,14 @@
+   readonly senderAddress?: Uint8Array;
+   /** The caller's constructor arguments, when a routing forwards one. */
+   readonly constructorArgs?: readonly FunctionArgument[];
++  /**
++   * The earlier calls' results this caller's arguments read, keyed the way the expression evaluator reads them.
++   *
++   * An argument built from an earlier call's result is not fixed by the caller's own facts: the hop states it from
++   * the result a settled pass learned, or from a stand-in until one is learned, and settles again until the two
++   * agree. Absent leaves such an argument unresolved, which is refused by name.
++   */
++  readonly argumentReturns?: ReadonlyMap<string, FunctionArgument>;
+ }
+ 
+ /** One published call site resolved to what a plan states. */
+@@ -83,6 +91,11 @@
+  */
+ export interface CallResolver {
+   resolve(source: ArgSource, occurrence: number): FunctionArgument | undefined;
++  /**
++   * One call argument, read as `resolve` reads it and also from the earlier calls' results the caller handed over
++   * (`argumentReturns`), which a target or a condition is never resolved from.
++   */
++  resolveArgument(source: ArgSource, occurrence: number): FunctionArgument | undefined;
+   evaluate(
+     expression: ExternalCallExpression,
+     occurrence: number,
+@@ -135,7 +148,10 @@
+   const callerInputs = entryRowOf(inputs.artifact, inputs.functionName)
+     .inputs.map((input) => ({ type: input.type }));
+ 
+-  const resolve = (source: ArgSource, occurrence: number): FunctionArgument | undefined => {
++  // `externalReturns` is the earlier results an argument may read; a target or a condition is resolved without them.
++  const resolve = (
++    source: ArgSource, occurrence: number, externalReturns?: ReadonlyMap<string, FunctionArgument>,
++  ): FunctionArgument | undefined => {
+     switch (source.kind) {
+       case 'forward':
+         return source.paramIndex === undefined ? undefined : inputs.args[source.paramIndex];
+@@ -168,7 +184,8 @@
+         return BigInt(source.initialValue) + step * BigInt(occurrence);
+       }
+       case 'expression':
+-        return source.expression === undefined ? undefined : evaluate(source.expression, occurrence);
++        return source.expression === undefined
++          ? undefined : evaluate(source.expression, occurrence, undefined, externalReturns);
+       default:
+         return undefined;
+     }
+@@ -176,7 +193,7 @@
+ 
+   const host: EvaluateExternalExpressionHost = {
+     resolveExternalArgs(
+-      sources, _functionArgs, _artifact, _state, _callerInputs, _externalReturns,
++      sources, _functionArgs, _artifact, _state, _callerInputs, externalReturns,
+       occurrenceIndex = 0, _stateIncludesPriorWrites, executionSelfAddress,
+     ): FunctionArgument[] | undefined {
+       if (sources === undefined) return undefined;
+@@ -184,7 +201,7 @@
+       for (const source of sources) {
+         const value = source.kind === 'selfAddress' && executionSelfAddress !== undefined
+           ? executionSelfAddress
+-          : resolve(source, occurrenceIndex);
++          : resolve(source, occurrenceIndex, externalReturns);
+         if (value === undefined) return undefined;
+         resolved.push(value);
+       }
+@@ -204,6 +221,7 @@
+ 
+   return {
+     resolve: (source, occurrence) => resolve(source, occurrence),
++    resolveArgument: (source, occurrence) => resolve(source, occurrence, inputs.argumentReturns),
+     evaluate,
+   };
+ }
+@@ -257,7 +275,8 @@
+  *
+  * The pushes become the record's digest and the callee's call data alike, so each is encoded the way the callee's
+  * own ABI decodes it: against the declared input type, with the artifact's structs. An argument no source resolves
+- * from the caller's own facts is refused, because the plan would have no value to state.
++ * from the caller's own facts, or from the earlier results the caller handed over, is refused, because the plan
++ * would have no value to state.
+  */
+ export function resolveCallArguments(
+   row: ExternalCallAbi,
+@@ -282,7 +301,7 @@
+     );
+   }
+   const values = sources.map((source, index): FunctionArgument => {
+-    const value = resolver.resolve(source, occurrence);
++    const value = resolver.resolveArgument(source, occurrence);
+     if (value === undefined) {
+       throw new PerCallProxyDeployError(
+         `${where} passes argument ${index} from a "${source.kind}"${source.expression === undefined ? '' : ` `
+--- a/packages/solidcash/src/per-call/proxy/external-calls.ts
++++ b/packages/solidcash/src/per-call/proxy/external-calls.ts
+@@ -215,6 +215,18 @@
+    * further planning pass can change the plan, and its length bounds how many passes are worth taking.
+    */
+   readonly conditionalProducers: readonly number[];
++  /**
++   * The callsite ids whose result a call argument of a site this plan visits reads, in the entry's own frame.
++   *
++   * Such an argument is stated from what that call returned, which only a settled pass learns: until then the plan
++   * states a stand-in, and the hop settles, learns the result and plans again until the two agree. Empty for an
++   * entry whose arguments read no earlier result, which is planned and settled once.
++   */
++  readonly argumentProducers: readonly number[];
++  /** The result each of `argumentProducers` was stated as in this plan: the one a pass learned, or the stand-in. */
++  readonly argumentResults: ReadonlyMap<number, FunctionArgument>;
++  /** The `argumentProducers` this plan states a stand-in for, because no settled pass has learned their result. */
++  readonly standInProducers: readonly number[];
+   readonly callees: readonly HopCallee[];
+   /** The live UTXO of every callee participant, keyed by the id the plan places it under. */
+   readonly utxos: ReadonlyMap<string, Utxo>;
+@@ -308,8 +320,8 @@
+   return false;
+ }
+ 
+-/** Every `producerResult`/`externalCall` node a condition reads, at any nesting depth. */
+-function producerCallsitesOf(condition: ExternalCallExpression): readonly number[] {
++/** Every `producerResult`/`externalCall` node a condition or an argument source reads, at any nesting depth. */
++function producerCallsitesOf(condition: ExternalCallExpression | ArgSource): readonly number[] {
+   const found: number[] = [];
+   const visit = (value: unknown): void => {
+     if (value === null || typeof value !== 'object') return;
+@@ -360,6 +372,87 @@
+ }
+ 
+ /**
++ * The zero of one declared result type, or undefined for a type whose zero this planner does not state.
++ *
++ * An integer is `0`, a `bool` false, a string empty, an address the empty lock the compiler gives `address(0)`, a
++ * fixed-width byte string zeros of its width and a fixed-length array that many zeros. A struct, an enum or any other
++ * type has no stand-in here, so an argument that reads one stays refused by name.
++ */
++function zeroOfResultType(type: string): FunctionArgument | undefined {
++  const array = /^(.+)\[(\d*)\]$/u.exec(type);
++  if (array !== null) {
++    if (array[2] === '') return [] as unknown as FunctionArgument;
++    const element = zeroOfResultType(array[1]!);
++    const length = Number(array[2]);
++    return element === undefined || length > 1024
++      ? undefined : Array.from({ length }, () => element) as unknown as FunctionArgument;
++  }
++  if (type === 'bool') return false;
++  if (type === 'bigint' || /^u?int\d*$/u.test(type)) return 0n;
++  if (type === 'string') return '';
++  if (type === 'address' || type === 'bytes') return new Uint8Array(0);
++  const fixed = /^bytes(\d+)$/u.exec(type);
++  return fixed === null ? undefined : new Uint8Array(Number(fixed[1]));
++}
++
++/**
++ * The value an earlier call's result is stated as before any settled pass has learned it: its declared zero.
++ *
++ * The stand-in only lets the pass that learns the result be planned and settled. The hop replaces it with what the
++ * call returned and plans again, so a pass whose argument the call did not return is never the one it broadcasts:
++ * the caller's own frame computes the argument from the result it reads and refuses a record that states another.
++ */
++function standInResultOf(producer: ExternalCallAbi): FunctionArgument | undefined {
++  const types = producer.returnTypes ?? [];
++  if (types.length === 0) return undefined;
++  const zeros = types.map(zeroOfResultType);
++  if (zeros.some((zero) => zero === undefined)) return undefined;
++  return types.length === 1 ? zeros[0] : zeros as unknown as FunctionArgument;
++}
++
++/** The earlier results an entry's call arguments are stated from, and which of them are stand-ins. */
++interface ArgumentReturns {
++  /** The results keyed the way the expression evaluator reads them, or absent when an argument reads none. */
++  readonly returns: ReadonlyMap<string, FunctionArgument> | undefined;
++  /** The value each producer was stated as, keyed by its callsite id. */
++  readonly stated: ReadonlyMap<number, FunctionArgument>;
++  /** The producers stated as a stand-in, because no settled pass has learned their result. */
++  readonly standIns: ReadonlySet<number>;
++}
++
++/**
++ * The earlier results the hop's own entry states its call arguments from, keyed the way the evaluator reads them.
++ *
++ * Each producer an argument reads is stated as the result a settled pass learned or, until one has, as its stand-in.
++ * A producer a loop repeats returns once per turn, which an argument does not name, and one the binder cannot place
++ * (no published result at that index) is left out: an argument that reads either stays refused by name.
++ */
++function argumentReturnsOf(
++  routing: readonly ExternalCallAbi[],
++  learned: ReadonlyMap<number, FunctionArgument> | undefined,
++): ArgumentReturns {
++  const stated = new Map<number, FunctionArgument>();
++  const standIns = new Set<number>();
++  const producers = new Set(routing.flatMap((row) => (row.argSources ?? []).flatMap(producerCallsitesOf)));
++  for (const callsiteId of producers) {
++    const producer = routing.find((row) => row.callsiteId === callsiteId);
++    if (producer === undefined || (producer.occurrence ?? 'once') === 'loop') continue;
++    const known = learned?.get(callsiteId);
++    const value = known ?? standInResultOf(producer);
++    if (value === undefined) continue;
++    stated.set(callsiteId, value);
++    if (known === undefined) standIns.add(callsiteId);
++  }
++  if (stated.size === 0) return { returns: undefined, stated, standIns };
++  try {
++    const returns = externalReturnsForCallsites(routing.flatMap((row) => row.argSources ?? []), stated, routing);
++    return { returns: returns.size === 0 ? undefined : returns, stated, standIns };
++  } catch {
++    return { returns: undefined, stated: new Map(), standIns: new Set() };
++  }
++}
++
++/**
+  * How many records one published site fills.
+  *
+  * A `loop` site fills the records its visits do: the domain's recurrence is evaluated against the caller's own
+@@ -620,6 +713,10 @@
+    * condition undecided for this pass.
+    */
+   readonly producerResults?: { readonly artifact: Artifact; readonly values: ReadonlyMap<number, FunctionArgument> };
++  /** The earlier result each argument of a visited root site was stated from, keyed by its producer's callsite. */
++  readonly argumentResults: Map<number, FunctionArgument>;
++  /** The producers of `argumentResults` this pass stated a stand-in for. */
++  readonly standIns: Set<number>;
+ }
+ 
+ /** The deployment a call reaches: the caller's named externals first, then the provider's registrations. */
+@@ -670,12 +767,17 @@
+     return { calls: [], callBases: [], callsiteIds: [] };
+   }
+   const routing = routingOf(caller.artifact, caller.functionName);
+-  const resolver = makeCallResolver(caller);
+   const writtenState = entryWrittenState(caller.artifact, caller.functionName);
+   // The results of earlier calls are only meaningful within the contract that published them: the callsite ids in
+   // a condition name that artifact's own call sites, so a callee's condition never sees another contract's results.
+   const producerResults = ctx.producerResults?.artifact === caller.artifact
+     ? ctx.producerResults.values : undefined;
++  // The hop's own entry states an argument built from an earlier call's result from what a settled pass learned
++  // that call returned, or from a stand-in until one has; the settle loop plans again until the two agree. A callee
++  // frame's own arguments are not served yet: its results are not learned per reach, so they stay refused by name.
++  const argumentReturns = enteredBy === null ? argumentReturnsOf(routing, producerResults) : undefined;
++  const resolver = makeCallResolver(argumentReturns?.returns === undefined
++    ? caller : { ...caller, argumentReturns: argumentReturns.returns });
+ 
+   // Pass one: resolve every site of this entry from the caller's own facts, so the plan is refused for its own
+   // shape before any live record is read.
+@@ -737,6 +839,20 @@
+     return { entry, external, resolved, where };
+   });
+ 
++  // The earlier results the visited sites' arguments were stated from: a settle checks exactly these against what
++  // each producer returned, so a site the plan does not visit names none.
++  if (argumentReturns !== undefined) {
++    sites.forEach((site, index) => {
++      if (site === undefined) return;
++      for (const callsiteId of (routing[index]!.argSources ?? []).flatMap(producerCallsitesOf)) {
++        const value = argumentReturns.stated.get(callsiteId);
++        if (value === undefined) continue;
++        ctx.argumentResults.set(callsiteId, value);
++        if (argumentReturns.standIns.has(callsiteId)) ctx.standIns.add(callsiteId);
++      }
++    });
++  }
++
+   // Pass two: read each callee's live deployment, take a master per reach from its pool, plan the callee's own
+   // calls from the values that deployment holds, and place its frames.
+   const calls: DraftCall[] = [];
+@@ -1354,8 +1470,9 @@
+    * The results a previous planning pass learned, keyed by the entry's own callsite ids.
+    *
+    * A condition that reads an earlier call's result is stated as no visit until that result is known; supplying it
+-   * here decides the condition, so a site whose arm the run takes gains its visits. Absent leaves every such
+-   * condition undecided, which is the first pass.
++   * here decides the condition, so a site whose arm the run takes gains its visits. An argument built from one is
++   * stated from it rather than from its stand-in. Absent leaves every such condition undecided and every such
++   * argument at its stand-in, which is the first pass.
+    */
+   readonly externalReturns?: ReadonlyMap<number, FunctionArgument>;
+ }
+@@ -1394,6 +1511,8 @@
+     utxos: new Map(),
+     ...(options.externalReturns === undefined || options.externalReturns.size === 0
+       ? {} : { producerResults: { artifact: options.artifact, values: options.externalReturns } }),
++    argumentResults: new Map(),
++    standIns: new Set(),
+   };
+   const root = await planEntryCalls(ctx, {
+     artifact: options.artifact,
+@@ -1409,6 +1528,9 @@
+     callBases: root.callBases,
+     callsiteIds: root.callsiteIds,
+     conditionalProducers: conditionalProducerCallsites(options.artifact, options.functionName),
++    argumentProducers: [...ctx.argumentResults.keys()],
++    argumentResults: ctx.argumentResults,
++    standInProducers: [...ctx.standIns],
+     callees: ctx.callees,
+     utxos: ctx.utxos,
+   };
+--- a/packages/solidcash/src/per-call/proxy/deploy.ts
++++ b/packages/solidcash/src/per-call/proxy/deploy.ts
+@@ -810,8 +810,11 @@
+   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
+   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
+   // values, the proxy's own address for `address(this)`, and the deployer's lock for `msg.sender`.
+-  const settleWithPlan = (externalPlan: HopExternalPlan): Promise<SettledHop> => settleHop({
++  const settleWithPlan = (
++    externalPlan: HopExternalPlan, retvalSink: Map<string, Uint8Array>,
++  ): Promise<SettledHop> => settleHop({
+     vm,
++    retvalSink,
+     proxyArtifact,
+     implementationArtifact,
+     root: rootOn(proxyArtifact),
+@@ -991,6 +994,12 @@
+   readonly retvalPlaceholder?: Uint8Array;
+   /** The callee frames the implementation frame's calls reach, in the order the entry reaches them. */
+   readonly callees?: readonly HopCallee[];
++  /**
++   * Receives each callee frame's `retval` as it is learned, keyed by master, so a settle that is refused still hands
++   * back what the callees it settled returned: a plan that stated an argument from a stand-in is planned again from
++   * those results rather than reported as refused.
++   */
++  readonly retvalSink?: Map<string, Uint8Array>;
+   /** The entry, for the refusal's own words, e.g. `"initialize" entry`. */
+   readonly entryLabel: string;
+   /** The plan for a given set of per-record, per-entry-write, per-event and `retval` candidate end values. */
+@@ -1028,13 +1037,15 @@
+   ) => CompositionDraftPlan;
+   readonly callees: readonly HopCallee[];
+   readonly maximumCommitmentBytes: number;
++  /** The map each learned `retval` is recorded in, which the caller keeps when a later frame is refused. */
++  readonly retvals?: Map<string, Uint8Array>;
+ }): Promise<{
+   readonly retvals: Map<string, Uint8Array>;
+   readonly writeViews: Map<string, readonly (Uint8Array | undefined)[]>;
+   readonly events: Map<string, readonly Uint8Array[]>;
+ }> {
+   const trace = hopTraceOn();
+-  const learned = new Map<string, Uint8Array>();
++  const learned = options.retvals ?? new Map<string, Uint8Array>();
+   const writeViews = new Map<string, readonly (Uint8Array | undefined)[]>();
+   // Each callee's event payloads start from the sentinel the plan states there; the body's own comparison of the
+   // payload it computed against that declaration is what hands the value back.
+@@ -1292,6 +1303,7 @@
+       artifacts,
+       callees: options.callees,
+       maximumCommitmentBytes: options.maximumCommitmentBytes,
++      ...(options.retvalSink === undefined ? {} : { retvals: options.retvalSink }),
+       planFor: (learned, calleeWriteViews, calleeEvents) => options.planFor(
+         writtenCommitments, entryWrites, entryWrites?.learningCandidates ?? [],
+         writtenEvents, learnedRetval ?? new Uint8Array(0), learned, calleeWriteViews, calleeEvents),
+@@ -1505,16 +1517,16 @@
+ /**
+  * The result each planned call produced, keyed by the callsite that made it.
+  *
+- * A caller's condition reads an earlier call's result by its callsite id, and the result is exactly what the
+- * callee frame's own `retval` carries once it is settled, decoded the way the callee's entry declares its returns.
+- * A producer whose site the plan stated no call for, or whose frame recorded nothing the entry declares, is left
+- * out: the hop does not fabricate a result for a call it did not place.
++ * A caller's condition or call argument reads an earlier call's result by its callsite id, and the result is exactly
++ * what the callee frame's own `retval` carries once it is settled, decoded the way the callee's entry declares its
++ * returns. A producer whose site the plan stated no call for, or whose frame recorded nothing the entry declares, is
++ * left out: the hop does not fabricate a result for a call it did not place.
+  */
+ function producedCallResults(
+-  externalPlan: HopExternalPlan, settled: SettledHop,
++  externalPlan: HopExternalPlan, calleeRetvals: ReadonlyMap<string, Uint8Array>,
+ ): Map<number, FunctionArgument> {
+   const results = new Map<number, FunctionArgument>();
+-  for (const callsiteId of externalPlan.conditionalProducers) {
++  for (const callsiteId of new Set([...externalPlan.conditionalProducers, ...externalPlan.argumentProducers])) {
+     const site = externalPlan.callsiteIds.indexOf(callsiteId);
+     if (site < 0) continue;
+     const base = externalPlan.callBases[site];
+@@ -1527,7 +1539,7 @@
+     // the result decodes against that frame's artifact and the entry it ran.
+     const producer = callee.retvalFrom === undefined ? callee : externalPlan.callees[callee.retvalFrom];
+     if (producer === undefined) continue;
+-    const retval = settled.calleeRetvals.get(producer.master);
++    const retval = calleeRetvals.get(producer.master);
+     if (retval === undefined) continue;
+     const entry = producer.artifact.abi.find((candidate) => candidate.name === producer.entry);
+     const values = decodeReturnValues(
+@@ -1549,36 +1561,123 @@
+     && left.callsiteIds.every((id, index) => id === right.callsiteIds[index]);
+ }
+ 
++/** True when two argument values are one value: equal numbers, flags and strings, equal bytes, member by member. */
++function sameArgumentValue(left: unknown, right: unknown): boolean {
++  if (left instanceof Uint8Array || right instanceof Uint8Array) {
++    return left instanceof Uint8Array && right instanceof Uint8Array && bytesEqual(left, right);
++  }
++  if (Array.isArray(left) || Array.isArray(right)) {
++    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
++      && left.every((item, index) => sameArgumentValue(item, right[index]));
++  }
++  if (typeof left === 'object' && left !== null && typeof right === 'object' && right !== null) {
++    const keys = Object.keys(left);
++    return keys.length === Object.keys(right).length && keys.every((key) => sameArgumentValue(
++      (left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]));
++  }
++  return left === right;
++}
++
+ /**
+- * Plans a hop's external calls and settles it, re-planning while an arm's condition waits on an earlier result.
++ * The producers whose result a settle learned differs from the value the plan stated for it.
++ *
++ * Each is an argument the plan built from a stand-in, or from a result an earlier pass learned while that producer's
++ * own arguments were still stand-ins; the next pass states what the producer returned. A producer the settle did
++ * not reach learned nothing and is not counted.
++ */
++function movedArgumentResults(
++  externalPlan: HopExternalPlan, results: ReadonlyMap<number, FunctionArgument>,
++): readonly number[] {
++  return externalPlan.argumentProducers.filter((callsiteId) => {
++    const learned = results.get(callsiteId);
++    return learned !== undefined && !sameArgumentValue(learned, externalPlan.argumentResults.get(callsiteId));
++  });
++}
++
++/** A stated or learned result as the hop trace prints it: bytes as hex, every other value as text. */
++function traceArgumentValue(value: unknown): string {
++  if (value instanceof Uint8Array) return binToHex(value).slice(0, 40);
++  if (Array.isArray(value)) return `[${value.map(traceArgumentValue).join(',')}]`;
++  return String(value);
++}
++
++/** The results a pass moved, as the hop trace prints them: `callsite:stated->learned`. */
++function traceMovedResults(
++  externalPlan: HopExternalPlan, results: ReadonlyMap<number, FunctionArgument>, moved: readonly number[],
++): string {
++  return moved.map((callsiteId) => `${callsiteId}:${traceArgumentValue(externalPlan.argumentResults.get(callsiteId))}`
++    + `->${traceArgumentValue(results.get(callsiteId))}`).join(' ');
++}
++
++/**
++ * Plans a hop's external calls and settles it, re-planning while a planned value waits on an earlier result.
+  *
+  * An arm gated on an earlier call's result cannot be planned before that call is settled: the plan states the
+  * sites the caller's own facts fix, the settle learns what each callee frame returned, and the next pass decides
+- * the gated arms from those results. The loop stops when a pass's results leave the plan's sites unchanged, so the
+- * plan that is settled is the one the execution's own arms imply; a plan that never stops changing is refused by
+- * name rather than settled. A hop whose conditions read no earlier result is planned and settled exactly once.
++ * the gated arms from those results. An argument built from an earlier call's result is stated from a stand-in until
++ * a settle learns what that call returned, and from the learned result after. A pass whose stated argument the
++ * producer did not return is refused by the caller's own frame, which computes the argument from the result it reads
++ * and finds another digest in its record, so that refusal is not the entry's verdict: the hop plans again from what
++ * the pass learned. A refusal stands once every such argument carried what its producer returned. The loop stops
++ * when a pass's results leave the plan's sites and arguments unchanged, so the plan that is settled is the one the
++ * execution's own arms and results imply; a plan that never stops changing is refused by name rather than settled.
++ * A hop whose conditions and arguments read no earlier result is planned and settled exactly once.
+  */
+ async function planAndSettleHop(options: {
+   readonly plan: (externalReturns: ReadonlyMap<number, FunctionArgument>) => Promise<HopExternalPlan>;
+-  readonly settle: (externalPlan: HopExternalPlan) => Promise<SettledHop>;
++  readonly settle: (externalPlan: HopExternalPlan, calleeRetvals: Map<string, Uint8Array>) => Promise<SettledHop>;
+ }): Promise<{ readonly externalPlan: HopExternalPlan; readonly settled: SettledHop }> {
++  const trace = hopTraceOn();
+   let externalPlan = await options.plan(new Map());
+   for (let pass = 0; ; pass += 1) {
++    const producers = externalPlan.conditionalProducers.length + externalPlan.argumentProducers.length;
+     // Every reach's own write was planned on its own; the reaches are checked together here, before any frame of
+     // this plan is settled, so a shape whose reaches cannot share one transaction is refused by name rather than
+-    // derived into a transaction the network rejects.
+-    requireSatisfiableReachWrites(externalPlan.callees);
+-    const settled = await options.settle(externalPlan);
+-    if (externalPlan.conditionalProducers.length === 0) return { externalPlan, settled };
+-    const next = await options.plan(producedCallResults(externalPlan, settled));
+-    if (samePlannedSites(next, externalPlan)) return { externalPlan, settled };
+-    if (pass >= externalPlan.conditionalProducers.length) {
++    // derived into a transaction the network rejects. A plan that states a stand-in may write from a value the run
++    // does not compute, so its refusal waits for the pass that learns the result.
++    let refusal: unknown;
++    try {
++      requireSatisfiableReachWrites(externalPlan.callees);
++    } catch (error) {
++      if (externalPlan.standInProducers.length === 0) throw error;
++      if (trace) hopTrace(`defer pass=${pass} reason=stand-in refusal=${hopTraceError(error)}`);
++      refusal = error;
++    }
++    // The callees' results are kept as they are learned, so a settle that is refused still hands them back.
++    const calleeRetvals = new Map<string, Uint8Array>();
++    let settled: SettledHop | undefined;
++    try {
++      settled = await options.settle(externalPlan, calleeRetvals);
++    } catch (error) {
++      if (externalPlan.argumentProducers.length === 0) throw error;
++      refusal ??= error;
++    }
++    if (settled !== undefined && refusal === undefined) {
++      if (externalPlan.conditionalProducers.length === 0) return { externalPlan, settled };
++      const next = await options.plan(producedCallResults(externalPlan, settled.calleeRetvals));
++      if (samePlannedSites(next, externalPlan)) return { externalPlan, settled };
++      if (pass >= producers) {
++        throw new PerCallProxyDeployError(
++          `the entry's arms an earlier call's result decides did not settle: the hop re-planned `
++          + `${pass + 1} time(s) without its sites stopping`,
++        );
++      }
++      externalPlan = next;
++      continue;
++    }
++    const results = producedCallResults(externalPlan, settled?.calleeRetvals ?? calleeRetvals);
++    const moved = movedArgumentResults(externalPlan, results);
++    if (moved.length === 0) throw refusal;
++    if (pass >= producers) {
+       throw new PerCallProxyDeployError(
+-        `the entry's arms an earlier call's result decides did not settle: the hop re-planned `
+-        + `${pass + 1} time(s) without its sites stopping`,
++        `the entry's arguments an earlier call's result builds did not settle: the hop re-planned ${pass + 1} `
++        + `time(s) without the results its producers returned stopping (callsite(s) ${moved.join(', ')})`,
+       );
+     }
+-    externalPlan = next;
++    if (trace) {
++      hopTrace(`replan pass=${pass} reason=argument-results moved=[${traceMovedResults(externalPlan, results, moved)}]`);
++    }
++    externalPlan = await options.plan(results);
+   }
+ }
+ 
+@@ -2732,8 +2831,11 @@
+   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
+   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
+   // values, the proxy's own address for `address(this)`, and the caller's lock for `msg.sender`.
+-  const settleWithPlan = (externalPlan: HopExternalPlan): Promise<SettledHop> => settleHop({
++  const settleWithPlan = (
++    externalPlan: HopExternalPlan, retvalSink: Map<string, Uint8Array>,
++  ): Promise<SettledHop> => settleHop({
+     vm,
++    retvalSink,
+     proxyArtifact,
+     implementationArtifact,
+     root: rootOn(proxyArtifact),

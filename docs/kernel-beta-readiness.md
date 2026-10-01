@@ -60,7 +60,9 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   The Marketplace iteration artifact context is stale until a normal complete project compile. That compile was
   attempted: missing root fixture dependencies (`@sablier/lockup` and `@prb/math`) were declared and installed,
   but the complete compile still exhausted an 8 GB Node heap. No complete artifact-context publication occurred;
-  the focused tests above used the successful iteration artifact. The project compile's memory wall remains open.
+  the focused tests above used the successful iteration artifact. A focused `MockSablierLockup.sol` iteration
+  compile also exhausts 4 GB, while compiling that same source with `messageBus: false` succeeds; the memory wall
+  is in route compilation of this import graph, not missing dependencies or project-wide artifact accumulation.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

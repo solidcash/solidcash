@@ -466,7 +466,7 @@ describe('messageBus.compose atomic transaction', () => {
     const secondGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
     const firstWideGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
     const secondWideGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
-    const build = () => messageBus.compose({
+    const build = (): ReturnType<typeof messageBus.compose> => messageBus.compose({
       preparedCalls: [
         { contract: driver, functionName: 'run', args: [] },
         { contract: coordinator, functionName: 'materialize', args: [1n] },
@@ -1009,7 +1009,7 @@ describe('messageBus.compose atomic transaction', () => {
     const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const firstGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
     const secondGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
-    const compose = (first: bigint, second: bigint) => messageBus.compose({
+    const compose = (first: bigint, second: bigint): ReturnType<typeof messageBus.compose> => messageBus.compose({
       preparedCalls: [
         { contract: driver, functionName: 'run', args: [first, second, 2_000n, 100n] },
         { contract: factory, functionName: 'create', args: [first, 2_000n, 100n] },
@@ -1840,8 +1840,8 @@ describe('messageBus.compose atomic transaction', () => {
 
   it.skipIf(process.env.TESTS_USE_REGTEST === 'true')(
     'advances past a reached conditional opaque-return row in a delegated root', async () => {
-    const provider = createMessageBusCapstoneTestProvider();
-    const targetArtifact = compileString(`
+      const provider = createMessageBusCapstoneTestProvider();
+      const targetArtifact = compileString(`
       pragma solidity ^0.8.20;
       contract ComposeConditionalRawTarget {
         function approve(address spender, uint256 value) public pure returns (bool) {
@@ -1850,14 +1850,14 @@ describe('messageBus.compose atomic transaction', () => {
         }
       }
     `, { forceStateful: true, messageBus: true, solidityImportCompat: true });
-    const targetBase = new Contract(targetArtifact, [], { provider });
-    const targetSetup = await setupStatefulUtxos(
-      provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
-    );
-    const target = StatefulContract.withCategory(
-      targetBase.withCategory(hexToBin(targetSetup.categoryId)), targetSetup.categoryId,
-    );
-    const dataArtifact = compileString(`
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const target = StatefulContract.withCategory(
+        targetBase.withCategory(hexToBin(targetSetup.categoryId)), targetSetup.categoryId,
+      );
+      const dataArtifact = compileString(`
       pragma solidity ^0.8.20;
       contract ComposeConditionalRawData {
         function userRegistered(address account) public pure returns (bool) {
@@ -1868,27 +1868,27 @@ describe('messageBus.compose atomic transaction', () => {
         function fee() public pure returns (uint256) { return 9; }
       }
     `, { forceStateful: true, messageBus: true, solidityImportCompat: true });
-    const dataBase = new Contract(dataArtifact, [], { provider });
-    const dataSetup = await setupStatefulUtxos(
-      provider, dataBase, dataArtifact.stateLayout!, {}, { saltContract: true },
-    );
-    const data = StatefulContract.withCategory(
-      dataBase.withCategory(hexToBin(dataSetup.categoryId)), dataSetup.categoryId,
-    );
-    const payArtifact = compileString(`
+      const dataBase = new Contract(dataArtifact, [], { provider });
+      const dataSetup = await setupStatefulUtxos(
+        provider, dataBase, dataArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const data = StatefulContract.withCategory(
+        dataBase.withCategory(hexToBin(dataSetup.categoryId)), dataSetup.categoryId,
+      );
+      const payArtifact = compileString(`
       pragma solidity ^0.8.20;
       contract ComposeConditionalRawPay {
         function pay(uint256 feeValue) public pure { require(feeValue == 9); }
       }
     `, { forceStateful: true, messageBus: true, solidityImportCompat: true });
-    const payBase = new Contract(payArtifact, [], { provider });
-    const paySetup = await setupStatefulUtxos(
-      provider, payBase, payArtifact.stateLayout!, {}, { saltContract: true },
-    );
-    const pay = StatefulContract.withCategory(
-      payBase.withCategory(hexToBin(paySetup.categoryId)), paySetup.categoryId,
-    );
-    const callerArtifact = compileString(`
+      const payBase = new Contract(payArtifact, [], { provider });
+      const paySetup = await setupStatefulUtxos(
+        provider, payBase, payArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const pay = StatefulContract.withCategory(
+        payBase.withCategory(hexToBin(paySetup.categoryId)), paySetup.categoryId,
+      );
+      const callerArtifact = compileString(`
       pragma solidity ^0.8.20;
       interface IComposeConditionalRawTarget {
         function approve(address spender, uint256 value) external returns (bool);
@@ -1934,62 +1934,62 @@ describe('messageBus.compose atomic transaction', () => {
         }
       }
     `, { forceStateful: true, messageBus: true, solidityImportCompat: true });
-    expect(callerArtifact.delegateArtifact).toBeDefined();
-    const signer = new Signer(alicePriv, provider);
-    for (let index = 0; index < 8; index += 1) {
-      await provider.addUtxo(signer.getAddress(), {
-        txid: `${(0xd0 + index).toString(16)}`.repeat(32), vout: 0, satoshis: 1_000_000n,
-      });
-    }
-    const proxy = await upgrades.deployProxy(
-      getContractFactory(callerArtifact, signer), { marker: 0n }, { initializer: false },
-    );
-    proxy.implementation._registerResolvedExternal('IComposeConditionalRawTarget', target);
-    proxy.implementation._registerResolvedExternal('IComposeConditionalRawData', data);
-    proxy.implementation._registerResolvedExternal('IComposeConditionalRawPay', pay);
-    const rootArgs = [
-      target.inner.lockingBytecode, target.inner.lockingBytecode, data.inner.lockingBytecode,
-      pay.inner.lockingBytecode, 7n, true,
-    ] as const;
-    const executionArtifact = proxy.implementation.inner.artifact;
-    const callsites = executionArtifact.abi
-      .find((candidate) => candidate.name === 'invoke')?.externalCalls ?? [];
-    expect(callsites).toHaveLength(8);
-    const registeredCallsite = callsites.find((callsite) => callsite.functionName === 'userRegistered');
-    const eventsCallsite = callsites.find((callsite) => callsite.functionName === 'eventsLength');
-    const publishCallsite = callsites.find((callsite) => callsite.functionName === 'publish');
-    const approveCallsite = callsites.find((callsite) => callsite.rawFunctionName === 'approve');
-    const feeCallsite = callsites.find((callsite) => callsite.functionName === 'fee');
-    const payCallsite = callsites.find((callsite) => callsite.functionName === 'pay');
-    if (!registeredCallsite || !eventsCallsite || !publishCallsite
+      expect(callerArtifact.delegateArtifact).toBeDefined();
+      const signer = new Signer(alicePriv, provider);
+      for (let index = 0; index < 8; index += 1) {
+        await provider.addUtxo(signer.getAddress(), {
+          txid: `${(0xd0 + index).toString(16)}`.repeat(32), vout: 0, satoshis: 1_000_000n,
+        });
+      }
+      const proxy = await upgrades.deployProxy(
+        getContractFactory(callerArtifact, signer), { marker: 0n }, { initializer: false },
+      );
+      proxy.implementation._registerResolvedExternal('IComposeConditionalRawTarget', target);
+      proxy.implementation._registerResolvedExternal('IComposeConditionalRawData', data);
+      proxy.implementation._registerResolvedExternal('IComposeConditionalRawPay', pay);
+      const rootArgs = [
+        target.inner.lockingBytecode, target.inner.lockingBytecode, data.inner.lockingBytecode,
+        pay.inner.lockingBytecode, 7n, true,
+      ] as const;
+      const executionArtifact = proxy.implementation.inner.artifact;
+      const callsites = executionArtifact.abi
+        .find((candidate) => candidate.name === 'invoke')?.externalCalls ?? [];
+      expect(callsites).toHaveLength(8);
+      const registeredCallsite = callsites.find((callsite) => callsite.functionName === 'userRegistered');
+      const eventsCallsite = callsites.find((callsite) => callsite.functionName === 'eventsLength');
+      const publishCallsite = callsites.find((callsite) => callsite.functionName === 'publish');
+      const approveCallsite = callsites.find((callsite) => callsite.rawFunctionName === 'approve');
+      const feeCallsite = callsites.find((callsite) => callsite.functionName === 'fee');
+      const payCallsite = callsites.find((callsite) => callsite.functionName === 'pay');
+      if (!registeredCallsite || !eventsCallsite || !publishCallsite
       || !approveCallsite || !feeCallsite || !payCallsite) {
-      throw new Error('test delegate did not publish its expected callsites');
-    }
-    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
-    const composition = messageBus.compose({
-      preparedCalls: [
-        {
-          contract: proxy.proxy, functionName: 'invoke', args: rootArgs,
-          executionArtifact, executor: proxy.implementation,
-        },
-        {
-          contract: data, functionName: 'userRegistered', args: [target.inner.lockingBytecode],
-          callsiteId: registeredCallsite.callsiteId,
-        },
-        { contract: data, functionName: 'eventsLength', args: [1n], callsiteId: eventsCallsite.callsiteId },
-        { contract: data, functionName: 'publish', args: [100n], callsiteId: publishCallsite.callsiteId },
-        {
-          contract: target, functionName: 'approve', args: [target.inner.lockingBytecode, 7n],
-          callsiteId: approveCallsite.callsiteId,
-        },
-        { contract: data, functionName: 'fee', args: [], callsiteId: feeCallsite.callsiteId },
-        { contract: pay, functionName: 'pay', args: [9n], callsiteId: payCallsite.callsiteId },
-      ],
-      funder: fee,
-      changeAddress: fee.unlocker.generateLockingBytecode(),
-    });
-    const canonical = await composition.build();
-    await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+        throw new Error('test delegate did not publish its expected callsites');
+      }
+      const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+      const composition = messageBus.compose({
+        preparedCalls: [
+          {
+            contract: proxy.proxy, functionName: 'invoke', args: rootArgs,
+            executionArtifact, executor: proxy.implementation,
+          },
+          {
+            contract: data, functionName: 'userRegistered', args: [target.inner.lockingBytecode],
+            callsiteId: registeredCallsite.callsiteId,
+          },
+          { contract: data, functionName: 'eventsLength', args: [1n], callsiteId: eventsCallsite.callsiteId },
+          { contract: data, functionName: 'publish', args: [100n], callsiteId: publishCallsite.callsiteId },
+          {
+            contract: target, functionName: 'approve', args: [target.inner.lockingBytecode, 7n],
+            callsiteId: approveCallsite.callsiteId,
+          },
+          { contract: data, functionName: 'fee', args: [], callsiteId: feeCallsite.callsiteId },
+          { contract: pay, functionName: 'pay', args: [9n], callsiteId: payCallsite.callsiteId },
+        ],
+        funder: fee,
+        changeAddress: fee.unlocker.generateLockingBytecode(),
+      });
+      const canonical = await composition.build();
+      await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }, 120_000,
   );
 

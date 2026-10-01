@@ -84,7 +84,7 @@ export function finishCreateBuilderNestedCompose(
 ): FinishCreateBuilderNestedComposeBags {
   const {
     nested, selectedFn, sharedGroupIndex, delegateCallGroupIndex, childExternalGroupIndex,
-    childCompilerRoute, childCompilerInternalArgs, childFunctionName, nestedArgs, nestedSources,
+    childCompilerRoute, childCompilerInternalArgs, nestedArgs, nestedSources,
     needsExpressionReturns, directInvocationRows, replanChildRoute, resolveGraphNestedReturns,
     delegateVisibleArgs, delegateVisibleInputs, callInfoContract, onChainState,
     publishedNestedExternalCalls, proxyCallee, refreshChunkableRouteWitnesses,
@@ -157,42 +157,42 @@ export function finishCreateBuilderNestedCompose(
       ) => FunctionArgument[] | undefined) | undefined;
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_SKIP_ROW_RESULT_RESOLVER !== '1') {
-      if (replanChildRoute && resolveGraphNestedReturns) {
-        const planRoute = replanChildRoute;
-        const resolveReturns = resolveGraphNestedReturns;
-        resolveRowArgsFromResults = (row, results) => {
-          const resolved = resolveReturns(results);
-          if (!resolved) return undefined;
-          const replanned = planRoute(resolved);
-          if (!replanned) return undefined;
-          const sourceCallsiteId = row.sourceCallsiteId ?? nested.callsiteId;
-          const replannedRow = replanned.rowArguments.find((candidate: any) => (
-            candidate.selector === row.selector
+        if (replanChildRoute && resolveGraphNestedReturns) {
+          const planRoute = replanChildRoute;
+          const resolveReturns = resolveGraphNestedReturns;
+          resolveRowArgsFromResults = (row, results) => {
+            const resolved = resolveReturns(results);
+            if (!resolved) return undefined;
+            const replanned = planRoute(resolved);
+            if (!replanned) return undefined;
+            const sourceCallsiteId = row.sourceCallsiteId ?? nested.callsiteId;
+            const replannedRow = replanned.rowArguments.find((candidate: any) => (
+              candidate.selector === row.selector
             && candidate.sourceCallsiteId === sourceCallsiteId
             && candidate.sourceLogicalIndex === row.sourceLogicalIndex
             && candidate.occurrenceIndex === row.occurrenceIndex
-          ));
-          return replannedRow ? [...replannedRow.args] : undefined;
-        };
-      } else if (resolveGraphNestedReturns && nestedSources) {
+            ));
+            return replannedRow ? [...replannedRow.args] : undefined;
+          };
+        } else if (resolveGraphNestedReturns && nestedSources) {
         // Without a compiled batch route these rows are the reached occurrences of one callsite, so
         // their arguments are re-resolved from the same authenticated result epoch at that
         // occurrence. Argument recipes only run once their producer result is authenticated, which is
         // why the planning-time vector can still hold the pre-result placeholder.
-        const resolveReturns = resolveGraphNestedReturns;
-        resolveRowArgsFromResults = (row, results) => {
-          const resolved = resolveReturns(results);
-          if (!resolved) return undefined;
-          const occurrenceIndex = row.occurrenceIndex ?? 0;
-          if (occurrenceIndex === 0) return [...resolved.nextArgs];
-          const occurrenceArgs = host.resolveExternalArgs(
-            nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
-            delegateVisibleInputs, resolved.externalReturns, occurrenceIndex, false,
-            delegateSelfAddress,
-          );
-          return occurrenceArgs ? [...occurrenceArgs] : undefined;
-        };
-      }
+          const resolveReturns = resolveGraphNestedReturns;
+          resolveRowArgsFromResults = (row, results) => {
+            const resolved = resolveReturns(results);
+            if (!resolved) return undefined;
+            const occurrenceIndex = row.occurrenceIndex ?? 0;
+            if (occurrenceIndex === 0) return [...resolved.nextArgs];
+            const occurrenceArgs = host.resolveExternalArgs(
+              nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
+              delegateVisibleInputs, resolved.externalReturns, occurrenceIndex, false,
+              delegateSelfAddress,
+            );
+            return occurrenceArgs ? [...occurrenceArgs] : undefined;
+          };
+        }
       }
       for (const { row, producerPath } of runtimeRowsWithProducerPaths) {
         const rowValueChunkProductions = valueChunkProductionsForPath(producerPath);

@@ -2575,6 +2575,9 @@ function buildFunctionAbiMetadata(
           }),
           ...occurrenceInfo,
           ...(ec.condition && { condition: ec.condition }),
+          ...(!ec.batchInvocations && ec.preCallRequires?.length && {
+            preCallRequires: ec.preCallRequires,
+          }),
           ...(iterationDomains.get(ec.slotIndex) && {
             iterationDomain: iterationDomains.get(ec.slotIndex)!,
           }),

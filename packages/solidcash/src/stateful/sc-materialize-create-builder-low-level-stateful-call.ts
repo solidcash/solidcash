@@ -15,6 +15,7 @@ import {
   resolvePreparedKernelDelegateExecution,
   resolvePreparedKernelDelegateOwnerFrame,
 } from './KernelDelegateForwarding.js';
+import { hydrateExternalPredicateState } from './sc-hydrate-external-predicate-state.js';
 import type { ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 
 export type MaterializeCreateBuilderLowLevelStatefulCallHost = {
@@ -23,6 +24,7 @@ export type MaterializeCreateBuilderLowLevelStatefulCallHost = {
   readonly selfContract: any;
   getMasterOnlyState: (contract: any) => Promise<any>;
   getFullState: (contract: any) => Promise<any>;
+  getEntries: (name: string) => Promise<any>;
   statefulCall: (name: string) => FunctionArgument[] | undefined;
   resolveExternalExpressionReturns: (...args: any[]) => Promise<any>;
   evaluateExternalExpression: (...args: any[]) => any;
@@ -73,6 +75,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     rootProducerPath: ValueChunkProducerPathDisposition;
     publicSelfAddress: Uint8Array;
     authenticatedSelfAddress: Uint8Array;
+    incomingCallerAddress?: Uint8Array;
     onChainState: any;
     [key: string]: any;
   },
@@ -81,6 +84,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     callInfo, callMode, lowLevelCallUtxoGroups, groupProxyMasterIndices,
     abiFunction, physicalAbiFunction, functionName, args, callIndex,
     rootProducerPath, publicSelfAddress, authenticatedSelfAddress, onChainState,
+    incomingCallerAddress,
   } = params;
   let preparedAtomicNodes = params.preparedAtomicNodes;
 
@@ -219,7 +223,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
       }];
     }
   }
-  const publishedNestedExternalCalls = [...(delegateFn?.externalCalls ?? [])];
+  const publishedNestedExternalCalls: ExternalCallAbi[] = [...(delegateFn?.externalCalls ?? [])];
   // Nested argSources.paramIndex is the logical Solidity function's visible parameter
   // list (a dynamic-array argument can be third). A compiler-owned route stores [blob, ...witnesses]
   // on the LLC, so reading callInfo.args[3] is not the tags array.
@@ -267,6 +271,24 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   ) ? authenticatedSelfAddress : publicSelfAddress;
   const nestedExternalCalls: ExternalCallAbi[] = [];
   for (const nested of publishedNestedExternalCalls) {
+    // A failed source require is a necessary-condition proof that no outgoing call was reached. Resolve
+    // collection reads from the authenticated owner state before looking up the callee's resources. Unknown
+    // predicates retain the call; only an exact false can omit it. Loops need per-iteration proof instead.
+    if (nested.occurrence !== 'loop' && nested.preCallRequires?.length) {
+      const guardState = await hydrateExternalPredicateState({
+        evaluateExternalExpression: (...values: any[]) => host.evaluateExternalExpression(
+          ...values, undefined, undefined, false, incomingCallerAddress,
+        ),
+        getEntries: host.getEntries,
+      }, nested.preCallRequires, delegateVisibleArgs, callInfo.contract.inner.artifact,
+      onChainState.state, delegateVisibleInputs, delegateSelfAddress);
+      const rejected = nested.preCallRequires.some((guard) => host.evaluateExternalExpression(
+        guard, delegateVisibleArgs, callInfo.contract.inner.artifact, guardState,
+        delegateVisibleInputs, undefined, 0, false, delegateSelfAddress,
+        undefined, undefined, false, incomingCallerAddress,
+      ) === false);
+      if (rejected) continue;
+    }
     if (!nested.condition) {
     // Older artifacts and control-flow shapes not yet expressible by ExternalCallExpression retain
     // the existing covenant-driven occurrence handling. Never infer inactivity from a missing guard.

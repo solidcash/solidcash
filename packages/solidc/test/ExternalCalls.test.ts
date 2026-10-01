@@ -945,6 +945,58 @@ describe('Named-arg external interface call', () => {
   });
 });
 
+describe('pre-call require reachability metadata', () => {
+  const header = `pragma solidity ^0.8.19;
+    interface ITarget { function ping() external; }
+    contract C {
+      struct Job { address worker; uint8 state; }
+      mapping(uint256 => Job) jobs;
+      ITarget target;
+  `;
+
+  it('publishes source require guards separately from branch activation', () => {
+    const artifact = compileString(`${header}
+      function run(uint256 id) public {
+        require(jobs[id].worker == msg.sender, "not worker");
+        require(jobs[id].state == 1, "wrong state");
+        target.ping();
+      }
+    }`, { solidityImportCompat: true, forceStateful: true });
+    const call = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0];
+    expect(call?.condition).toBeUndefined();
+    expect(call?.preCallRequires).toHaveLength(2);
+    expect(call?.preCallRequires?.[0]).toMatchObject({
+      kind: 'binary', operator: '==', left: { kind: 'field', name: 'worker' },
+      right: { kind: 'source', source: { kind: 'msgSender' } },
+    });
+  });
+
+  it('serializes a guard at the require, before an intervening state write', () => {
+    const artifact = compileString(`${header}
+      function run(uint256 id) public {
+        require(jobs[id].state == 1);
+        jobs[id].state = 0;
+        target.ping();
+      }
+    }`, { solidityImportCompat: true, forceStateful: true });
+    const guard = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0]?.preCallRequires?.[0];
+    expect(guard?.left).toMatchObject({ kind: 'field', name: 'state' });
+    expect(guard?.left?.expression).toMatchObject({ kind: 'stateAccess', name: 'jobs' });
+  });
+
+  it('does not publish a lowered constant placeholder around a returning external call', () => {
+    const artifact = compileString(`pragma solidity ^0.8.19;
+      interface ITarget { function check() external returns (uint256); }
+      interface IOther { function ping() external; }
+      contract C { ITarget target; IOther other;
+        function run() public { require(target.check() > 0); other.ping(); }
+      }`, { solidityImportCompat: true, forceStateful: true });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls ?? [];
+    expect(calls.map((call) => call.functionName)).toEqual(['check', 'ping']);
+    expect(calls[1]?.preCallRequires).toBeUndefined();
+  });
+});
+
 describe('SBE-25: msg.sender category forwarded across internal calls', () => {
   // A function using msg.sender gets a synthetic `bytes32 __internal__msgSenderCategory` param. A positional
   // internal call to such a function must forward the caller's own category (msg.sender is identical across an

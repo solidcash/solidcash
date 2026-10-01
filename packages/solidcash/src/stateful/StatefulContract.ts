@@ -11805,6 +11805,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               selfContract: this as any,
               getMasterOnlyState: (contract: any) => contract._getMasterOnlyState(),
               getFullState: (contract: any) => contract.getFullState(),
+              getEntries: (name: string) => this.getEntries(name),
               statefulCall: (name: string) => statefulCall(name),
               resolveExternalExpressionReturns: (...a: any[]) => (
                 this as any
@@ -11827,6 +11828,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               rootProducerPath,
               publicSelfAddress,
               authenticatedSelfAddress,
+              incomingCallerAddress: overrides?.callerLockingBytecode
+                ?? probeCallerIdentity?.unlocker.generateLockingBytecode(),
               onChainState,
             },
           );

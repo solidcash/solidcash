@@ -7465,7 +7465,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    * and any expression the compiler cannot prove are left unresolved.
    */
   private dominatingStateFieldValue(
-    read: FieldAccessNode, use: ExternalFunctionCallNode,
+    read: FieldAccessNode, use: Node,
     activeExpressions: ReadonlySet<Node>,
   ): ExpressionNode | undefined {
     type StatePath = { root: string; keys: readonly string[]; fields: readonly string[] };
@@ -8156,6 +8156,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         return visitBlock(this.currentFunction.body) ? prior : undefined;
       };
       let priorStatements = dominatingStatements();
+      let serializationProgramPoint: Node = node;
       let unresolvedProducerAlias = false;
       const definitionDependsOnProducer = (
         definition: VariableDefinitionNode, seenDefinitions = new Set<VariableDefinitionNode>(),
@@ -8450,7 +8451,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               return { kind: 'literal', type: 'bigint', value: member.value.toString() };
             }
           }
-          const writtenValue = this.dominatingStateFieldValue(expression, node, seen);
+          const writtenValue = this.dominatingStateFieldValue(expression, serializationProgramPoint, seen);
           if (writtenValue) return serializeExpression(writtenValue, seen);
           const inner = serializeExpression(expression.expression, seen);
           const fieldType = expression.type
@@ -9062,6 +9063,14 @@ export default class SymbolTableTraversal extends AstTraversal {
           expression.ifTrue, expression.ifFalse, ...(expression.args ?? [])]
           .some((child) => child !== undefined && containsUnresolvedConditionNode(child));
       };
+      const containsUnresolvedPreCallRequireNode = (expression: ExternalCallExpression): boolean => {
+        if (['unsupported', 'missing', 'identifier', 'reference', 'externalCall', 'producerResult']
+          .includes(expression.kind)) return true;
+        return [expression.expression, expression.left, expression.right, expression.condition,
+          expression.ifTrue, expression.ifFalse, expression.source?.expression,
+          ...(expression.args ?? [])]
+          .some((child) => child !== undefined && containsUnresolvedPreCallRequireNode(child));
+      };
       const condition = serializedConditions.some(containsUnresolvedConditionNode)
         ? undefined
         : serializedConditions.reduce<ExternalCallExpression | undefined>(
@@ -9070,7 +9079,31 @@ export default class SymbolTableTraversal extends AstTraversal {
             : { kind: 'binary', operator: '&&', left: combined, right: next },
           undefined,
         );
-
+      const dependsOnRuntimeValue = (expression: ExternalCallExpression): boolean => (
+        (expression.kind === 'source' && expression.source?.kind !== 'literal')
+        || expression.kind === 'state' || expression.kind === 'stateAccess'
+        || [expression.expression, expression.left, expression.right, expression.condition,
+          expression.ifTrue, expression.ifFalse, expression.source?.expression,
+          ...(expression.args ?? [])]
+          .some((child) => child !== undefined && dependsOnRuntimeValue(child))
+      );
+      const preCallRequires = (dominatingStatements() ?? []).flatMap((statement) => {
+        if (!(statement instanceof RequireNode)) return [];
+        const callPriorStatements = priorStatements;
+        const callProgramPoint = serializationProgramPoint;
+        priorStatements = dominatingStatements(statement.expression);
+        serializationProgramPoint = statement.expression;
+        try {
+          const serialized = serializeExpression(statement.expression);
+          // Lowered return-carrier checks can leave a literal `0 == 1` placeholder before their producer
+          // call. A constant-only predicate cannot safely prove source reachability at this callsite.
+          return serialized && !containsUnresolvedPreCallRequireNode(serialized)
+            && dependsOnRuntimeValue(serialized) ? [serialized] : [];
+        } finally {
+          priorStatements = callPriorStatements;
+          serializationProgramPoint = callProgramPoint;
+        }
+      });
       if (node.callInfo.interfaceName === '__raw__' && !addressParam && addressLiteral === undefined
         && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RAW_TARGET === '1') {
@@ -9151,6 +9184,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // omission for legacy artifacts where argument provenance was not published.
         argSources,
         ...(condition && { condition }),
+        ...(preCallRequires.length > 0 && { preCallRequires }),
         sourceCallNode: node,
       });
       return;

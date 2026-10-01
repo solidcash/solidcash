@@ -1274,6 +1274,8 @@ export interface ExternalCallAbi {
   occurrence?: 'once' | 'conditional' | 'loop';
   /** Runtime predicate guarding this callsite, serialized from its enclosing source branches. */
   condition?: ExternalCallExpression;
+  /** Compiler-proven necessary `require` predicates before this call. A false guard makes the call unreachable. */
+  preCallRequires?: readonly ExternalCallExpression[];
   /** Exact affine pre-test loop recurrence which reaches this callsite. Unlike `maximumOccurrences`, this
    * describes the runtime iteration domain rather than only publishing a protocol ceiling. */
   iterationDomain?: ExternalCallIterationDomainAbi;

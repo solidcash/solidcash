@@ -2882,6 +2882,8 @@ export interface ExternalCallSlot {
   argSources?: ExternalCallArgSource[];
   /** Runtime predicate guarding this callsite, serialized from its enclosing source branches. */
   condition?: ExternalCallExpression;
+  /** Necessary source `require` predicates reached before this call, evaluated at their own program points. */
+  preCallRequires?: ExternalCallExpression[];
   /** ABI output array directly populated by this loop call (`result[i] = call(); return result`). */
   resultArrayOutput?: number;
   rawFunctionName?: string;

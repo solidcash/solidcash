@@ -303,9 +303,9 @@ export async function pushCreateBuilderDirectExternalCallGroup(
         const variable = bStatelayout.variables.find((candidate) => candidate.name === name);
         if (!variable) continue;
         const candidates = bAbiFunc!.inputs
-          .map((input, index) => ({ input, index }))
-          .filter(({ input }) => !input.name.startsWith('__internal__')
-            && input.type === variable.type);
+          .map((abiInput, index) => ({ abiInput, index }))
+          .filter(({ abiInput }) => !abiInput.name.startsWith('__internal__')
+            && abiInput.type === variable.type);
         if (candidates.length !== 1) continue;
         const value = callInfo.args[candidates[0].index];
         if (typeof value === 'string' || value instanceof Uint8Array) values[name] = value;

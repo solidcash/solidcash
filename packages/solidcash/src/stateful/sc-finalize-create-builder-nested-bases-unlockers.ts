@@ -223,9 +223,9 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         const call = bAbiFunc?.externalCalls?.[slotIdx];
         const childGroup = children
           .map((idx) => externalCallUtxoGroups[idx])
-          .find((group) => group.functionName === call?.functionName
-            || group.logicalFunctionName === call?.functionName
-            || group.functionName === call?.rawFunctionName)
+          .find((candidateGroup) => candidateGroup.functionName === call?.functionName
+            || candidateGroup.logicalFunctionName === call?.functionName
+            || candidateGroup.functionName === call?.rawFunctionName)
           ?? (slotIdx < children.length ? externalCallUtxoGroups[children[slotIdx]] : undefined);
         if (childGroup) {
           const cAbi = childGroup.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[];

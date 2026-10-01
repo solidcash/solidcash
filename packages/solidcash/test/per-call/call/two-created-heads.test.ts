@@ -25,8 +25,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * deployment, so two reaches into one empty collection both splice through that one head. Two inserts of different
  * keys into the fixed-width `counts` (`putTwo`) are refused by the hop's cross-reach check before anything settles.
  * Two appends to one key of the dynamic-valued `logs` (`logTwice`, the shape of a store's per-job event log) each
- * create the key's node; the check leaves a dynamic value's reaches to chain through one node, which serves appends
- * to a held key, and the validator refuses the broadcast. One reach settles through the genesis head.
+ * create the key's node; a dynamic value's reaches are not chained across frames, so the hop refuses the second
+ * insert by name once every frame has settled, before the broadcast. One reach settles through the genesis head.
  *
  * Before heads were minted only at genesis, a reach into an empty collection minted the head in its own transaction,
  * and both shapes broadcast two heads of one collection on the mock (measured and refused by name at 1ac66d296).
@@ -285,10 +285,12 @@ describe('reaches into a collection the store never wrote, through the head its 
   it('refuses two appends to one key of an empty dynamic-valued collection, broadcasting nothing', async () => {
     const world = await deployed();
 
-    // Both reaches splice key 7 in through the genesis head and each creates the key's node; the validator, at
-    // input 1, refuses the broadcast.
+    // Both reaches splice key 7 in through the genesis head and each creates the key's node. A dynamic value's reaches
+    // are not chained, so once every frame has settled the hop refuses the second insert by name rather than handing
+    // the validator a chain it refuses (at input 1, before the check).
     await expect(callRoot(world, 'logTwice', [7n])).rejects.toThrow(
-      'error in evaluating input index 1: Program failed an OP_VERIFY operation',
+      'the hop\'s reach "Store.log()" touches a node of collection "logs" that an earlier reach "Store.log()" relinks '
+      + 'to insert a key',
     );
     expect(await callCoinLive(world)).toBe(true);
   });

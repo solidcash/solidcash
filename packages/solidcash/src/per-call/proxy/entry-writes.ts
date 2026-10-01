@@ -111,6 +111,17 @@ export function mappingNodeSlot(id: string): Uint8Array | undefined {
   return hex.length > 0 && hex.length % 2 === 0 && /^[0-9a-f]+$/.test(hex) ? hexToBin(hex) : undefined;
 }
 
+/**
+ * The participant id a callee contract's mapping node is placed under, whichever reach reads or writes it.
+ *
+ * The node is keyed by the category its records sit at, its collection and its own slot, so the reaches of one
+ * transaction that touch one node name one input and each frame declares the views it sees of it. An id that named
+ * the reach's role, or the key a read was resolved from, placed one node once per reach and spent its outpoint twice.
+ */
+export function sharedNodeId(categoryId: string, collection: string, slot: Uint8Array): string {
+  return `${MAPPING_NODE_PREFIX}${categoryId}-${collection}-${bytesToHex(slot)}`;
+}
+
 /** One key an entry's own write targets, with the node an insert splices through. */
 export interface ReachWriteTarget {
   readonly collection: string;
@@ -207,6 +218,12 @@ export interface HopEntryWritesRequest {
    * the batch is refused.
    */
   readonly declaredReadSlots?: readonly number[];
+  /**
+   * The id each node the batch spends is placed under, by its collection and its own slot. A callee frame names its
+   * contract's nodes so every reach that touches one shares it (`sharedNodeId`); absent names a node by its slot, or
+   * its collection's empty head by the collection.
+   */
+  readonly nodeIdOf?: (collection: string, slot: Uint8Array) => string;
 }
 
 /** The live deployment a call's hop reads its writes against, from the deployment's own classification. */
@@ -963,10 +980,11 @@ function planHopCollectionBatch(
   const spent = plan.written.filter((node) => node.existed).map((node) => ({
     slot: node.slot,
     before: node.before,
-    // The empty head sentinel is named by its collection; any other spent node is named by its own slot.
-    id: bytesEqual(node.before, headCommitment)
+    // The empty head sentinel is named by its collection; any other spent node is named by its own slot, unless the
+    // caller names the nodes it shares across frames.
+    id: request.nodeIdOf?.(collection.name, node.slot) ?? (bytesEqual(node.before, headCommitment)
       ? `${MAPPING_HEAD_PREFIX}${collection.name}`
-      : `${MAPPING_NODE_PREFIX}${bytesToHex(node.slot)}`,
+      : `${MAPPING_NODE_PREFIX}${bytesToHex(node.slot)}`),
   }));
   return {
     collection: collection.name,

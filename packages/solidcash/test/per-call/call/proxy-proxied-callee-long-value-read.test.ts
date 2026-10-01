@@ -9,6 +9,7 @@ import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { sharedNodeId } from '../../../src/per-call/proxy/entry-writes.js';
 import { entryRecordLockingBytecode } from '../../../src/per-call/deploy/records.js';
 import { mappingValueChunkLock } from '../../../src/per-call/composer/mapping-plan.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
@@ -241,8 +242,10 @@ describe('a hop whose proxied callee reads a mapping value past the inline limit
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
 
     // The node the callee reads is declared once, and the frame's witness block carries the whole value.
-    const readNodes = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-read-'));
-    expect(readNodes).toHaveLength(1);
+    expect(result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-'))
+      .map((placed) => placed.id)).toStrictEqual([
+      sharedNodeId(funded.rosterProxyCategoryId, 'profiles', keyToSlotMulti([funded.deployerLock])),
+    ]);
     const implementation = result.draft.blockOf('callee-impl-master-2');
     expect(implementation.values).toHaveLength(1);
     expect(implementation.values![0]).toStrictEqual(profileValue(funded.deployerLock));

@@ -5,10 +5,11 @@ import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { sharedNodeId } from '../../../src/per-call/proxy/entry-writes.js';
 import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -18,14 +19,14 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * One entry reaching the same mapping-writing, value-returning callee three times in one hop.
  *
  * Every reach runs a master of its own and writes the callee's one sorted mapping, and the reaches are separate
- * call sites, so each is planned by its own write step with no knowledge of its siblings. A transaction writes each
- * key once and recreates each spent node once, so the reaches only settle together when each one's key splices
- * through a node of its own: three keys in three gaps, with the read-only callee behind its own proxy reached
- * before them and the event-emitting callee reached after, all declare records the one transaction carries.
+ * call sites, so each is planned by its own write step against the deployment alone. Three keys in three gaps each
+ * splice through a node of its own, with the read-only callee behind its own proxy reached before them and the
+ * event-emitting callee reached after, and all declare records the one transaction carries. Three reaches that
+ * update one key the list holds share its node: it is one input, and each reach continues from the view the one
+ * before it left, so they settle too.
  *
- * The two shapes where the reaches cannot share one transaction are refused by name rather than settled into a
- * plan that derives but cannot broadcast: three reaches writing one key each compute a value for the same node's
- * output, and three reaches inserting into one gap each relink the same spent predecessor to their own key.
+ * Three reaches inserting into one gap each relink the same spent predecessor to their own key, which the master's
+ * insert does not chain, so that shape is refused by name rather than settled into a plan that cannot broadcast.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -304,11 +305,26 @@ describe('one entry reaching the same mapping-writing callee three times', () =>
     );
   });
 
-  it('refuses three reaches that write one key, which one node output cannot carry', async () => {
+  it('settles three reaches that update one key, each continuing from the view the one before it left', async () => {
     const { network, funded } = await deployedChains();
     const { oneKey } = keySets();
-    await expect(callRun(network, funded, [oneKey, oneKey, oneKey])).rejects.toThrow(
-      /entry "Ledger\.move\(\)" 3 times.*write collection "held" at the same key.*distinct keys/,
-    );
+    const result = await callRun(network, funded, [oneKey, oneKey, oneKey]);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+
+    // The seeded key's node is one input under the ledger's category; the reaches add 1, 2 and 3 to its 10 in turn.
+    const node = sharedNodeId(LEDGER_CATEGORY, 'held', keyToSlotMulti([bigIntToVmNumber(oneKey)]));
+    const { participants } = result.draft.layout;
+    expect(participants.filter((placed) => placed.id.startsWith('mapping-')).map((placed) => placed.id))
+      .toStrictEqual([node]);
+    const index = participants.find((placed) => placed.id === node)!.index;
+    const value = (commitment: Uint8Array): string => binToHex(decodeEntryCommitment(commitment).value);
+    const held = (amount: bigint): string => binToHex(bigIntToVmNumber(amount));
+    const views = (master: string): readonly string[] => result.draft.blockOf(master).segments.flat()
+      .filter((entry) => entry.in === index).map((entry) => `${value(entry.viewIn)}>${value(entry.viewOut)}`);
+    expect(['callee-master-3', 'callee-master-4', 'callee-master-5'].map(views)).toStrictEqual([
+      [`${held(10n)}>${held(11n)}`], [`${held(11n)}>${held(13n)}`], [`${held(13n)}>${held(16n)}`],
+    ]);
+    expect(value(Uint8Array.from(result.transaction.outputs[index]!.token!.nft!.commitment))).toBe(held(16n));
   });
 });

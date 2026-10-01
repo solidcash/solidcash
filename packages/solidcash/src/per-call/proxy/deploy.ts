@@ -54,7 +54,7 @@ import {
   PerCallComposerError, UNFILLED_CALLEE_REF, createComposedDerivationHost, deriveComposition, describeInnermost,
   facetId, layoutTransaction, participant, reportCompositionRefusal, requireLearnedViews, validatorFacetsOf,
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftCall, type DraftInput,
-  type DraftMaster, type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
+  type DraftMaster, type DraftRecordEntry, type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
 import { readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
 import { frameDataRecordIndices, orderLoopKeyArgs } from '../call/entry-records.js';
@@ -72,10 +72,13 @@ import {
 } from './entry-writes.js';
 import {
   calleeReadNodesOrNone,
+  chainedNodeIds,
   deploymentStateValues,
   planHopExternalCalls,
   reachedResultKey,
   requireSatisfiableReachWrites,
+  requireSettledNodeChains,
+  sharedNodeWritersBefore,
   type HopCallee,
   type HopCalleeReadNode,
   type HopCalleeRecord,
@@ -414,13 +417,13 @@ function laidWriteRecords(options: {
   const { laid, writes } = options;
   const readIds = new Set(writes.readRunIds ?? []);
   const readIndices = new Set([...readIds].map((id) => options.indexOf(id)));
+  // The nodes a sorted batch spends, under whatever id the plan names them: the frame's own or a shared one.
+  const nodeIds = new Set(writes.reachWrites.flatMap((write) => write.spentIds));
   const runIndices = new Set<number>();
   for (const id of writes.participantIds) {
-    // The plan lists a sorted batch's nodes under a mapping id and a read run's chunks apart; every other
-    // participant belongs to the run the write grows.
-    if (mappingHeadCollection(id) === undefined && mappingNodeSlot(id) === undefined && !readIds.has(id)) {
-      runIndices.add(options.indexOf(id));
-    }
+    // The plan lists a sorted batch's nodes and a read run's chunks apart; every other participant belongs to the
+    // run the write grows.
+    if (!nodeIds.has(id) && !readIds.has(id)) runIndices.add(options.indexOf(id));
   }
   const runLock = options.dynamicVariable === undefined || options.dynamicType === undefined
     ? undefined : dynamicRunLock(options.category, options.dynamicVariable, options.dynamicType);
@@ -1031,6 +1034,38 @@ interface CalleeSettlement {
 }
 
 /**
+ * The order the hop settles its callee frames in.
+ *
+ * Deepest first, so the frames a callee reaches answer before it is derived; and a frame that declares the view an
+ * earlier frame's write of a shared node left is settled after that writer, whose view is learned from its own
+ * frame (`sharedNodeWritersBefore`). A hop with no shared write keeps the deepest-first order unchanged. Only the
+ * frames being settled order each other: a frame this settle leaves out keeps the view an earlier settle learned.
+ */
+function calleeSettleOrder(callees: readonly HopCallee[], deepestFirst: readonly number[]): readonly number[] {
+  const writersBefore = sharedNodeWritersBefore(callees);
+  const inScope = new Set(deepestFirst);
+  const settled = new Set<number>();
+  const order: number[] = [];
+  const remaining = [...deepestFirst];
+  const ready = (index: number): boolean =>
+    callees.every((callee, at) => callee.enteredBy !== index || !inScope.has(at) || settled.has(at))
+    && (writersBefore.get(index) ?? []).every((writer) => !inScope.has(writer) || settled.has(writer));
+  while (remaining.length > 0) {
+    const at = remaining.findIndex(ready);
+    if (at < 0) {
+      throw new PerCallProxyDeployError(
+        'the hop\'s callee frames have no settle order that answers each frame\'s callees before it and each '
+        + 'shared node\'s writes before the frames that declare the views they left',
+      );
+    }
+    const index = remaining.splice(at, 1)[0]!;
+    settled.add(index);
+    order.push(index);
+  }
+  return order;
+}
+
+/**
  * Learns what each callee frame's entry computed, before the caller that reaches it is settled.
  *
  * A callee's own frame is the authority on its return: the plan states a candidate in its `retval` slot and the
@@ -1085,7 +1120,7 @@ async function settleCallees(options: {
     .map((_callee, index) => index)
     .filter((index) => options.only === undefined || options.only.has(index))
     .sort((left, right) => depthOf(right) - depthOf(left));
-  for (const calleeIndex of deepestFirst) {
+  for (const calleeIndex of calleeSettleOrder(options.callees, deepestFirst)) {
     const callee = options.callees[calleeIndex]!;
     const placeholder = hopRetvalPlaceholder(callee.contract, callee.entry);
     // One attempt per value the frame computes — its return, each unstated write, each event payload — plus the
@@ -1725,6 +1760,14 @@ async function planAndSettleHop(options: {
     externalPlan: HopExternalPlan, only: ReadonlySet<number>, seed: CalleeSettlement,
   ) => Promise<CalleeSettlement>;
 }): Promise<{ readonly externalPlan: HopExternalPlan; readonly settled: SettledHop }> {
+  // A node whose values chunk is not chained across frames, so a hop whose every frame settled beside such a chain
+  // is refused by name once settled, before it is broadcast.
+  const settledHop = (
+    plan: HopExternalPlan, settled: SettledHop,
+  ): { readonly externalPlan: HopExternalPlan; readonly settled: SettledHop } => {
+    requireSettledNodeChains(plan.callees);
+    return { externalPlan: plan, settled };
+  };
   const trace = hopTraceOn();
   const reached = new Map<string, FunctionArgument>();
   const learning: FrameLearning = { retvals: new Map(), writeViews: new Map(), events: new Map() };
@@ -1776,10 +1819,10 @@ async function planAndSettleHop(options: {
     requireSatisfiableReachWrites(externalPlan.callees);
     const settled = await options.settle(
       externalPlan, stops === 0 ? undefined : seedOf(learning, externalPlan.callees));
-    if (externalPlan.conditionalProducers.length === 0) return { externalPlan, settled };
+    if (externalPlan.conditionalProducers.length === 0) return settledHop(externalPlan, settled);
     externalReturns = producedCallResults(externalPlan, settled);
     const next = await options.plan(externalReturns, reached);
-    if (next.blocked === undefined && samePlannedSites(next, externalPlan)) return { externalPlan, settled };
+    if (next.blocked === undefined && samePlannedSites(next, externalPlan)) return settledHop(externalPlan, settled);
     if (pass >= externalPlan.conditionalProducers.length) {
       throw new PerCallProxyDeployError(
         `the entry's arms an earlier call's result decides did not settle: the hop re-planned `
@@ -2001,6 +2044,71 @@ function calleeDeclaredRecordsOfCategory(
     }
   }
   return ids;
+}
+
+/**
+ * Chains the views the frames declare for each node several of them touch, in the order the validator walks them.
+ *
+ * Every callee frame is planned against the deployment alone, so each declares a node as the deployment holds it,
+ * while the transaction spends the node once and the validator reads its declarations as one chain in execution
+ * order (V6): each frame's segments, a call's callee between the segment that makes it and the next. The walk
+ * restates the declarations in that order: a kept one keeps the view the last write before it left, and a write
+ * continues from that view to the one its own frame computed, which the hop learns from that frame. `ends` is the
+ * view each written node's chain ends at, which its output carries.
+ */
+function chainSharedNodeViews(
+  masters: readonly DraftMaster[],
+  root: string,
+  nodes: ReadonlySet<number>,
+  writes: ReadonlySet<DraftRecordEntry>,
+): { readonly masters: readonly DraftMaster[]; readonly ends: ReadonlyMap<number, Uint8Array> } {
+  if (nodes.size === 0) return { masters, ends: new Map() };
+  const byId = new Map(masters.map((master) => [master.master, master]));
+  const chained = new Map<string, DraftRecordEntry[][]>();
+  const views = new Map<number, Uint8Array>();
+  const visit = (id: string): void => {
+    const master = byId.get(id);
+    if (master === undefined || chained.has(id)) return;
+    const segments: DraftRecordEntry[][] = [];
+    chained.set(id, segments);
+    master.segments.forEach((segment, at) => {
+      segments.push(segment.map((entry): DraftRecordEntry => {
+        if (!nodes.has(entry.in) || entry.viewOut === undefined) return entry;
+        const view = views.get(entry.in) ?? entry.viewIn;
+        if (!writes.has(entry) || bytesEqual(entry.viewIn, entry.viewOut)) return { ...entry, viewIn: view, viewOut: view };
+        views.set(entry.in, entry.viewOut);
+        return { ...entry, viewIn: view };
+      }));
+      const call = master.calls[at];
+      if (call !== undefined) visit(call.callee);
+    });
+  };
+  visit(root);
+  return {
+    masters: masters.map((master) => {
+      const segments = chained.get(master.master);
+      return segments === undefined ? master : { ...master, segments };
+    }),
+    ends: views,
+  };
+}
+
+/** The inputs, each shared node a write touched recreated at the view its chain ends at. */
+function withChainEnds(
+  participants: readonly { readonly id: string; readonly index: number }[],
+  ends: ReadonlyMap<number, Uint8Array>,
+  inputs: Record<string, DraftInput>,
+): Record<string, DraftInput> {
+  for (const placed of participants) {
+    const end = ends.get(placed.index);
+    const input = inputs[placed.id];
+    const token = input?.output?.token;
+    if (end === undefined || input?.output === undefined || token?.nft === undefined) continue;
+    inputs[placed.id] = {
+      ...input, output: { ...input.output, token: { ...token, nft: { ...token.nft, commitment: end } } },
+    };
+  }
+  return inputs;
 }
 
 /** Lays out the delegate hop from the deployed masters and the proxy's records. */
@@ -2360,6 +2468,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     stateInputs: entry.stateInputs,
     ...(entry.createdOutputs.length === 0 ? {} : { createdOutputs: entry.createdOutputs }),
   }));
+  // The declarations each callee frame's own write transitions a record with, as laid in its write's segment; the
+  // copies kept on either side of that segment are not.
+  const writeTransitions = new Set<RecordEntry>();
   const calleeMasterDrafts: DraftMaster[] = callees.map((callee, calleePosition) => {
     // A frame that owns the records it lists places them; a delegate frame reads the records of the proxy frame
     // that entered it, which are the first ones that frame declares.
@@ -2392,7 +2503,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     ]);
 
     if (laidCalleeWrites?.records !== undefined) {
-      placeLaidWrites(segments, resolveLaidWriteSegments(
+      const placed = resolveLaidWriteSegments(
         laidCalleeWrites.records,
         (write, what) => resolvedWriteSegment({
           artifact: callee.artifact,
@@ -2404,7 +2515,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
           ...(callee.truncated === true ? { truncated: true } : {}),
         }),
         `the callee's "${callee.functionName}" entry`,
-      ));
+      );
+      for (const { entry } of placed) writeTransitions.add(entry);
+      placeLaidWrites(segments, placed);
     }
     const valueWitnesses = calleeValueWitnesses(callee.readNodes, laidCalleeWrites?.laid);
     return {
@@ -2441,14 +2554,21 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       redeemScript: callee.deployed.script,
     };
   });
+  // A node several callee frames touch is one participant: the views they declare of it chain in the order the
+  // validator walks the frames, and its output carries the view the last write left.
+  const sharedNodeIndices = new Set([...chainedNodeIds(callees)].map((id) => participant(layout, id).index));
+  const chained = chainSharedNodeViews(
+    [proxyMasterDraft, implementationMasterDraft, ...calleeMasterDrafts], PROXY_MASTER_ID, sharedNodeIndices,
+    writeTransitions,
+  );
   const proxyMasterAmount = options.proxyMasterAmount;
   const implementationMasterAmount = options.implementationMasterAmount;
   const proxyRecordAmount = options.validatorAmount;
   const plan: CompositionDraftPlan = {
     blocks,
     userInputs: [{ id: USER_ID, index: layout.participantCount }],
-    masters: [proxyMasterDraft, implementationMasterDraft, ...calleeMasterDrafts],
-    inputs: {
+    masters: chained.masters,
+    inputs: withChainEnds(layout.participants, chained.ends, {
       [PROXY_MASTER_ID]: {
         source: masterSource(proxyMaster.lockingBytecode, options.proxyCategory, proxyMasterAmount),
       },
@@ -2519,7 +2639,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       ...(laidWrites?.inputs ?? {}),
       // Each callee frame's own write spends the collection nodes it names, which its own block already placed.
       ...Object.assign({}, ...calleeTrailing.map((written) => written?.laid?.inputs ?? {})),
-    },
+    }),
     validator: {
       id: VALIDATOR_ID,
       covers: [...new Set([implementationArtifact.contractName, ...callees.map((callee) => callee.contract)])],

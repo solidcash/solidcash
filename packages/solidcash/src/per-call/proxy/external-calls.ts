@@ -83,9 +83,11 @@ import {
   type AbiEntryRow, type CallResolver, type HopCallInputs, type ResolvedCall,
 } from './call-resolution.js';
 import {
-  hopEntryWrites, joinedNodeValue, type HopEntryWrites, type HopLiveDeployment, type ReachWriteTarget,
+  hopEntryWrites, joinedNodeValue, sharedNodeId,
+  type HopEntryWrites, type HopLiveDeployment, type ReachWrite, type ReachWriteTarget,
 } from './entry-writes.js';
 import { readEntryNode } from '../call/entry-records.js';
+import { decodeEntryCommitment } from '../../stateful/SortedList.js';
 import { PerCallProxyDeployError } from './errors.js';
 
 /** One contract the caller names for a call an implementation entry makes, keyed by the interface it calls. */
@@ -1003,6 +1005,7 @@ function calleeEntryWrites(
   senderAddress: Uint8Array | undefined,
   live: HopLiveDeployment,
   readNodes: readonly HopCalleeReadNode[],
+  categoryId: string,
 ): HopEntryWrites | undefined {
   const callee = `${artifact.contractName}.${functionName}()`;
   let writes: HopEntryWrites | undefined;
@@ -1015,6 +1018,8 @@ function calleeEntryWrites(
       liveDeployment: live,
       writtenCommitments: live.recordCommitments,
       declaredReadSlots: readNodes.map((node) => node.slotIndex),
+      // A node is the contract's, not the reach's: every reach that touches it names the same participant.
+      nodeIdOf: (collection, slot) => sharedNodeId(categoryId, collection, slot),
     });
   } catch (error) {
     const fn = artifact.abi.find((candidate) => candidate.name === functionName);
@@ -1060,6 +1065,11 @@ function calleeReadNodes(options: {
    * implementation's. Absent means the deployment's records are the artifact's own.
    */
   readonly recordLayout?: StateLayout;
+  /**
+   * The id each node is placed under, by its collection and its own slot: a callee frame's node is its contract's,
+   * shared with every reach that reads or writes it (`sharedNodeId`). Absent names it by the key the read resolved.
+   */
+  readonly nodeIdOf?: (collection: string, slot: Uint8Array) => string;
 }): readonly HopCalleeReadNode[] {
   const fn = options.artifact.abi.find((candidate) => candidate.name === options.functionName);
   if (fn === undefined) return [];
@@ -1122,7 +1132,10 @@ function calleeReadNodes(options: {
       }
     }
     return {
-      id: `mapping-read-${node.collection}-${bytesToHex(node.slot)}`,
+      // A key the list does not hold is read against the node that brackets it, so a shared id names the node's own
+      // slot: two reads that resolve to one node are one input.
+      id: options.nodeIdOf?.(node.collection, decodeEntryCommitment(node.commitment).slot)
+        ?? `mapping-read-${node.collection}-${bytesToHex(node.slot)}`,
       collection: node.collection,
       signature: node.signature,
       slotIndex: slot.slotIndex!,
@@ -1220,6 +1233,7 @@ async function placeCalleeMasters(
   const stateValues = deploymentStateValues(layout, categoryId, deployment);
   const category = hexToBin(categoryId);
   const live = liveDeploymentOf(categoryId, deployment, layout);
+  const nodeIdOf = (collection: string, slot: Uint8Array): string => sharedNodeId(categoryId, collection, slot);
   for (const [occurrence, call] of resolved.entries()) {
     // A stop inside an earlier visit's own calls ends the plan there, so no later visit is placed.
     if (ctx.stop.blocked !== undefined) break;
@@ -1231,12 +1245,12 @@ async function placeCalleeMasters(
     // The nodes the entry only reads, from the reach's own call data; they lead any batch's groups.
     const readNodes = calleeReadNodesOrNone({
       artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
-      senderAddress: caller.selfAddress, categoryId, deployment,
+      senderAddress: caller.selfAddress, categoryId, deployment, nodeIdOf,
     });
     // The frame's own write is planned from the reach's own call data, so two reaches that pass different values
     // write different nodes.
     const writes = calleeEntryWrites(
-      external.artifact, entry.name, call.argumentValues, caller.selfAddress, live, readNodes);
+      external.artifact, entry.name, call.argumentValues, caller.selfAddress, live, readNodes, categoryId);
     for (const node of readNodes) ctx.utxos.set(node.id, node.utxo);
     // A mapping node the frame writes sits on a live UTXO the deployment's classification already placed, so the
     // hop hands the rebuild its outpoint rather than have it search the category again.
@@ -1407,10 +1421,12 @@ async function placeProxiedCallee(
       artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
       senderAddress: caller.selfAddress, categoryId: external.categoryId, deployment: proxyDeployment,
       recordLayout: proxyReadLayout,
+      nodeIdOf: (collection, slot) => sharedNodeId(external.categoryId, collection, slot),
     });
     // The implementation entry's own write is planned from this reach's call data, against the proxy's deployment.
     const implementationWrites = calleeEntryWrites(
-      external.artifact, entry.name, call.argumentValues, caller.selfAddress, live, implementationReads);
+      external.artifact, entry.name, call.argumentValues, caller.selfAddress, live, implementationReads,
+      external.categoryId);
     for (const node of implementationReads) ctx.utxos.set(node.id, node.utxo);
     for (const [id, utxo] of implementationWrites?.spentUtxos ?? []) ctx.utxos.set(id, utxo);
     const implementationBaseFrame: HopCallee = {
@@ -1467,17 +1483,47 @@ interface CollectionReach {
   readonly functionName: string;
   readonly targets: readonly ReachWriteTarget[];
   readonly spentIds: readonly string[];
+  /** The spent nodes the reach rewrites in place as its own key's update, rather than relinks for an insert. */
+  readonly updatedIds: ReadonlySet<string>;
+}
+
+/** Why a reach cannot follow an insert through the node it touches. */
+const AFTER_INSERT = 'relinks to insert a key, and each reach is planned against the deployment alone, so the later '
+  + 'one is not planned against the list the insert left';
+
+/** What a master would need before an insert can follow another reach's write of the node it splices through. */
+const CHAINED_INSERT_NEED = 'an insert chained after another reach\'s write would need the master\'s insert to prove '
+  + 'its predecessor, and the relink it writes, against the views its own frame declares, also for a node an earlier '
+  + 'reach created; it proves them against the spent input and the transaction\'s output';
+
+/**
+ * The spent nodes one reach's write rewrites in place: the targets the list held, which an update keeps where they
+ * stand. A node an insert splices through is relinked instead, and so is a target some insert of the same write
+ * splices through.
+ */
+function updatedNodeIds(categoryId: string, write: ReachWrite): ReadonlySet<string> {
+  const idOf = (slot: Uint8Array): string => sharedNodeId(categoryId, write.collection, slot);
+  const relinked = new Set(write.targets.flatMap((target) =>
+    (target.predecessor === undefined ? [] : [idOf(target.predecessor)])));
+  return new Set(write.targets
+    .filter((target) => target.predecessor === undefined)
+    .map((target) => idOf(target.slot))
+    .filter((id) => !relinked.has(id)));
 }
 
 /**
  * Refuses a hop whose sibling reaches of one contract write one collection in a way one transaction cannot carry.
  *
- * Each reach of a mapping-writing callee runs as a master of its own and is planned on its own, while the
- * transaction writes each key once and recreates each spent node once. Two reaches that write one key each compute
- * a value for that node's output, and one output cannot carry both; two reaches that insert into one gap each
- * relink the same predecessor to their own key, and one spent input is recreated once. Either shape would derive a
- * plan whose frames disagree about a shared output and so could not broadcast, so it is refused by name here
- * rather than settled into a transaction the network rejects.
+ * Each reach of a mapping-writing callee runs as a master of its own and is planned on its own against the
+ * deployment, while the transaction spends each node once. A node several reaches touch is one participant, and the
+ * frames' views of it chain in the order they run (`buildHopPlan`): a read sees the view every write before it left,
+ * and an update of a key the list holds rewrites the view the update before it left, which the master's update reads
+ * from its frame's declaration. Two reaches that update one key therefore share one transaction.
+ *
+ * An insert does not chain: two reaches that write one key the list does not hold each insert it, and two reaches
+ * that insert into one gap each relink the same predecessor to their own key. The master's insert proves the
+ * predecessor from the spent input, not the view an earlier reach left, so either shape is refused by name here
+ * rather than settled into a transaction the network rejects; so are the chains `requireChainableNodes` names.
  */
 export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): void {
   const byCollection = new Map<string, {
@@ -1498,45 +1544,219 @@ export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): vo
         functionName: callee.functionName,
         targets: write.targets,
         spentIds: write.spentIds,
+        updatedIds: updatedNodeIds(bytesToHex(owner.category), write),
       });
       byCollection.set(key, group);
     }
   }
   for (const group of byCollection.values()) {
     if (group.reaches.length < 2) continue;
-    // A dynamic value's reaches write versions of one value: each frame mints the chunks of its own version and
-    // states the view it continues from, so the reaches chain through the node rather than collide over it.
+    // A dynamic value's reaches are left to the settled hop (`requireSettledNodeChains`).
     if (group.chunkable) continue;
     const where = `the hop reaches the entry "${group.reaches[0]!.functionName}" `
       + `${group.reaches.length} times`;
-    const clashes = (left: readonly string[], right: readonly string[]): string | undefined =>
-      left.find((candidate) => right.includes(candidate));
     for (let left = 0; left < group.reaches.length; left += 1) {
       for (let right = left + 1; right < group.reaches.length; right += 1) {
         const first = group.reaches[left]!;
         const second = group.reaches[right]!;
+        // A key the list holds is updated in place by each reach, so the reaches chain through its node; a key it
+        // does not hold is inserted by each.
+        const inserted = (reach: CollectionReach, slot: Uint8Array): boolean => reach.targets.some((target) =>
+          bytesEqual(target.slot, slot) && target.predecessor !== undefined);
         const sharedKey = first.targets.find((target) =>
-          second.targets.some((other) => bytesEqual(other.slot, target.slot)));
+          second.targets.some((other) => bytesEqual(other.slot, target.slot))
+          && (inserted(first, target.slot) || inserted(second, target.slot)));
         if (sharedKey !== undefined) {
           throw new PerCallProxyDeployError(
             `${where}, and ${group.reaches.filter((reach) => reach.targets.some((target) =>
               bytesEqual(target.slot, sharedKey.slot))).length} of them write collection `
-            + `"${group.collection}" at the same key; the compiled entry writes one node per key, and one output `
-            + 'cannot carry the value each reach computed for it, so the reaches must write distinct keys',
+            + `"${group.collection}" at the same key, which the list does not hold, so each reach inserts it; `
+            + `${CHAINED_INSERT_NEED}, so the reaches must write distinct keys`,
           );
         }
-        const sharedNode = clashes(first.spentIds, second.spentIds);
+        const sharedNode = first.spentIds.find((id) => second.spentIds.includes(id)
+          && !(first.updatedIds.has(id) && second.updatedIds.has(id)));
         if (sharedNode !== undefined) {
           throw new PerCallProxyDeployError(
             `${where}, and ${group.reaches.filter((reach) => reach.spentIds.includes(sharedNode)).length} of them `
-            + `insert into collection "${group.collection}" through the same node; the compiled entry relinks that `
-            + 'node to its own key, and one spent input is recreated once, so the reaches must splice through '
-            + 'distinct nodes',
+            + `insert into collection "${group.collection}" through the same node, or write the node another `
+            + `inserts through; ${CHAINED_INSERT_NEED}, so the reaches must splice through distinct nodes`,
           );
         }
       }
     }
   }
+  requireChainableNodes(callees);
+}
+
+/** One frame's touch of a node its contract holds. */
+interface NodeTouch {
+  /** The frame's index in the hop's callees, which is the order the frames run in. */
+  readonly frame: number;
+  readonly functionName: string;
+  readonly collection: string;
+  /** The frame reads the node, rewrites it in place as its own key's update, or relinks it for an insert. */
+  readonly kind: 'read' | 'update' | 'relink';
+  /**
+   * True when the collection's values chunk: a write's value sizes the run of chunk records it takes, and a long
+   * value is read from a witness, both planned from the value the deployment holds.
+   */
+  readonly chunkable: boolean;
+}
+
+/**
+ * Every callee mapping node the hop's frames touch, by its participant id, with one touch per frame in frame order.
+ *
+ * A frame that touches a node twice, a read beside its write, is counted by its strongest touch. The frames are in
+ * placement order, which is the order they run in for frames none of which enters another.
+ */
+function nodeTouches(callees: readonly HopCallee[]): ReadonlyMap<string, readonly NodeTouch[]> {
+  const strength = { read: 0, update: 1, relink: 2 } as const;
+  const touches = new Map<string, NodeTouch[]>();
+  callees.forEach((callee, frame) => {
+    const owner = callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!;
+    const own = new Map<string, NodeTouch>();
+    const touch = (id: string, found: NodeTouch): void => {
+      const known = own.get(id);
+      if (known === undefined || strength[found.kind] > strength[known.kind]) own.set(id, found);
+    };
+    const collections = callee.artifact?.stateLayout?.collections ?? [];
+    for (const node of callee.readNodes ?? []) {
+      touch(node.id, {
+        frame, functionName: callee.functionName, collection: node.collection, kind: 'read',
+        chunkable: collections.some((candidate) => candidate.name === node.collection
+          && candidate.chunkableValue === true),
+      });
+    }
+    for (const write of callee.entryWrites?.reachWrites ?? []) {
+      const updated = updatedNodeIds(bytesToHex(owner.category), write);
+      for (const id of write.spentIds) {
+        touch(id, {
+          frame, functionName: callee.functionName, collection: write.collection,
+          kind: updated.has(id) ? 'update' : 'relink', chunkable: write.chunkable,
+        });
+      }
+    }
+    for (const [id, found] of own) touches.set(id, [...(touches.get(id) ?? []), found]);
+  });
+  return touches;
+}
+
+/** True when frame `outer` enters frame `inner`, directly or through the frames between them. */
+function entersFrame(callees: readonly HopCallee[], outer: number, inner: number): boolean {
+  for (let at = callees[inner]?.enteredBy ?? null; at !== null; at = callees[at]?.enteredBy ?? null) {
+    if (at === outer) return true;
+  }
+  return false;
+}
+
+/** True when a node's collection holds values that chunk, which the hop does not chain across frames. */
+function chunkingNode(touches: readonly NodeTouch[]): boolean {
+  return touches.some((touch) => touch.chunkable);
+}
+
+/**
+ * Refuses a node several frames touch in a chain the hop cannot state.
+ *
+ * Every frame is planned against the deployment alone, and the views a shared node's frames declare are chained in
+ * the order the frames run: a read keeps the view the last write before it left, and an update of the node's own key
+ * rewrites it. That covers reads and updates of a fixed-width value in any order. Each remaining shape is refused by
+ * name: a touch after an insert relinked the node, which reads a list the planner never saw; an insert through a node
+ * an earlier reach wrote, which the master's insert does not chain; and two touches where one frame enters the other,
+ * whose segments interleave in an order this hop does not settle.
+ *
+ * A node whose values chunk is left to the settled hop (`requireSettledNodeChains`): its frames' views are not
+ * chained, so a frame the execution reaches before the chain still reports its own refusal.
+ */
+function requireChainableNodes(callees: readonly HopCallee[]): void {
+  for (const touches of nodeTouches(callees).values()) {
+    if (touches.length < 2 || chunkingNode(touches)) continue;
+    const collection = touches[0]!.collection;
+    for (const [at, outer] of touches.entries()) {
+      for (const inner of touches.slice(at + 1)) {
+        if (!entersFrame(callees, outer.frame, inner.frame) && !entersFrame(callees, inner.frame, outer.frame)) continue;
+        throw new PerCallProxyDeployError(
+          `the hop's reaches "${outer.functionName}" and "${inner.functionName}" touch one node of collection `
+          + `"${collection}", and one of them enters the other, so their segments interleave in an order this hop `
+          + 'does not settle',
+        );
+      }
+    }
+    let written: NodeTouch | undefined;
+    for (const touch of touches) {
+      if (written !== undefined) {
+        const pair = `the hop's reach "${touch.functionName}" touches a node of collection "${collection}" that an `
+          + `earlier reach "${written.functionName}"`;
+        if (written.kind === 'relink') throw new PerCallProxyDeployError(`${pair} ${AFTER_INSERT}`);
+        if (touch.kind === 'relink') {
+          throw new PerCallProxyDeployError(`${pair} writes, and inserts through it; ${CHAINED_INSERT_NEED}`);
+        }
+      }
+      if (touch.kind !== 'read') written = touch;
+    }
+  }
+}
+
+/**
+ * Refuses a settled hop that touches a node whose values chunk after another reach wrote it.
+ *
+ * Each reach sizes the run of chunk records a value takes, and witnesses a long value it reads, from the value the
+ * deployment holds, so a later frame cannot continue from the view an earlier one left and the hop does not chain
+ * them: the node's declarations would not link into the one chain the validator requires (V7). The shape is refused
+ * here, once every frame has settled, rather than at planning: an arm the planner states and the execution skips,
+ * or a frame that refuses before the chain is reached, is reported as itself.
+ */
+export function requireSettledNodeChains(callees: readonly HopCallee[]): void {
+  for (const touches of nodeTouches(callees).values()) {
+    if (touches.length < 2 || !chunkingNode(touches)) continue;
+    const written = touches.findIndex((touch) => touch.kind !== 'read');
+    const later = written < 0 ? undefined : touches[written + 1];
+    if (later === undefined) continue;
+    const earlier = touches[written]!;
+    const pair = `the hop's reach "${later.functionName}" touches a node of collection "${later.collection}" that an `
+      + `earlier reach "${earlier.functionName}"`;
+    // An insert's relink does not chain whatever the value, as `requireChainableNodes` names it; an update of a value
+    // that chunks does not chain because the hop plans it from the deployment's value.
+    if (earlier.kind === 'relink') throw new PerCallProxyDeployError(`${pair} ${AFTER_INSERT}`);
+    if (later.kind === 'relink') {
+      throw new PerCallProxyDeployError(`${pair} writes, and inserts through it; ${CHAINED_INSERT_NEED}`);
+    }
+    throw new PerCallProxyDeployError(
+      `${pair} writes, and its values chunk: each reach sizes the run of chunk records a value takes, and witnesses `
+      + 'a long value it reads, from the value the deployment holds, not the one the earlier reach wrote',
+    );
+  }
+}
+
+/**
+ * The callee mapping nodes whose frames' views the hop chains: every node the frames touch, but one whose values
+ * chunk (`requireSettledNodeChains`).
+ */
+export function chainedNodeIds(callees: readonly HopCallee[]): ReadonlySet<string> {
+  return new Set([...nodeTouches(callees)].filter(([, touches]) => !chunkingNode(touches)).map(([id]) => id));
+}
+
+/**
+ * For each callee frame, the frames that write a node it touches before it does.
+ *
+ * A frame declares the view each earlier write of a shared node left, and a write's view is learned when its own
+ * frame is settled, so the hop settles a frame after every such writer (`settleCallees`). A node whose values chunk
+ * is not chained, so it orders nothing.
+ */
+export function sharedNodeWritersBefore(callees: readonly HopCallee[]): ReadonlyMap<number, readonly number[]> {
+  const before = new Map<number, number[]>();
+  for (const touches of nodeTouches(callees).values()) {
+    if (chunkingNode(touches)) continue;
+    touches.forEach((touch, at) => {
+      for (const earlier of touches.slice(0, at)) {
+        if (earlier.kind === 'read') continue;
+        const writers = before.get(touch.frame) ?? [];
+        if (!writers.includes(earlier.frame)) writers.push(earlier.frame);
+        before.set(touch.frame, writers);
+      }
+    });
+  }
+  return before;
 }
 
 /** Everything the implementation frame's calls are planned from, and the live deployments they run against. */

@@ -521,9 +521,16 @@ const REOPEN_LINE = lineOf('function reopen(');
 const SIZED_RUN = ', and the run it declares for dynamic "jobs" is 2 chunk(s), sized from the length the record\'s '
   + 'own declaration states';
 
-/** The class-(d) reach guard's refusal: both token arms are planned, and both write the same balance keys. */
-const ONE_KEY_TWICE = 'the hop reaches the entry "Coin.transferFrom()" 2 times, and 2 of them write collection '
-  + '"balances" at the same key';
+/** Where the update is reported: the line its parameters open. */
+const UPDATE_LINE = lineOf('int id, string title, bytes32 digest, string[] tags');
+
+/**
+ * An update's refusal with both token arms planned: they chain through the balance nodes they share and settle, and
+ * the entry's own frame refuses where the execution skips them.
+ */
+const UPDATE_SKIPS_ARMS = 'the implementation\'s "update" entry did not settle through the proxy: frame '
+  + `"implementation-master" of Desk.update() at line ${UPDATE_LINE}: no source message (Program failed an `
+  + `OP_VERIFY operation.)${SIZED_RUN}`;
 
 /** A refusal thrown while the hop plans an arm the execution does not take: its argument is not a `uint`. */
 function expectArmOutOfBounds(outcome: Outcome, value: bigint): void {
@@ -618,22 +625,23 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): a job updated, c
       expect(await entries(world)).toBe(1n);
     }, 1_800_000);
 
-    it('an update with a registered judge and a second tag (31, 33) is refused for two token reaches writing one key',
+    it('an update with a registered judge and a second tag (31, 33) stops at the token arms the execution skips',
       async () => {
         const outcome = await enter(world, 'Desk', 'update', updateArgs(100n, ['LA', 'Bug'], JUDGE));
-        // Both token arms are planned, because their conditions read the job the entry rewrites, and the pull's batch
-        // is planned beside its allowance read, so the pull and the payout both write the creator's and the root's
-        // balances: the class-(d) reach guard, before anything is derived. Owner: the SDK hop planner
-        // (`proxy/external-calls.ts`, `requireSatisfiableReachWrites`, behind `occurrenceCountOf`).
-        expectRefused(outcome, ONE_KEY_TWICE);
-        expect(outcome.draft).toBeUndefined();
+        // Both token arms are planned, because their conditions read the job the entry rewrites, and the pull and the
+        // payout both write the creator's and the root's balances. The keys are ones the token holds, so the two reaches
+        // share each node and chain their views (the reach guard no longer stops them); the callees settle, and the
+        // entry's own frame refuses where it skips the arms the plan states, as closing before a day does. Owner: the
+        // SDK hop planner (`proxy/external-calls.ts`, `occurrenceCountOf`).
+        expectRefused(outcome, UPDATE_SKIPS_ARMS);
+        expect(outcome.draft).toBeDefined();
       }, 900_000);
 
-    it('an update with no judge (32) is refused the same way', async () => {
+    it('an update with no judge (32) stops the same way', async () => {
       const outcome = await enter(world, 'Desk', 'update', updateArgs(100n, ['LA'], NO_JUDGE));
       // Owner: the SDK hop planner, as above.
-      expectRefused(outcome, ONE_KEY_TWICE);
-      expect(outcome.draft).toBeUndefined();
+      expectRefused(outcome, UPDATE_SKIPS_ARMS);
+      expect(outcome.draft).toBeDefined();
     }, 900_000);
 
     it('an update raising the amount (34) is refused while the hop plans the payout arm', async () => {
@@ -763,13 +771,13 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): a job updated, c
       expect(await entries(world)).toBe(2n);
     }, 1_800_000);
 
-    it('an update beside it (31, 33) is refused for two token reaches writing one balance key', async () => {
+    it('an update beside it (31, 33) stops at the token arms the execution skips', async () => {
       const outcome = await enter(world, 'Desk', 'update', updateArgs(100n, ['LA', 'Bug'], JUDGE));
-      // Both token arms are still planned, and the pull and the payout both write the creator's and the root's
-      // balances: the class-(d) reach guard. Owner: the SDK hop planner (`proxy/external-calls.ts`,
-      // `requireSatisfiableReachWrites`, behind `occurrenceCountOf`).
-      expectRefused(outcome, ONE_KEY_TWICE);
-      expect(outcome.draft).toBeUndefined();
+      // Both token arms are still planned and chain through the creator's and the root's balance nodes, and the
+      // entry's own frame refuses where it skips them. Owner: the SDK hop planner (`proxy/external-calls.ts`,
+      // `occurrenceCountOf`).
+      expectRefused(outcome, UPDATE_SKIPS_ARMS);
+      expect(outcome.draft).toBeDefined();
     }, 900_000);
   });
 });

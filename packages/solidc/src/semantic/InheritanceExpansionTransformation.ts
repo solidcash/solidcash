@@ -63,6 +63,8 @@ import {
   StringConcatNode,
   AddressSendExpressionNode,
   LowLevelCallNode,
+  MethodCallNode,
+  MethodCallStatementNode,
   TypeIntrospectionNode,
   StateVariableNode,
   CollectionNode,
@@ -1883,6 +1885,19 @@ export function substituteInExpression(
     return expr;
   }
 
+  if (expr instanceof MethodCallNode) {
+    // A method call still in its source form - a using-for library call whose receiver type was unknown at parse
+    // time, as on an inherited mapping (`_balances[account].add(amount)`) - keeps its receiver and arguments as
+    // ordinary expressions. Skipping them left a substituted parameter dangling inside the call.
+    expr.object = substituteInExpression(expr.object, subs);
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    if (expr.callOptions?.value) expr.callOptions.value = substituteInExpression(expr.callOptions.value, subs);
+    if (expr.callOptions?.gas) expr.callOptions.gas = substituteInExpression(expr.callOptions.gas, subs);
+    if (expr.callOptions?.salt) expr.callOptions.salt = substituteInExpression(expr.callOptions.salt, subs);
+    if (expr.runtimeSelector) expr.runtimeSelector = substituteInExpression(expr.runtimeSelector, subs);
+    return expr;
+  }
+
   if (expr instanceof TernaryOpNode) {
     expr.condition = substituteInExpression(expr.condition, subs);
     expr.ifTrue = substituteInExpression(expr.ifTrue, subs);
@@ -2155,6 +2170,11 @@ function substituteInStatement(
       stmt.call.identifier = qualified;
     }
     stmt.call.parameters = stmt.call.parameters.map((p) => substituteInExpression(p, subs));
+    return stmt;
+  }
+
+  if (stmt instanceof MethodCallStatementNode) {
+    stmt.call = substituteInExpression(stmt.call, subs) as MethodCallNode;
     return stmt;
   }
 

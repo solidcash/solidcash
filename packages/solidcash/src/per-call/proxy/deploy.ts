@@ -2346,8 +2346,10 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     for (const master of plan.masters) {
       const calls = master.calls.map((call) =>
         `${call.callee}:${frameKindName(call.kind)}->${binToHex(call.target).slice(0, 8)}`).join(' ');
+      const self = (master.frame as { readonly selfAddress?: Uint8Array }).selfAddress;
       hopTrace(`plan ${traceFrameFacts(master.master, master.functionName, master.frame.kind)} `
-        + `contract=${master.contract} calls=[${calls}]`);
+        + `contract=${master.contract} self=${self === undefined ? 'none' : binToHex(self).slice(0, 12)} `
+        + `calls=[${calls}]`);
     }
   }
   return plan;
@@ -2436,6 +2438,164 @@ function writeNodeIdsOf(writes: HopEntryWrites): Map<string, string> {
 }
 
 /**
+ * One participant's planned source output beside the live UTXO the hop will actually spend, as one trace line.
+ *
+ * The settle evaluates each input against the plan's own `sourceOutputs`, while the network resolves an input's
+ * source output from the outpoint it spends; a hop that settles and then fails verification differs in exactly this
+ * pair, so the line states both. The locks are printed as a length and the first bytes of their hash, which is what
+ * tells two lock scripts apart inside the trace's line limit.
+ */
+function describeSourceOutput(
+  planned: { readonly lockingBytecode: Uint8Array; readonly valueSatoshis: bigint;
+    readonly token?: { readonly category: Uint8Array; readonly amount: bigint;
+      readonly nft?: { readonly capability: unknown; readonly commitment: Uint8Array } } },
+  live: { readonly lockingBytecode?: Uint8Array; readonly satoshis: bigint; readonly token?: Utxo['token'] },
+): string {
+  const hex = (bytes: Uint8Array | string): string => (typeof bytes === 'string' ? bytes : binToHex(bytes));
+  const lock = (bytes: Uint8Array | undefined): string => bytes === undefined
+    ? 'none'
+    : `${bytes.length}@${binToHex(sha256(bytes)).slice(0, 12)}`;
+  const tokenOf = (token: typeof planned.token | Utxo['token']): string => token === undefined
+    ? 'none'
+    : `${hex(token.category).slice(0, 12)}/${token.amount.toString()}/`
+      + `${token.nft === undefined ? 'none' : `${String(token.nft.capability)}:${hex(token.nft.commitment).slice(0, 12)}`}`;
+  return `${lock(planned.lockingBytecode)} ${planned.valueSatoshis} ${tokenOf(planned.token)}`
+    + ` | live ${lock(live.lockingBytecode)} ${live.satoshis} ${tokenOf(live.token)}`;
+}
+
+/**
+ * One libauth source output as a trace field: its lock's length and hash, its value, its token and its commitment.
+ */
+function describeLibauthOutput(output: unknown): string {
+  const typed = output as {
+    readonly lockingBytecode?: Uint8Array;
+    readonly valueSatoshis?: bigint;
+    readonly token?: { readonly category: Uint8Array; readonly amount: bigint;
+      readonly nft?: { readonly capability: unknown; readonly commitment: Uint8Array } };
+  };
+  if (typed === undefined) return 'none';
+  const lock = typed.lockingBytecode === undefined
+    ? 'none'
+    : `${typed.lockingBytecode.length}@${binToHex(sha256(typed.lockingBytecode)).slice(0, 12)}`;
+  const token = typed.token === undefined
+    ? 'none'
+    : `${binToHex(typed.token.category).slice(0, 12)}/${typed.token.amount.toString()}/`
+      + `${typed.token.nft === undefined ? 'none' : String(typed.token.nft.capability)}`;
+  return `${lock} ${String(typed.valueSatoshis ?? '')} ${token}`;
+}
+
+/**
+ * Evaluates the assembled transaction the way the network will and traces every input that refuses.
+ *
+ * The settle evaluates each input against the plan's own `sourceOutputs`; the network resolves an input's source
+ * output from the outpoint the transaction spends, and the two need not agree about everything. This runs the
+ * assembled transaction - its real outpoints, the builder's own source outputs and the caller's change - through
+ * the same machine, so an input that the settle accepted and the network refuses is named with its instruction.
+ */
+async function traceAssembledHop(
+  builder: { buildLibauthProgram(skipChecks?: boolean): {
+    transaction: { readonly inputs: readonly unknown[] };
+    sourceOutputs: readonly unknown[];
+  } },
+  provider: NetworkProvider,
+  program: { readonly sourceOutputs: readonly unknown[]; readonly transaction: unknown },
+): Promise<void> {
+  const { transaction, sourceOutputs } = builder.buildLibauthProgram(true);
+  const machine = await providerMachine(provider);
+  for (let index = 0; index < transaction.inputs.length; index += 1) {
+    const state = machine.evaluate({
+      inputIndex: index,
+      sourceOutputs: sourceOutputs as never,
+      transaction: transaction as never,
+    }) as unknown as { readonly error?: string; readonly ip?: number;
+      readonly stack?: readonly Uint8Array[]; readonly altStack?: readonly Uint8Array[] };
+    if (machine.stateSuccess(state as never) === true) continue;
+    hopTrace(`assembled ${index} ${String(state.error ?? '')} ip=${String(state.ip ?? '')}`);
+    hopTrace(`assembled-source ${index} `
+      + `${describeLibauthOutput(sourceOutputs[index])} | plan ${describeLibauthOutput(program.sourceOutputs[index])}`);
+    hopTrace(`stack ${index} ${(state.stack ?? []).slice(-6).map((item) =>
+      `${item.length}:${binToHex(item)}`).join(' ')}`);
+    const instructions = (state as unknown as { readonly instructions?: readonly { readonly opcode: number }[] })
+      .instructions ?? [];
+    const at = Number(state.ip ?? 0) - 1;
+    hopTrace(`instr ${index} ${instructions.slice(Math.max(0, at - 6), at + 3)
+      .map((instruction, offset) => `${Math.max(0, at - 6) + offset}:${instruction.opcode}`).join(' ')}`);
+    const operands = await equalityOperands(provider, index, sourceOutputs, transaction);
+    if (operands !== undefined) {
+      hopTrace(`operands ${index} ${operands.map((item) => `${item.length}:${binToHex(item)}`).join(' vs ')}`);
+    }
+    hopTrace(`altstack ${index} ${(state.altStack ?? []).slice(-4).map((item) => binToHex(item)).join(' ')}`);
+    await traceAssembledDiff(transaction, program);
+  }
+}
+
+/**
+ * The two items the failing `OP_EQUALVERIFY` compared, taken by stepping the input in place.
+ *
+ * A failed comparison has already consumed its operands, so the state the machine returns no longer carries them.
+ * The step before the failure is where they still exist: the last `OP_EQUALVERIFY` the input reached had this
+ * stack, and those two items are what disagreed.
+ */
+async function equalityOperands(
+  provider: NetworkProvider,
+  inputIndex: number,
+  sourceOutputs: readonly unknown[],
+  transaction: unknown,
+): Promise<readonly Uint8Array[] | undefined> {
+  const { createFaithfulTraceVmForProvider } = await import('../../network/createVirtualMachine.js');
+  const { Opcodes } = await import('@bitauth/libauth');
+  let operands: readonly Uint8Array[] | undefined;
+  const observing = createFaithfulTraceVmForProvider(provider, (observed) => {
+    const state = observed as { readonly ip: number; readonly instructions: readonly { readonly opcode: number }[];
+      readonly stack: readonly Uint8Array[] };
+    if (state.instructions[state.ip]?.opcode === Opcodes.OP_EQUALVERIFY) operands = state.stack.slice(-2);
+  });
+  observing.evaluate({ inputIndex, sourceOutputs, transaction } as never);
+  return operands;
+}
+
+/**
+ * Traces how the assembled transaction differs from the one the settle evaluated, input by input and output by
+ * output. The two carry the same plans, so only the outpoints, the caller's own coin and its change can differ;
+ * a hop that settles and then refuses verification is decided by one of those.
+ */
+async function traceAssembledDiff(transaction: unknown, program: unknown): Promise<void> {
+  interface HopTransaction {
+    readonly inputs: readonly { readonly outpointTransactionHash: Uint8Array; readonly outpointIndex: number;
+      readonly unlockingBytecode: Uint8Array; readonly sequenceNumber: number }[];
+    readonly outputs: readonly unknown[]; readonly locktime: number;
+  }
+  const built = transaction as HopTransaction;
+  const planned = (program as { readonly transaction: HopTransaction }).transaction;
+  hopTrace(`diff counts plan ${planned.inputs.length}/${planned.outputs.length}/${planned.locktime} `
+    + `assembled ${built.inputs.length}/${built.outputs.length}/${built.locktime}`);
+  for (let index = 0; index < built.inputs.length; index += 1) {
+    const left = built.inputs[index]!;
+    const right = planned.inputs[index];
+    const sameUnlock = right !== undefined
+      && binToHex(left.unlockingBytecode) === binToHex(right.unlockingBytecode);
+    const sameOutpoint = right !== undefined
+      && binToHex(left.outpointTransactionHash) === binToHex(right.outpointTransactionHash)
+      && left.outpointIndex === right.outpointIndex;
+    const sameSequence = right !== undefined && left.sequenceNumber === right.sequenceNumber;
+    if (sameUnlock && sameOutpoint && sameSequence) continue;
+    hopTrace(`diff input ${index} unlock=${sameUnlock ? 'same' : `${left.unlockingBytecode.length}/`
+      + `${binToHex(sha256(left.unlockingBytecode)).slice(0, 8)} vs `
+      + `${right === undefined ? 'none' : `${right.unlockingBytecode.length}/`
+        + binToHex(sha256(right.unlockingBytecode)).slice(0, 8)}`} `
+      + `outpoint=${sameOutpoint ? 'same' : `${binToHex(left.outpointTransactionHash).slice(56)}:${left.outpointIndex}`} `
+      + `sequence=${sameSequence ? 'same' : String(left.sequenceNumber)}`);
+  }
+  for (let index = 0; index < built.outputs.length; index += 1) {
+    const left = describeLibauthOutput(built.outputs[index]);
+    const right = describeLibauthOutput(planned.outputs[index]);
+    if (index < planned.outputs.length && left === right) continue;
+    if (index >= planned.outputs.length) hopTrace(`diff output ${index} assembled-only ${left}`);
+    else hopTrace(`diff output ${index} ${left} | plan ${right}`);
+  }
+}
+
+/**
  * Rebuilds the derived hop on the outpoints the two geneses created, signs the caller's input, and broadcasts it.
  *
  * The derived hop is the specification: each participant input keeps the unlocking bytecode the composer
@@ -2509,6 +2669,7 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
     const utxo: Utxo = { txid: real.txid, vout: real.vout, satoshis: source.valueSatoshis, ...token };
     const outpoint = `${utxo.txid}:${utxo.vout}`;
     hopTrace(`participant ${placed.index} ${placed.id} ${placed.kind} ${outpoint}`);
+    hopTrace(`source ${placed.index} ${describeSourceOutput(source, real)}`);
     const shared = resolved.get(outpoint);
     // Two participants on one outpoint is what the builder refuses, and both ids are wider than one trace line, so
     // the pair gets a line each.
@@ -2526,6 +2687,11 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   // The deployer's own coin funds the hop and is the frame's root caller; its signature is a real one over the
   // real transaction, which is what the root's `msg.sender` binding and the provider both check. Its sequence is
   // the caller's own choice, not the composer's.
+  for (const [index, funder] of program.sourceOutputs.entries()) {
+    if (index < draft.layout.participantCount) continue;
+    hopTrace(`funder ${index} source ${describeSourceOutput(funder, callerFunding.utxo)}`);
+  }
+  hopTrace(`caller input ${callerFunding.utxo.txid}:${callerFunding.utxo.vout} ${callerFunding.utxo.satoshis}`);
   builder.addInput(callerFunding.utxo, callerFunding.funder);
 
   // Every participant recreates in place, so its output index is its input index; anything the composer placed
@@ -2544,6 +2710,7 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   // judges its bytes against the production ceiling and would refuse the hop the provider's own profile accepts, so
   // the hop is materialized by the builder and handed to the provider directly. The provider stays the decider.
   const transaction = builder.buildLibauthTransaction();
+  if (hopTraceOn()) await traceAssembledHop(builder, provider, program);
   const { binToHex, encodeTransaction, hash256 } = await import('@bitauth/libauth');
   const rawBytes = encodeTransaction(transaction);
   const rawHex = binToHex(rawBytes);

@@ -36,6 +36,7 @@
  */
 
 import { binToHex, binToUtf8, hexToBin } from '@bitauth/libauth';
+import { hopTrace, hopTraceOn } from './hop-trace.js';
 import {
   bytesEqual,
   bytesToHex,
@@ -1088,6 +1089,10 @@ async function placeCalleeMasters(
       kind: call.kind, callee: master, target: call.target, value: 0n,
       argumentPushes: call.argumentPushes,
     });
+    if (hopTraceOn()) {
+      hopTrace(`callee ${master} entry=${entry.name} self=${binToHex(deployed.address).slice(0, 12)} `
+        + `target=${binToHex(call.target).slice(0, 12)}`);
+    }
   }
 }
 
@@ -1254,6 +1259,11 @@ async function placeProxiedCallee(
       kind: call.kind, callee: proxyMaster, target: call.target, value: 0n,
       argumentPushes: call.argumentPushes,
     });
+    if (hopTraceOn()) {
+      hopTrace(`callee ${proxyMaster} entry=__fallback self=${binToHex(proxyDeployed.address).slice(0, 12)} `
+        + `target=${binToHex(call.target).slice(0, 12)} impl=${implementationMaster} `
+        + `impl-self=${binToHex(implementationDeployed.address).slice(0, 12)}`);
+    }
   }
 }
 

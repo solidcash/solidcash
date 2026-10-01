@@ -19,7 +19,11 @@ const eventLock = hexToBin(`aa20${'22'.repeat(32)}87`);
 const otherLock = hexToBin(`aa20${'33'.repeat(32)}87`);
 const commitment = '515e1976a914';
 
-const eventOutput = (to = eventLock, value = commitment, categoryId = category) => ({
+const eventOutput = (to = eventLock, value = commitment, categoryId = category): {
+  to: Uint8Array;
+  amount: bigint;
+  token: { category: string; nft: { capability: string; commitment: string } };
+} => ({
   to,
   amount: 1200n,
   token: {
@@ -303,7 +307,11 @@ describe('reassertDeclaredMutableSlotLock', () => {
 
 describe('clearMutableCollectionOutputsOutsideAuthoritativeRun', () => {
   it('burns superseded collection chunks outside the authoritative replacement run', () => {
-    const mutable = (value: string) => ({
+    const mutable = (value: string): {
+      to: Uint8Array;
+      amount: bigint;
+      token: { category: string; nft: { capability: string; commitment: string } };
+    } => ({
       to: eventLock,
       amount: 1200n,
       token: { category, nft: { capability: 'mutable', commitment: value } },
@@ -316,7 +324,11 @@ describe('clearMutableCollectionOutputsOutsideAuthoritativeRun', () => {
   });
 
   it('uses collection identity rather than commitment value', () => {
-    const mutable = (value: string, to = eventLock, categoryId = category) => ({
+    const mutable = (value: string, to = eventLock, categoryId = category): {
+      to: Uint8Array;
+      amount: bigint;
+      token: { category: string; nft: { capability: string; commitment: string } };
+    } => ({
       to,
       amount: 1200n,
       token: { category: categoryId, nft: { capability: 'mutable', commitment: value } },

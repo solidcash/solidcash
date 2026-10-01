@@ -174,7 +174,9 @@ describe('messageBus.encodeMessageBatch', () => {
     expect(clear.calldataLength).toBe(0);
     expect(binToHex(messageBus.sliceMessageBatchRowCalldata(encoded.blob, clear))).toBe('');
 
-    const { calldataStart: _start, calldataLength: _length, ...missingBounds } = clear;
+    const missingBounds: Parameters<typeof messageBus.sliceMessageBatchRowCalldata>[1] = { ...clear };
+    delete missingBounds.calldataStart;
+    delete missingBounds.calldataLength;
     expect(() => messageBus.sliceMessageBatchRowCalldata(encoded.blob, missingBounds))
       .toThrow(/unframed: missing calldataStart\/Length/);
     expect(() => messageBus.sliceMessageBatchRowCalldata(encoded.blob, {

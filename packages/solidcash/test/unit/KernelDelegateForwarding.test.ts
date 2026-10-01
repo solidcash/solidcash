@@ -174,13 +174,15 @@ describe('kernel delegate entry coordinates', () => {
     const evaluate = (
       initial: bigint | undefined, step: bigint | undefined,
       active: (counter: bigint) => boolean | undefined,
-    ) => evaluateExternalCallAffineIterationDomain(domain, (expression, bindings) => {
-      if (expression === initialValue) return initial;
-      if (expression === stepValue) return step;
-      const counter = bindings.get('counter');
-      if (typeof counter !== 'bigint') return undefined;
-      return active(counter);
-    });
+    ): ReturnType<typeof evaluateExternalCallAffineIterationDomain> => (
+      evaluateExternalCallAffineIterationDomain(domain, (expression, bindings) => {
+        if (expression === initialValue) return initial;
+        if (expression === stepValue) return step;
+        const counter = bindings.get('counter');
+        if (typeof counter !== 'bigint') return undefined;
+        return active(counter);
+      })
+    );
 
     expect(() => evaluate(undefined, 1n, () => true)).toThrow(/unresolved initial value/);
     expect(() => evaluate(0n, 1n, () => undefined)).toThrow(/unresolved continue condition/);
@@ -397,14 +399,19 @@ describe('kernel delegate forwarding binding prerequisite', () => {
   });
 
   it('selects the authenticated delegate executor independently of group order', () => {
-    const group = (lockingBytecode: string, callMode = 'delegatecall') => ({
+    const group = (lockingBytecode: string, callMode = 'delegatecall'): {
+      callMode: string;
+      externalContract: { inner: { lockingBytecode: string } };
+    } => ({
       callMode,
       externalContract: { inner: { lockingBytecode } },
     });
     const decoy = group('cc20');
     const target = group('bb20');
     const ordinary = group('bb20', 'call');
-    const select = (groups: ReturnType<typeof group>[]) => selectKernelDelegateForwardingGroupIndex({
+    const select = (
+      groups: ReturnType<typeof group>[],
+    ): ReturnType<typeof selectKernelDelegateForwardingGroupIndex> => selectKernelDelegateForwardingGroupIndex({
       forwarding: metadata(),
       encodedProxyConstructorArgs: [bytes('bb20')],
       groups,

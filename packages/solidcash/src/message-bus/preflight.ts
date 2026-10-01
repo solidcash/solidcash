@@ -296,6 +296,10 @@ const convergeMessageBusMutableResourceOutputs = (
   const observerEligibility = new Map<number, boolean>();
   let repairs = 0;
   const maximumRounds = candidateCount * 2 + 1;
+  const resourceDebugEnabled = (): boolean =>
+    (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_RESOURCE_VALUES === '1';
+  const logResourceValue = (value: string): void => { console.error('message-bus-resource-value', value); };
   for (let round = 1; round <= maximumRounds; round += 1) {
     const transaction = builder.buildLibauthTransaction();
     // A resource covenant can be gated by another semantic output (most notably an event-slot scan). The owned
@@ -342,14 +346,13 @@ const convergeMessageBusMutableResourceOutputs = (
       opcodes: new Set([Op.OP_OUTPUTTOKENCOMMITMENT]),
       beforeOperation: (unknownState) => {
         const state = unknownState as AuthenticationProgramStateCommon;
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_RESOURCE_VALUES === '1') {
+        if (resourceDebugEnabled()) {
           for (const item of state.stack) {
             if (item.length < 190 || item.length > 210) continue;
             const hex = binToHex(item);
             if (debugResourceValues.has(hex)) continue;
             debugResourceValues.add(hex);
-            console.error('message-bus-resource-value', JSON.stringify({ bytes: item.length, value: hex }));
+            logResourceValue(JSON.stringify({ bytes: item.length, value: hex }));
           }
         }
         if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
@@ -558,7 +561,8 @@ const convergeMessageBusMutableResourceOutputs = (
       changed = true;
     }
     if (!changed) {
-      const finalKey = [...ownedByBlock.values()].flatMap((owned) => [...owned].sort((a, b) => a - b))
+      const finalKey = [...ownedByBlock.values()].flatMap((ownedOutputs) =>
+        [...ownedOutputs].sort((a, b) => a - b))
         .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
         .join('|');
       finalizeMonotonePass(commitmentLattice, finalKey);
@@ -1642,96 +1646,96 @@ const evaluateEveryInput = (
   const preStateRingByInput = new Map<number, AuthenticationProgramStateCommon[]>();
   const vm = createVirtualMachineBch2026ForProvider(builder.provider,
     (outputCompareDebug || failurePreStateDebug || resourceSlotIndexDebug) ? {
-    opcodes: failurePreStateDebug
-      ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode))
-      : resourceSlotIndexDebug
+      opcodes: failurePreStateDebug
         ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode))
-        : new Set([Op.OP_OUTPUTBYTECODE, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_OUTPUTTOKENCOMMITMENT]),
-    beforeOperation: (unknownState) => {
-      const resourceState = unknownState as AuthenticationProgramStateCommon;
-      if (resourceSlotIndexDebug && resourceState.program?.inputIndex === 227
+        : resourceSlotIndexDebug
+          ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode))
+          : new Set([Op.OP_OUTPUTBYTECODE, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_OUTPUTTOKENCOMMITMENT]),
+      beforeOperation: (unknownState) => {
+        const resourceState = unknownState as AuthenticationProgramStateCommon;
+        if (resourceSlotIndexDebug && resourceState.program?.inputIndex === 227
         && resourceState.instructions.length === 642 && [473, 475].includes(resourceState.ip)) {
-        const depth = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
-        console.error('graph-event-park', JSON.stringify({
-          ip: resourceState.ip,
-          depth,
-          selected: resourceState.stack.at(-2 - depth) && binToHex(resourceState.stack.at(-2 - depth)!),
-          stackDepth: resourceState.stack.length,
-          top: resourceState.stack.slice(-12).map((item) => binToHex(item)),
-        }));
-      }
-      if (resourceSlotIndexDebug
+          const depth = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
+          console.error('graph-event-park', JSON.stringify({
+            ip: resourceState.ip,
+            depth,
+            selected: resourceState.stack.at(-2 - depth) && binToHex(resourceState.stack.at(-2 - depth)!),
+            stackDepth: resourceState.stack.length,
+            top: resourceState.stack.slice(-12).map((item) => binToHex(item)),
+          }));
+        }
+        if (resourceSlotIndexDebug
         && resourceState.program?.inputIndex === 227
         && resourceState.instructions.length === 13
         && resourceState.instructions[resourceState.ip]?.opcode === Op.OP_OUTPUTTOKENCOMMITMENT) {
-        const outputIndex = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
-        const output = resourceState.program.transaction.outputs[outputIndex];
-        returnCommitmentReads.push({
-          ip: resourceState.ip,
-          outputIndex,
-          expected: resourceState.stack.at(-2) && binToHex(resourceState.stack.at(-2)!),
-          outputCommitment: output?.token?.nft && binToHex(output.token.nft.commitment),
-        });
-        if (returnCommitmentReads.length > 50) returnCommitmentReads.shift();
-      }
-      if (resourceSlotIndexDebug && !resourceSlotIndexLogged
+          const outputIndex = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
+          const output = resourceState.program.transaction.outputs[outputIndex];
+          returnCommitmentReads.push({
+            ip: resourceState.ip,
+            outputIndex,
+            expected: resourceState.stack.at(-2) && binToHex(resourceState.stack.at(-2)!),
+            outputCommitment: output?.token?.nft && binToHex(output.token.nft.commitment),
+          });
+          if (returnCommitmentReads.length > 50) returnCommitmentReads.shift();
+        }
+        if (resourceSlotIndexDebug && !resourceSlotIndexLogged
         && resourceState.program?.inputIndex === 227
         && resourceState.instructions.length === 13 && resourceState.ip === 5) {
-        const outputIndex = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
-        const output = resourceState.program.transaction.outputs[outputIndex];
-        if (output?.token === undefined) return;
-        resourceSlotIndexLogged = true;
-        console.error('resource-slot-index', JSON.stringify({
-          inputIndex: resourceState.program.inputIndex,
-          outputIndex,
-          output: output === undefined ? undefined : {
-            lockingBytecode: binToHex(output.lockingBytecode),
-            category: output.token && binToHex(output.token.category),
-            capability: output.token?.nft?.capability,
-            commitment: output.token?.nft && binToHex(output.token.nft.commitment),
-          },
-          stack: resourceState.stack.slice(-6).map((item) => binToHex(item)),
-        }));
-      }
-      if (failurePreStateDebug) {
-        const captured = unknownState as AuthenticationProgramStateCommon;
-        const ownedInput = captured.program?.inputIndex;
-        if (typeof ownedInput === 'number' && shouldCapturePreflightDiagnosticInput(ownedInput, failurePreStateInput)) {
-          const ring = preStateRingByInput.get(ownedInput) ?? [];
-          ring.push(snapshotPreflightDiagnosticState(captured));
-          // 256, not 64: an input can iterate a loop (or a convergence pass) more than 64 times, and at 64 the ring
-          // held only the loop's own iterations - every entry the same ip, with the coordinate instructions that
-          // built the failing operands already evicted.
-          if (ring.length > 256) ring.splice(0, ring.length - 256);
-          preStateRingByInput.set(ownedInput, ring);
+          const outputIndex = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
+          const output = resourceState.program.transaction.outputs[outputIndex];
+          if (output?.token === undefined) return;
+          resourceSlotIndexLogged = true;
+          console.error('resource-slot-index', JSON.stringify({
+            inputIndex: resourceState.program.inputIndex,
+            outputIndex,
+            output: output === undefined ? undefined : {
+              lockingBytecode: binToHex(output.lockingBytecode),
+              category: output.token && binToHex(output.token.category),
+              capability: output.token?.nft?.capability,
+              commitment: output.token?.nft && binToHex(output.token.nft.commitment),
+            },
+            stack: resourceState.stack.slice(-6).map((item) => binToHex(item)),
+          }));
         }
-      }
-      if (!outputCompareDebug) return;
-      const state = unknownState as unknown as {
-        ip: number;
-        stack: Uint8Array[];
-        instructions: Array<{ opcode: number }>;
-        program?: { inputIndex?: number; transaction?: { outputs?: Array<{ lockingBytecode: Uint8Array }> } };
-      };
-      const { instructions, ip, stack } = state;
-      if (ip < 2 || instructions[ip - 1]?.opcode !== Op.OP_DUP) return;
-      if (instructions[ip + 1]?.opcode !== Op.OP_3 || instructions[ip + 2]?.opcode !== Op.OP_PICK) return;
-      if (instructions[ip + 3]?.opcode !== Op.OP_EQUALVERIFY) return;
-      const indexItem = stack.at(-1);
-      const index = indexItem === undefined ? -1 : Number(vmNumberToBigInt(indexItem));
-      const expected = stack[stack.length - 1 - 3];
-      const output = state.program?.transaction?.outputs?.[index];
-      console.error('output-compare-operands', JSON.stringify({
-        inputIndex: state.program?.inputIndex,
-        ip,
-        programLength: instructions.length,
-        index,
-        actual: output === undefined ? undefined : binToHex(output.lockingBytecode),
-        expected: expected === undefined ? undefined : `${expected.length}:${binToHex(expected)}`,
-        stackDepth: stack.length,
-      }));
-    },
-  } : undefined);
+        if (failurePreStateDebug) {
+          const captured = unknownState as AuthenticationProgramStateCommon;
+          const ownedInput = captured.program?.inputIndex;
+          if (typeof ownedInput === 'number' && shouldCapturePreflightDiagnosticInput(ownedInput, failurePreStateInput)) {
+            const ring = preStateRingByInput.get(ownedInput) ?? [];
+            ring.push(snapshotPreflightDiagnosticState(captured));
+            // 256, not 64: an input can iterate a loop (or a convergence pass) more than 64 times, and at 64 the ring
+            // held only the loop's own iterations - every entry the same ip, with the coordinate instructions that
+            // built the failing operands already evicted.
+            if (ring.length > 256) ring.splice(0, ring.length - 256);
+            preStateRingByInput.set(ownedInput, ring);
+          }
+        }
+        if (!outputCompareDebug) return;
+        const state = unknownState as unknown as {
+          ip: number;
+          stack: Uint8Array[];
+          instructions: Array<{ opcode: number }>;
+          program?: { inputIndex?: number; transaction?: { outputs?: Array<{ lockingBytecode: Uint8Array }> } };
+        };
+        const { instructions, ip, stack } = state;
+        if (ip < 2 || instructions[ip - 1]?.opcode !== Op.OP_DUP) return;
+        if (instructions[ip + 1]?.opcode !== Op.OP_3 || instructions[ip + 2]?.opcode !== Op.OP_PICK) return;
+        if (instructions[ip + 3]?.opcode !== Op.OP_EQUALVERIFY) return;
+        const indexItem = stack.at(-1);
+        const index = indexItem === undefined ? -1 : Number(vmNumberToBigInt(indexItem));
+        const expected = stack[stack.length - 1 - 3];
+        const output = state.program?.transaction?.outputs?.[index];
+        console.error('output-compare-operands', JSON.stringify({
+          inputIndex: state.program?.inputIndex,
+          ip,
+          programLength: instructions.length,
+          index,
+          actual: output === undefined ? undefined : binToHex(output.lockingBytecode),
+          expected: expected === undefined ? undefined : `${expected.length}:${binToHex(expected)}`,
+          stackDepth: stack.length,
+        }));
+      },
+    } : undefined);
   const debugOnlyInputValue = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ONLY_PREFLIGHT_INPUT;
   const debugOnlyInput = debugOnlyInputValue === undefined ? undefined : Number(debugOnlyInputValue);
@@ -1770,7 +1774,11 @@ const evaluateEveryInput = (
       Op.OP_CAT, Op.OP_SPLIT, Op.OP_DROP, Op.OP_PICK, Op.OP_ROLL,
       Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUAL, Op.OP_EQUALVERIFY,
     ]);
-    const describeStack = (state: InvokeDebugState) => ({
+    const describeStack = (state: InvokeDebugState): {
+      depth: number;
+      top: Array<{ index: number; fromTop: number; bytes: number; head: string; tail?: string }>;
+      large: Array<{ index: number; fromTop: number; bytes: number; head: string; tail: string }>;
+    } => ({
       depth: state.stack.length,
       top: state.stack.slice(-12).map((item, offset, items) => ({
         index: state.stack.length - items.length + offset,
@@ -3057,11 +3065,11 @@ const evaluateEveryInput = (
           const commitment = output.token?.nft ? binToHex(output.token.nft.commitment) : '';
           return ((lock !== '51' && failureStackHex.has(lock))
             || (commitment.length > 0 && failureStackHex.has(commitment))) ? [{
-            index,
-            lock,
-            commitment,
-            capability: output.token?.nft?.capability,
-          }] : [];
+              index,
+              lock,
+              commitment,
+              capability: output.token?.nft?.capability,
+            }] : [];
         }));
         console.error('message-bus-preflight-failure', JSON.stringify({
           diagnosticLargeValues: [...diagnosticLargeValues].map(([hex, bytes]) => ({ bytes, hex })),
@@ -3233,29 +3241,29 @@ export function mapMessageBusVmFailure(
  * unlocking bytecode: `53434231 || version || valueMode || rowCount || rows[selector||index||..||argsLength||args]`.
  * Returns undefined for an ordinary selector-dispatched frame.
  */
-function describeMessageBusBatchRows(
-  unlockingBytecode: Uint8Array, artifact: { messageBus?: { handlers?: readonly { name?: string; selector?: string }[] } }
+  function describeMessageBusBatchRows(
+    unlockingBytecode: Uint8Array, artifact: { messageBus?: { handlers?: readonly { name?: string; selector?: string }[] } }
     | undefined,
-): string | undefined {
-  if (unlockingBytecode.length < 7) return undefined;
-  if (binToHex(unlockingBytecode.slice(0, 4)) !== '53434231') return undefined;
-  const valueMode = unlockingBytecode[4 + 1] === 1;
-  const rowCount = unlockingBytecode[6];
-  const handlers = artifact?.messageBus?.handlers ?? [];
-  const rows: string[] = [];
-  let offset = 7;
-  for (let row = 0; row < rowCount; row += 1) {
-    if (offset + 12 > unlockingBytecode.length) break;
-    const selector = binToHex(unlockingBytecode.slice(offset, offset + 4));
-    const logicalIndex = unlockingBytecode[offset + 4] | (unlockingBytecode[offset + 5] << 8)
+  ): string | undefined {
+    if (unlockingBytecode.length < 7) return undefined;
+    if (binToHex(unlockingBytecode.slice(0, 4)) !== '53434231') return undefined;
+    const valueMode = unlockingBytecode[4 + 1] === 1;
+    const rowCount = unlockingBytecode[6];
+    const handlers = artifact?.messageBus?.handlers ?? [];
+    const rows: string[] = [];
+    let offset = 7;
+    for (let row = 0; row < rowCount; row += 1) {
+      if (offset + 12 > unlockingBytecode.length) break;
+      const selector = binToHex(unlockingBytecode.slice(offset, offset + 4));
+      const logicalIndex = unlockingBytecode[offset + 4] | (unlockingBytecode[offset + 5] << 8)
       | (unlockingBytecode[offset + 6] << 16) | (unlockingBytecode[offset + 7] << 24);
-    const argsLength = unlockingBytecode[offset + 10] | (unlockingBytecode[offset + 11] << 8);
-    const name = handlers.find((handler) => handler.selector?.toLowerCase() === selector)?.name;
-    rows.push(`${name ?? selector}@${String(logicalIndex)}${argsLength === 0 ? '' : `/${String(argsLength)}b`}`);
-    offset += 12 + argsLength + (valueMode ? 8 : 0);
+      const argsLength = unlockingBytecode[offset + 10] | (unlockingBytecode[offset + 11] << 8);
+      const name = handlers.find((handler) => handler.selector?.toLowerCase() === selector)?.name;
+      rows.push(`${name ?? selector}@${String(logicalIndex)}${argsLength === 0 ? '' : `/${String(argsLength)}b`}`);
+      offset += 12 + argsLength + (valueMode ? 8 : 0);
+    }
+    return ` (batch rows ${String(rowCount)}: ${rows.join(', ')})`;
   }
-  return ` (batch rows ${String(rowCount)}: ${rows.join(', ')})`;
-}
 
   const detailedFailure = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_FAILURE_POINT === '1';
@@ -3347,7 +3355,7 @@ function describeMessageBusBatchRows(
         ? '' : ` (${exactRequire.requireStatement.message})`}`
     : bodyRequireAttribution?.possibleMessage !== undefined
       ? `; possible require reason from an equivalent function body: ${bodyRequireAttribution.possibleMessage}`
-    : detailedFailure ? ((): string => {
+      : detailedFailure ? ((): string => {
     // A proxied call executes the implementation's body, so the delegate artifact chain is searched too - the same
     // widening `probeRequireStatement` performs for probes.
     type ArtifactDebugView = {
@@ -3399,7 +3407,6 @@ function describeMessageBusBatchRows(
       if (!functions) continue;
       const runtimeIp = failure?.ip;
       if (runtimeIp === undefined) continue;
-      const selector = input?.unlocker?.abiFunction?.selector;
       const selectors = selector !== undefined && functions[selector] !== undefined
         ? [selector] : Object.keys(functions);
       for (const candidate of selectors) {
@@ -3440,7 +3447,7 @@ function describeMessageBusBatchRows(
       }
     }
     return '';
-  })() : '';
+      })() : '';
   if (input?.unlocker?.abiFunction?.selector?.toLowerCase() !== '53434231') {
     const batchRows = describeMessageBusBatchRows(
       transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(), input?.unlocker?.contract?.artifact,
@@ -3506,9 +3513,9 @@ function describeMessageBusBatchRows(
     };
   })?.unlocker;
   if (unlockerParams?.abiFunction?.inputs && unlockerParams.params) {
-    const idxParams = unlockerParams.abiFunction.inputs.flatMap((input, i) => (
-      /returnOutputIdx/i.test(input.name)
-        ? [{ name: input.name, value: String(unlockerParams.params?.[i]) }] : []
+    const idxParams = unlockerParams.abiFunction.inputs.flatMap((abiInput, i) => (
+      /returnOutputIdx/i.test(abiInput.name)
+        ? [{ name: abiInput.name, value: String(unlockerParams.params?.[i]) }] : []
     ));
     if (idxParams.length > 0) console.error('preflight-return-idx', { inputIndex, idxParams, rawVmReason });
   }

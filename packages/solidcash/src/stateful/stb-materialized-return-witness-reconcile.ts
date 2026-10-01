@@ -5,7 +5,7 @@
 
 import { binToHex } from '@bitauth/libauth';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { isContractUnlocker, type UnlockableUtxo } from '../interfaces.js';
+import { isContractUnlocker } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import {

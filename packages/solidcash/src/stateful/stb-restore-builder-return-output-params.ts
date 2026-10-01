@@ -58,7 +58,14 @@ export function restoreBuilderReturnOutputParams(
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_RESOURCE_PARTS === '1'
     && [...learned, ...baseline].some(([, observation]) => observation.resourceIdentity !== undefined)) {
-    const summarize = ([index, observation]: [number, DerivedChunkOutputObservation]) => ({
+    const summarize = ([index, observation]: [number, DerivedChunkOutputObservation]): {
+      index: number;
+      categoryId: string | undefined;
+      resourceIdentity: string | undefined;
+      resourcePart: string | undefined;
+      semanticKind: DerivedChunkOutputObservation['semanticKind'];
+      commitment: string;
+    } => ({
       index,
       categoryId: observation.categoryId?.slice(0, 8),
       resourceIdentity: observation.resourceIdentity,

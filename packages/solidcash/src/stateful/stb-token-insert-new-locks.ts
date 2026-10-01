@@ -33,6 +33,10 @@ export interface TokenInsertNewLocksHost {
   findMintingInputIndex(categoryId: string): number;
 }
 
+function traceTokenInsertBalanceSnapshot(label: string, master: number, idxs: number[]): void {
+  console.error('token-insert-bal-snap', { label, master, idxs });
+}
+
 /** Reassert compiler-described sorted-batch INSERT and UPDATE entry geometry without shifting output tails. */
 export function reassertTokenInsertNewLocks(
   host: TokenInsertNewLocksHost,
@@ -134,7 +138,7 @@ export function reassertTokenInsertNewLocks(
                   ? [index] : []
               ));
               if (idxs.includes(12) || label === 'before-pred' || label === 'after-offsets') {
-                console.error('token-insert-bal-snap', { label, master, idxs });
+                traceTokenInsertBalanceSnapshot(label, master, idxs);
               }
             };
             snapBal('before-pred');

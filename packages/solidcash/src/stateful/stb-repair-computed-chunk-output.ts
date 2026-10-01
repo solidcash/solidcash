@@ -767,8 +767,8 @@ export function repairComputedChunkOutput(
     }
     if (returnGroupIndex !== undefined
       && groupOwnsInBlockReturnEvent(host.externalCallUtxoGroups, returnGroupIndex)) {
-      const returnGroup = host.externalCallUtxoGroups[returnGroupIndex];
-      const identityIndex = returnGroup.fusedReturnGroupIndex ?? returnGroupIndex;
+      const ownedReturnGroup = host.externalCallUtxoGroups[returnGroupIndex];
+      const identityIndex = ownedReturnGroup.fusedReturnGroupIndex ?? returnGroupIndex;
       // Both forms can be seeded for one physical part. Updating both keeps final layout reassertion from
       // restoring a provisional value after the owning covenant has authenticated the computed return.
       host.setReturnEventOutput(category, commitment, `external-call:${identityIndex}`, false);

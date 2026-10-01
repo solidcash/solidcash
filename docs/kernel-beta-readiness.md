@@ -6,9 +6,9 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
 
 - 2026-09-28 integration checkpoint: `grok/message-bus-kernel-beta` contains the `solidcash_v0.13.1` tip and
   builds with `yarn build`. It has **not** been merged back into `solidcash_v0.13.1`.
-- 2026-10-01 focused checkpoint: `yarn build` passes; ESLint reports zero errors or warnings across
-  `packages/solidcash/src` (405 files) and `packages/solidcash/test` (1,004 files). The exact
-  `KernelRepeatedMixedRouteWrite` titles for `Ledger` and `ILedger` each pass, including the alternate
+- 2026-10-01 focused checkpoint: `yarn build` and the top-level `yarn lint` pass. ESLint reports zero
+  errors or warnings across `packages/solidcash/src` (405 files) and `packages/solidcash/test` (1,004 files).
+  The exact `KernelRepeatedMixedRouteWrite` titles for `Ledger` and `ILedger` each pass, including the alternate
   direct callee with the same ABI. No comprehensive test suite or beta gate was rerun for this checkpoint.
 - The formal `yarn test:kernel-beta` gate stops at its application-name fence before running tests: the production
   diff since the manifest census still contains application-specific planning names and literals. This requires a

@@ -19,6 +19,7 @@ import {
   type ValueChunkWriteDescriptor,
 } from './value-chunk-persist.js';
 import { describeValueChunkWrites } from './writer-group-selection.js';
+import { resolveValueChunkWriteGeometry } from './value-chunk-write-geometry.js';
 
 export interface BuildStatefulFunctionCallHost {
   compilerRoute?: {
@@ -53,7 +54,16 @@ export async function buildStatefulFunctionCall(
     }
     const built = stb.build();
     stb.bindMaterializedValueChunkWitnesses(built, host.compilerRoute?.blockBase ?? 0);
-    const compilerValueChunkWrites = stb.getValueChunkWriteDescriptors();
+    const composedBlockBase = stb.getComposedBlockBase();
+    const compilerValueChunkWrites = resolveValueChunkWriteGeometry(
+      stb.getValueChunkWriteDescriptors(),
+      host.compilerRoute?.valueChunkProductions?.map((production) => production.write) ?? [],
+      [...stb.getDerivedChunkOutputs()].map(([offset, chunk]) => ({
+        offset: offset + composedBlockBase,
+        resourceIdentity: chunk.resourceIdentity,
+        resourcePart: chunk.resourcePart,
+      })),
+    );
     const runtimeEvents = stb.getRuntimeLoopEventOutputs();
     if (runtimeEvents.length > 0) {
       Object.defineProperty(built, '__messageBusRuntimeLoopEvents', {
@@ -145,7 +155,6 @@ export async function buildStatefulFunctionCall(
     }
     // Derived pins live at block-local coordinates; the composer range-checks every claim against the
     // participant's absolute trailing range, so shift them by the block base exactly once here.
-    const composedBlockBase = stb.getComposedBlockBase();
     for (const [localOffset, chunk] of stb.getDerivedChunkOutputs()) {
       const offset = localOffset + composedBlockBase;
       if (computedValueChunks.some((candidate) => candidate.offset === offset)) continue;

@@ -100,6 +100,7 @@ export async function deployStatefulContract<T extends Artifact>(
     );
     if (value !== undefined) replayedDynamicValues.set(name, value as FunctionArgument);
   }
+  const resolvedDynamicWriteNames = new Set<string>();
   const dynamicInitialChunks = (stateLayout.variables ?? []).flatMap((variable) => {
     if (!variable.dynamic || !constructorAbi?.dynamicWrites?.includes(variable.name)) return [];
     const normalized = variable.name.replace(/^_+/, '');
@@ -110,6 +111,9 @@ export async function deployStatefulContract<T extends Artifact>(
       ?? (inputIndex >= 0 ? options.initArgs?.[inputIndex] : undefined);
     const value = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
     if (value === undefined) return [];
+    // A known empty value has zero chunks; it must not be mistaken for an unresolved write merely because
+    // dynamicInitialChunks has no entry for it.
+    resolvedDynamicWriteNames.add(variable.name);
     return splitValueIntoChunks(value).map((chunkData: Uint8Array, chunkIndex: number) => ({
       name: variable.name, type: variable.type, chunkIndex, chunkData,
       commitment: buildChunkCommitment(
@@ -119,7 +123,7 @@ export async function deployStatefulContract<T extends Artifact>(
   });
   const unresolvedDynamicWriteNames = (stateLayout.variables ?? [])
     .filter((variable) => variable.dynamic && constructorAbi?.dynamicWrites?.includes(variable.name)
-      && !dynamicInitialChunks.some((chunk) => chunk.name === variable.name))
+      && !resolvedDynamicWriteNames.has(variable.name))
     .map((variable) => variable.name);
 
   // Determine counts for constructor features

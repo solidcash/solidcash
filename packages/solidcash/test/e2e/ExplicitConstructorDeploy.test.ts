@@ -25,9 +25,9 @@ const p2pkh = new Contract(
 // Returns the deploy result plus the genesis funding txid. On mocknet the funding UTXO keeps the given seed
 // txid; on regtest addUtxo mutates it to the real one - either way the derived category equals that txid.
 async function deploy(artifact: ReturnType<typeof compileString>, constructorArgs: unknown[],
-  seed: string, initialState: Record<string, bigint>, initArgs?: unknown[]):
+  seed: string, initialState: Record<string, bigint>, initArgs?: unknown[], fundingSatoshis = 300_000n):
   Promise<{ result: Awaited<ReturnType<typeof StatefulContract.deploy>>; categoryId: string }> {
-  const fundingUtxo: Utxo = { txid: seed.repeat(16), vout: 0, satoshis: 300000n };
+  const fundingUtxo: Utxo = { txid: seed.repeat(16), vout: 0, satoshis: fundingSatoshis };
   await provider.addUtxo(p2pkh.address, fundingUtxo);
   const result = await StatefulContract.deploy(artifact, constructorArgs as never, {
     provider,
@@ -51,6 +51,22 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
     `);
     const { result, categoryId } = await deploy(artifact, [], 'a1b2', { count: 1n });
     expect(result.categoryId).toBe(categoryId);
+  });
+
+  it('deploys literal empty dynamic values without phantom chunk outputs', async () => {
+    const artifact = compileString(`
+      contract C() {
+          string label;
+          string symbol;
+          constructor() { this.label = ""; this.symbol = ""; }
+          function read() view returns (string) { return this.label; }
+      }
+    `);
+    // Covers the conservative 5,000-sat fee and fixed NFTs, but not phantom reservations for empty chunks.
+    const { result } = await deploy(artifact, [], 'e0f1', {}, undefined, 9_000n);
+    expect(await result.contract.getState()).toMatchObject({ label: '', symbol: '' });
+    expect(result.tx.outputs.filter((output) => output.token?.nft?.capability === 'mutable'))
+      .toHaveLength(artifact.stateLayout!.dataNftCount);
   });
 
   it('progressively derives multiple NFTs from one fixed constructor pre-state', async () => {
@@ -145,7 +161,7 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
       scalar: 2n, selected: long, memo: largeMemo,
     });
 
-    const mutableOutputs = (result: typeof shortResult) => result.tx.outputs
+    const mutableOutputs = (result: typeof shortResult): number => result.tx.outputs
       .filter((output) => output.token?.nft?.capability === 'mutable').length;
     expect(mutableOutputs(longResult)).toBeGreaterThan(mutableOutputs(shortResult));
   });

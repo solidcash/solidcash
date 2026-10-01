@@ -208,6 +208,8 @@ import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helper
 import {
   describeValueChunkWrites, resolveChunkableEntryCollection,
 } from '../../src/stateful/StatefulContract.js';
+import { resolveChunkableEntryCollection as resolveRuntimeChunkableEntryCollection }
+  from '../../src/stateful/kernel-value-chunk-lanes.js';
 
 describe('delegate-only physical slot projection', () => {
   const layout = {
@@ -695,6 +697,7 @@ describe('generic persisted value-chunk write identity', () => {
   });
 
   it('resolves chunkable entry ownership from exact metadata and fails closed for kernel ambiguity', () => {
+    expect(resolveChunkableEntryCollection).toBe(resolveRuntimeChunkableEntryCollection);
     const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     expect(resolveChunkableEntryCollection({
       writes: [renamed],
@@ -722,6 +725,13 @@ describe('generic persisted value-chunk write identity', () => {
       convention: 'kernel-row-loop',
       legacyFallback: 'historical',
     })).toThrow(/requires one exact compiler-published collection identity/);
+    expect(() => resolveChunkableEntryCollection({
+      writes: [],
+      categoryId,
+      publishedCollections: ['records', 'audit'],
+      convention: 'legacy-unroll',
+      legacyFallback: 'historical',
+    })).toThrow(/ambiguous compiler-published collections/);
     expect(resolveChunkableEntryCollection({
       writes: [],
       categoryId,

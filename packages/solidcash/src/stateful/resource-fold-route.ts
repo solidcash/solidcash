@@ -64,7 +64,8 @@ export type FoldActivationEnvResolveOptions = {
 };
 
 /**
- * Build a path-effect activation/settle-time ExecutionContext fold activation environment from one route row's visible ABI args.
+ * Build a path-effect activation/settle-time ExecutionContext fold activation
+ * environment from one route row's visible ABI args.
  * Uses scalar-preserving path-effect env construction (ints/bytes survive for handlerInputEq).
  * When a settle-time ExecutionContext is registered for the row journal key, prefer its
  * activationEnv over freshly derived args (compose-surface parity with batch filters).
@@ -167,10 +168,10 @@ export function deriveChunkableArrayValueChannels({
   leadingMutation?: Uint8Array;
   currentElement?: Uint8Array;
 }): {
-  preValueWitness?: Uint8Array;
-  leadingMutation?: Uint8Array;
-  postValue: Uint8Array;
-} {
+    preValueWitness?: Uint8Array;
+    leadingMutation?: Uint8Array;
+    postValue: Uint8Array;
+  } {
   let postValue = storedPreValue;
   if (leadingMutation && leadingMutation.length > 0) {
     postValue = concatenateEncodedArrays(postValue, leadingMutation);
@@ -230,19 +231,19 @@ export function buildChunkablePushFoldPlan(params: {
     row: RouteExpressionKeyRow, access: EntryAccessAbi, elementType: string,
   ) => Uint8Array | undefined;
 }): {
-  plan: ResourceFoldPlan;
-  elements: Uint8Array[];
-  /** Same-key mutating rows in fold step order (for per-step activation env). */
-  rows: RouteExpressionKeyRow[];
-  valueType: string;
-  published?: PublishedResourceFoldPlanSummary;
-} | undefined {
+    plan: ResourceFoldPlan;
+    elements: Uint8Array[];
+    /** Same-key mutating rows in fold step order (for per-step activation env). */
+    rows: RouteExpressionKeyRow[];
+    valueType: string;
+    published?: PublishedResourceFoldPlanSummary;
+  } | undefined {
   const published = params.publishedFoldPlans !== undefined
     ? findPublishedResourceFoldPlan(params.publishedFoldPlans, params.collection)
     : undefined;
   if (params.publishedFoldPlans !== undefined && published === undefined) {
     throw new Error(
-      `resource-fold: artifact published resourceFoldPlans but has no plan for collection `
+      'resource-fold: artifact published resourceFoldPlans but has no plan for collection '
         + `'${params.collection}' (fail closed; rediscovery disabled)`,
     );
   }
@@ -364,7 +365,8 @@ function foldSelectedRouteArrayPushes(
   const built = buildChunkablePushFoldPlan({ ...params, minimumRows });
   if (!built) return undefined;
   // Published resource-fold plans authority: leading/complete are fold outputs from the (published or rediscovered) plan.
-  // path-effect activation/settle-time ExecutionContext: step activations from entry-access ECE; env from shared, per-row, or settle-time EC.
+  // Path-effect activation/settle-time ExecutionContext: step activations from
+  // entry-access ECE; env from shared, per-row, or settle-time EC.
   const folded = foldChunkableResource(built.plan, {
     resolveElement: (step) => {
       const index = built.plan.steps.indexOf(step);

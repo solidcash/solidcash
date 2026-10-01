@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: Compose phase-boundary extract — lifecycle validation, indexes, slots, deployments, assembly runtime.
+ * phase-boundary extract: Compose phase-boundary extract — lifecycle validation,
+ * indexes, slots, deployments, assembly runtime.
  */
 
 import { hexToBin } from '@bitauth/libauth';
@@ -170,17 +171,17 @@ export async function resolveComposeValidatedIndexes(
   provider: NetworkProvider,
   options: ComposeAtomicMessageBusOptions,
 ): Promise<{
-  splitByParticipant: ReturnType<typeof resolveComposeLifecycleMaps>['splitByParticipant'];
-  mergeByParticipant: ReturnType<typeof resolveComposeLifecycleMaps>['mergeByParticipant'];
-  selfdestructByParticipant: ReturnType<typeof resolveComposeLifecycleMaps>['selfdestructByParticipant'];
-  byLockingBytecode: Map<string, StatefulContract>;
-  descriptorByLockingBytecode: Map<string, CallDescriptor>;
-  categories: string[];
-  logicalIdentities: Map<number, import('../stateful/logical-identity.js').ResolvedLogicalIdentity>;
-  returning: CompiledGraphPlan['invocations'];
-  preparedResults: Record<number, string>;
-  provisionalResults: Record<number, string>;
-}> {
+    splitByParticipant: ReturnType<typeof resolveComposeLifecycleMaps>['splitByParticipant'];
+    mergeByParticipant: ReturnType<typeof resolveComposeLifecycleMaps>['mergeByParticipant'];
+    selfdestructByParticipant: ReturnType<typeof resolveComposeLifecycleMaps>['selfdestructByParticipant'];
+    byLockingBytecode: Map<string, StatefulContract>;
+    descriptorByLockingBytecode: Map<string, CallDescriptor>;
+    categories: string[];
+    logicalIdentities: Map<number, import('../stateful/logical-identity.js').ResolvedLogicalIdentity>;
+    returning: CompiledGraphPlan['invocations'];
+    preparedResults: Record<number, string>;
+    provisionalResults: Record<number, string>;
+  }> {
   const lifecycle = resolveComposeLifecycleMaps(plan, options);
   validateComposeUpgradeTargets(plan, descriptors, upgradeOutputs);
   assertAtomicParticipantCapacity(plan.participants.length);

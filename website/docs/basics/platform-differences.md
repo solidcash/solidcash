@@ -121,7 +121,9 @@ This is the deepest difference, and it explains most of the others.
 - **No re-entrancy and no call stack.** External calls are not synchronous jumps; they are modelled as
   **co-spent inputs and outputs** pinned by the covenant. A contract cannot be re-entered mid-execution,
   because there is no mid-execution to re-enter. Re-entrancy guards ported from Solidity are harmless but
-  unnecessary.
+  unnecessary. When a call graph does not fit that model — an owner invoked twice, or a cycle — the
+  [message bus](/docs/guides/message-bus) folds the invocations into one authenticated atomic transition
+  instead of introducing a call stack.
 - **Memory is on-stack, not a separate heap.** The `memory` keyword is accepted and meaningful for aliasing,
   but there is no separate memory region. See [Data Locations](/docs/language/data-locations).
 - **Addresses are full locking bytecode**, variable length, not a fixed 20- or 32-byte hash. `payable` is a

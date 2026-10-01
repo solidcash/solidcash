@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: SC class-body extract — blockhash oracle param resolution, probe extraction, and co-spend ordering.
+ * phase-boundary extract: SC class-body extract — blockhash oracle param resolution,
+ * probe extraction, and co-spend ordering.
  */
 
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth';
@@ -9,7 +10,7 @@ import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   isComputedBlockhashKey,
 } from '@solidcash/utils';
-import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
+import type { Output, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';

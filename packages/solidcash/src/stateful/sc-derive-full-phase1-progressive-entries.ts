@@ -368,7 +368,9 @@ export function deriveFullPhase1ProgressiveEntries(
             ? Number(trailingCountRaw)
             : -1;
       const abiFn = group.compilerRoute?.abiFunction
-        ?? (group.externalContract?.inner?.artifact?.abi as { name?: string; sortedBatchInfo?: Array<{ linear?: boolean }> }[] | undefined)
+        ?? (group.externalContract?.inner?.artifact?.abi as {
+          name?: string; sortedBatchInfo?: Array<{ linear?: boolean }>;
+        }[] | undefined)
           ?.find((candidate) => candidate.name === (group.logicalFunctionName ?? group.functionName));
       const linearInBlock = (abiFn?.sortedBatchInfo?.some((batch) => batch.linear === true) ?? false)
         && trailingCount === 0;

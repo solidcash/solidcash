@@ -79,7 +79,7 @@ export async function completeCreateBuilderNestedUnlockers(
 ): Promise<void> {
   const {
     externalCallUtxoGroups, lowLevelCallUtxoGroups, returningExternalGroups,
-    physicalReturnIndexForGroup, nestedMasterIndices, nestedOutputBases,
+    physicalReturnIndexForGroup, nestedMasterIndices,
     relocatedPredOutBase, allGroupParentIndices, allGroupEcSlots,
     delegateExternalGroupIndices, delegateExternalGroupByCallsite,
     lateTransitiveGroupIndices,
@@ -378,7 +378,6 @@ export async function completeCreateBuilderNestedUnlockers(
           target?: { kind?: string; name?: string };
           targetSource?: { kind?: string; paramIndex?: number };
         } | undefined;
-        const delegateGroupIndex = child.delegateCallGroupIndex;
         const nestedGroups = childNestedGroups;
         const targetName = lowLevelCall?.target?.name;
         const targetSlot = targetName === undefined ? -1 : (childFn.externalCalls ?? [])

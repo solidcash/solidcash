@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _deriveFullTransactionState extract — Phase 1 return-event blob + event discovery/progress.
  */
 
-import { binToHex, hexToBin, sha256, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
+import { binToHex, hexToBin, sha256 } from '@bitauth/libauth';
 import type { AbiFunction } from '@solidcash/utils';
 import {
   Op,
@@ -57,6 +57,10 @@ export function deriveFullPhase1ReturnAndEvents(
   bMasterIdx: number,
 ): void {
   const ec = { hasReturnValues };
+  const routeReturnDebugEnabled = (): boolean => {
+    const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+    return env?.SOLIDC_DEBUG_ROUTE_CONCISE === '1' || env?.SOLIDC_DEBUG_RETURN === '1';
+  };
   // Return event blob: extract from the dedicated return-event section, whose index is fixed at the
   // tx end and therefore order-independent. The inline data-NFT range only coincides with the return
   // event when the returning call is the LAST external call; a call following it shifts the return
@@ -175,11 +179,6 @@ export function deriveFullPhase1ReturnAndEvents(
     if (evmScalar && !returnCommitments?.length
       && (!fullTraceRet.at(-1)?.error || !/^0+$/.test(evmScalar))) {
       const boolReturn = calleeReturnTypes.length === 1 && calleeReturnTypes[0] === 'bool';
-      const logicalName = group.logicalFunctionName ?? group.functionName;
-      const writerAbi = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-        .find((fn) => fn.name === logicalName)
-        ?? group.compilerRoute?.abiFunction;
-      const isView = writerAbi?.writesState !== true;
       const precomputedHex = group.precomputedReturnCommitment
         ? binToHex(group.precomputedReturnCommitment) : undefined;
       const scannedTrue = boolReturn && /^(00)+01$/.test(evmScalar);
@@ -417,8 +416,7 @@ export function deriveFullPhase1ReturnAndEvents(
               eventOutputs[ei] = undefined;
             }
             group.eventOutputs = eventOutputs;
-            if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
-              (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
+            if (routeReturnDebugEnabled()) {
               console.error('progressive-route-events', {
                 candidate: ei,
                 learned: eventOutputs.map((output, index) => output ? index : undefined)

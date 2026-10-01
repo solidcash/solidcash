@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: SC _deriveFullTransactionState extract — rebase proxy identity witnesses for local delegate probes.
+ * phase-boundary extract: SC _deriveFullTransactionState extract — rebase proxy
+ * identity witnesses for local delegate probes.
  */
 
 import type { FunctionArgument } from '../Argument.js';

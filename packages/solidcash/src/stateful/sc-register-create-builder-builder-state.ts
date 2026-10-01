@@ -17,7 +17,6 @@ import {
 } from '@solidcash/utils';
 import { addressToLockScript } from '../utils.js';
 import { getValueChunkAddress } from './covenant-helpers.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import type { OnChainState } from './StateReader.js';
 import { providerUnixLocktime } from './soft-state-overlays.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
@@ -76,7 +75,7 @@ export function registerCreateBuilderBuilderState(
     inactiveMessageBusEntrySlots, entryDeleteSlots, condSoftDeleteSlots, entryNfts,
     entryAbiFunction, batchTargetPlaceholders, exactBatchTargetSlots, sortedInserts,
     compilerRouteDelegateLayout, activeDynamicWrites, usesComposedDelegateDynamicTail,
-    computedValueChunkRuns, onChainState, entryArgs, pendingEntryValueTails,
+    computedValueChunkRuns, onChainState, pendingEntryValueTails,
     transportedProductions, valueChunkMints, maxBhLocktime, functionName, timing,
   } = params;
   const activeMessageBusEntryOperations = (params.activeMessageBusEntryOperations as Map<number, any> | undefined)

@@ -83,7 +83,12 @@ export async function hydrateExternalPredicateState(
       }
       const typedKeys = keys as Array<bigint | boolean | Uint8Array | string>;
       const entry = selectMappingEntryByKeys(
-        entries as Array<{ slot?: Uint8Array; key?: bigint | boolean | Uint8Array; keys?: Array<bigint | boolean | Uint8Array>; value?: unknown }>,
+        entries as Array<{
+          slot?: Uint8Array;
+          key?: bigint | boolean | Uint8Array;
+          keys?: Array<bigint | boolean | Uint8Array>;
+          value?: unknown;
+        }>,
         typedKeys,
         collection.keyTypes ?? [collection.keyType],
         collection,

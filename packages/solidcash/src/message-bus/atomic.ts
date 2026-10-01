@@ -368,7 +368,7 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
   const body = concat(
     hexToBin(version === 5 ? ATOMIC_MESSAGE_BUS_DOMAIN_V5
       : version === 4 ? ATOMIC_MESSAGE_BUS_DOMAIN_V4 : version === 3 ? ATOMIC_MESSAGE_BUS_DOMAIN_V3
-      : version === 2 ? ATOMIC_MESSAGE_BUS_DOMAIN_V2 : ATOMIC_MESSAGE_BUS_DOMAIN),
+        : version === 2 ? ATOMIC_MESSAGE_BUS_DOMAIN_V2 : ATOMIC_MESSAGE_BUS_DOMAIN),
     uint(participants.length, 1, 'participant count'), ...participantParts,
     uint(rows.length, 2, 'row count'), ...rowParts,
   );

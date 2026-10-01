@@ -95,8 +95,8 @@ export function materializeLowLevelCallOutputs(
         ?? (nftIsImmutable && inputCommitment
           ? inputCommitment
           : buildPushdataCommitment(
-          group.stateLayout, bCurrentState, nftIdx,
-          host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
+            group.stateLayout, bCurrentState, nftIdx,
+            host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
           ));
       builder.addOutput({
         to: nftUtxo.unlocker.generateLockingBytecode(),

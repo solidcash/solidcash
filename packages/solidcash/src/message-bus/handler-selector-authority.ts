@@ -10,7 +10,7 @@
 import type { Artifact } from '@solidcash/utils';
 
 export type MessageBusPublishedHandler = NonNullable<
-  NonNullable<Artifact['messageBus']>['handlers']
+NonNullable<Artifact['messageBus']>['handlers']
 >[number];
 
 export const normalizeMessageBusFunctionSelector = (

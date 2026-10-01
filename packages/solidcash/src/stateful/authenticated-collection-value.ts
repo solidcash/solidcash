@@ -53,8 +53,8 @@ export function storedChunkableValueRoots(
 function authenticatedCollectionValueSelector(
   valueType: string | undefined, structs: StateLayout['structs'],
 ): (
-  items: readonly Uint8Array[], roots: ReadonlySet<string>, preferredRoots: ReadonlySet<string>,
-) => Uint8Array | undefined {
+    items: readonly Uint8Array[], roots: ReadonlySet<string>, preferredRoots: ReadonlySet<string>,
+  ) => Uint8Array | undefined {
   // Sparse probe states share immutable stack items by reference. Cache their two pure classifications across
   // states so a long collection is not decoded and hashed hundreds of times during one witness search.
   const digests = new WeakMap<Uint8Array, string>();

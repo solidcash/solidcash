@@ -501,7 +501,7 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
               return index < 0 ? undefined : args[index];
             });
             const stateAccessor = (target.proxy.state as unknown as Record<
-              string, ((...values: FunctionArgument[]) => Promise<unknown>) | undefined
+            string, ((...values: FunctionArgument[]) => Promise<unknown>) | undefined
             >)[directRead.collection];
             if (keyArgs.every((value) => value !== undefined) && stateAccessor) {
               return stateAccessor(...keyArgs as FunctionArgument[]).then((value) => (
@@ -929,7 +929,7 @@ export async function upgradeProxy<TImpl extends Artifact>(
 ): Promise<ProxyContract<TImpl>> {
   if (proxy.forwardShape.mode !== 'param') {
     throw new Error(
-      `upgrades.upgradeProxy only supports param-mode proxies (forwarder takes address impl). `
+      'upgrades.upgradeProxy only supports param-mode proxies (forwarder takes address impl). '
       + `This proxy uses '${proxy.forwardShape.mode}' mode with a constructor-baked implementation pin; `
       + 'deploy a new proxy and migrate state, or use a custom param-mode proxy.',
     );

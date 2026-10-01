@@ -46,8 +46,8 @@ import {
 } from './value-chunk-geometry.js';
 
 export interface MintingSwapPredecessorHost extends Omit<
-  ScaledPreserveEmitHost,
-  'allInputs' | 'mintingOutputSwap' | 'externalCallUtxoGroups'
+ScaledPreserveEmitHost,
+'allInputs' | 'mintingOutputSwap' | 'externalCallUtxoGroups'
 > {
   readonly allInputs: UnlockableUtxo[];
   funderUtxos: UnlockableUtxo[];

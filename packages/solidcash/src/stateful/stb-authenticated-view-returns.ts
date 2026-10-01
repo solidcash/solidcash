@@ -131,22 +131,22 @@ export function ensureAuthenticatedViewReturns(
     while (returnHost >= builder.outputs.length) {
       builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
     }
-    // Jobs suffix is `TXOUTPUTCOUNT - 1 - nNew` with exactly one trailer. View returns after
+    // The reverse-indexed suffix is `TXOUTPUTCOUNT - 1 - nNew` with exactly one trailer. View returns after
     // that trailer (or inside the chunk run) make the covenant read empty chunk commitments.
     if (host.delegateDynamicChunksAtSuffix) {
       const suffixVar = host.getDynamicChunkVars().find((variable) => variable.delegateSuffix === true)
         ?? host.dynamicChunkVars[0];
       moveTrailingOutputsBeforeValueChunkSuffix(builder.outputs, suffixVar?.lockingBytecode);
     }
-    const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+    const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
     const liveOpReturn = builder.outputs.findIndex((output) => isOpReturnLockingBytecode(
       output?.to instanceof Uint8Array || typeof output?.to === 'string' ? output.to : undefined,
     ));
     // Reverse-index math is only safe once the unique OP_RETURN trailer exists. Before that,
-    // `length - jobsCount - 1` lands inside the contract block (Marketplace whitelist punched
+    // `length - suffixChunkCount - 1` lands inside the contract block (an earlier failure punched
     // output 6 into a token-free OP_TRUE and OUTPUTTOKENCATEGORY(6) failed closed).
-    const jobsSuffixStart = liveOpReturn >= 0 && jobsCount > 0
-      ? Math.max(0, liveOpReturn - jobsCount)
+    const chunkSuffixStart = liveOpReturn >= 0 && suffixChunkCount > 0
+      ? Math.max(0, liveOpReturn - suffixChunkCount)
       : liveOpReturn >= 0 ? liveOpReturn : builder.outputs.length;
     const blockOccupancyEnd = Math.max(
       host.blockLayout?.blockSize ?? 0,
@@ -164,10 +164,10 @@ export function ensureAuthenticatedViewReturns(
         returnHost = insertBandReturnSlot;
       }
     }
-    const onOrAfterJobsSuffix = returnHost >= jobsSuffixStart
+    const onOrAfterChunkSuffix = returnHost >= chunkSuffixStart
       || isOpReturnLockingBytecode(lockOf(returnHost));
-    if (onOrAfterJobsSuffix && jobsSuffixStart >= blockOccupancyEnd
-      && jobsSuffixStart <= builder.outputs.length) {
+    if (onOrAfterChunkSuffix && chunkSuffixStart >= blockOccupancyEnd
+      && chunkSuffixStart <= builder.outputs.length) {
       const pad: Output = {
         to: Uint8Array.of(0x51),
         amount: 800n,
@@ -177,8 +177,8 @@ export function ensureAuthenticatedViewReturns(
           nft: { capability: 'none', commitment: pending.commitment },
         },
       };
-      builder.outputs.splice(jobsSuffixStart, 0, pad);
-      returnHost = jobsSuffixStart;
+      builder.outputs.splice(chunkSuffixStart, 0, pad);
+      returnHost = chunkSuffixStart;
     }
     const existing = String(builder.outputs[returnHost]?.token?.nft?.commitment ?? '');
     if (existing.toLowerCase() === pending.commitment.toLowerCase()

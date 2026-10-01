@@ -92,7 +92,7 @@ export function placeTailReturnAfterSwappedTokenBlock(
     }
   }
   const after = master + (tokenGroup?.blockLayout?.blockSize ?? 8);
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
   const tailReturns = host.tailReturnEventOutputs();
   const placements = packTailReturnPlacements(
     host.externalCallUtxoGroups,
@@ -100,8 +100,8 @@ export function placeTailReturnAfterSwappedTokenBlock(
     tailReturns,
     swapCategoryId,
     host.getChunkableValueWriteBand()?.end ?? -1,
-    host.viewTailPackOptions(jobsCount > 0
-      ? builder.outputs.length - jobsCount - 1
+    host.viewTailPackOptions(suffixChunkCount > 0
+      ? builder.outputs.length - suffixChunkCount - 1
       : builder.outputs.length),
   );
   const writerSlots = new Set<number>();
@@ -169,19 +169,19 @@ export function placeTailReturnAfterSwappedTokenBlock(
       const groupIdx = coordinate?.groupIndex ?? -1;
       const group = groupIdx >= 0 ? host.externalCallUtxoGroups[groupIdx] : undefined;
       // OP_RETURN is never a data carrier. Prefer the live separator index;
-      // fall back to the reserved jobs-suffix slot when it is not materialized yet.
+      // fall back to the reserved value-chunk suffix slot when it is not materialized yet.
       const liveOpReturn = builder.outputs.findIndex((out) => (
         isOpReturnLockingBytecode(
           out?.to instanceof Uint8Array ? out.to
             : typeof out?.to === 'string' ? out.to : undefined,
         )
       ));
-      const jobsCountForSuffix = host.delegateDynamicChunksAtSuffix
+      const fallbackSuffixChunkCount = host.delegateDynamicChunksAtSuffix
         ? host.dynamicChunkOutputCount() : 0;
       const suffixStart = liveOpReturn >= 0
         ? liveOpReturn
-        : (jobsCountForSuffix > 0
-          ? builder.outputs.length - jobsCountForSuffix - 1
+        : (fallbackSuffixChunkCount > 0
+          ? builder.outputs.length - fallbackSuffixChunkCount - 1
           : undefined);
       let redirected = redirectViewTailOffOpReturn({
         placedIndex,

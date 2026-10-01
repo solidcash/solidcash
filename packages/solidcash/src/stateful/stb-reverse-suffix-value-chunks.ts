@@ -1,6 +1,6 @@
 /**
  * phase-boundary extract: STB class-body extract — staged value-chunk reassert + reverse-suffix
- * jobs finalize / pin helpers.
+ * value-chunk finalization / pin helpers.
  */
 
 import { binToHex } from '@bitauth/libauth';
@@ -52,7 +52,7 @@ export function reassertStagedValueChunkOutputs(
   };
   const band = host.getChunkableValueWriteBand();
   // Only relocate when a prior append parked staged chunk locks before the band
-  // (publishJobEvent dataNft slots). Do not rewrite a healthy full-width layout.
+  // (compiler-owned data NFT slots). Do not rewrite a healthy full-width layout.
   const stagedLocks = new Set(
     host.valueChunkOutputs.map((staged) => lockHex(staged.to)).filter((hex): hex is string => !!hex),
   );
@@ -173,11 +173,11 @@ export function finalizeReverseSuffixValueChunkLayout(
       host.setChunkRawCommitments(dv.name, fromDerived);
     }
   }
-  const jobsCount = host.dynamicChunkOutputCount();
+  const suffixChunkCount = host.dynamicChunkOutputCount();
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_CHUNK_LAYOUT === '1') {
-    console.error('finalize-reverse-suffix-jobs', {
-      jobsCount,
+    console.error('finalize-reverse-suffix-value-chunks', {
+      suffixChunkCount,
       outputCount: builder.outputs.length,
       vars: host.dynamicChunkVars.map((dv) => ({
         name: dv.name,
@@ -197,23 +197,23 @@ export function finalizeReverseSuffixValueChunkLayout(
       })),
     });
   }
-  if (jobsCount <= 0) return 0;
+  if (suffixChunkCount <= 0) return 0;
   const suffixVar = host.dynamicChunkVars.find((variable) => variable.delegateSuffix === true)
     ?? host.dynamicChunkVars[host.dynamicChunkVars.length - 1];
   if (!suffixVar) return 0;
   let changed = moveLateOutputsBeforeReverseSuffix(
-    builder.outputs, suffixVar.lockingBytecode, jobsCount,
+    builder.outputs, suffixVar.lockingBytecode, suffixChunkCount,
   );
   changed += reassertReverseSuffixDynamicChunks(host, builder, { stripSurplus: true });
   return changed;
 }
 /**
- * Pin reverse-suffix dynamic-array chunks (Marketplace.jobs) at TXOUTPUTCOUNT-1-nNew.
+ * Pin reverse-suffix dynamic-array chunks at TXOUTPUTCOUNT-1-nNew.
  * Empty-whitelist posts were leaving chunk0/chunk1 swapped or missing on that window after
  * late layout growth, so final preflight EQUALVERIFYd the wrong commitment then the wrong lock.
  *
  * When `stripSurplus` is set (final send layout only), demote earlier same-lock mutable copies
- * left behind by late value-chunk appends so TXOUTPUTCOUNT-1-nNew is the unique jobs window.
+ * left behind by late value-chunk appends so TXOUTPUTCOUNT-1-nNew is the unique chunk window.
  * Do not enable during probe builds — stripping there thrash-hangs derivation.
  */
 export function reassertReverseSuffixDynamicChunks(
@@ -267,7 +267,7 @@ export function reassertReverseSuffixDynamicChunks(
     cursor = base;
   }
   if (options?.stripSurplus === true && authoritative.size > 0) {
-    const jobsLocks = new Set(
+    const suffixLocks = new Set(
       host.dynamicChunkVars.map((dv) => binToHex(dv.lockingBytecode)),
     );
     for (let index = 0; index < builder.outputs.length; index += 1) {
@@ -277,10 +277,10 @@ export function reassertReverseSuffixDynamicChunks(
         ? output.to
         : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
       if (!lock || lock.length !== 35 || lock[0] !== 0xaa) continue;
-      if (!jobsLocks.has(binToHex(lock))) continue;
+      if (!suffixLocks.has(binToHex(lock))) continue;
       if (output?.token?.nft?.capability !== 'mutable') continue;
       if (output.token?.category !== host.categoryId) continue;
-      // Token-free OP_TRUE keeps TXOUTPUTCOUNT stable without a second jobs run.
+      // Token-free OP_TRUE keeps TXOUTPUTCOUNT stable without a second chunk run.
       builder.outputs[index] = { to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS };
       stripped += 1;
     }

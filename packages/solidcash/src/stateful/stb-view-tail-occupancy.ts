@@ -55,7 +55,7 @@ export interface ViewTailOccupancyHost {
  * View tails are OP_TRUE + none-cap return NFTs. Token-swap placement already
  * parks them after FakeToken; without a swap, jobEvents mutables still occupy
  * the first planned tail slots. Write the pending views after that writer band
- * and leave collection/jobs coordinates unmoved.
+ * and leave collection/value-chunk coordinates unmoved.
  */
 export function writeViewTailsAfterWriterOccupancy(
   host: ViewTailOccupancyHost,
@@ -64,11 +64,11 @@ export function writeViewTailsAfterWriterOccupancy(
 ): void {
   const tailReturns = host.tailReturnEventOutputs();
   if (tailReturns.length === 0) return;
-  const jobsCountForPack = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixChunkCountForPack = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
   const packOptions: ViewTailPackOptions = {
     band: host.getChunkableValueWriteBand(),
-    suffixStart: jobsCountForPack > 0
-      ? builder.outputs.length - jobsCountForPack - 1
+    suffixStart: suffixChunkCountForPack > 0
+      ? builder.outputs.length - suffixChunkCountForPack - 1
       : Math.max(0, host.allInputs.length - 1),
     tokenWriterPresent: host.externalCallUtxoGroups.some((group) =>
       isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention)),
@@ -90,9 +90,9 @@ export function writeViewTailsAfterWriterOccupancy(
     lastCollidingMutableWriterIndex(builder.outputs, plannedIndices),
     derivedEnd,
   );
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
-  const suffixStart = jobsCount > 0
-    ? builder.outputs.length - jobsCount - 1
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixStart = suffixChunkCount > 0
+    ? builder.outputs.length - suffixChunkCount - 1
     : builder.outputs.length;
   const reserved = new Set<number>();
   for (const [index, input] of host.allInputs.entries()) {

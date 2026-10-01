@@ -25,7 +25,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 903 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 905 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 22 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
@@ -50,14 +50,14 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/ahead/` | `solidcash` | 137, under `PER_CALL_AHEAD=1` |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 10 |
 
-Total: 2304 checks (115 + 957 + 1222 + 10), with four more cases that run under
+Total: 2306 checks (115 + 959 + 1222 + 10), with four more cases that run under
 `PER_CALL_FULL=1`: three in `primitives/many-masters.test.ts` (the nine-entry composition and its refusal, which
 `shapes/deep-arbitration.test.ts` covers by default, and the twenty-four-master composition, which takes about
 twenty-eight seconds to derive), and the shipped data contract's clock-stamped append
 (`call/proxy-proxied-callee-element-clock.test.ts`), which deploys the project's compiled `MarketplaceDataV1`
 behind its proxy and takes about three and a half minutes; `pw7-measure.test.ts` runs only under `PER_CALL_FULL=1`
 too. The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 957 is the four rows above it (105 files),
+`vitest.per-call.config.ts`: `solidc` 959 is the four rows above it (105 files),
 `solidcash` 1222 is the rows above it from `validator/` down, `ahead/` excepted (211 files; refreshed 2026-10-01),
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`.

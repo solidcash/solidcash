@@ -22862,6 +22862,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     }
     if (this.readsRecordsFromFrame && this.batchTargetOrdinal(slotIndex) !== undefined) {
+      if (this.readsPastBatchWrite()) this.emitCreatedTargetName(slotIndex, loc);
       // The node a write targets may be one an earlier frame created, which the frame names at its output alone.
       this.emitPerCallBatchProofView(loc, () => this.emitPerCallNodeLockCheck(loc, true), 1); // [Hk32, entryAddr, commit]
       this.emit(Op.OP_NIP, loc);                      // [Hk32, commit]
@@ -32203,6 +32204,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Every batch target of the body, in the order the segments declare their record groups. */
   private batchTargetSlots(): number[] {
     return (this.currentFunction.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices);
+  }
+
+  /** True when the code being emitted runs in a segment the source fixes after the one the batch writes land in. */
+  private readsPastBatchWrite(): boolean {
+    return !this.perCallBatchWriteRuntime && !this.perCallCallsMadeActive
+      && (this.perCallReadSegment ?? this.perCallSegmentIndex) > this.perCallBatchWriteSegment;
+  }
+
+  /**
+   * Entry and exit `[..., coordinate]`. Past the write's segment, a target the batch inserted is the node the write
+   * created, not the predecessor its proof names: the coordinate becomes that node's name, `-(out + 1)`, with `out`
+   * the output the write segment declares for the target group's second record. An updated target keeps its proof.
+   */
+  private emitCreatedTargetName(slotIndex: number, loc: SingleLocationData): void {
+    this.emitCopyUpsertVMapWitness(`__internal__vmapBatchPredOut_${slotIndex}`, loc);
+    this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emitDeclaredGroupRecordOrdinal(this.batchTargetOrdinal(slotIndex)!, 1, loc);
+    this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc); // -(ordinal + 1) -> ordinal
+    const readSegment = this.perCallReadSegment;
+    this.perCallReadSegment = this.perCallBatchWriteSegment;
+    this.emitDeclaredOrdinalIndexRead('out', loc);
+    this.perCallReadSegment = readSegment;
+    this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc); // out -> -(out + 1)
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**

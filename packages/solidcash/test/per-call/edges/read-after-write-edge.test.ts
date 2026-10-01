@@ -121,10 +121,10 @@ describe('a body that reads a mapping entry after writing it', () => {
   });
 
   it('refuses a read past a call of a node its own push inserted (pinned)', async () => {
-    // Pinned wall, failing closed, the same before this change: past the write's segment the read resolves the
-    // insert's proof record, the relinked predecessor, which no longer brackets the key
-    // (`GenerateTargetTraversal.emitSortedSetRead`), and the hop declares no created node in a later segment
-    // (`placeLaidWrites` in proxy/deploy.ts). A key the list holds settles above.
+    // Pinned wall, failing closed: past the write's segment the read names the node the insert created by the output
+    // the write segment declares for it (`GenerateTargetTraversal.emitCreatedTargetName`, served at master level in
+    // `solidc/test/per-call/master/read-after-push.test.ts`), but the hop declares no created node in a later
+    // segment (`placeLaidWrites` in proxy/deploy.ts), so the read finds no record. A key the list holds settles above.
     const run = await relay();
     await expectRefusedEdge(run, 'keepThenLog', [FRESH, 41n, word(0x58)],
       /"keepThenLog" entry did not settle through the proxy: .*Program failed an OP_VERIFY operation/);

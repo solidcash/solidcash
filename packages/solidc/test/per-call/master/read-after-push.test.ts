@@ -248,9 +248,12 @@ describe('a per-call body that reads a mapping entry after a call that follows i
   /**
    * The caller's verdict. `held` is the array the list holds before the push, absent for a key it does not hold,
    * whose insert relinks the head at 3 and creates the node at 6; `later` is the node the segment after the call
-   * declares, and `count` the record the body writes past the call.
+   * declares, and `count` the record the body writes past the call. `laterCreated` false leaves the created node out
+   * of the segment after the call.
    */
-  function accepts(held: readonly Uint8Array[] | undefined, later: readonly Uint8Array[], count: bigint): boolean {
+  function accepts(
+    held: readonly Uint8Array[] | undefined, later: readonly Uint8Array[], count: bigint, laterCreated = true,
+  ): boolean {
     const validator = validatorSpend(category, { roots: [at.caller], masters: [at.caller, at.callee], settles: [] });
     const masterLock = encodeLockingBytecodeP2sh32(hash256(program));
     const dataLock = stateRecordLockingBytecode(binToHex(category));
@@ -266,7 +269,7 @@ describe('a per-call body that reads a mapping entry after a call that follows i
         ],
         [
           { in: at.node, out: at.node, viewIn: head(SLOT), viewOut: head(SLOT) },
-          { in: 0xffff, out: at.created, viewIn: nodeOf(later), viewOut: nodeOf(later) },
+          ...(laterCreated ? [{ in: 0xffff, out: at.created, viewIn: nodeOf(later), viewOut: nodeOf(later) }] : []),
         ],
       ]
       : [
@@ -343,13 +346,21 @@ describe('a per-call body that reads a mapping entry after a call that follows i
     expect(accepts([HELD], [HELD, ADDED, THIRD], 2n)).toBe(false);
   });
 
-  it('refuses a read past the call of a node its push inserted, whichever length the record carries', () => {
-    // Pinned wall, failing closed: past the write's segment the read resolves the batch target's proof record, which
-    // for an insert is the relinked predecessor, and its view no longer brackets the key
-    // (`GenerateTargetTraversal.emitSortedSetRead`, the per-call batch-target arm). The node is read again only once
-    // the read names the created record by its output.
-    expect(accepts(undefined, [ADDED], 1n)).toBe(false);
+  it('reads past the call the length a push into a key the list did not hold left, from the node it created', () => {
+    // The proof names the relinked predecessor, which no longer brackets the key; the read names the created node
+    // by the output the write segment declares for it instead.
+    expect(accepts(undefined, [ADDED], 1n)).toBe(true);
     expect(accepts(undefined, [ADDED], 0n)).toBe(false);
+  });
+
+  it('takes the view the re-entered frame left on the node the push created', () => {
+    expect(accepts(undefined, [ADDED, THIRD], 2n)).toBe(true);
+    expect(accepts(undefined, [ADDED, THIRD], 1n)).toBe(false);
+  });
+
+  it('refuses the read when the segment after the call does not declare the node the push created', () => {
+    expect(accepts(undefined, [ADDED], 1n, false)).toBe(false);
+    expect(accepts(undefined, [ADDED], 0n, false)).toBe(false);
   });
 });
 

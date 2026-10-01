@@ -79,8 +79,9 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   const funderLock = options.funder.generateLockingBytecode();
   const senderLockingBytecode = funderLock.length === 25 ? funderLock : undefined;
   // Every sorted collection an entry can write needs its empty head sentinel minted here, because a first insert
-  // splices beside it. A collection the constructor's own plan writes carries the head that plan relinked, and the
-  // genesis filters that one out; a caller that names extra collections (a proxy's) keeps its own too.
+  // splices beside it and a head is minted only at genesis. A collection the constructor's own plan writes carries
+  // the head that plan relinked, and the genesis filters that one out; a caller that names extra collections (a
+  // proxy's: its implementation's) keeps its own too.
   const declaredHeads = (artifact.stateLayout?.collections ?? [])
     .filter((collection) => collection.sorted === true)
     .map((collection) => ({ name: collection.name, signature: collection.signature }));
@@ -171,8 +172,8 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   // created. Each sits at its collection's entry covenant, so a composition spends and recreates it under the
   // covenant's own rules; the collection's signature derives that lock.
   for (const entry of genesis.entries) {
-    // A collection the artifact's own layout publishes carries its signature; one only an entry writes is named by
-    // the deployment, which is where the genesis learned to seed its head.
+    // A collection the artifact's own layout publishes carries its signature; one the deployment names (a proxy's,
+    // from its implementation) carries the signature the deployment gave it.
     const signature = entry.signature
       ?? artifact.stateLayout?.collections?.find((candidate) => candidate.name === entry.collection)?.signature;
     if (signature === undefined) {

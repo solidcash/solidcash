@@ -4,29 +4,31 @@ import { bytesToHex, sha256 } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
+import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
 import { requireSatisfiableReachWrites, type HopCallee } from '../../../src/per-call/proxy/external-calls.js';
-import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * Two reaches of one hop that would each mint the head sentinel of one collection, refused before any broadcast.
+ * Reaches of one hop into a collection of a proxied store that its initialize never wrote, and the one head each
+ * collection holds.
  *
- * A call into a collection the deployment holds no node of plans its first write against the empty list, and the
- * hop mints that list's head in its own transaction. Each reach of a callee is planned on its own against the
- * deployment, so two reaches into one empty collection each minted a head. Measured on the mock before the refusal:
- * two appends to one key of a dynamic value (`logTwice`, the shape of a store's per-job event log) broadcast two
- * heads and two nodes for that key, and two inserts of different keys into a fixed-width value (`putTwo`) broadcast
- * two heads. Every input's program accepted both, since no rule on chain counts a collection's heads.
+ * A head is minted only at genesis: the store's proxy genesis mints the empty head of `logs` and of `counts`, though
+ * its initialize writes neither, so no reach mints a head. Each reach of a callee is planned on its own against the
+ * deployment, so two reaches into one empty collection both splice through that one head. Two inserts of different
+ * keys into the fixed-width `counts` (`putTwo`) are refused by the hop's cross-reach check before anything settles.
+ * Two appends to one key of the dynamic-valued `logs` (`logTwice`, the shape of a store's per-job event log) each
+ * create the key's node; the check leaves a dynamic value's reaches to chain through one node, which serves appends
+ * to a held key, and the validator refuses the broadcast. One reach settles through the genesis head.
  *
- * Until the convention decides where a head may be created (only at genesis, or under a per-collection census in
- * the validator), the hop's cross-reach check refuses the shape by name (`requireSatisfiableReachWrites`,
- * `proxy/external-calls.ts`). One reach that mints the head in a call still settles.
+ * Before heads were minted only at genesis, a reach into an empty collection minted the head in its own transaction,
+ * and both shapes broadcast two heads of one collection on the mock (measured and refused by name at 1ac66d296).
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -182,44 +184,59 @@ async function callCoinLive(world: World): Promise<boolean> {
     .some((utxo) => utxo.txid === world.callCoin.txid && utxo.vout === world.callCoin.vout);
 }
 
-/** The refusal's words for `count` reaches of `entry` that each create the head of `collection`. */
-function headsRefusal(entry: string, count: number, collection: string): string {
-  return `the hop reaches the entry "${entry}" ${count} times, and ${count} of them create the head of collection `
-    + `"${collection}", which one transaction must create once`;
+/** The cross-reach check's words for `count` reaches of `entry` inserting into `collection` through one node. */
+function sameNodeRefusal(entry: string, count: number, collection: string): string {
+  return `the hop reaches the entry "${entry}" ${count} times, and ${count} of them insert into collection `
+    + `"${collection}" through the same node`;
 }
 
-describe('two reaches that each create the head of one collection', () => {
+/** The store's live nodes of one collection, read with the implementation's collections grafted on the proxy's. */
+async function storeNodes(world: World, collection: string): Promise<readonly Utxo[]> {
+  const layout = { ...buildProxyArtifact(store).stateLayout!, collections: store.stateLayout!.collections };
+  const deployment = await readPerCallDeployment(world.network, world.storeProxyCategoryId, layout);
+  return deployment.nodesByCollection.get(collection) ?? [];
+}
+
+describe('reaches into a collection the store never wrote, through the head its genesis minted', () => {
   it('refuses two appends to one key of an empty dynamic-valued collection, broadcasting nothing', async () => {
     const world = await deployed();
 
-    await expect(callRoot(world, 'logTwice', [7n])).rejects.toThrow(headsRefusal('Store.log()', 2, 'logs'));
+    // Both reaches splice key 7 in through the genesis head and each creates the key's node; the validator, at
+    // input 1, refuses the broadcast.
+    await expect(callRoot(world, 'logTwice', [7n])).rejects.toThrow(
+      'error in evaluating input index 1: Program failed an OP_VERIFY operation',
+    );
     expect(await callCoinLive(world)).toBe(true);
   });
 
   it('refuses two inserts of different keys into an empty fixed-width collection, broadcasting nothing', async () => {
     const world = await deployed();
 
-    // The keys differ and neither reach spends a node, so only the heads the two reaches create clash.
-    await expect(callRoot(world, 'putTwo', [1n, 2n])).rejects.toThrow(headsRefusal('Store.put()', 2, 'counts'));
+    // The keys differ, and both reaches relink the one head the genesis minted.
+    await expect(callRoot(world, 'putTwo', [1n, 2n])).rejects.toThrow(sameNodeRefusal('Store.put()', 2, 'counts'));
     expect(await callCoinLive(world)).toBe(true);
   });
 
-  it('settles one reach that creates the head in a call, leaving one head linked to its key', async () => {
+  it('settles one reach through the head the genesis minted, leaving one head linked to its key', async () => {
     const world = await deployed();
+
+    // Before the call the collection holds the genesis head alone, empty.
+    const before = await storeNodes(world, 'logs');
+    expect(before.map((node) => node.token!.nft!.commitment)).toStrictEqual([binToHex(headSentinelCommitment())]);
 
     const result = await callRoot(world, 'logOnce', [7n, 5n]);
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
 
-    // The store's collection now holds the head the hop minted and the node it linked to key 7, and nothing else.
-    const layout = { ...buildProxyArtifact(store).stateLayout!, collections: store.stateLayout!.collections };
-    const deployment = await readPerCallDeployment(world.network, world.storeProxyCategoryId, layout);
-    const nodes = (deployment.nodesByCollection.get('logs') ?? [])
-      .map((node) => decodeEntryCommitment(hexToBin(node.token!.nft!.commitment)));
+    // The hop spent that head and recreated it linked to key 7, beside the node it created, and nothing else.
+    const nodes = (await storeNodes(world, 'logs'))
+      .map((node) => ({ txid: node.txid, ...decodeEntryCommitment(hexToBin(node.token!.nft!.commitment)) }));
     const headSlot = bytesToHex(new Uint8Array(32));
     const keySlot = bytesToHex(keyToSlotMulti([bigIntToVmNumber(7n)]));
     const heads = nodes.filter((node) => bytesToHex(node.slot) === headSlot);
     expect(heads).toHaveLength(1);
+    expect(heads[0]!.txid).toBe(result.broadcast!.txid);
+    expect(heads[0]!.txid).not.toBe(before[0]!.txid);
     expect(bytesToHex(heads[0]!.nextKey)).toBe(keySlot);
     expect(nodes.map((node) => bytesToHex(node.slot)).sort()).toStrictEqual([headSlot, keySlot].sort());
   });

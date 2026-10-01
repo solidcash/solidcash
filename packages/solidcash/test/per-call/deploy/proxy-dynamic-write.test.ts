@@ -31,10 +31,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * the derivation learns from the body's close.
  *
  * A sorted mapping's write is declared beside the run. A target the live list holds is spliced through a node the
- * deployment already carries, so the hop spends and recreates that predecessor; a collection the deployment holds
- * no node of has no head sentinel to splice through, so the hop mints the empty head in its own transaction — the
- * shipped encoder's commitment, at the collection's own entry covenant — and declares it with no input, but with
- * the sentinel as its input view, which is the pre-state a read of the absent key proves its bracket against.
+ * deployment already carries, so the hop spends and recreates that predecessor; a first insert into a collection the
+ * entries never wrote splices through the empty head the proxy's genesis minted for it, since a head is minted only
+ * at genesis.
  *
  * The expected commitments here come from the shipped encoders (`encodePushdataValue` for the value,
  * `buildChunkCommitment` for a chunk, `chunkRecordLockingBytecode` for the value's collection covenant), and the
@@ -467,22 +466,11 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(bytesToHex(node.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
   });
 
-  it('settles a first insert beside the append, the hop minting the head it splices through', async () => {
-    // A call into a collection the deployment holds no node of plans its first write against the empty list's head
-    // sentinel, which no live UTXO carries. The hop mints that head in its own transaction — the shipped encoder's
-    // commitment for the empty list, at the collection's own entry covenant, spending nothing for it — and declares
-    // the group's first record as the created head relinked to the new slot. The plan carries the head as
-    // `{in: 0xffff, out: <trailing>, viewIn: <sentinel>, viewOut: <zero slot || target slot || zero value>}`, beside
-    // the created node. The input side names no coordinate, but the declared view is the empty list's head: a body
-    // that reads the absent key resolves its predecessor through that declaration, and the empty head is the
-    // pre-state its non-membership bracket is proven against.
-    //
-    // The compiler serves that predecessor for a per-call master: the single-target insert arm reads the create
-    // sentinel in the record's `in` field as a coordinate below every input, proves the recreated head's output is
-    // the collection's zero slot relinked to the target, and drops the proof-input bytecode comparison that has no
-    // input to compare with. The isolated shape and its wrong-relink control settle
-    // (`solidc test/per-call/master/insert-beside-append.test.ts`); the control beside this case is the live-head
-    // insert below, which splices through a node the deployment already holds.
+  it('settles a first insert beside the append, splicing through the head the proxy genesis minted', async () => {
+    // The deployment's own entry never writes `members`, but a head is minted only at genesis, so the proxy's
+    // genesis minted that collection's empty head beside the record. The call's first insert spends it under the
+    // collection covenant and recreates it in place, relinked to the new slot, exactly as a later insert splices
+    // through a live node; nothing the call creates is a head.
     const { deployment, network, artifacts, funding } = await deploy(UNSEEDED_REGISTER_SOURCE, [], true);
     expect(deployment.initialize.accepted).toBe(true);
 
@@ -518,29 +506,33 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
       (piece, index) => ({ index, commitment: hexToBin(buildValueChunkCommitment(index, piece)) }),
     );
 
-    // The created head leads the trailing region, then the created node, then the value's chunks.
+    // The created node leads the trailing region, then the value's chunks; no head is created.
     const trailing = result.draft.trailingOutputs;
-    expect(trailing).toHaveLength(2 + valueChunks.length);
-    const head = decodeEntryCommitment(
-      Uint8Array.from(result.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment!));
-    expect(bytesToHex(head.slot)).toBe(bytesToHex(new Uint8Array(32)));
-    expect(bytesToHex(head.nextKey)).toBe(bytesToHex(slot));
+    expect(trailing).toHaveLength(1 + valueChunks.length);
     const created = decodeEntryCommitment(
-      Uint8Array.from(result.transaction.outputs[trailing[1]!.index]!.token!.nft!.commitment!));
+      Uint8Array.from(result.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment!));
     expect(bytesToHex(created.slot)).toBe(bytesToHex(slot));
     expect(bytesToHex(created.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
-    trailing.slice(2).forEach((output, position) => {
+    trailing.slice(1).forEach((output, position) => {
       expect(output.output.lockingBytecode).toStrictEqual(chunkLock);
       expect(output.output.token!.nft!.commitment).toStrictEqual(valueChunks[position]!.commitment);
     });
 
-    // The head's record declares the empty list's sentinel as its input view, and the relinked head as its output.
+    // The head is a participant on the UTXO the proxy's genesis minted, spent and recreated relinked to the slot,
+    // and its record states the empty list's sentinel as the view it starts from.
+    const headIndex = result.draft.layout.participants
+      .find((placed) => placed.id === 'mapping-head-members')!.index;
+    expect(binToHex(result.broadcast!.inputs[headIndex]!.outpointTransactionHash)).toBe(deployment.proxy.tx.txid);
+    const head = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[headIndex]!.token!.nft!.commitment!));
+    expect(bytesToHex(head.slot)).toBe(bytesToHex(new Uint8Array(32)));
+    expect(bytesToHex(head.nextKey)).toBe(bytesToHex(slot));
     const block = result.draft.blockOf('implementation-master');
-    const headRecord = block.segments[0]!.find((entry) => entry.out === trailing[0]!.index)!;
-    expect(headRecord.in).toBe(0xffff);
+    const headRecord = block.segments[0]!.find((entry) => entry.in === headIndex)!;
+    expect(headRecord.out).toBe(headIndex);
     expect(bytesToHex(headRecord.viewIn)).toBe(bytesToHex(headSentinelCommitment()));
     expect(bytesToHex(headRecord.viewOut)).toBe(bytesToHex(
-      result.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment!));
+      result.transaction.outputs[headIndex]!.token!.nft!.commitment!));
 
     // The dynamic run is the live chunk recreated in place, carrying the array the append grew.
     const grown = encodePushdataValue(

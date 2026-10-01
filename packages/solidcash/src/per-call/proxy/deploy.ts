@@ -3,7 +3,8 @@
  *
  *   1. the implementation's genesis: its category, master pool and validator pool (and the records its own
  *      constructor frame computed);
- *   2. the proxy's genesis: the same pools, with the proxy's one record carrying the implementation's address;
+ *   2. the proxy's genesis: the same pools, with the proxy's one record carrying the implementation's address and
+ *      the empty head of every sorted collection the implementation declares;
  *   3. `initialize` through the proxy: a root frame on the proxy's master whose body delegatecalls the
  *      implementation, which runs as a `DELEGATE` frame on the proxy's own records, so its `msg.sender` and
  *      `address(this)` are the deployer's and the proxy's.
@@ -718,10 +719,9 @@ export async function deployPerCallProxy(
   const implementationMaster = deployMaster(implementationArtifact, implementationCategory, validatorProgram);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
 
-  // The records the entry's own body writes — mapping nodes today — are planned against the entry's published
-  // accesses and their stated values, so their commitments are declared outright rather than learned. A collection
-  // the entry writes has no record until then, so the proxy's genesis seeds its empty head; the implementation
-  // artifact is where that collection is published.
+  // The records the entry's own body writes (mapping nodes today) are planned against the entry's published
+  // accesses and their stated values, so their commitments are declared outright rather than learned. A first
+  // insert splices through the empty head the proxy's genesis mints.
   // A run-time loop's key array is handed to the frame in the order the emitted body walks it, so the plan's
   // per-turn nodes are the ones the body reaches; the caller's call data carries that same array.
   const initializeArgs = orderLoopKeyArgs({
@@ -736,9 +736,12 @@ export async function deployPerCallProxy(
     ...(initializeArgs.length === 0 ? {} : { args: initializeArgs }),
     callerLockingBytecode: options.callerLockingBytecode,
   });
-  // A sorted collection the entry writes has no node until it does, so the proxy's genesis seeds its empty head;
-  // a dynamic value's run has no head, so a write that only appends to one seeds nothing.
-  const headCollections = [...(entryWrites?.collections ?? [])];
+  // A head is minted only at genesis and a call never creates one. A delegate frame writes the proxy's records, so
+  // the proxy's genesis mints the empty head of every sorted collection the implementation declares, whether or not
+  // `initialize` writes it.
+  const headCollections = (implementationArtifact.stateLayout?.collections ?? [])
+    .filter((collection) => collection.sorted === true)
+    .map((collection) => ({ name: collection.name, signature: collection.signature }));
 
   // 1. The implementation's genesis and pools.
   const implementation = await deployStatefulContract(
@@ -746,8 +749,8 @@ export async function deployPerCallProxy(
     { ...options.implementationDeploy, provider },
   );
 
-  // 2. The proxy's genesis, its one record carrying the implementation's address, and the empty head of any
-  // collection the entry writes.
+  // 2. The proxy's genesis, its one record carrying the implementation's address, and the empty head of every
+  // sorted collection the implementation declares.
   const proxy = await deployStatefulContract(proxyArtifact, [], {
     ...options.proxyDeploy,
     provider,

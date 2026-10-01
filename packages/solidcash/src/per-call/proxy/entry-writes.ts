@@ -263,18 +263,10 @@ export interface LaidHopEntryWrites {
 /** The writes one entry performs, with the ids the plan places. */
 export interface HopEntryWrites {
   /**
-   * Every sorted collection the entry batches into, in the order the artifact publishes them.
+   * The first sorted collection the entry batches into, when it writes one.
    *
-   * A sorted list has no node until something writes it, so a deployment that a later entry writes has to mint the
-   * list's empty head, one per collection the entry writes.
-   */
-  readonly collections: readonly { readonly name: string; readonly signature: string }[];
-  /**
-   * The first sorted collection the entry batches into, when it writes one; the deployment seeds its empty head.
-   *
-   * A sorted list has no node until something writes it, so a deployment that a later entry writes has to mint the
-   * list's empty head. A dynamic value's chunks have no head — the empty value is no chunk at all — so a write that
-   * only appends to one names no collection here and the deployment seeds nothing.
+   * A dynamic value's chunks have no head (the empty value is no chunk at all), so a write that only appends to one
+   * names no collection here.
    */
   readonly collection?: string;
   /** The first collection's canonical signature, which derives the entry covenant lock its records sit at. */
@@ -1552,7 +1544,6 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
   const readRunIds = reads.flatMap((run) => run.chunks.map((chunk) => chunk.id));
   for (const chunk of reads.flatMap((run) => run.chunks)) spentUtxos.set(chunk.id, chunk.utxo);
   return {
-    collections: batches.map((batch) => ({ name: batch.collection, signature: batch.signature })),
     ...(batches[0] === undefined ? {} : { collection: batches[0].collection, signature: batches[0].signature }),
     participantIds: [
       ...batches.flatMap((batch) => batch.spent.map((node) => node.id)),

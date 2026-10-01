@@ -21,10 +21,10 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * contract below it. The two unguarded reaches, the loop's two turns and the guarded reach the caller's argument
  * leaves untaken make four reaches in all, each writing its own key.
  *
- * The callee's initialize writes no key, so the deployment holds no node of the mapping: each reach plans its insert
- * against the empty list and mints the list's head itself. The hop settled that, and the mock accepted four heads
- * of one collection (five with the guarded reach); the cross-reach check now refuses it by name before anything is
- * broadcast, counting the loop's turns and the taken guarded site as reaches of their own.
+ * The callee's initialize writes no key, so the mapping holds only the empty head its proxy's genesis minted (a
+ * head is minted only at genesis), and every reach splices its own key in through that one head. The cross-reach
+ * check refuses that by name before anything is broadcast, counting the loop's turns and the taken guarded site as
+ * reaches of their own.
  */
 
 const PING_CATEGORY = '99'.repeat(32);
@@ -166,10 +166,10 @@ async function deployed(): Promise<World> {
   return world;
 }
 
-/** The cross-reach check's words for `count` reaches of the callee's entry, each minting a head of `events`. */
-function headsRefusal(count: number): string {
-  return `the hop reaches the entry "${inner.contractName}.record()" ${count} times, and ${count} of them create the `
-    + 'head of collection "events", which one transaction must create once';
+/** The cross-reach check's words for `count` reaches of the callee's entry inserting through one node of `events`. */
+function sameNodeRefusal(count: number): string {
+  return `the hop reaches the entry "${inner.contractName}.record()" ${count} times, and ${count} of them insert `
+    + 'into collection "events" through the same node';
 }
 
 /** True while the caller's coin is unspent, i.e. nothing was broadcast for the hop. */
@@ -179,14 +179,14 @@ async function callCoinLive(world: World): Promise<boolean> {
 }
 
 describe('a hop whose proxied callee writes beside a call of its own', () => {
-  it('refuses the four reaches, each minting a head of the empty mapping, and broadcasts nothing', async () => {
+  it('refuses the four reaches, each splicing through the one genesis head, and broadcasts nothing', async () => {
     const world = await deployed();
     const { network, funded } = world;
 
-    // It settled before the refusal: the four reaches, each completing its own callee, then the implementation
-    // frame, then the proxy fallback, shared each of the callee's two blocks and created their records past the
-    // participants. Owner: the SDK hop planner (`proxy/external-calls.ts`, `requireSatisfiableReachWrites`), the
-    // interim refusal while the convention decides where a head may be created.
+    // Each reach plans its insert against the deployment alone, so all four relink the one head the genesis minted
+    // to their own key, and one spent input is recreated once. Owner: the SDK hop planner
+    // (`proxy/external-calls.ts`, `requireSatisfiableReachWrites`), until reaches that touch one node share one
+    // participant with their views chained in execution order.
     await expect(callPerCallProxyEntry({
       provider: network,
       implementationArtifact: outer,
@@ -201,7 +201,7 @@ describe('a hop whose proxied callee writes beside a call of its own', () => {
       funder: funded.funder,
       changeAddress: funded.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow(headsRefusal(4));
+    })).rejects.toThrow(sameNodeRefusal(4));
     expect(await callCoinLive(world)).toBe(true);
   });
 
@@ -224,7 +224,7 @@ describe('a hop whose proxied callee writes beside a call of its own', () => {
       funder: funded.funder,
       changeAddress: funded.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow(headsRefusal(5));
+    })).rejects.toThrow(sameNodeRefusal(5));
     expect(await callCoinLive(world)).toBe(true);
   });
 });

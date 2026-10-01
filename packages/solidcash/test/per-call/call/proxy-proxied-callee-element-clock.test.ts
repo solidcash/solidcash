@@ -150,8 +150,8 @@ describe('a proxied callee that appends an element stamped with the transaction 
     expect(result.accepted).toBe(true);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
     // The reach runs the implementation's own frame, which emits beside the element it appends. It is one reach:
-    // the store's `pieces` is empty, so a second reach would mint a head of its own beside the first one's, which the
-    // hop refuses by name (`call/two-created-heads.test.ts`).
+    // the store's `pieces` holds only the head its genesis minted, and a second reach would splice through that same
+    // head (`call/proxy-multi-site-proxied-callee-chunked-writes.test.ts`).
     expect(result.completed.map((frame) => frame.functionName)).toStrictEqual([
       `${store.contractName}.append()`,
       `${store.contractName}Proxy.__fallback()`,

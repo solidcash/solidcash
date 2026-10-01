@@ -556,6 +556,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     occurrence?: 'once' | 'conditional' | 'loop';
     maximumOccurrences?: number;
   }[];
+
   // Delegate-library calls desugared from `L.f()` (SynthesizeLibraryDelegateCalls), in source order. The SDK
   // auto-wires the delegatecall co-spend from a registered library instance, so the caller need not name the
   // library function again. `args` are positional: a forwarded enclosing-function parameter or a literal; the
@@ -729,6 +730,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     completedDescriptorDigest: string;
     streamDescriptorDigests: readonly string[];
   }[];
+
   /** Ordered compiler-private disposition manifest owned by this generated aggregate route. */
   messageBusKernelJournalDispositions?: readonly {
     selectorHex: string;
@@ -740,6 +742,7 @@ export class FunctionDefinitionNode extends Node implements Named {
       disposition: 'carrier' | 'eager-journal' | 'neutral';
     }[];
   }[];
+
   /** Digest emitted only by the authenticated aggregate route as the SCJD v1 bytecode marker. */
   messageBusKernelJournalDispositionCommitmentDigest?: string;
 
@@ -852,6 +855,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     effectOrdinal: number;
     activation?: ExternalCallExpression;
   }>;
+
   /** This handler owns one direct push into a chunkable sorted mapping-array entry (unconditional and/or
    * bool-param activated with empty else). Kernel route lowering threads the typed pending array through every
    * selected OP_INVOKE row and flushes it exactly once, so repeated same-key rows compose without intermediate

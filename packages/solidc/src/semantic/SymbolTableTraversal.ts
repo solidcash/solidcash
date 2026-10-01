@@ -253,8 +253,7 @@ class SourceEffectOrderTraversal extends AstTraversal {
     super.visitMappingAssign(node);
     if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
       node.sourceEffectOrdinal = this.next++;
-    }
-    else if (node.sourceEffectOrdinal !== undefined) {
+    } else if (node.sourceEffectOrdinal !== undefined) {
       this.next = Math.max(this.next, node.sourceEffectOrdinal + 1);
     }
     return node;
@@ -280,8 +279,7 @@ class SourceEffectOrderTraversal extends AstTraversal {
     super.visitMappingFieldAssign(node);
     if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
       node.sourceEffectOrdinal = this.next++;
-    }
-    else if (node.sourceEffectOrdinal !== undefined) {
+    } else if (node.sourceEffectOrdinal !== undefined) {
       this.next = Math.max(this.next, node.sourceEffectOrdinal + 1);
     }
     return node;
@@ -291,8 +289,7 @@ class SourceEffectOrderTraversal extends AstTraversal {
     super.visitMappingDelete(node);
     if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
       node.sourceEffectOrdinal = this.next++;
-    }
-    else if (node.sourceEffectOrdinal !== undefined) {
+    } else if (node.sourceEffectOrdinal !== undefined) {
       this.next = Math.max(this.next, node.sourceEffectOrdinal + 1);
     }
     return node;
@@ -307,8 +304,7 @@ class SourceEffectOrderTraversal extends AstTraversal {
     if (node.callInfo && !node.foldedIntoDeploy && !node.rawValueTransferOnly) {
       if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
         node.sourceEffectOrdinal = this.next++;
-      }
-      else if (node.sourceEffectOrdinal !== undefined) {
+      } else if (node.sourceEffectOrdinal !== undefined) {
         this.next = Math.max(this.next, node.sourceEffectOrdinal + 1);
       }
     }
@@ -3648,28 +3644,28 @@ export default class SymbolTableTraversal extends AstTraversal {
               helpersByName.set(candidate.name, group);
             }
             let unsupported = false;
-            const visit = (node: Node, seen: Set<Node>): void => {
-              if (unsupported || seen.has(node)) return;
-              seen.add(node);
-              const name = (node as unknown as { name?: unknown }).name;
+            const visit = (visitedNode: Node, seen: Set<Node>): void => {
+              if (unsupported || seen.has(visitedNode)) return;
+              seen.add(visitedNode);
+              const name = (visitedNode as unknown as { name?: unknown }).name;
               if (typeof name === 'string' && chunkable.has(name)
-                && (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
-                  || node instanceof MappingDeleteNode || node instanceof ArrayAssignNode
-                  || node instanceof ArrayPushNode || node instanceof ArrayPopNode
-                  || node instanceof ArrayDeleteNode || node instanceof StateArrayAssignNode
-                  || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
-                  || node instanceof StateArrayDeleteNode || node instanceof StateAssignNode
-                  || node instanceof DeleteStateNode)) {
+                && (visitedNode instanceof MappingAssignNode || visitedNode instanceof MappingFieldAssignNode
+                  || visitedNode instanceof MappingDeleteNode || visitedNode instanceof ArrayAssignNode
+                  || visitedNode instanceof ArrayPushNode || visitedNode instanceof ArrayPopNode
+                  || visitedNode instanceof ArrayDeleteNode || visitedNode instanceof StateArrayAssignNode
+                  || visitedNode instanceof StateArrayPushNode || visitedNode instanceof StateArrayPopNode
+                  || visitedNode instanceof StateArrayDeleteNode || visitedNode instanceof StateAssignNode
+                  || visitedNode instanceof DeleteStateNode)) {
                 unsupported = true;
                 return;
               }
-              if (node instanceof FunctionCallNode && node.identifier instanceof IdentifierNode) {
-                for (const helper of helpersByName.get(node.identifier.name) ?? []) {
+              if (visitedNode instanceof FunctionCallNode && visitedNode.identifier instanceof IdentifierNode) {
+                for (const helper of helpersByName.get(visitedNode.identifier.name) ?? []) {
                   if (helper.body) visit(helper.body, seen);
                   if (unsupported) return;
                 }
               }
-              for (const value of Object.values(node)) {
+              for (const value of Object.values(visitedNode)) {
                 if (value instanceof Node) visit(value, seen);
                 else if (Array.isArray(value)) {
                   for (const item of value) if (item instanceof Node) visit(item, seen);
@@ -8475,9 +8471,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           // published expression keeps its established spelling.
           const aliasInner = (() => {
             if (!(expression.expression instanceof IdentifierNode)) return inner;
-            const resolved = resolveInitializer(expression.expression);
-            if (resolved === expression.expression) return inner;
-            return serializeExpression(resolved, new Set()) ?? inner;
+            const resolvedInitializer = resolveInitializer(expression.expression);
+            if (resolvedInitializer === expression.expression) return inner;
+            return serializeExpression(resolvedInitializer, new Set()) ?? inner;
           })();
           // The front end forwards a read of an entry field to the whole-entry value the handler wrote for it: a
           // partially written entry is rebuilt as `T(.., thisField, ..)`, where an argument that references the
@@ -8548,10 +8544,10 @@ export default class SymbolTableTraversal extends AstTraversal {
               if (initializer === identifier) return undefined;
               const serialized = serializeExpression(initializer, new Set());
               if (serialized?.kind === 'state') return serialized.name;
-              const source = serialized?.kind === 'source' ? serialized.source : undefined;
+              const serializedSource = serialized?.kind === 'source' ? serialized.source : undefined;
               // A state name may reach the argument classifier as a source instead of a bare `state` expression.
-              return (source as { kind?: string; name?: string } | undefined)?.kind === 'state'
-                ? (source as { name?: string }).name : undefined;
+              return (serializedSource as { kind?: string; name?: string } | undefined)?.kind === 'state'
+                ? (serializedSource as { name?: string }).name : undefined;
             } finally {
               resolvingStateCollections.delete(raw);
             }
@@ -10248,8 +10244,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       return undefined;
     };
-    const consider = (target: string, expression: ExpressionNode, conditional: boolean): void => {
-      if (target !== local || foreign) return;
+    const consider = (candidateName: string, expression: ExpressionNode, conditional: boolean): void => {
+      if (candidateName !== local || foreign) return;
       if (conditional) { foreign = true; return; }
       const delta = localDelta(expression);
       if (delta) deltas.push(delta);
@@ -15796,7 +15792,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.refreshGraphEffectFrameOffsets(frame, route);
     // Token-container INPUT identity lives on the route's one co-spent slot. Share that layout with the
     // OP_INVOKE handler so a `tokenContainer` OP_UTXO uses the compile-time offset, never a row-relative
-    // `tcTransfer` output index. token-container co-layout: also share for read-only token-container co-layout (no transfers).
+    // `tcTransfer` output index. Also share token-container co-layout for read-only handlers (no transfers).
     for (const fn of handlers) {
       if (tokenTransferCount(fn) > 0 || ((fn.ecrecoverCallCount ?? 0) > 0)
         || (fn.transferInfos?.length ?? 0) > 0 || (fn.emitInfos?.length ?? 0) > 0

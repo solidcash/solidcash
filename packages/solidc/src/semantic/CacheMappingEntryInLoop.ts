@@ -375,9 +375,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private collectCacheableEntries(
     body: Node,
   ): Array<{
-    mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; fromModifier?: string;
-    anchorIndex?: number;
-  }> {
+      mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; fromModifier?: string;
+      anchorIndex?: number;
+    }> {
     const info = new Map<string, EntryInfo>();
     const get = (mapping: string, rawKeys: Node | Node[], allowExpression = false): EntryInfo | null => {
       const keys = Array.isArray(rawKeys) ? rawKeys : [rawKeys];

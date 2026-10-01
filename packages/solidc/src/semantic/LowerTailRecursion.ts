@@ -384,11 +384,11 @@ export default class LowerTailRecursion extends AstTraversal {
       if (expression.kind === 'ternary') {
         return expression.condition === undefined || expression.ifTrue === undefined || expression.ifFalse === undefined
           ? expression : {
-          ...expression,
-          condition: rewriteFrameIdentifier(expression.condition),
-          ifTrue: rewriteFrameIdentifier(expression.ifTrue),
-          ifFalse: rewriteFrameIdentifier(expression.ifFalse),
-        };
+            ...expression,
+            condition: rewriteFrameIdentifier(expression.condition),
+            ifTrue: rewriteFrameIdentifier(expression.ifTrue),
+            ifFalse: rewriteFrameIdentifier(expression.ifFalse),
+          };
       }
       return expression;
     };

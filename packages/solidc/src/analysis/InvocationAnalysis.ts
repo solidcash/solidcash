@@ -203,8 +203,7 @@ export function analyseFunctionFootprint(
         } else if (node instanceof IdentifierNode && cache?.stateNames?.has(node.name)
           && !locallyBound.has(node.name)) {
           directReads.add(`state:${node.name}`);
-        }
-        else if (bareReadName !== undefined && !locallyBound.has(bareReadName)) {
+        } else if (bareReadName !== undefined && !locallyBound.has(bareReadName)) {
           directReads.add(collectionResourceName(bareReadName, undefined));
         } else if (/^(MappingAccess|ArrayAccess|StateArrayAccess)/.test(kind) && collectionResource
           && resourceName && !locallyBound.has(resourceName)) {

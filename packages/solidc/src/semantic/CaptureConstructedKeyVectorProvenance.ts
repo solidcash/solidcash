@@ -77,13 +77,13 @@ const isConsumerMappingWrite = (node: Node, arrayName: string): boolean => {
     return found;
   }
   if (!(node instanceof MappingAssignNode)) return false;
-  let found = false;
+  const match = { found: false };
   for (const key of node.keys) {
     walk(key, (candidate) => {
-      if (candidate instanceof ArrayAccessNode && identifierName(candidate.array) === arrayName) found = true;
+      if (candidate instanceof ArrayAccessNode && identifierName(candidate.array) === arrayName) match.found = true;
     });
   }
-  return found;
+  return match.found;
 };
 
 /**
@@ -272,11 +272,15 @@ const projectVector = (
     return undefined;
   }
   const allocationLength = serializeExpression(selected.allocation.size, parameters);
-  if (!allocationLength || !replayIntegerType(replayExpressionType(selected.allocation.size, parameterTypes))) return undefined;
+  if (!allocationLength || !replayIntegerType(replayExpressionType(selected.allocation.size, parameterTypes))) {
+    return undefined;
+  }
 
   type Producer = { loop: WhileNode; counter: string; start: Node; write: ArrayAssignNode };
   const producers: Producer[] = [];
-  const consumers: Array<{ loop: WhileNode; counter: string; write: MappingAssignNode; component: number; access: ArrayAccessNode }> = [];
+  const consumers: Array<{
+    loop: WhileNode; counter: string; write: MappingAssignNode; component: number; access: ArrayAccessNode;
+  }> = [];
   for (const { statement, prior } of nestedStatements(proof.sourceProgram)) {
     if (!(statement instanceof WhileNode)) continue;
     const condition = statement.condition;
@@ -315,7 +319,9 @@ const projectVector = (
     || !replayValueType(replayExpressionType(producer.write.value, parameterTypes, producer.counter) ?? '')) return undefined;
   const fixedComponents = consumer.write.keys.map((key, component) => ({ component, expression: key }))
     .filter(({ component }) => component !== consumer.component)
-    .map(({ component, expression }) => ({ component, expression: serializeExpression(expression, parameters, consumer.counter) }));
+    .map(({ component, expression }) => ({
+      component, expression: serializeExpression(expression, parameters, consumer.counter),
+    }));
   if (!fixedComponents.every((component): component is { component: number; expression: ExternalCallExpression } =>
     component.expression !== undefined)) return undefined;
   // No local identifier may cross this boundary. This tiny type inference is deliberately independent of later

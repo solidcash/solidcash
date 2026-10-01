@@ -172,8 +172,7 @@ export function evaluatePathEffectActivation(
     if (right === undefined) return false;
     const rightLiteral = typeof right === 'boolean' ? String(right)
       : (() => {
-        try { return BigInt(right as bigint | number | string).toString(); }
-        catch { return String(right); }
+        try { return BigInt(right as bigint | number | string).toString(); } catch { return String(right); }
       })();
     return comparePathEffectInputLiteral(env.namedInputs?.[recipe.leftName], recipe.op, rightLiteral);
   }
@@ -597,7 +596,7 @@ function resolveHandlerPathEffectActivation(
 }
 
 /**
- * Multi-effect path-effect schedule beyond child-deploy IR: build a multi-effect path-effect schedule from handler-local writes/events/transfers
+ * Build a multi-effect path-effect schedule from handler-local writes, events, and transfers
  * (and optional child-deployment recipes). Effect ordinals must be unique across the combined program.
  */
 export function pathEffectScheduleFromHandlerEffects(

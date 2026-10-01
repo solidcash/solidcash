@@ -10,7 +10,6 @@ import {
   encodeExternalReturnValues,
 } from './external-return-encoding.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 
 export type PrecomputeCreateBuilderNestedComposeReturnsHost = {
   readonly categoryId: string;
@@ -63,7 +62,7 @@ export async function precomputeCreateBuilderNestedComposeReturns(
   },
 ): Promise<PrecomputeCreateBuilderNestedComposeReturnsResult> {
   const {
-    nested, proxyCallee, callee, selectedFn, proxyTargetFn, nestedArgs, nestedSources,
+    nested, proxyCallee, callee, selectedFn, proxyTargetFn, nestedArgs,
     delegateVisibleArgs, delegateVisibleInputs, childCompilerRoute, childWritesState,
     sharedCompilerRouteCoversCall, graphPlanningResults, publicSelfAddress,
     childFunctionName, childFunctionArgs, callInfoContract, onChainState, delegateSelfAddress,
@@ -226,7 +225,7 @@ export async function precomputeCreateBuilderNestedComposeReturns(
           const publicMethod = (proxyCallee as unknown as Record<string, unknown>)[nested.functionName];
           return typeof publicMethod === 'function'
             ? await (publicMethod as (...args: FunctionArgument[]) => Promise<StateValue>)(...nestedArgs)
-            : await proxyCallee.forward(nested.functionName, nestedArgs).staticCall();
+            : await (proxyCallee.forward(nested.functionName, nestedArgs).staticCall() as Promise<StateValue>);
         } catch {
           // A forwarded view can require the complete parent transaction, or be unreachable behind a
           // caller guard. This is optional precomputation; the final route remains the authority for

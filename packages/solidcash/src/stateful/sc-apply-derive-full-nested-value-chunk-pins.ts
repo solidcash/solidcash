@@ -46,7 +46,7 @@ import {
   isPersistedJobEventsReady,
   rememberJobEventsLock,
   rememberJobEventsValue,
-  persistedJobEventsLock,
+  persistedCompatibilityValueChunkLock,
   selectValueChunkResource,
   selectValueChunkWriteCategory,
   stageJobEventsValue,
@@ -454,7 +454,7 @@ export function applyDeriveFullNestedValueChunkPin(
   const redeemLock = pin?.lockingBytecode && isP2sh32LockingBytecode(pin.lockingBytecode)
     ? pin.lockingBytecode
     : (permitsLegacyValueCandidate && chunkCategory
-      ? persistedJobEventsLock(chunkCategory) : undefined);
+      ? persistedCompatibilityValueChunkLock(chunkCategory) : undefined);
   if (chunkCategory && redeemLock) {
     const selection = selectValueChunkWriteCategory(valueChunkWrites.filter(
       (write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase(),

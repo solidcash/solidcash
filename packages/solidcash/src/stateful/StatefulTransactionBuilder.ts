@@ -136,7 +136,7 @@ export {
   rememberJobEventsValue,
   persistedJobEventsValue,
   rememberJobEventsLock,
-  persistedJobEventsLock,
+  persistedCompatibilityValueChunkLock,
   type ValueChunkWriteDescriptor,
   type DerivedChunkOutputObservation,
   type LateValueSuffixInsertion,
@@ -177,7 +177,7 @@ import {
   persistValueChunkLock,
   legacyJobEventsPersistValueChunkLock,
   persistedJobEventsValue,
-  persistedJobEventsLock,
+  persistedCompatibilityValueChunkLock,
   type ValueChunkWriteDescriptor,
   type DerivedChunkOutputObservation,
   type LateValueSuffixInsertion,
@@ -565,7 +565,7 @@ import { type ReassertSendFinalConservationHost } from './stb-reassert-send-fina
 import { type ReassertSendAfterViewRepackHost } from './stb-reassert-send-after-view-repack.js';
 import { type PatchRelocatedDelegateOutputBasesHost } from './stb-patch-relocated-delegate-output-bases.js';
 import { type ReassertBuildConservationRepairsHost } from './stb-reassert-build-conservation-repairs.js';
-import { type FinalizeBuildJobsBandAndViewsHost } from './stb-finalize-build-jobs-band-and-views.js';
+import { type FinalizeBuildValueChunkBandAndViewsHost } from './stb-finalize-build-value-chunk-band-and-views.js';
 import { type ReassertSendFinalLayoutHost } from './stb-reassert-send-final-layout.js';
 import { type MaterializeOwnerEventNftOutputsHost } from './stb-materialize-owner-event-nft-outputs.js';
 import {
@@ -2235,7 +2235,7 @@ export class StatefulTransactionBuilder {
       }),
       finalizeBuildDerivedSuffixHost: () => this._finalizeBuildDerivedSuffixHost(),
       reassertBuildConservationRepairsHost: () => this._reassertBuildConservationRepairsHost(),
-      finalizeBuildJobsBandAndViewsHost: () => this._finalizeBuildJobsBandAndViewsHost(),
+      finalizeBuildValueChunkBandAndViewsHost: () => this._finalizeBuildValueChunkBandAndViewsHost(),
       finalizeBuildStampHost: () => this._finalizeBuildStampHost(),
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
     };
@@ -2422,12 +2422,12 @@ export class StatefulTransactionBuilder {
     };
   }
 
-  private _finalizeBuildJobsBandAndViewsHost(): FinalizeBuildJobsBandAndViewsHost {
+  private _finalizeBuildValueChunkBandAndViewsHost(): FinalizeBuildValueChunkBandAndViewsHost {
     const self = this;
     return {
       allInputs: this.allInputs,
       valueChunkOutputs: this.valueChunkOutputs,
-      jobEventsRedeemLock: this.jobEventsRedeemLock,
+      valueChunkRedeemLock: this.jobEventsRedeemLock,
       preserveBlockLayoutWidth: this.preserveBlockLayoutWidth,
       pinnedEntrySlots: this.pinnedEntrySlots,
       requiredEntryOutputSlots: this.requiredEntryOutputSlots,
@@ -2442,7 +2442,7 @@ export class StatefulTransactionBuilder {
       repackViewTailsAfterMaterialization: (b) => this._repackViewTailsAfterMaterialization(b),
       refreshInputs: () => { this._refreshInputs(); },
       reassertStagedValueChunkOutputs: (b) => { this._reassertStagedValueChunkOutputs(b); },
-      materializeJobEventsBand: (b) => { this._materializeJobEventsBand(b); },
+      materializeValueChunkBand: (b) => { this._materializeJobEventsBand(b); },
       placeTailReturnAfterSwappedTokenBlock: (b, refs) => {
         this._placeTailReturnAfterSwappedTokenBlock(b, refs);
       },
@@ -2451,7 +2451,7 @@ export class StatefulTransactionBuilder {
       reassertNestedEmitEvents: (b) => { this._reassertNestedEmitEvents(b); },
       reassertDelegateImplEvents: (b) => { this._reassertDelegateImplEvents(b); },
       isPersistedChunkableValueWriteReady: () => this._isPersistedChunkableValueWriteReady(),
-      reassertPersistedJobEventsOneToOnes: (b, emitDest) => {
+      reassertPersistedValueChunkOneToOnes: (b, emitDest) => {
         this._reassertPersistedJobEventsOneToOnes(b, emitDest);
       },
       scaledEmitOutputIndex: (outputCount) => this._scaledEmitOutputIndex(outputCount),
@@ -4472,7 +4472,7 @@ export class StatefulTransactionBuilder {
       categoryId, this.jobEventsRedeemLock, this._persistedValueChunkWrite(categoryId),
     )
       ?? this.jobEventsRedeemLock
-      ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined);
+      ?? (categoryId ? persistedCompatibilityValueChunkLock(categoryId) : undefined);
     if (!value || !lock) return 0;
     if (this.bumpChunkableValueWriteWidth(valueChunkCountFor(value))) this._refreshInputs();
     const live = this.getChunkableValueWriteBand() ?? band;

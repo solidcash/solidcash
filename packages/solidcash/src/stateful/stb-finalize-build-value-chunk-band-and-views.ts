@@ -1,5 +1,5 @@
 /**
- * phase-boundary extract: STB build-phase extract — strip surplus chunk locks, materialize jobs band, reassert views.
+ * Build-phase finalizer: strip surplus value-chunk locks, materialize the chunk band, reassert views.
  */
 
 import { binToHex } from '@bitauth/libauth';
@@ -7,13 +7,13 @@ import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { reassertNoneCapFunderTwins } from './mutable-output-reassert.js';
 import { stripSurplusValueChunkLocks } from './scid-minting-return-layout.js';
-import { persistedJobEventsLock } from './value-chunk-persist.js';
+import { persistedCompatibilityValueChunkLock } from './value-chunk-persist.js';
 import { skipCompilerOwnedInBlockCollectionStrip } from './writer-event-delegate-layout.js';
 
-export interface FinalizeBuildJobsBandAndViewsHost {
+export interface FinalizeBuildValueChunkBandAndViewsHost {
   readonly allInputs: UnlockableUtxo[];
   readonly valueChunkOutputs: ReadonlyArray<{ to: string | Uint8Array; amount: bigint; token?: unknown }>;
-  readonly jobEventsRedeemLock?: Uint8Array;
+  readonly valueChunkRedeemLock?: Uint8Array;
   readonly preserveBlockLayoutWidth: boolean;
   readonly pinnedEntrySlots: ReadonlySet<unknown>;
   readonly requiredEntryOutputSlots: ReadonlySet<unknown>;
@@ -27,7 +27,7 @@ export interface FinalizeBuildJobsBandAndViewsHost {
   repackViewTailsAfterMaterialization(builder: TransactionBuilder): boolean;
   refreshInputs(): void;
   reassertStagedValueChunkOutputs(builder: TransactionBuilder): void;
-  materializeJobEventsBand(builder: TransactionBuilder): void;
+  materializeValueChunkBand(builder: TransactionBuilder): void;
   placeTailReturnAfterSwappedTokenBlock(
     builder: TransactionBuilder,
     returnOutputRefs: Map<string, Output>,
@@ -37,7 +37,7 @@ export interface FinalizeBuildJobsBandAndViewsHost {
   reassertNestedEmitEvents(builder: TransactionBuilder): void;
   reassertDelegateImplEvents(builder: TransactionBuilder): void;
   isPersistedChunkableValueWriteReady(): boolean;
-  reassertPersistedJobEventsOneToOnes(builder: TransactionBuilder, emitDest: number): void;
+  reassertPersistedValueChunkOneToOnes(builder: TransactionBuilder, emitDest: number): void;
   scaledEmitOutputIndex(outputCount: number): number | undefined;
   reassertMintingOneToOne(builder: TransactionBuilder): void;
   reassertFixedStateOutputs(builder: TransactionBuilder): void;
@@ -49,18 +49,18 @@ export interface FinalizeBuildJobsBandAndViewsHost {
 
 /**
  * After conservation repairs: strip surplus value-chunk locks, optionally request a full rebuild
- * after first view-tail rebind, then materialize the jobs band and reassert view/event/state pins.
+ * after first view-tail rebind, then materialize the value-chunk band and reassert view/event/state pins.
  * Returns `'rebuild'` when the caller must re-enter `build()`.
  */
-export function finalizeBuildJobsBandAndViews(
-  host: FinalizeBuildJobsBandAndViewsHost,
+export function finalizeBuildValueChunkBandAndViews(
+  host: FinalizeBuildValueChunkBandAndViewsHost,
   builder: TransactionBuilder,
   returnOutputRefs: Map<string, Output>,
 ): 'rebuild' | 'continue' {
   const chunkBand = host.getChunkableValueWriteBand();
   const publishCategory = host.chunkableValueWriteCategory();
-  const chunkLock = host.jobEventsRedeemLock
-    ?? (publishCategory ? persistedJobEventsLock(publishCategory) : undefined);
+  const chunkLock = host.valueChunkRedeemLock
+    ?? (publishCategory ? persistedCompatibilityValueChunkLock(publishCategory) : undefined);
   // Kernel identity-scan pins count matching locks anywhere. A single persist band
   // must not convert those trailing copies into OP_TRUE.
   const stagedLockHexes = new Set(
@@ -99,7 +99,7 @@ export function finalizeBuildJobsBandAndViews(
     ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1' && stagedLockHexes.size > 0) {
     console.error('staged-locks-after-surplus-strip', { present: countStagedLocks() });
   }
-  // Rebind before placing tails so planned 20-21 still names the jobEvents pins.
+  // Rebind before placing tails so planned coordinates still name the value-chunk pins.
   if (!host.viewTailRepackAttempted && host.repackViewTailsAfterMaterialization(builder)) {
     host.viewTailRepackAttempted = true;
     host.refreshInputs();
@@ -112,13 +112,13 @@ export function finalizeBuildJobsBandAndViews(
     ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1' && stagedLockHexes.size > 0) {
     console.error('staged-locks-before-materialize', { present: countStagedLocks() });
   }
-  host.materializeJobEventsBand(builder);
+  host.materializeValueChunkBand(builder);
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1' && stagedLockHexes.size > 0) {
     console.error('staged-locks-after-materialize', { present: countStagedLocks() });
   }
-  // Re-assert view tails AFTER jobEvents/chunk materialization. Placing them earlier lets
-  // the jobs band overwrite OP_TRUE none-cap returns, leaving unlock witnesses pointing at
+  // Re-assert view tails after value-chunk materialization. Placing them earlier lets
+  // the chunk band overwrite OP_TRUE none-cap returns, leaving unlock witnesses pointing at
   // zero placeholders while nested view requires observe false.
   host.placeTailReturnAfterSwappedTokenBlock(builder, returnOutputRefs);
   host.ensureAuthenticatedViewReturns(builder);
@@ -127,7 +127,7 @@ export function finalizeBuildJobsBandAndViews(
   host.reassertNestedEmitEvents(builder);
   host.reassertDelegateImplEvents(builder);
   if (host.isPersistedChunkableValueWriteReady()) {
-    host.reassertPersistedJobEventsOneToOnes(
+    host.reassertPersistedValueChunkOneToOnes(
       builder, host.scaledEmitOutputIndex(builder.outputs.length) ?? -1,
     );
   }

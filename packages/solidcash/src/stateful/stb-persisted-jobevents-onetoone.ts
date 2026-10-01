@@ -35,7 +35,7 @@ import {
   shouldStampPersistUpdateDigestLockForHost,
 } from './stb-chunkable-write-planning.js';
 import {
-  persistedJobEventsLock,
+  persistedCompatibilityValueChunkLock,
   persistUpdateRedeemLock,
   valueChunkIndexFromCommitment,
   type ValueChunkWriteDescriptor,
@@ -79,7 +79,7 @@ export function reassertPersistedJobEventsOneToOnes(
     : chunkableValueWriteCategory(host);
   const categoryId = destCategory ?? chunkableValueWriteCategory(host);
   const persistLockCategory = persistedValueChunkCategory(host) ?? categoryId;
-  const persistLock = (persistLockCategory ? persistedJobEventsLock(persistLockCategory) : undefined)
+  const persistLock = (persistLockCategory ? persistedCompatibilityValueChunkLock(persistLockCategory) : undefined)
     ?? host.jobEventsRedeemLock;
   const replayCategories = new Set([categoryId, persistLockCategory].filter(
     (candidate): candidate is string => candidate !== undefined,

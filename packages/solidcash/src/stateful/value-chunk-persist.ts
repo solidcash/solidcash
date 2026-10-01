@@ -747,7 +747,7 @@ export function rememberJobEventsLock(
 }
 
 
-export function persistedJobEventsLock(
+export function persistedCompatibilityValueChunkLock(
   categoryId: string,
   session?: CompositionSettlementSession,
 ): Uint8Array | undefined {
@@ -1027,7 +1027,7 @@ export function persistUpdateRedeemLock(
       return getValueChunkLockingBytecode(recipe.categoryId, recipe.collection, recipe.slot, recipe.root);
     } catch { /* invalid recipe */ }
   }
-  return persistedJobEventsLock(categoryId);
+  return persistedCompatibilityValueChunkLock(categoryId);
 }
 
 /** True only after a successful publishJobEvent send, not compose/extract. */

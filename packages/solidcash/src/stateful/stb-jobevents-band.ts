@@ -41,7 +41,7 @@ import {
   isEmptyValueChunkCommitment,
   latestPersisted,
   persistUpdateRedeemLock,
-  persistedJobEventsLock,
+  persistedCompatibilityValueChunkLock,
   persistedJobEventsWidth,
   rememberJobEventsLock,
   rememberJobEventsUnlockRecipe,
@@ -275,7 +275,7 @@ export function materializeJobEventsBand(
   const redeemLock = chunks[0]?.lockingBytecode
     ?? recipeLock
     ?? host.jobEventsRedeemLock
-    ?? (stateOwnerCategory ? persistedJobEventsLock(stateOwnerCategory) : undefined);
+    ?? (stateOwnerCategory ? persistedCompatibilityValueChunkLock(stateOwnerCategory) : undefined);
   const placed = applyRedeemLockToChunks(
     [...host.derivedChunkOutputs.entries()]
       .filter(([index]) => index >= liveBand.start && index <= liveEnd)
@@ -365,7 +365,7 @@ export function ensureLiveJobEventsBand(
   const redeemLock = persistVLock
     ?? persistDigestLock
     ?? host.jobEventsRedeemLock
-    ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined);
+    ?? (categoryId ? persistedCompatibilityValueChunkLock(categoryId) : undefined);
   const persistedValue = shouldRematerializePersistUpdateForHost(host)
     ? (host.persistedValueChunkValue(persistTokenCategory)
       ?? host.persistedValueChunkValue(categoryId))
@@ -493,7 +493,7 @@ export function persistPlacedJobEventsBand(
       liveCount = value.n;
     }
   }
-  const redeemLock = liveLock ?? host.jobEventsRedeemLock ?? persistedJobEventsLock(categoryId);
+  const redeemLock = liveLock ?? host.jobEventsRedeemLock ?? persistedCompatibilityValueChunkLock(categoryId);
   const chunks: AuthenticatedValueChunk[] = [];
   const spends: Array<{
     txid: string;

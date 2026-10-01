@@ -33,7 +33,7 @@ import {
   isPersistedJobEventsReady,
   legacyJobEventsPersistValueChunkLock,
   persistValueChunkLock,
-  persistedJobEventsLock,
+  persistedCompatibilityValueChunkLock,
   persistedJobEventsUnlockRecipe,
   persistedJobEventsValue,
   persistedJobEventsWidth,
@@ -71,9 +71,9 @@ export function legacyPersistedValueChunkValue(
   return persistedJobEventsValue(...args);
 }
 export function legacyPersistedValueChunkLock(
-  ...args: Parameters<typeof persistedJobEventsLock>
-): ReturnType<typeof persistedJobEventsLock> {
-  return persistedJobEventsLock(...args);
+  ...args: Parameters<typeof persistedCompatibilityValueChunkLock>
+): ReturnType<typeof persistedCompatibilityValueChunkLock> {
+  return persistedCompatibilityValueChunkLock(...args);
 }
 export function legacyPersistedValueChunkUnlockRecipe(
   ...args: Parameters<typeof persistedJobEventsUnlockRecipe>
@@ -636,7 +636,7 @@ export function chunksFromJobEventsValue(
   if (value.length <= VALUE_HEAD_SIZE) return [];
   const lock = lockingBytecode
     ?? legacyJobEventsPersistValueChunkLock(categoryId, value)
-    ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined)
+    ?? (categoryId ? persistedCompatibilityValueChunkLock(categoryId) : undefined)
     ?? p2sh32LockFromValueRoot(sha256Sync(value));
   return chunksFromValue(value, { lockingBytecode: lock, categoryId });
 }

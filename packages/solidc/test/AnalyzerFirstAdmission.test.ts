@@ -77,7 +77,7 @@ describe('analyzer-first admission', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(join(here, '../src/compiler.ts'), 'utf8');
     expect(src).toContain('recoverCompileByMonotoneRefusal');
-    expect(src).toContain("published-fallback is retired");
+    expect(src).toContain('published-fallback is retired');
     expect(src).not.toMatch(/applyAdmissionStamp\([^)]*'published-fallback'/);
     const codeLines = src.split('\n').filter((line) => {
       const t = line.trim();

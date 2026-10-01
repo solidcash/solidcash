@@ -64,8 +64,7 @@ describe('MarketplaceV1 publishJobPost upsert keys', () => {
       ops.push(op);
       if (op > 0 && op <= 75) i += op;
       else if (op === 76) i += 1 + raw[i];
-      else if (op === 77) { const n = raw[i] | (raw[i + 1] << 8); i += 2 + n; }
-      else if (op === 78) {
+      else if (op === 77) { const n = raw[i] | (raw[i + 1] << 8); i += 2 + n; } else if (op === 78) {
         const n = raw[i] | (raw[i + 1] << 8) | (raw[i + 2] << 16) | (raw[i + 3] << 24);
         i += 4 + n;
       }

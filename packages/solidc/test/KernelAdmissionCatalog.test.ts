@@ -77,7 +77,7 @@ describe('KERNEL_* admission catalog kernel admission catalog', () => {
     expect(catalogSrc).toContain('export function throwKernelCatalogDiagnostic');
     expect(catalogSrc).toContain('export function normalizeKernelAdmissionReason');
     expect(helpersSrc).toContain("from '../kernel-admission-catalog.js'");
-    expect(helpersSrc).toContain("throwKernelCatalogDiagnostic(");
+    expect(helpersSrc).toContain('throwKernelCatalogDiagnostic(');
     expect(helpersSrc).toContain("gate: 'journal-exit-split'");
     expect(helpersSrc).toContain('do not share one exit');
     expect(helpersSrc).toContain("gate: 'journal-early-return'");

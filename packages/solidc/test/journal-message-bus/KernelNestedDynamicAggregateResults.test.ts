@@ -11,7 +11,8 @@ const OPTIONS = {
   suppressWarnings: true,
 } as const;
 
-const handler = (source: string, name: string) => compileString(source, OPTIONS)
+const handler = (source: string, name: string):
+NonNullable<ReturnType<typeof compileString>['messageBus']>['handlers'][number] | undefined => compileString(source, OPTIONS)
   .messageBus?.handlers.find((candidate) => candidate.name === name);
 
 describe('kernel nested dynamic aggregate results', () => {

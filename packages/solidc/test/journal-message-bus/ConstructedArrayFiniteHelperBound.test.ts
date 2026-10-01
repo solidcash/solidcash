@@ -527,7 +527,7 @@ describe('constructed-array exhausted finite helper replay', () => {
     ['a helper-owned resize', 'resize(domain, base);'],
     ['a reassigned allocation', 'domain = new int[](base);'],
   ])('keeps %s out of an allocation-length recipe', (_label, operation) => {
-      const handler = compile(`
+    const handler = compile(`
         function touch(int[] memory domain, int value) internal { domain[0] = value; }
         function resize(int[] memory domain, int value) internal pure { domain.push(value); }
         function fill(int[] memory keys, int base, int stop) internal pure {
@@ -540,7 +540,7 @@ describe('constructed-array exhausted finite helper replay', () => {
         ${operation}
         fill(keys, base, domain.length);
       `);
-      expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
   });
 
   it('exhausts a bounded-integer recursive helper with an invariant runtime scalar', () => {

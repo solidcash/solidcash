@@ -8,7 +8,7 @@ const KERNEL = {
   maximumInputBytes: 1_000_000,
 } as const;
 
-const compile = (loop: string) => compileString(`contract C() {
+const compile = (loop: string): ReturnType<typeof compileString> => compileString(`contract C() {
   mapping(int => int) slots;
   function fill(int[] memory keys, int base, int limit, int stride) internal pure {
     ${loop}

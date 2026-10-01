@@ -229,7 +229,9 @@ describe('delegate inference', () => {
         const decoded = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
         return typeof decoded === 'bigint' ? decoded : undefined;
       };
-      const findHelperInvoke = (bytecode: string) => {
+      const findHelperInvoke = (bytecode: string): {
+        index: number; instructions: ReturnType<typeof decodeAuthenticationInstructions>;
+      } => {
         const instructions = decodeAuthenticationInstructions(hexToBin(bytecode));
         const index = instructions.findIndex((instruction, i) => i > 0
           && instruction.opcode === OpcodesBCH.OP_INVOKE

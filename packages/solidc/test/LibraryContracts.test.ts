@@ -143,12 +143,12 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
   });
 
   it('keeps event-emitting collection handlers in the co-spent delegate library', () => {
-    const LIB = 'library Ledger { mapping(address => int) balances; '
+    const ledgerLibrary = 'library Ledger { mapping(address => int) balances; '
       + 'event Changed(address indexed who, int value); '
       + 'function change(address who, int value) public { '
       + 'if (value > 0) { this.balances[who] = value; emit Changed(who, value); } } }';
     const resolver = (p: string): { source: string; id: string } | undefined =>
-      (p.includes('ledger') ? { source: LIB, id: 'ledger' } : undefined);
+      (p.includes('ledger') ? { source: ledgerLibrary, id: 'ledger' } : undefined);
     const consumer = 'import { Ledger } from "./ledger.scash"; '
       + 'contract C() { mapping(address => int) balances; '
       + 'function forward(address who, int value) { Ledger.change(who, value); } }';

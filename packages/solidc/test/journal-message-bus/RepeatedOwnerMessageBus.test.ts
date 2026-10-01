@@ -47,7 +47,10 @@ describe('inferred message-bus batching for repeated external callees', () => {
   });
 
   it('publishes deterministic pre-collapse source callsites for every batch row', () => {
-    const projection = () => compileString(SOURCE).abi.find((fn) => fn.name === 'run')
+    const projection = (): Array<{
+      physicalCallsiteId: number | undefined;
+      rows: Array<{ sourceCallsiteId: number | undefined; logicalIndex: number }> | undefined;
+    }> | undefined => compileString(SOURCE).abi.find((fn) => fn.name === 'run')
       ?.externalCalls?.map((call) => ({
         physicalCallsiteId: call.callsiteId,
         rows: call.batchInvocations?.map((row) => ({

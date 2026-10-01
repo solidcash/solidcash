@@ -193,7 +193,7 @@ describe('shared integer helpers', () => {
   });
 
   it('keeps authenticated collection-journal bodies trace-stable under the compilation-speed hint', () => {
-    const source = `
+    const traceSource = `
       contract TraceStable() {
         int[] public items;
         mapping(bytes20 => int) public weights;
@@ -208,7 +208,7 @@ describe('shared integer helpers', () => {
       maximumInputBytes: 1_000_000,
       commitmentLimit: 128,
     } as const;
-    const fast = compileString(source, { ...options, optimizeForCompilationSpeed: true });
+    const fast = compileString(traceSource, { ...options, optimizeForCompilationSpeed: true });
     const selector = fast.abi.find((fn) => fn.name === 'append')?.selector;
     expect(selector).toBeDefined();
     expect(fast.abi.find((fn) => fn.name === 'append')).toMatchObject({

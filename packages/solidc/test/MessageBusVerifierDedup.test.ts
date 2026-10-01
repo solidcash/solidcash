@@ -47,7 +47,9 @@ describe('detached message-bus verifier stack-suffix outlining', () => {
       encodeInt(0n), Op.OP_INVOKE,
     ]);
     const unlockingBytecode = scriptToBytecode(Array.from({ length: 49 }, (_, i) => encodeInt(BigInt(i + 1))));
-    const evaluate = (lockingBytecode: Uint8Array) => {
+    const evaluate = (lockingBytecode: Uint8Array): ReturnType<
+    ReturnType<typeof createVirtualMachineBch2026>['evaluate']
+    > => {
       const vm = createVirtualMachineBch2026();
       const transaction = {
         version: 2,

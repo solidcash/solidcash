@@ -12,7 +12,9 @@ import { compileString } from './direct-compile.js';
 import { compileString as compileMessageBus } from '../dist/compiler.js';
 
 describe('returned external-call loop metadata', () => {
-  const makeBody = (step = 1n, competingWrite = false, allocationBound = 'count') => {
+  const makeBody = (step = 1n, competingWrite = false, allocationBound = 'count'): {
+    target: ExternalFunctionCallNode; body: BlockNode;
+  } => {
     const target = new ExternalFunctionCallNode(
       'IData', new IdentifierNode('data'), 'get', [new IdentifierNode('i')],
     );
@@ -78,7 +80,7 @@ describe('returned external-call loop metadata', () => {
         }
       }
     `;
-    const compileAt = (messageBusKernel: boolean) => compileMessageBus(source, {
+    const compileAt = (messageBusKernel: boolean): ReturnType<typeof compileMessageBus> => compileMessageBus(source, {
       forceStateful: true,
       solidityImportCompat: true,
       messageBus: true,

@@ -1,5 +1,5 @@
 /**
- * unique selfdestruct admission: unique modifier-only selfdestruct stays admitted; selfdestruct swarms stay KERNEL_LIFECYCLE.
+ * Unique modifier-only selfdestruct stays admitted; selfdestruct swarms stay KERNEL_LIFECYCLE.
  */
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';

@@ -1135,7 +1135,7 @@ describe('required kernel admission', () => {
       'require(checkMultiSig([auth.first, auth.second], auth.authorities));',
       'struct Auth { sig first; sig second; pubkey[] authorities; }'],
   ])('keeps nested CHECKMULTISIG provenance fenced for %s', (_label, body, declaration =
-    'struct Auth { sig[] proofs; pubkey[] authorities; int nonce; }') => {
+  'struct Auth { sig[] proofs; pubkey[] authorities; int nonce; }') => {
     expect(denied(`contract C() {
       ${declaration}
       function migrate(Auth auth) public upgrade { ${body} }
@@ -3860,7 +3860,7 @@ describe('required kernel admission', () => {
   });
 
   it('admits explicit deploy with the same typed child topology as inferred deploy', () => {
-    const compile = (modifier: string) => compileString(`contract Unit() {
+    const compile = (modifier: string): ReturnType<typeof compileString> => compileString(`contract Unit() {
         int marker;
         constructor(int seed) { this.marker = seed; }
       }
@@ -3872,7 +3872,8 @@ describe('required kernel admission', () => {
       }`, KERNEL);
     const inferred = compile('');
     const explicit = compile('deploy');
-    const handler = (artifact: ReturnType<typeof compileString>) => artifact.messageBus?.handlers.find(
+    const handler = (artifact: ReturnType<typeof compileString>):
+    NonNullable<ReturnType<typeof compileString>['messageBus']>['handlers'][number] | undefined => artifact.messageBus?.handlers.find(
       (candidate) => candidate.name === 'materialize',
     );
     expect(handler(explicit)).toMatchObject({ eligible: true });
@@ -8549,7 +8550,9 @@ describe('required kernel admission', () => {
   });
 
   it('admits shared multi-mutation geometry independently of source names', () => {
-    const compileRenamed = (contract: string, left: string, right: string, operation: string) => compileString(`
+    const compileRenamed = (
+      contract: string, left: string, right: string, operation: string,
+    ): ReturnType<typeof compileString> => compileString(`
       contract ${contract}() {
         mapping(int => int) ${left};
         mapping(int => int) ${right};

@@ -26,9 +26,10 @@ const handlerByArity = (
   artifact: ReturnType<typeof compileString>,
   name: string,
   arity: number,
-) => artifact.messageBus?.handlers.find((handler) => (
-  handler.name === name && handler.inputs.length === arity
-));
+): NonNullable<ReturnType<typeof compileString>['messageBus']>['handlers'][number] | undefined =>
+  artifact.messageBus?.handlers.find((handler) => (
+    handler.name === name && handler.inputs.length === arity
+  ));
 
 describe('selector-authoritative message-bus handler filtering', () => {
   it('keeps legacy name selection as an explicit selection of every overload', () => {
@@ -122,6 +123,8 @@ describe('selector-authoritative message-bus handler filtering', () => {
   });
 });
 
-function artifactHandler(artifact: ReturnType<typeof compileString>, name: string) {
+function artifactHandler(
+  artifact: ReturnType<typeof compileString>, name: string,
+): NonNullable<ReturnType<typeof compileString>['messageBus']>['handlers'][number] | undefined {
   return artifact.messageBus?.handlers.find((handler) => handler.name === name);
 }

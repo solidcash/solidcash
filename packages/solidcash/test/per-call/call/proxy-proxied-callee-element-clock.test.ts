@@ -62,7 +62,6 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function initialize(address target) { this.store = target; require(true); }'
   + '   function run() {'
   + `     IStore(this.store).append(7, Piece(1, hex"${BODY}", 0));`
-  + `     IStore(this.store).append(8, Piece(2, hex"${BODY}", 0));`
   + '     require(true);'
   + '   }'
   + ' }';
@@ -77,7 +76,7 @@ function funding(txid: string): { txid: string; vout: number; satoshis: bigint }
 }
 
 describe('a proxied callee that appends an element stamped with the transaction clock', () => {
-  it('settles every reach, its own append and its event, and broadcasts', async () => {
+  it('settles the reach, its own append and its event, and broadcasts', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
     const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -150,18 +149,18 @@ describe('a proxied callee that appends an element stamped with the transaction 
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.accepted).toBe(true);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-    // Each reach runs the implementation's own frame, which emits beside the element it appends.
+    // The reach runs the implementation's own frame, which emits beside the element it appends. It is one reach:
+    // the store's `pieces` is empty, so a second reach would mint a head of its own beside the first one's, which the
+    // hop refuses by name (`call/two-created-heads.test.ts`).
     expect(result.completed.map((frame) => frame.functionName)).toStrictEqual([
-      `${store.contractName}.append()`,
-      `${store.contractName}Proxy.__fallback()`,
       `${store.contractName}.append()`,
       `${store.contractName}Proxy.__fallback()`,
       `${outer.contractName}.run()`,
       `${outer.contractName}Proxy.__fallback()`,
     ]);
 
-    // The element each reach appended carries the clock the frame read, read back through the shipped reader.
-    for (const id of [7n, 8n]) {
+    // The element the reach appended carries the clock the frame read, read back through the shipped reader.
+    for (const id of [7n]) {
       const read = await readPerCallEntry({
         provider: network,
         artifact: store,

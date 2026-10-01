@@ -141,6 +141,13 @@ export interface ReachWrite {
   readonly targets: readonly ReachWriteTarget[];
   /** The participant id of every node this collection's write spends. */
   readonly spentIds: readonly string[];
+  /**
+   * True when the deployment holds no node of the collection, so the write mints the collection's head sentinel.
+   *
+   * Each reach is planned against the deployment alone, so two reaches into an empty collection would each mint
+   * a head of their own, while one transaction must create a collection's head once.
+   */
+  readonly createsHead: boolean;
 }
 
 /** One sorted batch an entry performs against the collection it starts from. */
@@ -160,6 +167,8 @@ interface HopMappingBatch {
   readonly spent: readonly { readonly slot: Uint8Array; readonly before: Uint8Array; readonly id: string }[];
   /** Every key the batch writes, with the node an insert splices through. */
   readonly targets: readonly ReachWriteTarget[];
+  /** True when the batch mints the collection's head sentinel, the deployment holding no node of it. */
+  readonly createsHead: boolean;
   /** The slot of each value-dependent node, in learning order, whose end view the body computes. */
   readonly learningSlots: readonly Uint8Array[];
   /** The placeholder each value-dependent node's declaration starts from, in learning order. */
@@ -980,6 +989,9 @@ function planHopCollectionBatch(
     ...(loop === undefined ? {} : { loopWritten: true }),
     spent,
     targets: writeTargets,
+    // The head the hop mints is the sentinel the plan relinks, which every write into an empty list does.
+    createsHead: createsHead
+      && planned.written.some((node) => node.existed && bytesEqual(node.before, headCommitment)),
     learningSlots,
     learningCandidates,
     utxoBySlot,
@@ -1554,6 +1566,7 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
         .find((candidate) => candidate.name === batch.collection)?.chunkableValue === true,
       targets: batch.targets,
       spentIds: batch.spent.map((node) => node.id),
+      createsHead: batch.createsHead,
     })),
     learningCandidates: [
       ...batches.flatMap((batch) => batch.learningCandidates),

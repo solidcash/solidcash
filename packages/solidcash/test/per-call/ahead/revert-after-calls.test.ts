@@ -45,6 +45,8 @@ const ALICE_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
 const BOB_LOCK = encodeLockingBytecodeP2pkh(bobPkh);
 
 // `Roster` lists Alice as a member and a referee and Bob as a referee; `Coin` gives Alice 1000 and Bob 500.
+// `Journal` holds the two keys `post` notes, so each note rewrites a node the deployment holds: two notes into an
+// empty `marks` would each mint its head, which the hop refuses by name (`call/two-created-heads.test.ts`).
 const SOURCE = [
   'pragma solidcash ^0.13.0;',
   'error ShortBalance(address holder, int balance, int needed);',
@@ -59,7 +61,7 @@ const SOURCE = [
   '  address public implementation;',
   '  int public opened;',
   '  mapping(int => int) marks;',
-  '  function initialize() { this.opened = 1; require(this.opened > 0); }',
+  '  function initialize() { this.opened = 1; this.marks[7] = 2; this.marks[9] = 2; require(this.opened > 0); }',
   '  function note(int id) { this.marks[id] = 1; require(true); }',
   '  function isOpen() returns (bool) { return this.opened == 1; }',
   '}',

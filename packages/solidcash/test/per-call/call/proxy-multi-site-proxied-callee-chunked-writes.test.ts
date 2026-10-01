@@ -4,10 +4,8 @@ import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
-import { readPerCallEntry } from '../../../src/per-call/read/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -20,6 +18,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * node ends at is the one the deployment holds with the element appended, and a value past the inline limit takes
  * a run of chunk records. The two unguarded reaches, the loop's two turns and the guarded reach the caller's
  * argument leaves untaken make four reaches in all, each appending under its own key.
+ *
+ * The store's initialize writes no element, so the deployment holds no node of the mapping: each reach plans its
+ * insert against the empty list and mints the list's head itself. The hop settled that, and the mock accepted four
+ * heads of one collection; the cross-reach check now refuses it by name before anything is broadcast.
  */
 
 const STORE_IMPL_CATEGORY = '33'.repeat(32);
@@ -136,11 +138,14 @@ async function deployAll(network: MockNetworkProvider): Promise<{
 }
 
 describe('a hop whose proxied callee appends to a chunked mapping', () => {
-  it('settles every reach, its own append and its chunk run, and broadcasts', async () => {
+  it('refuses the four reaches, each minting a head of the empty mapping, and broadcasts nothing', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployAll(network);
 
-    const result = await callPerCallProxyEntry({
+    // It settled before the refusal, each reach reading back one element of its own kind under its own key beside
+    // a head of its own. Owner: the SDK hop planner (`proxy/external-calls.ts`, `requireSatisfiableReachWrites`),
+    // the interim refusal while the convention decides where a head may be created.
+    await expect(callPerCallProxyEntry({
       provider: network,
       implementationArtifact: outer,
       proxyArtifact: buildProxyArtifact(outer),
@@ -161,48 +166,11 @@ describe('a hop whose proxied callee appends to a chunked mapping', () => {
       funder: funded.funder,
       changeAddress: funded.changeAddress,
       vm: compositionMachine(),
-    });
-
-    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(result.accepted).toBe(true);
-    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual([
-      `${store.contractName}.append()`,
-      `${store.contractName}Proxy.__fallback()`,
-      `${store.contractName}.append()`,
-      `${store.contractName}Proxy.__fallback()`,
-      `${store.contractName}.append()`,
-      `${store.contractName}Proxy.__fallback()`,
-      `${store.contractName}.append()`,
-      `${store.contractName}Proxy.__fallback()`,
-      `${outer.contractName}.run()`,
-      `${outer.contractName}Proxy.__fallback()`,
-    ]);
-    // Each reach carries its own chunk run past the frames' participants.
-    expect(result.draft.trailingOutputs.length).toBeGreaterThanOrEqual(4);
-
-    // Each reach's append reads back through the shipped reader: one element, of the kind that site pushed.
-    for (const [id, kind] of [[10n, 1n], [20n, 2n], [100n, 3n], [101n, 3n]] as const) {
-      const read = await readPerCallEntry({
-        provider: network,
-        artifact: store,
-        categoryId: funded.storeProxyCategoryId,
-        functionName: 'piecesLength',
-        args: [id],
-        vm: compositionMachine(),
-      });
-      expect(read.accepted, read.objection).toBe(true);
-      expect(read.value).toBe(1n);
-      const kindRead = await readPerCallEntry({
-        provider: network,
-        artifact: store,
-        categoryId: funded.storeProxyCategoryId,
-        functionName: 'pieceKind',
-        args: [id],
-        vm: compositionMachine(),
-      });
-      expect(kindRead.accepted, kindRead.objection).toBe(true);
-      expect(kindRead.value).toBe(kind);
-    }
+    })).rejects.toThrow(
+      `the hop reaches the entry "${store.contractName}.append()" 4 times, and 4 of them create the head of `
+      + 'collection "pieces", which one transaction must create once',
+    );
+    expect((await network.getUtxosForLockingBytecode(funded.deployerLock))
+      .some((utxo) => utxo.txid === funded.callCoin.txid && utxo.vout === funded.callCoin.vout)).toBe(true);
   });
 });

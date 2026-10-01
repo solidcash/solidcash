@@ -1262,6 +1262,7 @@ interface CollectionReach {
   readonly functionName: string;
   readonly targets: readonly ReachWriteTarget[];
   readonly spentIds: readonly string[];
+  readonly createsHead: boolean;
 }
 
 /**
@@ -1273,6 +1274,11 @@ interface CollectionReach {
  * relink the same predecessor to their own key, and one spent input is recreated once. Either shape would derive a
  * plan whose frames disagree about a shared output and so could not broadcast, so it is refused by name here
  * rather than settled into a transaction the network rejects.
+ *
+ * A reach into a collection the deployment holds no node of mints the collection's head sentinel, so two such
+ * reaches would broadcast two heads of one collection, a shape no rule on chain counts and so the network accepts.
+ * That is refused as well, for a fixed-width and a dynamic value alike, while the convention has yet to decide
+ * where a head may be created.
  */
 export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): void {
   const byCollection = new Map<string, {
@@ -1293,6 +1299,7 @@ export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): vo
         functionName: callee.functionName,
         targets: write.targets,
         spentIds: write.spentIds,
+        createsHead: write.createsHead,
       });
       byCollection.set(key, group);
     }
@@ -1331,6 +1338,18 @@ export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): vo
         }
       }
     }
+  }
+  // Each reach was planned against the empty list, so each mints a head of its own beside its siblings'.
+  for (const group of byCollection.values()) {
+    const creating = group.reaches.filter((reach) => reach.createsHead).length;
+    if (creating < 2) continue;
+    const entries = [...new Set(group.reaches.map((reach) => `"${reach.functionName}"`))];
+    throw new PerCallProxyDeployError(
+      `the hop reaches the ${entries.length === 1 ? 'entry' : 'entries'} ${entries.join(', ')} `
+      + `${group.reaches.length} times, and ${creating} of them create the head of collection "${group.collection}", `
+      + 'which one transaction must create once: the deployment holds no node of the collection, so each reach '
+      + 'planned its write against the empty list and mints a head of its own',
+    );
   }
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { bytesToHex, validatorAddress } from '@solidcash/utils';
+import { validatorAddress } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
@@ -20,6 +20,11 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * mapping, whose node UTXOs the frame has to declare in the segment the write lands in, and it calls a third
  * contract below it. The two unguarded reaches, the loop's two turns and the guarded reach the caller's argument
  * leaves untaken make four reaches in all, each writing its own key.
+ *
+ * The callee's initialize writes no key, so the deployment holds no node of the mapping: each reach plans its insert
+ * against the empty list and mints the list's head itself. The hop settled that, and the mock accepted four heads
+ * of one collection (five with the guarded reach); the cross-reach check now refuses it by name before anything is
+ * broadcast, counting the loop's turns and the taken guarded site as reaches of their own.
  */
 
 const PING_CATEGORY = '99'.repeat(32);
@@ -161,11 +166,28 @@ async function deployed(): Promise<World> {
   return world;
 }
 
-describe('a hop whose proxied callee writes beside a call of its own', () => {
-  it('settles every reach, its own write and its own call, and broadcasts', async () => {
-    const { network, funded } = await deployed();
+/** The cross-reach check's words for `count` reaches of the callee's entry, each minting a head of `events`. */
+function headsRefusal(count: number): string {
+  return `the hop reaches the entry "${inner.contractName}.record()" ${count} times, and ${count} of them create the `
+    + 'head of collection "events", which one transaction must create once';
+}
 
-    const result = await callPerCallProxyEntry({
+/** True while the caller's coin is unspent, i.e. nothing was broadcast for the hop. */
+async function callCoinLive(world: World): Promise<boolean> {
+  return (await world.network.getUtxosForLockingBytecode(world.funded.deployerLock))
+    .some((utxo) => utxo.txid === world.funded.callCoin.txid && utxo.vout === world.funded.callCoin.vout);
+}
+
+describe('a hop whose proxied callee writes beside a call of its own', () => {
+  it('refuses the four reaches, each minting a head of the empty mapping, and broadcasts nothing', async () => {
+    const world = await deployed();
+    const { network, funded } = world;
+
+    // It settled before the refusal: the four reaches, each completing its own callee, then the implementation
+    // frame, then the proxy fallback, shared each of the callee's two blocks and created their records past the
+    // participants. Owner: the SDK hop planner (`proxy/external-calls.ts`, `requireSatisfiableReachWrites`), the
+    // interim refusal while the convention decides where a head may be created.
+    await expect(callPerCallProxyEntry({
       provider: network,
       implementationArtifact: outer,
       proxyArtifact: buildProxyArtifact(outer),
@@ -179,46 +201,16 @@ describe('a hop whose proxied callee writes beside a call of its own', () => {
       funder: funded.funder,
       changeAddress: funded.changeAddress,
       vm: compositionMachine(),
-    });
-
-    // Each reach completes its own callee first, then the implementation frame that reaches it, then the proxy
-    // fallback that entered that frame; the four reaches come first, then the entry and its own fallback.
-    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual([
-      `${ping.contractName}.ping()`,
-      `${inner.contractName}.record()`,
-      `${inner.contractName}Proxy.__fallback()`,
-      `${ping.contractName}.ping()`,
-      `${inner.contractName}.record()`,
-      `${inner.contractName}Proxy.__fallback()`,
-      `${ping.contractName}.ping()`,
-      `${inner.contractName}.record()`,
-      `${inner.contractName}Proxy.__fallback()`,
-      `${ping.contractName}.ping()`,
-      `${inner.contractName}.record()`,
-      `${inner.contractName}Proxy.__fallback()`,
-      `${outer.contractName}.run()`,
-      `${outer.contractName}Proxy.__fallback()`,
-    ]);
-    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(result.accepted).toBe(true);
-    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-
-    // The four reaches share each of the callee's two blocks, and the guarded site the caller's argument leaves
-    // untaken places nothing.
-    const proxyContract = buildProxyArtifact(inner).contractName;
-    const proxyBlock = result.draft.layout.blocks.find((block) => block.contract === proxyContract)!;
-    const implementationBlock = result.draft.layout.blocks.find((block) => block.contract === inner.contractName)!;
-    expect(proxyBlock.masters).toHaveLength(4);
-    expect(implementationBlock.masters).toHaveLength(4);
-    expect(result.draft.blockOf('implementation-master').calls).toHaveLength(4);
-    // Each reach's own write is its own record: four records were created past the participants.
-    expect(result.draft.trailingOutputs.length).toBeGreaterThanOrEqual(4);
+    })).rejects.toThrow(headsRefusal(4));
+    expect(await callCoinLive(world)).toBe(true);
   });
 
-  it('settles the guarded reach too when the caller takes it', async () => {
-    const { network, funded } = await deployed();
+  it('refuses the guarded reach too when the caller takes it, counting five', async () => {
+    const world = await deployed();
+    const { network, funded } = world;
 
-    const result = await callPerCallProxyEntry({
+    // Owner: as above.
+    await expect(callPerCallProxyEntry({
       provider: network,
       implementationArtifact: outer,
       proxyArtifact: buildProxyArtifact(outer),
@@ -232,14 +224,7 @@ describe('a hop whose proxied callee writes beside a call of its own', () => {
       funder: funded.funder,
       changeAddress: funded.changeAddress,
       vm: compositionMachine(),
-    });
-
-    // The guarded site is taken now, so the callee's proxy and implementation blocks each hold five masters.
-    const proxyContract = buildProxyArtifact(inner).contractName;
-    expect(result.draft.layout.blocks.find((block) => block.contract === proxyContract)!.masters).toHaveLength(5);
-    expect(result.draft.layout.blocks.find((block) => block.contract === inner.contractName)!.masters)
-      .toHaveLength(5);
-    expect(result.accepted).toBe(true);
-    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    })).rejects.toThrow(headsRefusal(5));
+    expect(await callCoinLive(world)).toBe(true);
   });
 });

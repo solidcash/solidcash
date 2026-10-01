@@ -52,7 +52,10 @@ import { layoutWitnessIsActiveCoordinate } from './layout-sentinels.js';
 import { isPendingBatchPredecessor } from './pending-batch-predecessor.js';
 import { retainTerminalValueChunkProductions } from './terminal-value-chunk-productions.js';
 import { allowsDeferredComputeVmDiscovery } from './materialization-mode.js';
-import { probeEarlySourceRevertBeforeDeferredCompute } from './deferred-compute-early-revert.js';
+import {
+  probeEarlySourceRevertBeforeDeferredCompute,
+  unresolvedComputeOffsetsForEarlyRevert,
+} from './deferred-compute-early-revert.js';
 import {
   finalizeMonotonePass,
   MonotoneCell,
@@ -2128,7 +2131,11 @@ export async function assembleAtomicComposition(
           unresolvedUnderRecipe.map((block) => ({
             inputIndex: block.executionInput,
             inputBase: block.inputBase,
-            offsets: block.offsets,
+            offsets: unresolvedComputeOffsetsForEarlyRevert(
+              block.offsets,
+              plan.participants[block.participant].blockLayout?.slots ?? [],
+              block.controller.remaining?.(),
+            ),
           })),
         );
         if (earlyRevert !== undefined) throw earlyRevert;

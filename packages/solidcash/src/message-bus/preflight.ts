@@ -3313,6 +3313,9 @@ export function mapMessageBusVmFailure(
         functionBodies?: Record<string, string>;
         debug?: { functionDebug?: Record<string, {
           requires?: Array<{ ip: number; line: number; message?: string }>;
+        }>; invokeDebug?: Record<string, {
+          bytecode: string;
+          requires: Array<{ ip: number; line: number; message?: string }>;
         }> };
         delegateArtifact?: unknown;
       };
@@ -3324,6 +3327,21 @@ export function mapMessageBusVmFailure(
             ?.find((entry) => entry.ip === failure.ip);
         if (requireStatement !== undefined) {
           matches.push({ artifactName: artifact.contractName ?? 'contract', selector, requireStatement });
+        }
+      }
+      // An OP_INVOKE failure reports an instruction pointer in the active outlined helper, not in the outer
+      // selector body. Match the VM's exact decoded body against the compiler's invokeDebug table as well;
+      // source-map proximity or the route selector cannot identify a nested guard safely.
+      for (const [identifier, body] of Object.entries(artifact.debug?.invokeDebug ?? {})) {
+        if (body.bytecode.toLowerCase() !== executedBody) continue;
+        const requireStatement = body.requires.find((entry) => entry.ip === failure.ip! - 1)
+          ?? body.requires.find((entry) => entry.ip === failure.ip);
+        if (requireStatement !== undefined) {
+          matches.push({
+            artifactName: artifact.contractName ?? 'contract',
+            selector: `invoke:${identifier}`,
+            requireStatement,
+          });
         }
       }
       inspect(artifact.delegateArtifact);

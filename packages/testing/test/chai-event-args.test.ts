@@ -208,4 +208,25 @@ describe('chai revert assertions', () => {
       send: async (): Promise<void> => { throw new Error('revert ExpectedError(...)'); },
     }).to.be.revertedWithCustomError({}, 'ExpectedError');
   });
+
+  it('verifies custom-error arguments from the same rejected transaction', async () => {
+    let sends = 0;
+    const transaction = {
+      functionName: 'mutate',
+      parentContract: {
+        inner: {
+          provider: { consensusLimits: { maximumInputBytes: 1_000_000 } },
+          artifact: { abi: [{ name: 'mutate', writesState: true }] },
+        },
+      },
+      send: async (): Promise<void> => {
+        sends += 1;
+        const error = new Error('revert ExpectedError(...)') as Error & { errorArgs: bigint[] };
+        error.errorArgs = [0n];
+        throw error;
+      },
+    };
+    await expect(transaction).to.be.revertedWithCustomError({}, 'ExpectedError').withArgs(0n);
+    vitestExpect(sends).toBe(1);
+  });
 });

@@ -15,6 +15,22 @@ export interface DeferredComputeEarlyRevertCandidate {
   offsets: readonly number[];
 }
 
+/** Keep partially unresolved families conservative; a fully resolved family cannot taint the early rejection. */
+export function unresolvedComputeOffsetsForEarlyRevert(
+  offsets: readonly number[],
+  slots: readonly { offset: number; kind: string }[],
+  remaining?: { keccakUnresolved: number; ecrecoverUnresolved: number },
+): number[] {
+  if (remaining === undefined) return [...offsets];
+  const kindAt = new Map(slots.map((slot) => [slot.offset, slot.kind]));
+  return offsets.filter((offset) => {
+    const kind = kindAt.get(offset);
+    if (kind === 'keccakSideCar') return remaining.keccakUnresolved > 0;
+    if (kind === 'ecrecoverSideCar') return remaining.ecrecoverUnresolved > 0;
+    return true;
+  });
+}
+
 const unresolvedValueReads = new Set<number>([
   // Resolving a compute sidecar changes its unlocking script and its aligned output commitment. Other fields,
   // including the input category and aligned output lock, are already fixed by the recipe.
@@ -68,31 +84,24 @@ export function probeEarlySourceRevertBeforeDeferredCompute(
       continue;
     }
     const failingIp = state.ip - 1;
-    if (readUnresolvedValue || !state.error?.includes('OP_VERIFY')
-        || state.instructions[failingIp]?.opcode !== Op.OP_VERIFY) continue;
+    if (!state.error) continue;
 
     const artifact = unlocker.contract.artifact;
     const activeBytecode = binToHex(Uint8Array.from(state.instructions.flatMap((instruction) =>
       [...encodeAuthenticationInstruction(instruction)])));
     const matches = Object.values(artifact.debug?.invokeDebug ?? {})
       .filter((body) => body.bytecode === activeBytecode);
-    if (matches.length !== 1) continue;
+    if (readUnresolvedValue || !state.error.includes('OP_VERIFY')
+        || state.instructions[failingIp]?.opcode !== Op.OP_VERIFY
+        || matches.length !== 1) continue;
     const requires = matches[0].requires.filter((requireStatement) => requireStatement.ip === failingIp);
     if (requires.length !== 1) continue;
 
     // The provisional transaction is not a useful Bitauth debugging URI: it still carries placeholder compute
     // outputs. Report only the source-attributed failure; the actual signed transaction is never submitted.
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_EARLY_REVERT === '1') {
-      console.error('deferred-compute-early-revert', {
-        contract: artifact.contractName,
-        inputIndex,
-        line: requires[0].line,
-        message: requires[0].message,
-      });
-    }
     return new FailedRequireError(
       artifact, failingIp, requires[0], inputIndex, '', state.error, matches[0].sourceMap,
+      false, state.stack,
     );
   }
   return undefined;

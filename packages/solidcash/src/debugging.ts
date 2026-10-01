@@ -342,6 +342,7 @@ const debugSingleScenario = (
         artifact, failingIp, requireStatement, inputIndex, getBitauthUri(template), error,
         functionSourceMap,
         isNullFail && failingInstruction?.opcode === Op.OP_CHECKSIGVERIFY,
+        lastExecutedDebugStep.stack,
       );
     }
 
@@ -380,6 +381,8 @@ const debugSingleScenario = (
       throw new FailedRequireError(
         artifact, sourcemapInstructionPointer, requireStatement, inputIndex, getBitauthUri(template),
         undefined, functionSourceMap,
+        false,
+        lastExecutedDebugStep.stack,
       );
     }
 

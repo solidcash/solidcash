@@ -1,4 +1,17 @@
-import { Artifact, RequireStatement, sourceMapToLocationData, Type } from '@solidcash/utils';
+import { binToHex } from '@bitauth/libauth';
+import {
+  Artifact, RequireStatement, Type, decodeBool, decodeInt, decodeString, sourceMapToLocationData,
+} from '@solidcash/utils';
+
+const decodeCustomErrorArgument = (type: string, value: Uint8Array): unknown => {
+  if (type === 'bool') return decodeBool(value);
+  if (type === 'int' || type === 'uint' || type === 'bigint' || /^u?int\d+$/.test(type)) {
+    return decodeInt(value);
+  }
+  if (type === 'string') return decodeString(value);
+  if (type === 'bytes' || /^bytes\d+$/.test(type) || type === 'address') return `0x${binToHex(value)}`;
+  return undefined;
+};
 
 export class TypeError extends Error {
   constructor(actual: string, expected: Type) {
@@ -72,6 +85,8 @@ export class FailedTransactionEvaluationError extends FailedTransactionError {
 }
 
 export class FailedRequireError extends FailedTransactionError {
+  readonly errorArgs?: readonly unknown[];
+
   constructor(
     public artifact: Artifact,
     public failingInstructionPointer: number,
@@ -81,6 +96,7 @@ export class FailedRequireError extends FailedTransactionError {
     public libauthErrorMessage?: string,
     functionSourceMap?: string,
     preferDirectCheckSigPredicate = false,
+    stackAtFailure?: readonly Uint8Array[],
   ) {
     const { statement, lineNumber } = getLocationDataForInstructionPointer(
       artifact, failingInstructionPointer, functionSourceMap, requireStatement.line,
@@ -93,6 +109,14 @@ export class FailedRequireError extends FailedTransactionError {
     const fullMessage = `${requireStatement.message ? baseMessageWithRequireMessage : baseMessage}.\nFailing statement: ${failingStatement}`;
 
     super(fullMessage, bitauthUri);
+    const types = requireStatement.errorArgumentTypes;
+    if (types && stackAtFailure && stackAtFailure.length >= types.length) {
+      try {
+        const values = stackAtFailure.slice(-types.length).map((value, index) =>
+          decodeCustomErrorArgument(types[index], value));
+        if (values.every((value) => value !== undefined)) this.errorArgs = values;
+      } catch { /* Invalid sideband data must not mask the source-level revert. */ }
+    }
   }
 }
 

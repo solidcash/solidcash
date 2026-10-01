@@ -4,7 +4,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { FailedRequireError } from '../../src/Errors.js';
 import type NetworkProvider from '../../src/network/NetworkProvider.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
-import { probeEarlySourceRevertBeforeDeferredCompute } from '../../src/message-bus/deferred-compute-early-revert.js';
+import {
+  probeEarlySourceRevertBeforeDeferredCompute,
+  unresolvedComputeOffsetsForEarlyRevert,
+} from '../../src/message-bus/deferred-compute-early-revert.js';
 
 const scenario = vi.hoisted(() => ({
   reads: [] as Array<{ opcode: number; coordinate: number }>,
@@ -86,5 +89,23 @@ describe('deferred-compute early source revert', () => {
     expect(probeEarlySourceRevertBeforeDeferredCompute(builder, provider, candidate)).toBeInstanceOf(
       FailedRequireError,
     );
+  });
+
+  it('excludes a resolved compute family while recovery remains pending', () => {
+    const offsets = unresolvedComputeOffsetsForEarlyRevert(
+      [3, 4],
+      [{ offset: 3, kind: 'keccakSideCar' }, { offset: 4, kind: 'ecrecoverSideCar' }],
+      { keccakUnresolved: 0, ecrecoverUnresolved: 1 },
+    );
+    expect(offsets).toEqual([4]);
+    const { builder, provider } = fixture();
+    scenario.reads = [{ opcode: Op.OP_INPUTBYTECODE, coordinate: 3 }];
+    expect(probeEarlySourceRevertBeforeDeferredCompute(
+      builder, provider, [{ inputIndex: 0, inputBase: 0, offsets }],
+    )).toBeInstanceOf(FailedRequireError);
+    scenario.reads = [{ opcode: Op.OP_INPUTBYTECODE, coordinate: 4 }];
+    expect(probeEarlySourceRevertBeforeDeferredCompute(
+      builder, provider, [{ inputIndex: 0, inputBase: 0, offsets }],
+    )).toBeUndefined();
   });
 });

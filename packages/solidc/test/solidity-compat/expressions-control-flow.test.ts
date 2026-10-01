@@ -945,6 +945,14 @@ describe('ecrecover(hash, v, r, s) alias maps to a recovery projection under the
   it("ecrecover:'evm' is byte-identical to ecrecoverEvm (20-byte keccak address)", () => {
     expect(bc(mkB20('ecrecover'), { ecrecover: 'evm' })).toBe(bc(mkB20('ecrecoverEvm'), {}));
   });
+  it('returns a zero-address sentinel for invalid v before reading recovery sidecars', () => {
+    // A zero uint8 can be encoded as Script's empty item. Test v before concatenating the argument blob, and
+    // enter the sidecar path only for Ethereum recovery IDs 27 and 28, for either address projection.
+    const guard = 'OP_2 OP_PICK OP_BIN2NUM 1b 1d OP_WITHIN OP_TOALTSTACK '
+      + 'OP_CAT OP_CAT OP_CAT OP_FROMALTSTACK OP_IF';
+    expect(bc(mkAddr('ecrecover'), { ecrecover: 'p2pkh' })).toContain(guard);
+    expect(bc(mkB20('ecrecover'), { ecrecover: 'evm' })).toContain(guard);
+  });
   it('solidityImportCompat defaults ecrecover to the exact EVM projection', () => {
     expect(bc(mkB20('ecrecover'), {})).toBe(bc(mkB20('ecrecover'), { ecrecover: 'evm' }));
   });

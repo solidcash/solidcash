@@ -147,6 +147,26 @@ describe('message-bus batch VM refusal attribution', () => {
     expect(error.message).toContain('1 should equal 2');
   });
 
+  it('attributes a source require inside an active OP_INVOKE body', () => {
+    const body = '0069'; // OP_0 OP_VERIFY
+    const requireStatement = { ip: 1, line: 7, message: 'invoked guard failed' };
+    const artifact = {
+      contractName: 'Invoked',
+      functionBodies: {},
+      debug: { invokeDebug: { 7: { bytecode: body, requires: [requireStatement] } } },
+    };
+    const builder = {
+      inputs: [{ unlocker: { contract: { artifact }, abiFunction: { selector: '53434231' } } }],
+    } as never;
+    const valid = transaction([0x53, 0x43, 0x42, 0x31, 1, 0, 1, ...Array(12).fill(0)]);
+    const instructions = decodeAuthenticationInstructions(hexToBin(body));
+    const error = messageBus.mapMessageBusVmFailure(
+      builder, valid, 0, raw, { instructions, ip: 2 } as never,
+    );
+    expect(error.message).toContain('invoked guard failed');
+    expect(error).toMatchObject({ requireStatement, inputIndex: 0 });
+  });
+
   it('maps a VM-priced resource refusal without discarding its raw reason', () => {
     const reason = 'Operation cost limit exceeded: 12000 exceeds maximum 10000.';
     const valid = transaction([0x53, 0x43, 0x42, 0x31, 1, 0, 1, ...Array(12).fill(0)]);

@@ -528,6 +528,8 @@ class EmitAssertion implements PromiseLike<void> {
 /** chai `Assertion` shim. Language chains are no-ops; terminals delegate to Vitest. */
 class Assertion {
   private negate = false;
+  private hasObservedRevertError = false;
+  private observedRevertError: unknown;
 
   constructor(private actual: any) {}
 
@@ -736,6 +738,8 @@ class Assertion {
           const message = String((error as { message?: unknown })?.message ?? error);
           const matches = reason instanceof RegExp ? reason.test(message) : message.includes(reason);
           if (!matches) throw error;
+          this.observedRevertError = error;
+          this.hasObservedRevertError = true;
         },
       );
     }
@@ -746,9 +750,8 @@ class Assertion {
   /**
    * Custom-error revert with optional argument verification.
    *
-   * A locally modelled contract raises its errors with the argument tuple attached, so `.withArgs(...)` can be
-   * checked here. A compiled covenant only carries the error *name* in its debug metadata: when no argument tuple
-   * reaches the matcher the assertion keeps the previous informative failure instead of silently passing.
+   * Local models and source-attributed compiled covenants can attach the executed tuple to the error. Require
+   * that evidence for `.withArgs(...)`; a name-only diagnostic must not silently satisfy an argument assertion.
    */
   revertedWithCustomError(_contract: any, name: string): Promise<void> & { withArgs: (...a: any[]) => Promise<void> } {
     const p = this.revertedWith(new RegExp(name)) as Promise<void> & { withArgs: (...a: any[]) => Promise<void> };
@@ -774,8 +777,11 @@ class Assertion {
     return p;
   }
 
-  /** Argument tuple a locally modelled contract attached to its custom-error revert, when one is available. */
+  /** Argument tuple attached to the rejection already checked above, when one is available. */
   private async revertArgumentTuple(): Promise<readonly unknown[] | undefined> {
+    if (this.hasObservedRevertError) {
+      return (this.observedRevertError as { errorArgs?: readonly unknown[] })?.errorArgs;
+    }
     try {
       const resolved = await Promise.resolve(this.actual);
       if (resolved && typeof resolved.debug === 'function') resolved.debug();

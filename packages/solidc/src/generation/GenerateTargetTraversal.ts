@@ -7912,6 +7912,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitRevert(node: RevertNode): Node {
+    // BCH has no revert-data channel. Evaluate custom-error arguments on the failing branch and leave them on
+    // the VM stack behind OP_VERIFY's false operand so source-attributed debugging can verify the actual tuple.
+    // This also preserves Solidity's evaluation of argument expressions on a taken revert path.
+    const errorArgumentTypes = node.errorDefinition?.parameters.map((parameter) => parameter.type.toString());
+    const materializeErrorArgs = node.errorName !== undefined
+      && errorArgumentTypes?.length === node.args.length;
+    if (materializeErrorArgs) {
+      node.args = node.args.map((argument) => this.visit(argument));
+    }
     // Emit OP_0 OP_VERIFY (unconditional failure)
     this.emit(encodeBool(false), { location: node.location, positionHint: PositionHint.START });
     this.pushToStack('(revert)');
@@ -7921,9 +7930,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ip: this.getMostRecentInstructionPointer(),
       line: node.location.start.line,
       message: node.message ?? (node.errorName ? `revert ${node.errorName}(...)` : undefined),
+      ...(materializeErrorArgs && errorArgumentTypes?.length && { errorArgumentTypes }),
     });
 
     this.popFromStack();
+    if (materializeErrorArgs) this.popFromStack(node.args.length);
     return node;
   }
 
@@ -10752,6 +10763,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEcrecoverComputeCall(node: FunctionCallNode): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const isEvm = node.identifier.name === GlobalFunction.ECRECOVER_EVM;
+    const isP2pkh = node.identifier.name === GlobalFunction.ECRECOVER_P2PKH;
+    const returnsAddress = isEvm || isP2pkh;
     const fn = this.currentFunction;
     const i = (fn.ecrecoverArgParams ??= []).length;
     const effectOrdinal = node.recoveryEffectOrdinal ?? i;
@@ -10872,10 +10885,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.parameters[p] = this.visit(node.parameters[p]);
       if (reverseEvmScalars && p !== 1) this.emit(Op.OP_REVERSEBYTES, loc);
     }
+    if (returnsAddress) {
+      // Address-returning recovery returns address(0) for an invalid recovery id. Test the original v stack item before
+      // packing the arguments: a zero uint8 may use Script's empty encoding, so an offset into argBlob is not
+      // a reliable way to locate it. The invalid branch must not read recovery/keccak side-cars.
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_BIN2NUM, loc);
+      this.emit(encodeInt(27n), loc); this.emit(encodeInt(29n), loc);
+      this.emit(Op.OP_WITHIN, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    }
     this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc); // [.., argBlob]
     // Sync the tracker to the VM: four argument copies were physically collapsed to one argBlob. Every later
     // tracked read (loop counters, scoped compute bases, and caller-frame values) must use that physical width.
     this.popFromStack(3);
+
+    if (returnsAddress) {
+      this.emit(Op.OP_FROMALTSTACK, loc);
+      this.emit(Op.OP_IF, loc);
+    }
 
     // 2. side-car A: bind ITS argBlob == ours, then integrity-check its covenant.
     if (loop) {
@@ -11000,6 +11027,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitTakeFirst32(loc);
       }
       this.emit(encodeInt(12n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [R[12:32] = addr20]
+    }
+    if (returnsAddress) {
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DROP, loc); // invalid-v argBlob
+      if (isEvm) this.emitFixedWidthConstant(new Uint8Array(20), loc);
+      else this.emit(Op.OP_0, loc); // native P2PKH address(0) is empty locking bytecode
+      this.emit(Op.OP_ENDIF, loc);
     }
     if (loop) {
       // The tracker was already reconciled to the pre-arg baseline (popFromStack 3 + 1), so just track the result,

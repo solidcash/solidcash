@@ -813,6 +813,8 @@ export interface RequireStatement {
   ip: number; // instruction pointer
   line: number; // line in the source code
   message?: string; // custom message for failing `require` statement
+  /** Custom-error arguments left on the VM stack by the failing branch, in declaration order. */
+  errorArgumentTypes?: string[];
 }
 
 export interface StateVariableInfo {

@@ -56,7 +56,7 @@ const STRING_ENTRY_INIT = `pragma solidcash >=0.8.0;
 const SORTED_BATCH_ENTRY_INIT = `pragma solidcash >=0.8.0;
   contract SortedBatchEntryInit() {
     mapping(string => string) tags;
-    function initialize() public {
+    function initialize() public delegate {
       this.tags["DA"] = "DIGITAL_AUDIO";
       this.tags["DV"] = "DIGITAL_VIDEO";
       this.tags["DT"] = "DIGITAL_TEXT";
@@ -66,6 +66,7 @@ const SORTED_BATCH_ENTRY_INIT = `pragma solidcash >=0.8.0;
       this.tags["NDS"] = "NON_DIGITAL_SERVICES";
       this.tags["NDO"] = "NON_DIGITAL_OTHERS";
     }
+    function tagOf(string key) public delegate returns (string) { return this.tags[key]; }
   }`;
 
 const ENTRY_CALL = `pragma solidcash >=0.8.0;
@@ -118,6 +119,10 @@ describe('mapping-entry write inside a proxy initializer', () => {
     const Impl = getContractFactory(compileString(SORTED_BATCH_ENTRY_INIT), signer);
     const proxy = await upgrades.deployProxy(Impl, []);
     await expect(proxy.waitForDeployment()).resolves.toBeDefined();
+    // The batch stored each value under its own key in the proxy's mapping.
+    const tags = proxy as unknown as { tagOf(key: string): Promise<string> };
+    await expect(tags.tagOf('NDS')).resolves.toBe('NON_DIGITAL_SERVICES');
+    await expect(tags.tagOf('DA')).resolves.toBe('DIGITAL_AUDIO');
   });
 
   it('writes the same entry through an ordinary post-deploy proxy call', async () => {

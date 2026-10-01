@@ -43,8 +43,9 @@ the whole struct back reproduces both cases exactly (a fresh-key read yields the
 The rebuild evaluates field values in STRUCT-FIELD order, not statement order, so it fires only under two conservative
 gates that make the reorder observationally identical:
 
-- **No value reads the same entry `m[k]`** - a self-read (`m[k].b = m[k].a`) would need the progressively-updated
-  entry; skipped (left as individual writes).
+- **A value that reads the same entry `m[k]` reads the progressively-updated entry** - each read is rewritten to the
+  value the run wrote EARLIER for that field, or to the snapshot's field when the run has not written it, so a self-read
+  (`m[k].b = m[k].a`) takes the `a` the run just wrote, as the statement-sequential program does.
 - **No value has side effects** (no call / instantiation / assignment expression) - pure values are order-independent.
 
 Plus: same collection (a `sorted`/vmap struct-valued mapping), keys structurally equal across the run and side-effect

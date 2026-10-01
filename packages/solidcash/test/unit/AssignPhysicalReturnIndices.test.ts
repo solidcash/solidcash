@@ -2188,9 +2188,13 @@ describe('assignPhysicalReturnIndices', () => {
     expect(pinExactSortedBatchEntry({
       exact: true, conditionalLayoutSlot: true, linearSortedBatch: true,
     })).toBe(true);
+    // A computed value leaves its key-and-link seed derivable; the slot's required output keeps it published.
     expect(pinExactSortedBatchEntry({
       exact: false, conditionalLayoutSlot: true, linearSortedBatch: true,
-    })).toBe(true);
+    })).toBe(false);
+    expect(pinExactSortedBatchEntry({
+      exact: false, conditionalLayoutSlot: false, linearSortedBatch: true,
+    })).toBe(false);
     expect(pinExactSortedBatchEntry({
       exact: true, conditionalLayoutSlot: true, linearSortedBatch: false,
     })).toBe(false);

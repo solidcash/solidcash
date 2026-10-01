@@ -105,6 +105,7 @@ import {
   NewArrayNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
+  AssemblyStatementNode,
   CollectionIterationNode,
   CollectionIterationInfo,
   CollectionIterationMode,
@@ -530,6 +531,16 @@ interface ActiveFunctionBodySurvey {
   keccakLoopDepth: number;
 }
 
+/** What one straight-line statement of a function body may do to state, for canonicalizing later state reads. */
+interface CanonStatementEffects {
+  /** Every variable the statement may write, at any depth. */
+  writes: Set<string>;
+  /** The statement calls a function or runs assembly, so it may write any state. */
+  opaque: boolean;
+  /** The statement itself, when it is a whole-value state assignment. */
+  assign?: StateAssignNode;
+}
+
 export interface ContractStatefulnessHint {
   hasContractInstantiation: boolean;
   deploysWithValue: boolean;
@@ -577,6 +588,11 @@ export default class SymbolTableTraversal extends AstTraversal {
   // `address lastKey = keys[keys.length-1]; m[lastKey] = v`). Populated per function before the entry pre-scan.
   private localKeyDefs: Map<string, ExpressionNode> = new Map();
   private canonSeen: Set<string> = new Set(); // cycle guard for transitive local-key canonicalization
+  // Each node's straight-line statement number in the function body, and each statement's state effects: a
+  // canonical read of state the body already assigned names the assigned value, so the SDK evaluates it against
+  // the state the call starts from.
+  private canonStatementIndex: WeakMap<Node, number> = new WeakMap();
+  private canonStatementEffects: CanonStatementEffects[] = [];
   private currentContract: ContractNode;
   private expectedSymbolType: SymbolType = SymbolType.VARIABLE;
   // Context for resolving a bare overloaded function name assigned to an internal function-pointer variable.
@@ -10125,7 +10141,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       return `id:${node.name}`;
     }
     if (node instanceof StateAccessNode) {
-      return `state:${node.name}`;
+      const assigned = this.stateAssignedBefore(node);
+      return assigned === undefined ? `state:${node.name}` : this.canonicalizeExpression(assigned);
     }
     if (node instanceof LiteralNode) {
       return `lit:${node.toString()}`;
@@ -10301,6 +10318,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       return { kind: 'expression', canonical: `id:${key.name}` };
     }
     if (key instanceof StateAccessNode) {
+      // State the body assigned before the key is read names the assigned value, not the starting state.
+      if (this.stateAssignedBefore(key) !== undefined) {
+        return { kind: 'expression', canonical: this.canonicalizeExpression(key) };
+      }
       return { kind: 'state', stateVarName: key.name, canonical: `state:${key.name}` };
     }
     // Inline `arr[arr.length-1]` used directly as a key.
@@ -10354,6 +10375,83 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.localKeyDefs.set(name, expression);
       }
     }
+    this.indexCanonStatements(node);
+  }
+
+  /**
+   * Numbers the body's straight-line statements, descending into plain and unchecked blocks, and records for each
+   * the state it may write and whether it calls or runs assembly; every node inside a statement takes its number,
+   * and a node two statements share takes -1, since it has no single position on the line.
+   */
+  private indexCanonStatements(body: Node | undefined): void {
+    this.canonStatementIndex = new WeakMap();
+    this.canonStatementEffects = [];
+    const contractFunctions = new Set((this.currentContract?.functions ?? []).map((fn) => fn.name));
+    const number = (statement: Node): void => {
+      if (statement instanceof BlockNode) {
+        for (const inner of statement.statements ?? []) number(inner);
+        return;
+      }
+      if (statement instanceof UncheckedNode) {
+        number(statement.block);
+        return;
+      }
+      const position = this.canonStatementEffects.length;
+      const effects: CanonStatementEffects = {
+        writes: new Set(), opaque: false, ...(statement instanceof StateAssignNode && { assign: statement }),
+      };
+      this.canonStatementEffects.push(effects);
+      const seen = new Set<Node>();
+      const visit = (n: Node): void => {
+        if (seen.has(n)) return;
+        seen.add(n);
+        const earlier = this.canonStatementIndex.get(n);
+        this.canonStatementIndex.set(n, earlier === undefined || earlier === position ? position : -1);
+        if (n instanceof StateAssignNode || n instanceof DeleteStateNode || n instanceof StateArrayPushNode
+          || n instanceof StateArrayPopNode || n instanceof StateArrayAssignNode || n instanceof StateArrayDeleteNode) {
+          effects.writes.add(n.name);
+        } else if (n instanceof AssignNode || n instanceof DeleteLocalNode) {
+          effects.writes.add(n.identifier.name);
+        } else if (n instanceof TupleAssignmentNode) {
+          for (const element of n.elements) if (element.name !== undefined) effects.writes.add(element.name);
+        }
+        if (n instanceof AssemblyStatementNode || n instanceof FunctionCallStatementNode
+          || n instanceof MethodCallStatementNode || n instanceof MethodCallNode || n instanceof TryCatchNode
+          || n instanceof ExternalFunctionCallNode || n instanceof LowLevelCallNode || n instanceof LowLevelCallStatementNode
+          || (n instanceof FunctionCallNode && contractFunctions.has(n.identifier.name))) {
+          effects.opaque = true;
+        }
+        for (const key of Object.keys(n)) {
+          if (RESOLVED_BACKREF_KEYS.has(key)) continue;
+          const value = (n as unknown as Record<string, unknown>)[key];
+          if (value instanceof Node) visit(value);
+          else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) visit(item);
+        }
+      };
+      visit(statement);
+    };
+    if (body !== undefined) number(body);
+  }
+
+  /**
+   * The value a state read takes when the body assigned the variable earlier on its straight line: the nearest
+   * `v = expr` statement ahead of the read, with no other write of `v`, call or assembly from there to the read.
+   * The read's own statement may write `v` only as that statement's assignment, whose right side it is in.
+   * Undefined when the read sees the state the call starts from, or a value no straight line fixes.
+   */
+  private stateAssignedBefore(node: StateAccessNode): ExpressionNode | undefined {
+    const position = this.canonStatementIndex.get(node);
+    if (position === undefined || position < 0) return undefined;
+    const assigns = (effects: CanonStatementEffects): boolean =>
+      !effects.opaque && effects.assign?.name === node.name && effects.writes.size === 1;
+    const own = this.canonStatementEffects[position]!;
+    if (own.opaque || (own.writes.has(node.name) && !assigns(own))) return undefined;
+    for (let index = position - 1; index >= 0; index -= 1) {
+      const effects = this.canonStatementEffects[index]!;
+      if (assigns(effects)) return effects.assign!.expression;
+      if (effects.opaque || effects.writes.has(node.name)) return undefined;
+    }
+    return undefined;
   }
 
   // Returns the state array name A if `expr` is exactly `A[A.length - 1]` (a state array's last element), else

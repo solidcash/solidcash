@@ -7,6 +7,7 @@ import {
   attachDecodedAccessors,
   decodePushdataValue,
   encodePushdataValue,
+  getDefaultStateValue,
   type AbiFunction,
   type Artifact,
   type StateValue,
@@ -187,7 +188,12 @@ callerContract?: StatefulContract<Artifact>,
       const match = selectMappingEntryByKeys(entries, candidate, directMappingRead.keyTypes);
       if (match) return attachDecodedAccessors(match.value) as StateValue;
     }
-    return 0n;
+    // An absent key reads as its value type's zero value: a struct's carries the decoded accessors a present one does.
+    const stateLayout = host.inner.artifact.stateLayout;
+    const valueType = stateLayout?.collections?.find((candidate) =>
+      candidate.name === directMappingRead.collection)?.valueType;
+    return valueType === undefined ? 0n
+      : attachDecodedAccessors(getDefaultStateValue(valueType, stateLayout?.structs)) as StateValue;
   }
   const abiFunction = exactAbiFunction ?? host.resolveCallAbi(functionName, args);
   type StatefulCall = Extract<CallInfo, { type: 'stateful' }>;

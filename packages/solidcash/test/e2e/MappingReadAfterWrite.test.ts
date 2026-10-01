@@ -22,6 +22,11 @@ import { createTestProvider } from '../test-util.js';
  * Marketplace impact this guards: `MarketplaceV1.publishJobPost` writes `jobPost.whitelistWorkers` and then packs
  * it into the Created `JobEventData.data_` payload. Reading the pre-write value published `whitelistWorkers: false`
  * for a job posted with a whitelist, which is what `should whitelist worker` compares through `getEvents`.
+ *
+ * The SDK evaluates a computed key against the state the call starts from, so a key read from state the handler
+ * assigned earlier (`counter = counter + 1; uint256 id = counter - 1;`) is published as the assigned value. Naming
+ * it `state:counter` proved the entry at the pre-increment key, and two writes keyed by `counter` on either side of
+ * its increment shared one slot.
  */
 const SRC = `contract W() {
   struct Job { bool whitelistWorkers; bytes data; }
@@ -58,19 +63,34 @@ const SRC = `contract W() {
   }
 }`;
 
+const PAIR_SRC = `contract P() {
+  uint256 counter;
+  mapping(uint256 => uint256) seq;
+
+  function pair(uint256 v) public {
+    seq[counter] = v;
+    counter = counter + 1;
+    seq[counter] = v + 1;
+  }
+
+  function seqIs(uint256 k, uint256 v) public {
+    require(seq[k] == v);
+  }
+}`;
+
 interface Fixture {
   call: (name: string, args: unknown[]) => Promise<void>;
   packed: () => Promise<string>;
 }
 
 /** Fresh provider + deployment per case: each function writes its own entry and is asserted independently. */
-const fixture = async (): Promise<Fixture> => {
+const fixture = async (source: string = SRC): Promise<Fixture> => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   let nonce = 0x4200;
   const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
-  const art = compileString(SRC, { forceStateful: true, suppressWarnings: true });
+  const art = compileString(source, { forceStateful: true, suppressWarnings: true });
   const funding = { txid: uid(), vout: 0, satoshis: 400000n };
   await provider.addUtxo(p2pkh.address, funding);
   const { contract } = await StatefulContract.deploy(art, [], {
@@ -112,4 +132,13 @@ describe('sorted mapping read after write in one handler', () => {
     const { call } = await fixture();
     await expect(call('postThenRequire', [true])).resolves.toBeUndefined();
   }, 60_000);
+
+  it('writes the two entries a counter keys on either side of its increment', async () => {
+    const { call } = await fixture(PAIR_SRC);
+    await call('pair', [5n]);
+    await expect(call('seqIs', [0n, 5n])).resolves.toBeUndefined();
+    await expect(call('seqIs', [1n, 6n])).resolves.toBeUndefined();
+    // The second write lands under the incremented key, never over the first entry.
+    await expect(call('seqIs', [0n, 6n])).rejects.toThrow(/OP_VERIFY/);
+  }, 90_000);
 });

@@ -25,6 +25,9 @@ describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
     function updAll(uint256 k, uint256 a, uint256 b, uint256 c, uint256 d, pubkey pk, sig s) {
       require(checkSig(s, pk)); m[k].a = a; m[k].b = b; m[k].c = c; m[k].d = d;
     }
+    function updSelf(uint256 k, uint256 x, pubkey pk, sig s) {
+      require(checkSig(s, pk)); m[k].a = x; m[k].b = m[k].a;
+    }
     function chk(uint256 k, uint256 ea, uint256 eb, uint256 ec, uint256 ed, pubkey pk, sig s) {
       require(checkSig(s, pk));
       require(m[k].a == ea); require(m[k].b == eb); require(m[k].c == ec); require(m[k].d == ed);
@@ -78,17 +81,30 @@ describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
       .toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
-  // The gate leaves a same-entry self-read (`m[k].b = m[k].a`) uncoalesced (it would need the progressively-updated
-  // entry). Asserted at compile level: the self-read stays two upserts, larger than the coalesced no-self-read form.
-  it('gate leaves a same-entry self-read uncoalesced', () => {
-    const sz = (src: string): number => {
-      const bc = compileString(src).bytecode.trim().split(/\s+/);
-      return bc.reduce((n, t) => n + (t.startsWith('OP_') ? 1 : t.length / 2), 0);
-    };
+  // A same-entry self-read (`m[k].b = m[k].a`) reads the value the run wrote earlier, as the statement-sequential
+  // program does, so it coalesces into the same single whole-struct write as spelling that value out.
+  it('coalesces a same-entry self-read by forwarding the field the run already wrote', () => {
     const base = 'struct S { uint256 a; uint256 b; uint256 c; } mapping(uint256 => S) m;';
-    const selfRead = sz(`contract C() { ${base} function f(uint256 k, uint256 x) public { m[k].a = x; m[k].b = m[k].a; require(true); } }`);
-    const noSelf = sz(`contract C() { ${base} function f(uint256 k, uint256 x, uint256 y) public { m[k].a = x; m[k].b = y; require(true); } }`);
-    expect(selfRead).toBeGreaterThan(noSelf);
+    const selfRead = compileString(`contract C() { ${base} function f(uint256 k, uint256 x) public {`
+      + ' m[k].a = x; m[k].b = m[k].a; require(true); } }');
+    const forwarded = compileString(`contract C() { ${base} function f(uint256 k, uint256 x) public {`
+      + ' m[k].a = x; m[k].b = x; require(true); } }');
+    expect(selfRead.bytecode).toBe(forwarded.bytecode);
+    expect(selfRead.abi.find((row: { name: string }) => row.name === 'f')?.entryAccesses?.map(
+      (access: { operations: readonly string[] }) => access.operations,
+    )).toStrictEqual([['read', 'write']]);
+  });
+
+  it('a self-read sees the field the run wrote, and preserves the untouched ones', async () => {
+    const c = await setup();
+    await c.fund(); await c.seed(5n, 1n, 2n, 3n, 4n, alicePub, sig).send();          // m[5] = {1,2,3,4}
+    await c.fund(); await c.updSelf(5n, 9n, alicePub, sig).send();                   // a=9, b=a -> {9,9,3,4}
+    expect(c.lastDerivationIterations).toBe(1);
+    await c.fund();
+    expect(await c.chk(5n, 9n, 9n, 3n, 4n, alicePub, sig).send())
+      .toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
+    await c.fund();
+    await expect(c.chk(5n, 9n, 1n, 3n, 4n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
   });
 
   it('rejects a wrong expected value (oracle is live)', async () => {

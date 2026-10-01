@@ -151,6 +151,41 @@ describe('sorted mapping local-key metadata', () => {
     expect(artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses?.[0]?.keySources?.[0])
       .toMatchObject({ kind: 'expression', expressionLabel: 'id:user' });
   });
+
+  it('names state the body assigned earlier by the assigned value, in terms of the starting state', () => {
+    const artifact = compileString(`contract C() {
+      uint256 counter;
+      mapping(uint256 => uint256) m;
+      function post(uint256 v) {
+        counter = counter + 1;
+        uint256 id = counter - 1;
+        m[id] = v;
+      }
+      function pair(uint256 v) {
+        m[counter] = v;
+        counter = counter + 1;
+        m[counter] = v + 1;
+      }
+      function captured(uint256 v) {
+        uint256 id = counter;
+        counter = counter + 1;
+        m[id] = v;
+      }
+      function branch(uint256 v, bool c) {
+        if (c) { counter = counter + 1; }
+        m[counter] = v;
+      }
+    }`, { forceStateful: true });
+    const keys = (name: string): string[][] => (artifact.abi.find((fn) => fn.name === name)?.entryAccesses ?? [])
+      .map((access) => access.keyParams);
+    expect(keys('post')).toEqual([['binop:-(binop:+(state:counter,lit:1),lit:1)']]);
+    // The two writes key different entries, so they no longer share one slot.
+    expect(keys('pair')).toEqual([['state:counter'], ['binop:+(state:counter,lit:1)']]);
+    // A local read before the assignment keeps the starting value.
+    expect(keys('captured')).toEqual([['state:counter']]);
+    // No straight line fixes a conditionally assigned value: it keeps the starting-state label.
+    expect(keys('branch')).toEqual([['state:counter']]);
+  });
 });
 
 // A sorted (vmap) mapping keyed by msg.sender / tx.origin compiles and records a `msgSender` keySource: on BCH a direct

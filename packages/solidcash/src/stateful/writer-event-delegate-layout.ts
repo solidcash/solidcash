@@ -213,10 +213,11 @@ export function pinExactSortedBatchEntry(parts: {
   conditionalLayoutSlot: boolean;
   linearSortedBatch: boolean;
 }): boolean {
-  // A linear sorted batch publishes every reached key as an in-block node. Pin those placeholders even when
-  // the layout slot is conditional, otherwise probe derivation treats an unobserved INSERT as a no-op delete
-  // and replaces the minted NFT with OP_TRUE.
-  return parts.linearSortedBatch || (parts.exact && !parts.conditionalLayoutSlot);
+  // A linear sorted batch publishes every reached key as an in-block node, so its exact placeholders are pinned
+  // even when the layout slot is conditional. A node whose value the body computes stays derivable: pinned, its
+  // key-and-link seed would never take the value, and the slot's required output already keeps an unobserved
+  // insert from reading as a no-op delete.
+  return parts.exact && (parts.linearSortedBatch || !parts.conditionalLayoutSlot);
 }
 
 /** Compiler-owned in-block vmap nodes are not leftover P'+NEW clones. */

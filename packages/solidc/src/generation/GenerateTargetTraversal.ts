@@ -23687,7 +23687,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else if (this.readsRecordsFromFrame) {
         this.emitPerCallEntryIndex('out', slotIndex, loc);
       } else {
-        this.emitBlockSlotIndex('entry', slotIndex, loc, 0);
+        // A delegate's target follows the co-spent implementation block, which emitEntryOutputIndex resolves.
+        this.emitEntryOutputIndex(slotIndex, loc, 0);
       }
       this.emit(Op.OP_ELSE, loc);
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
@@ -23705,8 +23706,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // The created node is the record after the target's own in the segment's declared list, so it is named by
         // the next position, in the negative form the shared close reads as a position rather than a coordinate.
         this.emitDeclaredGroupRecordOrdinal(declaredOrdinal, 1, loc);
-      } else {
+      } else if (this.readsRecordsFromFrame) {
         this.emitBlockSlotIndex('entry', slotIndex, loc, 0);
+      } else {
+        this.emitEntryOutputIndex(slotIndex, loc, 0);
       }
       this.emit(Op.OP_ENDIF, loc);
 

@@ -124,7 +124,9 @@ import EnsureFinalRequireTraversal, {
 } from './semantic/EnsureFinalRequireTraversal.js';
 import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversal.js';
 import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
-import NamedReturnTransformation, { synthesizeEmptyVoidBodies } from './semantic/NamedReturnTransformation.js';
+import NamedReturnTransformation, {
+  synthesizeEmptyVoidBodies, synthesizeFallThroughDefaultReturns,
+} from './semantic/NamedReturnTransformation.js';
 import MarkLegacyCheckedMath from './semantic/MarkLegacyCheckedMath.js';
 import LowerTailRecursion from './semantic/LowerTailRecursion.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
@@ -13150,6 +13152,10 @@ function compileResolvedAst(
   // A return nested under further conditions with fall-through (internal fns) -> flag + gated tail +
   // terminal return (after NamedReturn so implicit tails are explicit; before semantic so locals resolve).
   if (needsNestedBranchReturn) ast = ast.accept(new DesugarNestedBranchReturn()) as Ast;
+  // The skipped pass is also where a function with unnamed return types gets its fall-through default return. Add
+  // it here, after the nested-return desugar has given its functions their terminal return, and only where the
+  // final check would refuse the function, so every function that returns or reverts keeps its lowering.
+  if (!needsNamedReturns) synthesizeFallThroughDefaultReturns(ast);
 
   restoreParkedFunctions(ast, cheapAdmissionPark);
   // Drop unused compatibility-library low-level-call / assembly helpers before journal and memory lowering. A

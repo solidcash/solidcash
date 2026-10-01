@@ -198,6 +198,18 @@ export function rejectFreeFunctionMissingReturns(ast: SourceFileNode): void {
   }
 }
 
+/**
+ * Whether a function with return types can still fall off its end, judged the way this pass judges it once the
+ * program is lowered. Inline assembly does not count as terminating here: LowerInlineAssembly turns a Yul `revert`
+ * into `require(false)` before this pass runs, and that is no terminator to it. NamedReturnTransformation's
+ * fall-through default asks this which functions it has to complete. `freeFunctions` supply the helpers that never
+ * return, as they do for the pass itself.
+ */
+export function fallsOffEndCheck(freeFunctions: FunctionDefinitionNode[]): (fn: FunctionDefinitionNode) => boolean {
+  const neverReturn = collectNeverReturnNames(freeFunctions, false);
+  return (fn) => !allPathsReturn(fn.body?.statements, neverReturn, false);
+}
+
 // A path with no verification (no require/assert/revert/timeop) and no state change compiles as
 // unconditionally-spendable (codegen ends it with OP_1). This is a hard error by default; callers must
 // explicitly disable enforceFinalRequire to permit it, in which case the compiler still emits a warning.
@@ -396,9 +408,11 @@ function callNeverReturns(name: string, neverReturn: Set<string>): boolean {
   return neverReturn.has(name) || neverReturn.has(simple) || simple === '_revert';
 }
 
-function isTerminatingStatement(statement: StatementNode, neverReturn: Set<string>): boolean {
+function isTerminatingStatement(
+  statement: StatementNode, neverReturn: Set<string>, assemblyTerminates = true,
+): boolean {
   if (statement instanceof ReturnNode || statement instanceof RevertNode) return true;
-  if (statement instanceof AssemblyStatementNode) {
+  if (statement instanceof AssemblyStatementNode && assemblyTerminates) {
     if (/\brevert\b/i.test(statement.assemblyBody)) return true;
     if (statement.yulBlock && yulContainsRevert(statement.yulBlock)) return true;
   }
@@ -406,38 +420,41 @@ function isTerminatingStatement(statement: StatementNode, neverReturn: Set<strin
     return callNeverReturns(statement.call.identifier.name, neverReturn);
   }
   if (statement instanceof BranchNode) {
-    return allPathsTerminate(statement.ifBlock.statements, neverReturn)
+    return allPathsTerminate(statement.ifBlock.statements, neverReturn, assemblyTerminates)
       && (statement.elseBlock !== undefined
-        && allPathsTerminate(statement.elseBlock.statements, neverReturn));
+        && allPathsTerminate(statement.elseBlock.statements, neverReturn, assemblyTerminates));
   }
   if (statement instanceof UncheckedNode) {
-    return allPathsTerminate(statement.block.statements ?? [], neverReturn);
+    return allPathsTerminate(statement.block.statements ?? [], neverReturn, assemblyTerminates);
   }
   if (statement instanceof BlockNode) {
-    return allPathsTerminate(statement.statements ?? [], neverReturn);
+    return allPathsTerminate(statement.statements ?? [], neverReturn, assemblyTerminates);
   }
   if (statement instanceof SwitchNode) {
     if (!statement.defaultCase) return false;
-    return statement.cases.every((c) => allPathsTerminate(c.body.statements, neverReturn))
-      && allPathsTerminate(statement.defaultCase.statements, neverReturn);
+    return statement.cases.every((c) => allPathsTerminate(c.body.statements, neverReturn, assemblyTerminates))
+      && allPathsTerminate(statement.defaultCase.statements, neverReturn, assemblyTerminates);
   }
   return false;
 }
 
-function allPathsTerminate(statements: StatementNode[] = [], neverReturn: Set<string> = new Set()): boolean {
+function allPathsTerminate(
+  statements: StatementNode[] = [], neverReturn: Set<string> = new Set(), assemblyTerminates = true,
+): boolean {
   const statementsWithoutLogs = statements.filter((s) => !(s instanceof ConsoleStatementNode));
   if (statementsWithoutLogs.length === 0) return false;
-  return isTerminatingStatement(statementsWithoutLogs[statementsWithoutLogs.length - 1], neverReturn);
+  const last = statementsWithoutLogs[statementsWithoutLogs.length - 1];
+  return isTerminatingStatement(last, neverReturn, assemblyTerminates);
 }
 
-function collectNeverReturnNames(functions: FunctionDefinitionNode[]): Set<string> {
+function collectNeverReturnNames(functions: FunctionDefinitionNode[], assemblyTerminates = true): Set<string> {
   const neverReturn = new Set<string>();
   let grew = true;
   while (grew) {
     grew = false;
     for (const fn of functions) {
       if (!fn.body || neverReturn.has(fn.name)) continue;
-      if (allPathsTerminate(fn.body.statements, neverReturn)) {
+      if (allPathsTerminate(fn.body.statements, neverReturn, assemblyTerminates)) {
         neverReturn.add(fn.name);
         const simple = fn.name.split('.').pop();
         if (simple) neverReturn.add(simple);
@@ -449,7 +466,7 @@ function collectNeverReturnNames(functions: FunctionDefinitionNode[]): Set<strin
 }
 
 function allPathsReturn(
-  statements: StatementNode[] = [], neverReturn: Set<string> = new Set(),
+  statements: StatementNode[] = [], neverReturn: Set<string> = new Set(), assemblyTerminates = true,
 ): boolean {
   const statementsWithoutLogs = statements.filter((s) => !(s instanceof ConsoleStatementNode));
   if (statementsWithoutLogs.length === 0) return false;
@@ -459,18 +476,18 @@ function allPathsReturn(
   // `return` while leaving an author-written dead require after it for the later dead-code transform to remove.
   // Validate the reachable prefix rather than choosing the syntactically final statement unconditionally.
   const firstTerminal = statementsWithoutLogs.findIndex((statement) =>
-    isTerminatingStatement(statement, neverReturn));
+    isTerminatingStatement(statement, neverReturn, assemblyTerminates));
   if (firstTerminal >= 0 && firstTerminal < statementsWithoutLogs.length - 1) return true;
 
   const finalStatement = statementsWithoutLogs[statementsWithoutLogs.length - 1];
 
   if (finalStatement instanceof ReturnNode) return true;
-  if (isTerminatingStatement(finalStatement, neverReturn)) return true;
+  if (isTerminatingStatement(finalStatement, neverReturn, assemblyTerminates)) return true;
 
   if (finalStatement instanceof BranchNode) {
-    const ifReturns = allPathsReturn(finalStatement.ifBlock.statements, neverReturn);
+    const ifReturns = allPathsReturn(finalStatement.ifBlock.statements, neverReturn, assemblyTerminates);
     const elseReturns = finalStatement.elseBlock
-      ? allPathsReturn(finalStatement.elseBlock.statements, neverReturn)
+      ? allPathsReturn(finalStatement.elseBlock.statements, neverReturn, assemblyTerminates)
       : false;
     return ifReturns && elseReturns;
   }
@@ -479,21 +496,22 @@ function allPathsReturn(
     // BCH script failure is fatal, so catch clauses are dead code (SymbolTableTraversal emits the corresponding
     // compatibility warning and codegen compiles only the try path). A successful try is therefore the only
     // continuing path whose return behavior matters; a failed try never falls through this function.
-    return allPathsReturn(finalStatement.tryBlock.statements, neverReturn);
+    return allPathsReturn(finalStatement.tryBlock.statements, neverReturn, assemblyTerminates);
   }
 
   if (finalStatement instanceof UncheckedNode) {
-    return allPathsReturn(finalStatement.block.statements ?? [], neverReturn);
+    return allPathsReturn(finalStatement.block.statements ?? [], neverReturn, assemblyTerminates);
   }
 
   if (finalStatement instanceof BlockNode) {
-    return allPathsReturn(finalStatement.statements ?? [], neverReturn);
+    return allPathsReturn(finalStatement.statements ?? [], neverReturn, assemblyTerminates);
   }
 
   if (finalStatement instanceof SwitchNode) {
     if (!finalStatement.defaultCase) return false;
-    const casesReturn = finalStatement.cases.every((c) => allPathsReturn(c.body.statements, neverReturn));
-    const defaultReturns = allPathsReturn(finalStatement.defaultCase.statements, neverReturn);
+    const casesReturn = finalStatement.cases
+      .every((c) => allPathsReturn(c.body.statements, neverReturn, assemblyTerminates));
+    const defaultReturns = allPathsReturn(finalStatement.defaultCase.statements, neverReturn, assemblyTerminates);
     return casesReturn && defaultReturns;
   }
 

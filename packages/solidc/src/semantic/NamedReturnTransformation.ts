@@ -13,6 +13,7 @@ import {
 } from '../ast/AST.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { blockEndsWithReturn } from './EarlyReturnTransformation.js';
+import { fallsOffEndCheck } from './EnsureFinalRequireTraversal.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
@@ -49,6 +50,31 @@ export function synthesizeEmptyVoidBodies(ast: SourceFileNode): void {
   const { contract } = ast;
   for (const fn of [...ast.freeFunctions, ...contract.functions, contract.fallbackDef, contract.receiveDef]) {
     if (fn) synthesizeEmptyVoidBody(fn);
+  }
+}
+
+/** Append Solidity's fall-through `return <type defaults>;` to a function with unnamed return types. */
+function appendFallThroughDefaultReturn(node: FunctionDefinitionNode): void {
+  const stmts = node.body.statements ?? [];
+  const ret = new ReturnNode(node.returnTypes.map((t) => createDefaultValueExpression(t, node.location)));
+  ret.location = node.location;
+  node.body.statements = [...stmts, ret];
+}
+
+/**
+ * Apply only the fall-through default-return step of the transformation, and only to the functions that still
+ * fall off their end: those EnsureFinalRequireTraversal would refuse (MissingReturnError, or EmptyFunctionError for
+ * an empty body). The compiler skips the whole transformation when no function names its returns, and runs this
+ * after DesugarNestedBranchReturn instead: that pass already gives a nested may-return function its terminal
+ * return, and every function that returns or reverts on every path keeps exactly the lowering it had.
+ */
+export function synthesizeFallThroughDefaultReturns(ast: SourceFileNode): void {
+  const { contract } = ast;
+  const fallsOffEnd = fallsOffEndCheck(ast.freeFunctions);
+  for (const fn of [...ast.freeFunctions, ...contract.functions, contract.fallbackDef, contract.receiveDef]) {
+    if (!fn?.body || fn.isAbstract || fn.splitDelegateReturnForwarder) continue;
+    if (fn.returnTypes.length === 0 || fn.returnNames.length > 0) continue;
+    if (fallsOffEnd(fn)) appendFallThroughDefaultReturn(fn);
   }
 }
 
@@ -99,12 +125,7 @@ export default class NamedReturnTransformation extends AstTraversal {
       // terminal if/else (or switch) whose branches all return needs no default - and the synthesized
       // `return <defaults>` would be dead code that still type-checks (createDefaultValueExpression yields int 0
       // for address/enum returns, mismatching the declared types). blockEndsWithReturn covers those shapes.
-      if (!blockEndsWithReturn(node.body)) {
-        const stmts = node.body.statements ?? [];
-        const ret = new ReturnNode(node.returnTypes.map((t) => createDefaultValueExpression(t, node.location)));
-        ret.location = node.location;
-        node.body.statements = [...stmts, ret];
-      }
+      if (!blockEndsWithReturn(node.body)) appendFallThroughDefaultReturn(node);
       return node;
     }
 

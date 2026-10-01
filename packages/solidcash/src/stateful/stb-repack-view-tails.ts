@@ -38,7 +38,7 @@ export interface RepackViewTailsHost {
 /**
  * JobEvents occupancy is only final after the first materialization. If planned
  * view-tail witnesses still name a mutable collection slot, pack them after that
- * band and refresh unlockers for one rematerialize. Does not move jobs suffix.
+ * band and refresh unlockers for one rematerialize. Does not move the value-chunk suffix.
  */
 export function repackViewTailsAfterMaterialization(
   host: RepackViewTailsHost,

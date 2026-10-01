@@ -123,7 +123,7 @@ export function planCreateBuilderNestedBases(params: {
     (overrides?.blockBase ?? 0) + projectedRouteBlockSize,
   ) + delegatedLoopOutputCount + delegatedLoopOutputSurplus
     // RMW write chunks occupy impl+trailing outputs (burned, recreated at the suffix).
-    // Without them here, nested output bases sit two slots early once jobs already has chunks.
+    // Without them here, nested output bases sit early once the dynamic collection has chunks.
     + delegatedDynamicWriteChunkCount;
   // Upsert HEAD pads returnEvent + P' + NEW before nested callees. Output count+surplus can
   // over-shift nestedOutputBase relative to that input geometry; keep the bases aligned.
@@ -168,9 +168,8 @@ export function planCreateBuilderNestedBases(params: {
       + (g.keccakInputs?.length ?? 0), 0)
     + iterationEntryInputs.length;
   // Only the *entry* implementation's own return channel occupies a slot before
-  // the nested tail. Nested view impls (MarketplaceData.arbitratorRegistered,
-  // meceTags) also have outputs, but those are the tail returns themselves —
-  // counting them here shifted updateJobPost's witnesses onto the empty output
+  // the nested tail. Nested view implementations also have outputs, but those are
+  // the tail returns themselves — counting them here shifted return witnesses onto the empty output
   // after the real 0x51 / tag-string returns.
   const delegatedCallerReturnCount = (legacyRouteDelegateFn?.outputs?.length ?? 0) > 0 ? 1 : 0;
   const externalGroupOutputCount = externalCallUtxoGroups.reduce(
@@ -199,12 +198,11 @@ export function planCreateBuilderNestedBases(params: {
     && (legacyRouteDelegateFn?.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent')) {
     delegateReturnOutputBase += 1;
   }
-  // A no-return writer (updateJobPost / closeJob) already places the nested
-  // publishJobEvent impl inside MarketplaceData.__forward's 10-output block,
-  // and jobs-chunk pads occupy impl+trailing. The associated-delegate +1 then
+  // A no-return writer already places the nested implementation inside the forwarded fixed block,
+  // and value-chunk pads occupy implementation+trailing. The associated-delegate +1 then
   // lands tail witnesses on the empty output after the real 0x51 / tag-string
-  // returns. publishJobPost keeps the +1: it has its own return channel and
-  // FakeToken in-block returns that re-pack the tail.
+  // returns. A returning writer keeps the +1 when its own return channel and
+  // in-block token returns re-pack the tail.
   if ((legacyRouteDelegateFn?.outputs?.length ?? 0) === 0
     && delegatedDynamicWriteChunkCount > 0 && associatedDelegateGroups.size > 0) {
     delegateReturnOutputBase -= 1;
@@ -244,8 +242,8 @@ export function planCreateBuilderNestedBases(params: {
     const physical = externalCallUtxoGroups[physicalGroupIdx];
     const returnSlot = physical.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent');
     // In-block events don't consume a position in the appended tail. Counting
-    // them here shifted every later logical return (for example MarketplaceData
-    // userRegistered after an in-block token balanceOf) onto unrelated outputs.
+    // them here shifted every later logical return after an in-block token read
+    // onto unrelated outputs.
     if (groupOwnsInBlockReturnEvent(externalCallUtxoGroups, groupIdx) && returnSlot) {
       returnIndexForGroup.set(groupIdx, nestedOutputBases[physicalGroupIdx] + returnSlot.offset);
     }

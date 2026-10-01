@@ -146,7 +146,7 @@ export function reassertBatchPredecessorOutputsAtDeclaredSlots(
   return changed;
 }
 
-/** True when `to` is a bare OP_RETURN (jobs-suffix separator). */
+/** True when `to` is a bare OP_RETURN (reverse-indexed suffix separator). */
 export function isOpReturnLockingBytecode(to?: Uint8Array | string): boolean {
   if (to instanceof Uint8Array) return to.length === 1 && to[0] === 0x6a;
   if (typeof to === 'string') {
@@ -157,13 +157,13 @@ export function isOpReturnLockingBytecode(to?: Uint8Array | string): boolean {
 }
 
 /**
- * Packer ranks can land a view return on the jobs OP_RETURN separator slot
+ * Packer ranks can land a view return on the value-chunk OP_RETURN separator slot
  * (current 0x6a, or the reserved suffixStart index before materialize writes
  * 0x6a). Prefer an already-unlocked view/disposable pad (planned, then current,
  * then the pad immediately before the separator). Never host after OP_RETURN:
- * reverse-indexed jobs chunks require the separator to be the unique trailer
+ * reverse-indexed value chunks require the separator to be the unique trailer
  * (`TXOUTPUTCOUNT - 1 - nNew`). Returns undefined when no safe host exists —
- * caller may insert one before the jobs suffix.
+ * caller may insert one before the value-chunk suffix.
  */
 export function redirectViewTailOffOpReturn(parts: {
   placedIndex: number;
@@ -247,7 +247,7 @@ export function moveLateOutputsBeforeReverseSuffix<T extends {
   if (suffixCount <= 0 || suffixLock.length !== 35 || suffixLock[0] !== 0xaa) return 0;
   if (outputs.length < suffixCount + 2) return 0;
   const trailer = outputs.length - 1;
-  // Reverse-index math needs a dedicated trailer; OP_RETURN is the marketplace separator.
+  // Reverse-index math needs a dedicated OP_RETURN trailer.
   if (!isOpReturnLockingBytecode(outputs[trailer]?.to)) return 0;
   const wanted = binToHex(suffixLock);
   const windowStart = trailer - suffixCount;
@@ -257,7 +257,7 @@ export function moveLateOutputsBeforeReverseSuffix<T extends {
     return !!lock && lock.length === 35 && binToHex(lock) === wanted
       && output?.token?.nft?.capability === 'mutable';
   };
-  // Already correct: reverse window is contiguous jobs.
+  // Already correct: the reverse-indexed chunk window is contiguous.
   if (Array.from({ length: suffixCount }, (_, offset) => isSuffixResource(outputs[windowStart + offset]))
     .every(Boolean)) {
     return 0;

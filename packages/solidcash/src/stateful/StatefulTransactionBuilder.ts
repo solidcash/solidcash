@@ -1333,7 +1333,7 @@ export class StatefulTransactionBuilder {
     return shouldStampPersistUpdateDigestLockForHost(this._chunkableWritePlanningHost());
   }
 
-  /** Every delegate `INPUTINDEX*scale-k` 1:1 window (Marketplace impl 5 → 21–24). */
+  /** Every delegate `INPUTINDEX*scale-k` 1:1 preservation window. */
   private _scaledPreserveRanges(): Array<{ start: number; endExclusive: number }> {
     return scaledPreserveRanges(this._scaledPreserveEmitHost());
   }
@@ -2871,7 +2871,7 @@ export class StatefulTransactionBuilder {
     return emitDestinationIndices(this._scaledPreserveEmitHost());
   }
 
-  /** JobEvents band uses the executing Marketplace impl window, not nested MD. */
+  /** The value-chunk band uses the executing implementation window, not a nested participant's. */
   private _entryScaledPreserveRange(): { start: number; endExclusive: number } | undefined {
     return entryScaledPreserveRange(this._scaledPreserveEmitHost());
   }
@@ -3264,7 +3264,7 @@ export class StatefulTransactionBuilder {
   /**
    * Routed proxy groups emit an OP_TRUE spacer at their sequential slot. The
    * minting UTXO must still be recreated at INPUTINDEX. Insert it there and drop
-   * one later P2PKH/OP_TRUE pad so view tails and the jobs suffix do not move.
+   * one later P2PKH/OP_TRUE pad so view tails and the value-chunk suffix do not move.
    */
   private _reassertNestedMintingMasters(builder: TransactionBuilder): void {
     reassertNestedMintingMasters(this._nestedOutputReassertHost(), builder);
@@ -3328,7 +3328,7 @@ export class StatefulTransactionBuilder {
   /**
    * When returnOutputIdx < 0, the compiler compacts trailing outputs by one into the
    * reserved returnEvent coordinate (GenerateTargetTraversal.emitTrailingWriteOutputBase).
-   * Prefer the unlocker that owns `layout` (delegate publishJobPost), not a sibling's return idx.
+   * Prefer the unlocker that owns `layout`, not a sibling's return index.
    */
   private _unmaterializedReturnEventCompact(
     layout?: { trailingBase?: number; slots?: ReadonlyArray<{ kind: string }> },
@@ -3349,7 +3349,7 @@ export class StatefulTransactionBuilder {
    * View tails are OP_TRUE + none-cap return NFTs. Token-swap placement already
    * parks them after FakeToken; without a swap, jobEvents mutables still occupy
    * the first planned tail slots. Write the pending views after that writer band
-   * and leave collection/jobs coordinates unmoved.
+   * and leave collection/value-chunk coordinates unmoved.
    */
   private _writeViewTailsAfterWriterOccupancy(
     builder: TransactionBuilder,
@@ -4585,12 +4585,12 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Pin reverse-suffix dynamic-array chunks (Marketplace.jobs) at TXOUTPUTCOUNT-1-nNew.
+   * Pin reverse-suffix dynamic-array chunks at TXOUTPUTCOUNT-1-nNew.
    * Empty-whitelist posts were leaving chunk0/chunk1 swapped or missing on that window after
    * late layout growth, so final preflight EQUALVERIFYd the wrong commitment then the wrong lock.
    *
    * When `stripSurplus` is set (final send layout only), demote earlier same-lock mutable copies
-   * left behind by late value-chunk appends so TXOUTPUTCOUNT-1-nNew is the unique jobs window.
+   * left behind by late value-chunk appends so TXOUTPUTCOUNT-1-nNew is the unique chunk window.
    * Do not enable during probe builds — stripping there thrash-hangs derivation.
    */
   private _reassertReverseSuffixDynamicChunks(
@@ -4806,7 +4806,7 @@ export class StatefulTransactionBuilder {
           if (index > maxReturnIdx) maxReturnIdx = index;
         }
       }
-      // Splice is required so reverse-indexed jobs chunks stay correct; rebind view-return
+      // Splice is required so reverse-indexed value chunks stay correct; rebind view-return
       // Idx when the insert would otherwise park them on the dummy/separator.
       if (maxReturnIdx >= insertAt) {
         this._rebindReturnWitnessesAfterInsertion(builder, insertAt);
@@ -5523,7 +5523,7 @@ export class StatefulTransactionBuilder {
       return trailingBase + this._trailingLoopEntryOutputCount() + this._valueChunkOutputCount()
         + this.pendingOutputs.length;
     }
-    // Compiler model: local dynamic array chunks (Marketplace.jobs) verify before chunkable
+    // Compiler model: local dynamic-array chunks verify before chunkable
     // mapping-value continuations. Do not add nested jobEvents width here — that band is
     // shifted past this base in getChunkableValueWriteBand instead.
     return trailingBase
@@ -6207,7 +6207,7 @@ export class StatefulTransactionBuilder {
   /**
    * JobEvents occupancy is only final after the first materialization. If planned
    * view-tail witnesses still name a mutable collection slot, pack them after that
-   * band and refresh unlockers for one rematerialize. Does not move jobs suffix.
+   * band and refresh unlockers for one rematerialize. Does not move the value-chunk suffix.
    */
   private _repackViewTailsAfterMaterialization(builder: TransactionBuilder): boolean {
     return repackViewTailsAfterMaterialization(this._repackViewTailsHost(), builder);

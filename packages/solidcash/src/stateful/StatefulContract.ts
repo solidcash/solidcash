@@ -1908,7 +1908,7 @@ function normalizeJobEventAddresses(
   return decoded;
 }
 
-/** Quarantine the historical Marketplace adapter to its exact legacy wire schema and legacy-unroll artifact. */
+/** Quarantine the historical wire adapter to its exact legacy schema and legacy-unroll artifact. */
 export function usesLegacyJobEventCompatibility(
   artifact: Artifact, type: string, structs: Artifact['structs'],
 ): boolean {
@@ -3393,7 +3393,7 @@ export function groupIndexForExternalCallSlot(params: {
 }): number | undefined {
   const call = params.externalCalls?.[params.slot];
   // A published callsite is slot-stable. Compact child arrays skip omitted conditionals, so
-  // `compactGroups[slot]` would bind a later call (MarketplaceData) onto an earlier unused slot
+  // `compactGroups[slot]` would bind a later call onto an earlier unused slot
   // (`__raw__` transfer). Only treat a *missing* map entry as omitted when the ABI says the
   // callsite is conditional; a required (`once`) call still falls back positionally.
   if (call?.callsiteId !== undefined) {
@@ -6574,7 +6574,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // A successful probe proves the builder's current commitments and output geometry satisfy the complete
             // covenant. Continuing can only revisit the same authenticated observations and falsely classify that
             // stable fixed point as an oscillation.
-            // The root marketplace covenant can pass while a nested publishJobEvent still
+            // The root covenant can pass while a nested value-chunk writer still
             // lacks later value-chunk outputs (nNew>1). Keep probing until those pins settle.
             if (!anyProbeHadError && nestedPinProgress === 0) break;
             if (convergenceKey === prevConvergenceKey && (!needsPassingProbe || !anyProbeHadError)) break;
@@ -7651,8 +7651,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 // A nested frame's `msg.sender` is the CALLING CONTRACT, not the transaction origin: the compiler
                 // resolves it from the caller identity the route/participant publishes, so hashing the signer here
                 // keyed the entry on a different slot than the covenant reads (measured: the allowance pin hashed
-                // [marketplace, signer] while the runtime witness and the resolution path hashed
-                // [marketplace, unicrow], the frame co-spent an unrelated key's node, and the read came back
+                // [root, signer] while the runtime witness and the resolution path hashed
+                // [root, nested caller], the frame co-spent an unrelated key's node, and the read came back
                 // empty). The caller supplies that identity when it builds a nested frame.
                 if (authenticatedCallerLock !== undefined) {
                   return Uint8Array.from(authenticatedCallerLock);
@@ -12105,7 +12105,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       };
       // Tail ranks were assigned before in-block returns were rebased onto physical
       // masters. A later token/callee in-block return can land on the same index as
-      // rank 0 (second publishJobPost: FakeToken approve at 29 vs MD tail at 29).
+      // rank 0 (a repeated writer: token approval and nested tail shared one output index).
       // Re-pack remaining tail witnesses after every in-block return.
       const relocated = relocateCreateBuilderPredOutBasesImpl({
         externalCallUtxoGroups,

@@ -85,7 +85,7 @@ export interface NestedOutputReassertHost {
 /**
  * Routed proxy groups emit an OP_TRUE spacer at their sequential slot. The
  * minting UTXO must still be recreated at INPUTINDEX. Insert it there and drop
- * one later P2PKH/OP_TRUE pad so view tails and the jobs suffix do not move.
+ * one later P2PKH/OP_TRUE pad so view tails and the value-chunk suffix do not move.
  */
 export function reassertNestedMintingMasters(
   host: NestedOutputReassertHost,

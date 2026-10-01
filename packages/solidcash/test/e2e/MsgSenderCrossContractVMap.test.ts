@@ -51,7 +51,11 @@ describe('cross-contract msg.sender-keyed vmap mapping (callee bal[msg.sender], 
       forceStateful: true,
       messageBus: true,
     });
-    expect(artCallerExplicitBus.debug?.bytecode).toBe(artCaller.debug?.bytecode);
+    // An explicit `messageBus: true` request admits `pay` onto the row-loop route and embeds that route; the
+    // direct compile this test spends carries none. Either way the external call stays one unbatched invocation.
+    expect(artCaller.messageBus).toBeUndefined();
+    expect(artCallerExplicitBus.messageBus?.routeInBytecode).toBe(true);
+    expect(artCallerExplicitBus.messageBus?.admittedHandlerIds).toEqual(['pay']);
     expect(artCallerExplicitBus.abi[0].externalCalls?.[0].batchInvocations)
       .toBeUndefined();
 

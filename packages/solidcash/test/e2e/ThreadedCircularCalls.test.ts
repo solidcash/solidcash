@@ -324,6 +324,7 @@ describe('Threaded Circular Calls (A->B->A via Threading)', () => {
       const unlockAThread0 = contractA.unlock.callB(
         5n,     // val
         2n,     // _externalCallInputBase (B starts at input[2])
+        -1n,    // _extcallAnchorIdx0 (-1: the direct identity proof, bAddr is B's own lock)
         6n,     // _externalReturnOutputIdx (B's return event output)
       );
       const dataNftUnlockAThread0 = createDataNftUnlocker(contractA, 0, catA);
@@ -333,6 +334,7 @@ describe('Threaded Circular Calls (A->B->A via Threading)', () => {
         5n,     // val
         4n,     // _externalCallInputBase (A thread 1 starts at input[4])
         aHandleCallbackSelector, // _externalCallSelector -> A's handleCallback (bytes4)
+        -1n,    // _extcallAnchorIdx0 (-1: the direct identity proof, aAddr is A's own lock)
         6n,     // _returnOutputIdx (B's return event)
         7n,     // _externalReturnOutputIdx (A thread 1's return event)
       );

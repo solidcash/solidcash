@@ -466,7 +466,7 @@ describe('Valid Contracts - SDK e2e', () => {
       const { provider, contract } = setupContract(loadCash('unsafe_bool_cast.scash'), [0n]);
       await addUtxos(provider, contract.address);
       const txPromise = sendTx(provider, contract, contract.unlock.test());
-      await expect(txPromise).rejects.toThrow(requireFailure('Test.scash', 0, '<unknown>'));
+      await expect(txPromise).rejects.toThrow(requireFailure('Test.scash', 3, 'require(unsafe_bool(x));'));
     });
 
     it('unsafe_int_cast: unsafe_int(x) > unsafe_int(y)', async () => {

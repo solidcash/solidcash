@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { compileString } from '../direct-compile.js';
 import { decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
@@ -607,17 +607,24 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
     // (now `assertFinalizedBytesWithCovenant`) live in `message-bus/preflight.ts` because `TransactionBuilder.send`
     // became their second caller, and the per-file call counts are asserted in
     // `X186SendCovenantAbsorption.test.ts` row 5b. What stays here is the half whose subject is these four
-    // sites: they route, and none of them calls the bare gate.
-    const source = readFileSync(fileURLToPath(new URL('../../src/stateful/StatefulContract.ts', import.meta.url)),
-      'utf8');
-    const call = (name: string): string[] => source.split('\n')
+    // sites: they route, and none of them calls the bare gate. The sites themselves have since moved out of
+    // `StatefulContract.ts` into its extracted `sc-*` phase modules (split and merge, destroy, `_sendRawBuilder`),
+    // so the census reads the class file together with those modules.
+    const dir = fileURLToPath(new URL('../../src/stateful/', import.meta.url));
+    const sources = ['StatefulContract.ts', ...readdirSync(dir).filter((name) => /^sc-.*\.ts$/.test(name)).sort()]
+      .map((name) => readFileSync(`${dir}${name}`, 'utf8'));
+    const call = (name: string): string[] => sources.flatMap((source) => source.split('\n'))
       .filter((line) => new RegExp(`${name}\\(`).test(line) && !/^\s*[*/]/.test(line)
         && !/^import|^\s{2}\w+,?$/.test(line));
     expect(call('assertFinalizedBytesWithCovenant'), 'routed sites').toHaveLength(4);
     expect(call('assertFinalizedTransactionBytes'), 'bare gate calls').toHaveLength(0);
-    expect(source).toMatch(
-      /import \{[\s\S]*?assertFinalizedBytesWithCovenant[\s\S]*?\} from '\.\.\/message-bus\/preflight\.js'/,
-    );
+    const routing = sources.filter((source) => /assertFinalizedBytesWithCovenant\(/.test(source));
+    expect(routing.length).toBeGreaterThan(0);
+    for (const source of routing) {
+      expect(source).toMatch(
+        /import \{[\s\S]*?assertFinalizedBytesWithCovenant[\s\S]*?\} from '\.\.\/message-bus\/preflight\.js'/,
+      );
+    }
   });
 
   /* ---------------------------------------------------------------------------------------------------- */
@@ -630,23 +637,29 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
     // a NEW ungated site from appearing quietly. Scanning the source is the only way to see a site that no
     // test happens to reach; that is exactly how this one stayed invisible.
     const root = fileURLToPath(new URL('../../src/', import.meta.url));
+    // `StatefulContract.ts` and `StatefulTransactionBuilder.ts` were split into `sc-*` and `stb-*` phase modules,
+    // and the census follows the sites into them.
+    const extracted = readdirSync(`${root}stateful/`).filter((name) => /^(sc|stb)-.*\.ts$/.test(name)).sort()
+      .map((name) => `stateful/${name}`);
     const files = [
       'TransactionBuilder.ts', 'message-bus/preflight.ts',
-      'stateful/StatefulContract.ts', 'stateful/StatefulTransactionBuilder.ts',
+      'stateful/StatefulContract.ts', 'stateful/StatefulTransactionBuilder.ts', ...extracted,
     ];
     const callSites: string[] = [];
     for (const file of files) {
       const text = readFileSync(`${root}${file}`, 'utf8');
       expect(text, 'the dead site is deleted').not.toMatch(/async _sendBuilderWithCustomUnlockers/);
       text.split('\n').forEach((line, index) => {
-        if (/\.sendRawTransaction\(/.test(line) && !/^\s*\*/.test(line)) {
+        // A provider that forwards `sendRawTransaction` to its base (the projected provider a return-value
+        // derivation reads through) defines the method; it is not a broadcast site.
+        if (/\.sendRawTransaction\(/.test(line) && !/^\s*\*/.test(line) && !/sendRawTransaction:\s*\(/.test(line)) {
           callSites.push(`${file}:${index + 1}`);
         }
       });
     }
     // Seven live sites, one per gated path. A new entry here is a new broadcast path that must be gated
     // before this list is updated.
-    expect(callSites).toHaveLength(7);
-    expect(callSites.filter((site) => site.startsWith('stateful/StatefulContract.ts'))).toHaveLength(4);
+    expect(callSites, callSites.join(' | ')).toHaveLength(7);
+    expect(callSites.filter((site) => /^stateful\/(StatefulContract\.ts|sc-)/.test(site))).toHaveLength(4);
   });
 });

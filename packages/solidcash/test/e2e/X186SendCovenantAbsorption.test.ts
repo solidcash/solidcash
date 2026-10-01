@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { binToHex } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
@@ -314,6 +314,10 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
 
   const SRC_ROOT = fileURLToPath(new URL('../../src/', import.meta.url));
   const read = (file: string): string[] => readFileSync(`${SRC_ROOT}${file}`, 'utf8').split('\n');
+  /** A stateful class file plus the phase modules extracted from it (`sc-*` or `stb-*`), as one list of lines. */
+  const readFamily = (file: string, modules: RegExp): string[] => [
+    file, ...readdirSync(`${SRC_ROOT}stateful/`).filter((name) => modules.test(name)).sort(),
+  ].flatMap((name) => read(`stateful/${name}`));
   /** Call lines only: not the declaration, not an import, not a comment. */
   const callsTo = (lines: string[], name: string): string[] => lines.filter(
     (line) => new RegExp(`${name}\\(`).test(line)
@@ -325,12 +329,14 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
     // THE COST CLAIM, held structurally because it is a claim about an ordering. Every send that settles -
     // the 1,159 the X126 probe measured accepted through this site, and every one since - takes the early
     // return, so this row is what makes "it cannot cost anything" checkable rather than asserted.
+    // The early return reads the ENFORCED refusals, so a verdict with none is the admitted one.
     const body = readFileSync(`${SRC_ROOT}message-bus/preflight.ts`, 'utf8')
       .split('export function assertFinalizedBytesWithCovenant')[1];
-    expect(body.indexOf('assessFinalizedTransactionBytes(transaction, subjects)'))
-      .toBeLessThan(body.indexOf('if (verdict.admitted) return;'));
-    expect(body.indexOf('if (verdict.admitted) return;'))
-      .toBeLessThan(body.indexOf('covenantObjectionOf(builder, transaction)'));
+    const assessed = body.indexOf('assessFinalizedTransactionBytes(transaction, subjects');
+    const admitted = body.indexOf('if (enforced.length === 0) return;');
+    expect(assessed).toBeGreaterThanOrEqual(0);
+    expect(assessed).toBeLessThan(admitted);
+    expect(admitted).toBeLessThan(body.indexOf('covenantObjectionOf(builder, transaction)'));
   });
 
   it('5b. STRUCTURAL: the routed sites route, and the bare gate has exactly one caller left outside preflight',
@@ -345,7 +351,8 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
       expect(callsTo(builder, 'assertFinalizedBytesWithCovenant')).toHaveLength(1);
       expect(callsTo(builder, 'assertFinalizedTransactionBytes')).toHaveLength(0);
 
-      const stateful = read('stateful/StatefulContract.ts');
+      // The four sites have since moved again, into the `sc-*` modules extracted from `StatefulContract.ts`.
+      const stateful = readFamily('StatefulContract.ts', /^sc-.*\.ts$/);
       expect(callsTo(stateful, 'assertFinalizedBytesWithCovenant')).toHaveLength(4);
       expect(callsTo(stateful, 'assertFinalizedTransactionBytes')).toHaveLength(0);
 
@@ -370,7 +377,8 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
       // conditional on `strictVmPreflight` - so no covenant verdict is guaranteed ahead of it either. That
       // window is NOT closed by this row, and `L4GateAtSubmitSite` row 1 asserts `refused by 1 byte rule(s)`,
       // which the combined message would not match. Whoever routes it must update that file in the same change.
-      const submit = read('stateful/StatefulTransactionBuilder.ts');
+      // The submit phase now lives in the `stb-*` modules extracted from `StatefulTransactionBuilder.ts`.
+      const submit = readFamily('StatefulTransactionBuilder.ts', /^stb-.*\.ts$/);
       expect(callsTo(submit, 'assertFinalizedTransactionBytes')).toHaveLength(1);
       expect(callsTo(submit, 'assertFinalizedBytesWithCovenant')).toHaveLength(0);
     });

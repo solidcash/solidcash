@@ -232,10 +232,14 @@ describe('msg.sender and tx.origin', () => {
       expect(categoryInput!.type).toBe('bytes32');
     });
 
-    it('matches an identity-anchor commitment by its SCID magic prefix', () => {
+    it('authenticates a contract caller by its one minting master, never by a zero-padded SCID compare', () => {
+      // The direct route resolves a contract caller to the locking bytecode of the single co-spent minting master
+      // of the declared category: a second match aborts. It has no logical identity-anchor step today. The
+      // zero-padded prefix compare that once stood in for one (it compared padding to "SCID" and never matched a
+      // real anchor) must not come back.
       const artifact = compileString(SENDER_CHECKER);
       expect(artifact.bytecode).toContain(
-        'OP_UTXOTOKENCOMMITMENT OP_4 OP_SPLIT OP_DROP 53434944 OP_EQUAL',
+        'OP_UTXOTOKENCATEGORY OP_3 OP_PICK OP_EQUAL OP_IF OP_OVER OP_SIZE OP_NIP OP_0NOTEQUAL OP_NOT OP_VERIFY',
       );
       expect(artifact.bytecode).not.toContain('00000000 OP_CAT OP_4 OP_SPLIT OP_DROP 53434944');
     });
@@ -462,9 +466,10 @@ describe('msg.sender and tx.origin', () => {
       // A master + A data + B master + B data = outputs 0-3, return event at 4
       const returnOutputIdx = 4n;
 
-      // A.callB params: (val, _externalCallInputBase, _externalReturnOutputIdx)
+      // A.callB params: (val, _externalCallInputBase, _extcallAnchorIdx0, _externalReturnOutputIdx). The anchor
+      // index -1 selects the direct identity proof: bAddr is B's own master lock, as the SDK fills it.
       // No _externalCallSelector: IB has only 1 callable function (doWork)
-      const unlockA = contractA.unlock.callB(5n, 2n, returnOutputIdx);
+      const unlockA = contractA.unlock.callB(5n, 2n, -1n, returnOutputIdx);
       const dataNftUnlockA = createDataNftUnlocker(contractA, 0, catA);
 
       // B.doWork params: (val, _returnOutputIdx)
@@ -579,14 +584,14 @@ describe('msg.sender and tx.origin', () => {
       // Return event output indices (after all contract outputs)
       const returnOutputIdx = 6n;
 
-      // A.startChain params: (val, _externalCallInputBase, _externalReturnOutputIdx)
-      // No selector: IB_Chain has only 1 callable function (chainToC)
-      const unlockA = contractA.unlock.startChain(5n, 2n, returnOutputIdx);
+      // A.startChain params: (val, _externalCallInputBase, _extcallAnchorIdx0, _externalReturnOutputIdx); -1
+      // selects the direct identity proof. No selector: IB_Chain has only 1 callable function (chainToC)
+      const unlockA = contractA.unlock.startChain(5n, 2n, -1n, returnOutputIdx);
       const dataNftUnlockA = createDataNftUnlocker(contractA, 0, catA);
 
-      // B.chainToC params: (val, _externalCallInputBase, _returnOutputIdx, _externalReturnOutputIdx)
-      // No selector: IC_Sender has only 1 callable function (compute)
-      const unlockB = contractB.unlock.chainToC(5n, 4n, returnOutputIdx, 7n);
+      // B.chainToC params: (val, _externalCallInputBase, _extcallAnchorIdx0, _returnOutputIdx,
+      // _externalReturnOutputIdx). No selector: IC_Sender has only 1 callable function (compute)
+      const unlockB = contractB.unlock.chainToC(5n, 4n, -1n, returnOutputIdx, 7n);
       const dataNftUnlockB = createDataNftUnlocker(contractB, 2, catB);
 
       // C.compute params: (val, _msgSenderCategory, _returnOutputIdx)
@@ -737,10 +742,11 @@ describe('msg.sender and tx.origin', () => {
       const returnOutputIdxC = 7n;
 
       // A.callBothBC params: (valB, valC, _externalCallInputBase, _extcallMasterIdx0, _extcallMasterIdx1,
-      // _externalReturnOutputIdx0, _externalReturnOutputIdx1). Multi-call functions carry a per-slot runtime
-      // master index (B at input 2, C at input 4); no selectors (IB_Sender/IC_Sender each have 1 fn).
+      // _extcallAnchorIdx0, _extcallAnchorIdx1, _externalReturnOutputIdx0, _externalReturnOutputIdx1). Multi-call
+      // functions carry a per-slot runtime master index (B at input 2, C at input 4) and a per-slot anchor index
+      // (-1: the direct identity proof); no selectors (IB_Sender/IC_Sender each have 1 fn).
       const unlockA = contractA.unlock.callBothBC(
-        3n, 7n, 2n, 2n, 4n, returnOutputIdxB, returnOutputIdxC,
+        3n, 7n, 2n, 2n, 4n, -1n, -1n, returnOutputIdxB, returnOutputIdxC,
       );
       const dataNftUnlockA = createDataNftUnlocker(contractA, 0, catA);
 

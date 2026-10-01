@@ -121,13 +121,16 @@ describe('Recursion', () => {
   });
 
   describe('countdown (recursive internal function)', () => {
-    it('should compute countdown(10) == 10', async () => {
+    // The real BCH-2026 operation-cost budget (800 units per unlocking byte) admits depth 4 at this script size,
+    // as it does factorial(5): each level re-frames the lowered recursion's state buffer, so depth 5 already needs
+    // about 940 units per byte.
+    it('should compute countdown(4) == 4', async () => {
       const to = contract.address;
       const amount = 1000n;
       const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
 
       const tx = await new TransactionBuilder({ provider })
-        .addInputs(utxos, contract.unlock.testCountdown(new SignatureTemplate(alicePriv), 10n, 10n))
+        .addInputs(utxos, contract.unlock.testCountdown(new SignatureTemplate(alicePriv), 4n, 4n))
         .addOutput({ to, amount })
         .addOutput({ to, amount: changeAmount })
         .send();
@@ -192,13 +195,15 @@ describe('UnboundedLoop', () => {
   });
 
   describe('sumTo (for loop)', () => {
-    it('should compute sumTo(50) == 1275', async () => {
+    // Each iteration pays for checked int256 arithmetic, so the real operation-cost budget at this script size runs
+    // out near 37 iterations; 30 keeps a margin.
+    it('should compute sumTo(30) == 465', async () => {
       const to = contract.address;
       const amount = 1000n;
       const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
 
       const tx = await new TransactionBuilder({ provider })
-        .addInputs(utxos, contract.unlock.sumTo(new SignatureTemplate(alicePriv), 50n, 1275n))
+        .addInputs(utxos, contract.unlock.sumTo(new SignatureTemplate(alicePriv), 30n, 465n))
         .addOutput({ to, amount })
         .addOutput({ to, amount: changeAmount })
         .send();
@@ -212,7 +217,7 @@ describe('UnboundedLoop', () => {
       const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
 
       const txPromise = new TransactionBuilder({ provider })
-        .addInputs(utxos, contract.unlock.sumTo(new SignatureTemplate(alicePriv), 50n, 1200n))
+        .addInputs(utxos, contract.unlock.sumTo(new SignatureTemplate(alicePriv), 30n, 400n))
         .addOutput({ to, amount })
         .addOutput({ to, amount: changeAmount })
         .send();

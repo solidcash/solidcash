@@ -70,7 +70,9 @@ describe('Low-Level Call Primitives (.call and .staticcall)', () => {
       expect(dynamicCallFn!.externalCalls!.length).toBe(1);
       expect(dynamicCallFn!.externalCalls![0].interfaceName).toBe('ICounter');
       expect(dynamicCallFn!.externalCalls![0].functionName).toBe('increment');
-      expect(dynamicCallFn!.externalCalls![0].callMode).toBe('call');
+      // A typed `I(addr).fn.call()` is the SolidCash invoke spelling: it lowers to the regular call mode, which
+      // the artifact leaves unstated. Only a non-regular mode (staticcall, delegatecall) is published.
+      expect(dynamicCallFn!.externalCalls![0].callMode).toBeUndefined();
 
       const readOnlyCallFn = art.abi.find((f) => f.name === 'readOnlyCall');
       expect(readOnlyCallFn).toBeDefined();
@@ -142,7 +144,8 @@ describe('Low-Level Call Primitives (.call and .staticcall)', () => {
       //   Input[2]: Counter master
       //   Input[3]: Counter data NFT
 
-      const unlockCaller = contractCaller.unlock.dynamicCall(2n);
+      // (_externalCallInputBase, _extcallAnchorIdx0); -1 selects the direct identity proof.
+      const unlockCaller = contractCaller.unlock.dynamicCall(2n, -1n);
       const unlockCounter = contractCounter.unlock.increment();
 
       const stb = new StatefulTransactionBuilder({
@@ -156,7 +159,8 @@ describe('Low-Level Call Primitives (.call and .staticcall)', () => {
           categoryId: catCounter,
           stateLayout: layoutCounter,
           masterUtxo: { ...masterCounter, unlocker: unlockCounter },
-          dataNftUtxos: [{ ...dataNftCounter, unlocker: createDataNftUnlocker(contractCounter, 0, catCounter) }],
+          // The Counter's data NFT is unlocked beside its own master, at input 2.
+          dataNftUtxos: [{ ...dataNftCounter, unlocker: createDataNftUnlocker(contractCounter, 2, catCounter) }],
           requiredDataNftIndices: [0],
           functionName: 'increment',
           functionArgs: [],
@@ -218,7 +222,8 @@ describe('Low-Level Call Primitives (.call and .staticcall)', () => {
       const masterCaller = callerGenesis.utxos[0];
       const dataNftCaller = callerGenesis.utxos[1];
 
-      const unlockCaller = contractCaller.unlock.readOnlyCall(2n);
+      // (_externalCallInputBase, _extcallAnchorIdx0); -1 selects the direct identity proof.
+      const unlockCaller = contractCaller.unlock.readOnlyCall(2n, -1n);
       const unlockCounter = contractCounter.unlock.increment();
 
       const stb = new StatefulTransactionBuilder({
@@ -232,7 +237,8 @@ describe('Low-Level Call Primitives (.call and .staticcall)', () => {
           categoryId: catCounter,
           stateLayout: layoutCounter,
           masterUtxo: { ...masterCounter, unlocker: unlockCounter },
-          dataNftUtxos: [{ ...dataNftCounter, unlocker: createDataNftUnlocker(contractCounter, 0, catCounter) }],
+          // The Counter's data NFT is unlocked beside its own master, at input 2.
+          dataNftUtxos: [{ ...dataNftCounter, unlocker: createDataNftUnlocker(contractCounter, 2, catCounter) }],
           requiredDataNftIndices: [0],
           functionName: 'increment',
           functionArgs: [],

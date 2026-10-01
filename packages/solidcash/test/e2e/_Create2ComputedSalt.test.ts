@@ -2,7 +2,6 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { writeFileSync, mkdirSync } from 'fs';
 import { compileStringMulti } from '../direct-compile.js';
 import type { ResolvedImport } from 'solidc';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
@@ -11,8 +10,6 @@ import { createTestProvider } from '../test-util.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import type { Utxo } from '../../src/interfaces.js';
 import { addressToLockScript } from '../../src/utils.js';
-
-const SCRATCH = '/tmp/grok-goal-f077261f25bd/implementer';
 
 const childSrc = `
   contract PairChild() {
@@ -147,12 +144,7 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
   }, 120_000);
 
   it('B: computed keccak salt deploy succeeds (no vmap)', async () => {
-    mkdirSync(SCRATCH, { recursive: true });
     const { factory: factoryArt, child: childArt } = compileFactory(factoryComputedSalt);
-    const cp = factoryArt.abi.find((f: any) => f.name === 'deployComputed');
-    writeFileSync(`${SCRATCH}/create2-B-layout.json`, JSON.stringify({
-      deployTargets: cp?.deployTargets, blockLayout: cp?.blockLayout, keccak: cp?.keccakCompute,
-    }, null, 2));
     const fundF = await mintFund(300_000n);
     const { contract: factory } = await StatefulContract.deploy(factoryArt, [alicePub], {
       provider, fundingUtxo: fundF, funder, changeAddress: p2pkh.address,
@@ -161,35 +153,27 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
     const tokenA = p2pkh.address;
     const tokenB = new Contract(p2pkhArtifact, [hexToBin('22'.repeat(20))], { provider }).address;
     const fundC = await mintFund();
-    try {
-      const result = await StatefulContract.deployFrom({
-        provider, factory: factory as any, deployFunctionName: 'deployComputed',
-        deployFunctionArgs: [new SignatureTemplate(alicePriv), tokenA, tokenB],
-        childArtifact: childArt, childConstructorArgs: [],
-        fundingUtxo: fundC, funder, changeAddress: p2pkh.address, fee: 30_000n,
-      });
-      expect(result.tx.txid).toBeDefined();
-      // Offline salt for parity check
-      const a = addressToLockScript(tokenA);
-      const b = addressToLockScript(tokenB);
-      const [t0, t1] = binToHex(a) < binToHex(b) ? [a, b] : [b, a];
-      const packed = new Uint8Array(t0.length + t1.length);
-      packed.set(t0, 0); packed.set(t1, t0.length);
-      const salt = keccak_256(packed);
-      const expected = new Contract(childArt, [], {
-        provider, addressType: 'p2sh32', category: hexToBin(result.childCategoryId), salt,
-      });
-      writeFileSync(`${SCRATCH}/create2-B.log`,
-        `OK child=${result.child.address}\nexpected=${expected.address}\nsalt=${binToHex(salt)}\n`);
-      expect(result.child.address).toBe(expected.address);
-    } catch (e: any) {
-      writeFileSync(`${SCRATCH}/create2-B.log`, `ERR ${e?.message ?? e}\n`);
-      throw e;
-    }
+    const result = await StatefulContract.deployFrom({
+      provider, factory: factory as any, deployFunctionName: 'deployComputed',
+      deployFunctionArgs: [new SignatureTemplate(alicePriv), tokenA, tokenB],
+      childArtifact: childArt, childConstructorArgs: [],
+      fundingUtxo: fundC, funder, changeAddress: p2pkh.address, fee: 30_000n,
+    });
+    expect(result.tx.txid).toBeDefined();
+    // Offline salt for parity check
+    const a = addressToLockScript(tokenA);
+    const b = addressToLockScript(tokenB);
+    const [t0, t1] = binToHex(a) < binToHex(b) ? [a, b] : [b, a];
+    const packed = new Uint8Array(t0.length + t1.length);
+    packed.set(t0, 0); packed.set(t1, t0.length);
+    const salt = keccak_256(packed);
+    const expected = new Contract(childArt, [], {
+      provider, addressType: 'p2sh32', category: hexToBin(result.childCategoryId), salt,
+    });
+    expect(result.child.address).toBe(expected.address);
   }, 120_000);
 
   it('C0: dual getPair vmap writes without deploy succeed via normal call path', async () => {
-    mkdirSync(SCRATCH, { recursive: true });
     // Single-file compile (no import)
     const { compileString } = await import('../direct-compile.js');
     const art = compileString(factoryVMapOnly, { solidityImportCompat: true });
@@ -200,30 +184,18 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
     const tokenA = p2pkh.address;
     const tokenB = new Contract(p2pkhArtifact, [hexToBin('44'.repeat(20))], { provider }).address;
     const pairAddr = new Contract(p2pkhArtifact, [hexToBin('55'.repeat(20))], { provider }).address;
-    try {
-      await (factory as any).setBoth(new SignatureTemplate(alicePriv), tokenA, tokenB, pairAddr).send();
-      const ab = await (factory as any).getPair(tokenA, tokenB);
-      const ba = await (factory as any).getPair(tokenB, tokenA);
-      const exp = binToHex(addressToLockScript(pairAddr));
-      const abHex = ab instanceof Uint8Array ? binToHex(ab) : binToHex(addressToLockScript(String(ab)));
-      const baHex = ba instanceof Uint8Array ? binToHex(ba) : binToHex(addressToLockScript(String(ba)));
-      writeFileSync(`${SCRATCH}/create2-C0.log`, `OK AB=${abHex} BA=${baHex} exp=${exp}\n`);
-      expect(abHex).toBe(exp);
-      expect(baHex).toBe(exp);
-    } catch (e: any) {
-      writeFileSync(`${SCRATCH}/create2-C0.log`, `ERR ${e?.message ?? e}\n`);
-      throw e;
-    }
+    await (factory as any).setBoth(new SignatureTemplate(alicePriv), tokenA, tokenB, pairAddr).send();
+    const ab = await (factory as any).getPair(tokenA, tokenB);
+    const ba = await (factory as any).getPair(tokenB, tokenA);
+    const exp = binToHex(addressToLockScript(pairAddr));
+    const abHex = ab instanceof Uint8Array ? binToHex(ab) : binToHex(addressToLockScript(String(ab)));
+    const baHex = ba instanceof Uint8Array ? binToHex(ba) : binToHex(addressToLockScript(String(ba)));
+    expect(abHex).toBe(exp);
+    expect(baHex).toBe(exp);
   }, 120_000);
 
   it('C: computed salt + dual getPair vmap succeeds', async () => {
-    mkdirSync(SCRATCH, { recursive: true });
     const { factory: factoryArt, child: childArt } = compileFactory(factoryFull);
-    const cp = factoryArt.abi.find((f: any) => f.name === 'createPair');
-    writeFileSync(`${SCRATCH}/create2-C-layout.json`, JSON.stringify({
-      deployTargets: cp?.deployTargets, blockLayout: cp?.blockLayout,
-      entryAccesses: cp?.entryAccesses, sortedBatchInfo: cp?.sortedBatchInfo,
-    }, null, 2));
     const fundF = await mintFund(400_000n);
     const { contract: factory } = await StatefulContract.deploy(factoryArt, [alicePub], {
       provider, fundingUtxo: fundF, funder, changeAddress: p2pkh.address,
@@ -232,40 +204,20 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
     const tokenA = p2pkh.address;
     const tokenB = new Contract(p2pkhArtifact, [hexToBin('33'.repeat(20))], { provider }).address;
     const fundC = await mintFund(300_000n);
-    // Diagnostics: HEAD entry must exist before dual insert.
-    const full = await (factory as any).getFullState();
-    const entryN = full.entryNftUtxos?.length ?? 0;
-    writeFileSync(`${SCRATCH}/create2-C-pre.json`, JSON.stringify({
-      entryN,
-      entries: (full.entryNftUtxos ?? []).map((u: any) => ({
-        vout: u.vout, sat: String(u.satoshis),
-        cap: u.token?.nft?.capability,
-        c: (u.token?.nft?.commitment ?? '').slice(0, 80),
-      })),
-      dataN: full.dataNftUtxos?.length ?? 0,
-      dataNftCount: factoryArt.stateLayout?.dataNftCount,
-    }, null, 2));
-    try {
-      const result = await StatefulContract.deployFrom({
-        provider, factory: factory as any, deployFunctionName: 'createPair',
-        deployFunctionArgs: [new SignatureTemplate(alicePriv), tokenA, tokenB],
-        childArtifact: childArt, childConstructorArgs: [],
-        fundingUtxo: fundC, funder, changeAddress: p2pkh.address, fee: 40_000n,
-      });
-      expect(result.tx.txid).toBeDefined();
-      const sc = factory as any;
-      const ab = await sc.getPair(tokenA, tokenB);
-      const ba = await sc.getPair(tokenB, tokenA);
-      const expectedLbc = addressToLockScript(result.child.address);
-      const abHex = ab instanceof Uint8Array ? binToHex(ab) : binToHex(addressToLockScript(String(ab)));
-      const baHex = ba instanceof Uint8Array ? binToHex(ba) : binToHex(addressToLockScript(String(ba)));
-      writeFileSync(`${SCRATCH}/create2-C.log`,
-        `OK child=${result.child.address}\nAB=${abHex}\nBA=${baHex}\nexp=${binToHex(expectedLbc)}\n`);
-      expect(abHex).toBe(binToHex(expectedLbc));
-      expect(baHex).toBe(binToHex(expectedLbc));
-    } catch (e: any) {
-      writeFileSync(`${SCRATCH}/create2-C.log`, `ERR ${e?.message ?? e}\n`);
-      throw e;
-    }
+    const result = await StatefulContract.deployFrom({
+      provider, factory: factory as any, deployFunctionName: 'createPair',
+      deployFunctionArgs: [new SignatureTemplate(alicePriv), tokenA, tokenB],
+      childArtifact: childArt, childConstructorArgs: [],
+      fundingUtxo: fundC, funder, changeAddress: p2pkh.address, fee: 40_000n,
+    });
+    expect(result.tx.txid).toBeDefined();
+    const sc = factory as any;
+    const ab = await sc.getPair(tokenA, tokenB);
+    const ba = await sc.getPair(tokenB, tokenA);
+    const expectedLbc = addressToLockScript(result.child.address);
+    const abHex = ab instanceof Uint8Array ? binToHex(ab) : binToHex(addressToLockScript(String(ab)));
+    const baHex = ba instanceof Uint8Array ? binToHex(ba) : binToHex(addressToLockScript(String(ba)));
+    expect(abHex).toBe(binToHex(expectedLbc));
+    expect(baHex).toBe(binToHex(expectedLbc));
   }, 180_000);
 });

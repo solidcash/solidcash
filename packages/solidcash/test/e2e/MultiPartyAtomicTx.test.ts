@@ -336,8 +336,9 @@ contract SingleCaller(bytes poolAddr) {
       // No selectors needed: IPoolA and IPoolB each have only 1 callable function
       const multiCallerMasterUnlocker = multiCallerContract.unlock.doMultiCall(
         // fee, amount, _externalCallInputBase, _extcallMasterIdx0 (poolA @2), _extcallMasterIdx1 (poolB @4),
+        // _extcallAnchorIdx0, _extcallAnchorIdx1 (-1: the direct identity proof),
         // _externalReturnOutputIdx0, _externalReturnOutputIdx1
-        5n, 20n, 2n, 2n, 4n, 6n, 7n,
+        5n, 20n, 2n, 2n, 4n, -1n, -1n, 6n, 7n,
       );
       const multiCallerDataNftUnlocker = createDataNftUnlocker(
         multiCallerContract, 0, multiCallerCategoryId,
@@ -391,8 +392,9 @@ contract SingleCaller(bytes poolAddr) {
       // No selectors needed: IPoolA and IPoolB each have only 1 callable function
       const multiCallerMasterUnlocker = multiCallerContract.unlock.doMultiCall(
         // fee, amount, _externalCallInputBase, _extcallMasterIdx0 (poolA @2), _extcallMasterIdx1 (poolB @4),
+        // _extcallAnchorIdx0, _extcallAnchorIdx1 (-1: the direct identity proof),
         // _externalReturnOutputIdx0, _externalReturnOutputIdx1
-        5n, 20n, 2n, 2n, 4n, 6n, 7n,
+        5n, 20n, 2n, 2n, 4n, -1n, -1n, 6n, 7n,
       );
       const multiCallerDataNftUnlocker = createDataNftUnlocker(
         multiCallerContract, 0, multiCallerCategoryId,

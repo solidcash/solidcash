@@ -60,6 +60,8 @@ export default defineConfig(solidhatPreset(
     },
     test: {
       include: ['.marketplace/project/test/marketplace.test.ts'],
+      // A run measures the compiled fixture on disk, so a fixture older than the compiler build is refused up front.
+      globalSetup: ['./scripts/marketplace-fixture-fresh.mjs'],
       // Kernel-mode history tests compose dozens of multi-participant BCH transactions serially. Keep the
       // unchanged upstream test bodies authoritative rather than aborting a healthy loop at the ten-minute mark.
       testTimeout: 1_200_000,

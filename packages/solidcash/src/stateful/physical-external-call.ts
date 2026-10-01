@@ -247,21 +247,6 @@ export {
   matchingRouteRowsForExpressionKey,
   resolveRouteRowExpressionKey,
 } from './route-expression-key.js';
-import {
-  evalComputedKey,
-  type RouteExpressionKeyRow,
-  parseRowArgsDecodeLabel,
-  visibleHandlerInputs,
-  canonicalAbiFunctionSignature,
-  entryAccessAt,
-  resolvePreparedProducerEntry,
-  selectVisibleCallArguments,
-  type DirectMappingReadPlan,
-  directMappingReadPlan,
-  canShareIdempotentCounterLoopSettlement,
-  matchingRouteRowsForExpressionKey,
-  resolveRouteRowExpressionKey,
-} from './route-expression-key.js';
 
 
 /**

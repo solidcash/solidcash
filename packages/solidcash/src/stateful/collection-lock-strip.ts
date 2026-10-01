@@ -4,17 +4,7 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import type { Output } from '../interfaces.js';
 import { isEmptyValueEntryCommitment } from './SortedList.js';
-import {
-  isDisposableAlignmentPad,
-  isP2sh32LockScript,
-  isViewReturnTailOutput,
-} from './value-chunk-band-helpers.js';
-import {
-  commitmentHexOf,
-  outputMatchesLock,
-} from './stb-output-utils.js';
 import {
   SLOT_HEX,
   isSortedEntryHeadCommitment,

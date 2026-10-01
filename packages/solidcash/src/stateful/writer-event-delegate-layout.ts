@@ -3,42 +3,16 @@
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { BlockSlotKind, FunctionBlockLayout } from '@solidcash/utils';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import {
-  commitmentHexOf,
-  cloneToken,
-  outputMatchesLock,
-} from './stb-output-utils.js';
-import {
-  isDisposableAlignmentPad,
-  isViewReturnTailOutput,
-} from './value-chunk-band-helpers.js';
-import {
   isJobEventEmitCommitment,
-  isCreatedJobEventCommitment,
-  chunkableWriterEventOutputIndex,
-  publishJobEventOutputIndex,
   isOverwritableEmitOccupant,
   emitDestCollidesPreservedInput,
-  shouldDisplaceForNestedEvent,
-  nextAlignmentPadIndex,
 } from './same-index-twin-emit.js';
 import {
-  isDelegateEventNftOutput,
   isEmptySameCategoryNoneCap,
-  isMaterializedImmutableNftOutput,
-  isLearnedEventEmitCommitment,
-  isAuthenticatedEventRepairCommitment,
-  demoteUnclaimedConditionalEventOutput,
 } from './delegate-event-jobevent-helpers.js';
-import { isOpReturnLockingBytecode } from './mutable-output-reassert.js';
-import type { CompilerTokenWriterGroup } from './value-chunk-geometry.js';
-import {
-  physicalParticipantWidth,
-  tokenWriterReturnIndex,
-} from './value-chunk-geometry.js';
 
 /** Place the chunkable writer's event at impl+event.offset and drop a cloned stub on dest+1. */
 export function placeChunkableWriterEventOutput(
@@ -410,10 +384,14 @@ export function resolveAbsolutePredOut(
   return BigInt(base + ordinal);
 }
 
-const WRITER_BATCH_WITNESS = /^(?:__internal__vmapBatch(?:PredOut|Proof|Slot|Next|Rank)_\d+|__internal__vmapBatchRows_.+|__internal__vmapBatchTrailingCount)$/;
+const WRITER_BATCH_WITNESS = [
+  /^__internal__vmapBatch(?:PredOut|Proof|Slot|Next|Rank)_\d+$/,
+  /^__internal__vmapBatchRows_.+$/,
+  /^__internal__vmapBatchTrailingCount$/,
+] as const;
 
 export function isWriterBatchWitnessName(name: string): boolean {
-  return WRITER_BATCH_WITNESS.test(name);
+  return WRITER_BATCH_WITNESS.some((pattern) => pattern.test(name));
 }
 
 /**

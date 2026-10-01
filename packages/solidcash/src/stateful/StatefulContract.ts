@@ -12242,7 +12242,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
       if (stableSettlementPlan) {
-        const resolveSettlementOutput = (authority: KernelEntryJournalSettlementReference) => {
+        const resolveSettlementOutput = (authority: KernelEntryJournalSettlementReference): {
+          collection: string; offset: number;
+        } => {
           const location = physicalLocations.get(authority.recordOrdinal);
           if (!location) {
             throw new Error(
@@ -12574,7 +12576,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const preparedChildProducerPath = (
       parentIndex: number,
       source: Parameters<typeof lowLevelNestedCaches.preparedChildProducerPath>[1],
-    ) => lowLevelNestedCaches.preparedChildProducerPath(preparedAtomicNodes?.[parentIndex], source);
+    ): ValueChunkProducerPathDisposition =>
+      lowLevelNestedCaches.preparedChildProducerPath(preparedAtomicNodes?.[parentIndex], source);
     let nestedFunderIndex = lowLevelNestedCaches.nestedFunderIndex;
     // low-level-nested-caches-complete (size-guarded end marker for prepareCreateBuilderLowLevelNestedCaches)
 
@@ -12864,7 +12867,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const delegatedLoopOutputCount = [...sortedLoopCommitments.entries()]
         .filter(([collection]) => delegatedLoopCollections.has(collection))
         .reduce((sum, [, commitments]) => sum + commitments.length, 0);
-      const delegatedLoopInputCount = iterationEntryInputs.length + insertLoopPredecessors.length;
       const delegatedLoopOutputSurplus = Math.max(
         0,
         Math.max(delegatedLoopOutputCount, insertLoopPredecessors.length * 2) - insertLoopPredecessors.length,
@@ -12903,14 +12905,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         allGroupEcSlots,
         timing,
       });
-      const nestedInputBase = nestedBases.nestedInputBase;
-      const projectedRouteBlockSize = nestedBases.projectedRouteBlockSize;
-      const nestedOutputBase = nestedBases.nestedOutputBase;
       const nestedMasterIndices = nestedBases.nestedMasterIndices;
       const nestedOutputBases = nestedBases.nestedOutputBases;
       const delegateReturnOutputBase = nestedBases.delegateReturnOutputBase;
       const returningExternalGroups = nestedBases.returningExternalGroups;
-      const returnIndexForGroup = nestedBases.returnIndexForGroup;
       const physicalReturnIndexForGroup = nestedBases.physicalReturnIndexForGroup;
       const tailReturnRank = (a: number, b: number): number => {
         const name = (idx: number): string => externalCallUtxoGroups[idx]?.functionName ?? '';
@@ -12933,7 +12931,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         tailReturnRank,
       });
       const relocatedPredOutBase = relocated.relocatedPredOutBase;
-      const swappedTokenGroups = relocated.swappedTokenGroups;
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
         console.error('nested-route-layout', {
           external: externalCallUtxoGroups.map((group, index) => ({
@@ -13102,7 +13099,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     );
     const satoshiContainerUtxo = satoshiContainerLoad.satoshiContainerUtxo;
     const satoshiContainerLockingBytecode = satoshiContainerLoad.satoshiContainerLockingBytecode;
-    const transferCount = abiFunction?.transferCount ?? 0;
 
     const synthesized = materializeCreateBuilderSyntheticArgsImpl(
       {
@@ -13125,7 +13121,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     );
     finalArgs = synthesized.finalArgs;
     activeDelegateGroupIndex = synthesized.activeDelegateGroupIndex;
-    const callInputIndexByName = synthesized.callInputIndexByName;
     const delegateInputArgumentIndex = synthesized.delegateInputArgumentIndex;
 
     if (resolvedMsgSenderCategory !== undefined && abiFunction !== undefined
@@ -13161,7 +13156,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let buildStateInputUnlocker = stateUnlockers.buildStateInputUnlocker;
     let refreshPhysicalDelegateInputIndex = stateUnlockers.refreshPhysicalDelegateInputIndex;
     let stateInputUnlocker = stateUnlockers.stateInputUnlocker;
-    const blockBase = stateUnlockers.blockBase;
     const dataNftUnlockers = stateUnlockers.dataNftUnlockers;
     const topLevelDynamicChunkArgumentIndex = stateUnlockers.topLevelDynamicChunkArgumentIndex;
 
@@ -13369,7 +13363,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const eventDefs = eventLocks.eventDefs;
     const eventNftLockingBytecodes = eventLocks.eventNftLockingBytecodes;
     const runtimeEventNftLockingBytecodes = eventLocks.runtimeEventNftLockingBytecodes;
-    const runtimeEventSignatures = eventLocks.runtimeEventSignatures;
     // read-only or untouched vars must be left alone, else their chunks would be wrongly destroyed.
     const selectedEntryDynamicRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
       ?.messageBusRowArguments;
@@ -13764,11 +13757,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // assembled-witnesses-complete (size-guarded end marker for rebindCreateBuilderAssembledWitnesses)
 
     const {
-      tokenContainerTransferOps,
       derivTransferCount,
       derivTokenOps,
       delegatecallInputIndex,
-      delegatecallAbiFunction,
       eventBlockLayoutForDerive,
     } = await prepareCreateBuilderDerivePreludeImpl(
       {

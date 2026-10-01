@@ -521,6 +521,8 @@ type InternalCompilerOptions = CompilerOptions & {
   /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
   __perCallCallCount?: number;
   __perCallRefusedEntries?: Map<string, string>;
+  /** Refused bodies no selector reaches whose definitions are emitted as refusal stubs; never published. */
+  __perCallStubbedDefinitions?: Map<string, string>;
   __perCallBalanceReaders?: readonly string[];
   __perCallEntryCallRepeats?: Map<string, boolean>;
   /** The stop-site table a driver derives the master from, one entry per entry point. */
@@ -14198,6 +14200,9 @@ function compileResolvedAst(
     (mergedCompilerOptions as InternalCompilerOptions).__perCallCallCount = assessment.callCount ?? 0;
     (mergedCompilerOptions as InternalCompilerOptions).__perCallRefusedEntries = new Map(
       (assessment.refusedEntries ?? []).map((entry) => [entry.entryName, entry.reason]),
+    );
+    (mergedCompilerOptions as InternalCompilerOptions).__perCallStubbedDefinitions = new Map(
+      (assessment.stubbedDefinitions ?? []).map((body) => [body.name, body.reason]),
     );
     (mergedCompilerOptions as InternalCompilerOptions).__perCallBalanceReaders = assessment.balanceReaders ?? [];
     (mergedCompilerOptions as InternalCompilerOptions).__perCallReservesValidatorHash = true;

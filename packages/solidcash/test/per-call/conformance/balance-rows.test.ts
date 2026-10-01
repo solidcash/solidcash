@@ -134,3 +134,46 @@ describe('spec section 23 row 10: address(this).balance compared with 0', () => 
     );
   }, 120_000);
 });
+
+/**
+ * A kept subroutine that reads its contract's balance (spec 4b). It has no frame to read the balance from, so the
+ * compiler refuses the entry and the constructor that run it by name, and the call path and the deployment answer
+ * with the published reason rather than with a failed compile or an opcode.
+ */
+const KEPT_ENTRY_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Till {'
+  + '   int public seen;'
+  + '   function f(int expected) { require(mine() == expected); this.seen = 1; }'
+  + '   function note() { this.seen = this.seen + 1; require(true); }'
+  + '   function mine() internal view returns (int) { return address(this).balance; }'
+  + ' }';
+
+const KEPT_CONSTRUCTOR_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Opening {'
+  + '   int public seen;'
+  + '   constructor() { this.seen = mine(); }'
+  + '   function note() { this.seen = this.seen + 1; require(true); }'
+  + '   function mine() internal view returns (int) { return address(this).balance; }'
+  + ' }';
+
+describe('a kept subroutine that reads its contract\'s balance', () => {
+  it('refuses by name the call of an entry that runs it, and spends nothing', async () => {
+    const till = compileStringMulti(KEPT_ENTRY_SOURCE, { composition: 'per-call' }).Till!;
+    const deployed = await deployedFor(till);
+    const coin = freshCoin();
+    await deployed.provider.addUtxo(binToHex(deployed.callerLock), coin);
+    await expect(callPerCallEntry({
+      provider: deployed.provider, artifact: till, categoryId: deployed.categoryId, functionName: 'f', args: [0n],
+      callerUtxo: coin, callerLockingBytecode: deployed.callerLock, funder: deployed.funder, vm: compositionMachine(),
+    })).rejects.toThrow('PER_CALL_HOST_ENTRY_REFUSED: Till.f() is refused by the compiler: it runs \'mine\', which '
+      + 'the master cannot serve: the body reads its contract\'s balance and is invoked as its own subroutine');
+    expect((await deployed.provider.getUtxosForLockingBytecode(deployed.callerLock))
+      .some((utxo) => utxo.txid === coin.txid)).toBe(true);
+  }, 120_000);
+
+  it('refuses by name the deployment of a constructor that runs it', async () => {
+    const opening = compileStringMulti(KEPT_CONSTRUCTOR_SOURCE, { composition: 'per-call' }).Opening!;
+    await expect(deployedFor(opening)).rejects.toThrow('the constructor of "Opening" is refused by the compiler '
+      + '(Opening.__construct()): the constructor reads its contract\'s balance, which no genesis shows');
+  }, 120_000);
+});

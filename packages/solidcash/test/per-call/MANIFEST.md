@@ -25,7 +25,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 919 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 921 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 22 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
@@ -37,7 +37,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 150 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 151 |
 | `packages/solidcash/test/per-call/call/` | `solidcash` | 170 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 11 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 112 |
@@ -45,20 +45,20 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 70 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 9 (6 by default, 3 under `PER_CALL_FULL=1`) |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 81 |
-| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 121 (120 by default, 1 under `PER_CALL_FULL=1`) |
+| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 123 (122 by default, 1 under `PER_CALL_FULL=1`) |
 | `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2, under `PER_CALL_FULL=1` |
 | `packages/solidcash/test/per-call/ahead/` | `solidcash` | 137, under `PER_CALL_AHEAD=1` |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 10 |
 
-Total: 2324 checks (115 + 973 + 1226 + 10), with four more cases that run under
+Total: 2329 checks (115 + 975 + 1229 + 10), with four more cases that run under
 `PER_CALL_FULL=1`: three in `primitives/many-masters.test.ts` (the nine-entry composition and its refusal, which
 `shapes/deep-arbitration.test.ts` covers by default, and the twenty-four-master composition, which takes about
 twenty-eight seconds to derive), and the shipped data contract's clock-stamped append
 (`call/proxy-proxied-callee-element-clock.test.ts`), which deploys the project's compiled `MarketplaceDataV1`
 behind its proxy and takes about three and a half minutes; `pw7-measure.test.ts` runs only under `PER_CALL_FULL=1`
 too. The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 973 is the four rows above it (106 files),
-`solidcash` 1226 is the rows above it from `validator/` down, `ahead/` excepted (211 files; refreshed 2026-10-01),
+`vitest.per-call.config.ts`: `solidc` 975 is the four rows above it (106 files),
+`solidcash` 1229 is the rows above it from `validator/` down, `ahead/` excepted (211 files; refreshed 2026-10-01),
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one

@@ -265,3 +265,53 @@ describe('a constructor that reads a balance, compiled per-call', () => {
       .toStrictEqual({ accepted: true });
   });
 });
+
+/**
+ * A kept subroutine that reads its contract's balance (spec 4b).
+ *
+ * A body the master keeps as its own subroutine has no frame to read the balance from, so its definition cannot be
+ * emitted and used to fail the whole compile. It is emitted as a refusal stub instead, and the entry and the
+ * constructor that run it are refused with it, by name, while the entry that reads its balance itself settles.
+ */
+const KEPT_HELPER_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Vault {'
+  + '   constructor() { require(mine() >= 0); }'
+  + '   function f(int expected) { require(mine() == expected); }'
+  + '   function check(int expected) { require(address(this).balance == expected); }'
+  + '   function mine() internal view returns (int) { return address(this).balance; }'
+  + ' }';
+
+describe('a kept subroutine that reads its contract\'s balance, compiled per-call', () => {
+  const compiledVault = (): Artifact => compileString(KEPT_HELPER_SOURCE, { composition: 'per-call' });
+
+  it('compiles, and refuses by name the entry and the constructor that run it', () => {
+    expect(compiledVault().composition!.refusedEntries).toStrictEqual([
+      {
+        functionName: 'Vault.__construct()',
+        reason: 'the constructor reads its contract\'s balance, which no genesis shows: the balance is the '
+          + 'containers a transaction spends beside a master of the contract, and the contract has no master '
+          + 'before its genesis',
+      },
+      {
+        functionName: 'Vault.f()',
+        reason: 'it runs \'mine\', which the master cannot serve: the body reads its contract\'s balance and is '
+          + 'invoked as its own subroutine, which has no frame to read it from',
+      },
+    ]);
+  });
+
+  it('fails at the refused bodies while the entry that reads its balance itself settles', () => {
+    const vault = compiledVault();
+    expect(verdict({
+      artifact: vault, entry: 'check', args: [int(50_000n)], containersIn: [30_000n, 20_000n],
+      trailing: [container(50_000n)],
+    })).toStrictEqual({ accepted: true });
+    const refused = { accepted: false, objection: 'Program failed an OP_VERIFY operation.' };
+    expect(verdict({
+      artifact: vault, entry: 'f', args: [int(50_000n)], containersIn: [30_000n, 20_000n],
+      trailing: [container(50_000n)],
+    })).toStrictEqual(refused);
+    expect(verdict({ artifact: vault, entry: '__construct', args: [], containersIn: [], trailing: [] }))
+      .toStrictEqual(refused);
+  });
+});

@@ -2163,9 +2163,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       __perCallEntryCallSites?: ReadonlyMap<string, readonly MasterCallSite[]>;
     }).__perCallEntryCallSites ?? new Map();
     this.perCallCallCount = (compilerOptions as { __perCallCallCount?: number }).__perCallCallCount ?? 0;
-    this.perCallRefusedEntries = (compilerOptions as {
-      __perCallRefusedEntries?: ReadonlyMap<string, string>;
-    }).__perCallRefusedEntries ?? new Map();
+    // A refused body no selector reaches whose definition cannot be emitted is stubbed as a refused entry is.
+    this.perCallRefusedEntries = new Map([
+      ...((compilerOptions as { __perCallRefusedEntries?: ReadonlyMap<string, string> }).__perCallRefusedEntries ?? []),
+      ...((compilerOptions as { __perCallStubbedDefinitions?: ReadonlyMap<string, string> })
+        .__perCallStubbedDefinitions ?? []),
+    ]);
     this.perCallReservesValidatorHash = (compilerOptions as {
       __perCallReservesValidatorHash?: boolean;
     }).__perCallReservesValidatorHash === true;

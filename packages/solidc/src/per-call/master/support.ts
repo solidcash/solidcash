@@ -1208,6 +1208,12 @@ export interface PerCallMasterShapeAssessment {
    * spends. The names are the bodies' own; the artifact publishes each as `Contract.entry()`.
    */
   readonly balanceReaders?: readonly string[];
+  /**
+   * The refused bodies no selector reaches whose definitions code generation cannot emit, each with the fact that
+   * refuses it: a kept subroutine that reads its contract's balance has no frame to read it from. Each is emitted
+   * as a refusal stub and is not published, since no frame names it; the bodies that run it are refused with it.
+   */
+  readonly stubbedDefinitions?: readonly { readonly name: string; readonly reason: string }[];
 }
 
 /** True when an address expression is the contract's own, `address(this)`, whatever casts wrap it. */
@@ -1349,6 +1355,13 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   // that invoke a refused one are refused with it by the closure below.
   const invoked = new Set<string>();
   for (const names of invokes.values()) for (const name of names) invoked.add(name);
+  // The constructor runs the bodies it invokes as subroutines too.
+  if (contract.constructorDef !== undefined) {
+    for (const name of invokedFunctionNames(contract.constructorDef.body)) invoked.add(name);
+  }
+  // The refused bodies no selector reaches whose definitions code generation cannot emit.
+  const entryNames = new Set(entryPoints.map((entry) => entry.name));
+  const stubbed = new Set<string>();
   for (const fn of entryBodies) {
     // A hidden parameter is an operand the direct path expects from the SDK or from a co-spent input. The head
     // supplies the frame values itself and derives the batch operands it can, so any other hidden operand would be
@@ -1421,6 +1434,9 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     if (reads.own && invoked.has(fn.name)) {
       refuseBody(fn, 'the body reads its contract\'s balance and is invoked as its own subroutine, which has no '
         + 'frame to read it from');
+      // A definition no selector reaches is emitted for the bodies that invoke it, and it has no frame to read the
+      // balance from, so it is emitted as a refusal stub; the bodies that run it are refused with it.
+      if (!entryNames.has(fn.name)) stubbed.add(fn.name);
     }
   }
   // The constructor runs only at its genesis, and no genesis shows a balance: another address's shows only in the
@@ -1537,6 +1553,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   // measured. Taking the unfiltered count would leave the head refusing the standalone frame a served master is
   // entitled to when the only call-making entries are the refused ones.
   const callCount = Math.max(0, ...entryCalls.map((entry) => entry.pathCount ?? entry.calls.length));
+  const stubbedDefinitions = [...stubbed].map((name) => ({ name, reason: refusals.get(name)! }));
   if (entryCalls.length === 0 && contract.constructorDef === undefined) {
     // Every body is refused, so the master would dispatch only to refusals. That is still a contract whose
     // functions are each reported by name, which is what a builder needs to say which shape is missing.
@@ -1547,6 +1564,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
       tail: tail.tail,
       ...(refusals.size > 0 ? { refusedEntries: renderRefusals(contract, entryPoints, refusals) } : {}),
       ...(balanceReaders.length > 0 ? { balanceReaders } : {}),
+      ...(stubbedDefinitions.length > 0 ? { stubbedDefinitions } : {}),
     };
   }
   return {
@@ -1556,6 +1574,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     tail: tail.tail,
     ...(refusals.size > 0 ? { refusedEntries: renderRefusals(contract, entryPoints, refusals) } : {}),
     ...(balanceReaders.length > 0 ? { balanceReaders } : {}),
+    ...(stubbedDefinitions.length > 0 ? { stubbedDefinitions } : {}),
   };
 }
 

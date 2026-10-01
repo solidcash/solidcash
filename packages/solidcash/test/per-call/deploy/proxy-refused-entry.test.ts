@@ -76,6 +76,12 @@ const INITIALIZER_SOURCE = 'pragma solidity ^0.8.19;\n'
   + '  }\n'
   + '}\n';
 
+/** The served fields and initialize, beside an entry that runs a kept subroutine reading its contract's balance. */
+const KEPT_BALANCE_SOURCE = SERVED_SOURCE.replace(/}\n$/, ''
+  + '  function settle(int expected) { require(mine() == expected); this.version = 8; }\n'
+  + '  function mine() internal view returns (int) { return address(this).balance; }\n'
+  + '}\n');
+
 const COMPILE_OPTIONS = { composition: 'per-call' } as const;
 const SOLIDITY_OPTIONS = { composition: 'per-call', solidityImportCompat: true } as const;
 
@@ -156,6 +162,29 @@ describe('a hop whose implementation entry the compiler refused', () => {
 
     await expect(call).rejects.toThrow(PerCallProxyDeployError);
     await expect(call).rejects.toThrow(/the implementation's "initialize" entry is refused by the compiler/);
+  });
+
+  it('refuses by name an entry that runs a kept subroutine reading its contract\'s balance', async () => {
+    // The subroutine's definition is emitted as a refusal stub, so the implementation compiles and the entry that
+    // runs it is published as refused, which the call surface reads before the live pools.
+    const artifacts = compileStringMulti(KEPT_BALANCE_SOURCE, COMPILE_OPTIONS);
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const { funder, deployerLock } = await funded(network);
+    const call = callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: PROXY_CATEGORY,
+      implementationCategoryId: IMPL_CATEGORY,
+      functionName: 'settle',
+      args: [0n],
+      callerUtxo: { txid: '55'.repeat(31) + 'ab', vout: 0, satoshis: 100_000n },
+      callerLockingBytecode: deployerLock,
+      funder,
+    });
+
+    await expect(call).rejects.toThrow(PerCallProxyDeployError);
+    await expect(call).rejects.toThrow('the implementation\'s "settle" entry is refused by the compiler '
+      + '(Impl.settle()): it runs \'mine\', which the master cannot serve: the body reads its contract\'s balance');
   });
 
   it('settles the same hop when the entry has no refusal of its own', async () => {

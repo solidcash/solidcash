@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { compileString } from 'solidc';
-import type { Artifact, FunctionArgument } from '@solidcash/utils';
+import type { Artifact } from '@solidcash/utils';
+import type { FunctionArgument } from '../../src/Argument.js';
 import { StatefulContract } from '../../src/index.js';
 import { StatefulFunctionCall } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider } from '../test-util.js';

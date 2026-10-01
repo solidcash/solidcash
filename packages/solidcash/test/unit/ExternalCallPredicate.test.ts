@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { hash160 } from '@solidcash/utils';
 import type {
-  ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression, FunctionArgument,
+  ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression,
 } from '@solidcash/utils';
+import type { FunctionArgument } from '../../src/Argument.js';
 import { compileString } from '../direct-compile.js';
 import { StatefulContract } from '../../src/index.js';
 import {

@@ -7101,11 +7101,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       return call.addressParam ? [call.addressParam] : [];
     }));
     const normalized = args.map((arg, index) => {
-      if (frameInputs[index]?.type !== 'address' || typeof arg !== 'string'
-        || externalTargetNames.has(frameInputs[index].name)) return arg;
+      if (frameInputs[index]?.type !== 'address') return arg;
+      const addressArg = typeof arg === 'object' && arg !== null && !(arg instanceof Uint8Array)
+        && typeof (arg as { address?: unknown }).address === 'string'
+        ? (arg as { address: string }).address : arg;
+      if (typeof addressArg !== 'string' || externalTargetNames.has(frameInputs[index].name)) {
+        return addressArg;
+      }
       // The registry distinguishes a plain contract's execution lock from a kernel participant's authenticated
       // public CREATE identity. Use that same value for ABI arguments and genesis state, so both paths agree.
-      return registeredValueAddressLockingBytecode(this.inner.provider, arg) ?? arg;
+      return registeredValueAddressLockingBytecode(this.inner.provider, addressArg) ?? addressArg;
     });
     const structs = this.inner.artifact.structs ?? this.inner.artifact.stateLayout?.structs;
     frameInputs.forEach((input, index) => {

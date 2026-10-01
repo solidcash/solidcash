@@ -201,7 +201,16 @@ export function finalizeReverseSuffixValueChunkLayout(
   const suffixVar = host.dynamicChunkVars.find((variable) => variable.delegateSuffix === true)
     ?? host.dynamicChunkVars[host.dynamicChunkVars.length - 1];
   if (!suffixVar) return 0;
-  let changed = moveLateOutputsBeforeReverseSuffix(
+  // Once the authoritative commitments are known, the pin below can write the
+  // reverse-indexed suffix in place. Moving an earlier run with splice() shifts
+  // absolute output coordinates owned by other participants (e.g. a proxy
+  // master), even though those coordinates have nothing to do with chunks.
+  // Keep the move only for a run whose commitments cannot yet be materialized.
+  const materializedWidth = host.dynamicChunkVars.reduce(
+    (sum, variable) => sum + (host.chunkRawCommitments.get(variable.name) ?? [])
+      .filter((commitment) => commitment.length > 0).length, 0,
+  );
+  let changed = materializedWidth >= suffixChunkCount ? 0 : moveLateOutputsBeforeReverseSuffix(
     builder.outputs, suffixVar.lockingBytecode, suffixChunkCount,
   );
   changed += reassertReverseSuffixDynamicChunks(host, builder, { stripSurplus: true });

@@ -48,6 +48,18 @@ describe('stateful ABI argument validation', () => {
       );
   });
 
+  it('normalizes an address-bearing signer in a stateful ABI frame', () => {
+    const contract = createFixedWidthContract();
+    const address = `0x${'11'.repeat(20)}`;
+    const signer = { address };
+    const abi = {
+      name: 'send',
+      inputs: [{ name: 'recipient', type: 'address' }],
+    } as AbiFunction;
+
+    expect(contract._validateAbiFrame(abi, [signer])).toEqual([address]);
+  });
+
   it('validates every supplied route witness around an implicit caller category', () => {
     const contract = createFixedWidthContract();
     const blob = Uint8Array.of(1);

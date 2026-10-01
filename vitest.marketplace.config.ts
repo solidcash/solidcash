@@ -51,4 +51,7 @@ export default defineConfig(solidhatPreset(
       reporters: ['verbose'],
     },
   },
+  // The unchanged upstream message tests publish through an IPFS upload/gateway service. Keep that transport
+  // hermetic through SolidHat's wire-compatible in-memory service and reject unexpected network requests.
+  { offline: true },
 ));

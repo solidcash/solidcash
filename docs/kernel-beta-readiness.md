@@ -72,6 +72,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   compiler regression and its immediately preceding title pass. After `yarn build` and a normal complete
   Marketplace compile, the unchanged sanity-check title and its immediately preceding `take job multiple` title
   both pass individually (1 selected, 65 skipped each). The other Marketplace titles remain unverified here.
+- 2026-10-01 focused message checkpoint: the unchanged `post thread message > sanity checks` title now passes
+  individually (1 selected, 65 skipped), as does its immediately preceding `pay start job > pay start job` title.
+  A consumed logical-identity NFT is relocated if its provisional output is reserved for a reverse suffix. When
+  authoritative suffix commitments exist, finalization writes them in place rather than splicing an earlier
+  chunk run across fixed participant output indices. The SDK also accepts an address-bearing signer in an
+  address-typed ABI argument, matching the upstream negative-path call. The relevant focused regressions and
+  adjacent checks pass. No comprehensive suite or beta gate was run for this checkpoint.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

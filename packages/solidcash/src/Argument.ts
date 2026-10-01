@@ -233,6 +233,15 @@ export function encodeFunctionArgument(
 
   if (type === PrimitiveType.SIG && argument instanceof SignatureTemplate) return argument;
 
+  // Ethers-style address-bearing objects (including SignerWithAddress) are
+  // address arguments only. Read their concrete address here so direct unlock
+  // and stateful ABI validation agree on the encoded value.
+  if (type instanceof AddressType && typeof argument === 'object' && argument !== null
+    && !(argument instanceof Uint8Array) && !Array.isArray(argument)) {
+    const address = (argument as { address?: unknown }).address;
+    if (typeof address === 'string') argument = address;
+  }
+
   // An `address` argument given as a CashAddress string (has a `prefix:` part) -> its locking bytecode. A
   // hex-encoded locking bytecode still falls through to hexToBin below. Prevents silently hexToBin-ing a
   // CashAddress into garbage bytes (which then mismatch the real address everywhere it is used).

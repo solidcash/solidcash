@@ -100,7 +100,11 @@ export function reassertScidIdentityOutputs(
     const lock = input.unlocker?.generateLockingBytecode();
     if (!lock) continue;
     const wanted = binToHex(lock);
-    const already = outputs.some((output) => output?.token?.nft?.capability === 'none'
+    // A matching replica in a compiler-owned suffix is not preserved: the later chunk/event materializer will
+    // overwrite that coordinate. Relocate it now to an unreserved pad instead of treating mere presence as proof
+    // of a durable 1:1 identity output.
+    const already = outputs.some((output, outputIndex) => !reservedIndices.has(outputIndex)
+      && output?.token?.nft?.capability === 'none'
       && output.token.category === category
       && output.token.nft.commitment === commitment
       && lockHex(output.to) === wanted);

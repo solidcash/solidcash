@@ -32,7 +32,7 @@ import {
   normalizeJobEventAddresses,
   usesLegacyJobEventCompatibility,
 } from './legacy-job-event-wire.js';
-import { resolveLogicalIdentityFromAddresses } from './logical-identity.js';
+import { resolveLogicalIdentityByCategory } from './logical-identity.js';
 import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
 import { decorateFunctionResult } from './public-result.js';
 import {
@@ -384,9 +384,11 @@ export async function deriveReturnValue(
           generateUnlockingBytecode: () => new Uint8Array(),
         },
       }];
-      const callerIdentity = await resolveLogicalIdentityFromAddresses(
-        callerContract.inner.provider,
-        [callerContract.target],
+      // Resolve the caller's immutable identity by category. A handle can expose a
+      // physical execution address after a state transition, while msg.sender
+      // still uses the logical CREATE identity anchored by this category.
+      const callerIdentity = await resolveLogicalIdentityByCategory(
+        callerContract.inner.provider, callerContract.categoryId, [callerContract.target],
       );
       if (callerIdentity !== undefined
         && callerIdentity.categoryId.toLowerCase() === callerContract.categoryId.toLowerCase()) {

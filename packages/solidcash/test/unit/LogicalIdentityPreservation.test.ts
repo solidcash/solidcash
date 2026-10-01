@@ -139,6 +139,29 @@ describe('logical CREATE identity at getAddress()', () => {
     expect((outputs[2].token as { nft?: { commitment?: string } }).nft?.commitment).toBe(commitment);
   });
 
+  it('relocates an already-restored SCID out of a reserved suffix slot', () => {
+    const commitment = '5343494401cafe';
+    const category = 'cc'.repeat(32);
+    const lock = Uint8Array.of(0xaa, 0x20, 0x08);
+    const outputs: Array<{ to?: Uint8Array; amount?: bigint; token?: object }> = [
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: lock, amount: 1200n },
+      { to: lock, amount: 1200n, token: { category, amount: 0n,
+        nft: { capability: 'none', commitment } } },
+      { to: Uint8Array.of(0xaa, 0x20, 0x09), amount: 1200n,
+        token: { category, amount: 0n, nft: { capability: 'mutable', commitment: '00' } } },
+      { to: Uint8Array.of(0x6a), amount: 0n },
+    ];
+    expect(reassertScidIdentityOutputs(outputs, [{
+      satoshis: 1200n,
+      token: { category, amount: 0n, nft: { capability: 'none', commitment } },
+      unlocker: { generateLockingBytecode: () => lock },
+    }], new Set([2, 3, 4]))).toBe(1);
+    expect((outputs[1].token as { nft?: { commitment?: string } }).nft?.commitment).toBe(commitment);
+    expect(outputs[2].token).toBeUndefined();
+    expect(outputs).toHaveLength(5);
+  });
+
   it('recreates a consumed SCID identity 1:1 at its input index', () => {
     const commitment = '5343494401dead';
     const outputs: Array<{ to?: Uint8Array; amount?: bigint; token?: object }> = [

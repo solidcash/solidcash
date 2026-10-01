@@ -281,6 +281,33 @@ describe('state-backed external-call expected address', () => {
   });
 });
 
+describe('state-field arguments after sibling writes', () => {
+  it('retains the state read after a storage-pointer partial struct update', () => {
+    const artifact = compileString(`
+      struct Roles { address creator; address arbitrator; address worker; }
+      struct Job { Roles roles; uint state; }
+      interface IFee { function getFee(address arbitrator) external view returns (uint); }
+      contract C(IFee feeContract) {
+        Job[] jobs;
+        function pay(uint id, address worker) public {
+          Job storage job = jobs[id];
+          job.state = 1;
+          job.roles.worker = worker;
+          feeContract.getFee(job.roles.arbitrator);
+          require(true);
+        }
+      }
+    `, { solidityImportCompat: true, forceStateful: true });
+    const call = artifact.abi.find((candidate) => candidate.name === 'pay')?.externalCalls
+      ?.find((candidate) => candidate.functionName === 'getFee');
+    const source = JSON.stringify(call?.argSources);
+    expect(source).toContain('"name":"jobs"');
+    expect(source).toContain('"name":"arbitrator"');
+    expect(source).not.toContain('"kind":"reference"');
+    expect(source).not.toContain('"kind":"unsupported"');
+  });
+});
+
 describe('unlocking selector extract', () => {
   it('takes the first 4-byte script push, not a 0x04 prefix plus three selector bytes', () => {
     const artifact = compileString(

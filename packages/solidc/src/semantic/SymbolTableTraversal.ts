@@ -7466,6 +7466,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    */
   private dominatingStateFieldValue(
     read: FieldAccessNode, use: ExternalFunctionCallNode,
+    activeExpressions: ReadonlySet<Node>,
   ): ExpressionNode | undefined {
     type StatePath = { root: string; keys: readonly string[]; fields: readonly string[] };
     type StateWrite = StatePath & { value: ExpressionNode };
@@ -7579,6 +7580,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (isPrefix(write.fields, target.fields)) {
         const value = projectFields(write.value, target.fields.slice(write.fields.length));
         if (!value) return undefined;
+        // A struct rebuild's unchanged fields read the old value while its RHS is evaluated. If the
+        // projected value is already on this serialization path, following the write would recursively
+        // serialize the very rebuild whose argument we are resolving. Look through to the prior state.
+        if (activeExpressions.has(value)) continue;
         const carried = statePath(value);
         if (carried && carried.root === target.root
           && carried.keys.join('\0') === target.keys.join('\0')
@@ -8445,7 +8450,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               return { kind: 'literal', type: 'bigint', value: member.value.toString() };
             }
           }
-          const writtenValue = this.dominatingStateFieldValue(expression, node);
+          const writtenValue = this.dominatingStateFieldValue(expression, node, seen);
           if (writtenValue) return serializeExpression(writtenValue, seen);
           const inner = serializeExpression(expression.expression, seen);
           const fieldType = expression.type

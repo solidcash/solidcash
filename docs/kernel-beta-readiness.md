@@ -65,6 +65,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   publishes the current artifact context. Its regenerated `takeJob` ABI and relevant executable bodies are byte-
   identical to the iteration artifacts used by the green focused Marketplace titles. This remains a focused
   checkpoint, not a comprehensive test or beta-gate pass.
+- 2026-10-01 focused pay-start checkpoint: the unchanged `pay start job > sanity checks` title initially failed
+  while planning a later `getArbitratorFee` call. Its compiler-published argument recursively referenced the
+  struct rebuild that was still evaluating old fields after a sibling storage-pointer write. State-field
+  provenance now looks through that self-referential write to the prior authenticated state read. A neutral
+  compiler regression and its immediately preceding title pass. After `yarn build` and a normal complete
+  Marketplace compile, the unchanged sanity-check title and its immediately preceding `take job multiple` title
+  both pass individually (1 selected, 65 skipped each). The other Marketplace titles remain unverified here.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

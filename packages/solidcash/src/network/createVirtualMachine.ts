@@ -747,19 +747,28 @@ function buildVirtualMachineBch2026ForProvider(
   }
   const machine = createVirtualMachine(instructionSet);
   if (runPhases !== undefined) {
-    // The same phases as `evaluate`, stepped one instruction at a time and retaining only the state before the
-    // current one. `debug` keeps every step, so reading a stop state from a long-running program grows without
-    // bound; this returns the stop state's neighborhood in constant memory.
+    // The same phases as `evaluate`, stepped in place as `evaluate` steps them, returning each phase's stop state
+    // and the step before it. That step carries only what a stop is read from: its position, and its stack when it
+    // is an OP_EQUALVERIFY; its other fields are the stop state's. `stateStep` clones the whole state, OP_DEFINE
+    // table included, at every instruction, which made this reader most of a hop's derivation time.
     type MachineState = Parameters<typeof machine.stateStep>[0];
     const boundedDebug = (program: Parameters<typeof machine.evaluate>[0]): readonly MachineState[] => {
       const states: MachineState[] = [];
       const collect = (initial: MachineState): MachineState => {
-        let previous = initial;
-        let current = initial;
+        let current = machine.stateClone(initial);
+        let stepped = false;
+        let ip = current.ip;
+        let instructions = current.instructions;
+        let stack: MachineState['stack'] | undefined;
         while (machine.stateContinue(current)) {
-          previous = current;
-          current = machine.stateStep(current);
+          ({ ip, instructions } = current);
+          stack = instructions[ip]?.opcode === OpcodesBch2026.OP_EQUALVERIFY ? current.stack.slice() : undefined;
+          current = machine.stateStepMutate(current);
+          stepped = true;
         }
+        const previous = stepped
+          ? { ...current, error: undefined, ip, instructions, stack: stack ?? current.stack } as MachineState
+          : initial;
         states.push(previous, current);
         return current;
       };

@@ -1377,6 +1377,13 @@ export interface HopExternalPlanOptions {
    * condition undecided, which is the first pass.
    */
   readonly externalReturns?: ReadonlyMap<number, FunctionArgument>;
+  /**
+   * The node ids the frames outside this plan already place as writes, by the outpoint each spends.
+   *
+   * The caller's own frame is planned outside the callees, and a node it rewrites is one input and one participant:
+   * a callee that only reads that node names it under the id supplied here rather than placing a second one.
+   */
+  readonly writtenNodeIds?: ReadonlyMap<string, string>;
 }
 
 /** The callsite ids an entry's own conditions read a result from, in published order. */
@@ -1428,7 +1435,58 @@ export async function planHopExternalCalls(
     callBases: root.callBases,
     callsiteIds: root.callsiteIds,
     conditionalProducers: conditionalProducerCallsites(options.artifact, options.functionName),
-    callees: ctx.callees,
+    callees: shareWrittenReadNodes(ctx.callees, options.writtenNodeIds),
     utxos: ctx.utxos,
   };
+}
+
+/**
+ * The id each node a hop's writes place is carried under, by the outpoint that node is spent at.
+ *
+ * A write plans the node it rewrites under an id of its own, and the plan places that id as one participant; the
+ * outpoint is what tells two plans that they name the same live node.
+ */
+export function writtenNodeIds(callees: readonly HopCallee[]): Map<string, string> {
+  const written = new Map<string, string>();
+  for (const callee of callees) {
+    for (const [id, utxo] of callee.entryWrites?.spentUtxos ?? []) written.set(`${utxo.txid}:${utxo.vout}`, id);
+  }
+  return written;
+}
+
+/**
+ * Renames each read node whose outpoint one of the hop's write nodes already places, so the transaction spends it
+ * once.
+ *
+ * A reach whose entry only reads a key declares the node the key's slot holds, and a reach whose entry writes that
+ * key declares the same live node as one it spends and recreates. The transaction carries one input at that
+ * outpoint, so the reading reach names the node under the id the writing one places: the two reaches' records are
+ * records of one participant, one in each of the segments its own frame runs in, which is what the chain rule reads
+ * across them. A read the same reach's own write claims is refused where that reach is planned instead.
+ */
+export function shareReadNodeIds(
+  nodes: readonly HopCalleeReadNode[],
+  written: ReadonlyMap<string, string>,
+): HopCalleeReadNode[] {
+  if (nodes.length === 0 || written.size === 0) return [...nodes];
+  return nodes.map((node) => {
+    const writer = written.get(`${node.utxo.txid}:${node.utxo.vout}`);
+    return writer === undefined || writer === node.id ? node : { ...node, id: writer };
+  });
+}
+
+/** Applies {@link shareReadNodeIds} to every callee's own read nodes, beside the caller's own write nodes. */
+export function shareWrittenReadNodes(
+  callees: readonly HopCallee[],
+  extraWritten?: ReadonlyMap<string, string>,
+): HopCallee[] {
+  const written = writtenNodeIds(callees);
+  for (const [outpoint, id] of extraWritten ?? []) written.set(outpoint, id);
+  if (written.size === 0) return [...callees];
+  return callees.map((callee) => {
+    const readNodes = shareReadNodeIds(callee.readNodes, written);
+    return readNodes.every((node, at) => node === callee.readNodes[at])
+      ? callee
+      : { ...callee, readNodes };
+  });
 }

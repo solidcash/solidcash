@@ -74,6 +74,8 @@ import {
   deploymentStateValues,
   planHopExternalCalls,
   requireSatisfiableReachWrites,
+  shareReadNodeIds,
+  writtenNodeIds,
   type HopCallee,
   type HopCalleeReadNode,
   type HopCalleeRecord,
@@ -860,6 +862,7 @@ export async function deployPerCallProxy(
       selfAddress: proxyMaster.address,
       senderAddress: options.callerLockingBytecode,
       externalReturns,
+      ...(entryWrites === undefined ? {} : { writtenNodeIds: writeNodeIdsOf(entryWrites) }),
     }),
     settle: settleWithPlan,
   });
@@ -2426,6 +2429,12 @@ function participantUtxo(
   return pool?.[0];
 }
 
+
+/** The node ids a plan's own writes place, keyed by the outpoint each spends. */
+function writeNodeIdsOf(writes: HopEntryWrites): Map<string, string> {
+  return new Map([...writes.spentUtxos].map(([id, utxo]) => [`${utxo.txid}:${utxo.vout}`, id]));
+}
+
 /**
  * Rebuilds the derived hop on the outpoints the two geneses created, signs the caller's input, and broadcasts it.
  *
@@ -2758,7 +2767,7 @@ export async function callPerCallProxyEntry(
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments,
       ...(attemptWrites === undefined ? {} : { entryWrites: attemptWrites }),
-      ...(readNodes.length === 0 ? {} : { readNodes }),
+      ...(readNodes.length === 0 ? {} : { readNodes: shareReadNodeIds(readNodes, writtenNodeIds(externalPlan.callees)) }),
       entryWriteViews,
       implementationRetval,
       ...(externalPlan.calls.length === 0 ? {} : { calls: externalPlan.calls }),
@@ -2779,6 +2788,15 @@ export async function callPerCallProxyEntry(
       entry: { functionName: options.functionName, args },
     }),
   });
+  // The caller's own frame is planned outside its callees, and a node it rewrites is one participant: a callee that
+  // only reads that node names it under the id the caller's own write places.
+  let callerWriteNodes = new Map<string, string>();
+  try {
+    const callerWritten = hopEntryWrites({ ...writesRequest, writtenCommitments: recordCommitments });
+    if (callerWritten !== undefined) callerWriteNodes = writeNodeIdsOf(callerWritten);
+  } catch {
+    // The caller's own writes are refused while it settles, which reports the reason; the plan states none here.
+  }
   const { externalPlan, settled } = await planAndSettleHop({
     plan: (externalReturns) => planHopExternalCalls({
       provider, artifact: implementationArtifact, functionName: options.functionName,
@@ -2787,6 +2805,7 @@ export async function callPerCallProxyEntry(
       selfAddress: proxyMaster.address,
       senderAddress: options.callerLockingBytecode,
       externalReturns,
+      writtenNodeIds: callerWriteNodes,
     }),
     settle: settleWithPlan,
   });

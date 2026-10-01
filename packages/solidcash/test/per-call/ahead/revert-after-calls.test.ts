@@ -160,6 +160,8 @@ interface Deployed {
   readonly externals: Record<string, PerCallProxyExternal>;
   readonly alice: Caller;
   readonly bob: Caller;
+  /** A caller of its own, for a case that broadcasts and so spends the coin it is given. */
+  readonly newCaller: (seed: string) => Promise<Caller>;
 }
 
 let compiled: Compiled;
@@ -240,6 +242,7 @@ async function deployAll(): Promise<Deployed> {
     },
     alice: await caller(ALICE_LOCK, aliceAddress, alicePriv, '39'),
     bob: await caller(BOB_LOCK, bobAddress, bobPriv, '3a'),
+    newCaller: (seed: string) => caller(ALICE_LOCK, aliceAddress, alicePriv, seed),
   };
 }
 
@@ -448,20 +451,25 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('a revert after calls through
     expect(reasonOf(report, 'callee-master-7')?.error?.name).toBe('ShortBalance');
   });
 
-  it('with every check passing, every frame accepts and the broadcast refuses a node planned twice', async () => {
-    const refused = await refusedCall(deployed.alice, 'post', [5n, 100n, 7n, BOB_LOCK, compiled.coinAddress]);
-    // Not step 2: sibling reaches of one contract are planned apart, so Alice's balance node is spent twice.
-    expect(reportOf(refused.draft)).toStrictEqual({ accepted: true, refusals: [] });
-    expect(refused.broadcasts).toBe(0);
-    const duplicate = /^Duplicate input detected: [0-9a-f]{64}:\d+ is already included at input (\d+) /
-      .exec(refused.error.message);
-    expect(duplicate).not.toBeNull();
-    const { participants } = refused.draft.layout;
-    const read = participants.find((placed) => placed.id.startsWith('mapping-read-balances-'))!;
-    expect(read.index).toBe(Number(duplicate![1]));
-    const slot = read.id.slice('mapping-read-balances-'.length);
-    expect(participants.some((placed) => placed.id === `mapping-node-${slot}`)).toBe(true);
-  });
+  it('with every check passing, the read of a balance and the write of it share one participant and the hop settles',
+    async () => {
+      // Alice's balance node is read by the `balanceOf` reach and rewritten by the `transferFrom` reach. One
+      // transaction carries one input at that outpoint, so the reading reach names the node under the id the
+      // writing reach places: the two reaches' records are records of one participant, one per segment.
+      const result = await settledCall(await deployed.newCaller('3b'), 'post',
+        [5n, 100n, 7n, BOB_LOCK, compiled.coinAddress]);
+      expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+      expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+
+      // One input per outpoint, which is what the builder's duplicate check requires and what the reconciled plan
+      // states: the reach that only reads the balance spends the node the reach that writes it declares.
+      const spent = result.transaction.inputs.map(
+        (input) => `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+      expect(new Set(spent).size).toBe(spent.length);
+      // Both reaches still ran: the read-only one reads the node from the segment its own frame declares.
+      expect(result.completed.map((frame) => frame.functionName)).toContain('Coin.balanceOf()');
+      expect(result.completed.map((frame) => frame.functionName)).toContain('Coin.transferFrom()');
+    });
 
   it('a value a proxied store returns reaches its caller, and the read settles', async () => {
     const result = await settledCall(deployed.alice, 'peek', []);

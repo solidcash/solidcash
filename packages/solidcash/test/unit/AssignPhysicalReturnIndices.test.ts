@@ -1,7 +1,7 @@
 import { binToHex, bigIntToVmNumber, hexToBin, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   computeCollectionHash, sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, VALUE_CHUNK_MAX_COUNT,
-  type Artifact, type EntryAccessAbi,
+  type Artifact, type CollectionInfo, type EntryAccessAbi, type StateLayout,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import type { Output } from '../../src/interfaces.js';
@@ -236,7 +236,9 @@ describe('external event probe input', () => {
 });
 
 describe('materialized low-level-call block identity', () => {
-  const makeGroup = (functionName: string, txid: string, vout = 0) => ({
+  const makeGroup = (
+    functionName: string, txid: string, vout = 0,
+  ): import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup => ({
     categoryId: 'ab'.repeat(32),
     functionName,
     masterUtxo: { txid, vout },
@@ -540,7 +542,14 @@ describe('generic persisted value-chunk write identity', () => {
   });
 
   it('recovers an alpha-renamed legacy writer from exact planned continuation geometry', () => {
-    const structuralLegacy = (functionName: string, collectionName: string) => {
+    const structuralLegacy = (functionName: string, collectionName: string): {
+      functionName: string;
+      stateLayout: StateLayout & { collections: CollectionInfo[] };
+      logicalArtifact: Artifact;
+      valueChunkOutputBase: number;
+      valueChunkOutputCount?: number;
+      externalContract?: { inner: { artifact: Artifact } };
+    } => {
       const collection = {
         name: collectionName,
         signature: `${collectionName}:mapping(int => Notice[])`,
@@ -561,9 +570,12 @@ describe('generic persisted value-chunk write identity', () => {
           ],
         },
       };
+      // This legacy artifact predates the required modern layout metadata; keep its sparse runtime shape.
+      const stateLayout = { variables: [], collections: [collection] } as unknown as StateLayout
+      & { collections: CollectionInfo[] };
       return {
         functionName,
-        stateLayout: { variables: [], collections: [collection] },
+        stateLayout,
         logicalArtifact: {
           abi: [handler],
           stateLayout: { variables: [], collections: [collection] },
@@ -828,7 +840,9 @@ describe('generic persisted value-chunk write identity', () => {
 
   it('fails closed when independent participants both claim token-band repair ownership', () => {
     const otherCategory = 'cd'.repeat(32);
-    const participant = (id: string, name: string) => ({
+    const participant = (
+      id: string, name: string,
+    ): import('../../src/stateful/StatefulTransactionBuilder.js').PhysicalReturnGroup => ({
       categoryId: id, functionName: name, blockLayout: {
         blockSize: 5, slots: [{ kind: 'master', offset: 0 }, { kind: 'entry', offset: 1 }],
       },
@@ -1608,7 +1622,10 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('rebinds stale return witnesses from final output content without moving valid witnesses', () => {
-    const tail = (category: string, commitment: string) => ({
+    const tail = (category: string, commitment: string): {
+      to: Uint8Array;
+      token: { category: string; nft: { capability: 'none'; commitment: string } };
+    } => ({
       to: Uint8Array.of(0x51),
       token: { category, nft: { capability: 'none' as const, commitment } },
     });
@@ -1723,7 +1740,9 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('gathers serialized tail funders next to a colliding block without adding inputs', () => {
-    const input = (txid: string, token = false) => ({
+    const input = (txid: string, token = false): {
+      txid: string; vout: number; token?: Record<string, never>;
+    } => ({
       txid, vout: 0, ...(token ? { token: {} } : {}),
     });
     const inputs = [
@@ -1741,7 +1760,10 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('does not use a token-free P2SH covenant input as output-only block funding', () => {
-    const input = (txid: string, lock: Uint8Array, token = false) => ({
+    const input = (txid: string, lock: Uint8Array, token = false): {
+      txid: string; vout: number; token?: Record<string, never>;
+      unlocker: { generateLockingBytecode: () => Uint8Array };
+    } => ({
       txid,
       vout: 0,
       ...(token ? { token: {} } : {}),
@@ -3631,7 +3653,7 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('quarantines nested timestamp adaptation to the exact legacy ABI schema', () => {
-    const artifact = (convention: 'legacy-unroll' | 'kernel-row-loop', renamed = false) => ({
+    const artifact = (convention: 'legacy-unroll' | 'kernel-row-loop', renamed = false): Artifact => ({
       contractName: 'Archive',
       abi: [{
         name: 'appendNotice',
@@ -4260,7 +4282,9 @@ describe('assignPhysicalReturnIndices', () => {
     const write = (collection: string): EntryAccessAbi => ({
       collection, keyParams: ['key'], operations: ['read', 'write'],
     });
-    const described = (name: string, writes: number) => ({
+    const described = (
+      name: string, writes: number,
+    ): import('../../src/stateful/value-chunk-geometry.js').CompilerTokenWriterGroup => ({
       functionName: name,
       compilerRoute: { abiFunction: {
         name,
@@ -4482,7 +4506,9 @@ describe('assignPhysicalReturnIndices', () => {
   it('keeps a linear sorted-batch of in-block nodes when planned count includes every key', () => {
     const lock = new Uint8Array(35);
     lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;
-    const node = (commitment: string) => ({
+    const node = (commitment: string): {
+      to: Uint8Array; token: { nft: { capability: 'mutable'; commitment: string } };
+    } => ({
       to: lock, token: { nft: { capability: 'mutable' as const, commitment } },
     });
     const outputs = [

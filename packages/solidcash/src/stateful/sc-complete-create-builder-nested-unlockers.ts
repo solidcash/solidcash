@@ -193,6 +193,9 @@ export async function completeCreateBuilderNestedUnlockers(
         // root contract whose StatefulFunctionCall is building the graph.
         return hexToBin(childCallerCategoryId).reverse();
       }
+      // No codegen reads the sender anchor: msg.sender is the lock of the caller master the category above selects.
+      // Fill its ABI position with the no-anchor sentinel the deploy derivation passes.
+      if (input.name === '__internal__msgSenderAnchorIdx') return -1n;
       if (input.name === '__internal__delegateInputIndex') {
         const delegateGroup = child.delegateCallGroupIndex;
         if (delegateGroup === undefined) return -1n;

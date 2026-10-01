@@ -26437,7 +26437,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const aliasOwner = aliasWrite === undefined ? undefined : this.entrySlots[aliasWrite].aliasCondDeleteSlot;
       if (aliasWrite !== undefined && aliasOwner !== undefined) {
         const fixedField = (field: 'slot' | 'next'): void => commitmentField(() => {
-          this.emitBlockSlotIndex('entry', aliasOwner, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+          this.emitFixedEntryInputIndex(aliasOwner, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
         }, field);
         fixedField('slot'); arg(`__internal__vmapBatchSlot_${aliasOwner}`, 1); bin(Op.OP_EQUALVERIFY);
         fixedField('next'); arg(`__internal__vmapBatchNext_${aliasOwner}`, 1); bin(Op.OP_EQUALVERIFY);
@@ -26989,6 +26989,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
+  }
+
+  /**
+   * Push the input index of the entry spent at a slot's fixed block coordinate. A direct delegate executor's
+   * entries follow its co-spent implementation block, as emitEntryInputIndex resolves them, so the coordinate is
+   * implementation-relative there rather than the proxy master's.
+   */
+  private emitFixedEntryInputIndex(slotIndex: number, locationData: SingleLocationData): void {
+    if (!this.usesDelegateExecutorBlockBase() || this.readsRecordsFromFrame) {
+      this.emitBlockSlotIndex('entry', slotIndex, locationData);
+      return;
+    }
+    this.emit(Op.OP_INPUTINDEX, locationData);
+    const offset = this.getBlockSlotOffset('entry', slotIndex);
+    if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
   }
 
   /**

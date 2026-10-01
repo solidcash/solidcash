@@ -341,6 +341,10 @@ export async function fixCreateBuilderDelegateUnlockers(
             nestedProxyGroup?.callerIdentity?.categoryId ?? host.categoryId,
           );
         }
+        // No codegen reads the sender anchor: msg.sender resolves from the category witness alone (tx.origin for the
+        // zero category, else the one co-spent minting master of that category). Fill its ABI position with the
+        // no-anchor sentinel the deploy derivation passes.
+        if (inp.name === '__internal__msgSenderAnchorIdx') return -1n;
         if (inp.name === '__internal__proxyMasterIndex') {
           const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
           const resolvedProxyMaster = proxyExternalGroup === undefined

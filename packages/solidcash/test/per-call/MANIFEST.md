@@ -35,7 +35,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 143 |
-| `packages/solidcash/test/per-call/call/` | `solidcash` | 148 |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 152 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 11 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 103 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 93 |
@@ -44,10 +44,10 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | 82 |
 | `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2, under `PER_CALL_FULL=1` |
-| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 130, under `PER_CALL_AHEAD=1` |
+| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 137, under `PER_CALL_AHEAD=1` |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 10 |
 
-Total: 1882 checks (115 + 664 + 1093 + 10), with four more cases that run under
+Total: 1886 checks (115 + 664 + 1097 + 10), with four more cases that run under
 `PER_CALL_FULL=1`: three in `primitives/many-masters.test.ts` (the nine-entry composition and its refusal, which
 `shapes/deep-arbitration.test.ts` covers by default, and the twenty-four-master composition, which takes about
 twenty-eight seconds to derive), and the shipped data contract's clock-stamped append
@@ -55,7 +55,7 @@ twenty-eight seconds to derive), and the shipped data contract's clock-stamped a
 behind its proxy and takes about three and a half minutes; `pw7-measure.test.ts` runs only under `PER_CALL_FULL=1`
 too. The package totals are full-config runs of
 `vitest.per-call.config.ts`: `solidc` 664 is the four rows above it (93 files),
-`solidcash` 1093 is the rows above it from `validator/` down (191 files; refreshed at the eighth prune, `01cfeb172`),
+`solidcash` 1097 is the rows above it from `validator/` down (192 files; refreshed at the eighth prune, `01cfeb172`),
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -324,8 +324,8 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   from the entry's own write), `packed-address-argument.test.ts` and `packed-integer-argument.test.ts` (a
   struct-field address or an integer packed into a call argument), `block-oracle-beside-array.test.ts` (records an
   entry does not name, and a `view` read of a proxied store) and `read-only-dynamic-records.test.ts` and
-  `hop-callee-read-beside-batch.test.ts` (the acceptance cases of the two hop patches in `docs/per-call/patches/`,
-  pinned where HEAD stands), `pushed-struct-fields-and-event.test.ts` (a wide struct appended with every field
+  `hop-callee-read-beside-batch.test.ts` (the acceptance cases of the two hop
+  changes applied in `2a85cd76f`), `pushed-struct-fields-and-event.test.ts` (a wide struct appended with every field
   written and one payload event, the same entry with a whitelist write its call does not take, and the same entry
   with no guarded write) and `push-length-keyed-mapping-write.test.ts` (a loop write whose key the entry's own push
   computes). The directory runs only under `PER_CALL_AHEAD=1`.

@@ -107,8 +107,8 @@ export interface SymbolicParticipantLayout {
   contractName?: string;
   /** Compiler block layout when available (slots + trailingBase/Capacity). */
   blockLayout?: Pick<
-    FunctionBlockLayout,
-    'blockSize' | 'trailingBase' | 'trailingCapacity' | 'fixedSuffix' | 'slots'
+  FunctionBlockLayout,
+  'blockSize' | 'trailingBase' | 'trailingCapacity' | 'fixedSuffix' | 'slots'
   >;
   /** Ordered symbolic bands; when omitted, derived from blockLayout. */
   bands?: readonly SymbolicBand[];
@@ -685,6 +685,8 @@ export function resolveTransactionLayout(input: LayoutResolverInput): ResolvedLa
     const brandedParticipant = asParticipantId(participant.participant);
     const brandedInputBase = asAbsoluteInputIndex(inputCursor);
     const brandedOutputBase = asAbsoluteOutputIndex(outputCursor);
+    const participantInputCursor = inputCursor;
+    const participantOutputCursor = outputCursor;
     participantInputs.push(brandedInputBase);
     participantOutputs.push(brandedOutputBase);
     resolvedParticipants.push({
@@ -697,8 +699,8 @@ export function resolveTransactionLayout(input: LayoutResolverInput): ResolvedLa
       trailingCapacity: participant.blockLayout?.trailingCapacity,
       bands: bands.map((band) => ({
         ...band,
-        absoluteBase: asAbsoluteInputIndex(inputCursor + band.localBase),
-        absoluteOutputBase: asAbsoluteOutputIndex(outputCursor + band.localBase),
+        absoluteBase: asAbsoluteInputIndex(participantInputCursor + band.localBase),
+        absoluteOutputBase: asAbsoluteOutputIndex(participantOutputCursor + band.localBase),
       })),
     });
     inputCursor += blockSize;
@@ -967,7 +969,7 @@ export function resolveTransactionLayout(input: LayoutResolverInput): ResolvedLa
 }
 
 /**
- * Skeptic-grade layout failure string (layout invariant attribution attribution) + structured plan-failure structured plan-failure trailer.
+ * Skeptic-grade layout failure string with a structured plan-failure trailer.
  * Production layout throws and compose `layoutInvariantError` both surface the same machine trailer.
  */
 export function formatLayoutInvariant(failure: LayoutInvariantFailure): string {
@@ -1197,12 +1199,12 @@ export function resolveParticipantAbsoluteWitnesses(params: {
   nonParticipantInputPrefix?: number;
   nonParticipantOutputPrefix?: number;
 }): {
-  layout: ResolvedLayout;
-  dynamicChunkInputBase?: bigint;
-  entryNewOutputBase?: bigint;
-  valueChunkOutputBase?: bigint;
-  predOuts: ReadonlyMap<string, bigint>;
-} {
+    layout: ResolvedLayout;
+    dynamicChunkInputBase?: bigint;
+    entryNewOutputBase?: bigint;
+    valueChunkOutputBase?: bigint;
+    predOuts: ReadonlyMap<string, bigint>;
+  } {
   const solo: SymbolicParticipantLayout = {
     participant: params.participant,
     contractName: params.contractName,
@@ -1373,9 +1375,9 @@ export function resolveComposeTransactionLayoutAuthority(params: {
   nonParticipantInputPrefix?: number;
   nonParticipantOutputPrefix?: number;
 }): {
-  layout: ResolvedLayout;
-  witnessesByParticipant: ReadonlyMap<number, ComposeParticipantAbsoluteWitnesses>;
-} {
+    layout: ResolvedLayout;
+    witnessesByParticipant: ReadonlyMap<number, ComposeParticipantAbsoluteWitnesses>;
+  } {
   if (params.participants.length === 0) {
     throw new Error('layout-resolver: resolveComposeTransactionLayoutAuthority requires ≥1 participant claim');
   }
@@ -1558,14 +1560,14 @@ export function resolveComposeParticipantLayoutAuthority(params: {
 export function resolveTransactionLayoutWitnesses(
   input: LayoutResolverInput,
 ): {
-  layout: ResolvedLayout;
-  witnessesByParticipant: ReadonlyMap<number, {
-    dynamicChunkInputBase?: bigint;
-    entryNewOutputBase?: bigint;
-    valueChunkOutputBase?: bigint;
-    predOuts: ReadonlyMap<string, bigint>;
-  }>;
-} {
+    layout: ResolvedLayout;
+    witnessesByParticipant: ReadonlyMap<number, {
+      dynamicChunkInputBase?: bigint;
+      entryNewOutputBase?: bigint;
+      valueChunkOutputBase?: bigint;
+      predOuts: ReadonlyMap<string, bigint>;
+    }>;
+  } {
   const layout = resolveTransactionLayout(input);
   const encodeAbs = (absolute: number): bigint => encodeLayoutCoordinate({
     kind: 'coordinate', index: absolute,
@@ -1611,15 +1613,15 @@ export function applyParticipantAbsoluteWitnesses(args: {
   /** Mutated in place after full validation. */
   params: unknown[];
   witnesses: Pick<
-    ParticipantAbsoluteWitnesses,
-    'dynamicChunkInputBase' | 'valueChunkOutputBase' | 'predOuts'
+  ParticipantAbsoluteWitnesses,
+  'dynamicChunkInputBase' | 'valueChunkOutputBase' | 'predOuts'
   >;
   participant?: number;
   /** Restrict an alias update to the witness slots it actually delegates to this resolve. */
   onlyIndices?: readonly number[];
 }): {
-  written: Array<{ name: string; index: number; from: string; to: string }>;
-} {
+    written: Array<{ name: string; index: number; from: string; to: string }>;
+  } {
   const isInactiveSentinel = (value: unknown): boolean => {
     if (typeof value !== 'bigint') return false;
     const decoded = decodeLayoutCoordinate(value);

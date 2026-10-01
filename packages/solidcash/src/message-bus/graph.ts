@@ -25,6 +25,7 @@ import {
 import {
   findMessageBusHandlerByNameOrSelector,
   findMessageBusHandlerForInvocation,
+  type MessageBusPublishedHandler,
 } from './graph-handler-join.js';
 import { terminalConditionalReturnBase } from './layout-resolver.js';
 
@@ -975,7 +976,8 @@ export function finalizeAtomicInvocationGraph(
     throw new Error('messageBus: atomic deployment effects contain a duplicate invocation site');
   }
   const expectedDeploymentKeys = new Set<string>();
-  const canonicalDeploymentSites = (invocationIndex: number) => {
+  type CanonicalDeploymentSites = NonNullable<MessageBusPublishedHandler['childDeployments']>;
+  const canonicalDeploymentSites = (invocationIndex: number): CanonicalDeploymentSites => {
     const invocation = plan.invocations[invocationIndex];
     const participant = invocation === undefined ? undefined : plan.participants[invocation.callee];
     const handler = participant === undefined
@@ -1158,7 +1160,7 @@ export function finalizeAtomicInvocationGraph(
   const callManifest = {
     ...(directV5 ? { version: 5 as const }
       : signatureV4 ? { version: 4 as const }
-      : outputIdentityV2 ? { version: 2 as const } : {}), participants, rows,
+        : outputIdentityV2 ? { version: 2 as const } : {}), participants, rows,
   };
   const bytes = encodeAtomicMessageBusCallManifest(callManifest);
   return Object.freeze({ plan, layout, callManifest, bytes, messageEnvelope: encodeAtomicMessageEnvelope(callManifest) });
@@ -1319,8 +1321,8 @@ export type ReachedConsumerCallsite = {
 
 /**
  * Bind each reached child to one compiler-authored occurrence without guessing across incompatible schemas.
- * sourceCallsite attribution: prefer published `sourceCallsiteId` / unique selector; kernel (`requireUniqueAttribution`) fails closed
- * on same-name multi-candidate collapse instead of first-match.
+ * sourceCallsite attribution: prefer published `sourceCallsiteId` / unique selector;
+ * kernel (`requireUniqueAttribution`) fails closed on same-name multi-candidate collapse.
  */
 export function bindConsumerCallsites(
   parent: number,
@@ -1926,45 +1928,45 @@ const resolvePublishedCallerIdentity = (
     };
   }
   switch (published.role) {
-  case 'owner': {
-    const offset = published.authOffset;
-    return {
-      version: 1, role: 'owner', auth: published.auth, authOffset: offset,
-      lockingBytecode: caller.lockingBytecode.toLowerCase(), offset,
-      sourceCallsiteProvenance: provenance,
-    };
-  }
-  case 'create':
-  case 'proxy': {
-    const logical = caller.logicalLockingBytecode?.toLowerCase();
-    if (!logical) {
-      throw new Error(
-        `messageBus: callerIdentity role '${published.role}' requires an authenticated logical identity`,
-      );
+    case 'owner': {
+      const offset = published.authOffset;
+      return {
+        version: 1, role: 'owner', auth: published.auth, authOffset: offset,
+        lockingBytecode: caller.lockingBytecode.toLowerCase(), offset,
+        sourceCallsiteProvenance: provenance,
+      };
     }
-    const offset = published.authOffset === 0xffff
-      ? (caller.logicalIdentityOffset ?? 0)
-      : published.authOffset;
-    return {
-      version: 1, role: published.role, auth: published.auth, authOffset: offset,
-      lockingBytecode: logical, offset, sourceCallsiteProvenance: provenance,
-    };
-  }
-  case 'executor': {
-    const executor = caller.executorLockingBytecode?.toLowerCase();
-    const offset = published.authOffset === 0xffff
-      ? (caller.executorOffset ?? 0xffff)
-      : published.authOffset;
-    if (!executor || offset === 0xffff) {
-      throw new Error('messageBus: callerIdentity role \'executor\' requires a pinned executor input');
+    case 'create':
+    case 'proxy': {
+      const logical = caller.logicalLockingBytecode?.toLowerCase();
+      if (!logical) {
+        throw new Error(
+          `messageBus: callerIdentity role '${published.role}' requires an authenticated logical identity`,
+        );
+      }
+      const offset = published.authOffset === 0xffff
+        ? (caller.logicalIdentityOffset ?? 0)
+        : published.authOffset;
+      return {
+        version: 1, role: published.role, auth: published.auth, authOffset: offset,
+        lockingBytecode: logical, offset, sourceCallsiteProvenance: provenance,
+      };
     }
-    return {
-      version: 1, role: 'executor', auth: published.auth, authOffset: offset,
-      lockingBytecode: executor, offset, sourceCallsiteProvenance: provenance,
-    };
-  }
-  default:
-    throw new Error(`messageBus: unsupported callerIdentity role '${(published as CallsiteCallerIdentityAbi).role}'`);
+    case 'executor': {
+      const executor = caller.executorLockingBytecode?.toLowerCase();
+      const offset = published.authOffset === 0xffff
+        ? (caller.executorOffset ?? 0xffff)
+        : published.authOffset;
+      if (!executor || offset === 0xffff) {
+        throw new Error('messageBus: callerIdentity role \'executor\' requires a pinned executor input');
+      }
+      return {
+        version: 1, role: 'executor', auth: published.auth, authOffset: offset,
+        lockingBytecode: executor, offset, sourceCallsiteProvenance: provenance,
+      };
+    }
+    default:
+      throw new Error(`messageBus: unsupported callerIdentity role '${(published as CallsiteCallerIdentityAbi).role}'`);
   }
 };
 

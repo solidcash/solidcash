@@ -63,7 +63,7 @@ function decodeAuthenticationInstructionViews(bytecode: Uint8Array): DecodedInst
 const decodedP2shByProvider = new WeakMap<NetworkProvider, Map<string, DecodedInstructions>>();
 const MAX_CACHED_P2SH_SCRIPTS = 64;
 const observerlessVmByProvider = new WeakMap<
-  NetworkProvider, Map<string, ReturnType<typeof createVirtualMachineBch2026>>
+NetworkProvider, Map<string, ReturnType<typeof createVirtualMachineBch2026>>
 >();
 
 function observerlessVmCacheKey(provider: NetworkProvider, standard: boolean): string {
@@ -251,6 +251,9 @@ function installCachedInvokeEvaluator(
   const decodedFunctions = new WeakMap<Uint8Array, DecodedInstructions>();
   const decodedFunctionKeys = new WeakMap<DecodedInstructions, string>();
   const returnProbes = new WeakMap<object, { functionTableKey: string; frameDepth: number }>();
+  const invokeReturnDebugEnv = (): Record<string, string> | undefined =>
+    (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+  const logInvokeReturn = (details: unknown): void => { console.error('invoke-return', JSON.stringify(details)); };
   instructionSet.operations[OpcodesBch2026.OP_INVOKE] = conditionallyEvaluate((state: State) => {
     const functionIdentifier = state.stack.pop();
     if (functionIdentifier === undefined) {
@@ -314,17 +317,17 @@ function installCachedInvokeEvaluator(
     instructionSet.operations[opcode] = ((state: State) => {
       const probe = returnProbes.get(state as object);
       if (probe !== undefined && state.controlStack.length < probe.frameDepth) {
-        const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+        const env = invokeReturnDebugEnv();
         const inputIndex = (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex;
         if (env?.SOLIDC_DEBUG_EQUALVERIFY_INPUT === undefined
           || inputIndex === Number(env.SOLIDC_DEBUG_EQUALVERIFY_INPUT)) {
-          console.error('invoke-return', JSON.stringify({
+          logInvokeReturn({
             inputIndex,
             functionTableKey: probe.functionTableKey,
             opcode,
             stackLength: state.stack.length,
             tail: state.stack.slice(-32).map((item) => `${item.length}:${binToHex(item.slice(0, 160))}`),
-          }));
+          });
         }
         returnProbes.delete(state as object);
       }
@@ -552,10 +555,10 @@ function buildVirtualMachineBch2026ForProvider(
       }) as typeof originalDrop;
     }
 
-  // Diagnostic: log the value-chunk domain preimage the covenant hashes (its last 64 hex characters are the stored
-  // value's root), so a probe's staged value can be compared against the covenant's own expectation.
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_VALUE_ROOT === '1') {
+    // Diagnostic: log the value-chunk domain preimage the covenant hashes (its last 64 hex characters are the stored
+    // value's root), so a probe's staged value can be compared against the covenant's own expectation.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_VALUE_ROOT === '1') {
     type DomainState = Parameters<(typeof instructionSet.operations)[number]>[0];
     const hash256Opcode = (OpcodesBch2026 as unknown as { OP_HASH256?: number }).OP_HASH256 ?? 0xaa;
     const originalHash = instructionSet.operations[hash256Opcode];
@@ -579,12 +582,12 @@ function buildVirtualMachineBch2026ForProvider(
       }
       return (originalHash as (inner: DomainState) => unknown)(state);
     }) as typeof originalHash;
-  }
+    }
 
-  // Companion diagnostic: the covenant's value is the PREIMAGE of a sha256 whose digest is the value root, so log
-  // every sha256 preimage of a plausible struct length; its bytes can be compared with the SDK's staged value.
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_VALUE_PREIMAGE === '1') {
+    // Companion diagnostic: the covenant's value is the PREIMAGE of a sha256 whose digest is the value root, so log
+    // every sha256 preimage of a plausible struct length; its bytes can be compared with the SDK's staged value.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_VALUE_PREIMAGE === '1') {
     type ShaState = Parameters<(typeof instructionSet.operations)[number]>[0];
     const sha256Opcode = 0xa8;
     const originalSha = instructionSet.operations[sha256Opcode];
@@ -596,12 +599,12 @@ function buildVirtualMachineBch2026ForProvider(
       }
       return (originalSha as (inner: ShaState) => unknown)(state);
     }) as typeof originalSha;
-  }
+    }
 
-  // Companion diagnostic: the chunked-value tail is `len4 || sha256(value) || value[0..28]` (64 bytes). Logging it
-  // exposes the covenant's own value HEAD, which can be compared member-by-member with the SDK's staged value.
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_VALUE_TAIL === '1') {
+    // Companion diagnostic: the chunked-value tail is `len4 || sha256(value) || value[0..28]` (64 bytes). Logging it
+    // exposes the covenant's own value HEAD, which can be compared member-by-member with the SDK's staged value.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_VALUE_TAIL === '1') {
     type CatState = Parameters<(typeof instructionSet.operations)[number]>[0];
     const catOpcode = 0x7e;
     const originalCat = instructionSet.operations[catOpcode];
@@ -614,13 +617,13 @@ function buildVirtualMachineBch2026ForProvider(
       }
       return evaluated;
     }) as typeof originalCat;
-  }
+    }
 
-  // Diagnostic: report every failed `OP_EQUALVERIFY` with the operands it compared and the shape of the program
-  // that ran it. A covenant's identity/commitment checks all end here, and the trace recorders can be sparse (or
-  // run on a different VM instance), so this hooks the operation itself.
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_EQUALVERIFY_FAIL === '1') {
+    // Diagnostic: report every failed `OP_EQUALVERIFY` with the operands it compared and the shape of the program
+    // that ran it. A covenant's identity/commitment checks all end here, and the trace recorders can be sparse (or
+    // run on a different VM instance), so this hooks the operation itself.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_EQUALVERIFY_FAIL === '1') {
     type EqState = Parameters<(typeof instructionSet.operations)[number]>[0];
     const equalVerifyOpcode = 0x88;
     const originalEqualVerify = instructionSet.operations[equalVerifyOpcode];
@@ -660,9 +663,9 @@ function buildVirtualMachineBch2026ForProvider(
       }
       return (originalEqualVerify as (inner: EqState) => unknown)(state);
     }) as typeof originalEqualVerify;
-  }
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_STACK_IP !== undefined) {
+    }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_STACK_IP !== undefined) {
     type DebugState = Parameters<(typeof instructionSet.operations)[number]>[0];
     const equalOpcode = 0x87;
     const originalEqual = instructionSet.operations[equalOpcode];
@@ -691,7 +694,7 @@ function buildVirtualMachineBch2026ForProvider(
       }
       return (originalEqual as (inner: DebugState) => unknown)(state);
     }) as typeof originalEqual;
-  }
+    }
     if (observer !== undefined && observer.recordInactiveBranches !== true) {
       installSparseProbeBranchSkips(instructionSet);
     }

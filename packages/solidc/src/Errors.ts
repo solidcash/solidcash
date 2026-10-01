@@ -778,6 +778,17 @@ export class DirectStaleReadError extends SolidCashError {
   }
 }
 
+/**
+ * A constructor reads a verified-mapping entry after a write whose key may name it and which keeps no value: the read
+ * would take the genesis default rather than the value the write stored.
+ */
+export class ConstructorStaleReadError extends SolidCashError {
+  constructor(public node: Node, entry: string, written: string, shape: string) {
+    super(node, `a read of \`${entry}\` in the constructor after the write of \`${written}\` ${shape} is not `
+      + 'supported: read it before the write, or into a local');
+  }
+}
+
 // A second element/push write to a mapping-entry ARRAY value chains from the prior write via the flat
 // drop+re-push, which consumes the pending value before the element value expression is evaluated - so a
 // read of the SAME entry inside that value (or index) reads the STALE input, not the pending write.

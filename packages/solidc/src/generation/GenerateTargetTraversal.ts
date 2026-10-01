@@ -271,7 +271,7 @@ import {
   ChainedEntryElementReadError, ConditionalDeployError, NegativeExponentError, SolidCashError,
   RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
   BlockLayoutUnavailableError, StackVariableUnavailableError, SolidcDiagnosticError,
-  DirectStaleReadError,
+  DirectStaleReadError, ConstructorStaleReadError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
@@ -1073,6 +1073,110 @@ interface DynamicWriteRunCoordinate {
 }
 
 /**
+ * How a constructor's read of a verified-mapping entry takes the value its own writes left: the last write naming the
+ * read's entry with the same keys, if any, then each later write whose key may name it, compared by key hash.
+ */
+interface GenesisReadPlan {
+  readonly base?: Node;
+  readonly compared: readonly Node[];
+}
+
+/** Where a sorted-mapping flow walk is: a branch arm or the code after an early return, and inside a loop. */
+interface SortedFlowScope {
+  readonly arm?: 'branch' | 'early';
+  readonly loop: boolean;
+}
+
+/** The facts a sorted-mapping flow walk keeps along a path; an undefined flow is a path that already ended. */
+interface SortedFlowHooks<F> {
+  readonly join: (...flows: (F | undefined)[]) => F | undefined;
+  readonly copy: (flow: F) => F;
+  /** The facts after a node's own access, once its children ran. */
+  readonly access: (node: Node, flow: F | undefined, scope: SortedFlowScope) => F | undefined;
+}
+
+const SORTED_FLOW_SKIPPED = new Set(['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+  'referencedContract', 'stateVariable', 'packedStateVariable', 'collection', 'type', 'location', 'name',
+  'functionId', 'error', 'opRolls', 'selectorHex', 'abiType', 'catchClauses']);
+
+/** A node's executable children, in field order. */
+function sortedFlowChildren(node: Node): Node[] {
+  const out: Node[] = [];
+  for (const key in node) {
+    if (SORTED_FLOW_SKIPPED.has(key)) continue;
+    const child = (node as unknown as Record<string, unknown>)[key];
+    if (child instanceof Node) out.push(child);
+    else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) out.push(item);
+  }
+  return out;
+}
+
+/**
+ * Walks a body in execution order: branch arms, loops, early exits and lazily evaluated operands join their paths,
+ * and each node's access applies once its children ran.
+ */
+function walkSortedFlow<F>(root: Node, start: F, hooks: SortedFlowHooks<F>): void {
+  const loops: { breaks: (F | undefined)[]; continues: (F | undefined)[] }[] = [];
+  const copy = (flow: F | undefined): F | undefined => (flow === undefined ? undefined : hooks.copy(flow));
+  const endsInReturn = (block: BlockNode | undefined): boolean =>
+    (block?.statements ?? []).at(-1) instanceof ReturnNode;
+  const walk = (node: Node, flow: F | undefined, scope: SortedFlowScope): F | undefined => {
+    if (node instanceof BlockNode) {
+      let current = flow;
+      for (const statement of node.statements ?? []) current = walk(statement, current, scope);
+      return current;
+    }
+    if (node instanceof UncheckedNode) return walk(node.block, flow, scope);
+    if (node instanceof BranchNode) {
+      const tested = walk(node.condition, flow, scope);
+      const armOf = (side: BlockNode | undefined): SortedFlowScope => ({
+        ...scope, arm: scope.arm === 'branch' || !endsInReturn(side) ? 'branch' : 'early',
+      });
+      const taken = walk(node.ifBlock, copy(tested), armOf(node.elseBlock));
+      const other = node.elseBlock === undefined ? tested : walk(node.elseBlock, copy(tested), armOf(node.ifBlock));
+      return hooks.join(taken, other);
+    }
+    if (node instanceof SwitchNode) {
+      const tested = walk(node.expression, flow, scope);
+      const arm: SortedFlowScope = { ...scope, arm: 'branch' };
+      const arms = node.cases.map((entry) => walk(entry.body, copy(walk(entry.value, copy(tested), scope)), arm));
+      return hooks.join(...arms, node.defaultCase === undefined ? tested : walk(node.defaultCase, copy(tested), arm));
+    }
+    if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode) {
+      const body = node instanceof CollectionIterationNode ? node.body : node.block;
+      const condition = node instanceof CollectionIterationNode ? undefined : node.condition;
+      const entered = node instanceof WhileNode ? walk(node.condition, flow, scope) : flow;
+      loops.push({ breaks: [], continues: [] });
+      const ran = walk(body, copy(entered), { ...scope, loop: true });
+      const { breaks, continues } = loops.pop()!;
+      const turned = hooks.join(ran, ...continues);
+      const again = condition === undefined ? turned : walk(condition, turned, scope);
+      return node instanceof DoWhileNode ? hooks.join(again, ...breaks) : hooks.join(entered, again, ...breaks);
+    }
+    if (node instanceof TryCatchNode) return walk(node.tryBlock, walk(node.expression, flow, scope), scope);
+    if (node instanceof BreakNode || node instanceof ContinueNode) {
+      const loop = loops.at(-1);
+      if (loop === undefined) return flow;
+      (node instanceof BreakNode ? loop.breaks : loop.continues).push(copy(flow));
+      return undefined;
+    }
+    if (node instanceof TernaryOpNode) {
+      const tested = walk(node.condition, flow, scope);
+      return hooks.join(walk(node.ifTrue, copy(tested), scope), walk(node.ifFalse, copy(tested), scope));
+    }
+    if (node instanceof BinaryOpNode && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR)) {
+      const left = walk(node.left, flow, scope);
+      return hooks.join(left, walk(node.right, copy(left), scope));
+    }
+    let current = flow;
+    for (const child of sortedFlowChildren(node)) current = walk(child, current, scope);
+    current = hooks.access(node, current, scope);
+    return node instanceof ReturnNode || node instanceof RevertNode ? undefined : current;
+  };
+  walk(root, start, { loop: false });
+}
+
+/**
  * Whether a declared type is one whose access the compiler lowers through structural helpers - struct field
  * extract/prefix/skip, array element/split/truncate. Used to decide whether a contract needs the subroutine
  * usage probe at all, before any helper has been allocated.
@@ -1623,6 +1727,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // On the direct convention, the writes to a sorted entry whose value a later read takes, and the reads they serve.
   private directKeptSortedWrites: WeakSet<Node> = new WeakSet();
   private directServedSortedReads: WeakSet<Node> = new WeakSet();
+  // In a constructor, the writes whose value (and, where a read compares keys, key hash) a later genesis read takes,
+  // the stack names they are kept under, and each served read's plan.
+  private genesisKeptWrites: WeakSet<Node> = new WeakSet();
+  private genesisHashedWrites: WeakSet<Node> = new WeakSet();
+  private genesisKeptNames: Map<Node, { hash?: string; value?: string }> = new Map();
+  private genesisKeptCount = 0;
+  private genesisReadPlans: WeakMap<Node, GenesisReadPlan> = new WeakMap();
   // Straight-line repeated RMWs of one chunkable vmap value are accumulated locally and covenant-pinned once at the
   // last write. Pinning each intermediate value to the same fixed output is unsatisfiable (and reads stale input).
   private sortedCompositeWritesRemaining: Map<number, number> = new Map();
@@ -7872,6 +7983,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.countSortedEntryAccesses(node);
     this.refuseDirectStaleSortedReads(node);
+    this.planGenesisReads(node);
 
     // C1/piece-5: a conditional delegatecall needs a runtime "the delegate edge was reached" flag. The state
     // covenant skip is per-function, the co-spend pin is per-callsite, so the epilogue must know which paths
@@ -22922,6 +23034,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // At genesis the mapping is empty, so constructor reads need no linked-list witness.
     if (node.isGenesisRead) {
+      if (this.emitServedGenesisRead(node)) return node;
       const gLoc = { location: node.location, positionHint: PositionHint.START };
       this.emitDefaultValue(gLoc, node.collection!.innermostValueType);
       this.pushToStack('(value)');
@@ -23414,6 +23527,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // alive for it. Hk is stashed as a temp and reordered onto the value below to restore the [v, Hk32] layout.
     this.emitSortedKeyHash(node, slotIndex, loc);
     this.pushToStack('(__upsert_hk)');
+    this.keepGenesisKeyHash(node, loc);
     const aliasOwner = this.entrySlots[slotIndex]?.aliasCondDeleteSlot;
     const runtimeAliasOwners = this.entrySlots[slotIndex]?.runtimeAliasPriorSlots ?? [];
     if (aliasOwner !== undefined) {
@@ -23488,6 +23602,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!keptValue && !routeScalarWitness && !hasRepoint && this.directSortedWriteMayKeepValue(node)) {
       keptValue = this.keepDirectSortedWrittenValue(slotIndex, loc);
     }
+    keptValue = this.keepGenesisWrittenValue(node, slotIndex, keptValue, loc);
     if (this.isChunkableValue(collection.innermostValueType)) {
       // Design D: pin the value chunks from the on-stack value BEFORE transforming it into the digest tail. This
       // works for ANY value (computed or a direct param) and rejects forged/absent chunks at write time.
@@ -24385,8 +24500,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.directServedSortedReads = new WeakSet();
     if (this.perCallMaster || fn.body === undefined || this.ownsMessageBusParticipantBlock(fn)) return;
     type Pending = { readonly shape?: string; readonly write?: Node };
-    type Flow = Map<number, Pending> | undefined;
-    type Scope = { readonly arm?: 'branch' | 'early'; readonly loop: boolean };
+    type Flow = Map<number, Pending>;
     const isWrite = (node: Node): node is MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode =>
       (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode)
       && node.collection?.sorted === true;
@@ -24400,40 +24514,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && node.collection !== undefined && this.isChunkableValue(node.collection.innermostValueType)
       && (node.arrayIndex !== undefined || node.arrayPush === true || node.arrayPop === true);
     const chainLeft = new Map(this.sortedCompositeWritesRemaining);
-    const loops: { breaks: Flow[]; continues: Flow[] }[] = [];
-    const join = (...flows: Flow[]): Flow => {
-      const live = flows.filter((flow): flow is Map<number, Pending> => flow !== undefined);
-      if (live.length === 0) return undefined;
-      const joined = new Map(live[0]);
-      for (const flow of live.slice(1)) {
-        for (const [slot, pending] of flow) {
-          const other = joined.get(slot);
-          joined.set(slot, other === undefined ? pending
-            : { shape: other.shape ?? pending.shape, write: other.write ?? pending.write });
-        }
-      }
-      return joined;
-    };
-    const copy = (flow: Flow): Flow => (flow === undefined ? undefined : new Map(flow));
-    const skipped = new Set(['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
-      'referencedContract', 'stateVariable', 'packedStateVariable', 'collection', 'type', 'location', 'name',
-      'functionId', 'error', 'opRolls', 'selectorHex', 'abiType', 'catchClauses']);
-    const children = (node: Node): Node[] => {
-      const out: Node[] = [];
-      for (const key in node) {
-        if (skipped.has(key)) continue;
-        const child = (node as unknown as Record<string, unknown>)[key];
-        if (child instanceof Node) out.push(child);
-        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) out.push(item);
-      }
-      return out;
-    };
-    const endsInReturn = (block: BlockNode | undefined): boolean =>
-      (block?.statements ?? []).at(-1) instanceof ReturnNode;
     const uses = new Map<string, number>();
     const survey = (node: Node): void => {
       if (node instanceof IdentifierNode) uses.set(node.name, (uses.get(node.name) ?? 0) + 1);
-      for (const child of children(node)) survey(child);
+      for (const child of sortedFlowChildren(node)) survey(child);
     };
     survey(fn.body);
     const carried = new WeakSet<Node>();
@@ -24445,7 +24529,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       });
     });
 
-    const read = (node: MappingAccessNode, flow: Flow): void => {
+    const read = (node: MappingAccessNode, flow: Flow | undefined): void => {
       if (flow === undefined || carried.has(node) || node.collection?.sorted !== true
         || node.isTokenContainerAccess === true || node.isGenesisRead === true || node.entrySlotIndex < 0) return;
       const pending = flow.get(node.entrySlotIndex);
@@ -24457,8 +24541,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       throw new DirectStaleReadError(node, this.sortedEntryText(node.collection.name, node.keys), pending.shape);
     };
-    const write = (node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode, flow: Flow, scope: Scope):
-    Flow => {
+    const write = (
+      node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode, flow: Flow | undefined, scope: SortedFlowScope,
+    ): Flow | undefined => {
       const slot = node.entrySlotIndex;
       const writesAfter = (writesLeft.get(slot) ?? 1) - 1;
       writesLeft.set(slot, writesAfter);
@@ -24478,61 +24563,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       next.set(slot, { shape, write: chained || shape !== undefined ? undefined : node });
       return next;
     };
-    const walk = (node: Node, flow: Flow, scope: Scope): Flow => {
-      if (node instanceof BlockNode) {
-        let current = flow;
-        for (const statement of node.statements ?? []) current = walk(statement, current, scope);
-        return current;
-      }
-      if (node instanceof UncheckedNode) return walk(node.block, flow, scope);
-      if (node instanceof BranchNode) {
-        const tested = walk(node.condition, flow, scope);
-        const armOf = (side: BlockNode | undefined): Scope => ({
-          ...scope, arm: scope.arm === 'branch' || !endsInReturn(side) ? 'branch' : 'early',
-        });
-        const taken = walk(node.ifBlock, copy(tested), armOf(node.elseBlock));
-        const other = node.elseBlock === undefined ? tested : walk(node.elseBlock, copy(tested), armOf(node.ifBlock));
-        return join(taken, other);
-      }
-      if (node instanceof SwitchNode) {
-        const tested = walk(node.expression, flow, scope);
-        const arm: Scope = { ...scope, arm: 'branch' };
-        const arms = node.cases.map((entry) => walk(entry.body, copy(walk(entry.value, copy(tested), scope)), arm));
-        return join(...arms, node.defaultCase === undefined ? tested : walk(node.defaultCase, copy(tested), arm));
-      }
-      if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode) {
-        const body = node instanceof CollectionIterationNode ? node.body : node.block;
-        const condition = node instanceof CollectionIterationNode ? undefined : node.condition;
-        const entered = node instanceof WhileNode ? walk(node.condition, flow, scope) : flow;
-        loops.push({ breaks: [], continues: [] });
-        const ran = walk(body, copy(entered), { ...scope, loop: true });
-        const { breaks, continues } = loops.pop()!;
-        const turned = join(ran, ...continues);
-        const again = condition === undefined ? turned : walk(condition, turned, scope);
-        return node instanceof DoWhileNode ? join(again, ...breaks) : join(entered, again, ...breaks);
-      }
-      if (node instanceof TryCatchNode) return walk(node.tryBlock, walk(node.expression, flow, scope), scope);
-      if (node instanceof BreakNode || node instanceof ContinueNode) {
-        const loop = loops.at(-1);
-        if (loop === undefined) return flow;
-        (node instanceof BreakNode ? loop.breaks : loop.continues).push(copy(flow));
-        return undefined;
-      }
-      if (node instanceof TernaryOpNode) {
-        const tested = walk(node.condition, flow, scope);
-        return join(walk(node.ifTrue, copy(tested), scope), walk(node.ifFalse, copy(tested), scope));
-      }
-      if (node instanceof BinaryOpNode && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR)) {
-        const left = walk(node.left, flow, scope);
-        return join(left, walk(node.right, copy(left), scope));
-      }
-      let current = flow;
-      for (const child of children(node)) current = walk(child, current, scope);
-      if (node instanceof MappingAccessNode) read(node, current);
-      if (isWrite(node)) current = write(node, current, scope);
-      return node instanceof ReturnNode || node instanceof RevertNode ? undefined : current;
-    };
-    walk(fn.body, new Map(), { loop: false });
+    walkSortedFlow<Flow>(fn.body, new Map(), {
+      join: (...flows) => {
+        const live = flows.filter((flow): flow is Flow => flow !== undefined);
+        if (live.length === 0) return undefined;
+        const joined = new Map(live[0]);
+        for (const flow of live.slice(1)) {
+          for (const [slot, pending] of flow) {
+            const other = joined.get(slot);
+            joined.set(slot, other === undefined ? pending
+              : { shape: other.shape ?? pending.shape, write: other.write ?? pending.write });
+          }
+        }
+        return joined;
+      },
+      copy: (flow) => new Map(flow),
+      access: (node, flow, scope) => {
+        if (node instanceof MappingAccessNode) read(node, flow);
+        return isWrite(node) ? write(node, flow, scope) : flow;
+      },
+    });
   }
 
   /**
@@ -24542,7 +24592,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private directSortedWriteShape(
     node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode,
-    scope: { readonly arm?: 'branch' | 'early'; readonly loop: boolean },
+    scope: SortedFlowScope,
     writesAfter: number, changed: ReadonlySet<string>,
   ): string | undefined {
     const entry = this.entrySlots[node.entrySlotIndex];
@@ -24583,6 +24633,237 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!this.directServedSortedReads.has(node) || this.sortedReadServed(node.entrySlotIndex)) return;
     throw new DirectStaleReadError(node, this.sortedEntryText(node.collection?.name ?? node.name, node.keys),
       'whose value the body does not keep');
+  }
+
+  /**
+   * Plans, in a constructor, each read of a verified-mapping entry that may follow a write to its collection.
+   *
+   * A constructor's mapping read is a genesis read: the mapping is empty at genesis, so it takes the type default. A
+   * read the constructor's own writes may have reached takes the value of the last write whose key names its entry
+   * instead, as the EVM's does: it starts from the last write with the same keys, or the default, and takes each
+   * later write whose key hash equals its own. Each such write keeps its value, and its key hash where the read
+   * compares. A write in a branch arm, a loop, the code after an early return or an outlined helper keeps nothing,
+   * so a read it may reach is refused; keys that are distinct literals never name one entry.
+   */
+  private planGenesisReads(fn: FunctionDefinitionNode): void {
+    this.genesisKeptWrites = new WeakSet();
+    this.genesisHashedWrites = new WeakSet();
+    this.genesisKeptNames = new Map();
+    this.genesisKeptCount = 0;
+    this.genesisReadPlans = new WeakMap();
+    if (fn.body === undefined) return;
+    let genesisReads = false;
+    walkInvocationAst(fn.body, (candidate) => {
+      if (candidate instanceof MappingAccessNode && candidate.isGenesisRead === true
+        && candidate.collection?.sorted === true) genesisReads = true;
+    });
+    if (!genesisReads) return;
+    type Write = MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode;
+    type Pending = { readonly node: Write; readonly shape?: string };
+    type Flow = Map<string, readonly Pending[]>;
+    const isWrite = (node: Node): node is Write =>
+      (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode)
+      && node.collection?.sorted === true;
+    const isArrayOp = (node: Node): boolean => node instanceof MappingAssignNode
+      && node.collection !== undefined && this.isChunkableValue(node.collection.innermostValueType)
+      && (node.arrayIndex !== undefined || node.arrayPush === true || node.arrayPop === true);
+    const changed = this.namesChangedIn(fn);
+    const chainLeft = new Map(this.sortedCompositeWritesRemaining);
+    const entryText = (node: Write | MappingAccessNode): string =>
+      this.sortedEntryText(node.collection?.name ?? node.name, node.keys);
+    const read = (node: MappingAccessNode, flow: Flow | undefined): void => {
+      if (flow === undefined || node.isGenesisRead !== true || node.collection?.sorted !== true) return;
+      const reaching = (flow.get(node.collection.name) ?? [])
+        .filter((write) => !this.sortedKeysDistinct(write.node.keys, node.keys));
+      if (reaching.length === 0) return;
+      const same = reaching.map((write) => this.sortedKeysSame(write.node.keys, node.keys, changed)).lastIndexOf(true);
+      const live = same < 0 ? reaching : reaching.slice(same);
+      const blocked = live.find((write) => write.shape !== undefined);
+      if (blocked !== undefined) {
+        throw new ConstructorStaleReadError(node, entryText(node), entryText(blocked.node), blocked.shape!);
+      }
+      const base = same < 0 ? undefined : live[0].node;
+      const compared = (same < 0 ? live : live.slice(1)).map((write) => write.node);
+      if (base !== undefined) this.genesisKeptWrites.add(base);
+      for (const write of compared) {
+        this.genesisKeptWrites.add(write);
+        this.genesisHashedWrites.add(write);
+      }
+      this.genesisReadPlans.set(node, { base, compared });
+    };
+    const write = (node: Write, flow: Flow | undefined, scope: SortedFlowScope): Flow | undefined => {
+      const arrayOp = isArrayOp(node);
+      const chained = arrayOp && (chainLeft.get(node.entrySlotIndex) ?? 1) > 1;
+      if (arrayOp) chainLeft.set(node.entrySlotIndex, (chainLeft.get(node.entrySlotIndex) ?? 1) - 1);
+      if (flow === undefined) return flow;
+      const name = node.collection!.name;
+      const shape = chained ? 'when the body writes it again' : this.genesisWriteShape(node, scope);
+      return new Map(flow).set(name, [...(flow.get(name) ?? []), { node, shape }]);
+    };
+    walkSortedFlow<Flow>(fn.body, new Map(), {
+      join: (...flows) => {
+        const live = flows.filter((flow): flow is Flow => flow !== undefined);
+        if (live.length === 0) return undefined;
+        const joined = new Map(live[0]);
+        for (const flow of live.slice(1)) {
+          for (const [name, writes] of flow) {
+            const known = joined.get(name) ?? [];
+            joined.set(name, [...known, ...writes.filter((pending) => !known.some((other) => other.node === pending.node))]);
+          }
+        }
+        return joined;
+      },
+      copy: (flow) => new Map(flow),
+      access: (node, flow, scope) => {
+        if (node instanceof MappingAccessNode) read(node, flow);
+        return isWrite(node) ? write(node, flow, scope) : flow;
+      },
+    });
+  }
+
+  /** Why a constructor's write to a sorted entry keeps no value for the reads after it, or undefined when it does. */
+  private genesisWriteShape(
+    node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode, scope: SortedFlowScope,
+  ): string | undefined {
+    if (this.isDefineSubTraversal) return 'inside an outlined internal function';
+    if (scope.loop) return 'in a loop';
+    if (scope.arm === 'branch') return 'in a branch arm';
+    if (scope.arm === 'early') return 'in the code after an early return';
+    const entry = this.entrySlots[node.entrySlotIndex];
+    if (entry === undefined) return 'without an entry slot';
+    if (entry.aliasCondDeleteSlot !== undefined || (entry.runtimeAliasPriorSlots?.length ?? 0) > 0) {
+      return 'on an aliased entry';
+    }
+    return undefined;
+  }
+
+  /** True when two key lists differ in a position where both are literals, so they never name one entry. */
+  private sortedKeysDistinct(left: readonly Node[], right: readonly Node[]): boolean {
+    return left.length === right.length && left.some((key, index) => {
+      const other = right[index];
+      if (key instanceof IntLiteralNode && other instanceof IntLiteralNode) return key.value !== other.value;
+      if (key instanceof BoolLiteralNode && other instanceof BoolLiteralNode) return key.value !== other.value;
+      if (key instanceof StringLiteralNode && other instanceof StringLiteralNode) return key.value !== other.value;
+      if (key instanceof HexLiteralNode && other instanceof HexLiteralNode) {
+        return binToHex(key.value) !== binToHex(other.value);
+      }
+      return false;
+    });
+  }
+
+  /** True when two key lists spell the same keys, each naming one value wherever the body spells it. */
+  private sortedKeysSame(left: readonly Node[], right: readonly Node[], changed: ReadonlySet<string>): boolean {
+    return left.length === right.length && left.every((key, index) => {
+      const other = right[index];
+      if (!this.sortedKeyInvariant(key, changed)) return false;
+      if (key instanceof IdentifierNode) return other instanceof IdentifierNode && other.name === key.name;
+      if (key instanceof NullaryOpNode) return other instanceof NullaryOpNode && other.operator === key.operator;
+      if (key instanceof HexLiteralNode) {
+        return other instanceof HexLiteralNode && binToHex(other.value) === binToHex(key.value);
+      }
+      if (key instanceof IntLiteralNode || key instanceof BoolLiteralNode || key instanceof StringLiteralNode) {
+        return other.constructor === key.constructor && (other as typeof key).value === key.value;
+      }
+      return false;
+    });
+  }
+
+  /** True where the code being emitted runs on the body's straight line, which a kept genesis value needs. */
+  private genesisKeepsHere(): boolean {
+    return !this.isDefineSubTraversal && this.scopeDepth === 0 && this.plainLoopDepth === 0;
+  }
+
+  /** Keeps a copy of a constructor write's key hash, tracked as the top, for the reads that compare with it. */
+  private keepGenesisKeyHash(node: Node, loc: SingleLocationData): void {
+    if (!this.genesisHashedWrites.has(node) || !this.genesisKeepsHere()) return;
+    const name = `(__genesis_hash_${this.genesisKeptCount++})`;
+    this.emit(Op.OP_DUP, loc);
+    this.stack[0] = name;
+    this.pushToStack('(__upsert_hk)');
+    this.genesisKeptNames.set(node, { hash: name });
+  }
+
+  /**
+   * Keeps a copy of the value a constructor's write is about to store beneath it, for the reads after it; a value the
+   * write already keeps for another read is shared.
+   */
+  private keepGenesisWrittenValue(node: Node, slotIndex: number, kept: boolean, loc: SingleLocationData): boolean {
+    if (!this.genesisKeptWrites.has(node) || !this.genesisKeepsHere()) return kept;
+    const names = this.genesisKeptNames.get(node) ?? {};
+    if (kept) {
+      this.genesisKeptNames.set(node, { ...names, value: this.sortedCompositeValueCache.get(slotIndex) });
+      return kept;
+    }
+    const name = `(__genesis_value_${this.genesisKeptCount++})`;
+    this.emit(Op.OP_DUP, loc);
+    this.stack[0] = name;
+    this.pushToStack('(value)');
+    this.genesisKeptNames.set(node, { ...names, value: name });
+    return true;
+  }
+
+  /**
+   * Emits a constructor's read of a verified-mapping entry from the values its own writes kept, as its plan selects
+   * them, or returns false for a read no write may have reached, which takes the genesis default.
+   */
+  private emitServedGenesisRead(node: MappingAccessNode): boolean {
+    const plan = this.genesisReadPlans.get(node);
+    if (plan === undefined) return false;
+    const loc = { location: node.location, positionHint: PositionHint.START };
+    const kept = (write: Node, part: 'hash' | 'value'): string => {
+      const name = this.genesisKeptNames.get(write)?.[part];
+      if (name === undefined || this.getStackIndex(name, true) < 0) {
+        const written = write as MappingAssignNode;
+        throw new ConstructorStaleReadError(node, this.sortedEntryText(node.collection?.name ?? node.name, node.keys),
+          this.sortedEntryText(written.collection?.name ?? written.name, written.keys), 'whose value it does not keep');
+      }
+      return name;
+    };
+    const pick = (name: string): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+      this.emit(Op.OP_PICK, loc);
+    };
+    const readHash = '(__genesis_read_hash)';
+    if (plan.compared.length > 0) {
+      this.emitGenesisKeyHash(node, loc);
+      this.pushToStack(readHash);
+    }
+    if (plan.base === undefined) this.emitDefaultValue(loc, node.collection!.innermostValueType);
+    else pick(kept(plan.base, 'value'));
+    this.pushToStack('(value)');
+    for (const write of plan.compared) {
+      pick(readHash);
+      this.pushToStack('(__genesis_read_hash_copy)');
+      pick(kept(write, 'hash'));
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.popFromStack();
+      pick(kept(write, 'value'));
+      this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
+    if (plan.compared.length > 0) {
+      this.emit(Op.OP_NIP, loc);
+      this.removeFromStack(this.getStackIndex(readHash));
+    }
+    if (node.arrayIndex) this.emitArrayElementExtract(node, loc);
+    return true;
+  }
+
+  /** Pushes a constructor read's masked key hash, untracked, as `emitSortedKeyHash` hashes a write's keys. */
+  private emitGenesisKeyHash(node: MappingAccessNode, loc: SingleLocationData): void {
+    for (let i = 0; i < node.keys.length; i++) {
+      node.keys[i] = this.visit(node.keys[i]);
+      this.emit(Op.OP_SHA256, loc);
+      if (i > 0) {
+        this.emit(Op.OP_CAT, loc);
+        this.popFromStack();
+      }
+    }
+    this.popFromStack();
+    if (node.keys.length > 1) this.emit(Op.OP_SHA256, loc);
+    this.emit(encodeInt(31n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(new Uint8Array([0x7f]), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_CAT, loc);
   }
 
   /**

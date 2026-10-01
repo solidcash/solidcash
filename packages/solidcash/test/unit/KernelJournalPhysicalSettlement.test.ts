@@ -35,14 +35,16 @@ describe('kernel journal physical settlement plan', () => {
     synthetic: dirty,
   });
 
-  const oneDirtyOutput = () => planKernelEntryJournalPhysicalSettlement([{
-    frameIndex: 0, identity: identity(0, 'mutation-settlement'), accessOrdinal: 0,
-    access: {
-      targetRecordOrdinal: 0, predecessorRecordOrdinal: 1,
-      presentBefore: false, presentAfter: true, mutates: true,
-      authenticatesPredecessor: true,
-    },
-  }]);
+  const oneDirtyOutput = (): ReturnType<typeof planKernelEntryJournalPhysicalSettlement> => (
+    planKernelEntryJournalPhysicalSettlement([{
+      frameIndex: 0, identity: identity(0, 'mutation-settlement'), accessOrdinal: 0,
+      access: {
+        targetRecordOrdinal: 0, predecessorRecordOrdinal: 1,
+        presentBefore: false, presentAfter: true, mutates: true,
+        authenticatesPredecessor: true,
+      },
+    }])
+  );
 
   it('binds a dirty final authority to one complete final body, not a legacy provisional output', () => {
     const dirty = record(true);
@@ -64,7 +66,9 @@ describe('kernel journal physical settlement plan', () => {
     const body = encodeEntryCommitment(dirty.slot, dirty.nextKey, Uint8Array.of(42));
     const plan = oneDirtyOutput();
     const producer = plan.outputs[0]!.finalOwner;
-    const resolve = (candidates: Array<{ producer: typeof producer; commitment: Uint8Array }>) => (
+    const resolve = (
+      candidates: Array<{ producer: typeof producer; commitment: Uint8Array }>,
+    ): ReturnType<typeof resolveKernelEntryJournalDirtyFinalBodies> => (
       resolveKernelEntryJournalDirtyFinalBodies(plan, [dirty, record(false)], candidates)
     );
     expect(() => resolve([])).toThrow('requires exactly one final body for record 0; found 0');
@@ -201,12 +205,18 @@ describe('kernel journal physical settlement plan', () => {
       materializesInput,
       rewritesToZeroAuthConsumer,
     }))).toEqual([
-      { target: 9, authenticatesTarget: true, authenticatesPredecessor: undefined, materializesInput: true, rewritesToZeroAuthConsumer: false },
-      { target: 3, authenticatesTarget: true, authenticatesPredecessor: undefined, materializesInput: true, rewritesToZeroAuthConsumer: false },
-      { target: 9, authenticatesTarget: undefined, authenticatesPredecessor: undefined, materializesInput: false, rewritesToZeroAuthConsumer: true },
-      { target: 20, authenticatesTarget: undefined, authenticatesPredecessor: true, materializesInput: true, rewritesToZeroAuthConsumer: false },
-      { target: 21, authenticatesTarget: undefined, authenticatesPredecessor: undefined, materializesInput: false, rewritesToZeroAuthConsumer: true },
-      { target: 7, authenticatesTarget: undefined, authenticatesPredecessor: undefined, materializesInput: false, rewritesToZeroAuthConsumer: false },
+      { target: 9, authenticatesTarget: true, authenticatesPredecessor: undefined,
+        materializesInput: true, rewritesToZeroAuthConsumer: false },
+      { target: 3, authenticatesTarget: true, authenticatesPredecessor: undefined,
+        materializesInput: true, rewritesToZeroAuthConsumer: false },
+      { target: 9, authenticatesTarget: undefined, authenticatesPredecessor: undefined,
+        materializesInput: false, rewritesToZeroAuthConsumer: true },
+      { target: 20, authenticatesTarget: undefined, authenticatesPredecessor: true,
+        materializesInput: true, rewritesToZeroAuthConsumer: false },
+      { target: 21, authenticatesTarget: undefined, authenticatesPredecessor: undefined,
+        materializesInput: false, rewritesToZeroAuthConsumer: true },
+      { target: 7, authenticatesTarget: undefined, authenticatesPredecessor: undefined,
+        materializesInput: false, rewritesToZeroAuthConsumer: false },
     ]);
     expect(plan.streamAccounting).toEqual([
       { frameIndex: 0, accessStreamIndex: 2, inputCount: 1, outputCount: 1 },
@@ -218,9 +228,15 @@ describe('kernel journal physical settlement plan', () => {
   });
 
   it('fails closed for a consumer before its owner, repeated dirty proof, or unauthenticated live record', () => {
-    const clean = (authenticatesTarget: boolean, frameIndex: number) => ({
+    const clean = (
+      authenticatesTarget: boolean,
+      frameIndex: number,
+    ): KernelEntryJournalSettlementOccurrence => ({
       frameIndex, identity: identity(0, 'carrier-only'), accessOrdinal: 0,
-      access: { targetRecordOrdinal: 1, presentBefore: true, presentAfter: true, mutates: false, authenticatesTarget },
+      // The false branch deliberately presents a decoded zero-auth consumer.
+      access: {
+        targetRecordOrdinal: 1, presentBefore: true, presentAfter: true, mutates: false, authenticatesTarget,
+      } as KernelEntryJournalAccess,
     });
     expect(() => planKernelEntryJournalPhysicalSettlement([clean(false, 0), clean(true, 1)]))
       .toThrow('consumer precedes authenticated producer');

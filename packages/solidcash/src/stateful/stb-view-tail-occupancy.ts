@@ -1,6 +1,6 @@
 /**
  * phase-boundary extract: STB class-body extract — view-tail write after writer occupancy + vacate
- * JobEvents-band view tails.
+ * chunkable-value-band view tails.
  */
 
 import { binToHex } from '@bitauth/libauth';
@@ -53,7 +53,7 @@ export interface ViewTailOccupancyHost {
 
 /**
  * View tails are OP_TRUE + none-cap return NFTs. Token-swap placement already
- * parks them after FakeToken; without a swap, jobEvents mutables still occupy
+ * parks them after a token writer; without a swap, mutable value chunks can still occupy
  * the first planned tail slots. Write the pending views after that writer band
  * and leave collection/value-chunk coordinates unmoved.
  */
@@ -226,12 +226,13 @@ export function writeViewTailsAfterWriterOccupancy(
       group.returnOutputIndex = outputIndex;
     }
   }
-  vacateViewTailsFromJobEventsBand(host, builder);
+  vacateViewTailsFromValueChunkBand(host, builder);
   host.restoreDeclaredMutableEntrySlots(builder);
   host.reassertInBlockWriterReturns(builder);
 }
 
-export function vacateViewTailsFromJobEventsBand(
+/** Restore predecessor/padding outputs before derived value chunks reoccupy the selected band. */
+export function vacateViewTailsFromValueChunkBand(
   host: ViewTailOccupancyHost,
   builder: TransactionBuilder,
 ): void {
@@ -258,3 +259,6 @@ export function vacateViewTailsFromJobEventsBand(
   }
   if (vacated) host.applyDerivedValueChunks(builder);
 }
+
+/** Pre-generic SDK call sites retain this name until their host surface can be migrated together. */
+export const vacateViewTailsFromJobEventsBand = vacateViewTailsFromValueChunkBand;

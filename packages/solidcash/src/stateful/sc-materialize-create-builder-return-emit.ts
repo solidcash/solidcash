@@ -43,20 +43,49 @@ export function selectPreparedAtomicReturnSeed(
     : group.precomputedReturnCommitment;
 }
 
-/** An isolated discovery read cannot certify a result after an earlier write to its participant. */
+/**
+ * An isolated discovery result cannot certify a later graph value when an earlier invocation writes a
+ * participant touched by this invocation or any of its nested calls. For example, a release can update escrow
+ * state before calling a different contract's claim; the claim's nested getEscrow then observes the new state,
+ * although an isolated probe of claim saw the old escrow. Only graph-discovery seeds use this predicate;
+ * explicitly prepared results retain the composer's strict producer-result comparison.
+ */
 export function discoveredReturnFollowsParticipantWrite(
-  nodes: readonly Pick<PreparedAtomicMessageBusCall,
-  'contract' | 'functionName' | 'selector' | 'executionArtifact'>[],
+  nodes: readonly (Pick<PreparedAtomicMessageBusCall,
+  'contract' | 'functionName' | 'selector' | 'executionArtifact'> & {
+    parent?: number | null;
+    active?: boolean;
+  })[],
   nodeIndex: number,
 ): boolean {
   const current = nodes[nodeIndex];
   if (!current?.contract.categoryId) return false;
+  const belongsToSubtree = (index: number): boolean => {
+    if (index === nodeIndex) return true;
+    const seen = new Set<number>();
+    let parent = nodes[index]?.parent;
+    while (parent !== null && parent !== undefined) {
+      if (parent === nodeIndex) return true;
+      if (seen.has(parent)) return false;
+      seen.add(parent);
+      parent = nodes[parent]?.parent;
+    }
+    return false;
+  };
+  const observedParticipants = new Set(nodes.flatMap((node, index) => (
+    node.active === false || !belongsToSubtree(index) || !node.contract.categoryId
+      ? [] : [node.contract.categoryId.toLowerCase()]
+  )));
   return nodes.slice(0, nodeIndex).some((prior) => {
-    if (prior.contract.categoryId?.toLowerCase() !== current.contract.categoryId?.toLowerCase()) return false;
+    if (prior.active === false || !observedParticipants.has(prior.contract.categoryId?.toLowerCase() ?? '')) {
+      return false;
+    }
     const artifact = prior.executionArtifact ?? prior.contract.inner.artifact;
     const entry = artifact.abi.find((candidate) => candidate.name === prior.functionName
       && (prior.selector === undefined || candidate.selector?.toLowerCase() === prior.selector.toLowerCase()));
-    return entry?.writesState === true;
+    // An interface ABI can omit effect metadata and even its concrete selector. Only an exact read-only proof
+    // certifies the isolated result against a preceding call; an absent entry is not proof of purity.
+    return entry?.writesState !== false;
   });
 }
 

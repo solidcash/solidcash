@@ -14,7 +14,7 @@ import {
   preparedInvocationResult,
   provisionalInvocationResult,
 } from './compose-recipes.js';
-import type { CallDescriptor } from './compose-prepared-invocation.js';
+import { hasTransientConvergenceResultSeed, type CallDescriptor } from './compose-prepared-invocation.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
@@ -77,19 +77,28 @@ export async function resolveComposeParticipantIndexes(
     logicalIdentities.set(participant.participant, identity);
   }));
   const returning = plan.invocations.filter((invocation) => invocation.resultTypes.length > 0);
-  const preparedResults = Object.fromEntries(returning.flatMap((invocation) => {
+  const seededResults = Object.fromEntries(returning.flatMap((invocation) => {
     const artifact = plan.participants[invocation.callee].artifact;
-    const prepared = preparedInvocationResult(
+    const seeded = preparedInvocationResult(
       descriptors[invocation.index]?.provisionalResultCommitment,
       artifact,
       invocation.resultTypes,
       invocation.resultEncoding,
     );
-    return prepared === undefined ? [] : [[invocation.index, prepared] as const];
+    return seeded === undefined ? [] : [[invocation.index, seeded] as const];
+  }));
+  // Values learned in an earlier provisional graph pass help convergence, but they are not caller-prepared
+  // commitments. Retain their shape-checked bytes as seeds without making them immutable expected results;
+  // the complete producer VM and final preflight remain authoritative.
+  const preparedResults = Object.fromEntries(returning.flatMap((invocation) => {
+    const descriptor = descriptors[invocation.index];
+    return descriptor && !hasTransientConvergenceResultSeed(descriptor)
+      && seededResults[invocation.index] !== undefined
+      ? [[invocation.index, seededResults[invocation.index]] as const] : [];
   }));
   const provisionalResults = Object.fromEntries(returning.map((invocation) => {
     const artifact = plan.participants[invocation.callee].artifact;
-    return [invocation.index, preparedResults[invocation.index]
+    return [invocation.index, seededResults[invocation.index]
       ?? provisionalInvocationResult(artifact, invocation.resultTypes, invocation.resultEncoding)];
   }));
   return {

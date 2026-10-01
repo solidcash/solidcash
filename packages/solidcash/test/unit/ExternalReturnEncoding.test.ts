@@ -365,6 +365,49 @@ describe('selectMaterializedTailReturnEvents', () => {
     expect(discoveredReturnFollowsParticipantWrite(nodes, 3)).toBe(true);
   });
 
+  it('does not prepare a cross-contract result whose nested read follows an earlier write', () => {
+    const artifact = { abi: [
+      { name: 'root', writesState: true },
+      { name: 'release', writesState: true },
+      { name: 'claim', writesState: true },
+      { name: 'getEscrow', writesState: false },
+      { name: 'unrelatedRead', writesState: false },
+    ] };
+    const contract = (categoryId: string): { categoryId: string; inner: { artifact: typeof artifact } } => (
+      { categoryId, inner: { artifact } }
+    );
+    const nodes = [
+      { contract: contract('marketplace'), functionName: 'root', parent: null },
+      { contract: contract('escrow'), functionName: 'release', parent: 0 },
+      { contract: contract('claim'), functionName: 'claim', parent: 1 },
+      { contract: contract('escrow'), functionName: 'getEscrow', parent: 2 },
+      { contract: contract('unrelated'), functionName: 'unrelatedRead', parent: 0 },
+    ] as never;
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 2)).toBe(true);
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 3)).toBe(true);
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 4)).toBe(false);
+  });
+
+  it('does not treat missing interface effect metadata as a read-only proof', () => {
+    const interfaceArtifact = { abi: [{ name: 'release' }] };
+    const readArtifact = { abi: [{ name: 'claim', writesState: true }, { name: 'getEscrow', writesState: false }] };
+    const nodes = [
+      {
+        contract: { categoryId: 'escrow', inner: { artifact: interfaceArtifact } },
+        functionName: 'release', selector: '01020304', parent: null,
+      },
+      {
+        contract: { categoryId: 'claim', inner: { artifact: readArtifact } },
+        functionName: 'claim', parent: 0,
+      },
+      {
+        contract: { categoryId: 'escrow', inner: { artifact: readArtifact } },
+        functionName: 'getEscrow', parent: 1,
+      },
+    ] as never;
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 1)).toBe(true);
+  });
+
   it('promotes an exact writer probe over its provisional seed', () => {
     const exact = Uint8Array.of(1);
     const events = selectMaterializedTailReturnEvents([group()], [

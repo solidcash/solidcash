@@ -133,6 +133,18 @@ export interface PreparedAtomicMessageBusCall {
   ) => readonly FunctionArgument[] | undefined;
 }
 
+// SDK-owned provenance for results learned during a provisional composition pass. Keep this symbol private:
+// a caller-provided commitment must never be able to opt out of the strict prepared-result comparison. It is
+// enumerable only so internal descriptor spreads retain the mark across a result-dependent graph rebuild;
+// compose() snapshots caller objects via string-keyed entries and strips any caller-owned symbols.
+const transientConvergenceResultSeed = Symbol('transientConvergenceResultSeed');
+
+export function hasTransientConvergenceResultSeed(call: PreparedAtomicMessageBusCall): boolean {
+  return (call as PreparedAtomicMessageBusCall & {
+    [transientConvergenceResultSeed]?: boolean;
+  })[transientConvergenceResultSeed] === true;
+}
+
 export interface CallDescriptor extends PreparedAtomicMessageBusCall {
   artifact: Artifact;
 }
@@ -249,14 +261,21 @@ export function rebuildPreparedInvocation(
   const valueChunkProductions = (argsChanged || options.refreshValueProductions === true)
     ? descriptor.resolveValueChunkProductionsFromArgs?.(args)
     : descriptor.valueChunkProductions;
-  return {
+  const strictlyPrepared = descriptor.provisionalResultCommitment !== undefined
+    && !hasTransientConvergenceResultSeed(descriptor);
+  const rebuilt: PreparedAtomicMessageBusCall = {
     ...descriptor,
     args,
     valueChunkProductions,
-    ...(provisionalResultHex !== undefined && {
+    ...(!strictlyPrepared && provisionalResultHex !== undefined && {
       provisionalResultCommitment: hexToBin(provisionalResultHex),
     }),
   };
+  if (!strictlyPrepared && (provisionalResultHex !== undefined
+    || hasTransientConvergenceResultSeed(descriptor))) {
+    Object.defineProperty(rebuilt, transientConvergenceResultSeed, { value: true, enumerable: true });
+  }
+  return rebuilt;
 }
 
 export interface SemanticClaimObservation<T = unknown> {

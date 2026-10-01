@@ -5,6 +5,10 @@ import type { PreparedAtomicMessageBusCall } from '../../src/message-bus/compose
 import {
   propagateResultDependentArguments, type ResultPropagationContext,
 } from '../../src/message-bus/compose-result-propagation.js';
+import { resolveComposeParticipantIndexes } from '../../src/message-bus/compose-participant-indexes.js';
+import {
+  hasTransientConvergenceResultSeed, rebuildPreparedInvocation,
+} from '../../src/message-bus/compose-prepared-invocation.js';
 import { propagateResultDependentCallTopology } from '../../src/message-bus/compose-result-topology.js';
 import { externalReturnsForCallsites } from '../../src/stateful/external-returns-for-callsites.js';
 import type { StatefulContract } from '../../src/stateful/StatefulContract.js';
@@ -78,6 +82,54 @@ describe('result-dependent topology propagation', () => {
     expect(binToHex(changed.calls[1].provisionalResultCommitment!)).toBe(results[1]);
     expect(binToHex(changed.calls[3].provisionalResultCommitment!)).toBe(results[4]);
     expect(changed.calls.some((call) => call.contract === ctx.descriptors[3].contract)).toBe(false);
+  });
+
+  it('keeps provisional restart results separate from caller-prepared commitments', async () => {
+    const ctx = fixture();
+    const observed = new Uint8Array(32);
+    observed[31] = 1;
+    const zero = new Uint8Array(32);
+    const transient = rebuildPreparedInvocation(ctx.descriptors[1], [], binToHex(observed));
+    expect(binToHex(transient.provisionalResultCommitment!)).toBe(binToHex(observed));
+    expect(hasTransientConvergenceResultSeed(transient)).toBe(true);
+    // Descriptor normalization spreads its fields on every recursive composition pass. The private provenance
+    // must survive that internal spread while an independently supplied commitment remains strict.
+    const spreadTransient = { ...transient, artifact: ctx.descriptors[1].artifact };
+    expect(hasTransientConvergenceResultSeed(spreadTransient)).toBe(true);
+    const supplied = { ...ctx.descriptors[1], provisionalResultCommitment: zero };
+    const stillStrict = rebuildPreparedInvocation(supplied, [], binToHex(observed));
+    expect(binToHex(stillStrict.provisionalResultCommitment!)).toBe(binToHex(zero));
+    expect(hasTransientConvergenceResultSeed(stillStrict)).toBe(false);
+
+    const participants = ctx.plan.participants.slice(0, ctx.descriptors.length).map((participant, index) => ({
+      ...participant, lockingBytecode: (index + 1).toString(16).padStart(2, '0'),
+    }));
+    const descriptors = ctx.descriptors.map((descriptor, index) => ({
+      ...descriptor,
+      contract: {
+        ...descriptor.contract,
+        inner: {
+          ...descriptor.contract.inner,
+          lockingBytecode: participants[index].lockingBytecode,
+        },
+      },
+    }));
+    const softIndexes = await resolveComposeParticipantIndexes(
+      { ...ctx.plan, participants } as never,
+      descriptors.map((descriptor, index) => index === 1
+        ? { ...spreadTransient, contract: descriptor.contract } : descriptor) as never,
+      {} as never,
+    );
+    expect(softIndexes.preparedResults[1]).toBeUndefined();
+    expect(softIndexes.provisionalResults[1]).toBe(binToHex(observed));
+
+    const strictIndexes = await resolveComposeParticipantIndexes(
+      { ...ctx.plan, participants } as never,
+      descriptors.map((descriptor, index) => index === 1
+        ? { ...stillStrict, contract: descriptor.contract } : descriptor) as never,
+      {} as never,
+    );
+    expect(strictIndexes.preparedResults[1]).toBe(binToHex(zero));
   });
 
   it('keeps a speculative subtree while its guard producer is still unknown', async () => {

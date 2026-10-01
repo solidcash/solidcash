@@ -52,6 +52,7 @@ import { layoutWitnessIsActiveCoordinate } from './layout-sentinels.js';
 import { isPendingBatchPredecessor } from './pending-batch-predecessor.js';
 import { retainTerminalValueChunkProductions } from './terminal-value-chunk-productions.js';
 import { allowsDeferredComputeVmDiscovery } from './materialization-mode.js';
+import { probeEarlySourceRevertBeforeDeferredCompute } from './deferred-compute-early-revert.js';
 import {
   finalizeMonotonePass,
   MonotoneCell,
@@ -2121,9 +2122,25 @@ export async function assembleAtomicComposition(
       const unresolvedUnderRecipe = resolvableDeferredBlocks
         .filter((block) => block.controller.hasUnresolved());
       if (unresolvedUnderRecipe.length > 0) {
+        const earlyRevert = probeEarlySourceRevertBeforeDeferredCompute(
+          aggregate,
+          ctx.provider,
+          unresolvedUnderRecipe.map((block) => ({
+            inputIndex: block.executionInput,
+            inputBase: block.inputBase,
+            offsets: block.offsets,
+          })),
+        );
+        if (earlyRevert !== undefined) throw earlyRevert;
+        const detail = unresolvedUnderRecipe.map((block) => {
+          const counts = block.controller.remaining?.();
+          if (counts === undefined) return String(block.participant);
+          return `${block.participant} (keccak ${counts.keccakUnresolved}/${counts.keccakTotal}, `
+            + `ecrecover ${counts.ecrecoverUnresolved}/${counts.ecrecoverTotal})`;
+        }).join(', ');
         throw new Error(
           'materialization: recipe mode forbids deferred-compute VM discovery as planner authority; '
-            + `unresolved participant(s) ${unresolvedUnderRecipe.map((block) => block.participant).join(', ')} `
+            + `unresolved participant(s) ${detail} `
             + '(opt into materializationMode=devOracle for diagnostic discovery)',
         );
       }

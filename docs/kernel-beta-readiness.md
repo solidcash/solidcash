@@ -41,6 +41,14 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   `take job > sanity checks` title: recipe-mode composition cannot materialize deferred compute for the
   `not whitelisted` rejection path. The custom-error argument case was not reached under the stronger matcher;
   no negative-path waiver or `devOracle` release behavior was introduced.
+- 2026-10-01 deferred-compute rejection checkpoint: a selected handler can fail a compiler-mapped `require`
+  before reading any unresolved compute value. Recipe mode now reports that source-level VM rejection without
+  using the VM trace to plan a resource. It refuses this path if the active body is ambiguous or if execution
+  reads a deferred sidecar unlocking script/output commitment. Focused safety tests and their adjacent title,
+  build, and focused lint pass. The unchanged `take job > sanity checks` title advanced past `not whitelisted`,
+  creator/arbitrator identity, and `not registered` checks; it remains red at the empty-signature custom-error
+  case, where ecrecover is still deferred. The preceding marketplace title has not been rerun for this change
+  because this title has not turned green.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

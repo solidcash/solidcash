@@ -1,99 +1,38 @@
 /* eslint-disable @typescript-eslint/no-loop-func */
 import {
   StateLayout,
-  EntryAccessAbi,
-  buildPushdataCommitment,
-  encodeNftIndexTag,
-  buildEntryCommitment,
-  buildEntryCommitmentMultiKey,
   parseEntryCommitment,
-  parsePushdataCommitment,
   getDefaultStateValue,
   encodePushdataValue,
-  encodeEventCommitment,
   EventDefinitionAbi,
   StateValue,
   FunctionBlockLayout,
   AbiFunction,
   BlockSlotKind,
   attachDecodedAccessors,
-  buildChunkCommitment,
-  buildEntryNftCovenantScript,
-  computeCollectionHash,
-  computeCollectionSignature,
-  dynamicChunkSignature,
-  splitValueIntoChunks,
-  splitValueIntoValueChunks,
   Artifact,
-  VALUE_HEAD_SIZE,
-  VALUE_CHUNK_SIZE,
-  VALUE_CHUNK_MAX_COUNT,
   encodeChunkableValueTail,
-  buildValueChunkCommitment,
-  sha256 as sha256Sync,
-  encodeInt,
-  Op,
 } from '@solidcash/utils';
-import {
-  binToHex, binsAreEqual, hexToBin, isHex, encodeTransaction, createVirtualMachineBch2026, utf8ToBin,
-  lockingBytecodeToCashAddress, encodeDataPush, bigIntToVmNumber, vmNumberToBigInt,
-} from '@bitauth/libauth';
-import { getDustThreshold } from '@mem-cash/validation';
-import { peekBuildId } from './buildSequence.js';
-import {
-  canonicalValueChunkProducerIdentity,
-  canonicalValueChunkProducerResourceClaim,
-  canonicalValueChunkProducerResourceIdentity,
-  canonicalValueChunkResourceOwnerIdentity,
-  canonicalValueChunkStateOwner,
-  type TransportedContinuationResourceClaim,
-  type ValueChunkProducerPathDisposition,
-  type ValueChunkProducerResourceClaim,
-} from './ValueChunkProducerIdentity.js';
-import {
-  buildEventNftCovenantScript, computeEventNameHash, buildSidecarRedeem,
-  sidecarLockingBytecode, scriptToBytecode,
-} from '@solidcash/utils';
+import { binToHex, binsAreEqual, hexToBin, isHex, encodeTransaction } from '@bitauth/libauth';
+import '@mem-cash/validation';
+import './buildSequence.js';
+import './ValueChunkProducerIdentity.js';
+import { buildSidecarRedeem, sidecarLockingBytecode, scriptToBytecode } from '@solidcash/utils';
 import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
-import {
-  buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit,
-} from '../ecrecover/ecrecoverComputeSidecar.js';
-import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
-import {
-  addressToLockScript, scriptToLockingBytecode, generateLibauthSourceOutputs, calculateDust,
-} from '../utils.js';
+import '../ecrecover/ecrecoverComputeSidecar.js';
+import './CovenantTransactionBuilder.js';
+import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
-import { attachWait } from '../wait.js';
-import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
+import '../wait.js';
+import '../network/createVirtualMachine.js';
 import { onMockNetworkProviderReset } from '../network/MockNetworkProvider.js';
 import { clearCollectionValueRecords } from './ValueChunkPersistence.js';
-import {
-  assertFinalizedTransactionBytes, assertFinalizedTransactionCovenants,
-  finalizedByteGateOptionsForProvider, inputSubjectsOfBuilder,
-} from '../message-bus/preflight.js';
+import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
-import {
-  Utxo, UnlockableUtxo, TransactionDetails, isContractUnlocker, isP2PKHUnlocker, Unlocker,
-} from '../interfaces.js';
+import { Utxo, UnlockableUtxo, TransactionDetails, isContractUnlocker, Unlocker } from '../interfaces.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
-import {
-  createDataNftUnlocker, createEntryNftUnlocker, createRelocatedDataNftUnlocker, createValueChunkUnlocker,
-  getValueChunkLockingBytecode,
-} from './covenant-helpers.js';
-import {
-  canMaterializeRepairedValueChunk,
-  canApplyRepairedNftCommitment,
-  computedOutputConvergenceFingerprint,
-  computedOutputRepairPassLimit,
-  followsMutableNftOutputGuard,
-  isActiveVmControlBranch,
-  isFixedStateRepairSlot,
-  isForwardOutputOnlyRepairSlot,
-  isOwnedStateRepairCoordinate,
-  isRepairableNftOutput,
-  recordComputedOutputConvergenceState,
-  recordComputedOutputRepairTransition,
-} from './computed-output-repair.js';
+import './covenant-helpers.js';
+import './computed-output-repair.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 
 /** Select a continuation lock without allowing compatibility state to override a live covenant pin. */
@@ -124,39 +63,18 @@ export function findScidAnchorInputIndex(inputs: readonly Pick<Utxo, 'token'>[],
 export function absoluteComposedValueChunkOutputBase(outputBase: number, blockBase: number): number {
   return outputBase < 0 ? outputBase : outputBase + blockBase;
 }
-import {
-  decodeEntryCommitment, encodeEntryCommitment, isEmptyValueEntryCommitment, keyToSlot, keyToSlotMulti,
-} from './SortedList.js';
-import {
-  planKernelEntryJournalOutputLayout,
-  type KernelEntryJournalEagerOutputPlanEntry,
-  type KernelEntryJournalOutputLayoutPlan,
-  type KernelEntryJournalSettlementOutputPlanEntry,
-} from './KernelEntryJournal.js';
+import { decodeEntryCommitment, encodeEntryCommitment } from './SortedList.js';
+import { planKernelEntryJournalOutputLayout, type KernelEntryJournalOutputLayoutPlan } from './KernelEntryJournal.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
-import {
-  buildKeccakComputeSidecar, extractKeccakPreimageFromTrace,
-} from '../keccak/keccakComputeSidecar.js';
-import {
-  LEGACY_JOB_EVENTS_COLLECTION_ALIASES,
-  legacyGroupLooksLikePublishJobEvent,
-  legacyIsJobEventsCollection,
-  legacyIsPublishJobEventName,
-  legacyScalarNameHints,
-  permitsLegacyScalarNameHeuristics,
-} from './legacy-planning-heuristics.js';
-import {
-  absoluteValueChunkOutputBaseFromResolve,
-} from '../message-bus/layout-resolver.js';
+import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
+import { legacyGroupLooksLikePublishJobEvent } from './legacy-planning-heuristics.js';
+import '../message-bus/layout-resolver.js';
 export {
   collectionValuePhysicalBindings,
   planCompilerTrailingResources,
 } from './compiler-trailing-resources.js';
-import {
-  allowsFinalizationVmRepairs,
-  refuseFinalizationVmRepairsIfRecipe,
-} from '../message-bus/materialization-mode.js';
+import '../message-bus/materialization-mode.js';
 
 
 export {
@@ -201,45 +119,14 @@ export {
   scaledEventOutputIndex,
 } from './value-chunk-geometry.js';
 import {
-  InBlockReturnGroup,
   groupOwnsInBlockReturnEvent,
   logicalReturnGroupIndex,
-  PhysicalReturnGroup,
-  MaterializedReturnEvent,
-  ExternalCallReturnCoordinate,
-  parseExternalCallReturnCoordinate,
-  MaterializedReturnGroup,
   selectMaterializedTailReturnEvents,
-  isMintingBandTokenWriter,
-  isMintingBandSwapFunction,
-  CompilerTokenWriterGroup,
   isCompilerDescribedMintingBandWriter,
-  shouldRestorePersistedContinuationInputs,
-  canonicalWriterReturnCommitment,
   shouldReplaceReturnEventCommitment,
   isAllZeroCommitment,
-  tokenWriterReturnIndex,
-  shouldRetainMintingOutputSwap,
-  liveChunkSlotsByOwner,
-  liveChunkWidthForGroup,
-  physicalParticipantWidth,
-  materializedParticipantWidth,
-  participantSpanOverlapsLane,
-  collidingParticipantGroupIndex,
-  TokenBandRepairOwnerSelection,
-  selectTokenBandRepairOwner,
-  proxyValueChunkPadCount,
-  participantRelocationExtraFunders,
-  valueChunkBandWidth,
-  valueChunkBandWidthForContinuationClaims,
   continuationOutputBaseBeforeSuffix,
-  selectValueChunkOutputBase,
-  viewTailOccupancyCap,
   ViewTailPackOptions,
-  clampViewTailPlacement,
-  liveJobEventsBandWidth,
-  scaledInputPreserveExclusiveEnd,
-  scaledEventOutputIndex,
 } from './value-chunk-geometry.js';
 
 export {
@@ -291,58 +178,30 @@ export {
   valueChunkWriteIdentity,
   valueChunkCountFor,
   coherentAuthenticatedValueChunkRun,
-  firstUsableValueChunkRun
+  firstUsableValueChunkRun,
 } from './value-chunk-persist.js';
 import {
   ValueChunkWriteStagingSession,
-  CompositionSettlementSession,
-  getCompositionSettlementSession,
-  createCompositionSettlementSession,
-  runWithCompositionSettlementSession,
   settlement,
   type AuthenticatedValueChunk,
   selectObservedValueChunkRun,
-  persistedJobEventsWidth,
-  rememberJobEventsUnlockRecipe,
-  persistedJobEventsUnlockRecipe,
   persistValueChunkLock,
   legacyJobEventsPersistValueChunkLock,
-  stageJobEventsValue,
-  rememberJobEventsValue,
   persistedJobEventsValue,
-  rememberJobEventsLock,
   persistedJobEventsLock,
   type ValueChunkWriteDescriptor,
   type DerivedChunkOutputObservation,
   type LateValueSuffixInsertion,
-  permitsHeuristicValueChunkRunRelocation,
-  materializedValueChunkAbsoluteStart,
-  sameDerivedChunkOutputObservation,
   valueChunkWriteResourceIdentity,
-  stageValueChunkWrite,
   stagedValueChunkWrite,
   isValueChunkWriteReady,
   type ValueChunkWriteCategorySelection,
-  type ValueChunkResourceSelection,
-  selectValueChunkResource,
-  selectValueChunkWriteCategory,
-  isInitialValueChunkWrite,
-  persistedValueChunkReadiness,
-  shouldRematerializeDescribedValueChunkWrite,
-  resolveValueChunkWriteCategory,
-  rememberValueChunkUnlockRecipe,
-  commitStagedValueChunkWrite,
   persistedValueChunkWriteState,
   selectPersistedValueChunkWrite,
   persistUpdateRedeemLock,
-  isPersistedJobEventsReady,
-  valueChunkIndexFromCommitment,
-  isEmptyValueChunkCommitment,
   latestPersisted,
-  valueChunkWriteIdentity,
   valueChunkCountFor,
   coherentAuthenticatedValueChunkRun,
-  firstUsableValueChunkRun
 } from './value-chunk-persist.js';
 
 
@@ -379,34 +238,9 @@ export {
 } from './early-value-chunk-helpers.js';
 import {
   decodeVmScriptNumber,
-  legacyLiveValueChunkBandWidth,
-  legacyComputePublishValueChunkBand,
-  legacyFillValueChunkBandHoles,
-  legacyPersistedValueChunkWidth,
-  legacyPersistedValueChunkValue,
-  legacyPersistedValueChunkLock,
-  legacyPersistedValueChunkUnlockRecipe,
-  legacyRememberValueChunkValue,
-  legacyRememberValueChunkLock,
-  legacyRememberValueChunkUnlockRecipe,
-  legacyStageValueChunkValue,
-  legacyIsPersistedValueChunkReady,
   stateVariableForUpdateKey,
   stateUpdatesTouchNft,
-  tokenWriterOccupiedDests,
-  persistAndTokenWriterOccupancy,
-  findDisposableValueChunkOutputBase,
-  computePublishJobEventsBand,
-  boundedDerivationIterations,
-  shouldGrowSpeculativeChunkRegion,
   seedChunksFromPersistedValue,
-  applyRedeemLockToChunks,
-  p2sh32LockFromValueRoot,
-  selectHashedValueForChunkPin,
-  extractIdentityScanValueChunkPin,
-  chunksFromValue,
-  chunksFromJobEventsValue,
-  shouldKeepPersistAtLayoutBase,
 } from './early-value-chunk-helpers.js';
 
 export {
@@ -424,21 +258,7 @@ export {
   packJobsAgainstOpReturn,
   relocateChangeAfterOccupancy,
 } from './persist-predecessor-layout.js';
-import {
-  isPersistValueChunkCommitment,
-  persistValueChunkBase,
-  persistPredecessorPlaceCount,
-  persistUpdatePredecessorDests,
-  syncBuilderInputsFromAllInputs,
-  persistPredecessorRank,
-  orderPersistPredecessorCandidates,
-  persistPredecessorWantedRank,
-  assignPersistPredecessors,
-  persistOccupantDisplaceable,
-  writerBlockOccupancyEnd,
-  packJobsAgainstOpReturn,
-  relocateChangeAfterOccupancy,
-} from './persist-predecessor-layout.js';
+import './persist-predecessor-layout.js';
 
 export {
   isP2sh32LockScript,
@@ -454,31 +274,14 @@ export {
   preferChunkCommitment,
   type ValueChunkTraceObservation,
 } from './value-chunk-band-helpers.js';
-import {
-  isP2sh32LockScript,
-  isViewReturnTailOutput,
-  isDisposableAlignmentPad,
-  placeValueChunksOnBand,
-  selectExpectedP2sh32OutputLock,
-  selectValueChunkCommitmentObservations,
-  fillJobEventsBandHoles,
-  isOverwritableValueChunkOccupant,
-  mintingSwapShift,
-  expectedFromOtcEqualVerify,
-  preferChunkCommitment,
-  type ValueChunkTraceObservation,
-} from './value-chunk-band-helpers.js';
+import { isViewReturnTailOutput } from './value-chunk-band-helpers.js';
 
 export {
   cloneToken,
   commitmentHexOf,
   outputMatchesLock,
 } from './stb-output-utils.js';
-import {
-  cloneToken,
-  commitmentHexOf,
-  outputMatchesLock,
-} from './stb-output-utils.js';
+import { cloneToken, commitmentHexOf } from './stb-output-utils.js';
 
 export {
   chooseMintingSwapShift,
@@ -491,17 +294,7 @@ export {
   packTailReturnPlacements,
   assignedTailEnd,
 } from './physical-return-layout.js';
-import {
-  chooseMintingSwapShift,
-  chooseParticipantRelocationShift,
-  gatherContiguousPlainFunders,
-  lastCollidingMutableWriterIndex,
-  findViewTailDestinations,
-  assignPhysicalReturnIndices,
-  returnWitnessOutputIndices,
-  packTailReturnPlacements,
-  assignedTailEnd,
-} from './physical-return-layout.js';
+import './physical-return-layout.js';
 
 export {
   isPredOutReusableHole,
@@ -519,18 +312,7 @@ export {
   clearMutableCollectionOutputsOutsideAuthoritativeRun,
 } from './mutable-output-reassert.js';
 import {
-  isPredOutReusableHole,
-  reassertBatchPredecessorOutputsAtDeclaredSlots,
   isOpReturnLockingBytecode,
-  redirectViewTailOffOpReturn,
-  movePostOpReturnBeforeJobsSuffix,
-  moveLateOutputsBeforeReverseSuffix,
-  hasEquivalentMutableNftOutput,
-  stripRelocatedMutableDuplicates,
-  isInsertBandDustToken,
-  reassertNoneCapFunderTwins,
-  reassertReadOnlyMutableOneToOnes,
-  reassertDeclaredMutableSlotLock,
   clearMutableCollectionOutputsOutsideAuthoritativeRun,
 } from './mutable-output-reassert.js';
 
@@ -541,13 +323,7 @@ export {
   selectBalancedEntryOutputIdentity,
   stripSurplusEmptyCollectionEntries,
 } from './collection-lock-strip.js';
-import {
-  isOutsideTokenWriterBlock,
-  stripSurplusInvalidCollectionLockOutputs,
-  stripInvalidCollectionLockOutputs,
-  selectBalancedEntryOutputIdentity,
-  stripSurplusEmptyCollectionEntries,
-} from './collection-lock-strip.js';
+import './collection-lock-strip.js';
 
 export {
   SLOT_HEX,
@@ -556,13 +332,7 @@ export {
   isSortedEntryNodeCommitment,
   synthesizePredNewCommitment,
 } from './sorted-entry-commitment.js';
-import {
-  SLOT_HEX,
-  isSortedEntryHeadCommitment,
-  isDataNftIndexCommitment,
-  isSortedEntryNodeCommitment,
-  synthesizePredNewCommitment,
-} from './sorted-entry-commitment.js';
+import './sorted-entry-commitment.js';
 
 export {
   permitsLegacyNamedValueChunkFallback,
@@ -585,27 +355,7 @@ export {
   type ChunkableValueWriteGroup,
   type ChunkableValueWriteResource,
 } from './chunkable-value-write-selection.js';
-import {
-  permitsLegacyNamedValueChunkFallback,
-  permitsLegacyValueChunkEventReconstruction,
-  permitsLegacyDelegateEventRepair,
-  groupChunkableValueWriteCollections,
-  groupChunkableValueWriteCollection,
-  claimedChunkableValueWriteCollection,
-  claimedChunkableValueWriteResource,
-  groupChunkableValueWriteResource,
-  groupWritesSingleChunkableValueCollection,
-  groupChunkableArrayWriteCollection,
-  groupWritesSingleChunkableArrayCollection,
-  groupDeclaredAbiFunction,
-  groupOwnsLinearSortedBatch,
-  groupChunkableValueWriteIdentity,
-  sameChunkableValueWriteResource,
-  legacyPlannedChunkableValueWriteCollection,
-  selectChunkableValueWriteExecution,
-  type ChunkableValueWriteGroup,
-  type ChunkableValueWriteResource,
-} from './chunkable-value-write-selection.js';
+import { groupChunkableValueWriteResource } from './chunkable-value-write-selection.js';
 
 import {
   chunkableValueWriteAbi,
@@ -681,22 +431,13 @@ import {
   writeViewTailsAfterWriterOccupancy,
   type ViewTailOccupancyHost,
 } from './stb-view-tail-occupancy.js';
-import {
-  reassertNestedEmitEvents,
-  type NestedEmitEventsHost,
-} from './stb-nested-emit-events.js';
+import { reassertNestedEmitEvents, type NestedEmitEventsHost } from './stb-nested-emit-events.js';
 import {
   reassertPersistedJobEventsOneToOnes,
   type PersistedJobEventsOneToOneHost,
 } from './stb-persisted-jobevents-onetoone.js';
-import {
-  placeTailReturnAfterSwappedTokenBlock,
-  type PlaceTailReturnHost,
-} from './stb-place-tail-return.js';
-import {
-  ensureAuthenticatedViewReturns,
-  type AuthenticatedViewReturnHost,
-} from './stb-authenticated-view-returns.js';
+import { placeTailReturnAfterSwappedTokenBlock, type PlaceTailReturnHost } from './stb-place-tail-return.js';
+import { ensureAuthenticatedViewReturns, type AuthenticatedViewReturnHost } from './stb-authenticated-view-returns.js';
 import {
   refreshMasterUnlocker,
   syncBuilderUnlockers,
@@ -719,26 +460,14 @@ import {
   reconcileMaterializedReturnWitnesses,
   type MaterializedReturnWitnessReconcileHost,
 } from './stb-materialized-return-witness-reconcile.js';
-import {
-  repackViewTailsAfterMaterialization,
-  type RepackViewTailsHost,
-} from './stb-repack-view-tails.js';
-import {
-  stripSurplusLinearBatchEntryClones,
-  type StripSurplusLinearBatchHost,
-} from './stb-strip-surplus-linear-batch.js';
-import {
-  reassertTokenInsertNewLocks,
-  type TokenInsertNewLocksHost,
-} from './stb-token-insert-new-locks.js';
+import { repackViewTailsAfterMaterialization, type RepackViewTailsHost } from './stb-repack-view-tails.js';
+import { stripSurplusLinearBatchEntryClones, type StripSurplusLinearBatchHost } from './stb-strip-surplus-linear-batch.js';
+import { reassertTokenInsertNewLocks, type TokenInsertNewLocksHost } from './stb-token-insert-new-locks.js';
 import {
   enforceDeclaredCollectionOutputCardinality,
   type DeclaredCollectionCardinalityHost,
 } from './stb-declared-collection-cardinality.js';
-import {
-  reassertMintingOneToOne,
-  type MintingOneToOneHost,
-} from './stb-minting-one-to-one.js';
+import { reassertMintingOneToOne, type MintingOneToOneHost } from './stb-minting-one-to-one.js';
 import {
   rebindLateValueSuffixAfterInsertion,
   reconcileMaterializedValueChunkWitnesses,
@@ -759,10 +488,7 @@ import {
   unmaterializedReturnEventCompact,
   type DelegateLoopEntriesHost,
 } from './stb-delegate-loop-entries.js';
-import {
-  assertConvergedFinalTransaction,
-  type ConvergedFinalTransactionHost,
-} from './stb-converged-final-transaction.js';
+import { assertConvergedFinalTransaction, type ConvergedFinalTransactionHost } from './stb-converged-final-transaction.js';
 import {
   applyDerivedValueChunks,
   relocateCollidingDerivedValueChunkRuns,
@@ -775,19 +501,13 @@ import {
   reassertStagedValueChunkOutputs,
   type ReverseSuffixValueChunkHost,
 } from './stb-reverse-suffix-value-chunks.js';
-import {
-  logCovenantFailureTrace,
-  type CovenantFailureTraceHost,
-} from './stb-covenant-failure-trace.js';
+import { logCovenantFailureTrace, type CovenantFailureTraceHost } from './stb-covenant-failure-trace.js';
 import {
   repairComputedChunkOutput,
   type ComputedChunkRepairResult,
   type RepairComputedChunkOutputHost,
 } from './stb-repair-computed-chunk-output.js';
-import {
-  buildInputs,
-  type BuildInputsHost,
-} from './stb-build-inputs.js';
+import { buildInputs, type BuildInputsHost } from './stb-build-inputs.js';
 import {
   applyLearnedWriterEvents,
   learnFinalizedDelegateEvents,
@@ -813,44 +533,22 @@ import {
   restoreBuilderReturnOutputParams as restoreBuilderReturnOutputParamsImpl,
   type RestoreBuilderReturnOutputParamsHost,
 } from './stb-restore-builder-return-output-params.js';
-import {
-  reassertSendPostLayoutMaterialization as reassertSendPostLayoutMaterializationImpl,
-  type ReassertSendPostLayoutMaterializationHost,
-} from './stb-reassert-send-post-layout-materialization.js';
-import {
-  validateSendFeeCapsAndBytes as validateSendFeeCapsAndBytesImpl,
-  type ValidateSendFeeCapsAndBytesHost,
-} from './stb-validate-send-fee-caps-and-bytes.js';
-import {
-  createSendFinalLayoutReassert as createSendFinalLayoutReassertImpl,
-  type CreateSendFinalLayoutReassertHost,
-} from './stb-create-send-final-layout-reassert.js';
-import {
-  convergeAndSerializeFinalTransaction as convergeAndSerializeFinalTransactionImpl,
-  type ConvergeAndSerializeFinalTransactionHost,
-} from './stb-converge-and-serialize-final-transaction.js';
+import { type ReassertSendPostLayoutMaterializationHost } from './stb-reassert-send-post-layout-materialization.js';
+import { type ValidateSendFeeCapsAndBytesHost } from './stb-validate-send-fee-caps-and-bytes.js';
+import { type CreateSendFinalLayoutReassertHost } from './stb-create-send-final-layout-reassert.js';
+import { type ConvergeAndSerializeFinalTransactionHost } from './stb-converge-and-serialize-final-transaction.js';
 import {
   assembleConstructorInputs as assembleConstructorInputsImpl,
   type AssembleConstructorInputsHost,
 } from './stb-assemble-constructor-inputs.js';
-import {
-  appendEarlyDelegateOutputs as appendEarlyDelegateOutputsImpl,
-  type AppendEarlyDelegateOutputsHost,
-} from './stb-append-early-delegate-outputs.js';
-import {
-  materializeLateBuildChunkFrame as materializeLateBuildChunkFrameImpl,
-} from './stb-materialize-late-build-chunk-frame.js';
+import { type AppendEarlyDelegateOutputsHost } from './stb-append-early-delegate-outputs.js';
+import './stb-materialize-late-build-chunk-frame.js';
 import {
   runSendPhase3FinalRebuild as runSendPhase3FinalRebuildImpl,
   type RunSendPhase3FinalRebuildHost,
 } from './stb-run-send-phase3-final-rebuild.js';
-import {
-  materializeMidBuildOutputsCascade as materializeMidBuildOutputsCascadeImpl,
-} from './stb-materialize-mid-build-outputs-cascade.js';
-import {
-  runBuildEarlyFront as runBuildEarlyFrontImpl,
-  type RunBuildEarlyFrontHost,
-} from './stb-run-build-early-front.js';
+import './stb-materialize-mid-build-outputs-cascade.js';
+import { runBuildEarlyFront as runBuildEarlyFrontImpl, type RunBuildEarlyFrontHost } from './stb-run-build-early-front.js';
 import {
   createSendTiming,
   runSendPhase4ThroughSubmit as runSendPhase4ThroughSubmitImpl,
@@ -872,145 +570,51 @@ import {
   resolveDeferredEcrecoverArgument as resolveDeferredEcrecoverArgumentImpl,
   type ResolveDeferredEcrecoverArgumentHost,
 } from './stb-resolve-deferred-ecrecover-argument.js';
-import {
-  setFunderUtxos as setFunderUtxosImpl,
-  type SetFunderUtxosHost,
-} from './stb-set-funder-utxos.js';
+import { setFunderUtxos as setFunderUtxosImpl, type SetFunderUtxosHost } from './stb-set-funder-utxos.js';
 import {
   getLoopEntryOutputIndex as getLoopEntryOutputIndexImpl,
   type GetLoopEntryOutputIndexHost,
 } from './stb-get-loop-entry-output-index.js';
+import { measureAndFundCovenantFee, type MeasureAndFundCovenantFeeHost } from './stb-measure-and-fund-covenant-fee.js';
+import { type ReassertSendFinalBuilderHost } from './stb-reassert-send-final-builder.js';
+import { type PlaceSendChangeAndSidecarHost } from './stb-place-send-change-and-sidecar.js';
+import './stb-rebalance-funder-surplus.js';
+import { type ReassertSendFinalConservationHost } from './stb-reassert-send-final-conservation.js';
+import { type ReassertSendAfterViewRepackHost } from './stb-reassert-send-after-view-repack.js';
+import './stb-finalize-fee-before-validation.js';
+import { type PatchRelocatedDelegateOutputBasesHost } from './stb-patch-relocated-delegate-output-bases.js';
+import { type ReassertBuildConservationRepairsHost } from './stb-reassert-build-conservation-repairs.js';
+import { type FinalizeBuildJobsBandAndViewsHost } from './stb-finalize-build-jobs-band-and-views.js';
+import { type ReassertSendFinalLayoutHost } from './stb-reassert-send-final-layout.js';
+import { type MaterializeOwnerEventNftOutputsHost } from './stb-materialize-owner-event-nft-outputs.js';
 import {
-  measureAndFundCovenantFee,
-  type MeasureAndFundCovenantFeeHost,
-} from './stb-measure-and-fund-covenant-fee.js';
-import {
-  reassertSendFinalBuilder,
-  type ReassertSendFinalBuilderHost,
-} from './stb-reassert-send-final-builder.js';
-import {
-  placeSendChangeAndSidecar,
-  type PlaceSendChangeAndSidecarHost,
-} from './stb-place-send-change-and-sidecar.js';
-import {
-  rebalanceFunderSurplus as rebalanceFunderSurplusImpl,
-} from './stb-rebalance-funder-surplus.js';
-import {
-  reassertSendFinalConservation,
-  type ReassertSendFinalConservationHost,
-} from './stb-reassert-send-final-conservation.js';
-import {
-  reassertSendAfterViewRepack,
-  type ReassertSendAfterViewRepackHost,
-} from './stb-reassert-send-after-view-repack.js';
-import {
-  createFinalizeFeeBeforeValidation,
-} from './stb-finalize-fee-before-validation.js';
-import {
-  patchRelocatedDelegateOutputBases,
-  type PatchRelocatedDelegateOutputBasesHost,
-} from './stb-patch-relocated-delegate-output-bases.js';
-import {
-  reassertBuildConservationRepairs,
-  type ReassertBuildConservationRepairsHost,
-} from './stb-reassert-build-conservation-repairs.js';
-import {
-  finalizeBuildJobsBandAndViews,
-  type FinalizeBuildJobsBandAndViewsHost,
-} from './stb-finalize-build-jobs-band-and-views.js';
-import {
-  reassertSendFinalLayout,
-  type ReassertSendFinalLayoutHost,
-} from './stb-reassert-send-final-layout.js';
-import {
-  materializeOwnerEventNftOutputs,
-  type MaterializeOwnerEventNftOutputsHost,
-} from './stb-materialize-owner-event-nft-outputs.js';
-import {
-  materializeOwnerEntriesContainersTransfers,
   type MaterializeOwnerEntriesContainersTransfersHost,
 } from './stb-materialize-owner-entries-containers-transfers.js';
-import {
-  materializeExternalCallOutputs,
-  type MaterializeExternalCallOutputsHost,
-} from './stb-materialize-external-call-outputs.js';
-import {
-  materializeOwnerFrontOutputs,
-  type MaterializeOwnerFrontOutputsHost,
-} from './stb-materialize-owner-front-outputs.js';
-import {
-  createAppendDelegateOutputHelpers,
-  type AppendDelegateOutputHelpersHost,
-} from './stb-append-delegate-output-helpers.js';
-import {
-  submitFinalTransaction,
-  type SubmitFinalTransactionHost,
-} from './stb-submit-final-transaction.js';
-import {
-  finalizeBuildStamp,
-  type FinalizeBuildStampHost,
-} from './stb-finalize-build-stamp.js';
-import {
-  finalizeBuildTail,
-} from './stb-finalize-build-tail.js';
-import {
-  registerStatefulInputs,
-  type RegisterStatefulInputsHost,
-} from './stb-register-stateful-inputs.js';
-import {
-  materializeTrailingFrameAndPending,
-  type MaterializeTrailingFrameAndPendingHost,
-} from './stb-materialize-trailing-frame-and-pending.js';
+import { type MaterializeExternalCallOutputsHost } from './stb-materialize-external-call-outputs.js';
+import { type MaterializeOwnerFrontOutputsHost } from './stb-materialize-owner-front-outputs.js';
+import { type AppendDelegateOutputHelpersHost } from './stb-append-delegate-output-helpers.js';
+import { type SubmitFinalTransactionHost } from './stb-submit-final-transaction.js';
+import { type FinalizeBuildStampHost } from './stb-finalize-build-stamp.js';
+import './stb-finalize-build-tail.js';
+import { type RegisterStatefulInputsHost } from './stb-register-stateful-inputs.js';
+import { type MaterializeTrailingFrameAndPendingHost } from './stb-materialize-trailing-frame-and-pending.js';
 export {
   physicalBalancedTrailingOutputCount,
   shouldReassertLegacyDelegateLoopEntries,
   shouldAppendUnsegmentedLoopEntries,
 } from './stb-materialize-trailing-frame-and-pending.js';
 export { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
-import {
-  createBuildDebugStages,
-  type CreateBuildDebugStagesHost,
-} from './stb-create-build-debug-stages.js';
-import {
-  createBuildSessionPrelude,
-  type CreateBuildSessionPreludeHost,
-} from './stb-create-build-session-prelude.js';
-import {
-  seedOwnerCurrentState,
-  type SeedOwnerCurrentStateHost,
-} from './stb-seed-owner-current-state.js';
-import {
-  runSendDiscoveryProbe,
-} from './stb-run-send-discovery-probe.js';
-import {
-  materializeReturnEventOutputs,
-  type MaterializeReturnEventOutputsHost,
-} from './stb-materialize-return-event-outputs.js';
-import {
-  materializeLowLevelCallOutputs,
-  type MaterializeLowLevelCallOutputsHost,
-} from './stb-materialize-low-level-call-outputs.js';
-import {
-  materializeTrailingIterationEntries,
-  type MaterializeTrailingIterationEntriesHost,
-} from './stb-materialize-trailing-iteration-entries.js';
-import {
-  materializeRuntimeLoopTrailing,
-  type MaterializeRuntimeLoopTrailingHost,
-} from './stb-materialize-runtime-loop-trailing.js';
-import {
-  appendValueChunks as appendValueChunksImpl,
-  appendDynamicChunks as appendDynamicChunksImpl,
-  type MaterializeValueAndDynamicChunksHost,
-} from './stb-materialize-value-and-dynamic-chunks.js';
-import {
-  finalizeBuildDerivedSuffix,
-  type FinalizeBuildDerivedSuffixHost,
-} from './stb-finalize-build-derived-suffix.js';
-import {
-  repairNestedCalleeOutputs,
-  type RepairNestedCalleeOutputsHost,
-} from './stb-repair-nested-callee-outputs.js';
+import { type CreateBuildDebugStagesHost } from './stb-create-build-debug-stages.js';
+import { type CreateBuildSessionPreludeHost } from './stb-create-build-session-prelude.js';
+import { type SeedOwnerCurrentStateHost } from './stb-seed-owner-current-state.js';
+import { runSendDiscoveryProbe } from './stb-run-send-discovery-probe.js';
+import { type MaterializeReturnEventOutputsHost } from './stb-materialize-return-event-outputs.js';
+import { type MaterializeLowLevelCallOutputsHost } from './stb-materialize-low-level-call-outputs.js';
+import { type MaterializeTrailingIterationEntriesHost } from './stb-materialize-trailing-iteration-entries.js';
+import { type MaterializeRuntimeLoopTrailingHost } from './stb-materialize-runtime-loop-trailing.js';
+import { type MaterializeValueAndDynamicChunksHost } from './stb-materialize-value-and-dynamic-chunks.js';
+import { type FinalizeBuildDerivedSuffixHost } from './stb-finalize-build-derived-suffix.js';
+import { type RepairNestedCalleeOutputsHost } from './stb-repair-nested-callee-outputs.js';
 
 export {
   jobEventsEntryOneToOneIndices,
@@ -1026,19 +630,7 @@ export {
   type EntryInsertLockRepair,
   type LinearSortedBatchEntryBand,
 } from './token-insert-linear-batch.js';
-import {
-  jobEventsEntryOneToOneIndices,
-  reassertTokenInsertNewLock,
-  reassertTokenInsertCommitments,
-  linearSortedBatchEntryBands,
-  linearSortedBatchValueArgument,
-  linearSortedBatchPlannedLockCounts,
-  entryInsertLockRepairs,
-  reassertDescribedEntryInsertLocks,
-  reorderLinearBatchProofSuccessor,
-  type EntryInsertLockRepair,
-  type LinearSortedBatchEntryBand,
-} from './token-insert-linear-batch.js';
+import './token-insert-linear-batch.js';
 
 export {
   stripSurplusValueChunkLocks,
@@ -1050,16 +642,7 @@ export {
   shouldOverwriteForSameIndexTwin,
   type MaterializedReturnExpectation,
 } from './scid-minting-return-layout.js';
-import {
-  stripSurplusValueChunkLocks,
-  reassertScidIdentityOutputs,
-  stripSurplusMintingOutputs,
-  shouldInsertMintingMaster,
-  placeMintingMasterPreservingTail,
-  matchMaterializedReturnOutputs,
-  shouldOverwriteForSameIndexTwin,
-  type MaterializedReturnExpectation,
-} from './scid-minting-return-layout.js';
+import './scid-minting-return-layout.js';
 
 export {
   isJobEventEmitCommitment,
@@ -1077,22 +660,7 @@ export {
   relocateJobEventEmitToDest,
   type SameIndexTwinOptions,
 } from './same-index-twin-emit.js';
-import {
-  isJobEventEmitCommitment,
-  entryCommitmentLacksValue,
-  resolveRestoredBalancesEntryCommitment,
-  nextAlignmentPadIndex,
-  placeSameIndexTwin,
-  placeInsertNewAt,
-  shouldDisplaceForNestedEvent,
-  isOverwritableEmitOccupant,
-  emitDestCollidesPreservedInput,
-  chunkableWriterEventOutputIndex,
-  publishJobEventOutputIndex,
-  isCreatedJobEventCommitment,
-  relocateJobEventEmitToDest,
-  type SameIndexTwinOptions,
-} from './same-index-twin-emit.js';
+import './same-index-twin-emit.js';
 
 
 export {
@@ -1132,40 +700,11 @@ export {
   type DelegateEventClaim,
 } from './delegate-event-jobevent-helpers.js';
 import {
-  SCID_COMMIT_PREFIX,
-  isMaterializedImmutableNftOutput,
-  isDelegateEventNftOutput,
-  lockingHexOf,
-  demoteUnclaimedDelegateEventClones,
-  relocateDelegateEventNftToDest,
-  resolveNamedEventValues,
-  jobEventTypeOf,
-  jobEventFieldEmpty,
-  stampEmptyJobEventTimestamp,
-  isWithdrawShapedJobEvent,
-  shouldRematerializePersistUpdate,
-  isInsertShapedJobEvent,
-  shouldStampPersistUpdateDigestLock,
-  shouldUseLegacyPersistDigestLockForValueChunks,
-  isIntegerType,
-  scalarTypeKey,
   canEncodeScalarStateValue,
-  permutations,
-  fieldNameMatchesArg,
   evalSimpleIntegerSource,
-  paramToStateValue,
   persistUpdateDigestLock,
   legacyJobEventsPersistUpdateDigestLock,
-  persistUpdateDestLock,
-  isEmptyPayloadJobEvent,
-  jobEventTimestampOf,
-  encodeEmptyJobEventEmitCommitment,
-  encodeJobEventEmitCommitment,
-  isLearnedEventEmitCommitment,
-  isAuthenticatedEventRepairCommitment,
   demoteUnclaimedConditionalEventOutput,
-  isEmptySameCategoryNoneCap,
-  type DelegateEventClaim,
 } from './delegate-event-jobevent-helpers.js';
 
 export {
@@ -1194,29 +733,8 @@ export {
   type PromotableWriterBatchPlan,
 } from './writer-event-delegate-layout.js';
 import {
-  placeChunkableWriterEventOutput,
-  placePublishJobEventOutput,
-  groupLayoutBlockSize,
-  selectDelegateExecutionLayout,
-  physicalDelegateSlotOffset,
-  pinExactSortedBatchEntry,
-  skipCompilerOwnedInBlockCollectionStrip,
-  assignBalancedOutputAtOffset,
-  groupLayoutTrailingBase,
-  blockOutputOwnsSlotKind,
-  blockOutputOwnsFixedDataNft,
   fixedDataNftOwnerInParticipantBlocks,
-  materializedPredOutBase,
-  syncDeclaredBatchPredOutWitnesses,
-  predOutBaseAfterOccupancy,
-  resolveAbsolutePredOut,
-  isWriterBatchWitnessName,
-  inheritWriterBatchWitnesses,
-  inheritWriterBatchPlan,
   constrainOwnCategoryImmutableOutputs,
-  remapInsertPredOuts,
-  type DelegateExecutionLayoutGroup,
-  type PromotableWriterBatchPlan,
 } from './writer-event-delegate-layout.js';
 
 export {
@@ -1236,12 +754,6 @@ export {
   type ExternalCallUtxoGroup,
 } from './external-call-utxo-group.js';
 import {
-  flattenLlcGroupInputs,
-  sameOutpoint,
-  lowLevelCallBlockLayout,
-  hasMaterializedLowLevelCallBlock,
-  materializedLowLevelCallBlockAtMaster,
-  repairMaterializedLowLevelCallBlocks,
   type EntryNftInfo,
   type TransferData,
   type EventEmitData,
@@ -1273,19 +785,8 @@ export {
   type StatefulTransactionOptions,
 } from './value-chunk-base-writer-select.js';
 import {
-  ownsCapturedValueChunkOutputBase,
-  refreshCapturedValueChunkOutputBase,
-  assignValueChunkOutputBaseFromResolve,
-  selectProtectedLoopEntryCollections,
-  selectExternalEventProbeInput,
-  selectCompilerWriterEvent,
-  externalCallEventDestinations,
   lowLevelCallImmutableEventDestinations,
   selectBuilderValueChunkOutputBase,
-  type ProtectedLoopEntryCollectionSelection,
-  type CompilerWriterEventCandidate,
-  type CompilerWriterEventSelection,
-  type ParticipantImmutableEventDestination,
   type StatefulTransactionOptions,
 } from './value-chunk-base-writer-select.js';
 
@@ -1362,11 +863,13 @@ export class StatefulTransactionBuilder {
     legacy: boolean;
     preimages: Array<Uint8Array | null>;
   };
+
   private deferredEcrecoverCompute?: {
     salt: Uint8Array;
     argBlobs: Array<Uint8Array | null>;
     evmKeccakPreimageIndices: number[];
   };
+
   private ecrecoverComputeCoSpendUtxos: UnlockableUtxo[];
   private ecrecoverComputeRecreates: Output[];
   private externalOutStateUtxoGroups: ExternalCallUtxoGroup[];
@@ -1420,6 +923,7 @@ export class StatefulTransactionBuilder {
   private externalCallEntryOutputsByIndex: Map<number, {
     categoryId: string; commitment: string; lockingBytecodeHex?: string;
   }> = new Map();
+
   // Trailing NEW entry nodes minted for a cross-contract callee INSERT (per group: address lbc + commitment hex),
   // placed right after the group's block (B's covenant mints the NEW at masterInputIndex + blockSize).
   private externalCallEntryInserts: Array<{
@@ -1430,6 +934,7 @@ export class StatefulTransactionBuilder {
   private pendingReturnEventOutputs: Array<{
     categoryId: string; commitment: Uint8Array; identity: string; provisional?: boolean;
   }> = [];
+
   /** Physical output positions from the most recent build, keyed by logical return identity. */
   private builtReturnEventOutputIndices = new Map<string, number>();
   /**
@@ -1445,6 +950,7 @@ export class StatefulTransactionBuilder {
   private dynamicChunkVars: Array<{
     name: string; type: string; lockingBytecode: Uint8Array; delegate?: boolean; delegateSuffix?: boolean;
   }> = [];
+
   private dynamicChunkInputs: UnlockableUtxo[] = [];
   private trailingDisposalInputs: UnlockableUtxo[] = [];
   // varName -> ordered chunk commitments (hex) from auto-derivation; length determines chunk output count.
@@ -1452,6 +958,7 @@ export class StatefulTransactionBuilder {
   private loopEntryVars: Array<{
     collection: string; lockingBytecode: Uint8Array; categoryId?: string; delegate?: boolean; chunkable?: boolean;
   }> = [];
+
   // collection -> ordered loop entry commitments (hex) from auto-derivation; length = entry output count.
   private loopEntryCommitments: Map<string, string[]> = new Map();
   private requiredLoopEntryCounts: Map<string, number> = new Map();
@@ -1460,6 +967,7 @@ export class StatefulTransactionBuilder {
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
     rowIndex: number;
   }> = [];
+
   private runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
   private runtimeLoopTrailingSegments: NonNullable<StatefulTransactionOptions['runtimeLoopTrailingSegments']> = [];
   private kernelJournalSettlementOutputPlan: NonNullable<StatefulTransactionOptions['kernelJournalSettlementOutputPlan']> = [];
@@ -1475,6 +983,7 @@ export class StatefulTransactionBuilder {
   private pendingEntryValueTails = new Map<string, {
     slotIndex: number; collection: string; slot: Uint8Array; seed: string; next: Uint8Array; chunkable: boolean;
   }>();
+
   // P5b: unpinned same-category 0x01 value-chunk outputs (LONG sorted-mapping values). Trailing, not covenant-
   // managed - the entry stores sha256(value) and the read verifies the reassembled witness, so these need no
   // on-chain pinning. Commitments are known exactly (buildChunkCommitment) so they never enter auto-derivation.
@@ -1490,6 +999,7 @@ export class StatefulTransactionBuilder {
   private persistedJobEventsChunks: Array<{
     commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
   }> = [];
+
   /** Last VM pin redeem lock for the jobEvents band (emitValueChunkP2sh32). */
   private jobEventsRedeemLock?: Uint8Array;
   /** A selected writer's persisted continuation band starts after its emitted event output. */
@@ -1517,6 +1027,7 @@ export class StatefulTransactionBuilder {
   private valueChunkVars: Map<string, {
     collection: string; lockingBytecode: Uint8Array; slot?: Uint8Array;
   }> = new Map();
+
   /** Compiler-authenticated writes executed by this root frame rather than by a nested call group. */
   private directValueChunkWriteDescriptors = new Map<string, ValueChunkWriteDescriptor>();
   private valueChunkRawCommitments: Map<string, string[]> = new Map(); // run id -> ordered chunk commitments (hex)
@@ -2823,7 +2334,8 @@ export class StatefulTransactionBuilder {
       set requiredNftIndices(next) { self.requiredNftIndices = next; },
       get allInputs() { return self.allInputs; },
       set allInputs(next) { self.allInputs = next; },
-      buildInputs: (entryInputs, tokenContainerInputs, satoshiContainerInputs, externalOutStateInputs, externalCallInputs, lowLevelCallInputs) => (
+      buildInputs: (entryInputs, tokenContainerInputs, satoshiContainerInputs,
+        externalOutStateInputs, externalCallInputs, lowLevelCallInputs) => (
         self._buildInputs(
           entryInputs, tokenContainerInputs, satoshiContainerInputs,
           externalOutStateInputs, externalCallInputs, lowLevelCallInputs,
@@ -3371,6 +2883,7 @@ export class StatefulTransactionBuilder {
   ): Set<number> {
     return tokenWriterOccupancyForHost(this._scaledPreserveEmitHost(), tokenMaster, outputs);
   }
+
   /** The input that actually evaluates publishJobEvent (`OP_INPUTINDEX`). */
   private _chunkableValueWriteInputIndex(): number {
     return chunkableValueWriteInputIndex(this._scaledPreserveEmitHost());
@@ -3814,6 +3327,7 @@ export class StatefulTransactionBuilder {
   private _reassertNestedEmitEvents(builder: TransactionBuilder): void {
     reassertNestedEmitEvents(this._nestedEmitEventsHost(), builder);
   }
+
   private _ensureDistinctJobEventNfts(_builder: TransactionBuilder): void {
     ensureDistinctJobEventNfts(this._delegateImplEventReassertHost(), _builder);
   }
@@ -3988,6 +3502,7 @@ export class StatefulTransactionBuilder {
   ): void {
     placeTailReturnAfterSwappedTokenBlock(this._placeTailReturnHost(), builder, returnOutputRefs);
   }
+
   private _ensureAuthenticatedViewReturns(builder: TransactionBuilder): boolean {
     return ensureAuthenticatedViewReturns(this._authenticatedViewReturnHost(), builder);
   }
@@ -6015,10 +5530,10 @@ export class StatefulTransactionBuilder {
     const lowLevelCallOutputCount = this.compilerRouteDelegateBlock
       ? 0
       : this.blockLayout?.slots.some((slot) => slot.kind === 'lowLevelCall')
-      ? 0
-      : this.lowLevelCallUtxoGroups.reduce(
-        (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
-      ) + this.lowLevelCallRawInputs.length;
+        ? 0
+        : this.lowLevelCallUtxoGroups.reduce(
+          (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
+        ) + this.lowLevelCallRawInputs.length;
     // External call blocks and their tail return events are emitted before local dynamic chunks, but they are
     // outside this function's blockLayout. Include their physical span so trace extraction observes the same
     // output indices that the compiler's dynamic-write covenant verifies.
@@ -6599,7 +6114,9 @@ export class StatefulTransactionBuilder {
     }
     if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()
       || !this._permitsLegacyNamedValueChunkFallback()) return undefined;
-    return categoryId ? settlement().stagedJobEventsValues.get(categoryId) : latestPersisted(settlement().stagedJobEventsValues);
+    return categoryId
+      ? settlement().stagedJobEventsValues.get(categoryId)
+      : latestPersisted(settlement().stagedJobEventsValues);
   }
 
   /** Exact committed value, with category-wide storage retained only for descriptor-free legacy plans. */

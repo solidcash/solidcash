@@ -10353,9 +10353,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               `Kernel runtime loop in '${loopAbiFunction.name}' has invalid journal stream ordinal ${streamIndex}.`,
             );
           }
-          // Mapping `delete` resets the value but retains the verified-list node, so it has ordinary write topology.
-          // `remove` is reserved by the journal codec for a future physical linked-list splice.
-          const operation: KernelEntryJournalTopologyOperation = info.op === 'read' ? 'read' : 'write';
+          // Mapping `delete` resets a present value but leaves an absent target absent. Keep that distinction
+          // in the authenticated topology rather than inserting an enumerable zero-valued node.
+          const operation: KernelEntryJournalTopologyOperation = info.op === 'read' ? 'read'
+            : info.op === 'delete' ? 'nullify' : 'write';
           runtimeKernelJournalStreams.push({
             collection: info.collection,
             collectionHash: computeCollectionHash(collection.signature),
@@ -10780,14 +10781,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         } else {
           // INSERT (a NEW recipient): co-spend the bracketing predecessor (from the ORIGINAL list) + mint P' then NEW.
-          // Deleting an absent enumerable mapping key is a language no-op, not permission to insert an observable
-          // zero-valued node. Until the row route can prove and omit that physical access, keep it fail-closed.
-          if (info.op === '-' || isDelete) {
-            const operation = isDelete ? 'delete' : 'debit';
-            throw new Error(`vmap upsert loop ${info.collection}: cannot ${operation} key ${i} - `
-              + 'it has no entry');
+          // A delete of an absent target is an authenticated no-op. Co-spend and reproduce the exact bracketing
+          // predecessor, leaving the queried key absent; the compact journal access binds the target tombstone
+          // and its predecessor to this source occurrence. A debit remains invalid without a present value.
+          if (info.op === '-') {
+            throw new Error(`vmap upsert loop ${info.collection}: cannot debit key ${i} - it has no entry`);
           }
           const basePred = list.predecessorOf(slot);
+          if (isDelete) {
+            const predecessorId = uidOf(basePred.utxo);
+            if (cospent.has(predecessorId)) {
+              throw new Error(`vmap delete loop ${info.collection}: absent key ${i} shares an already co-spent `
+                + 'predecessor; a shared absence proof is required');
+            }
+            cospent.add(predecessorId);
+            captureRuntimeJournalInputIntent({ ...basePred.utxo, unlocker: wUnlocker }, info.collection);
+            commitments.push(binToHex(encodeEntryCommitment(basePred.slot, basePred.nextKey, basePred.value)));
+            commitmentProducers.push(commitmentProducer(i, 'predecessor'));
+            continue;
+          }
           let pendingPred: RuntimeJournalPendingScalar | undefined;
           if (journalSettledScalar) {
             const targetSlotValue = bytesToSlotValue(slot);

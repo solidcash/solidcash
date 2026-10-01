@@ -27791,13 +27791,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_FROMALTSTACK, loc);
     // Supported row operations have exactly three topology shapes: an existing/pending target remains present
-    // (0b0011), an absent read remains absent behind its proof predecessor (0b0100), or an insertion becomes present
-    // behind that predecessor (0b0110). Bit 3 independently binds mutation authority to the compiler-derived row
+    // (0b0011), an absent read/delete remains absent behind its proof predecessor (0b0100), or an insertion becomes
+    // present behind that predecessor (0b0110). Bit 3 independently binds mutation authority to the compiler-derived row
     // operation. Derive the complete expected flags from the proof branch and operation, not from the carrier.
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_0NOTEQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    this.emit(encodeInt(this.sortedUpsertLoopOp === 'read' ? 4n : 6n), loc);
+    this.emit(encodeInt(this.sortedUpsertLoopOp === 'read' || this.sortedUpsertLoopOp === 'delete' ? 4n : 6n), loc);
     this.emit(Op.OP_ELSE, loc);
     this.emit(encodeInt(3n), loc);
     this.emit(Op.OP_ENDIF, loc);
@@ -28038,8 +28038,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc);
       this.emit(Op.OP_0, loc); this.emit(Op.OP_SWAP, loc);
       this.emit(Op.OP_ELSE, loc);
-      // ---- ABSENT: mutations may insert; a read proves the predecessor gap and reproduces it unchanged. ----
-      if (isMinus || op === 'delete') {
+      // ---- ABSENT: an insertion may create a target; reads and deletes prove the predecessor gap and reproduce
+      // it unchanged. An absent debit is still invalid. ----
+      if (isMinus) {
         this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc);
       }
       if (oldWitness) {
@@ -28064,10 +28065,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
       this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);       // Hk < coNext (U=3)
       this.emit(Op.OP_ENDIF, loc);                                                                    // [.., coSlot, coNext, coValue] U=3
-      if (op === 'read') {
+      if (op === 'read' || op === 'delete') {
         // The co-spent node is only an absence proof. Preserve its slot, successor, and value exactly, producing
         // one output and no mapping entry for Hk. This makes an absent mapping read observationally pure.
-        if (!settleReadCarrier) {
+        if (!deferJournalOutput) {
           pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);
           this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1, 4);
         }
@@ -28076,7 +28077,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                  // P' outIdx (U=4)
         this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, hkIdx() + 4, 1, 4); // P' = coSlot|Hk|coValue
       }
-      if (op !== 'read' && useLegacyPending) {
+      if (op !== 'read' && op !== 'delete' && useLegacyPending) {
         // CHAIN-DEFER: defer the NEW node (pu_slot=Hk, pu_val=amt, pu_next=coNext) instead of minting it, so a further
         // new key in this SAME gap chains off it - even when the predecessor is UNTOUCHED or the HEAD sentinel (a
         // fresh-map airdrop cluster). delta = 1 (only P' minted here); the teardown / next flush mints the last node.
@@ -28087,13 +28088,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(hkIdx() + 3)), loc); this.emit(Op.OP_PICK, loc);    // Hk copy (U=4)
         this.emitReplace(this.getStackIndex(this.sortedUpsertPendSlotName) + 4, node); // pu_slot = Hk -> U=3
         this.emit(Op.OP_1, loc);                                             // delta = 1 (U=4)
-      } else if (op !== 'read' && !settleScalar) {
+      } else if (op !== 'read' && op !== 'delete' && !settleScalar) {
         pushIdx(this.sortedUpsertLoopOutCounterName, 1, 3);                  // NEW outIdx2 (U=4)
         this.emitVerifySortedValueOutput(
           loc, addrIdx() + 4, hkIdx() + 4, 2, amtIdx() + 4, 4,
         ); // NEW = Hk|coNext|v[i]
         this.emit(Op.OP_2, loc);                                             // delta = 2 (U=4)
-      } else if (op !== 'read') {
+      } else if (op !== 'read' && op !== 'delete') {
         // Journal settlement emits no row-local intermediate output. Reserve two final records when this row
         // authenticated a clean predecessor, or only the new target when a dirty predecessor was already pending.
         this.emit(encodeInt(BigInt(this.getStackIndex(physicalCommitment) + 3)), loc);

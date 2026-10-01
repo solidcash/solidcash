@@ -222,12 +222,14 @@ export type AuthenticatedValueChunk = {
 /**
  * composition settlement session: per-composition settlement state (persisted job-events / observed chunks / recipes).
  * Two sessions do not share mutable maps unless they deliberately share one instance.
- * path-effect activation/settle-time ExecutionContext: also owns settle-time ExecutionContextLifecycle (register → assert → settle).
+ * Also owns the settle-time ExecutionContextLifecycle
+ * (register → assert → settle).
  */
 export class CompositionSettlementSession {
   readonly persistedJobEventsByCategory = new Map<string, Array<{
     commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
   }>>();
+
   readonly observedValueChunksByCollection = new Map<string, AuthenticatedValueChunk[]>();
   readonly persistedJobEventsValues = new Map<string, Uint8Array>();
   readonly persistedJobEventsLocks = new Map<string, Uint8Array>();
@@ -238,22 +240,26 @@ export class CompositionSettlementSession {
     token: NonNullable<Utxo['token']>;
     lockingBytecode: Uint8Array;
   }>>();
+
   readonly persistedJobEventsRecipes = new Map<string, {
     slot: Uint8Array;
     root: Uint8Array;
     collection: string;
     categoryId: string;
   }>();
+
   readonly persistedValueChunkWrites = new Map<string, {
     value: Uint8Array; lockingBytecode: Uint8Array; width: number;
     recipe: { slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string };
   }>();
+
   readonly valueChunkWriteStaging = new ValueChunkWriteStagingSession();
   readonly readyValueChunkWrites = new Set<string>();
   readonly persistedValueChunkSpends = new Map<string, Array<{
     txid: string; vout: number; satoshis: bigint;
     token: NonNullable<Utxo['token']>; lockingBytecode: Uint8Array;
   }>>();
+
   readonly observedValueChunkStatesByCategory = new Map<string, Map<string, ObservedValueChunkState>>();
   readonly stagedJobEventsValues = new Map<string, Uint8Array>();
   readonly createdDigestLocks = new Set<string>();
@@ -578,7 +584,11 @@ export function rememberJobEventsUnlockRecipe(categoryId: string): boolean {
   for (const { value, lock } of pairs) {
     const root = sha256Sync(value);
     for (const slot of jobEventsSlotCandidates()) {
-      for (const cat of new Set([categoryId, ...settlement().persistedJobEventsLocks.keys(), ...settlement().persistedJobEventsValues.keys()])) {
+      for (const cat of new Set([
+        categoryId,
+        ...settlement().persistedJobEventsLocks.keys(),
+        ...settlement().persistedJobEventsValues.keys(),
+      ])) {
         for (const collection of LEGACY_JOB_EVENTS_COLLECTION_ALIASES) {
           try {
             const expected = getValueChunkLockingBytecode(cat, collection, slot, root);

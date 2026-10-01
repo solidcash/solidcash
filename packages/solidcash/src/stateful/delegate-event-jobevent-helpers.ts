@@ -12,20 +12,10 @@ import {
   computeCollectionSignature,
   encodeInt,
   encodePushdataValue,
-  getDefaultStateValue,
 } from '@solidcash/utils';
 import { scriptToLockingBytecode } from '../utils.js';
-import {
-  commitmentHexOf,
-  cloneToken,
-  outputMatchesLock,
-} from './stb-output-utils.js';
-import {
-  isDisposableAlignmentPad,
-  isViewReturnTailOutput,
-} from './value-chunk-band-helpers.js';
+import { commitmentHexOf } from './stb-output-utils.js';
 import { isJobEventEmitCommitment } from './same-index-twin-emit.js';
-import { isOpReturnLockingBytecode } from './mutable-output-reassert.js';
 import type { ValueChunkWriteDescriptor } from './value-chunk-persist.js';
 
 /** SCID identity commitment ASCII prefix ("SCID"). */

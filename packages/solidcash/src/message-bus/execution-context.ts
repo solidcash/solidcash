@@ -1,5 +1,6 @@
 /**
- * path-effect activation / settle-time ExecutionContext: typed ExecutionContext binding handler-frame ABI to path-effect schedules.
+ * Path-effect activation / settle-time ExecutionContext binds handler-frame ABI
+ * to path-effect schedules.
  *
  * Layout-fold phase 7 (pay-as-you-go): compose selects active path effects under one
  * context that carries frame slots, authenticated args, and the published schedule.
@@ -128,11 +129,11 @@ export function buildKernelExecutionContext(
 export function assertExecutionContextPathProgram(
   context: KernelExecutionContext,
 ): {
-  ok: boolean;
-  failures: readonly ExecutionContextFailure[];
-  activeEffects: PublishedPathEffectSchedule['effects'];
-  frame: ReturnType<typeof validateHandlerFrame>;
-} {
+    ok: boolean;
+    failures: readonly ExecutionContextFailure[];
+    activeEffects: PublishedPathEffectSchedule['effects'];
+    frame: ReturnType<typeof validateHandlerFrame>;
+  } {
   const failures: ExecutionContextFailure[] = [];
   const argumentSlots = context.frame.slots.filter((slot) => slot.kind === 'argument');
   const argumentNames = new Set(argumentSlots.map((slot) => slot.name));
@@ -357,7 +358,8 @@ function freezeExecutionContext(context: KernelExecutionContext): KernelExecutio
 }
 
 /**
- * path-effect activation/settle-time ExecutionContext settle-time lifecycle: register contexts → assert path programs → settle (freeze).
+ * Path-effect activation / settle-time ExecutionContext lifecycle:
+ * register contexts → assert path programs → settle (freeze).
  * Owned by one composition build so two compositions never share mutable contexts.
  *
  * Multi-participant / nested-compose: contexts are keyed by

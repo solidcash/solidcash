@@ -3,18 +3,9 @@
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
-import {
-  AuthenticationProgramStateCommon,
-  binToHex,
-  hexToBin,
-} from '@bitauth/libauth';
-import { Op, buildValueChunkCommitment } from '@solidcash/utils';
-import { isP2sh32LockingBytecode } from './faithful-probe-trace.js';
-import { decodeScriptNumber } from './trace-commitment-helpers.js';
-import {
-  isEmptyValueChunkCommitment,
-  valueChunkIndexFromCommitment,
-} from './value-chunk-persist.js';
+import { binToHex } from '@bitauth/libauth';
+import { buildValueChunkCommitment } from '@solidcash/utils';
+import { isEmptyValueChunkCommitment } from './value-chunk-persist.js';
 import { relocateChangeAfterOccupancy } from './persist-predecessor-layout.js';
 
 /**

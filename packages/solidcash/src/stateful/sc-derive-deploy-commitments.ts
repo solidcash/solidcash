@@ -7,13 +7,11 @@ import {
   type AuthenticationProgramStateCommon,
 } from '@bitauth/libauth';
 import {
-  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   buildAnonymousEventNftCovenantScript,
   buildChunkCommitment,
   buildEntryNftCovenantScript,
   buildEventNftCovenantScript,
   buildInitialStateCommitments,
-  buildMessageBusVerifierCovenantScript,
   computeCollectionHash,
   computeEventNameHash,
   Op,
@@ -26,11 +24,9 @@ import { Contract } from '../Contract.js';
 import type { Utxo } from '../interfaces.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
-import { TransactionBuilder } from '../TransactionBuilder.js';
 import {
   addressToLockScript, generateLibauthSourceOutputs, scriptToLockingBytecode,
 } from '../utils.js';
-import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
 import {
   createDataNftUnlocker,
   createEntryNftUnlocker,
@@ -54,7 +50,6 @@ import {
 } from './trace-commitment-helpers.js';
 import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
 
-const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
 
 export async function deriveDeployCommitments<T extends Artifact>(

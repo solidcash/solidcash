@@ -2,7 +2,7 @@
  * phase-boundary extract: SC extract — instance _deriveCommitments (VM probe for factory/call state).
  */
 
-import { binToHex, hexToBin, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
+import { hexToBin, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
 import {
   type AbiFunction,
   buildPushdataCommitment,
@@ -12,12 +12,10 @@ import {
 import type { Contract } from '../Contract.js';
 import type { Output, Unlocker, Utxo } from '../interfaces.js';
 import type { StateValueType } from '../types/state-inference.js';
-import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
 import { AutoDerivationError } from './return-abi-plan.js';
 import {
-  extractCommitmentMapFromTrace,
   extractCommitmentsFromTrace,
 } from './trace-commitment-helpers.js';
 import { commitmentsToState } from './trace-verified-value-helpers.js';

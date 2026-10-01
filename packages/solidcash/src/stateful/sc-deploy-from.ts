@@ -2,7 +2,7 @@
  * phase-boundary extract: SC lifecycle extract — static deployFrom (factory deploy + child genesis).
  */
 
-import { bigIntToVmNumber, binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   buildChunkCommitment,
@@ -25,14 +25,6 @@ import {
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
 import type { Unlocker, Utxo } from '../interfaces.js';
-import {
-  assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder,
-} from '../message-bus/preflight.js';
-import {
-  materializeChildDeploymentEntryScalar,
-  materializeChildDeploymentEntryValue,
-} from '../message-bus/compose-recipes.js';
-import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StateValueType } from '../types/state-inference.js';
 import {
   addressToLockScript, lockingBytecodeToSolidityAddressPayload, randomUtxo, scriptToLockingBytecode,
@@ -65,12 +57,6 @@ import type {
   DeployFromOptions, DeployFromResult,
 } from './stateful-lifecycle-types.js';
 import type { ConnectedStatefulContract } from './StatefulContract.js';
-
-async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigint> {
-  const { encodeTransaction } = await import('@bitauth/libauth');
-  const tx = builder.buildLibauthTransaction();
-  return BigInt(encodeTransaction(tx).byteLength);
-}
 
 export async function deployFromStatefulContract<T extends Artifact>(
   options: DeployFromOptions<T>,

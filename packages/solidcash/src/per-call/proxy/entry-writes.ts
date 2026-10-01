@@ -27,6 +27,9 @@
  * A `delete m[k]` compiles to an in-place write of the value type's default, so that too is one write per target
  * with the target's commitment learned from the body's close.
  *
+ * A caller that declares the node of each key the entry only reads, kept and ahead of the batch's groups as a callee
+ * frame's read nodes are, names their slots, and a read at one of them is planned beside the batch, not refused.
+ *
  * A dynamic-state write is the same shape one level out: the value is not in a node but in a run of chunk records
  * at its own collection covenant, and the hop declares that run exactly as the body addresses it. The run's width
  * has to be stated because a run laid out at another width is not the run the body reads; it is the value the write
@@ -76,6 +79,7 @@ import type { Utxo } from '../../interfaces.js';
 import { addressToLockScript, createUnlockingBytecode, scriptToLockingBytecode } from '../../utils.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
+import { entryRecordReadUnlock } from '../deploy/records.js';
 import type { DraftInput, DraftSourceOutput, DraftToken } from '../composer/draft.js';
 import {
   dynamicValueRecords, layOutChunkRun, planChunkRun, type ChunkRunPlan,
@@ -197,6 +201,12 @@ export interface HopEntryWritesRequest {
    * which is the deployment path's shape.
    */
   readonly writtenCommitments?: readonly Uint8Array[];
+  /**
+   * The entry-access slots of the keys the entry only reads whose nodes the caller declares, kept and ahead of the
+   * batch's groups, as a callee frame's read nodes are. A read at one of them is the caller's; absent, a read beside
+   * the batch is refused.
+   */
+  readonly declaredReadSlots?: readonly number[];
 }
 
 /** The live deployment a call's hop reads its writes against, from the deployment's own classification. */
@@ -262,6 +272,12 @@ export interface HopEntryWrites {
   readonly signature?: string;
   /** The participant ids the proxy's block holds for the nodes the entry spends; a created run has none. */
   readonly participantIds: readonly string[];
+  /**
+   * The participant ids, also in `participantIds`, of the chunks of a dynamic value the entry only reads.
+   *
+   * They are kept unchanged, so no write fact places them: each segment declares them where the body reads them.
+   */
+  readonly readRunIds?: readonly string[];
   /**
    * Every collection the entry writes, with the keys it writes and the nodes it spends.
    *
@@ -654,9 +670,14 @@ function planHopMappingBatches(request: HopEntryWritesRequest): readonly HopMapp
     );
   }
   // A key the entry only reads beside the batches it writes has no group of its own: every access that is not one of
-  // the batches' targets is a read this hop does not declare.
+  // the batches' targets is a read this hop does not declare, unless the caller declares that read's node itself.
   const batched = new Set(batches.flatMap((batch) => batch.slotIndices));
-  const read = accesses.find((access) => access.slotIndex === undefined || !batched.has(access.slotIndex));
+  const declared = new Set(request.declaredReadSlots ?? []);
+  const declaredRead = (access: NonNullable<AbiFunction['entryAccesses']>[number]): boolean =>
+    access.slotIndex !== undefined && declared.has(access.slotIndex)
+    && access.operations.every((operation) => operation === 'read');
+  const read = accesses.find((access) =>
+    (access.slotIndex === undefined || !batched.has(access.slotIndex)) && !declaredRead(access));
   if (read !== undefined) {
     throw new PerCallProxyDeployError(
       `the implementation's "${request.functionName}" entry reads mapping "${read.collection}" beside the batch it `
@@ -1418,11 +1439,87 @@ function runChunkCandidate(variable: string, index: number): Uint8Array {
   return sha256(new TextEncoder().encode(`per-call dynamic run\u0000${variable}\u0000${index}`));
 }
 
+/** One dynamic value the entry only reads: its live chunks, in run order, each with the id the block holds it under. */
+interface HopReadRun {
+  readonly variable: string;
+  /** The declared type, which the run's collection covenant is derived from. */
+  readonly type: string;
+  readonly chunks: readonly { readonly id: string; readonly utxo: Utxo; readonly commitment: Uint8Array }[];
+}
+
+/**
+ * Plans the runs of chunk records the entry reads and does not write.
+ *
+ * A body reads a dynamic value from its frame's own declaration of the value's run, which sits past the records
+ * ahead of it in the segment, and the compiler addresses a read-only run ahead of every run a write grows, in the
+ * order the artifact publishes the reads. The hop declares each such run as the deployment holds it: every live
+ * chunk, kept in place at the commitment it carries. A value the entry also writes is the write's run, and a
+ * deployment's own first hop reads the empty values its genesis minted, which hold no chunk.
+ */
+function planHopReadRuns(request: HopEntryWritesRequest): readonly HopReadRun[] {
+  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
+  const layout = request.artifact.stateLayout;
+  const deployment = request.liveDeployment;
+  if (fn === undefined || layout === undefined || deployment === undefined) return [];
+  const written = new Set(fn.dynamicWrites ?? []);
+  return (fn.dynamicReads ?? []).filter((variable) => !written.has(variable)).map((variable): HopReadRun => {
+    const declared = layout.variables.find((candidate) => candidate.name === variable);
+    if (declared === undefined || declared.dynamic !== true) {
+      throw new PerCallProxyDeployError(
+        `the implementation's "${request.functionName}" entry reads dynamic "${variable}", which the artifact does `
+        + 'not publish as a dynamic state variable',
+      );
+    }
+    const live = liveDynamicValue(deployment, layout, variable, declared.type, declared.nftIndex);
+    return {
+      variable,
+      type: declared.type,
+      chunks: live.chunks.map((chunk, index) => ({
+        id: dynamicChunkId(variable, index),
+        utxo: chunk.utxo,
+        commitment: new Uint8Array(hexToBin(chunk.utxo.token!.nft!.commitment!)),
+      })),
+    };
+  }).filter((run) => run.chunks.length > 0);
+}
+
+/**
+ * The records the runs the entry only reads contribute: each live chunk kept where it sits, at its own commitment,
+ * spent on its collection covenant's read-only path, which recreates it unchanged.
+ */
+function layReadRuns(
+  reads: readonly HopReadRun[],
+  context: HopEntryWritesContext,
+): { readonly entries: readonly RecordEntry[]; readonly inputs: Readonly<Record<string, DraftInput>> } {
+  const entries: RecordEntry[] = [];
+  const inputs: Record<string, DraftInput> = {};
+  for (const run of reads) {
+    const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(
+      bytesToHex(context.category), dynamicChunkSignature(run.variable, run.type),
+    );
+    for (const chunk of run.chunks) {
+      const index = context.indexOf(chunk.id);
+      entries.push({ in: index, out: index, viewIn: chunk.commitment, viewOut: chunk.commitment });
+      inputs[chunk.id] = {
+        source: {
+          lockingBytecode, valueSatoshis: chunk.utxo.satoshis, token: nodeToken(context.category, chunk.commitment),
+        },
+        unlockingBytecode,
+      };
+    }
+  }
+  return { entries, inputs };
+}
+
 /** Plans the entry's own writes, with the ids the plan places. */
 export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites | undefined {
   const batches = planHopMappingBatches(request);
   const dynamic = planHopDynamicRun(request);
-  if (batches.length === 0 && dynamic === undefined) return undefined;
+  // A read-only run is declared only beside no mapping write: a verified batch's body holds the records past its
+  // groups to the chunks it writes and counts no run it only reads, and a run-time loop's nodes, one per turn, do not
+  // keep the run one layout width past the frame's first declared record, where the body reads it.
+  const reads = batches.length === 0 ? planHopReadRuns(request) : [];
+  if (batches.length === 0 && dynamic === undefined && reads.length === 0) return undefined;
   // One batch and one dynamic run sit in the frame's one segment, and the contract states the group's declared
   // surplus in both loops that address the run. Several batches beside a run would need the compiler's own order
   // for the two families, which it does not publish, so that shape is refused rather than guessed at.
@@ -1440,13 +1537,17 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
     }
   }
   for (const chunk of dynamic?.spent ?? []) spentUtxos.set(chunk.id, chunk.utxo);
+  const readRunIds = reads.flatMap((run) => run.chunks.map((chunk) => chunk.id));
+  for (const chunk of reads.flatMap((run) => run.chunks)) spentUtxos.set(chunk.id, chunk.utxo);
   return {
     collections: batches.map((batch) => ({ name: batch.collection, signature: batch.signature })),
     ...(batches[0] === undefined ? {} : { collection: batches[0].collection, signature: batches[0].signature }),
     participantIds: [
       ...batches.flatMap((batch) => batch.spent.map((node) => node.id)),
       ...(dynamic?.spent.map((chunk) => chunk.id) ?? []),
+      ...readRunIds,
     ],
+    ...(readRunIds.length === 0 ? {} : { readRunIds }),
     reachWrites: batches.map((batch) => ({
       collection: batch.collection,
       chunkable: (request.artifact.stateLayout?.collections ?? [])
@@ -1464,7 +1565,7 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
     // A body that writes one collection is laid out exactly as the shipped planner computes it, dynamic run beside
     // its batch. A body that writes several lays each batch's records at its own place in the created region.
     lay: (context: HopEntryWritesContext): LaidHopEntryWrites => (batches.length <= 1
-      ? layEntryWrites(batches[0], dynamic, context)
+      ? layEntryWrites(batches[0], dynamic, context, reads)
       : layEntryWriteBatches(batches, context)),
   };
 }
@@ -1474,6 +1575,7 @@ function layEntryWrites(
   batch: HopMappingBatch | undefined,
   dynamic: HopDynamicRun | undefined,
   context: HopEntryWritesContext,
+  reads: readonly HopReadRun[] = [],
 ): LaidHopEntryWrites {
   // The record families that fill the trailing region are laid out in the order the compiler emits them: the
   // batch's records, then a dynamic value's chunks, then a chunkable mapping value's chunks. A created record's
@@ -1530,10 +1632,12 @@ function layEntryWrites(
       unlockingBytecode: record.input!.unlockingBytecode,
     };
   });
+  // The runs the entry only reads sit past the batch's records and ahead of the run a write grows.
+  const read = layReadRuns(reads, context);
   if (batch === undefined || plan === undefined) {
     return {
-      entries: dynamicEntries,
-      inputs: dynamicInputs,
+      entries: [...read.entries, ...dynamicEntries],
+      inputs: { ...read.inputs, ...dynamicInputs },
       trailingOutputs: dynamicOutputs,
       createdOutputs: dynamicEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
     };
@@ -1578,7 +1682,7 @@ function layEntryWrites(
     encodeFunctionArgument(1n, 'bigint') as Uint8Array,
     encodeFunctionArgument(BigInt(context.proxyMasterIndex), 'bigint') as Uint8Array,
   ]);
-  const inputs: Record<string, DraftInput> = { ...dynamicInputs };
+  const inputs: Record<string, DraftInput> = { ...read.inputs, ...dynamicInputs };
   for (const node of batch.spent) {
     const satoshis = batch.utxoBySlot.get(bytesToHex(node.slot))?.satoshis ?? context.recordAmount;
     inputs[node.id] = {
@@ -1612,7 +1716,7 @@ function layEntryWrites(
       (_unused, slot) => batch.valueWitnesses.get(slot) ?? new Uint8Array(0),
     );
   return {
-    entries: [...groupEntries, ...dynamicEntries, ...valueChunkEntries],
+    entries: [...groupEntries, ...read.entries, ...dynamicEntries, ...valueChunkEntries],
     inputs,
     trailingOutputs: [...trailingOutputs, ...dynamicOutputs, ...chunkOutputs],
     // The created records the transaction writes, in first-declaration order: every created node, then the run

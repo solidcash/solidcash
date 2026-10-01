@@ -19,20 +19,21 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * Walls ahead: a proxied root pulls a plain token whose entry reads a mapping key beside the balance batch it
- * writes, through the shipped hop, `callPerCallProxyEntry`.
+ * A proxied root pulls a plain token whose entry reads a mapping key beside the balance batch it writes, through
+ * the shipped hop, `callPerCallProxyEntry`.
  *
  * The fixture's `publishJobPost` pulls through `SafeERC20.safeTransferFrom`, whose token reads
  * `allowances[from][msg.sender]` and rewrites `balances[from]` and `balances[to]`. The hop plans a callee's read
- * nodes and its batch apart (`proxy/external-calls.ts`, `calleeReadNodes` and `calleeEntryWrites`): the batch
- * planner (`proxy/entry-writes.ts`, `planHopMappingBatches`) refuses a key read beside a batch and
- * `calleeEntryWrites` drops that refusal, so the callee frame runs with its read node and none of the batch's, and
- * splits past the end of a 2-byte item at its first group read. A read of one key of the batch's own collection
- * stops the same way; a pull that reads no mapping settles. The direct call path declares the read node kept, ahead
- * of the batch's groups (815535a89).
+ * nodes first and declares them kept, ahead of its batch's groups, as the direct call path does (815535a89): the
+ * batch planner (`proxy/entry-writes.ts`, `planHopMappingBatches`) takes a read at one of those nodes' slots as the
+ * caller's (`declaredReadSlots`), and a batch it still cannot state is refused by name, naming the callee
+ * (`proxy/external-calls.ts`, `calleeEntryWrites`). Before it, that refusal was dropped and the callee frame ran
+ * with its read node and none of the batch's, splitting past the end of a 2-byte item at its first group read.
  *
- * Each case is pinned where it stands today; the patch `docs/per-call/patches/hop-callee-read-beside-batch.diff`
- * moves each to the outcome its comment names. The file runs only under `PER_CALL_AHEAD=1`.
+ * A pull within the allowance settles, and one past it is refused by the token's own check; a read of one key of
+ * the batch's own collection settles when the batch does not spend its node and is refused by name when it does,
+ * since one transaction cannot spend that node twice; a pull that reads no mapping settles. The file runs only
+ * under `PER_CALL_AHEAD=1`.
  */
 
 /** A 32-byte id with varied bytes, `seed` chosen so each name is distinct. */
@@ -240,35 +241,30 @@ function expectRefused(outcome: Outcome, message: string): void {
   expect(outcome.balances).toStrictEqual([900n, 100n]);
 }
 
-/** The callee frame's own refusal: it splits past the end of a 2-byte item at its first group read. */
-function batchlessRefusal(entry: string): string {
-  return `the call's callee "Coin.${entry}()" did not settle through the proxy: frame "callee-master-1" of `
-    + `Coin.${entry}() at line ${lineOf(`function ${entry}(`, 'contract Coin')}: no source message (Program called `
-    + 'an OP_SPLIT operation with an invalid index. stack item length: 2; requested split index: 4.)';
-}
-
 const COIN = addressOf(COIN_CATEGORY);
 
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a hop callee reads a mapping key beside its batch', () => {
-  it('a pull within the allowance stops at the callee frame, which has no node of its batch', async () => {
-    // Patched: settles, and 40 moves.
-    expectRefused(await pullOnce(50n, 'pull', [COIN, 40n]), batchlessRefusal('transferFrom'));
+  it('a pull within the allowance settles, and 40 moves', async () => {
+    expectMoved(await pullOnce(50n, 'pull', [COIN, 40n]));
   }, 900_000);
 
-  it('a pull past the allowance stops at the same frame', async () => {
-    // Patched: refused by the token's own check, "short allowance", at the entry's require.
-    expectRefused(await pullOnce(30n, 'pull', [COIN, 40n]), batchlessRefusal('transferFrom'));
+  it('a pull past the allowance is refused by the token\'s own "short allowance"', async () => {
+    // The callee frame runs with its batch and reaches the entry's require.
+    expectRefused(await pullOnce(30n, 'pull', [COIN, 40n]), 'the call\'s callee "Coin.transferFrom()" did not settle '
+      + 'through the proxy: frame "callee-master-1" of Coin.transferFrom() at line '
+      + `${lineOf('"short allowance"', 'contract Coin')}: short allowance (Program failed an OP_VERIFY operation.)`);
   }, 900_000);
 
-  it('a pull beside a read of a third holder\'s balance stops at the same frame', async () => {
-    // One key of the batch's own collection, at a node the batch does not spend. Patched: settles, and 40 moves.
-    expectRefused(await pullOnce(50n, 'pullVia', [COIN, THIRD, 40n]), batchlessRefusal('transferVia'));
+  it('a pull beside a read of a third holder\'s balance settles, and 40 moves', async () => {
+    // One key of the batch's own collection, at a node the batch does not spend.
+    expectMoved(await pullOnce(50n, 'pullVia', [COIN, THIRD, 40n]));
   }, 900_000);
 
-  it('a pull beside a read of the payer\'s own balance stops at the same frame', async () => {
-    // The read's node is one the batch spends. Patched: refused by name, as the direct path refuses it, because one
-    // transaction cannot spend that node twice.
-    expectRefused(await pullOnce(50n, 'pullVia', [COIN, PAYER, 40n]), batchlessRefusal('transferVia'));
+  it('a pull beside a read of the payer\'s own balance is refused by name', async () => {
+    // The read's node is one the batch spends, which one transaction cannot spend twice; the direct path refuses it
+    // the same way (`call/entry-records.ts`). Owner: the SDK hop (`proxy/external-calls.ts`, `calleeEntryWrites`).
+    expectRefused(await pullOnce(50n, 'pullVia', [COIN, PAYER, 40n]), 'the callee "Coin.transferVia()" reads mapping '
+      + '"balances" at a node its batch also spends, which one transaction cannot spend twice');
   }, 900_000);
 
   it('a pull that reads no mapping settles', async () => {

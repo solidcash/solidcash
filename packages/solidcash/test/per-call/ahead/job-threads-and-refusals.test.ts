@@ -669,26 +669,26 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
         .toStrictEqual([0n, false, TITLE, 100n]);
     }, 300_000);
 
-    it('a thread message from the creator (47) stops at its first read of the task array', async () => {
-      const outcome = await enter(world, 'Desk', 'message', [TASK, HASH, BOB_LOCK], CREATOR);
-      // The entry only reads the array, and the hop lays a dynamic value's chunk records only for an entry that
-      // writes it, so no chunk of `tasks` is spent. Owner: the SDK hop (`proxy/entry-writes.ts`, `hopEntryWrites`
-      // lays runs from `dynamicWrites`; nothing under proxy/ reads `dynamicReads`).
-      expect([lineOf('function message('), lineOf('"job closed"')]).toContain(unnamedRefusalLine(outcome, 'message'));
-      expect(outcome.draft!.layout.participants.some((placed) => placed.id.startsWith('dynamic-chunk-tasks-')))
-        .toBe(false);
-      expect(outcome.stalls).toStrictEqual([
-        'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.message() filled no witness at site 2 '
-        + '(call 1)',
+    it('a thread message from the creator (47) settles and the store posts its note', async () => {
+      const settled = expectSettled(await enter(world, 'Desk', 'message', [TASK, HASH, BOB_LOCK], CREATOR));
+      // The entry only reads the array, and the hop declares its run kept (`proxy/entry-writes.ts`,
+      // `planHopReadRuns`), every chunk of the array's two tasks kept in place.
+      expect(settled.draft.layout.participants.filter((placed) => placed.id.startsWith('dynamic-chunk-tasks-'))
+        .map((placed) => placed.id)).toStrictEqual(['dynamic-chunk-tasks-0', 'dynamic-chunk-tasks-1']);
+      expect(postedNotes(world, settled)).toStrictEqual([
+        { id: TASK, kind: 18n, data: `${binToHex(HASH)}${binToHex(BOB_LOCK)}` },
       ]);
     }, 300_000);
 
-    it('a thread message from the allowlisted worker (47) stops at the same read', async () => {
-      const outcome = await enter(world, 'Desk', 'message', [TASK, HASH, ALICE_LOCK], WORKER);
-      // Owner: the SDK hop, as the creator's message.
-      expect([lineOf('function message('), lineOf('"job closed"')]).toContain(unnamedRefusalLine(outcome, 'message'));
-      expect(outcome.draft!.layout.participants.some((placed) => placed.id.startsWith('dynamic-chunk-tasks-')))
-        .toBe(false);
+    it('a thread message from the allowlisted worker (47) settles, reading its allowlist entry', async () => {
+      const settled = expectSettled(await enter(world, 'Desk', 'message', [TASK, HASH, ALICE_LOCK], WORKER));
+      // The root frame plans the allowlist node it only reads as a callee frame's are (`proxy/deploy.ts`, `readNodes`),
+      // and the note goes to the creator.
+      expect(settled.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-read-allowlist-')))
+        .toHaveLength(1);
+      expect(postedNotes(world, settled)).toStrictEqual([
+        { id: TASK, kind: 17n, data: `${binToHex(HASH)}${binToHex(ALICE_LOCK)}` },
+      ]);
     }, 300_000);
 
     it('with the task read stepped around, the creator\'s message settles and the store posts its note', async () => {
@@ -803,7 +803,9 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
     it('an allowlist update of a closed task (30) stops at the task read, before its own "not open"', async () => {
       const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [], []], CREATOR);
       // Empty lists run no turn and plan no call, so the loop write is placed and the read `onlyCreator` makes of
-      // the array the entry never writes fails first. Owner: the SDK hop, as the thread message.
+      // the array the entry never writes fails first: the hop declares a run the entry only reads beside no mapping
+      // write, and a loop that takes no turn is still one. Owner: the SDK hop (`proxy/entry-writes.ts`,
+      // `hopEntryWrites`).
       expect(ALLOWED_READ_LINES).toContain(unnamedRefusalLine(outcome, 'setAllowed'));
     }, 300_000);
 

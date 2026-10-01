@@ -19,7 +19,7 @@ import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv, carolPkh, carolPriv } f
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * Walls ahead: a proxied root's entry that only reads a dynamic state value, through the shipped hop.
+ * A proxied root's entry that only reads a dynamic state value, through the shipped hop.
  *
  * `Board` keeps a struct array whose elements carry a string, so the array is a dynamic value: its record holds the
  * byte length and the bytes sit in a run of chunk records, which a per-call body reads from its frame's own
@@ -29,21 +29,18 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * the shapes of the fixture's thread message (title 47) and allowlist update (30), whose modifiers and first
  * requirements read the task array those entries never write.
  *
- * Pinned where HEAD stands: each read is refused at its first read of the array, because the hop lays a dynamic
- * value's chunk records only for an entry that writes it (`proxy/entry-writes.ts`, `hopEntryWrites` plans runs from
- * `dynamicWrites` alone), and it declares no mapping node the root entry only reads (`proxy/deploy.ts`, only a callee
- * frame is given `readNodes`). No `dynamic-chunk-items-` or `mapping-read-` participant is placed.
- *
- * The patch `docs/per-call/patches/hop-read-only-dynamic-records.diff` declares both: every live chunk of a run the
- * entry reads and does not write (`dynamicReads` minus `dynamicWrites`), kept unchanged in every segment ahead of any
- * written run, and the root frame's read-only mapping nodes after its data records, as a callee frame's are planned.
- * With it, the owner's `check` and `checkBeside` and the allowed caller's `checkAllowed` settle and broadcast, each
- * placing `dynamic-chunk-items-0` (and `checkAllowed` its `mapping-read-allowed-` node), and a stranger's `check`
- * and `checkAllowed` are refused with their own "not owner" and "not allowed". It declares no read-only run beside a
- * mapping write, whose geometry is the compiler's: a verified batch's body holds the records past its groups to the
- * chunks it writes (`countsDynamicChunkRecords` counts `dynamicWrites` only), and a run-time loop's nodes, one per
- * turn, do not keep the run one layout width past the frame's first declared record, where the body reads it. The
- * file runs only under `PER_CALL_AHEAD=1`.
+ * The hop declares every live chunk of a run the entry reads and does not write (`dynamicReads` minus
+ * `dynamicWrites`; `proxy/entry-writes.ts`, `planHopReadRuns`), kept unchanged in every segment ahead of any written
+ * run, and the root frame's read-only mapping nodes after its data records, as a callee frame's are planned
+ * (`proxy/deploy.ts`, `calleeReadNodesOrNone`). So the owner's `check` and `checkBeside` and the allowed caller's
+ * `checkAllowed` settle and broadcast, each placing `dynamic-chunk-items-0` (and `checkAllowed` its
+ * `mapping-read-allowed-` node), and a stranger's `check` and `checkAllowed` are refused with their own "not owner"
+ * and "not allowed". Before it, the hop laid a run only for an entry that writes it, and each entry here was refused
+ * at its first read of the array. It declares no read-only run beside a mapping write, whose geometry is the
+ * compiler's: a verified batch's body holds the records past its groups to the chunks it writes
+ * (`countsDynamicChunkRecords` counts `dynamicWrites` only), and a run-time loop's nodes, one per turn, do not keep
+ * the run one layout width past the frame's first declared record, where the body reads it. The file runs only
+ * under `PER_CALL_AHEAD=1`.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -195,24 +192,18 @@ function expectSettled(outcome: Outcome): PerCallProxyCallResult {
   return outcome.result!;
 }
 
-/**
- * The line a refusal of the board's entry names for a check of its own emitted code, which carries no source
- * message. It is the line the outlined code holding the check is attributed to, so the caller bounds it.
- */
-function unnamedRefusalLine(outcome: Outcome, entry: string): number {
+/** The hop was refused before anything was broadcast, by the board's own `reason` at its line in `entry`. */
+function expectOwnRefusal(outcome: Outcome, entry: string, reason: string): void {
   expect(outcome.error).toBeInstanceOf(PerCallProxyDeployError);
   expect(outcome.coinLive).toBe(true);
   expect(outcome.error!.message).toContain(`the implementation's "${entry}" entry did not settle through the proxy: `
-    + `frame "implementation-master" of Board.${entry}() at line `);
-  const line = /at line (\d+): no source message \(Program failed an OP_VERIFY operation\.\)/
-    .exec(outcome.error!.message);
-  expect(line).not.toBeNull();
-  return Number(line![1]);
+    + `frame "implementation-master" of Board.${entry}() at line ${lineOf(`"${reason}"`, `function ${entry}(`)}: `
+    + `${reason} (Program failed an OP_VERIFY operation.)`);
 }
 
-/** The ids of the participants the refused hop's last draft placed that start with `prefix`. */
-function placed(outcome: Outcome, prefix: string): readonly string[] {
-  return outcome.draft!.layout.participants.map((participant) => participant.id)
+/** The ids of the participants a settled hop's draft placed that start with `prefix`. */
+function placed(result: PerCallProxyCallResult, prefix: string): readonly string[] {
+  return result.draft.layout.participants.map((participant) => participant.id)
     .filter((id) => id.startsWith(prefix));
 }
 
@@ -284,39 +275,36 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a proxied root entry 
       world = await deployWorld();
     }, 600_000);
 
-    it('the owner\'s check stops at its first read of the array', async () => {
+    it('the owner\'s check settles, the array\'s run declared kept', async () => {
       const outcome = await enter(world, 'check', [ITEM], OWNER);
-      // Owner: the SDK hop (`proxy/entry-writes.ts`, `hopEntryWrites`): the run is laid for a writer only.
-      expect([lineOf('function check('), lineOf('"not owner"')]).toContain(unnamedRefusalLine(outcome, 'check'));
-      expect(placed(outcome, 'dynamic-chunk-items-')).toStrictEqual([]);
+      // The hop lays the run the entry only reads (`proxy/entry-writes.ts`, `planHopReadRuns` and `layReadRuns`).
+      const settled = expectSettled(outcome);
+      expect(placed(settled, 'dynamic-chunk-items-')).toStrictEqual(['dynamic-chunk-items-0']);
       expect(outcome.stalls).toStrictEqual([]);
     }, 300_000);
 
-    it('a stranger\'s check stops at the same read, before its own "not owner"', async () => {
-      const outcome = await enter(world, 'check', [ITEM], STRANGER);
-      expect([lineOf('function check('), lineOf('"not owner"')]).toContain(unnamedRefusalLine(outcome, 'check'));
-      expect(placed(outcome, 'dynamic-chunk-items-')).toStrictEqual([]);
+    it('a stranger\'s check is refused with its own "not owner"', async () => {
+      expectOwnRefusal(await enter(world, 'check', [ITEM], STRANGER), 'check', 'not owner');
     }, 300_000);
 
-    it('the allowed caller\'s check behind the mapping read stops at the same read', async () => {
+    it('the allowed caller\'s check behind the mapping read settles, its node and the run declared kept', async () => {
       const outcome = await enter(world, 'checkAllowed', [ITEM], ALLOWED);
-      // Owner: the SDK hop; the run sits past the entry slot, whose node the root frame does not declare either.
-      expect([lineOf('function checkAllowed('), lineOf('"closed"')])
-        .toContain(unnamedRefusalLine(outcome, 'checkAllowed'));
-      expect(placed(outcome, 'dynamic-chunk-items-')).toStrictEqual([]);
-      expect(placed(outcome, 'mapping-read-')).toStrictEqual([]);
+      // The root frame plans the node it only reads as a callee frame's are (`proxy/deploy.ts`, `readNodes`).
+      const settled = expectSettled(outcome);
+      expect(placed(settled, 'dynamic-chunk-items-')).toStrictEqual(['dynamic-chunk-items-0']);
+      expect(placed(settled, 'mapping-read-allowed-')).toHaveLength(1);
     }, 300_000);
 
-    it('the owner\'s check on both sides of a call stops at the same read', async () => {
+    it('a stranger\'s check behind the mapping read is refused with its own "not allowed"', async () => {
+      expectOwnRefusal(await enter(world, 'checkAllowed', [ITEM], STRANGER), 'checkAllowed', 'not allowed');
+    }, 300_000);
+
+    it('the owner\'s check on both sides of a call settles, the run declared kept', async () => {
       const outcome = await enter(world, 'checkBeside', [ITEM], OWNER);
-      // Owner: the SDK hop, as the check alone. The pinger's frame settles first; the entry's never reaches its call.
-      expect([lineOf('function checkBeside('), lineOf('"not owner"', 'function checkBeside(')])
-        .toContain(unnamedRefusalLine(outcome, 'checkBeside'));
-      expect(placed(outcome, 'dynamic-chunk-items-')).toStrictEqual([]);
-      expect(outcome.stalls).toStrictEqual([
-        'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Board.checkBeside() filled no witness at site 0 '
-        + '(call 0)',
-      ]);
+      // The pinger's frame settles first, and the entry reads the run on both sides of its call.
+      const settled = expectSettled(outcome);
+      expect(placed(settled, 'dynamic-chunk-items-')).toStrictEqual(['dynamic-chunk-items-0']);
+      expect(outcome.stalls).toStrictEqual([]);
     }, 300_000);
   });
 });

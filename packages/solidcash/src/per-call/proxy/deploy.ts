@@ -70,10 +70,12 @@ import {
   type HopEntryWrites, type LaidHopEntryWrites,
 } from './entry-writes.js';
 import {
+  calleeReadNodesOrNone,
   deploymentStateValues,
   planHopExternalCalls,
   requireSatisfiableReachWrites,
   type HopCallee,
+  type HopCalleeReadNode,
   type HopCalleeRecord,
   type HopExternalPlan,
   type PerCallProxyExternal,
@@ -297,6 +299,8 @@ interface LaidWriteIdentity {
   readonly record?: number;
   readonly collection?: string;
   readonly variable?: string;
+  /** True for a chunk of a run the entry only reads, which no write fact places. */
+  readonly read?: boolean;
 }
 
 /** The segment one of the entry's writes declares its records in, or undefined when the artifact states none. */
@@ -399,10 +403,13 @@ function laidWriteRecords(options: {
   readonly dynamicType?: string;
 }): readonly LaidWriteRecord[] {
   const { laid, writes } = options;
+  const readIds = new Set(writes.readRunIds ?? []);
+  const readIndices = new Set([...readIds].map((id) => options.indexOf(id)));
   const runIndices = new Set<number>();
   for (const id of writes.participantIds) {
-    // The plan lists a sorted batch's nodes under a mapping id; every other participant belongs to the run.
-    if (mappingHeadCollection(id) === undefined && mappingNodeSlot(id) === undefined) {
+    // The plan lists a sorted batch's nodes under a mapping id and a read run's chunks apart; every other
+    // participant belongs to the run the write grows.
+    if (mappingHeadCollection(id) === undefined && mappingNodeSlot(id) === undefined && !readIds.has(id)) {
       runIndices.add(options.indexOf(id));
     }
   }
@@ -417,6 +424,9 @@ function laidWriteRecords(options: {
   const run = options.dynamicVariable === undefined
     ? undefined : { write: { variable: options.dynamicVariable }, what: 'writes a run of chunk records' };
   return laid.entries.map((entry): LaidWriteRecord => {
+    if (entry.in !== INDEX_NONE && readIndices.has(entry.in)) {
+      return { write: { read: true }, what: 'reads a run of chunk records', entry };
+    }
     const belongsToRun = isRun(entry);
     if (belongsToRun && run === undefined) {
       throw new PerCallProxyDeployError(
@@ -460,7 +470,8 @@ function placeLaidWrites(
  * and the run of chunk records a dynamic write grows have to share one segment: a frame reads the run past the
  * records its own block declares, and the records a segment declares in front of the run are the position that
  * read resolves against, so a batch whose records land in another segment leaves the run where the frame's own
- * close refuses it.
+ * close refuses it. A run the entry only reads is kept unchanged, so it takes the segment of the write it sits
+ * among, which keeps it at its place in every segment, or the first when the entry writes nothing beside it.
  */
 function resolveLaidWriteSegments(
   records: readonly LaidWriteRecord[],
@@ -468,15 +479,21 @@ function resolveLaidWriteSegments(
   label: string,
 ): readonly { readonly at: number; readonly entry: RecordEntry }[] {
   const segments = new Map<string, number>();
-  const placed = records.map(({ write, what, entry }) => {
+  const segmentOf = ({ write, what }: LaidWriteRecord): number => {
     const key = `${String(write.record)}|${String(write.collection)}|${String(write.variable)}`;
     let at = segments.get(key);
     if (at === undefined) {
       at = segmentOfWrite(write, what);
       segments.set(key, at);
     }
-    return { at, entry };
-  });
+    return at;
+  };
+  const firstWrite = records.find(({ write }) => write.read !== true);
+  const readAt = firstWrite === undefined ? 0 : segmentOf(firstWrite);
+  const placed = records.map((record) => ({
+    at: record.write.read === true ? readAt : segmentOf(record),
+    entry: record.entry,
+  }));
   const batchAt = records.findIndex(({ write }) => write.collection !== undefined);
   const runAt = records.findIndex(({ write }) => write.variable !== undefined);
   if (batchAt >= 0 && runAt >= 0 && placed[batchAt]!.at !== placed[runAt]!.at) {
@@ -1619,6 +1636,8 @@ interface HopPlanOptions {
   readonly maximumCommitmentBytes?: number;
   /** The records the entry's own body writes beyond the data-NFT records, or absent when it writes none. */
   readonly entryWrites?: HopEntryWrites;
+  /** The mapping nodes the entry only reads, in the order its code reads them, as a callee frame's are planned. */
+  readonly readNodes?: readonly HopCalleeReadNode[];
   readonly recordCommitments: readonly Uint8Array[];
   /** The commitment each record is being asked to end at, which a writing entry's own computation replaces. */
   readonly writtenCommitments: readonly Uint8Array[];
@@ -1734,10 +1753,10 @@ function calleeDeclaredRecords(
  * writes already state theirs; the nodes the frame only reads add theirs here, and the two lists overlay by slot.
  */
 function calleeValueWitnesses(
-  callee: HopCallee, laidWrites: LaidHopEntryWrites | undefined,
+  readNodes: readonly HopCalleeReadNode[], laidWrites: LaidHopEntryWrites | undefined,
 ): readonly Uint8Array[] | undefined {
   const bySlot = new Map<number, Uint8Array>();
-  for (const node of callee.readNodes) {
+  for (const node of readNodes) {
     if (node.value !== undefined) bySlot.set(node.slotIndex, node.value);
   }
   const written = laidWrites?.values;
@@ -1786,6 +1805,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // a participant of the same block, after them. A callee the entry calls runs as its own block, its own master and
   // its own records, exactly as a caller the composer builds for itself lays one out.
   const recordIds = options.recordCommitments.map((_commitment, nftIndex) => proxyRecordParticipantId(nftIndex));
+  // The nodes the entry only reads sit after the data records, ahead of any write, as a callee frame's do.
+  const readNodes = options.readNodes ?? [];
+  const readNodeIds = readNodes.map((node) => node.id);
   const entryWriteIds = options.entryWrites?.participantIds ?? [];
   // A contract owns one block, and every master the hop spends of it sits in that block in placement order; a
   // contract reached at several sites therefore contributes several masters to its one block, and its records are
@@ -1823,7 +1845,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       contract: proxyArtifact.contractName,
       masters: [PROXY_MASTER_ID],
       validator: { id: VALIDATOR_ID, settles: [] },
-      state: [...recordIds, ...entryWriteIds],
+      state: [...recordIds, ...readNodeIds, ...entryWriteIds],
     },
     { contract: implementationArtifact.contractName, masters: [IMPLEMENTATION_MASTER_ID], state: [] },
     ...[...calleeBlocks.values()].map((block) => ({
@@ -1915,6 +1937,13 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       return segmentIndex === writeAt ? recordWritten[nftIndex]! : recordAfter[nftIndex]!;
     }),
   );
+  // The nodes the entry only reads follow its data records in every segment, kept, ahead of any write.
+  for (const segment of implementationSegments) {
+    for (const node of readNodes) {
+      const index = participant(layout, node.id).index;
+      segment.push({ in: index, out: index, viewIn: node.commitment, viewOut: node.commitment });
+    }
+  }
   // The records the entry's own body writes follow the state records its frame declares, which is the ordinal the
   // body's group walk reads them at. A created node is a trailing output past the events.
   const createdBase = trailingCursor;
@@ -1949,6 +1978,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       entryWritesLabel,
     ));
   }
+  const implementationValues = calleeValueWitnesses(readNodes, laidWrites);
   const proxyMasterDraft: DraftMaster = {
     master: PROXY_MASTER_ID,
     contract: proxyArtifact.contractName,
@@ -1998,7 +2028,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     // A delegate frame runs on the caller's records, so the records it reads and writes are the caller's, which
     // the segment declares: the entry's write is the view the proxy's later segment continues from.
     segments: implementationSegments,
-    ...(laidWrites?.values === undefined ? {} : { values: laidWrites.values }),
+    ...(implementationValues === undefined ? {} : { values: implementationValues }),
     events: eventIndices,
     sends: [],
     argumentPushes: pushes,
@@ -2078,7 +2108,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     }
     return { laid, records, ...calleeEventPlan[position]! };
   });
-  settle(options.proxyCategory, [...recordIds, ...entryWriteIds], laidWrites?.createdOutputs ?? []);
+  settle(options.proxyCategory, [...recordIds, ...readNodeIds, ...entryWriteIds], laidWrites?.createdOutputs ?? []);
   for (const owner of delegateOwnerIndices(callees)) {
     settle(
       callees[owner]!.category,
@@ -2159,7 +2189,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         `the callee's "${callee.functionName}" entry`,
       ));
     }
-    const valueWitnesses = calleeValueWitnesses(callee, laidCalleeWrites?.laid);
+    const valueWitnesses = calleeValueWitnesses(callee.readNodes, laidCalleeWrites?.laid);
     return {
       master: callee.master,
       contract: callee.contract,
@@ -2260,6 +2290,14 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
           }] as const;
         });
         return [masterEntry, ...recordEntries, ...readNodeEntries];
+      })),
+      // The nodes the entry itself only reads, spent the same way at the proxy's category.
+      ...Object.fromEntries(readNodes.map((node) => {
+        const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(options.recordCategoryHex, node.signature);
+        return [node.id, {
+          source: mutableSource(lockingBytecode, node.utxo.satoshis, options.proxyCategory, node.commitment),
+          unlockingBytecode,
+        }] as const;
       })),
       ...(laidWrites?.inputs ?? {}),
       // Each callee frame's own write spends the collection nodes it names, which its own block already placed.
@@ -2676,6 +2714,13 @@ export async function callPerCallProxyEntry(
   // the record's own close hands back the length the body wrote, and the run is laid at that length's chunks.
   const entryWritesFor = (commitments: readonly Uint8Array[]): HopEntryWrites | undefined =>
     hopEntryWrites({ ...writesRequest, writtenCommitments: commitments });
+  // The mapping nodes the entry only reads, planned the way a proxied callee's are: from the proxy's own nodes and
+  // records, read with the proxy's layout, and the call data the frame receives.
+  const readNodes = calleeReadNodesOrNone({
+    artifact: implementationArtifact, functionName: options.functionName, args,
+    senderAddress: options.callerLockingBytecode, categoryId: options.proxyCategoryId, deployment: proxyPools,
+    recordLayout: classificationLayout,
+  });
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
   // values, the proxy's own address for `address(this)`, and the caller's lock for `msg.sender`.
@@ -2700,6 +2745,7 @@ export async function callPerCallProxyEntry(
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments,
       ...(attemptWrites === undefined ? {} : { entryWrites: attemptWrites }),
+      ...(readNodes.length === 0 ? {} : { readNodes }),
       entryWriteViews,
       implementationRetval,
       ...(externalPlan.calls.length === 0 ? {} : { calls: externalPlan.calls }),
@@ -2746,9 +2792,14 @@ export async function callPerCallProxyEntry(
     implementationCategoryId: options.implementationCategoryId,
     program: settled.program,
     draft: settled.draft,
-    ...(settled.entryWrites === undefined && externalPlan.utxos.size === 0
+    ...(settled.entryWrites === undefined && externalPlan.utxos.size === 0 && readNodes.length === 0
       ? {}
-      : { spentUtxos: new Map([...(settled.entryWrites?.spentUtxos ?? []), ...externalPlan.utxos]) }),
+      : {
+        spentUtxos: new Map([
+          ...(settled.entryWrites?.spentUtxos ?? []), ...readNodes.map((node) => [node.id, node.utxo] as const),
+          ...externalPlan.utxos,
+        ]),
+      }),
   });
 
   const retval = settled.retval;

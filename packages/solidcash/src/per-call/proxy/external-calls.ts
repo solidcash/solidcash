@@ -800,12 +800,14 @@ function liveDeploymentOf(
  *
  * The frame's `msg.sender` is the caller's own address, which a write keyed by the sender resolves to, and the
  * deployment is the one that frame runs on: its own records and collection nodes for a call frame, the proxy's for
- * the delegate frame a proxied callee reaches.
+ * the delegate frame a proxied callee reaches. A key the entry only reads beside its batch is one of the frame's
+ * `readNodes`, declared kept ahead of the batch's groups as its code counts them, so it is planned, not refused.
  *
- * A write whose source the artifact publishes in a form this planner does not state is left unplanned rather than
- * refusing the whole hop: the frame is then planned as it was before a callee's writes were stated at all, and the
- * callee's own frame reports its refusal when it is settled, naming the callee. A shape the planner cannot state is
- * therefore a callee the hop cannot yet run, not a plan it fabricates.
+ * A body that writes a sorted mapping walks every group of its batch whichever path it takes, so a batch this planner
+ * cannot state is refused by name, naming the callee, rather than left to a frame that cannot settle; so is a read
+ * whose node the batch also spends, which one transaction cannot spend twice. A dynamic value's run is read only where
+ * its write runs, so an entry that writes no batch keeps a plan without the run: a path that skips the write still
+ * settles, and one that takes it is refused by the callee's own frame.
  */
 function calleeEntryWrites(
   artifact: Artifact,
@@ -813,19 +815,35 @@ function calleeEntryWrites(
   args: readonly FunctionArgument[],
   senderAddress: Uint8Array | undefined,
   live: HopLiveDeployment,
+  readNodes: readonly HopCalleeReadNode[],
 ): HopEntryWrites | undefined {
+  const callee = `${artifact.contractName}.${functionName}()`;
+  let writes: HopEntryWrites | undefined;
   try {
-    return hopEntryWrites({
+    writes = hopEntryWrites({
       artifact,
       functionName,
       args,
       callerLockingBytecode: senderAddress ?? new Uint8Array(0),
       liveDeployment: live,
       writtenCommitments: live.recordCommitments,
+      declaredReadSlots: readNodes.map((node) => node.slotIndex),
     });
-  } catch {
-    return undefined;
+  } catch (error) {
+    const fn = artifact.abi.find((candidate) => candidate.name === functionName);
+    if ((fn?.sortedBatchInfo ?? []).length === 0) return undefined;
+    throw new PerCallProxyDeployError(`the callee "${callee}" writes records this hop cannot declare: `
+      + `${error instanceof Error ? error.message : String(error)}`);
   }
+  const spent = new Set([...writes?.spentUtxos.values() ?? []].map((utxo) => `${utxo.txid}:${utxo.vout}`));
+  const shared = readNodes.find((node) => spent.has(`${node.utxo.txid}:${node.utxo.vout}`));
+  if (shared !== undefined) {
+    throw new PerCallProxyDeployError(
+      `the callee "${callee}" reads mapping "${shared.collection}" at a node its batch also spends, which one `
+      + 'transaction cannot spend twice',
+    );
+  }
+  return writes;
 }
 
 /**
@@ -931,11 +949,12 @@ function calleeReadNodes(options: {
 /**
  * The nodes a callee reads, or none when the artifact publishes a shape this planner does not state.
  *
- * A read the planner cannot state leaves the frame planned without it, exactly as a write it cannot state does: the
- * callee's own frame reports its refusal when it is settled, naming the callee, rather than the hop fabricating a
- * plan for a record it cannot place.
+ * A read the planner cannot state leaves the frame planned without it, exactly as a write outside a sorted batch it
+ * cannot state does: the callee's own frame reports its refusal when it is settled, naming the callee, rather than
+ * the hop fabricating a plan for a record it cannot place. The hop's own implementation frame reads its nodes the
+ * same way.
  */
-function calleeReadNodesOrNone(options: Parameters<typeof calleeReadNodes>[0]): readonly HopCalleeReadNode[] {
+export function calleeReadNodesOrNone(options: Parameters<typeof calleeReadNodes>[0]): readonly HopCalleeReadNode[] {
   try {
     return calleeReadNodes(options);
   } catch {
@@ -1018,15 +1037,15 @@ async function placeCalleeMasters(
     const master = `callee-master-${calleeIndex + 1}`;
     const masterUtxo = deployment.masters[base + occurrence]!;
     const deployed = deployMaster(external.artifact, category, ctx.validatorProgram);
-    // The frame's own write is planned from the reach's own call data, so two reaches that pass different values
-    // write different nodes.
-    const writes = calleeEntryWrites(
-      external.artifact, entry.name, call.argumentValues, caller.selfAddress, live);
-    // The nodes the entry only reads are planned the same way, from the reach's own call data.
+    // The nodes the entry only reads, from the reach's own call data; they lead any batch's groups.
     const readNodes = calleeReadNodesOrNone({
       artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
       senderAddress: caller.selfAddress, categoryId, deployment,
     });
+    // The frame's own write is planned from the reach's own call data, so two reaches that pass different values
+    // write different nodes.
+    const writes = calleeEntryWrites(
+      external.artifact, entry.name, call.argumentValues, caller.selfAddress, live, readNodes);
     for (const node of readNodes) ctx.utxos.set(node.id, node.utxo);
     // A mapping node the frame writes sits on a live UTXO the deployment's classification already placed, so the
     // hop hands the rebuild its outpoint rather than have it search the category again.
@@ -1182,15 +1201,15 @@ async function placeProxiedCallee(
       callBases: [0],
       enteredBy,
     };
-    // The implementation entry's own write is planned from this reach's call data, against the proxy's deployment.
-    const implementationWrites = calleeEntryWrites(
-      external.artifact, entry.name, call.argumentValues, caller.selfAddress, live);
     // The nodes the entry only reads are the proxy's own, planned against the proxy's deployment.
     const implementationReads = calleeReadNodesOrNone({
       artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
       senderAddress: caller.selfAddress, categoryId: external.categoryId, deployment: proxyDeployment,
       recordLayout: proxyReadLayout,
     });
+    // The implementation entry's own write is planned from this reach's call data, against the proxy's deployment.
+    const implementationWrites = calleeEntryWrites(
+      external.artifact, entry.name, call.argumentValues, caller.selfAddress, live, implementationReads);
     for (const node of implementationReads) ctx.utxos.set(node.id, node.utxo);
     for (const [id, utxo] of implementationWrites?.spentUtxos ?? []) ctx.utxos.set(id, utxo);
     const implementationBaseFrame: HopCallee = {

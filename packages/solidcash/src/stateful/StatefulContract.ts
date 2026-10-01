@@ -6,40 +6,24 @@ import {
   AbiFunction,
   ArgSource,
   ExternalCallExpression,
-  ExternalCallStatement,
   ExternalCallAbi,
   ExternalResultConsumerAbi,
   ExternalResultEncoding,
   TokenContainerTransferSiteAbi,
   SortedUpsertLoopAbi,
-  buildInitialStateCommitments,
-  buildEntryCommitment,
-  buildTokenContainerCovenantScript,
-  buildSatoshiContainerCovenantScript,
   buildDataNftCovenantScript,
   buildEntryNftCovenantScript,
-  buildEventNftCovenantScript,
-  buildAnonymousEventNftCovenantScript,
   computeCollectionHash,
   dynamicChunkSignature,
-  parseChunkCommitment,
-  buildValueChunkCommitment,
-  buildChunkCommitment,
-  splitValueIntoChunks,
-  dynamicLenKey,
   parseValueChunkCommitment,
   splitValueIntoValueChunks,
   VALUE_HEAD_SIZE,
   VALUE_CHUNK_SIZE,
-  VALUE_CHUNK_INDEX_SIZE,
   VALUE_CHUNK_MAX_COUNT,
   VALUE_INLINE_LIMIT,
   encodeChunkableValueTail,
   joinValueChunks,
-  DYNAMIC_CHUNK_SIZE,
-  computeEventNameHash,
   parsePushdataCommitment,
-  buildPushdataCommitment,
   parseEntryCommitment,
   StateValue,
   attachDecodedAccessors,
@@ -51,134 +35,72 @@ import {
   EntryAccessAbi,
   EmitAbi,
   EventDefinitionAbi,
-  BlockSlotKind,
   FunctionBlockLayout,
-  sidecarLockingBytecode,
-  resolveLibraryBlob,
-  SHARED_LIBRARY_SALT,
-  ExternalLibraryAbi,
   isComputedBlockhashKey,
   encodePushdataValue,
-  encodeEventCommitment,
   getDefaultStateValue,
-  preferZeroPrefixedEventBlob,
   keccakComputeLockingBytecode,
-  keccakComputeLockingBytecodeLegacy,
-  KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH_LEGACY,
-  ecrecoverComputeLockingBytecode,
   sha256 as sha256Sync,
   ripemd160 as ripemd160Sync,
   hash160 as hash160Sync,
   hash256 as hash256Sync,
   parseArrayTypeString,
-  isFixedWidthType,
-  unpackFixedWidthArray,
-  packFixedWidthArray,
-  decodePackedEventArray,
-  scriptToBytecode,
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
-  buildMessageBusVerifierCovenantScript,
-  messageBusVerifierCommitment,
-  bytecodeToScript,
-  scriptToAsm,
-  childStateLayoutDigest,
-  validateChildDeploymentGenesisState,
   FixedBchTransferAbi,
   KernelJournalDispositionsAbi,
   peekPushdataEncodedLength,
 } from '@solidcash/utils';
-import {
-  RUNTIME_LOOP_EVENT_ITERATION_LIMIT,
-  runtimeLoopEventIterationValues,
-  runtimeLoopEventRepeatSource,
-} from './runtime-loop-event-domain.js';
+import './runtime-loop-event-domain.js';
 import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
 import { nextBuildId, peekBuildId } from './buildSequence.js';
 import { appendComputedValueChunkRun } from './computed-value-chunk-runs.js';
-import {
-  decodeEvmInvocationResult, decodeEvmInvocationResultPrefix, encodeEvmInvocationResult,
-} from './evm-abi-result.js';
+import { encodeEvmInvocationResult } from './evm-abi-result.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
-import {
-  buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit,
-} from '../ecrecover/ecrecoverComputeSidecar.js';
-import {
-  encodeMessageBatch, encodeMessageBusArguments, evaluateFixedEffectPredicate, inactiveMessageBusRouteWitness,
-} from '../message-bus/message-bus.js';
-import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-authority.js';
+import '../ecrecover/ecrecoverComputeSidecar.js';
+import { encodeMessageBatch, evaluateFixedEffectPredicate } from '../message-bus/message-bus.js';
+import '../message-bus/internal-batch-authority.js';
 import { evaluateChildDeploymentRecipe } from '../message-bus/compose-recipes.js';
 import { loadFixedEffectEntries, type FixedEffectEntryResolver } from '../message-bus/fixed-effect-entries.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
-import {
-  foldChunkableResource,
-  type ResourceFoldPlan,
-  type ResourceFoldStep,
-} from '../message-bus/resource-fold.js';
+import '../message-bus/resource-fold.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
-import {
-  advanceValueChunkProducerArgumentEpoch,
-  buildTransportedContinuationResourceClaim,
-  canonicalValueChunkProducerPathContext,
-  createValueChunkProducerArgumentEpoch,
-  deriveValueChunkProducerChildPath,
-  orderTransportedContinuationResourceClaims,
-  selectSingletonValueChunkProducer,
-  terminalValueChunkProducerClaim,
-  valueChunkProducerArgumentsInEpoch,
-  type TransportedContinuationResourceClaim,
-  type ValueChunkProducerPathDisposition,
-  type ValueChunkProducerResourceClaim,
-} from './ValueChunkProducerIdentity.js';
+import { type ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 // X186. The covenant-annotating gate moved to `message-bus/preflight.ts` when `TransactionBuilder.send` became its
 // second caller. The four lifecycle-admin sites below route through it; none calls the bare gate.
-import {
-  assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder, type FinalizedByteSubject,
-} from '../message-bus/preflight.js';
+import '../message-bus/preflight.js';
 import {
   binToHex,
   hexToBin,
   binsAreEqual,
-  decodeTransactionUnsafe,
   encodeAuthenticationInstructions,
   encodeTransaction,
   AuthenticationProgramStateCommon,
-  encodeLockingBytecodeP2pkh,
   bigIntToVmNumber,
   vmNumberToBigInt,
   utf8ToBin,
   binToUtf8,
-  lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
-import { createFaithfulTraceVmForProvider, createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
+import {
+  createFaithfulTraceVmForProvider,
+  createVirtualMachineBch2026ForProvider,
+} from '../network/createVirtualMachine.js';
 import { Contract } from '../Contract.js';
 import { ConstructorArgument, FunctionArgument, encodeFunctionArgument } from '../Argument.js';
 import { AbiToFunctionMap } from '../types/type-inference.js';
 import { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import NetworkProvider from '../network/NetworkProvider.js';
-import { artifactUsesSolidityAbi, resolveExternalResultEncoding } from './solidityAbi.js';
-import {
-  legacyLiveValueChunkBandWidth,
-  legacyPersistedValueChunkWidth,
-} from './legacy-job-event-helpers.js';
-import {
-  isScidIdentityCommitment, logicalIdentityAddressVariants, logicalIdentityBandKey, resolveLogicalIdentity,
-  type ResolvedLogicalIdentity,
-} from './logical-identity.js';
+import { artifactUsesSolidityAbi } from './solidityAbi.js';
+import './legacy-job-event-helpers.js';
+import { isScidIdentityCommitment, resolveLogicalIdentity, type ResolvedLogicalIdentity } from './logical-identity.js';
 
-import {
-  addressToLockScript, tryCashAddressToLockScript, findLastIndex, generateLibauthSourceOutputs, getNetworkPrefix,
-  scriptToAddress, scriptToLockingBytecode, randomUtxo,
-} from '../utils.js';
+import { addressToLockScript, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode } from '../utils.js';
 
 // Redeem script: OP_TRUE (0x51). Locking: OP_HASH256 <hash256(0x51)> OP_EQUAL.
 // Unlocking: <push 0x51> (the redeem script).
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]); // push 1-byte redeem script
 
-import {
-  SortedList, getCachedSortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment,
-  encodeEntryCommitment, decodeEntryCommitment,
-} from './SortedList.js';
+import { SortedList, keyToSlotMulti, bytesToSlotValue, encodeEntryCommitment, decodeEntryCommitment } from './SortedList.js';
 import {
   decodeKernelEntryJournalRecord,
   decodeKernelEntryJournalAccesses,
@@ -207,100 +129,53 @@ import {
   type KernelEntryJournalSettlementReference,
   type KernelEntryJournalDirtyFinalBodyCandidate,
   type KernelEntryJournalTopologyOperation,
-  KERNEL_ENTRY_JOURNAL_ACCESS_TAG,
 } from './KernelEntryJournal.js';
-import {
-  resolveKernelDelegateForwardingTarget, resolveKernelDelegatePromotion,
-} from './KernelDelegateForwarding.js';
+import { resolveKernelDelegateForwardingTarget, resolveKernelDelegatePromotion } from './KernelDelegateForwarding.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
-import { attachWait } from '../wait.js';
+import '../wait.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { AddressType, ContractOptions, LibauthOutput, Output, TransactionDetails, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import {
-  StatefulTransactionBuilder, EntryNftInfo, TokenContainerInfo, RuntimeLoopTransferOutput, ExternalCallUtxoGroup,
-  groupOwnsInBlockReturnEvent, assignPhysicalReturnIndices, logicalReturnGroupIndex,
-  groupLayoutTrailingBase,
+  AddressType,
+  ContractOptions,
+  LibauthOutput,
+  Output,
+  TransactionDetails,
+  UnlockableUtxo,
+  Unlocker,
+  Utxo,
+} from '../interfaces.js';
+import {
+  StatefulTransactionBuilder,
+  EntryNftInfo,
+  ExternalCallUtxoGroup,
   selectDelegateExecutionLayout,
-  physicalDelegateSlotOffset,
-  pinExactSortedBatchEntry,
-  materializedPredOutBase,
-  inheritWriterBatchWitnesses,
-  inheritWriterBatchPlan,
-  isWriterBatchWitnessName,
-  remapInsertPredOuts,
-  resolveAbsolutePredOut,
-  lastCollidingMutableWriterIndex,
-  viewTailOccupancyCap,
-  valueChunkBandWidth,
-  mintingSwapShift,
-  isCompilerDescribedMintingBandWriter,
-  tokenWriterReturnIndex,
-  participantRelocationExtraFunders,
-  collidingParticipantGroupIndex,
-  materializedParticipantWidth,
-  liveChunkSlotsByOwner,
-  rememberJobEventsValue,
-  stageJobEventsValue,
-  stageValueChunkWrite,
-  stagedValueChunkWrite,
-  persistedJobEventsValue,
-  persistedJobEventsLock,
-  isPersistedJobEventsReady,
-  isValueChunkWriteReady,
-  boundedDerivationIterations,
-  rememberJobEventsLock,
-  applyRedeemLockToChunks,
-  selectHashedValueForChunkPin,
-  extractIdentityScanValueChunkPin,
-  chunksFromJobEventsValue,
-  isEmptyValueChunkCommitment,
   isJobEventEmitCommitment,
   isAuthenticatedEventRepairCommitment,
-  jobEventTypeOf,
   stampEmptyJobEventTimestamp,
-  expectedFromOtcEqualVerify,
-  selectExpectedP2sh32OutputLock,
-  preferChunkCommitment,
-  valueChunkIndexFromCommitment,
-  selectValueChunkOutputBase,
-  findDisposableValueChunkOutputBase,
-  selectExternalEventProbeInput,
-  persistedValueChunkWriteState,
-  selectPersistedValueChunkWrite,
-  selectValueChunkResource,
   selectValueChunkWriteCategory,
   permitsLegacyNamedValueChunkFallback,
   legacyPlannedChunkableValueWriteCollection,
-  rememberValueChunkUnlockRecipe,
-  selectValueChunkCommitmentObservations,
-  type ValueChunkTraceObservation,
   type ValueChunkWriteDescriptor,
   ValueChunkWriteStagingSession,
   valueChunkWriteResourceIdentity,
-  sameDerivedChunkOutputObservation,
-  ownsCapturedValueChunkOutputBase,
 } from './StatefulTransactionBuilder.js';
+import { legacyIsPublishJobEventName } from './legacy-planning-heuristics.js';
+import { OnChainState, type ParsedEvent, type EventFilter } from './StateReader.js';
 import {
-  legacyGroupLooksLikePublishJobEvent,
-  legacyIsPublishJobEventName,
-} from './legacy-planning-heuristics.js';
-import {
-  OnChainState, StateReader, type ParsedEvent, type EventFilter,
-  readEventsFiltered, readAnonymousEventsFromChain, valuesEqual,
-} from './StateReader.js';
-import {
-  getDataNftAddress, getEntryNftAddress, getEventNftAddress, getAnonymousEventNftAddress,
-  getDynamicChunkAddress, getValueChunkAddress,
-  getDataNftLockingBytecode, getEntryNftLockingBytecode,
-  getTokenContainerAddress, getSatoshiContainerAddress, getContractState,
-  createDataNftUnlocker, createDestroyDataNftUnlocker,
-  createReadOnlyDataNftUnlocker, createEntryNftUnlocker, createReadOnlyEntryNftUnlocker,
-  createDynamicChunkUnlocker, createReadOnlyDynamicChunkUnlocker, createValueChunkUnlocker,
-  createEventNftUnlocker, createAnonymousEventNftUnlocker,
-  createTokenContainerUnlocker, createSatoshiContainerUnlocker,
-  resolveCollectionSignature, resolveCategoryFromLockingBytecode, resolveCategoryFromAddress,
-  delegateImplMsgSenderCategory,
+  getDataNftAddress,
+  getEntryNftAddress,
+  getEventNftAddress,
+  getDynamicChunkAddress,
+  getValueChunkAddress,
+  getTokenContainerAddress,
+  getSatoshiContainerAddress,
+  getContractState,
+  createDataNftUnlocker,
+  createEntryNftUnlocker,
+  createReadOnlyEntryNftUnlocker,
+  resolveCategoryFromLockingBytecode,
+  resolveCategoryFromAddress,
 } from './covenant-helpers.js';
 
 const signerUtxoSnapshots = new WeakMap<object, Map<string, Map<string, Utxo>>>();
@@ -439,8 +314,11 @@ function invalidateSignerUtxos(signer: Signer): void {
   signerUtxoSnapshots.get(signer.provider as object)?.delete(signer.getAddress());
 }
 import {
-  findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName,
-  registeredExecutionLockingBytecode, registeredValueAddressLockingBytecode,
+  findDeploymentByAddress,
+  findDeploymentByLockingBytecode,
+  findDeploymentByName,
+  registeredExecutionLockingBytecode,
+  registeredValueAddressLockingBytecode,
 } from './deployment-registry.js';
 import {
   loadCreateBuilderOnChainState as loadCreateBuilderOnChainStateImpl,
@@ -455,9 +333,7 @@ import {
   materializeCreateBuilderEarlyArgs as materializeCreateBuilderEarlyArgsImpl,
   type MaterializeCreateBuilderEarlyArgsHost,
 } from './sc-materialize-create-builder-early-args.js';
-import {
-  resolveCreateBuilderEntryAbi as resolveCreateBuilderEntryAbiImpl,
-} from './sc-resolve-create-builder-entry-abi.js';
+import { resolveCreateBuilderEntryAbi as resolveCreateBuilderEntryAbiImpl } from './sc-resolve-create-builder-entry-abi.js';
 import {
   loadCreateBuilderExternalReads as loadCreateBuilderExternalReadsImpl,
   type LoadCreateBuilderExternalReadsHost,
@@ -489,9 +365,7 @@ import {
 import {
   expandCreateBuilderLateTransitive as expandCreateBuilderLateTransitiveImpl,
 } from './sc-expand-create-builder-late-transitive.js';
-import {
-  planCreateBuilderNestedBases as planCreateBuilderNestedBasesImpl,
-} from './sc-plan-create-builder-nested-bases.js';
+import { planCreateBuilderNestedBases as planCreateBuilderNestedBasesImpl } from './sc-plan-create-builder-nested-bases.js';
 import {
   relocateCreateBuilderPredOutBases as relocateCreateBuilderPredOutBasesImpl,
 } from './sc-relocate-create-builder-pred-out-bases.js';
@@ -562,27 +436,17 @@ import {
   publishPreparedKernelDelegateOwnerFrame,
 } from './sc-materialize-create-builder-low-level-stateful-call.js';
 export { publishPreparedKernelDelegateOwnerFrame };
-import {
-  runCreateBuilderDerivePass as runCreateBuilderDerivePassImpl,
-} from './sc-run-create-builder-derive-pass.js';
+import { runCreateBuilderDerivePass as runCreateBuilderDerivePassImpl } from './sc-run-create-builder-derive-pass.js';
 import {
   materializeCreateBuilderReturnEmit as materializeCreateBuilderReturnEmitImpl,
 } from './sc-materialize-create-builder-return-emit.js';
 import {
   finishCreateBuilderAtomicPromotion as finishCreateBuilderAtomicPromotionImpl,
 } from './sc-finish-create-builder-atomic-promotion.js';
-import {
-  destroyStatefulContract as destroyStatefulContractImpl,
-} from './sc-destroy.js';
-import {
-  queryEvents as queryEventsImpl,
-} from './sc-query-events.js';
-import {
-  getEntries as getEntriesImpl,
-} from './sc-get-entries.js';
-import {
-  inferConstructorArgs as inferConstructorArgsImpl,
-} from './sc-infer-constructor-args.js';
+import { destroyStatefulContract as destroyStatefulContractImpl } from './sc-destroy.js';
+import { queryEvents as queryEventsImpl } from './sc-query-events.js';
+import { getEntries as getEntriesImpl } from './sc-get-entries.js';
+import { inferConstructorArgs as inferConstructorArgsImpl } from './sc-infer-constructor-args.js';
 import {
   prepareDeriveFullValueChunkWrites as prepareDeriveFullValueChunkWritesImpl,
 } from './sc-prepare-derive-full-value-chunk-writes.js';
@@ -593,9 +457,7 @@ import {
   reconcileDeriveFullReturnWitnesses as reconcileDeriveFullReturnWitnessesImpl,
   rebindDeriveFullExternalResourceMaster as rebindDeriveFullExternalResourceMasterImpl,
 } from './sc-derive-full-return-witness-helpers.js';
-import {
-  deriveFullPhase1GroupFront as deriveFullPhase1GroupFrontImpl,
-} from './sc-derive-full-phase1-group-front.js';
+import { deriveFullPhase1GroupFront as deriveFullPhase1GroupFrontImpl } from './sc-derive-full-phase1-group-front.js';
 import {
   deriveFullPhase1PostEvaluateDataCommitments as deriveFullPhase1PostEvaluateDataCommitmentsImpl,
 } from './sc-derive-full-phase1-post-evaluate-data-commitments.js';
@@ -611,9 +473,7 @@ import {
 import {
   seedDeriveFullPhase2Placeholders as seedDeriveFullPhase2PlaceholdersImpl,
 } from './sc-seed-derive-full-phase2-placeholders.js';
-import {
-  prepareDeriveFullPhase2Loop as prepareDeriveFullPhase2LoopImpl,
-} from './sc-prepare-derive-full-phase2-loop.js';
+import { prepareDeriveFullPhase2Loop as prepareDeriveFullPhase2LoopImpl } from './sc-prepare-derive-full-phase2-loop.js';
 import {
   deriveFullPhase2IterationProbe as deriveFullPhase2IterationProbeImpl,
 } from './sc-derive-full-phase2-iteration-probe.js';
@@ -647,51 +507,30 @@ import {
 import {
   deriveFullPhase2ApplyTransfers as deriveFullPhase2ApplyTransfersImpl,
 } from './sc-derive-full-phase2-apply-transfers.js';
-import {
-  deriveFullPhase2Convergence as deriveFullPhase2ConvergenceImpl,
-} from './sc-derive-full-phase2-convergence.js';
+import { deriveFullPhase2Convergence as deriveFullPhase2ConvergenceImpl } from './sc-derive-full-phase2-convergence.js';
 import {
   deriveFullPhase2CleanedRescan as deriveFullPhase2CleanedRescanImpl,
 } from './sc-derive-full-phase2-cleaned-rescan.js';
 import {
   hydrateExternalPredicateState as hydrateExternalPredicateStateImpl,
 } from './sc-hydrate-external-predicate-state.js';
-import {
-  upgradeStatefulContract as upgradeStatefulContractImpl,
-} from './sc-upgrade.js';
+import { upgradeStatefulContract as upgradeStatefulContractImpl } from './sc-upgrade.js';
 import {
   splitStatefulContract as splitStatefulContractImpl,
   mergeStatefulContract as mergeStatefulContractImpl,
 } from './sc-split-merge.js';
-import {
-  withDelegatecall as withDelegatecallImpl,
-  assertDelegateLayoutCompatible,
-} from './sc-with-delegatecall.js';
-import {
-  autoWireLibraryDelegatecalls as autoWireLibraryDelegatecallsImpl,
-} from './sc-auto-wire-library-delegatecalls.js';
-import {
-  addressMappingKeyCandidates as addressMappingKeyCandidatesImpl,
-} from './sc-address-mapping-key-candidates.js';
-import {
-  deployStatefulContract as deployStatefulContractImpl,
-} from './sc-deploy.js';
-import {
-  deployFromStatefulContract as deployFromStatefulContractImpl,
-} from './sc-deploy-from.js';
-import {
-  deriveDeployCommitments as deriveDeployCommitmentsImpl,
-} from './sc-derive-deploy-commitments.js';
-import {
-  deriveCommitments as deriveCommitmentsImpl,
-} from './sc-derive-commitments.js';
+import { withDelegatecall as withDelegatecallImpl } from './sc-with-delegatecall.js';
+import { autoWireLibraryDelegatecalls as autoWireLibraryDelegatecallsImpl } from './sc-auto-wire-library-delegatecalls.js';
+import { addressMappingKeyCandidates as addressMappingKeyCandidatesImpl } from './sc-address-mapping-key-candidates.js';
+import { deployStatefulContract as deployStatefulContractImpl } from './sc-deploy.js';
+import { deployFromStatefulContract as deployFromStatefulContractImpl } from './sc-deploy-from.js';
+import { deriveDeployCommitments as deriveDeployCommitmentsImpl } from './sc-derive-deploy-commitments.js';
+import { deriveCommitments as deriveCommitmentsImpl } from './sc-derive-commitments.js';
 import {
   softApplyPairMint as softApplyPairMintImpl,
   softApplyUpdateExchangeRate as softApplyUpdateExchangeRateImpl,
 } from './sc-soft-apply-pair-overlays.js';
-import {
-  softApplyNoopReceipt as softApplyNoopReceiptImpl,
-} from './sc-soft-apply-noop-receipt.js';
+import { softApplyNoopReceipt as softApplyNoopReceiptImpl } from './sc-soft-apply-noop-receipt.js';
 import {
   softAccrueInterest as softAccrueInterestImpl,
   softApplyKashiStateSideEffects as softApplyKashiStateSideEffectsImpl,
@@ -703,12 +542,8 @@ import {
 import {
   resolveExternalKeccakSideCars as resolveExternalKeccakSideCarsImpl,
 } from './sc-resolve-external-keccak-side-cars.js';
-import {
-  kashiSoftFailCode as kashiSoftFailCodeImpl,
-} from './sc-kashi-soft-fail-code.js';
-import {
-  sendRawBuilder as sendRawBuilderImpl,
-} from './sc-send-raw-builder.js';
+import { kashiSoftFailCode as kashiSoftFailCodeImpl } from './sc-kashi-soft-fail-code.js';
+import { sendRawBuilder as sendRawBuilderImpl } from './sc-send-raw-builder.js';
 import {
   buildSplitTransactionBuilder as buildSplitTransactionBuilderImpl,
   buildMergeTransactionBuilder as buildMergeTransactionBuilderImpl,
@@ -720,24 +555,12 @@ import {
 import {
   replaceRepeatedExternalBatchRow as replaceRepeatedExternalBatchRowImpl,
 } from './sc-replace-repeated-external-batch-row.js';
-import {
-  buildRepeatedExternalBatch as buildRepeatedExternalBatchImpl,
-} from './sc-build-repeated-external-batch.js';
-import {
-  resolveExternalArgs as resolveExternalArgsImpl,
-} from './sc-resolve-external-args.js';
-import {
-  sendWithoutLogicalNonce as sendWithoutLogicalNonceImpl,
-} from './sc-send-without-logical-nonce.js';
-import {
-  pushAutoResolvedExternalCall as pushAutoResolvedExternalCallImpl,
-} from './sc-with-external-call.js';
-import {
-  resolveEcrecoverComputeCoSpends as resolveEcrecoverComputeCoSpendsImpl,
-} from './sc-resolve-ecrecover-co-spends.js';
-import {
-  resolveStatefulKeccakLoop as resolveStatefulKeccakLoopImpl,
-} from './sc-resolve-stateful-keccak-loop.js';
+import { buildRepeatedExternalBatch as buildRepeatedExternalBatchImpl } from './sc-build-repeated-external-batch.js';
+import { resolveExternalArgs as resolveExternalArgsImpl } from './sc-resolve-external-args.js';
+import { sendWithoutLogicalNonce as sendWithoutLogicalNonceImpl } from './sc-send-without-logical-nonce.js';
+import { pushAutoResolvedExternalCall as pushAutoResolvedExternalCallImpl } from './sc-with-external-call.js';
+import { resolveEcrecoverComputeCoSpends as resolveEcrecoverComputeCoSpendsImpl } from './sc-resolve-ecrecover-co-spends.js';
+import { resolveStatefulKeccakLoop as resolveStatefulKeccakLoopImpl } from './sc-resolve-stateful-keccak-loop.js';
 import {
   resolveKeccakComputeCoSpends as resolveKeccakComputeCoSpendsImpl,
   type ResolveKeccakProbeCtx,
@@ -751,9 +574,7 @@ import {
 import {
   refreshProjectedExternalReturns as refreshProjectedExternalReturnsImpl,
 } from './sc-refresh-projected-external-returns.js';
-import {
-  evaluateExternalExpression as evaluateExternalExpressionImpl,
-} from './sc-evaluate-external-expression.js';
+import { evaluateExternalExpression as evaluateExternalExpressionImpl } from './sc-evaluate-external-expression.js';
 import {
   resolveExternalExpressionReturns as resolveExternalExpressionReturnsImpl,
 } from './sc-resolve-external-expression-returns.js';
@@ -763,17 +584,10 @@ import {
   messageBusReturnBlobFromTransaction as messageBusReturnBlobFromTransactionImpl,
   messageBusEventCommitmentsFromTransaction as messageBusEventCommitmentsFromTransactionImpl,
 } from './sc-derive-return-blob.js';
-import {
-  buildNamespaces as buildNamespacesImpl,
-} from './sc-build-namespaces.js';
-import {
-  deriveReturnValue as deriveReturnValueImpl,
-} from './sc-derive-return-value.js';
+import { buildNamespaces as buildNamespacesImpl } from './sc-build-namespaces.js';
+import { deriveReturnValue as deriveReturnValueImpl } from './sc-derive-return-value.js';
 import { resolveSelectedDynamicWrites } from './selected-dynamic-writes.js';
-import {
-  applyOverrides as applyOverridesImpl,
-  reApplyOverrides as reApplyOverridesImpl,
-} from './sc-apply-overrides.js';
+import { applyOverrides as applyOverridesImpl, reApplyOverrides as reApplyOverridesImpl } from './sc-apply-overrides.js';
 import {
   batchRaw as batchRawImpl,
   mergePublishedMessageBusHandlerMetadata,
@@ -787,13 +601,8 @@ export {
   assertAcyclicExternalCallPath,
   visitExpandingExternalCallGroups,
 } from './external-call-graph-frontier.js';
-import {
-  buildStatefulFunctionCall as buildStatefulFunctionCallImpl,
-} from './sc-build-stateful-function-call.js';
-import {
-  authenticateKernelReadCarrierRoute,
-  kernelReadCarrierCapabilityForSelectedRoute,
-} from './kernel-read-carrier-route.js';
+import { buildStatefulFunctionCall as buildStatefulFunctionCallImpl } from './sc-build-stateful-function-call.js';
+import { kernelReadCarrierCapabilityForSelectedRoute } from './kernel-read-carrier-route.js';
 export {
   authenticateKernelReadCarrierRoute,
   canonicalKernelCarrierEnvelopeRows,
@@ -801,46 +610,17 @@ export {
   kernelReadCarrierCapabilityForSelectedRoute,
   kernelReadCarrierRouteIsCurrent,
 } from './kernel-read-carrier-route.js';
-import {
-  decodeScriptNumber,
-  extractCommitmentMapFromTrace,
-  extractCommitmentsFromTrace,
-  extractFailingValueChunkCommitments,
-  extractPendingReturnCommitment,
-  extractPendingReturnCommitmentAtOutput,
-  findRedeemScriptStart,
-  isDynamicChunkCommitmentAtIndex,
-} from './trace-commitment-helpers.js';
-import {
-  deriveRouteValueChunks,
-  extractAllRouteValueChunks,
-  extractFailingP2sh32OutputPin,
-  extractRouteChunkPin,
-  isValueChunkOutputPin,
-  lastExtractedComputedValue,
-  valueChunkOutputWitnessCarrier,
-} from './route-value-chunk-helpers.js';
-import {
-  compactFaithfulProbeTrace,
-  evaluateProbeTrace,
-} from './faithful-probe-trace.js';
+import { decodeScriptNumber } from './trace-commitment-helpers.js';
+import './route-value-chunk-helpers.js';
+import './faithful-probe-trace.js';
 export {
   compactFaithfulProbeTrace,
   evaluateBoundedProbeCandidates,
   evaluateProbeTrace,
   MAX_BOUNDED_PROBE_STATES,
 } from './faithful-probe-trace.js';
-import {
-  extractVerifiedValuesFromTrace,
-} from './trace-verified-value-helpers.js';
-import {
-  isCanonicalEvmScalarReturnVector,
-  probeRequireMessage,
-  probeRequireStatement,
-  decodeEvmScalarReturn,
-  decodeEvmReturnValue,
-  decodeAuthenticatedProducerResultVector,
-} from './external-return-encoding.js';
+import './trace-verified-value-helpers.js';
+import { isCanonicalEvmScalarReturnVector, probeRequireMessage } from './external-return-encoding.js';
 export {
   isCanonicalEvmScalarReturnVector,
   probeRequireMessage,
@@ -849,9 +629,7 @@ export {
   decodeEvmReturnValue,
   decodeAuthenticatedProducerResultVector,
 } from './external-return-encoding.js';
-import {
-  type RouteProbeObservation,
-} from './route-probe-progress.js';
+import { type RouteProbeObservation } from './route-probe-progress.js';
 
 function functionArgumentValuesEqual(left: unknown, right: unknown): boolean {
   if (left === right) return true;

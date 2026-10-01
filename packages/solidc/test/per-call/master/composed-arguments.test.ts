@@ -4,8 +4,8 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import {
-  argsHash, asmToScript, concatBytes, encodeArgumentList, encodeIntegerValue, encodePushdataValue, encodeWitnessBlock,
-  scriptToBytecode, sha256, validatorAddress,
+  argsHash, asmToScript, concatBytes, encodeArgumentList, encodeCallDataArguments, encodeIntegerValue,
+  encodePushdataValue, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress,
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
@@ -121,6 +121,33 @@ const ARRAY_LITERAL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Callee { function take(uint16[2] xs) { require(xs[0] > 0); } }'
   + ' contract Caller { function callIt() {'
   + `   ICallee(0x${toHex(ADDRESS_CALLEE)}).take([uint16(tx.inputs.length), uint16(7)]); require(true); } }`;
+
+/**
+ * A local the caller computes, read by the struct it builds at the site and again by the call's next argument.
+ *
+ * The digest visits the arguments last first, while the local's final use is marked in source order, in the later
+ * argument; the site keeps the local for the earlier argument's read rather than consuming it at the marked one.
+ */
+const SHARED_N = 8n;
+const SHARED_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' struct Rec { string tag; int n; }'
+  + ' interface ICallee { function pay(Rec r, int fee); }'
+  + ' contract Callee { function pay(Rec r, int fee) { require(r.n == fee); } }'
+  + ' contract Caller { function callIt(int n) {'
+  + '   int fee = n + 1;'
+  + `   ICallee(0x${toHex(ADDRESS_CALLEE)}).pay(Rec("hi", fee), fee); require(true); } }`;
+
+/** The call data `pay` carries for a struct member and a fee, in the one encoding the wire allows. */
+const sharedPushes = (member: bigint, fee: bigint): Uint8Array =>
+  encodeCallDataArguments([structBlob(member), encodeIntegerValue(fee)]);
+
+/** The same local read by two scalar arguments, the later one the marked final use. */
+const SHARED_SCALAR_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function pair(int a, int b); }'
+  + ' contract Callee { function pair(int a, int b) { require(a == b + 1); } }'
+  + ' contract Caller { function callIt(int n) {'
+  + '   int fee = n + 1;'
+  + `   ICallee(0x${toHex(ADDRESS_CALLEE)}).pair(fee + 1, fee); require(true); } }`;
 
 /** A call passing an external function pointer, which is a pair and not the one item a digest is computed from. */
 const POINTER_SOURCE = 'pragma solidcash ^0.13.0;'
@@ -324,6 +351,38 @@ describe('a call whose run-time argument is a composite the caller builds', () =
 
   it('still refuses a call passing an external function pointer, which is not one encodable item', () => {
     expect(refusalMessageOf(POINTER_SOURCE)).toContain('cannot encode into one push');
+  });
+});
+
+describe('a call whose arguments read one run-time local twice', () => {
+  const fee = SHARED_N + 1n;
+  const options = { callerEntryPushes: entryPush(SHARED_N) };
+
+  it('is accepted when both reads are the values the record and the callee carry', () => {
+    const pushes = sharedPushes(fee, fee);
+    expect(compositeAccepted(SHARED_SOURCE, 'pay', pushes, options, CALLER_INDEX)).toBe(true);
+    expect(compositeAccepted(SHARED_SOURCE, 'pay', pushes, options, CALLEE_INDEX)).toBe(true);
+    expect(compositeAccepted(SHARED_SOURCE, 'pay', pushes, options, VALIDATOR_INDEX)).toBe(true);
+  });
+
+  it('is refused when the record carries another value in either position', () => {
+    const selector = selectorOf(compileStringMulti(SHARED_SOURCE, { composition: 'per-call' }), 'pay');
+    for (const [member, recorded] of [[fee + 1n, fee], [fee, fee + 1n]] as const) {
+      expect(compositeAccepted(SHARED_SOURCE, 'pay', sharedPushes(fee, fee), {
+        ...options, recordedArgsHash: argsHash(selector, sharedPushes(member, recorded)),
+      }, CALLER_INDEX)).toBe(false);
+    }
+  });
+
+  it('is accepted for two scalar arguments, and refused for a record that swaps them', () => {
+    const pushes = encodeCallDataArguments([encodeIntegerValue(fee + 1n), encodeIntegerValue(fee)]);
+    expect(compositeAccepted(SHARED_SCALAR_SOURCE, 'pair', pushes, options, CALLER_INDEX)).toBe(true);
+    expect(compositeAccepted(SHARED_SCALAR_SOURCE, 'pair', pushes, options, CALLEE_INDEX)).toBe(true);
+    const selector = selectorOf(compileStringMulti(SHARED_SCALAR_SOURCE, { composition: 'per-call' }), 'pair');
+    const swapped = encodeCallDataArguments([encodeIntegerValue(fee), encodeIntegerValue(fee + 1n)]);
+    expect(compositeAccepted(SHARED_SCALAR_SOURCE, 'pair', pushes, {
+      ...options, recordedArgsHash: argsHash(selector, swapped),
+    }, CALLER_INDEX)).toBe(false);
   });
 });
 

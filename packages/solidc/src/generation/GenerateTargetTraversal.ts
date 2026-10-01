@@ -3852,37 +3852,73 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The arguments are folded in from the deepest one, so they are visited in wire order and each value's push
     // is appended to what is already there. Evaluating a shorter-lived value first leaves the same frame behind.
     const siteArguments = site.arguments ?? [];
-    for (let index = siteArguments.length - 1; index >= 0; index -= 1) {
-      const argument = siteArguments[index]!;
-      if (argument.kind === 'constant') {
-        // The digest concatenates the push the wire carries, framing byte included, so a compile-time value's push
-        // is left on the stack as data rather than run as a script push: executing it would consume the framing
-        // byte, and the digest would carry the bare value. The run-time branch's canonical fragment leaves its own
-        // push the same way.
-        this.emit(bytecodeToScript(encodeDataPush(encodeArgumentPayload(argument.bytes))), loc);
-        this.pushToStack('(value)');
-      } else {
-        const parameter = node.parameters[index];
-        if (parameter === undefined) {
-          throw new SolidcDiagnosticError(
-            'PER_CALL_CODEGEN_UNAVAILABLE',
-            `the per-call call site '${node.interfaceName}.${node.functionName}' records a run-time argument `
-            + `at position ${index}, which the source does not pass`,
-            { interface: node.interfaceName, function: node.functionName, position: index },
-          );
+    const kept = this.keepVariablesReadAcrossArguments(siteArguments.map((argument, index) =>
+      (argument.kind === 'constant' ? undefined : node.parameters[index])));
+    try {
+      for (let index = siteArguments.length - 1; index >= 0; index -= 1) {
+        const argument = siteArguments[index]!;
+        if (argument.kind === 'constant') {
+          // The digest concatenates the push the wire carries, framing byte included, so a compile-time value's
+          // push is left on the stack as data rather than run as a script push: executing it would consume the
+          // framing byte, and the digest would carry the bare value. The run-time branch's canonical fragment leaves
+          // its own push the same way.
+          this.emit(bytecodeToScript(encodeDataPush(encodeArgumentPayload(argument.bytes))), loc);
+          this.pushToStack('(value)');
+        } else {
+          const parameter = node.parameters[index];
+          if (parameter === undefined) {
+            throw new SolidcDiagnosticError(
+              'PER_CALL_CODEGEN_UNAVAILABLE',
+              `the per-call call site '${node.interfaceName}.${node.functionName}' records a run-time argument `
+              + `at position ${index}, which the source does not pass`,
+              { interface: node.interfaceName, function: node.functionName, position: index },
+            );
+          }
+          // The value the code computes replaces itself with the push the wire carries, so the frame is unchanged.
+          this.markArrayArgumentBlobEncoded(parameter);
+          this.visit(parameter);
+          this.emit(bytecodeToScript(canonicalPushScript(argument.numeric)), loc);
         }
-        // The value the code computes replaces itself with the push the wire carries, so the frame is unchanged.
-        this.markArrayArgumentBlobEncoded(parameter);
-        this.visit(parameter);
-        this.emit(bytecodeToScript(canonicalPushScript(argument.numeric)), loc);
+        this.emit(Op.OP_CAT, loc);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
       }
-      this.emit(Op.OP_CAT, loc);
-      this.popFromStack(2);
-      this.pushToStack('(value)');
+    } finally {
+      for (const [name, use] of kept) this.currentFunction.opRolls.set(name, use);
     }
     this.emit(Op.OP_SHA256, loc);
     this.popFromStack();
     this.pushToStack('(value)');
+  }
+
+  /**
+   * Unmarks the final use of each variable an argument visited after it still reads, returning the marks taken.
+   *
+   * The digest visits the run-time arguments last first, while a variable's final use is marked in source order, so
+   * a final use in a later argument would consume the variable before an earlier argument reads it. Picking that use
+   * instead leaves the variable on the stack for its scope's cleanup to drop, as a final use inside a branch does.
+   * `parameters` holds the argument the digest visits at each position, and nothing for a compile-time one; any
+   * other final use keeps its mark, so a call that compiled before compiles to the same code.
+   */
+  private keepVariablesReadAcrossArguments(
+    parameters: readonly (ExpressionNode | undefined)[],
+  ): ReadonlyMap<string, IdentifierNode> {
+    const firstReader = new Map<string, number>();
+    const finalUses: { readonly use: IdentifierNode; readonly position: number }[] = [];
+    parameters.forEach((parameter, position) => {
+      walkInvocationAst(parameter, (child) => {
+        if (!(child instanceof IdentifierNode)) return;
+        if (!firstReader.has(child.name)) firstReader.set(child.name, position);
+        if (this.currentFunction.opRolls.get(child.name) === child) finalUses.push({ use: child, position });
+      });
+    });
+    const kept = new Map<string, IdentifierNode>();
+    for (const { use, position } of finalUses) {
+      if (firstReader.get(use.name)! >= position) continue;
+      kept.set(use.name, use);
+      this.currentFunction.opRolls.delete(use.name);
+    }
+    return kept;
   }
 
   /**

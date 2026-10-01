@@ -890,17 +890,19 @@ function derivationRefusal(
 }
 
 describe('the obstacles this flow replica works around', () => {
-  it('pins an inline struct literal built from a run-time member: the compiler cannot emit its digest', () => {
-    // A struct argument is admitted when it is bound to a local first, and when it is written inline from
-    // compile-time values. Built inline from a run-time member, the compiler stops before code generation.
+  it('serves an inline struct literal built from a run-time member the next argument reads too', () => {
+    // The site's digest visits the arguments last first, so the fee's final use is the second argument's read; the
+    // site keeps the fee for the struct's read as well. The machine cases are in
+    // `solidc/test/per-call/master/composed-arguments.test.ts`, and the settled edge in `edges/struct-argument-edge`.
     const source = 'pragma solidcash ^0.13.0;'
       + ' struct Rec { string tag; int amount; }'
       + ' interface IStore { function getFee() view returns (int); }'
       + ' interface IEscrow { function pay(Rec r, int fee); }'
       + ` contract Root { function run() { int fee = IStore(0x${hexOf(STORE_ADDRESS)}).getFee(); `
       + `   IEscrow(0x${hexOf(ESCROW_ADDRESS)}).pay(Rec("tag", fee), fee); require(true); } }`;
-    expect(() => compileStringMulti(source, { composition: 'per-call' }))
-      .toThrow(/Expected variable 'fee' does not exist on the stack/);
+    const root = compileStringMulti(source, { composition: 'per-call' }).Root!;
+    expect((root.composition as { readonly refusedEntries?: readonly unknown[] }).refusedEntries ?? [])
+      .toStrictEqual([]);
   });
 
   it('settles the one-call pull: one frame writes its record and both balance nodes', () => {

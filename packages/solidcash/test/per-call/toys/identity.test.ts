@@ -1,15 +1,29 @@
-import { FrameKind, buildPushdataCommitment, bytesToHex, type RecordEntry } from '@solidcash/utils';
+import {
+  FrameKind, buildPushdataCommitment, bytesToHex, encodeEventCommitment, parsePushdataCommitment, sha256,
+  type Artifact, type RecordEntry,
+} from '@solidcash/utils';
 import { buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue } from '@solidcash/utils';
-import { encodeDataPush } from '@bitauth/libauth';
+import { binToHex, encodeDataPush, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { scriptToLockingBytecode } from '../../../src/utils.js';
-import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { decodeEntryCommitment, encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import {
-  USER_LOCK, compileAndDeploy, composeAndDerive, entryName, hexOf, master, masterInput, rootOf, seededAddress,
-  selectorOf, token, userInput, validatorFor, type DeployedContract,
+  deployMaster, eventLockingBytecode, readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
+} from '../../../src/per-call/deploy/index.js';
+import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
+import { Contract, SignatureTemplate } from '../../../src/index.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
+import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { deploymentStateValues, planHopExternalCalls } from '../../../src/per-call/proxy/external-calls.js';
+import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
+import { alicePkh, alicePriv, alicePub, bobPkh, bobPriv } from '../../fixture/vars.js';
+import {
+  USER_LOCK, VALIDATOR_PROGRAM, compileAndDeploy, composeAndDerive, entryName, fundShippedFacets, hexOf, master,
+  masterInput, rootOf, seededAddress, selectorOf, token, userInput, validatorFor, type DeployedContract,
 } from '../shapes/harness.js';
 import type { CompositionDraftPlan } from '../../../src/per-call/composer/index.js';
 import {
@@ -603,6 +617,255 @@ describe('Escrow.refund reached through Market.refund sees the root user in tx.o
     const refusal = refusalOf(() => marketCallsEscrow('require(msg.sender == address(this));'));
     expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
     expect(refusal.message).toMatch(/master "escrow-1" of Escrow.refund\(\) filled no witness/);
+  });
+});
+
+/**
+ * The refund half on the shipped path. `Market` sits behind a generated proxy and `Escrow` beside it, both deployed
+ * by the shipped deployment, and the user's `Market.refund()` runs through the shipped proxy hop, so the frames and
+ * the outputs are the ones the path plans. `Escrow.refund()` admits only the payer it was built for, by `tx.origin`,
+ * and its refund lands as the `Refunded` event naming the origin it saw; `Market` counts the refund in its record.
+ *
+ * Known wall: the same refund recorded in the escrow's own mapping under `tx.origin` (`refundRecorded`) is planned
+ * under the frame's sender instead. Owner: the SDK hop (`proxy/entry-writes.ts`, `resolveHopKey`, which answers a
+ * key the artifact names as `tx.origin` with the frame's caller lock), so the master, which derives the slot from
+ * the frame's origin, refuses the node the plan states.
+ */
+describe('Escrow.refund reached through Market.refund on the shipped path: tx.origin admits the payer', () => {
+  /** A 32-byte category or txid with varied bytes, taken from its label. */
+  const idOf = (label: string): string => bytesToHex(sha256(utf8ToBin(`identity refund ${label}`)));
+  const REFUND_ESCROW_CATEGORY = idOf('escrow');
+  const MARKET_IMPL_CATEGORY = idOf('market implementation');
+  const MARKET_PROXY_CATEGORY = idOf('market proxy');
+  const PAYER = encodeLockingBytecodeP2pkh(alicePkh);
+  const OTHER = encodeLockingBytecodeP2pkh(bobPkh);
+  const REFUND = 40n;
+  const REFUND_SOURCE = 'pragma solidcash ^0.13.0;'
+    + ' interface IEscrow { function refund(); function refundRecorded(); }'
+    + ' contract Escrow {'
+    + '   address public payer;'
+    + '   mapping(address => int) refunded;'
+    + '   event Refunded(address to, int amount);'
+    + '   constructor(address p) { this.payer = p; }'
+    + '   function refund() {'
+    + '     require(tx.origin == this.payer, "not the payer");'
+    + `     emit Refunded(tx.origin, ${REFUND});`
+    + '   }'
+    + '   function refundRecorded() {'
+    + '     require(tx.origin == this.payer, "not the payer");'
+    + `     this.refunded[tx.origin] = ${REFUND};`
+    + '   }'
+    + ' }'
+    + ' contract Market {'
+    + '   address public implementation;'
+    + '   address public escrow;'
+    + '   int public refunds;'
+    + '   function initialize(address e) { this.escrow = e; require(true); }'
+    + '   function refund() { this.refunds = this.refunds + 1; IEscrow(this.escrow).refund(); }'
+    + '   function refundRecorded() { this.refunds = this.refunds + 1; IEscrow(this.escrow).refundRecorded(); }'
+    + ' }';
+
+  /** A coin a genesis or a call is funded from; a genesis's txid becomes the category it mints. */
+  const funding = (txid: string): { txid: string; vout: number; satoshis: bigint } =>
+    ({ txid, vout: 0, satoshis: 500_000n });
+
+  /** The escrow, then the market behind its proxy pointing at it, and the chain as it stood when both were done. */
+  interface Deployed {
+    readonly network: MockNetworkProvider;
+    readonly escrow: Artifact;
+    readonly market: Artifact;
+    readonly marketProxy: Artifact;
+    readonly proxyCategoryId: string;
+    readonly implementationCategoryId: string;
+    readonly proxyAddress: Uint8Array;
+    readonly changeAddress: string;
+    readonly snapshot: SnapshotRestorer;
+  }
+
+  let deployedRun: Promise<Deployed> | undefined;
+
+  /** One deployment serves both cases; each rewinds the chain to it first. */
+  async function deployed(): Promise<Deployed> {
+    deployedRun ??= (async (): Promise<Deployed> => {
+      const artifacts = compileStringMulti(REFUND_SOURCE, { composition: 'per-call' });
+      const escrow = artifacts.Escrow!;
+      const market = artifacts.Market!;
+      const marketProxy = buildProxyArtifact(market);
+      const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+      const signature = new SignatureTemplate(alicePriv);
+      const wallet = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
+      const funder = wallet.unlock.spend(alicePub, signature);
+      await fundShippedFacets(network);
+      const escrowCoin = funding(REFUND_ESCROW_CATEGORY);
+      await network.addUtxo(wallet.address, escrowCoin);
+      await deployStatefulContract(escrow, [PAYER], {
+        fundingUtxo: escrowCoin, funder, changeAddress: wallet.address, provider: network,
+      });
+      for (const txid of [MARKET_IMPL_CATEGORY, MARKET_PROXY_CATEGORY]) {
+        await network.addUtxo(wallet.address, funding(txid));
+      }
+      const initCoin = funding(idOf('initialize coin'));
+      await network.addUtxo(binToHex(PAYER), initCoin);
+      const deployment = await deployPerCallProxy({
+        provider: network,
+        implementationArtifact: market,
+        proxyArtifact: marketProxy,
+        implementationDeploy: { fundingUtxo: funding(MARKET_IMPL_CATEGORY), funder, changeAddress: wallet.address },
+        proxyDeploy: { fundingUtxo: funding(MARKET_PROXY_CATEGORY), funder, changeAddress: wallet.address },
+        initialize: {
+          functionName: 'initialize',
+          args: [deployMaster(escrow, hexToBin(REFUND_ESCROW_CATEGORY), VALIDATOR_PROGRAM).address],
+        },
+        callerLockingBytecode: PAYER,
+        callerFunding: { utxo: initCoin, funder: signature.unlockP2PKH(), changeAddress: wallet.address },
+        vm: compositionMachine(),
+      });
+      expect(deployment.initialize.broadcast).toBeDefined();
+      return {
+        network, escrow, market, marketProxy,
+        proxyCategoryId: deployment.proxy.categoryId,
+        implementationCategoryId: deployment.implementation.categoryId,
+        proxyAddress: deployment.proxy.address,
+        changeAddress: wallet.address,
+        snapshot: await network.takeSnapshot(),
+      };
+    })();
+    const shared = await deployedRun;
+    await shared.snapshot.restore();
+    return shared;
+  }
+
+  interface Entered {
+    readonly coin: { txid: string; vout: number; satoshis: bigint };
+    readonly lock: Uint8Array;
+    readonly call: Promise<PerCallProxyCallResult>;
+  }
+
+  /** Funds a coin of the payer's or the other user's and runs one `Market` entry through the shipped proxy hop. */
+  async function enter(run: Deployed, caller: 'payer' | 'other', functionName = 'refund'): Promise<Entered> {
+    const lock = caller === 'payer' ? PAYER : OTHER;
+    const coin = funding(idOf(`${caller} ${functionName} coin`));
+    await run.network.addUtxo(binToHex(lock), coin);
+    const call = callPerCallProxyEntry({
+      provider: run.network,
+      implementationArtifact: run.market,
+      proxyArtifact: run.marketProxy,
+      proxyCategoryId: run.proxyCategoryId,
+      implementationCategoryId: run.implementationCategoryId,
+      functionName,
+      args: [],
+      externals: { IEscrow: { artifact: run.escrow, categoryId: REFUND_ESCROW_CATEGORY } },
+      callerUtxo: coin,
+      callerLockingBytecode: lock,
+      funder: new SignatureTemplate(caller === 'payer' ? alicePriv : bobPriv).unlockP2PKH(),
+      changeAddress: run.changeAddress,
+      vm: compositionMachine(),
+    });
+    return { coin, lock, call };
+  }
+
+  /** The payload of every `Refunded` event the chain holds at the escrow's event covenant. */
+  async function refundEvents(run: Deployed): Promise<readonly string[]> {
+    const event = run.escrow.events!.find((definition) => definition.name === 'Refunded')!;
+    const lock = eventLockingBytecode(hexToBin(REFUND_ESCROW_CATEGORY), event.signature, false);
+    return (await run.network.getUtxosForLockingBytecode(lock)).map((utxo) => utxo.token!.nft!.commitment);
+  }
+
+  /** The payload a `Refunded` event naming `to` carries. */
+  function refundPayload(run: Deployed, to: Uint8Array): string {
+    const event = run.escrow.events!.find((definition) => definition.name === 'Refunded')!;
+    return bytesToHex(encodeEventCommitment(event.parameters, [to, REFUND]));
+  }
+
+  /** The nodes of the escrow's `refunded` mapping, the head left out, as slots. */
+  async function refundedSlots(run: Deployed): Promise<readonly string[]> {
+    const pools = await readPerCallDeployment(run.network, REFUND_ESCROW_CATEGORY, run.escrow.stateLayout!);
+    return (pools.nodesByCollection.get('refunded') ?? [])
+      .map((utxo) => bytesToHex(decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)).slot))
+      .filter((slot) => slot !== bytesToHex(new Uint8Array(32)));
+  }
+
+  /** The market's refund count, as its proxy's records hold it. */
+  async function refundsCounted(run: Deployed): Promise<unknown> {
+    const layout = run.marketProxy.stateLayout!;
+    const pools = await readPerCallDeployment(run.network, run.proxyCategoryId, layout);
+    return (Object.assign({}, ...pools.records.map((record, nftIndex) =>
+      parsePushdataCommitment(record.token!.nft!.commitment, layout, nftIndex))) as Record<string, unknown>).refunds;
+  }
+
+  /** Every outpoint the two deployments hold and the chain's tip, which a refused call leaves exactly as they were. */
+  async function chainView(run: Deployed): Promise<{ readonly tip: number | undefined; readonly outpoints: string[] }> {
+    const held = await Promise.all([REFUND_ESCROW_CATEGORY, run.proxyCategoryId, run.implementationCategoryId]
+      .map((categoryId) => run.network.getUtxosByTokenCategory(categoryId)));
+    return {
+      tip: run.network.indexer.getTip()?.height,
+      outpoints: held.flat().map((utxo) => `${utxo.txid}:${utxo.vout}`).sort(),
+    };
+  }
+
+  it('admits the payer: Escrow sees the root user in tx.origin, and the refund lands on chain', async () => {
+    // The EVM keeps tx.origin unchanged across calls, so Escrow.refund sees the payer who signed although its
+    // msg.sender is Market: the require holds and the refund is emitted to the payer. The same answer here: the
+    // escrow's frame states Market's proxy as its sender and the payer's own input as its origin, every input is
+    // accepted, and the refund event and Market's count are read back on chain.
+    const run = await deployed();
+    const result = await (await enter(run, 'payer')).call;
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['Escrow.refund()', 'Market.refund()', 'MarketProxy.__fallback()']);
+    const nested = result.draft.blockOf('callee-master-1');
+    expect(bytesToHex(nested.sender)).toBe(bytesToHex(run.proxyAddress));
+    expect(bytesToHex(result.sourceOutputs[nested.originRef]!.lockingBytecode)).toBe(bytesToHex(PAYER));
+    expect(await refundEvents(run)).toStrictEqual([refundPayload(run, PAYER)]);
+    expect(await refundsCounted(run)).toBe(1n);
+  });
+
+  it('refuses another user with the escrow\'s own reason, and nothing is broadcast', async () => {
+    // The EVM reverts: tx.origin is the user who signed, not the payer, so Escrow.refund's require fails with its
+    // own message and Market's write is undone with it. The shipped hop reports the escrow's frame and that message,
+    // and the chain keeps every outpoint, the user's coin and both contracts' state.
+    const run = await deployed();
+    const before = await chainView(run);
+    const entered = await enter(run, 'other');
+    await expect(entered.call).rejects.toThrow(
+      /the call's callee "Escrow\.refund\(\)" did not settle through the proxy: frame "callee-master-1" .*not the payer/,
+    );
+    expect((await run.network.getUtxosForLockingBytecode(entered.lock))
+      .some((utxo) => utxo.txid === entered.coin.txid && utxo.vout === entered.coin.vout)).toBe(true);
+    expect(await chainView(run)).toStrictEqual(before);
+    expect(await refundEvents(run)).toStrictEqual([]);
+    expect(await refundsCounted(run)).toBe(0n);
+  });
+
+  it('known wall: a refund recorded under tx.origin is planned under the frame\'s sender, and refused', async () => {
+    // The EVM admits the payer and records refunded[payer]. Owner: the SDK hop. The artifact publishes the key as
+    // `{ kind: 'msgSender', senderOp: 'tx.origin' }`, and the hop answers every such key with the frame's caller
+    // (`proxy/entry-writes.ts`, `resolveHopKey`, handed the calling frame's address by `calleeEntryWrites`), here
+    // Market's proxy, while the master derives the slot from the frame's origin, the payer: the escrow's frame
+    // computes a node the plan did not link, and refuses.
+    const run = await deployed();
+    const layout = run.marketProxy.stateLayout!;
+    const plan = await planHopExternalCalls({
+      provider: run.network, artifact: run.market, functionName: 'refundRecorded', args: [],
+      externals: { IEscrow: { artifact: run.escrow, categoryId: REFUND_ESCROW_CATEGORY } },
+      validatorProgram: VALIDATOR_PROGRAM,
+      stateValues: deploymentStateValues(layout, run.proxyCategoryId,
+        await readPerCallDeployment(run.network, run.proxyCategoryId, layout)),
+      selfAddress: run.proxyAddress, senderAddress: PAYER,
+    });
+    const planned = plan.callees[0]!.entryWrites!.reachWrites.flatMap((write) => write.targets)
+      .map((target) => bytesToHex(target.slot));
+    expect(planned).toStrictEqual([bytesToHex(keyToSlotMulti([run.proxyAddress]))]);
+    expect(planned).not.toContain(bytesToHex(keyToSlotMulti([PAYER])));
+
+    const before = await chainView(run);
+    const entered = await enter(run, 'payer', 'refundRecorded');
+    await expect(entered.call).rejects.toThrow(new RegExp('the call\'s callee "Escrow\\.refundRecorded\\(\\)" did '
+      + 'not settle through the proxy: frame "callee-master-1" .*no source message'));
+    expect(await chainView(run)).toStrictEqual(before);
+    expect(await refundedSlots(run)).toStrictEqual([]);
   });
 });
 

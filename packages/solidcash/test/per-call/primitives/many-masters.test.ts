@@ -288,8 +288,9 @@ describe('three contracts entered eight times each in one transaction', () => {
       artifacts.Hub!, artifacts.Alpha!, artifacts.Beta!, artifacts.Gamma!,
     ], [rootOf('Hub', 'run', HUB_MASTER)]);
 
-      // The masters the layout places: twenty-four ledger masters, the hub, the validator and three records.
-      expect(outcome.verdicts.length).toBe(24 + 1 + 1 + 3);
+      // The inputs the layout places: twenty-four ledger masters, the hub, the validator, the facet it binds and
+      // three records.
+      expect(outcome.verdicts.length).toBe(24 + 1 + 1 + 1 + 3);
       expect(rejectedOf(outcome)).toStrictEqual([]);
       // Each contract's record carries the count its own eight frames added one to.
       for (const ledger of ledgers) {

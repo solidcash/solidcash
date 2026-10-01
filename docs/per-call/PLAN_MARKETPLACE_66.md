@@ -1066,7 +1066,21 @@ risk. Take the slices in order, each with its own tests.
     the body makes settles on the shipped composer with every input accepted (a plan naming the skipped turn's index
     stalls), so the owner is the SDK hop planner (`proxy/external-calls.ts`, `occurrenceCountOf`). The varying-key
     write beside `publishJobEvent`'s loop is PW3's (`conformance/loop-upsert-settlement.test.ts`).
-  - [ ] Row 5: Revert after state-changing calls (7 checks).
+  - [ ] Row 5: Revert after state-changing calls (7 checks). Guarded by `conformance/revert-after-calls-rows.test.ts`:
+    the seven checks sit in three entry shapes, each an entry of a desk behind a generated proxy calling a plain
+    ledger - two method length checks and a membership read after a token approve, two state checks after a store
+    write, and a text check of the entry's own and a score check inside the next callee after a payout that moves two
+    balances. Six are refused through the shipped proxy hop with the reverting frame's own reason and line, the
+    entry's derivation stopping only past the calls its source makes first; nothing is broadcast and no record,
+    mapping node, event output or balance moves; each shape's accepted control settles beside them, and a custom
+    error raised inside the pull after the approve is reported by the pull's frame. Open: the seventh, a state check
+    whose entry would next call a callee that refuses in that state (the desk not open, then the release of escrow 0),
+    reports the callee's revert, which the EVM never reaches, because the settle loop settles every callee before it
+    derives the entry (`proxy/deploy.ts`); and a callee's custom error reaches the thrown refusal without its
+    `errorArgs`, which the shipped reporter reads from the refused draft. Both are pinned as known walls in the same
+    file, beside a compiler one: a ledger frame with no mapping access carries the C3 own-category mutable NFT
+    conservation (`emitOwnCategoryMutableNftConservation`), so it refuses beside a sibling frame of its contract that
+    inserts a node (a first mark beside the release).
   - [x] Row 6: Custom errors raised in a callee and re-raised by SafeERC20 assembly. Guarded by
     `conformance/custom-error-rows.test.ts`: the self-target spelling runs the SafeERC20 `_revert` shape and the
     shipped refusal report names the error, its declared parameters and the arguments it was raised with
@@ -1143,7 +1157,15 @@ risk. Take the slices in order, each with its own tests.
     served through the shipped proxy path (set, read back, delete, read back, through the shipped decoders) and
     refused by name on the direct call path, which cannot declare the run of chunk records a chunkable mapping
     value's node grows.
-  - [ ] Row 25: Deep chains, four calls below M plus proxy hops, about 24 masters.
+  - [x] Row 25: Deep chains, four calls below M plus proxy hops, about 24 masters. Guarded by
+    `conformance/deep-chain-rows.test.ts`: a root behind a generated proxy writes a store behind its own proxy twice
+    and calls a gate, which settles a vault and calls a claimer; the claimer re-enters the gate and pays one share per
+    turn through the vault into a token four calls below the root's implementation. Driven through the shipped proxy
+    hop, every input is accepted, the master count, the frames per contract, the `DELEGATE` hops and each frame's depth
+    are read off the settled draft, and the writes are read back on chain. One turn (16 masters) runs by default; five
+    turns, the row's 24 masters with the vault entered nine times, run under `PER_CALL_FULL=1` (about 25 s).
+    `primitives/many-masters.test.ts`'s twenty-four-master case does not carry the row: its masters sit one call below
+    a plain hub, with no proxy hop, composed from a hand-written plan.
   - [ ] Row 26: A multi-megabyte master script in the mock (MarketplaceV1).
 - [ ] G3 Hostile tests, one per threat (spec section 9); each must be rejected:
   - [x] T1: execute on a non-master UTXO (loose BCH at `lockA`, or a foreign minting NFT placed there).
@@ -1403,8 +1425,15 @@ risk. Take the slices in order, each with its own tests.
   - [ ] **Y7 identity.** Partly settled as of `0e70219d6`: `this.onlySelf()` passes and `this.ownerOnly()` called by
     the owner fails, both as the EVM has them; the contract-debited commitment is accepted when the body's
     `this.transfer` is reached through a self call whose target is a compile-time value. Still open: the exact
-    `sweep(t)` spelling is refused because the self-called body writes a mapping (the same wall Y2 names), and the
-    `Escrow.refund()` half is unchanged. In one contract `Tok`:
+    `sweep(t)` spelling compiles, but its self-called body's batch and the caller's read of the same node cannot share
+    one layout yet, which waits on the reserved self-call layout decision. The `Escrow.refund()` half settles
+    through the shipped proxy hop (`toys/identity.test.ts`, 2026-10-01): a user's
+    `Market.refund()` behind a generated proxy reaches `Escrow.refund()`, whose `tx.origin == payer` guard admits the
+    root user as in the EVM; the escrow's frame states the market's proxy as its sender and the payer's input as its
+    origin, and the refund's event and the market's count are read back on chain, while another user is refused with
+    the escrow's own reason and nothing is broadcast. Open beside it: the same refund recorded in the escrow's mapping
+    under `tx.origin` is planned under the frame's caller (`proxy/entry-writes.ts`, `resolveHopKey`; the SDK hop's
+    lane), pinned as a known wall in the same file. In one contract `Tok`:
     - `sweep(t)` calls `this.transfer(t, bal[address(this)])`, which must debit the contract, not the user;
     - `this.onlySelf()` passes, while `onlySelf()` called directly by a user fails;
     - `this.ownerOnly()` called by the owner fails, as in the EVM;
@@ -1437,9 +1466,16 @@ risk. Take the slices in order, each with its own tests.
     selector are kept.
 - [ ] G6 Every edge of spec section 22 is exercised by at least one named test. The map is kept in `MANIFEST.md`,
   and it is written: every catalog row with the named test that exercises its shape today, or the piece a replica
-  would need (the low-level token spelling and the value send are refused by name rather than carried; a `string`
-  crossing an edge, a struct argument, a `string[]`-carrying return and the `uint256[5]` return have no replica yet).
-  The row stays open until every edge is carried.
+  would need. The low-level token spellings lower to the typed call and value sends are carried; a `string` crossing
+  an edge, a struct argument, a `string[]`-carrying return and the `uint256[5]` return each settle as a neutral
+  replica through the shipped hop (`edges/string-argument-edge`, `struct-argument-edge`, `string-array-return-edge`,
+  `fixed-array-return-edge`). Still not carried, each pinned as a known wall with its owner: two appends to one entry
+  in one transaction (the hop, `requireSettledNodeChains`); a returned value written straight to storage, the
+  market's `job.escrowId = unicrow.pay(...)` (the compiler's write-segment publication, `perCallWriteSteps`); a loop
+  whose turns a per-turn condition skips (the hop, `occurrenceCountOf`); a callee view that reads its own dynamic
+  field, through the read path (`per-call/read/read.ts`). With no replica yet: a re-entering static read returning a
+  struct or a `uint16[5]`, and a static read of a flag a deeper frame wrote. The row stays open until every edge is
+  carried.
 - [ ] G7 Marketplace flow shapes MS1-MS10 (`MARKETPLACE_SHAPES.md`): one neutral replica each, settling (milestone
   I2b).
 

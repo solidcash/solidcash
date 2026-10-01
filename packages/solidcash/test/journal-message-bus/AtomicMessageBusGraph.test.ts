@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, type Artifact } from '@solidcash/utils';
+import {
+  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
+  type Artifact,
+  type ChildDeploymentSiteAbi,
+} from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { messageBus, SignatureTemplate } from '../../src/index.js';
 import { valueChunkEffectDomainId } from '../../src/stateful/index.js';
@@ -448,7 +452,7 @@ describe('atomic compiled invocation graph', () => {
 
     const incomplete = structuredClone(root);
     const run = incomplete.abi.find((candidate) => candidate.selector
-      === root.abi.find((candidate) => candidate.name === 'run')?.selector)!;
+      === root.abi.find((runCandidate) => runCandidate.name === 'run')?.selector)!;
     delete run.externalCalls?.[0].sourceEffectOrdinal;
     const fenced = messageBus.deriveCompiledGraphPlan({
       root: { artifact: incomplete, lockingBytecode: '51' },
@@ -670,7 +674,9 @@ describe('atomic compiled invocation graph', () => {
       new SignatureTemplate(new Uint8Array(32).fill(2)),
     ];
     const authorities = [new Uint8Array(33).fill(3), new Uint8Array(33).fill(4)];
-    const derive = (functionName: 'forward' | 'construct') => messageBus.deriveCompiledGraphPlan({
+    const derive = (
+      functionName: 'forward' | 'construct',
+    ): ReturnType<typeof messageBus.deriveCompiledGraphPlan> => messageBus.deriveCompiledGraphPlan({
       root,
       function: functionName,
       args: functionName === 'forward'
@@ -765,7 +771,7 @@ describe('atomic compiled invocation graph', () => {
       selector: string,
       inputs: { name: string; type: string }[],
       delegated = false,
-    ) => ({
+    ): NonNullable<Artifact['messageBus']> => ({
       version: 1 as const,
       selector: '53434231' as const,
       maximumRows: 2,
@@ -823,17 +829,19 @@ describe('atomic compiled invocation graph', () => {
       executionKind: 'delegate' as const,
       executorLockingBytecode: '56',
     };
-    const derive = (count: number) => messageBus.deriveCompiledGraphPlan({
-      root,
-      function: 'run',
-      args: [Uint8Array.of(0x51), payload],
-      targets: {},
-      occurrence: () => count,
-      // The root owns state at 0x52 and publishes logical identity 0x54, while its handler executes at the
-      // authenticated delegate input 0x56. An outgoing CALL uses the state owner for both address(this) and the
-      // nested callee's msg.sender; the executor remains a separate code/resource identity.
-      dynamicCall: () => ({ participant: target, function: 'approve', args: [Uint8Array.of(0x52)] }),
-    });
+    const derive = (count: number): ReturnType<typeof messageBus.deriveCompiledGraphPlan> => (
+      messageBus.deriveCompiledGraphPlan({
+        root,
+        function: 'run',
+        args: [Uint8Array.of(0x51), payload],
+        targets: {},
+        occurrence: () => count,
+        // The root owns state at 0x52 and publishes logical identity 0x54, while its handler executes at the
+        // authenticated delegate input 0x56. An outgoing CALL uses the state owner for both address(this) and the
+        // nested callee's msg.sender; the executor remains a separate code/resource identity.
+        dynamicCall: () => ({ participant: target, function: 'approve', args: [Uint8Array.of(0x52)] }),
+      })
+    );
     expect(derive(0).invocations.map((invocation) => invocation.function)).toEqual(['run']);
     const reached = derive(1);
     expect(reached.invocations.map((invocation) => invocation.function)).toEqual(['run', 'approve']);
@@ -849,7 +857,9 @@ describe('atomic compiled invocation graph', () => {
   });
 
   it('preserves exact identities for omitted conditional siblings calling the same method', () => {
-    const capability = (name: string, selector: string, inputs: { name: string; type: string }[]) => ({
+    const capability = (
+      name: string, selector: string, inputs: { name: string; type: string }[],
+    ): NonNullable<Artifact['messageBus']> => ({
       version: 1 as const,
       selector: '53434231' as const,
       maximumRows: 3,
@@ -905,7 +915,9 @@ describe('atomic compiled invocation graph', () => {
   });
 
   it('expands fixed and runtime-loop rows from one collapsed callsite', () => {
-    const capability = (name: string, selector: string, inputs: { name: string; type: string }[]) => ({
+    const capability = (
+      name: string, selector: string, inputs: { name: string; type: string }[],
+    ): NonNullable<Artifact['messageBus']> => ({
       version: 1 as const,
       selector: '53434231' as const,
       maximumRows: 8,
@@ -952,7 +964,10 @@ describe('atomic compiled invocation graph', () => {
       } as unknown as Artifact,
       lockingBytecode: '52',
     };
-    const derive = (values: bigint[]) => {
+    const derive = (values: bigint[]): {
+      planned: ReturnType<typeof messageBus.deriveCompiledGraphPlan>;
+      targets: Array<{ batchLogicalIndex?: number; occurrence: number }>;
+    } => {
       const targets: Array<{ batchLogicalIndex?: number; occurrence: number }> = [];
       const planned = messageBus.deriveCompiledGraphPlan({
         root,
@@ -1025,7 +1040,8 @@ describe('atomic compiled invocation graph', () => {
     )).toThrow(/canonical next occurrence/);
     const missingSource = compiled.map((invocation, index) => {
       if (index !== 1) return invocation;
-      const { sourceCallsiteId: _sourceCallsiteId, ...withoutSource } = invocation;
+      const withoutSource = { ...invocation };
+      delete withoutSource.sourceCallsiteId;
       return withoutSource;
     });
     expect(() => messageBus.planCompiledGraph(
@@ -1106,7 +1122,7 @@ describe('atomic compiled invocation graph', () => {
     const inputs = [{ name: 'value', type: 'int' }];
     const capability = (
       name: string, selector: string, handlerInputs: readonly { name: string; type: string }[] = inputs,
-    ) => ({
+    ): NonNullable<Artifact['messageBus']> => ({
       version: 1 as const,
       selector: '53434231' as const,
       maximumRows: 4,
@@ -2102,7 +2118,9 @@ describe('atomic compiled invocation graph', () => {
 
   it('orders and exactly covers multiple heterogeneous deployment sites in one row window', () => {
     const base = plan();
-    const site = (siteIndex: number, contractName: string, dataNftOutputCount: number) => ({
+    const site = (
+      siteIndex: number, contractName: string, dataNftOutputCount: number,
+    ): ChildDeploymentSiteAbi => ({
       siteIndex, contractName, occurrence: 'once' as const,
       genesisInputCount: 1 as const, masterOutputCount: 1 as const,
       dataNftOutputCount, totalOutputCount: 1 + dataNftOutputCount,

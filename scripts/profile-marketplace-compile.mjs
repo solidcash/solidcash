@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { compileFileMulti } from 'solidc';
+import { asmToBytecode } from '@solidcash/utils';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const hasLegacy = process.argv.includes('--legacy');
@@ -65,6 +66,13 @@ const artifacts = compileFileMulti(source, options);
 const compilerMs = performance.now() - compilerStarted;
 const artifact = artifacts[contractName];
 if (!artifact) throw new Error(`${contractName} was not emitted while compiling ${source}`);
+const redeemScriptBytes = asmToBytecode(artifact.bytecode).length;
+const deployability = artifact.messageBus?.deployability;
+if (!deployability || deployability.measuredBytecodeBytes !== redeemScriptBytes
+  || deployability.withinP2shLimit !== (redeemScriptBytes <= deployability.p2shBytecodeLimit)
+  || deployability.status !== (deployability.withinP2shLimit ? 'asserted' : 'over-budget')) {
+  throw new Error(`${contractName}: compiler deployability certificate does not match emitted redeem-script bytes`);
+}
 
 const bodyBytes = (body) => typeof body === 'string' ? body.length / 2 : 0;
 const sha256 = (value) => createHash('sha256').update(value ?? '').digest('hex');
@@ -94,7 +102,9 @@ const result = {
   source,
   declarations: compileAllDeclarations ? 'all' : contractName,
   convention: artifact.messageBus?.convention,
+  deployability,
   sizes: {
+    redeemScriptBytes,
     routeBytes: bodyBytes(artifact.functionBodies?.[artifact.messageBus?.selector ?? '']),
     fullBytes: bodyBytes(artifact.debug?.bytecode),
     functionBodiesBytes: Object.values(artifact.functionBodies ?? {})

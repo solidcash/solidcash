@@ -99,8 +99,14 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   (19,367 route bytes, 262,494 full debug bytes, identical route/full/metadata hashes, zero caught compiler
   attempts; compiler times 8.15s and 7.94s). One fresh UnicrowClaim kernel compile produced a 2,640-byte route
   with zero caught attempts. The frozen beta manifest still pins 12,102 and 2,918 route bytes respectively, so
-  its cold-baseline comparison is stale; do not repin it from a partial sample. Marketplace remains over the
-  10,000-byte P2SH route ceiling. No legacy-mode or complete cold-matrix comparison was run.
+  its cold-baseline comparison is stale; do not repin it from a partial sample. A separate legacy Marketplace
+  sample measured a 59,627-byte route but was not repeated for deterministic comparison. The cold profiler now
+  verifies the compiler's certificate against assembled redeem-script bytes: current kernel certificates report
+  264,015 bytes for MarketplaceV1 and 16,904 for UnicrowClaim, both over the 10,000-byte P2SH limit. The old
+  manifest's route-only `deployability` field falsely asserted UnicrowClaim deployment; it is now explicitly a
+  route-size screen, which cannot establish full-contract deployability. Manifest-only static validation passes
+  without checking source fingerprints or running tests or cold compiles. The complete cold matrix and beta gate
+  remain unrun.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

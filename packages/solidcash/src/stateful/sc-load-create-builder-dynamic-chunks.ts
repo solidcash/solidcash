@@ -5,9 +5,6 @@
 
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import {
-  buildAnonymousEventNftCovenantScript,
-  buildEventNftCovenantScript,
-  computeEventNameHash,
   encodeEventCommitment,
   parseChunkCommitment,
   type AbiFunction,
@@ -19,14 +16,11 @@ import {
 import { vmapCounterPermutationSpec } from './sc-batch-raw.js';
 import { visibleHandlerInputs } from './route-expression-key.js';
 import type { FunctionArgument } from '../Argument.js';
-import type { UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
-import { scriptToLockingBytecode } from '../utils.js';
+import type { UnlockableUtxo } from '../interfaces.js';
 import {
   createDynamicChunkUnlocker,
-  createEntryNftUnlocker,
   createValueChunkUnlocker,
   getDynamicChunkAddress,
-  getEntryNftAddress,
   getEntryNftLockingBytecode,
   getValueChunkAddress,
 } from './covenant-helpers.js';
@@ -124,7 +118,7 @@ export async function loadCreateBuilderDynamicChunks(
     dynamicVarInfos, valueChunkGc, onChainState, stateLayout, overrides,
     abiFunction, entryAbiFunction, lowLevelCallUtxoGroups, nestedDelegateProxyGroupByLowLevel,
     batchPredCommitments, sortedLoopCommitments, runtimeLoopDerivedCounts, sortedInserts,
-    args, entryArgs, finalArgs, eventDefs, runtimeEventNftLockingBytecodes, timing,
+    args, entryArgs, eventDefs, runtimeEventNftLockingBytecodes, timing,
   } = params;
   const executionSelfAddress = params.executionSelfAddress as Uint8Array;
   const functionName = params.functionName as string;

@@ -24,6 +24,21 @@ import {
   type ValueChunkWriteDescriptor,
 } from './value-chunk-persist.js';
 
+/** An existing route may describe the same write with aggregate geometry; the production owns its exact lane. */
+export function authenticatedTransportedValueChunkWrite(
+  existing: ValueChunkWriteDescriptor | undefined,
+  production: ValueChunkWriteDescriptor,
+): ValueChunkWriteDescriptor {
+  if (existing && (existing.collection !== production.collection
+    || existing.collectionSignature !== production.collectionSignature
+    || existing.entryAccessSlot !== production.entryAccessSlot
+    || existing.routeSlot !== production.routeSlot
+    || existing.operation !== production.operation)) {
+    throw new Error('Transported value production disagrees with its final routed write shape.');
+  }
+  return { ...production };
+}
+
 /**
  * When overrides carry compiler-authenticated value productions, bind them to
  * the routed delegate carrier (writes, claims, continuation band).
@@ -70,14 +85,9 @@ export function applyCreateBuilderTransportedProductions(params: {
     }
     const resourceIdentity = valueChunkWriteResourceIdentity(production.write);
     const existingWrite = provisionalWrites.get(resourceIdentity);
-    if (existingWrite && (existingWrite.collection !== production.write.collection
-      || existingWrite.collectionSignature !== production.write.collectionSignature
-      || existingWrite.entryAccessSlot !== production.write.entryAccessSlot
-      || existingWrite.routeSlot !== production.write.routeSlot
-      || existingWrite.operation !== production.write.operation)) {
-      throw new Error('Transported value production disagrees with its final routed write shape.');
-    }
-    provisionalWrites.set(resourceIdentity, existingWrite ?? { ...production.write });
+    provisionalWrites.set(resourceIdentity, authenticatedTransportedValueChunkWrite(
+      existingWrite, production.write,
+    ));
     const derived = terminalValueChunkProducerClaim({
       rows,
       collectionIdentities: [production.write.collection, production.write.collectionSignature],

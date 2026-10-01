@@ -14,6 +14,7 @@ import { KERNEL_ENTRY_JOURNAL_ACCESS_TAG } from './KernelEntryJournal.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import type { StatefulContract } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
+import { preserveTransportedValueChunkWriteGeometry } from './sc-prepare-derive-full-value-chunk-writes.js';
 import {
   valueChunkWriteResourceIdentity,
   type ValueChunkWriteDescriptor,
@@ -50,7 +51,9 @@ export async function buildStatefulFunctionCall(
       // implementation whose code executes the write. Finalization may refresh output coordinates, but it must
       // not silently change the category component of the stable resource identity established by derivation.
       const described = describeValueChunkWrites(group, group.valueChunkStateOwner?.categoryId);
-      if (described.length > 0 || group.valueChunkWrites === undefined) group.valueChunkWrites = described;
+      if (described.length > 0 || group.valueChunkWrites === undefined) {
+        group.valueChunkWrites = preserveTransportedValueChunkWriteGeometry(group, described);
+      }
     }
     const built = stb.build();
     stb.bindMaterializedValueChunkWitnesses(built, host.compilerRoute?.blockBase ?? 0);

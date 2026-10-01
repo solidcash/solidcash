@@ -13796,6 +13796,7 @@ export class DeployFunctionCall {
 export class StatefulFunctionCall {
   private builderPromise?: Promise<StatefulTransactionBuilder>;
   private readonly builderFactory?: () => Promise<StatefulTransactionBuilder>;
+  private forceBuilderRebuild = false;
   private signerUtxosPromise?: Promise<Utxo[]>;
   private parentContract?: StatefulContract;
   /** Locking bytecode of the contract calling this frame, when a composition builds a nested participant. */
@@ -13934,6 +13935,50 @@ export class StatefulFunctionCall {
   /** @internal Fill an exact compiler-reserved BCH transfer slot for atomic composition. */
   _withCompilerTransfer(outputSlot: number, lockingBytecode: Uint8Array, amount: bigint): this {
     this.transfers.push({ outputSlot, lockingBytecode, amount });
+    return this;
+  }
+
+  /** @internal Rebuild a composed frame from its final authenticated continuation geometry. */
+  _withTransportedValueChunkProductions(
+    productions: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>,
+    localOutputBase: number,
+  ): this {
+    if (!this.compilerRoute || !Number.isSafeInteger(localOutputBase) || localOutputBase < 0) {
+      throw new Error('Transported continuation rebuild requires a compiler route and local output base.');
+    }
+    const witness = '__internal__valueChunkOutputBase';
+    const routeInputs = this.compilerRoute.abiFunction.inputs;
+    const publishedIndex = routeInputs.findIndex((input) => input.name === witness);
+    let reboundArgs = this.functionArgs;
+    if (publishedIndex >= 0) {
+      // _batchRaw may omit only the auto-injected msg.sender category from its local positional frame.
+      // Preserve that original frame shape when changing the later continuation witness.
+      const omittedCaller = routeInputs.findIndex((input) => input.name === '__internal__msgSenderCategory');
+      const omitted = this.functionArgs?.length === routeInputs.length - 1 && omittedCaller >= 0;
+      const routeIndex = publishedIndex - (omitted && omittedCaller < publishedIndex ? 1 : 0);
+      if (!this.functionArgs || routeIndex >= this.functionArgs.length
+        || (!omitted && this.functionArgs.length !== routeInputs.length)) {
+        throw new Error('Transported continuation route has no local output-base argument.');
+      }
+      reboundArgs = [...this.functionArgs];
+      reboundArgs[routeIndex] = BigInt(localOutputBase);
+    }
+    this.compilerRoute = {
+      ...this.compilerRoute,
+      valueChunkProductions: Object.freeze([...productions]),
+    };
+    this.functionArgs = reboundArgs;
+    for (const call of this.callInfos) {
+      if (call.type !== 'stateful' || !call.compilerRoute) continue;
+      if (call.compilerRoute.internalArgs?.[witness] === undefined) continue;
+      call.compilerRoute = {
+        ...call.compilerRoute,
+        internalArgs: { ...call.compilerRoute.internalArgs, [witness]: BigInt(localOutputBase) },
+      };
+    }
+    // The first local build froze its geometry metadata. A fresh _createBuilder must publish both
+    // carrier witnesses and computed-output claims from these final production coordinates.
+    this.forceBuilderRebuild = true;
     return this;
   }
 

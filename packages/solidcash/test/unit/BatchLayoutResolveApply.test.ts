@@ -75,6 +75,74 @@ describe('deferred multi-claim batch layout resolve batch layout resolve + valid
     expect(w1?.predOuts.get('__internal__vmapBatchPredOut_0')).toBe(32n); // 20 + 12
   });
 
+  it('projects sparse resource continuation bands without claiming the protected gap', () => {
+    const sparseTransactionParticipants = [{
+      participant: 0,
+      blockLayout: {
+        blockSize: 338, trailingBase: 320, trailingCapacity: 15, fixedSuffix: 3, slots: [] as const,
+      },
+    }];
+    const claim = {
+      participant: 0,
+      publishedBase: 0,
+      blockSize: 338,
+      trailingBase: 320,
+      trailingCapacity: 15,
+      // Keep the scalar route witness for the first resource. The aggregate count must not turn it into one
+      // broad ownership span across predecessor 330 or the second resource.
+      valueChunkBandOffset: 9,
+      valueChunkCollection: 'B',
+      valueChunkCount: 5,
+      valueChunkBands: [
+        { bandOffset: 329, chunkCount: 1, resourceIdentity: 'B' },
+        { bandOffset: 331, chunkCount: 4, resourceIdentity: 'A' },
+      ],
+      ownership: [
+        { participant: 0, carrier: 'valueChunk' as const, collection: 'B',
+          roles: { outputSlot: 329 }, rangeWidth: 1 },
+        { participant: 0, carrier: 'sortedBatch' as const, collection: 'predecessor',
+          roles: { outputSlot: 330 } },
+        { participant: 0, carrier: 'valueChunk' as const, collection: 'A',
+          roles: { outputSlot: 331 }, rangeWidth: 4 },
+        { participant: 0, carrier: 'lifecycle' as const, collection: 'minting',
+          roles: { produceOutput: 335 } },
+      ],
+    };
+    const { layout, witnessesByParticipant } = resolveComposeTransactionLayoutAuthority({
+      transactionParticipants: sparseTransactionParticipants, participants: [claim],
+    });
+
+    expect(layout.valueChunkBands.map((band) => ({
+      collection: band.collection, absoluteBase: band.absoluteBase, chunkCount: band.chunkCount,
+    }))).toEqual([
+      { collection: 'B', absoluteBase: 329, chunkCount: 1 },
+      { collection: 'A', absoluteBase: 331, chunkCount: 4 },
+    ]);
+    expect(witnessesByParticipant.get(0)?.valueChunkOutputBase).toBe(329n);
+    expect(layout.ownership.filter((owner) => owner.carrier === 'valueChunk').map((owner) => ({
+      outputSlot: owner.roles.outputSlot, rangeWidth: owner.rangeWidth,
+    }))).toEqual([
+      { outputSlot: 329, rangeWidth: 1 },
+      { outputSlot: 331, rangeWidth: 4 },
+    ]);
+    expect(() => resolveComposeTransactionLayoutAuthority({
+      transactionParticipants: sparseTransactionParticipants,
+      participants: [{ ...claim, ownership: [
+        { participant: 0, carrier: 'valueChunk' as const, collection: 'B',
+          roles: { outputSlot: 329 }, rangeWidth: 5 },
+        { participant: 0, carrier: 'valueChunk' as const, collection: 'A',
+          roles: { outputSlot: 331 }, rangeWidth: 4 },
+      ] }],
+    })).toThrow(/value-chunk-band-ownership/);
+    expect(() => resolveComposeTransactionLayoutAuthority({
+      transactionParticipants: sparseTransactionParticipants,
+      participants: [{ ...claim, ownership: undefined, valueChunkBands: [
+        { bandOffset: 329, chunkCount: 2, resourceIdentity: 'B' },
+        { bandOffset: 330, chunkCount: 3, resourceIdentity: 'A' },
+      ] }],
+    })).toThrow(/value-chunk-band-overlap/);
+  });
+
   it('batch resolve refuses cross-participant claim collisions in one resolve', () => {
     // Two participants with overlapping absolute value-chunk output ranges under shared packing.
     // P0 trailing at 0+5=5, valueChunk bandOffset 0 width 4 → outputs [5,9).

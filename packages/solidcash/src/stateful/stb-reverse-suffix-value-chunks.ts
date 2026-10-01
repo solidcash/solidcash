@@ -4,11 +4,14 @@
  */
 
 import { binToHex } from '@bitauth/libauth';
+import type { FunctionBlockLayout } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import { addressToLockScript, calculateDust } from '../utils.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
+import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { moveLateOutputsBeforeReverseSuffix } from './mutable-output-reassert.js';
+import { claimedFixedContinuationCoverage } from './stb-claimed-fixed-continuations.js';
 import { cloneToken } from './stb-output-utils.js';
 import type { DerivedChunkOutputObservation } from './value-chunk-persist.js';
 
@@ -32,6 +35,9 @@ export interface ReverseSuffixValueChunkHost {
   readonly dynamicChunkVars: readonly DynamicChunkVar[];
   readonly chunkRawCommitments: ReadonlyMap<string, readonly string[]>;
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
+  readonly externalCallUtxoGroups?: readonly ExternalCallUtxoGroup[];
+  readonly lowLevelCallUtxoGroups?: readonly ExternalCallUtxoGroup[];
+  readonly blockLayout?: FunctionBlockLayout;
   getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   setChunkRawCommitments(name: string, commitments: string[]): void;
   dynamicChunkOutputCount(): number;
@@ -43,6 +49,14 @@ export function reassertStagedValueChunkOutputs(
   builder: TransactionBuilder,
 ): number {
   if (host.valueChunkOutputs.length === 0) return 0;
+  const claimed = claimedFixedContinuationCoverage({
+    staged: host.valueChunkOutputs,
+    derived: host.derivedChunkOutputs,
+    groups: [...(host.externalCallUtxoGroups ?? []), ...(host.lowLevelCallUtxoGroups ?? [])],
+    blockLayout: host.blockLayout,
+  });
+  const stagedOutputs = host.valueChunkOutputs.filter((_, index) => !claimed.stagedIndices.has(index));
+  if (stagedOutputs.length === 0) return 0;
   const lockHex = (to: string | Uint8Array | undefined): string | undefined => {
     if (to instanceof Uint8Array) return binToHex(to);
     if (typeof to === 'string') {
@@ -54,7 +68,7 @@ export function reassertStagedValueChunkOutputs(
   // Only relocate when a prior append parked staged chunk locks before the band
   // (compiler-owned data NFT slots). Do not rewrite a healthy full-width layout.
   const stagedLocks = new Set(
-    host.valueChunkOutputs.map((staged) => lockHex(staged.to)).filter((hex): hex is string => !!hex),
+    stagedOutputs.map((staged) => lockHex(staged.to)).filter((hex): hex is string => !!hex),
   );
   const earlyFalseAppends: number[] = [];
   if (band) {
@@ -67,7 +81,7 @@ export function reassertStagedValueChunkOutputs(
   }
   if (band && earlyFalseAppends.length > 0) {
     let added = 0;
-    for (const [offset, staged] of host.valueChunkOutputs.entries()) {
+    for (const [offset, staged] of stagedOutputs.entries()) {
       if (offset >= band.nNew) break;
       const outputIndex = band.start + offset;
       host.padOutputsToIndex(builder, outputIndex);
@@ -93,7 +107,7 @@ export function reassertStagedValueChunkOutputs(
         mode: 'relocate-early-appends',
         bandStart: band.start,
         earlyFalseAppends,
-        staged: host.valueChunkOutputs.length,
+        staged: stagedOutputs.length,
         added,
         outputCount: builder.outputs.length,
       }));
@@ -107,7 +121,7 @@ export function reassertStagedValueChunkOutputs(
     present.set(hex, (present.get(hex) ?? 0) + 1);
   }
   const needed = new Map<string, Array<typeof host.valueChunkOutputs[number]>>();
-  for (const staged of host.valueChunkOutputs) {
+  for (const staged of stagedOutputs) {
     const hex = lockHex(staged.to);
     if (!hex) continue;
     const group = needed.get(hex) ?? [];
@@ -134,7 +148,7 @@ export function reassertStagedValueChunkOutputs(
       after.set(hex, (after.get(hex) ?? 0) + 1);
     }
     console.error('reassert-staged-value-chunks', JSON.stringify({
-      staged: host.valueChunkOutputs.length,
+      staged: stagedOutputs.length,
       added,
       outputCount: builder.outputs.length,
       needed: [...needed.entries()].map(([hex, group]) => ({

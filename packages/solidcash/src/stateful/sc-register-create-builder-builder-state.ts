@@ -12,7 +12,9 @@ import {
   isFixedWidthType,
   packFixedWidthArray,
   parseArrayTypeString,
+  sha256 as sha256Sync,
   splitValueIntoChunks,
+  splitValueIntoValueChunks,
   type AbiFunction,
 } from '@solidcash/utils';
 import { addressToLockScript } from '../utils.js';
@@ -22,7 +24,11 @@ import { providerUnixLocktime } from './soft-state-overlays.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { pinExactSortedBatchEntry } from './writer-event-delegate-layout.js';
 import { chunksFromValue } from './early-value-chunk-helpers.js';
-import { valueChunkWriteResourceIdentity } from './value-chunk-persist.js';
+import {
+  sameDerivedChunkOutputObservation,
+  valueChunkWriteResourceIdentity,
+  type ValueChunkWriteDescriptor,
+} from './value-chunk-persist.js';
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 
@@ -350,29 +356,77 @@ export function registerCreateBuilderBuilderState(
   // on-stack value (emitSortedValueChunkPin), so a forged/absent chunk is rejected at write time. Placed as the
   // LAST covenant-managed outputs (after the entries + NEW node), matching the covenant's base masterInput+
   // blockSize+isInsert.
-  const composedChunkBase = ((): number | undefined => {
-    const layout = effectiveBlockLayout;
-    const composed = (layout?.slots ?? []).some((slot: any) => slot.kind === 'trailing')
-      && builder.getComposedBlockBase() !== 0;
-    if (!composed) return undefined;
-    const trailing = (layout?.slots ?? [])
-      .filter((slot: any) => slot.kind === 'trailing').map((slot: any) => slot.offset).sort((left: any, right: any) => left - right);
-    const total = valueChunkMints.reduce((sum, mint) => sum + mint.chunks.length, 0);
-    if (trailing.length === 0 || total === 0 || trailing.length < total) return undefined;
-    return trailing[trailing.length - total];
-  })();
-  // Pack one contiguous trailing band per mint in source order. Reusing composedChunkBase+i for every mint
-  // overwrote earlier resources and left later covenants without their authenticated continuation family.
+  const trailing = (effectiveBlockLayout?.slots ?? [])
+    .filter((slot: any) => slot.kind === 'trailing')
+    .map((slot: any) => slot.offset as number)
+    .sort((left: number, right: number) => left - right);
+  const composed = trailing.length > 0
+    && (overrides?.omitLocalFeeTail === true || builder.getComposedBlockBase() !== 0);
+  const trailingSet = new Set<number>(trailing);
+  const totalMintChunks = valueChunkMints.reduce((sum, mint) => sum + mint.chunks.length, 0);
+  const composedChunkBase = composed && totalMintChunks > 0 && trailing.length >= totalMintChunks
+    ? trailing[trailing.length - totalMintChunks] : undefined;
+  const blockBase = overrides?.blockBase ?? 0;
+  const transportedByResource = new Map<string, {
+    write: ValueChunkWriteDescriptor; value: Uint8Array; chunks: ReturnType<typeof chunksFromValue>;
+  }>();
+  const occupiedTransportedSlots = new Set<number>();
+  if (composed) for (const production of transportedProductions) {
+    const write = production.write as ValueChunkWriteDescriptor;
+    const value = production.value as Uint8Array;
+    const resource = valueChunkWriteResourceIdentity(write);
+    const localBase = write.outputBase - blockBase;
+    const chunks = value instanceof Uint8Array ? chunksFromValue(value, { write }) : [];
+    if (transportedByResource.has(resource) || write.categoryId.toLowerCase() !== host.categoryId.toLowerCase()
+      || !Number.isSafeInteger(localBase) || localBase < 0 || chunks.length !== write.outputCount
+      || chunks.length === 0) {
+      throw new Error('Transported mint has no unique authenticated continuation geometry.');
+    }
+    for (let index = 0; index < chunks.length; index += 1) {
+      const offset = localBase + index;
+      if (!trailingSet.has(offset) || occupiedTransportedSlots.has(offset)) {
+        throw new Error('Transported mint continuation overlaps or leaves its published trailing slots.');
+      }
+      occupiedTransportedSlots.add(offset);
+    }
+    transportedByResource.set(resource, { write, value, chunks });
+  }
+  const occupiedMintSlots = new Set<number>(occupiedTransportedSlots);
+  const allocateUntransportedMint = (width: number): number => {
+    // The loop-entry planner owns NEW and rewritten-predecessor outputs in this same trailing frame.
+    // They are not derived value-chunk pins, so excluding only derivedChunkOutputs can place an
+    // unrelated mint over a predecessor. Resolve each current-builder lane through the planner;
+    // nested groups' outputBlockSlot coordinates belong to their own blocks, not this one.
+    for (const variable of builder.getLoopEntryVars()) {
+      if ((variable.categoryId !== undefined && variable.categoryId !== host.categoryId)
+        || (variable.delegate === true && compilerRouteDelegateLayout === undefined)) continue;
+      const count = builder.getLoopEntryCommitments(variable.collection).length;
+      for (let ordinal = 0; ordinal < count; ordinal += 1) {
+        const offset = builder.getLoopEntryOutputIndex(variable.collection, ordinal);
+        if (trailingSet.has(offset)) occupiedMintSlots.add(offset);
+      }
+    }
+    const first = trailing[0]!;
+    const last = trailing[trailing.length - 1]!;
+    const preferred = composedChunkBase ?? first;
+    const available = (start: number): boolean => Array.from({ length: width }, (_, index) => start + index)
+      .every((offset) => trailingSet.has(offset) && !occupiedMintSlots.has(offset)
+        && !builder.getDerivedChunkOutputs().has(offset));
+    for (let start = preferred; start + width - 1 <= last; start += 1) {
+      if (available(start)) return start;
+    }
+    for (let start = first; start < preferred; start += 1) {
+      if (available(start)) return start;
+    }
+    throw new Error('Untransported mint has no unowned published continuation band.');
+  };
+  // The routed production owns each transported resource's exact sparse band. Source-order packing is only a
+  // provisional fallback for unrelated mints and must never consume a transported resource's claimed slots.
   let composedMintCursor = 0;
   for (const mint of valueChunkMints) {
     // Precomputed values bypass trace-based value-chunk derivation, which normally completes this
     // header too. Publish the entry and its continuations from the same value, preserving its successor
     // and exact write lane: another lane can read the same collection/key without owning this update.
-    builder.completeExistingEntryValueTail(mint.collection, mint.slot, mint.value, mint.slotIndex);
-    const chunkAddr = getValueChunkAddress(host.inner, host.categoryId, mint.collection, mint.slot, mint.digest);
-    const chunkLock = addressToLockScript(chunkAddr);
-    const mintBandBase = composedChunkBase === undefined
-      ? undefined : composedChunkBase + composedMintCursor;
     const collection = host.inner.artifact.stateLayout?.collections?.find((candidate: any) => (
       candidate.name === mint.collection
     ));
@@ -381,34 +435,67 @@ export function registerCreateBuilderBuilderState(
       binToHex(computeCollectionHash(collection.signature)),
       binToHex(mint.slot),
     ].join(':');
+    const transported = resourceIdentity === undefined ? undefined : transportedByResource.get(resourceIdentity);
+    const value = transported?.value ?? mint.value;
+    const digest = transported ? sha256Sync(value) : mint.digest;
+    const chunkData = transported ? splitValueIntoValueChunks(value) : mint.chunks;
+    builder.completeExistingEntryValueTail(mint.collection, mint.slot, value, mint.slotIndex);
+    const chunkAddr = transported ? undefined
+      : getValueChunkAddress(host.inner, host.categoryId, mint.collection, mint.slot, digest);
+    const chunkLock = transported?.chunks[0]?.lockingBytecode
+      ?? (chunkAddr === undefined ? undefined : addressToLockScript(chunkAddr));
+    if (!chunkLock) throw new Error('Mint has no authenticated continuation locking bytecode.');
+    const mintBandBase = transported ? transported.write.outputBase - blockBase
+      : !composed ? undefined : transportedByResource.size === 0
+        ? composedChunkBase === undefined ? undefined : composedChunkBase + composedMintCursor
+        : allocateUntransportedMint(chunkData.length);
+    if (transported && chunkData.length !== transported.write.outputCount) {
+      throw new Error('Transported mint value disagrees with its authenticated continuation width.');
+    }
+    if (mintBandBase !== undefined && !transported) {
+      for (let index = 0; index < chunkData.length; index += 1) {
+        occupiedMintSlots.add(mintBandBase + index);
+      }
+    }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_CHUNK_MINT === '1') {
       console.error('chunk-mint-place', JSON.stringify({
-        collection: mint.collection, chunks: mint.chunks.length,
-        slot: binToHex(mint.slot), digest: binToHex(mint.digest),
+        collection: mint.collection, chunks: chunkData.length,
+        slot: binToHex(mint.slot), digest: binToHex(digest),
         lock: binToHex(chunkLock), composedChunkBase: mintBandBase ?? null,
-        bandOffset: mintBandBase, probeOnly: overrides?.returnProbeOnly === true,
+        bandOffset: mintBandBase, transported: transported !== undefined,
+        probeOnly: overrides?.returnProbeOnly === true,
       }));
     }
-    mint.chunks.forEach((data: any, i: number) => {
-      const commitment = buildValueChunkCommitment(i, data);
+    chunkData.forEach((data: Uint8Array, i: number) => {
+      const commitment = transported?.chunks[i]?.commitment ?? buildValueChunkCommitment(i, data);
+      const lockingBytecode = transported?.chunks[i]?.lockingBytecode ?? chunkLock;
       // A composed participant's continuation band lives INSIDE its balanced block: appending would grow the
       // block past the layout the covenant walks (`participant N built X/Y slots`), so pin the chunks at the
       // participant's own trailing coordinates instead.
-      if (mintBandBase !== undefined
-        && builder.setDerivedChunkOutput(mintBandBase + i, {
+      if (mintBandBase !== undefined) {
+        const expected = {
           commitment,
-          lockingBytecode: chunkLock,
+          lockingBytecode,
           categoryId: host.categoryId,
           fixedIndex: true,
-          semanticKind: 'valueChunk',
+          semanticKind: 'valueChunk' as const,
           ...(resourceIdentity !== undefined && {
             resourceIdentity,
             resourcePart: `chunk:${i}`,
           }),
-        })) {
-        return;
+        };
+        const existing = builder.getDerivedChunkOutputs().get(mintBandBase + i);
+        if (existing && sameDerivedChunkOutputObservation(existing, expected)) return;
+        if (transported && existing?.fixedIndex === true) {
+          throw new Error('Transported mint cannot replace a conflicting fixed continuation pin.');
+        }
+        if (builder.setDerivedChunkOutput(mintBandBase + i, expected)) return;
+        if (transported) {
+          throw new Error('Transported mint could not bind its authenticated continuation slot.');
+        }
       }
+      if (chunkAddr === undefined) throw new Error('Transported mint cannot append outside its claimed band.');
       builder.addValueChunkOutput({
         to: chunkAddr,
         amount: 1000n,
@@ -418,7 +505,7 @@ export function registerCreateBuilderBuilderState(
         },
       });
     });
-    composedMintCursor += mint.chunks.length;
+    composedMintCursor += chunkData.length;
   }
   // Runtime-loop groups normally land as reverse-suffix late outputs (covenant addresses group i as
   // outputCount - chunksAlreadyVerified - groupSize). Under a composed balanced trailing band the same

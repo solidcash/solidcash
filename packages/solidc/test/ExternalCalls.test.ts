@@ -361,6 +361,34 @@ describe('address.code with an authenticated external-call slot', () => {
 
 describe('inactive conditional external-call identity', () => {
   const IFACE = 'interface IERC20 { function transfer(address t, int a) external returns (bool); }';
+  it('preserves an outer parameter predicate through an inlined public helper call', () => {
+    const artifact = compileString(`pragma solidity ^0.8.19;
+      interface IData {
+        function updateUserRating(address worker, uint8 rating) external;
+      }
+      contract C {
+        IData data;
+        mapping(uint => uint8) ratings;
+        function review(uint jobId, address worker, uint8 rating) public {
+          ratings[jobId] = rating;
+          data.updateUserRating(worker, rating);
+          require(true);
+        }
+        function approveResult(uint jobId, address worker, uint8 rating) public {
+          // The caller's rating guards this call, while the helper's same-named parameter receives a literal.
+          if (rating > 0) { review(jobId, worker, uint8(5)); }
+          require(true);
+        }
+      }
+    `, { solidityImportCompat: true, messageBus: true });
+    const calls = artifact.abi.find((candidate) => candidate.name === 'approveResult')?.externalCalls ?? [];
+    expect(calls.map((call) => call.functionName)).toEqual(['updateUserRating']);
+    expect(calls[0].condition).toEqual({
+      kind: 'binary', operator: '>',
+      left: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
+      right: { kind: 'literal', type: 'bigint', value: '0' },
+    });
+  });
   it('skips UTXOBYTECODE identity when the SDK binds masterIdx < 0', () => {
     const artifact = compileString(`${IFACE}
       contract C(IERC20 token) {

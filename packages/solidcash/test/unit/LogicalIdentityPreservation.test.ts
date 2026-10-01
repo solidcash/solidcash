@@ -139,6 +139,49 @@ describe('logical CREATE identity at getAddress()', () => {
     expect((outputs[2].token as { nft?: { commitment?: string } }).nft?.commitment).toBe(commitment);
   });
 
+  it('does not park or accept a SCID on a consumed mutable resource slot', () => {
+    const commitment = '5343494401cafe';
+    const category = 'cc'.repeat(32);
+    const lock = Uint8Array.of(0xaa, 0x20, 0x08);
+    const identity = {
+      category, amount: 0n,
+      nft: { capability: 'none', commitment },
+    };
+    const inputs = [{
+      satoshis: 1200n,
+      token: identity,
+      unlocker: { generateLockingBytecode: () => lock },
+    }, {
+      satoshis: 1200n,
+      token: { category, amount: 0n, nft: { capability: 'mutable', commitment: '00' } },
+      unlocker: { generateLockingBytecode: () => Uint8Array.of(0xaa, 0x20, 0x09) },
+    }];
+    const outputs: Array<{ to?: Uint8Array; amount?: bigint; token?: object }> = [
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: Uint8Array.of(0x51), amount: 1000n },
+    ];
+    expect(reassertScidIdentityOutputs(outputs, inputs)).toBe(1);
+    expect((outputs[0].token as { nft?: { commitment?: string } }).nft?.commitment).toBe(commitment);
+    expect(outputs[1].token).toBeUndefined();
+
+    // A provisional replica on that slot must be moved too, not accepted as
+    // satisfying identity conservation before the resource proof is built.
+    outputs[0] = { to: Uint8Array.of(0x51), amount: 1000n };
+    outputs[1] = { to: lock, amount: 1200n, token: identity };
+    expect(reassertScidIdentityOutputs(outputs, inputs)).toBe(1);
+    expect((outputs[0].token as { nft?: { commitment?: string } }).nft?.commitment).toBe(commitment);
+    expect(outputs[1].token).toBeUndefined();
+
+    // A four-byte placeholder at the mutable slot is still not a free pad.
+    outputs[0] = { to: Uint8Array.of(0x51), amount: 1000n };
+    outputs[1] = { to: lock, amount: 1200n, token: {
+      category, amount: 0n, nft: { capability: 'none', commitment: '53434944' },
+    } };
+    expect(reassertScidIdentityOutputs(outputs, inputs)).toBe(1);
+    expect((outputs[0].token as { nft?: { commitment?: string } }).nft?.commitment).toBe(commitment);
+    expect((outputs[1].token as { nft?: { commitment?: string } }).nft?.commitment).toBe('53434944');
+  });
+
   it('relocates an already-restored SCID out of a reserved suffix slot', () => {
     const commitment = '5343494401cafe';
     const category = 'cc'.repeat(32);

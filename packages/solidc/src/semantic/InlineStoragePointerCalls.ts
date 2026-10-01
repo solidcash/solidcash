@@ -34,6 +34,7 @@ import {
   TupleAssignmentNode,
   ReturnNode,
   FunctionCallNode,
+  ExternalFunctionCallNode,
   ConsoleStatementNode,
   EmitStatementNode,
   TokenContainerMethodStatementNode,
@@ -632,7 +633,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
           if (this.ambiguousInlineKeys.has(inlineKey(callee.name, args.length))) {
             throw new AmbiguousInlineOverloadError(stmt.call, callee.name, args.length);
           }
-          out.push(...this.inlineCall(callee, args, stack));
+          out.push(...this.inlineCall(callee, args, stack, stmt.call.sourceActivationConditions ?? []));
           continue;
         }
       }
@@ -658,7 +659,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   }
 
   // Produce [value-param-binding decls..., renamed+substituted body...] for one inlined call site.
-  private inlineCall(callee: FunctionDefinitionNode, args: Node[], stack: string[]): StatementNode[] {
+  private inlineCall(
+    callee: FunctionDefinitionNode,
+    args: Node[],
+    stack: string[],
+    callerConditions: readonly { expression: ExpressionNode; negated: boolean }[],
+  ): StatementNode[] {
     const n = this.counter++;
     const cloned = cloneNode(callee) as FunctionDefinitionNode;
     normalizeVoidInlineReturns(cloned);
@@ -755,6 +761,28 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // params with their (un-renamed) argument expressions.
     this.applyRename(cloned.body, rename);
     substituteInFunction(cloned, subs);
+    // The callee's source snapshots describe only branches inside its own body. Once it is spliced into the
+    // caller, every nested call also inherits the caller's lexical path. Keep that path on the call node before
+    // recursively inlining further helpers; otherwise artifact collection mistakes an untaken inner call for
+    // an unconditional graph emission. Stamp after the callee-local rename/substitution so identically named
+    // caller parameters cannot be rewritten as the callee's locals.
+    if (callerConditions.length > 0) this.walk(cloned.body, (node) => {
+      if (node instanceof FunctionCallNode || node instanceof MethodCallNode
+        || node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
+        || node instanceof LowLevelCallStatementNode) {
+        // An undefined source snapshot means this call was synthesized after the source capture pass. Let
+        // artifact collection recover its whole lowered ancestry; manufacturing a partial snapshot here would
+        // truncate an inner branch predicate to the inherited caller depth.
+        if (node.sourceActivationConditions === undefined) return;
+        node.sourceActivationConditions = [
+          ...callerConditions,
+          ...(node.sourceActivationConditions ?? []),
+        ].map(({ expression, negated }) => ({
+          expression: cloneNode(expression) as ExpressionNode,
+          negated,
+        }));
+      }
+    });
     // An inherited helper's body may legitimately touch its own contract's PRIVATE state; tag the inlined
     // accesses with the defining contract (same mechanism as inlined modifier bodies).
     if (callee.inheritedFrom) tagModifierStateAccess([cloned.body], callee.inheritedFrom);

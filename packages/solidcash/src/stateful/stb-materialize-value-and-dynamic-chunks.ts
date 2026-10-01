@@ -9,6 +9,7 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, calculateDust } from '../utils.js';
 import type { DerivedChunkOutputObservation } from './value-chunk-persist.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { claimedFixedContinuationCoverage } from './stb-claimed-fixed-continuations.js';
 
 export interface MaterializeValueAndDynamicChunksHost {
   readonly categoryId: string;
@@ -43,6 +44,12 @@ export function appendValueChunks(
   builder: TransactionBuilder,
 ): void {
   const band = host.getChunkableValueWriteBand();
+  const claimed = claimedFixedContinuationCoverage({
+    staged: host.valueChunkOutputs,
+    derived: host.derivedChunkOutputs,
+    groups: [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups],
+    blockLayout: host.blockLayout,
+  });
   const fixedBandPins = band
     ? [...host.derivedChunkOutputs.entries()].filter(([index, chunk]) => (
       chunk.fixedIndex === true
@@ -54,10 +61,11 @@ export function appendValueChunks(
     ))
     : [];
   const isFixedContinuation = (lockingBytecode: Uint8Array, category: string, commitment: string): boolean => (
-    fixedBandPins.some(([, chunk]) => (chunk.categoryId ?? host.categoryId).toLowerCase() === category.toLowerCase()
+    claimed.tuples.has(JSON.stringify([category.toLowerCase(), binToHex(lockingBytecode), commitment.toLowerCase()]))
+    || fixedBandPins.some(([, chunk]) => (chunk.categoryId ?? host.categoryId).toLowerCase() === category.toLowerCase()
       && binToHex(chunk.lockingBytecode) === binToHex(lockingBytecode) && chunk.commitment === commitment)
   );
-  const unpinnedOutputs = host.valueChunkOutputs.filter((output) => !(
+  const unpinnedOutputs = host.valueChunkOutputs.filter((output, index) => !claimed.stagedIndices.has(index) && !(
     output.token?.nft?.capability === 'mutable'
       && isFixedContinuation(
         output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to),

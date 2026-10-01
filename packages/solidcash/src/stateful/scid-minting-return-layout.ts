@@ -81,8 +81,14 @@ export function reassertScidIdentityOutputs(
     const lock = output.to instanceof Uint8Array ? output.to : undefined;
     return !!lock && lock.length === 1 && lock[0] === 0x51 && output.token?.nft?.capability === 'none';
   };
+  const isReservedInputIndex = (index: number): boolean => reservedIndices.has(index)
+    || inputs[index]?.token?.nft?.capability === 'mutable'
+    || inputs[index]?.token?.nft?.capability === 'minting';
   const isReserved = (output: (typeof outputs)[number] | undefined, index?: number): boolean => {
-    if (index !== undefined && reservedIndices.has(index)) return true;
+    // A token-free output can still be the consumed side of a mutable resource.
+    // Placing an identity here turns its authenticated DELETE into a tokenful
+    // output, which the message-bus verifier correctly refuses.
+    if (index !== undefined && isReservedInputIndex(index)) return true;
     if (!output) return false;
     if (isViewTail(output)) return true;
     // Identity restoration may only claim token-free pads. In particular, an
@@ -103,7 +109,7 @@ export function reassertScidIdentityOutputs(
     // A matching replica in a compiler-owned suffix is not preserved: the later chunk/event materializer will
     // overwrite that coordinate. Relocate it now to an unreserved pad instead of treating mere presence as proof
     // of a durable 1:1 identity output.
-    const already = outputs.some((output, outputIndex) => !reservedIndices.has(outputIndex)
+    const already = outputs.some((output, outputIndex) => !isReservedInputIndex(outputIndex)
       && output?.token?.nft?.capability === 'none'
       && output.token.category === category
       && output.token.nft.commitment === commitment
@@ -128,6 +134,7 @@ export function reassertScidIdentityOutputs(
     for (let outputIndex = outputs.length - 1; outputIndex >= 0; outputIndex--) {
       const output = outputs[outputIndex];
       if (lockHex(output?.to) !== wanted) continue;
+      if (isReservedInputIndex(outputIndex)) continue;
       const outputToken = output?.token;
       const replaceableIdentityPad = outputToken !== undefined
         && outputToken.category === category

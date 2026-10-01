@@ -1348,6 +1348,12 @@ export interface ComposeParticipantLayoutClaims {
   valueChunkBandOffset?: number;
   valueChunkCollection?: string;
   valueChunkCount?: number;
+  /** Participant-local continuation ranges for distinct resources; scalar fields above remain band[0]. */
+  valueChunkBands?: readonly {
+    bandOffset: number;
+    chunkCount: number;
+    resourceIdentity?: string;
+  }[];
   predOuts?: readonly {
     witnessName: string;
     physicalLocalOffset: number;
@@ -1394,6 +1400,62 @@ export function resolveComposeTransactionLayoutAuthority(params: {
   const predOutClaims: ReturnType<typeof predOutClaimFromPhysicalRoute>[] = [];
 
   for (const claim of params.participants) {
+    const resourceBands = claim.valueChunkBands === undefined ? undefined
+      : [...claim.valueChunkBands].sort((left, right) => left.bandOffset - right.bandOffset);
+    if (resourceBands !== undefined) {
+      const totalChunks = resourceBands.reduce((total, band) => total + band.chunkCount, 0);
+      if ((claim.valueChunkCount !== undefined && claim.valueChunkCount !== totalChunks)
+        || (claim.valueChunkBandOffset !== undefined && claim.valueChunkBandOffset
+          !== (resourceBands[0]?.bandOffset ?? -1) - claim.trailingBase)) {
+        throw new Error(formatLayoutInvariant({
+          invariantId: 'value-chunk-band-scalar-mismatch',
+          participant: claim.participant,
+          detail: 'scalar continuation witness must describe the first resource band and total chunk count',
+        }));
+      }
+      for (const [index, band] of resourceBands.entries()) {
+        if (!Number.isSafeInteger(band.bandOffset) || !Number.isSafeInteger(band.chunkCount)
+          || band.chunkCount <= 0 || band.bandOffset < claim.trailingBase
+          || band.bandOffset + band.chunkCount > claim.blockSize
+          || (claim.trailingCapacity !== undefined
+            && band.bandOffset + band.chunkCount > claim.trailingBase + claim.trailingCapacity)
+          || (resourceBands.length > 1 && !band.resourceIdentity)) {
+          throw new Error(formatLayoutInvariant({
+            invariantId: 'value-chunk-band-invalid',
+            participant: claim.participant,
+            resource: band.resourceIdentity,
+            actualOutput: band.bandOffset,
+            detail: `chunkCount=${band.chunkCount} trailingBase=${claim.trailingBase}`,
+          }));
+        }
+        if (index > 0 && resourceBands[index - 1]!.bandOffset
+          + resourceBands[index - 1]!.chunkCount > band.bandOffset) {
+          throw new Error(formatLayoutInvariant({
+            invariantId: 'value-chunk-band-overlap',
+            participant: claim.participant,
+            resource: band.resourceIdentity,
+            actualOutput: band.bandOffset,
+            detail: 'distinct continuation resources cannot share a physical output slot',
+          }));
+        }
+      }
+      if (resourceBands.length > 1 && claim.ownership !== undefined) {
+        const valueOwners = claim.ownership.filter((owner) => owner.carrier === 'valueChunk');
+        const outputBase = claim.publishedBase
+          + (params.nonParticipantOutputPrefix ?? 0) - (params.nonParticipantInputPrefix ?? 0);
+        if (valueOwners.length !== resourceBands.length || resourceBands.some((band) => !valueOwners.some(
+          (owner) => owner.collection === band.resourceIdentity
+            && owner.roles.outputSlot === outputBase + band.bandOffset
+            && owner.rangeWidth === band.chunkCount,
+        ))) {
+          throw new Error(formatLayoutInvariant({
+            invariantId: 'value-chunk-band-ownership',
+            participant: claim.participant,
+            detail: 'each continuation resource must own exactly its physical band, without aggregate gaps',
+          }));
+        }
+      }
+    }
     if (claim.ownership !== undefined && claim.ownership.length > 0) {
       ownership.push(...claim.ownership);
     } else {
@@ -1405,7 +1467,17 @@ export function resolveComposeTransactionLayoutAuthority(params: {
           rangeWidth: claim.dynChunkCount,
         });
       }
-      if (claim.valueChunkBandOffset !== undefined) {
+      if (resourceBands !== undefined) {
+        for (const band of resourceBands) ownership.push({
+          participant: claim.participant,
+          carrier: 'valueChunk',
+          collection: resourceBands.length === 1
+            ? claim.valueChunkCollection ?? band.resourceIdentity ?? 'valueChunk'
+            : band.resourceIdentity,
+          roles: {},
+          rangeWidth: band.chunkCount,
+        });
+      } else if (claim.valueChunkBandOffset !== undefined) {
         ownership.push({
           participant: claim.participant,
           carrier: 'valueChunk',
@@ -1439,7 +1511,16 @@ export function resolveComposeTransactionLayoutAuthority(params: {
         entryIndex: entry.entryIndex,
       });
     }
-    if (claim.valueChunkBandOffset !== undefined) {
+    if (resourceBands !== undefined) {
+      for (const band of resourceBands) valueChunkClaims.push({
+        participant: claim.participant,
+        collection: resourceBands.length === 1
+          ? claim.valueChunkCollection ?? band.resourceIdentity ?? 'valueChunk'
+          : band.resourceIdentity!,
+        bandOffset: band.bandOffset - claim.trailingBase,
+        chunkCount: band.chunkCount,
+      });
+    } else if (claim.valueChunkBandOffset !== undefined) {
       valueChunkClaims.push({
         participant: claim.participant,
         collection: claim.valueChunkCollection ?? 'valueChunk',

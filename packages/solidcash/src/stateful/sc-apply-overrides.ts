@@ -28,6 +28,7 @@ type StateValueType = StateValue;
 export interface ApplyOverridesHost {
   builderPromise?: Promise<StatefulTransactionBuilder>;
   readonly builderFactory?: () => Promise<StatefulTransactionBuilder>;
+  forceBuilderRebuild?: boolean;
   signerUtxosPromise?: Promise<Utxo[]>;
   parentContract?: StatefulContract;
   callerLockingBytecode?: Uint8Array;
@@ -163,7 +164,7 @@ export async function applyOverrides(
   host.autoWireLibraryDelegatecalls();
   // Auto-wiring can append library calls after the first pass. Validate those frames before any builder work.
   validatePreparedFrames();
-  const needsRebuild = (host.externalCallInfos.length > 0 || host.callInfos.length > 0
+  const needsRebuild = (host.forceBuilderRebuild || host.externalCallInfos.length > 0 || host.callInfos.length > 0
     || host.entryKeyOverrides.size > 0 || host.externalEntryKeyOverrides.size > 0 || host.emitReturnFlag
     // A declared caller identity is itself a reason to rebuild: the initial build (the namespace factory) never
     // receives it, so without this the annotation silently does nothing for a plain call - measured: the

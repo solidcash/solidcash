@@ -231,6 +231,9 @@ export function observeComposeSemanticEffects(
     const lockingBytecodeChanges = inputMutable && outputMutable
       && binToHex(inputLockingBytecode) !== binToHex(outputLockingBytecode);
     const mode = inputMutable ? (outputMutable ? (lockingBytecodeChanges ? 5 : 0) : 2) : 1;
+    if (mode === 2 && outputToken !== undefined) {
+      throw new Error(`messageBus: DELETE resource slot ${slot.participant}:${slot.offset} must be token-free`);
+    }
     const retirementConsume = mode === 2
       && (slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft')
       && (ctx.selfdestructByParticipant.has(slot.participant)

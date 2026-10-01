@@ -5,8 +5,9 @@ import {
   applyOverrides, type ApplyOverridesHost,
 } from '../../src/stateful/sc-apply-overrides.js';
 import type { ResolvedLogicalIdentity } from '../../src/stateful/logical-identity.js';
-import type { StatefulContract } from '../../src/stateful/StatefulContract.js';
+import { StatefulFunctionCall, type StatefulContract } from '../../src/stateful/StatefulContract.js';
 import type { StatefulTransactionBuilder } from '../../src/stateful/StatefulTransactionBuilder.js';
+import type { ExternalCallUtxoGroup } from '../../src/stateful/external-call-utxo-group.js';
 
 type RebuildOptions = Parameters<StatefulContract['_createBuilder']>[2];
 
@@ -93,5 +94,66 @@ describe('compiler-route rebuild context', () => {
       expect(calls).toHaveLength(2);
       expect(calls[1]).toMatchObject({ logicalIdentity, valueChunkProductions: productions });
     }
+  });
+
+  it('forces a new builder for final continuation geometry even without other overrides', async () => {
+    const initial = mockBuilder();
+    const { host, calls, productions } = fixture(initial);
+    host.builderPromise = Promise.resolve(initial);
+    host.callerLockingBytecode = undefined;
+    host.forceBuilderRebuild = true;
+    await applyOverrides(host);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ valueChunkProductions: productions });
+  });
+
+  it('rebinds route and delegate witnesses before rebuilding a transported continuation', () => {
+    const route = { name: '__message_bus1', inputs: [
+      { name: 'batchBlob', type: 'bytes' },
+      { name: '__internal__valueChunkOutputBase', type: 'int' },
+    ] } as AbiFunction;
+    const original = [{ marker: 'old' }] as unknown as
+      NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
+    const final = [{ marker: 'final' }] as unknown as
+      NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
+    const call = new StatefulFunctionCall(
+      Promise.resolve(mockBuilder()), undefined, '__message_bus1', [new Uint8Array(), 5n],
+      { abiFunction: route, valueChunkProductions: original },
+    );
+    call._withTransportedValueChunkProductions(final, 9);
+    const internals = call as unknown as {
+      functionArgs: unknown[];
+      compilerRoute: { valueChunkProductions: unknown };
+      forceBuilderRebuild: boolean;
+    };
+    expect(internals.functionArgs[1]).toBe(9n);
+    expect(internals.compilerRoute.valueChunkProductions).toEqual(final);
+    expect(internals.forceBuilderRebuild).toBe(true);
+
+    const delegateRoute = {
+      abiFunction: route, selector: new Uint8Array(4), blob: new Uint8Array(), args: [],
+      logicalSelectors: [], internalArgs: { __internal__valueChunkOutputBase: 5n },
+    } as NonNullable<ExternalCallUtxoGroup['compilerRoute']>;
+    call._withCompilerRouteDelegatecall({} as StatefulContract, delegateRoute);
+    call._withTransportedValueChunkProductions(final, 11);
+    const delegate = call as unknown as {
+      callInfos: Array<{ compilerRoute?: { internalArgs?: Record<string, unknown> } }>;
+    };
+    expect(delegate.callInfos[0]?.compilerRoute?.internalArgs?.__internal__valueChunkOutputBase)
+      .toBe(11n);
+
+    const routeWithOmittedCaller = { name: '__message_bus1', inputs: [
+      { name: 'batchBlob', type: 'bytes' },
+      { name: '__internal__msgSenderCategory', type: 'bytes32' },
+      { name: '__internal__valueChunkOutputBase', type: 'int' },
+    ] } as AbiFunction;
+    const omittedCall = new StatefulFunctionCall(
+      Promise.resolve(mockBuilder()), undefined, '__message_bus1', [new Uint8Array(), 5n],
+      { abiFunction: routeWithOmittedCaller, valueChunkProductions: original },
+    );
+    omittedCall._withTransportedValueChunkProductions(final, 13);
+    expect((omittedCall as unknown as { functionArgs: unknown[] }).functionArgs).toEqual([
+      new Uint8Array(), 13n,
+    ]);
   });
 });

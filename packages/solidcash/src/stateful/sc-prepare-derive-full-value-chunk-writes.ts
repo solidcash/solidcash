@@ -25,6 +25,64 @@ export type DeriveFullValueChunkPrep = {
   persistWidthAtEntry: number;
 };
 
+/** Retain authenticated resource lanes when ABI discovery emits a shared aggregate base/count. */
+export function preserveTransportedValueChunkWriteGeometry(
+  group: ExternalCallUtxoGroup,
+  described: readonly ValueChunkWriteDescriptor[],
+): ValueChunkWriteDescriptor[] {
+  const claims = group.continuationResourceClaims;
+  if (group.transportedValueChunkProductions !== true || !claims?.length) return [...described];
+  const first = claims[0]!;
+  const scalarBase = group.valueChunkOutputBase;
+  const frameBase = scalarBase === undefined ? undefined : scalarBase - first.bandOffset;
+  if (frameBase === undefined || !Number.isSafeInteger(frameBase) || frameBase < 0) {
+    throw new Error('Transported continuation has no exact output coordinate frame.');
+  }
+  const claimedResources = new Set<string>();
+  const exactWrites = claims.map((claim) => {
+    const identity = claim.producerClaim.resourceIdentity;
+    const expectedBase = frameBase + claim.bandOffset;
+    if (claimedResources.has(identity) || !Number.isSafeInteger(expectedBase)) {
+      throw new Error('Transported continuation has duplicate or unsafe resource geometry.');
+    }
+    claimedResources.add(identity);
+    const matches = (group.valueChunkWrites ?? []).filter((write) => (
+      valueChunkWriteResourceIdentity(write) === identity
+    ));
+    if (matches.length !== 1 || matches[0]!.outputBase !== expectedBase
+      || matches[0]!.outputCount !== claim.chunkCount) {
+      throw new Error(`Transported continuation resource '${identity}' lost its exact write geometry.`);
+    }
+    return matches[0]!;
+  });
+  const exactByResource = new Map(exactWrites.map((write) => [
+    valueChunkWriteResourceIdentity(write), write,
+  ]));
+  const describedClaimedResources = new Set<string>();
+  const unrelatedDescribed = described.filter((write) => {
+    const identity = valueChunkWriteResourceIdentity(write);
+    const exact = exactByResource.get(identity);
+    if (!exact) return true;
+    // ABI discovery labels an absent entry as an update until derivation materializes its insert plan.
+    // Batching may also remap the physical route slot. The transported producer owns both fields;
+    // the described record must still agree on the stable source entry and collection shape.
+    const shapeChanges = ([
+      ['collection', exact.collection, write.collection],
+      ['collectionSignature', exact.collectionSignature, write.collectionSignature],
+      ['entryAccessSlot', exact.entryAccessSlot, write.entryAccessSlot],
+    ] as const).flatMap(([field, published, observed]) => (
+      published === observed ? [] : [`${field}:${published}->${observed}`]
+    ));
+    if (describedClaimedResources.has(identity) || shapeChanges.length > 0) {
+      throw new Error(`Transported continuation resource '${identity}' changed its routed write shape`
+        + ` (${shapeChanges.join(',') || 'duplicate description'}).`);
+    }
+    describedClaimedResources.add(identity);
+    return false;
+  });
+  return [...exactWrites, ...unrelatedDescribed];
+}
+
 /**
  * Describe and bind value-chunk writes across external + low-level groups, then select the
  * persisted write (and its entry width) for the derivation probe.
@@ -57,7 +115,9 @@ export function prepareDeriveFullValueChunkWrites(
     // materialized. In that case retain only compiler-authenticated transported descriptors; ordinary
     // descriptor-free groups continue to accept the locally described set (including an empty set).
     if (describedValueChunkWrites.length > 0 || !group.valueChunkProducerClaims?.length) {
-      group.valueChunkWrites = describedValueChunkWrites;
+      group.valueChunkWrites = preserveTransportedValueChunkWriteGeometry(
+        group, describedValueChunkWrites,
+      );
     }
     const effectiveValueChunkWrites = group.valueChunkWrites ?? [];
     if (!group.valueChunkStateOwner && stateOwnerLockingBytecode !== undefined) {

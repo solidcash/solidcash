@@ -33,7 +33,12 @@ import type { ExecutionContextLifecycle } from './execution-context.js';
 import {
   finalizeAtomicInvocationGraph, graphInvocationCallerIdentity, type AtomicSidecarSlotEffect,
 } from './graph.js';
-import { materializeTransportedContinuations } from './materialize-transported-continuations.js';
+import {
+  materializeTransportedContinuations,
+  selectTransportedContinuationResourceSlots,
+  transportedContinuationSpanClaims,
+  type MaterializedContinuationClaim,
+} from './materialize-transported-continuations.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
 import {
   applyParticipantAbsoluteWitnesses,
@@ -75,7 +80,6 @@ import {
   evaluateChildDeploymentRecipe,
   materializeFixedBchTransfer,
   minimumActualSizeForComputedValueChunkClaims,
-  mergeComputedValueChunkSpanClaims,
   fixedVmNumber,
 } from './compose-recipes.js';
 import type { ComputedValueChunkSpanClaim } from './compose-recipes.js';
@@ -454,62 +458,68 @@ export async function assembleAtomicComposition(
     if (ownerKeys.has(undefined) || ownerKeys.size > 1) {
       throw new Error('One routed execution carrier cannot own value productions from multiple state owners.');
     }
-    const selectedValueChunkSlots = transportedChunkCount === 0
+    // Begin with the canonical trailing placement. Once the participant's local outputs are known, select
+    // the latest genuinely unowned band: local writes can use the same trailing slots.
+    let selectedValueChunkSlots = transportedChunkCount === 0
       ? [] : valueChunkSlots.slice(-transportedChunkCount);
     if (selectedValueChunkSlots.some((slot, index) => index > 0
         && slot.offset !== selectedValueChunkSlots[index - 1]!.offset + 1)) {
       throw new Error('messageBus: transported continuation slots are not one consecutive trailing run');
     }
     const participantInputBase = graph.layout.participantInputs[participant.participant];
-    let bandCursor = 0;
-    const continuationResourceClaims: TransportedContinuationResourceClaim[] = [];
-    for (const candidate of transportedValueChunks) {
-      const chunkCount = candidate.chunks.length;
-      if (chunkCount === 0) {
-        throw new Error('messageBus: transported value production published an empty continuation band');
-      }
-      const bandOffset = selectedValueChunkSlots[bandCursor]!.offset;
-      const absoluteBase = participantInputBase + bandOffset;
-      const write = {
-        ...candidate.production.write,
-        outputBase: absoluteBase,
-        outputCount: chunkCount,
-      };
+    const placeTransportedBands = (): readonly TransportedContinuationResourceClaim[] => {
+      let bandCursor = 0;
+      const continuationResourceClaims: TransportedContinuationResourceClaim[] = [];
+      for (const candidate of transportedValueChunks) {
+        const chunkCount = candidate.chunks.length;
+        if (chunkCount === 0) {
+          throw new Error('messageBus: transported value production published an empty continuation band');
+        }
+        const bandOffset = selectedValueChunkSlots[bandCursor]!.offset;
+        const absoluteBase = participantInputBase + bandOffset;
+        const write = {
+          ...candidate.production.write,
+          outputBase: absoluteBase,
+          outputCount: chunkCount,
+        };
         // Productions arriving from graph promotion are frozen; replace the map entry rather than mutate.
-      const nextProduction = Object.freeze({
-        ...candidate.production,
-        write: Object.freeze({ ...write }),
-      });
-      const producerIdentity = canonicalValueChunkProducerIdentity(nextProduction.claim.producer);
-      const resourceIdentity = canonicalValueChunkProducerResourceIdentity(
-        valueChunkWriteResourceIdentity(write),
-      );
-      if (!producerIdentity || !resourceIdentity) {
-        throw new Error('messageBus: transported continuation production lost its canonical identity');
+        const nextProduction = Object.freeze({
+          ...candidate.production,
+          write: Object.freeze({ ...write }),
+        });
+        const producerIdentity = canonicalValueChunkProducerIdentity(nextProduction.claim.producer);
+        const resourceIdentity = canonicalValueChunkProducerResourceIdentity(
+          valueChunkWriteResourceIdentity(write),
+        );
+        if (!producerIdentity || !resourceIdentity) {
+          throw new Error('messageBus: transported continuation production lost its canonical identity');
+        }
+        valueChunkProductions.set(JSON.stringify([resourceIdentity, producerIdentity]), nextProduction);
+        candidate.production = nextProduction;
+        const claim = buildTransportedContinuationResourceClaim({
+          owner: nextProduction.stateOwner,
+          collectionSignature: write.collectionSignature,
+          collectionHash: write.collectionHash,
+          keySlot: write.keySlot,
+          digest: binToHex(sha256(nextProduction.value)),
+          chunkCount,
+          bandOffset,
+          producerClaim: nextProduction.claim,
+        });
+        if (!claim) {
+          throw new Error('messageBus: transported continuation resource claim is not canonical');
+        }
+        continuationResourceClaims.push(claim);
+        bandCursor += chunkCount;
       }
-      valueChunkProductions.set(JSON.stringify([resourceIdentity, producerIdentity]), nextProduction);
-      candidate.production = nextProduction;
-      const claim = buildTransportedContinuationResourceClaim({
-        owner: nextProduction.stateOwner,
-        collectionSignature: write.collectionSignature,
-        collectionHash: write.collectionHash,
-        keySlot: write.keySlot,
-        digest: binToHex(sha256(nextProduction.value)),
-        chunkCount,
-        bandOffset,
-        producerClaim: nextProduction.claim,
-      });
-      if (!claim) {
-        throw new Error('messageBus: transported continuation resource claim is not canonical');
+      const ordered = continuationResourceClaims.length === 0
+        ? [] : orderTransportedContinuationResourceClaims(continuationResourceClaims);
+      if (continuationResourceClaims.length > 0 && ordered === undefined) {
+        throw new Error('messageBus: transported continuation resource claims are not an ordered band list');
       }
-      continuationResourceClaims.push(claim);
-      bandCursor += chunkCount;
-    }
-    const orderedContinuationClaims = continuationResourceClaims.length === 0
-      ? [] : orderTransportedContinuationResourceClaims(continuationResourceClaims);
-    if (continuationResourceClaims.length > 0 && orderedContinuationClaims === undefined) {
-      throw new Error('messageBus: transported continuation resource claims are not an ordered band list');
-    }
+      return ordered ?? [];
+    };
+    let orderedContinuationClaims = placeTransportedBands();
     // Defer absolute valueChunk/dyn/PredOut to ONE resolveParticipantAbsoluteWitnesses pass after the
     // local frame exists (PredOut content-match needs outputs). Pass the participant-local slot offset
     // here so `_batchRaw` can build; the unlocker sync below rebases every absolute from that single result.
@@ -775,7 +785,8 @@ export async function assembleAtomicComposition(
     // A straight-line dynamic write may publish an exact typed value recipe. Evaluate it against the
     // authenticated incoming state and selected call arguments before VM preflight; the VM then validates
     // the commitment, rather than serving as the source of a repair for a failed frame.
-    if (participant.invocations.length === 1) {
+    const applyDynamicWriteRecipes = async (target: TransactionBuilder): Promise<void> => {
+      if (participant.invocations.length !== 1) return;
       const invocationIndex = participant.invocations[0]!;
       const supplied = descriptors[invocationIndex];
       const executionArtifact = supplied.executionArtifact ?? participant.artifact;
@@ -797,7 +808,7 @@ export async function assembleAtomicComposition(
           const chunkLock = addressToLockScript(getDynamicChunkAddress(
             contract.inner, categories[participant.participant], name, variable.type,
           ));
-          const slots = local.outputs.flatMap((output, index) => {
+          const slots = target.outputs.flatMap((output, index) => {
             const lock = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
             return output.token?.category === categories[participant.participant]
                 && output.token.nft?.capability === 'mutable'
@@ -805,8 +816,60 @@ export async function assembleAtomicComposition(
           });
           if (slots.length !== commitments.length) continue;
           slots.forEach((slot, index) => {
-            local.outputs[slot]!.token!.nft!.commitment = commitments[index]!;
+            target.outputs[slot]!.token!.nft!.commitment = commitments[index]!;
           });
+        }
+      }
+    };
+    await applyDynamicWriteRecipes(local);
+    let localComputedChunkMetadata = local as TransactionBuilder & {
+      __messageBusComputedValueChunkSpanClaims?: readonly ComputedValueChunkSpanClaim[];
+      __messageBusComputedValueChunks?: readonly MaterializedContinuationClaim[];
+    };
+    if (transportedChunkCount > 0) {
+      const physicalResources = transportedValueChunks.map((candidate) => ({
+        chunks: candidate.chunks.map((chunk) => ({
+          ...chunk,
+          categoryId: chunk.categoryId ?? candidate.production.stateOwner.categoryId,
+          resourceIdentity: valueChunkWriteResourceIdentity(candidate.production.write),
+        })),
+      }));
+      const selectedBands = selectTransportedContinuationResourceSlots(
+        local, valueChunkSlots.map((slot) => slot.offset), physicalResources,
+        [
+          ...(localComputedChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? []),
+          ...(localComputedChunkMetadata.__messageBusComputedValueChunks ?? []),
+        ], participantInputBase,
+      );
+      if (selectedBands === undefined) {
+        throw new Error(
+          `messageBus: participant ${participant.participant} has no owned continuation band for every resource`,
+        );
+      }
+      const selectedOffsets = selectedBands.flat();
+      if (selectedOffsets.some((offset, index) => offset !== selectedValueChunkSlots[index]?.offset)) {
+        selectedValueChunkSlots = selectedOffsets.map((offset) => ({ kind: 'trailing' as const, offset }));
+        orderedContinuationClaims = placeTransportedBands();
+        if (pendingValueChunkClaim) pendingValueChunkClaim.localSlotOffset = selectedOffsets[0]!;
+        localCall._withTransportedValueChunkProductions(
+          Object.freeze([...valueChunkProductions.values()]), selectedOffsets[0]!,
+        );
+        local = await localCall.build();
+        await applyDynamicWriteRecipes(local);
+        localComputedChunkMetadata = local as typeof localComputedChunkMetadata;
+        const rebuiltClaims = [
+          ...(localComputedChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? []),
+          ...(localComputedChunkMetadata.__messageBusComputedValueChunks ?? []),
+        ];
+        for (const [resourceIndex, band] of selectedBands.entries()) {
+          const expected = physicalResources[resourceIndex]!.chunks;
+          for (const [chunkIndex, offset] of band.entries()) {
+            if (!rebuiltClaims.some((claim) => claim.offset === participantInputBase + offset
+              && claim.resourceIdentity === expected[chunkIndex]!.resourceIdentity
+              && claim.resourcePart === `chunk:${chunkIndex}`)) {
+              throw new Error('messageBus: rebuilt continuation lost its final per-resource slot claim');
+            }
+          }
         }
       }
     }
@@ -816,8 +879,11 @@ export async function assembleAtomicComposition(
         const slot = selectedValueChunkSlots[transportedChunkIndex++];
         if (!slot) throw new Error('messageBus: transported continuation slot allocation overflowed');
         const chunkCategoryId = chunk.categoryId ?? candidate.production.stateOwner.categoryId;
-        return { ...chunk, offset: slot.offset, categoryId: chunkCategoryId };
-      })));
+        return {
+          ...chunk, offset: slot.offset, categoryId: chunkCategoryId,
+          resourceIdentity: valueChunkWriteResourceIdentity(candidate.production.write),
+        };
+      })), localComputedChunkMetadata.__messageBusComputedValueChunks ?? [], participantInputBase);
     const split = splitByParticipant.get(participant.participant);
     if (split) {
       local.addInputs([...split.funders]);
@@ -1221,20 +1287,18 @@ export async function assembleAtomicComposition(
     // back to the full block below; using blockSize here turns the valid range into an empty interval.
     const fixedSize = Math.min(participant.blockLayout!.trailingBase ?? blockSize,
       terminalConditionalReturnBase(participant.blockLayout!) ?? blockSize);
-    const computedValueChunkMetadata = local as TransactionBuilder & {
-      __messageBusComputedValueChunkSpanClaims?: readonly ComputedValueChunkSpanClaim[];
-      __messageBusComputedValueChunks?: readonly ComputedValueChunkSpanClaim[];
-    };
-    const computedValueChunkClaims = mergeComputedValueChunkSpanClaims([
-      ...(computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? []),
-      ...(computedValueChunkMetadata.__messageBusComputedValueChunks ?? []),
-    ], (orderedContinuationClaims ?? []).flatMap((claim) => Array.from(
+    const computedValueChunkMetadata = localComputedChunkMetadata;
+    const observedContinuationClaims = orderedContinuationClaims.flatMap((claim) => Array.from(
       { length: claim.chunkCount }, (_, chunkIndex) => ({
         offset: participantInputBase + claim.bandOffset + chunkIndex,
         resourceIdentity: claim.producerClaim.resourceIdentity,
         resourcePart: `chunk:${chunkIndex}`,
       }),
-    )));
+    ));
+    const computedValueChunkClaims = transportedContinuationSpanClaims([
+      ...(computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? []),
+      ...(computedValueChunkMetadata.__messageBusComputedValueChunks ?? []),
+    ], observedContinuationClaims);
     const computedMinimumActualSize = minimumActualSizeForComputedValueChunkClaims(
       participant.participant,
       graph.layout.participantInputs[participant.participant],
@@ -1467,6 +1531,7 @@ export async function assembleAtomicComposition(
           pendingValueChunkClaim?.localSlotOffset !== undefined
             ? pendingValueChunkClaim.localSlotOffset + (pendingValueChunkClaim.chunkCount || 1)
             : 0,
+          ...orderedContinuationClaims.map((claim) => claim.bandOffset + claim.chunkCount),
           ...predOutPhysical.map((pred) => pred.physicalLocalOffset + 1),
         );
         // Resolve each participant's dynamic, entry, value-chunk, and PredOut layout together.
@@ -1489,11 +1554,13 @@ export async function assembleAtomicComposition(
           handlerSelector,
           handlerDiagnosticName: eligibleHandler?.name ?? participant.artifact.contractName,
           publishedBase,
-          claimCount: predOutPhysical.length + (pendingValueChunkClaim ? 1 : 0),
-          dynamicWrites: pendingValueChunkClaim?.collection
-            ? [pendingValueChunkClaim.collection] : [],
-          selectedResources: pendingValueChunkClaim?.collection
-            ? [pendingValueChunkClaim.collection] : [],
+          claimCount: predOutPhysical.length + orderedContinuationClaims.length,
+          dynamicWrites: orderedContinuationClaims.length > 1
+            ? orderedContinuationClaims.map((claim) => claim.collectionSignature)
+            : pendingValueChunkClaim?.collection ? [pendingValueChunkClaim.collection] : [],
+          selectedResources: orderedContinuationClaims.length > 1
+            ? orderedContinuationClaims.map((claim) => claim.producerClaim.resourceIdentity)
+            : pendingValueChunkClaim?.collection ? [pendingValueChunkClaim.collection] : [],
           // published resource budgets: prefer compiler-published multi-axis budgets; kernel fails closed if absent.
           requirePublishedBudgets:
               participant.artifact.messageBus?.convention === 'kernel-row-loop',
@@ -1549,15 +1616,14 @@ export async function assembleAtomicComposition(
             },
             rangeWidth: Math.max(1, inferredDynCount),
           }] : []),
-          ...(pendingValueChunkClaim === undefined ? [] : [{
+          ...orderedContinuationClaims.map((claim) => ({
             participant: participant.participant,
             carrier: 'valueChunk' as const,
-            collection: pendingValueChunkClaim.collection,
-            roles: {
-              outputSlot: publishedBase + pendingValueChunkClaim.localSlotOffset,
-            },
-            rangeWidth: Math.max(1, pendingValueChunkClaim.chunkCount),
-          }]),
+            collection: orderedContinuationClaims.length > 1
+              ? claim.producerClaim.resourceIdentity : claim.collectionSignature,
+            roles: { outputSlot: publishedBase + claim.bandOffset },
+            rangeWidth: claim.chunkCount,
+          })),
           ...predOutPhysical.map((pred) => ({
             participant: participant.participant,
             carrier: 'sortedBatch' as const,
@@ -1582,6 +1648,12 @@ export async function assembleAtomicComposition(
             : pendingValueChunkClaim.localSlotOffset - routeTrailingBase,
           valueChunkCollection: pendingValueChunkClaim?.collection,
           valueChunkCount: pendingValueChunkClaim?.chunkCount,
+          valueChunkBands: orderedContinuationClaims.length > 1
+            ? orderedContinuationClaims.map((claim) => ({
+              bandOffset: claim.bandOffset,
+              chunkCount: claim.chunkCount,
+              resourceIdentity: claim.producerClaim.resourceIdentity,
+            })) : undefined,
           predOuts: predOutPhysical.map((pred) => ({
             witnessName: pred.witnessName,
             physicalLocalOffset: pred.physicalLocalOffset,

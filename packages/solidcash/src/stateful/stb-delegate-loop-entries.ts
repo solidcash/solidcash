@@ -84,9 +84,9 @@ export function delegateLoopEntryVars(
  * covenant address so they retain the consumed NFT's satoshis; only NEW entries should be funded at dust.
  */
 export function loopEntryTransitionSatoshis(
-host: DelegateLoopEntriesHost,
-variable: DelegateLoopEntryVar,
-commitment: string,
+  host: DelegateLoopEntriesHost,
+  variable: DelegateLoopEntryVar,
+  commitment: string,
 ): bigint | undefined {
   const outputCommitment = commitment.toLowerCase();
   if (outputCommitment.length < 64) return undefined;

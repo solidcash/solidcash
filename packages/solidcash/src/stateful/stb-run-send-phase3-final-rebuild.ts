@@ -52,10 +52,10 @@ export function runSendPhase3FinalRebuild(
   dustMinimum: bigint,
   sendTiming: (label: string) => void,
 ): {
-  finalBuilder: TransactionBuilder;
-  serializedAccountingFunders: UnlockableUtxo[];
-  reassertFinalLayout: () => void;
-} {
+    finalBuilder: TransactionBuilder;
+    serializedAccountingFunders: UnlockableUtxo[];
+    reassertFinalLayout: () => void;
+  } {
   // The funder input and change output go past the covenant's block range.
   // The compiler uses blockSize (not OP_TXOUTPUTCOUNT) for bounds checks,
   // so extra outputs don't affect covenant introspection.

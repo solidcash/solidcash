@@ -43,11 +43,11 @@ export function convergeAndSerializeFinalTransaction(
   reassertFinalLayout: () => void,
   sendTiming: (label: string) => void,
 ): {
-  finalizedTransaction: ConvergedLibauthTransaction;
-  rawTxBin: Uint8Array;
-  rawTx: string;
-  totalInputSats: bigint;
-} {
+    finalizedTransaction: ConvergedLibauthTransaction;
+    rawTxBin: Uint8Array;
+    rawTx: string;
+    totalInputSats: bigint;
+  } {
   // Fee accounting must use the inputs which produce the finalized transaction.
   // `allInputs` is the logical candidate set and can retain a funder or
   // participant displaced by fixed block assembly; counting that stale input

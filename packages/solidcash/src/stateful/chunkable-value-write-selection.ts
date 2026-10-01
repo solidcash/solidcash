@@ -312,9 +312,9 @@ export function selectChunkableValueWriteExecution(
   candidates: ReadonlyArray<{ group: ChunkableValueWriteGroup; inputIndex: number }>,
   options?: { allowCompilerDescribed?: boolean },
 ): {
-  inputIndex: number; abiFunction: AbiFunction; collection: string;
-  resourceIdentity?: string; resourceOwnerIdentity?: string;
-} | undefined {
+    inputIndex: number; abiFunction: AbiFunction; collection: string;
+    resourceIdentity?: string; resourceOwnerIdentity?: string;
+  } | undefined {
   const executions = new Map<string, {
     inputIndex: number; abiFunction: AbiFunction; collection: string;
     resourceIdentity?: string; resourceOwnerIdentity?: string;

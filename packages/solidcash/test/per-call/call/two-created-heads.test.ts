@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256 } from '@solidcash/utils';
+import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
-import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import { requireSatisfiableReachWrites, type HopCallee } from '../../../src/per-call/proxy/external-calls.js';
+import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -29,6 +30,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  *
  * Before heads were minted only at genesis, a reach into an empty collection minted the head in its own transaction,
  * and both shapes broadcast two heads of one collection on the mock (measured and refused by name at 1ac66d296).
+ * A call never creates a head now, so a live deployment that was made without one is refused by name.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -190,6 +192,88 @@ function sameNodeRefusal(entry: string, count: number, collection: string): stri
     + `"${collection}" through the same node`;
 }
 
+/** The hop's words for an entry that writes `collection` of a live deployment that holds no head of it. */
+function noHeadRefusal(entry: string, collection: string): string {
+  return `the implementation's "${entry}" entry writes mapping "${collection}", but the deployment's collection `
+    + `"${collection}" has no head; a head is minted only at genesis, so this deployment was deployed without it`;
+}
+
+/** A store whose proxy genesis minted no head, and a root behind its own proxy that reaches it. */
+interface HeadlessWorld {
+  readonly network: MockNetworkProvider;
+  readonly storeProxyCategoryId: string;
+  readonly storeImplementationCategoryId: string;
+  readonly rootProxyCategoryId: string;
+  readonly rootImplementationCategoryId: string;
+  readonly callerLock: Uint8Array;
+  readonly changeAddress: string;
+  readonly callCoin: { txid: string; vout: number; satoshis: bigint };
+  readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
+}
+
+/**
+ * Deploys the store from its two geneses alone, with no head minted under its proxy's category: the deployment an
+ * SDK that minted only the heads an initialize writes made for this store. The root is deployed as usual.
+ */
+async function deployHeadless(): Promise<HeadlessWorld> {
+  const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+  const signature = new SignatureTemplate(alicePriv);
+  const wallet = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
+  const funder = wallet.unlock.spend(alicePub, signature);
+  const callerFunder = signature.unlockP2PKH();
+  const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
+  const storeImplementationCategoryId = idOf('headless store implementation');
+  const storeProxyCategoryId = idOf('headless store proxy');
+  const rootImplementationCategoryId = idOf('headless root implementation');
+  const rootProxyCategoryId = idOf('headless root proxy');
+  for (const categoryId of [
+    storeImplementationCategoryId, storeProxyCategoryId, rootImplementationCategoryId, rootProxyCategoryId,
+  ]) {
+    await network.addUtxo(wallet.address, funding(categoryId));
+  }
+  const rootInitCoin = funding(idOf('headless root initialize coin'));
+  const callCoin = funding(idOf('headless call coin'));
+  for (const coin of [rootInitCoin, callCoin]) await network.addUtxo(binToHex(callerLock), coin);
+  await fundShippedFacets(network);
+
+  const validatorProgram = perCallValidator.buildValidatorProgram();
+  await deployStatefulContract(store, [], {
+    fundingUtxo: funding(storeImplementationCategoryId), funder, changeAddress: wallet.address, provider: network,
+  });
+  const storeImplementation = deployMaster(store, hexToBin(storeImplementationCategoryId), validatorProgram);
+  await deployStatefulContract(buildProxyArtifact(store), [], {
+    fundingUtxo: funding(storeProxyCategoryId), funder, changeAddress: wallet.address, provider: network,
+    initialState: { implementation: storeImplementation.address },
+  });
+  const storeProxy = deployMaster(buildProxyArtifact(store), hexToBin(storeProxyCategoryId), validatorProgram);
+
+  const rootDeployment = await deployPerCallProxy({
+    provider: network,
+    implementationArtifact: root,
+    proxyArtifact: buildProxyArtifact(root),
+    implementationDeploy: {
+      fundingUtxo: funding(rootImplementationCategoryId), funder, changeAddress: wallet.address,
+    },
+    proxyDeploy: { fundingUtxo: funding(rootProxyCategoryId), funder, changeAddress: wallet.address },
+    initialize: { functionName: 'initialize', args: [storeProxy.address] },
+    callerLockingBytecode: callerLock,
+    callerFunding: { utxo: rootInitCoin, funder: callerFunder, changeAddress: wallet.address },
+    vm: compositionMachine(),
+  });
+  expect(rootDeployment.initialize.broadcast).toBeDefined();
+  return {
+    network,
+    storeProxyCategoryId,
+    storeImplementationCategoryId,
+    rootProxyCategoryId: rootDeployment.proxy.categoryId,
+    rootImplementationCategoryId: rootDeployment.implementation.categoryId,
+    callerLock,
+    changeAddress: wallet.address,
+    callCoin,
+    funder: callerFunder,
+  };
+}
+
 /** The store's live nodes of one collection, read with the implementation's collections grafted on the proxy's. */
 async function storeNodes(world: World, collection: string): Promise<readonly Utxo[]> {
   const layout = { ...buildProxyArtifact(store).stateLayout!, collections: store.stateLayout!.collections };
@@ -241,21 +325,52 @@ describe('reaches into a collection the store never wrote, through the head its 
     expect(nodes.map((node) => bytesToHex(node.slot)).sort()).toStrictEqual([headSlot, keySlot].sort());
   });
 
-  it('allows one created head per collection and deployment', () => {
-    // Two deployments of the store, each reached once, each create the head of their own collection, and one reach
-    // creates the head of the first one's second collection: each collection's head is created once.
-    const frame = (categoryHex: string, functionName: string, collection: string): HopCallee => ({
-      master: `callee-${categoryHex.slice(0, 8)}-${collection}`,
-      functionName,
-      category: hexToBin(categoryHex),
-      entryWrites: {
-        reachWrites: [{ collection, chunkable: collection === 'logs', targets: [], spentIds: [], createsHead: true }],
+  it('refuses by name a write into a collection a live deployment holds no head of, broadcasting nothing', async () => {
+    const headless = await deployHeadless();
+
+    // Called directly, the store's own frame plans the write against the deployment and finds no head to splice
+    // through; a call never mints one.
+    await expect(callPerCallProxyEntry({
+      provider: headless.network,
+      implementationArtifact: store,
+      proxyArtifact: buildProxyArtifact(store),
+      proxyCategoryId: headless.storeProxyCategoryId,
+      implementationCategoryId: headless.storeImplementationCategoryId,
+      functionName: 'put',
+      args: [1n, 10n],
+      callerUtxo: headless.callCoin,
+      callerLockingBytecode: headless.callerLock,
+      funder: headless.funder,
+      changeAddress: headless.changeAddress,
+      vm: compositionMachine(),
+    })).rejects.toThrow(noHeadRefusal('put', 'counts'));
+
+    // Reached from the root, the callee's frame is refused the same way, by the callee's name.
+    await expect(callPerCallProxyEntry({
+      provider: headless.network,
+      implementationArtifact: root,
+      proxyArtifact: buildProxyArtifact(root),
+      proxyCategoryId: headless.rootProxyCategoryId,
+      implementationCategoryId: headless.rootImplementationCategoryId,
+      functionName: 'logOnce',
+      args: [7n, 5n],
+      externals: {
+        IStore: {
+          artifact: store,
+          categoryId: headless.storeProxyCategoryId,
+          proxyArtifact: buildProxyArtifact(store),
+          implementationCategoryId: headless.storeImplementationCategoryId,
+        },
       },
-    } as unknown as HopCallee);
-    expect(() => requireSatisfiableReachWrites([
-      frame(STORE_PROXY_CATEGORY, 'Store.log()', 'logs'),
-      frame(idOf('second store proxy'), 'Store.log()', 'logs'),
-      frame(STORE_PROXY_CATEGORY, 'Store.put()', 'counts'),
-    ])).not.toThrow();
+      callerUtxo: headless.callCoin,
+      callerLockingBytecode: headless.callerLock,
+      funder: headless.funder,
+      changeAddress: headless.changeAddress,
+      vm: compositionMachine(),
+    })).rejects.toThrow(
+      `the callee "Store.log()" writes records this hop cannot declare: ${noHeadRefusal('log', 'logs')}`,
+    );
+    expect((await headless.network.getUtxosForLockingBytecode(headless.callerLock))
+      .some((utxo) => utxo.txid === headless.callCoin.txid && utxo.vout === headless.callCoin.vout)).toBe(true);
   });
 });

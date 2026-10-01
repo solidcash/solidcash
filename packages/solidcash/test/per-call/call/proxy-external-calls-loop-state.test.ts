@@ -10,12 +10,14 @@ import {
 import { perCallValidator } from 'solidc';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
-  chunkRecordLockingBytecode, deployMaster, readPerCallDeployment, stateRecordLockingBytecode,
+  chunkRecordLockingBytecode, deployMaster, entryRecordLockingBytecode, readPerCallDeployment,
+  stateRecordLockingBytecode,
 } from '../../../src/per-call/deploy/index.js';
 import {
   deploymentStateValues, planHopExternalCalls,
 } from '../../../src/per-call/proxy/external-calls.js';
 import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
+import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 
 /**
  * A call site read from the caller's own facts, against the artifacts the compiler actually shipped.
@@ -50,10 +52,14 @@ function loadArtifact(name: string): Artifact {
   return JSON.parse(readFileSync(join(ARTIFACTS_DIR, name), 'utf8')) as Artifact;
 }
 
-/** A live deployment of `artifact`'s category: masters, one record per data NFT, and any chunks given. */
+/**
+ * A live deployment of `artifact`'s category: masters, one record per data NFT, and the empty head a genesis mints
+ * for every sorted collection, which for a proxy are its implementation's (`collections`).
+ */
 async function seedDeployment(
   network: MockNetworkProvider, artifact: Artifact, categoryId: string,
   state?: Record<string, unknown>, masterCount = 1,
+  collections = artifact.stateLayout?.collections ?? [],
 ): Promise<{ readonly master: Uint8Array; readonly layout: NonNullable<Artifact['stateLayout']> }> {
   const category = hexToBin(categoryId);
   const layout = artifact.stateLayout!;
@@ -72,6 +78,16 @@ async function seedDeployment(
       token: {
         category: categoryId, amount: 0n,
         nft: { capability: 'mutable', commitment: buildPushdataCommitment(layout, (state ?? {}) as never, nftIndex) },
+      },
+    });
+  }
+  for (const [index, collection] of collections.filter((candidate) => candidate.sorted === true).entries()) {
+    await network.addUtxo(binToHex(entryRecordLockingBytecode(categoryId, collection.signature)), {
+      txid: `${categoryId.slice(0, 60)}${(0x80 + index).toString(16).padStart(2, '0')}ee`, vout: index,
+      satoshis: 1200n,
+      token: {
+        category: categoryId, amount: 0n,
+        nft: { capability: 'mutable', commitment: binToHex(headSentinelCommitment()) },
       },
     });
   }
@@ -249,7 +265,9 @@ describeShipped('solving a call site from the caller\'s own facts', () => {
     const dataProxy = buildProxyArtifact(data);
     // The proxied callee is two contracts, so each of its five reaches takes a master of each; the direct callee
     // takes one per reach.
-    const proxyDeployment = await seedDeployment(network, dataProxy, DATA_PROXY_CATEGORY, undefined, 5);
+    const proxyDeployment = await seedDeployment(
+      network, dataProxy, DATA_PROXY_CATEGORY, undefined, 5, data.stateLayout?.collections,
+    );
     await seedDeployment(network, data, DATA_CATEGORY, undefined, 5);
     await seedDeployment(network, token, TOKEN_CATEGORY, undefined, 5);
 

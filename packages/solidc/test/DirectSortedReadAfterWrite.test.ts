@@ -70,10 +70,7 @@ function settle(artifact: Artifact, spend: Spend, e: Uint8Array): true | string 
     computeCollectionHash(collection.signature)));
   const entryLock = encodeLockingBytecodeP2sh32(hash256(entryRedeem));
   const slot = keyToSlotMulti([...spend.keys]);
-  // The published ABI also lists `__internal__completePushValue_N` beside each leading-push witness; the direct
-  // body's frame does not hold it.
-  const inputs = artifact.abi.find((candidate) => candidate.name === 'f')!.inputs
-    .filter((input) => !input.name.startsWith('__internal__completePushValue_'));
+  const inputs = artifact.abi.find((candidate) => candidate.name === 'f')!.inputs;
   const pushes = inputs.map((input) => {
     const value = input.name === 'e' ? e : spend.args[input.name] ?? updateWitness(input.name, slot);
     if (value === undefined) throw new Error(`no value for '${input.name}'`);

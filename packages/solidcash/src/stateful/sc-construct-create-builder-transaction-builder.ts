@@ -380,6 +380,8 @@ export function constructCreateBuilderTransactionBuilder(
     const sameLock = (left: Uint8Array | undefined, right: Uint8Array | undefined): boolean =>
       left !== undefined && right !== undefined && left.length === right.length
       && left.every((byte, offset) => byte === right[offset]);
+    const linearBatchSlots = new Set((abiFunction.sortedBatchInfo ?? [])
+      .filter((batch) => batch.linear === true).flatMap((batch) => batch.slotIndices));
     let changed = false;
     for (const input of abiFunction.inputs) {
       const match = /^__internal__vmapBatchPredOut_(\d+)$/.exec(input.name);
@@ -394,6 +396,9 @@ export function constructCreateBuilderTransactionBuilder(
       // An active INSERT can retain the provisional -1 until its exact predecessor output is materialized.
       // Inactive rows (-2), and ordinary update/read lanes with -1, remain topology sentinels.
       if (typeof current !== 'bigint' || current === -2n) continue;
+      // A linear batch's covenant requires -1 of an update and of an insert whose predecessor an earlier row
+      // republishes; it never stands for a coordinate still to be found.
+      if (current === -1n && linearBatchSlots.has(Number(slot))) continue;
       if (typeof proofOffset !== 'bigint' || proofOffset < 0n) continue;
       const required = lockedBytecodeAt(masterIndex + Number(proofOffset));
       if (required === undefined) continue;

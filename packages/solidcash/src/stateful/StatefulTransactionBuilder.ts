@@ -1884,6 +1884,7 @@ export class StatefulTransactionBuilder {
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
       preserveBlockLayoutWidth: this.preserveBlockLayoutWidth,
       pinnedEntrySlots: this.pinnedEntrySlots,
+      blockLayout: this.blockLayout,
       loopEntryVars: this.loopEntryVars,
       stateLayout: this.stateLayout,
       categoryId: this.categoryId,

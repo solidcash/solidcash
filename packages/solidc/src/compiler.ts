@@ -15110,11 +15110,15 @@ function compileResolvedAst(
       ...messageBusRouteAbi,
       inputs: withCompletePushBesideLeading(messageBusRouteAbi.inputs),
     };
-  // Also patch ordinary handler ABI rows so completePushValue_* is visible beside leading.
-  artifact.abi = artifact.abi.map((fn) => ({
-    ...fn,
-    inputs: withCompletePushBesideLeading(fn.inputs),
-  }));
+  // Also patch ordinary handler ABI rows so completePushValue_* is visible beside leading. Only a route injects the
+  // witness into the bodies it reaches; a body compiled without one takes none, and an input its frame does not hold
+  // would shift every argument it reads by position.
+  if (messageBusRouteAbi !== undefined) {
+    artifact.abi = artifact.abi.map((fn) => ({
+      ...fn,
+      inputs: withCompletePushBesideLeading(fn.inputs),
+    }));
+  }
   if (messageBusRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn.name !== '__message_bus1');
   // Message-bus graph expansion reads the source shape of a bounded pointer table: one dispatch site whose
   // reached-row count is runtime with an explicit compiler-proven ceiling. Publish that shape only for a

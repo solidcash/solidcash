@@ -6,9 +6,9 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
 // Boundary #4: a loop that assigns a loop-INVARIANT rawbytes value (bytes / int[]) to N sorted-mapping keys -
-// `for(i) m[ks[i]] = a`. The covenant routes through the upsert loop; the value is stored as the inline chunkable
-// tail (len4 ++ value, size<=60 asserted - chunked-in-loop fails closed). The SDK mirrors the tail. Present reads
-// verify each key got `a`; an absent read is bracket-proven default.
+// `for(i) m[ks[i]] = a`. The covenant routes through the upsert loop; the value is stored as the chunkable tail
+// (len4 ++ value inline up to 60 B, else len4 ++ digest ++ head with a chunk run the loop pins per key). The SDK
+// mirrors the tail. Present reads verify each key got `a`; an absent read is bracket-proven default.
 describe('vmap array/bytes-VALUE insert loop for(i) m[ks[i]] = a', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
@@ -59,8 +59,7 @@ describe('vmap array/bytes-VALUE insert loop for(i) m[ks[i]] = a', () => {
     }`;
     const art = compileString(SRC, { forceStateful: true });
     const c = await deploy(art);
-    // int256 elements are 32-byte-packed, so a chunkable value must stay <=60 B inline -> one element (4B len + 32B).
-    // A larger array chunks, which fails closed in a loop (verified separately).
+    // int256 elements are 32-byte-packed, so one element stays inline (<= 60 B); a larger array chunks (below).
     const arr = [42n];
     await fund(c.address);
     expect((await c.fill([2n, 8n, 5n], arr, alicePub, sig).send()).txid).toBeDefined();
@@ -71,7 +70,7 @@ describe('vmap array/bytes-VALUE insert loop for(i) m[ks[i]] = a', () => {
     }
   });
 
-  it('fails closed for one invariant int[] value >60 B until loop chunk pins are supported', async () => {
+  it('int[] value >60 B: fills N keys in a loop; each key reads every element back from its chunk run', async () => {
     const SRC = `contract C() {
       mapping(int => int[]) m;
       function fill(int[] ks, int[] a, pubkey pk, sig s) { require(checkSig(s, pk)); for (int i = 0; i < ks.length; i++) { m[ks[i]] = a; } }
@@ -80,7 +79,15 @@ describe('vmap array/bytes-VALUE insert loop for(i) m[ks[i]] = a', () => {
     const art = compileString(SRC, { forceStateful: true });
     const c = await deploy(art);
     await fund(c.address);
-    const arr = [11n, 22n, 33n]; // 100 B: persisted in authenticated reverse-suffix chunks.
-    await expect(c.fill([2n, 8n], arr, alicePub, sig).send()).rejects.toThrow(/OP_VERIFY|preflight/i);
+    const arr = [11n, 22n, 33n]; // 100 B: the loop pins each key's chunk run by its slot-specific address.
+    expect((await c.fill([2n, 8n], arr, alicePub, sig).send()).txid).toBeDefined();
+    for (const k of [2n, 8n]) {
+      for (const [idx, value] of arr.entries()) {
+        await fund(c.address);
+        expect((await c.chk(k, BigInt(idx), value).send()).txid).toBeDefined();
+      }
+    }
+    await fund(c.address);
+    await expect(c.chk(8n, 1n, 33n).send()).rejects.toThrow(/OP_VERIFY|preflight/i);
   });
 });

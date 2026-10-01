@@ -4339,6 +4339,24 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs.filter((output) => output.token?.nft?.capability === 'mutable')).toHaveLength(2);
   });
 
+  it('leaves a frame\'s own entry slot outputs out of the planned lane width', () => {
+    const lock = new Uint8Array(35);
+    lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;
+    const distinct = (length: number, seed: number): string => Array.from({ length },
+      (_unused, index) => ((seed + index * 37) & 0xff).toString(16).padStart(2, '0')).join('');
+    type Node = { to: Uint8Array; token?: { nft: { capability: 'mutable'; commitment: string } } };
+    const node = (commitment: string): Node => ({ to: lock, token: { nft: { capability: 'mutable', commitment } } });
+    // A direct batch insert: the new node at its block slot, then the trailing predecessor, a head relinked to it.
+    const slot = distinct(32, 0x1d);
+    const relinkedHead = '00'.repeat(32) + slot + '00'.repeat(64);
+    const outputs = [node(slot + '00'.repeat(32) + distinct(38, 0x52)), node(relinkedHead)];
+    expect(stripSurplusEmptyCollectionEntries(outputs, lock, 1, new Set([0]))).toBe(0);
+    expect(outputs[1].token?.nft?.commitment).toBe(relinkedHead);
+    // Counted as a lane, the block slot's node pushes the relinked head past the width, which strips it.
+    expect(stripSurplusEmptyCollectionEntries(outputs, lock, 1)).toBe(1);
+    expect(outputs[1].token).toBeUndefined();
+  });
+
   it('classifies sorted-list HEAD vs node vs data-NFT tags', () => {
     expect(isSortedEntryHeadCommitment('')).toBe(true);
     expect(isSortedEntryHeadCommitment('00'.repeat(32))).toBe(true);

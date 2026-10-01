@@ -183,11 +183,14 @@ export function stripSurplusEmptyCollectionEntries(
   }>,
   collectionLock: Uint8Array,
   plannedCount = 0,
+  /** Outputs a frame's layout places, which are neither planned lanes nor leftovers. */
+  fixedIndices: ReadonlySet<number> = new Set(),
 ): number {
   if (plannedCount <= 0 || collectionLock.length === 0) return 0;
   const matches: number[] = [];
   const empties: number[] = [];
   for (const [index, output] of outputs.entries()) {
+    if (fixedIndices.has(index)) continue;
     const lock = output.to instanceof Uint8Array ? output.to : undefined;
     if (!lock || lock.length !== collectionLock.length) continue;
     if (!lock.every((byte, offset) => byte === collectionLock[offset])) continue;

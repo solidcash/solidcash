@@ -201,6 +201,23 @@ describe('sorted mapping array push leading-value param', () => {
     expect(fn?.inputs.some((input) => input.name === '__internal__valueWitness_0')).toBe(true);
   });
 
+  it('publishes no complete-push witness beside the leading one when no route reaches the body', () => {
+    // Only a message-bus route injects `__internal__completePushValue_N` into the bodies it reaches. A direct body's
+    // frame holds none, and an input it does not take would shift every argument it reads by position.
+    const artifact = compileString(`
+      contract C() {
+        mapping(int => int[]) items;
+        function push(int k, int v) { this.items[k].push(v); }
+        function put(int k, int[] v) { this.items[k] = v; }
+      }
+    `, { forceStateful: true });
+    for (const name of ['push', 'put']) {
+      const fn = artifact.abi.find((candidate) => candidate.name === name);
+      expect(fn?.inputs.some((input) => input.name === '__internal__leadingPushValue_0')).toBe(true);
+      expect(fn?.inputs.some((input) => input.name.startsWith('__internal__completePushValue_'))).toBe(false);
+    }
+  });
+
   it('does not inject leadingPushValue on a read-only vmap getter', () => {
     const artifact = compileString(`
       contract C() {

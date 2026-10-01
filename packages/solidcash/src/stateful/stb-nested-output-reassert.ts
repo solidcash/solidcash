@@ -7,6 +7,7 @@
 import {
   buildPushdataCommitment,
   parsePushdataCommitment,
+  type FunctionBlockLayout,
   type StateLayout,
   type StateValue,
 } from '@solidcash/utils';
@@ -60,6 +61,8 @@ export interface NestedOutputReassertHost {
   readonly pendingReturnEventOutputs: readonly NestedReassertPendingReturnEvent[];
   readonly preserveBlockLayoutWidth: boolean;
   readonly pinnedEntrySlots: ReadonlySet<number>;
+  /** The executing frame's own block layout. */
+  readonly blockLayout?: FunctionBlockLayout;
   readonly loopEntryVars: readonly NestedReassertLoopEntryVar[];
   readonly stateLayout: StateLayout;
   readonly categoryId: string;
@@ -174,8 +177,18 @@ export function stripSurplusEmptyCollectionEntriesForHost(
     // cleanup must leave every output untouched.
     remember(variable.lockingBytecode, required > 0 ? required : materialized);
   }
+  // A direct frame's own entry slots sit at their block offsets, where its covenant verifies each node (a batch
+  // insert's new node included). They are not lanes of the planned width, so they neither count against it nor
+  // read as leftovers; counting them strips the trailing predecessor, a relinked head that looks empty.
+  const fixedIndices = new Set<number>();
+  const master = host.findMintingInputIndex(host.categoryId);
+  if (activeGroups.length === 0 && host.messageBusConvention === undefined && master >= 0) {
+    for (const slot of host.blockLayout?.slots ?? []) {
+      if (slot.kind === 'entry') fixedIndices.add(master + slot.offset);
+    }
+  }
   for (const { lock, planned } of plannedByLock.values()) {
-    stripSurplusEmptyCollectionEntries(builder.outputs, lock, planned);
+    stripSurplusEmptyCollectionEntries(builder.outputs, lock, planned, fixedIndices);
   }
 }
 

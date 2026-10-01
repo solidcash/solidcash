@@ -2087,10 +2087,10 @@ export function deriveChunkableArrayValueChannels({
   leadingMutation?: Uint8Array;
   currentElement?: Uint8Array;
 }): {
-  preValueWitness?: Uint8Array;
-  leadingMutation?: Uint8Array;
-  postValue: Uint8Array;
-} {
+    preValueWitness?: Uint8Array;
+    leadingMutation?: Uint8Array;
+    postValue: Uint8Array;
+  } {
   let postValue = storedPreValue;
   if (leadingMutation && leadingMutation.length > 0) {
     postValue = concatenateEncodedArrays(postValue, leadingMutation);
@@ -3127,8 +3127,8 @@ function storedChunkableValueRoots(
 function authenticatedCollectionValueSelector(
   valueType: string | undefined, structs: StateLayout['structs'],
 ): (
-  items: readonly Uint8Array[], roots: ReadonlySet<string>, preferredRoots: ReadonlySet<string>,
-) => Uint8Array | undefined {
+    items: readonly Uint8Array[], roots: ReadonlySet<string>, preferredRoots: ReadonlySet<string>,
+  ) => Uint8Array | undefined {
   // Sparse probe states share immutable stack items by reference. Cache their two pure classifications across
   // states so a long collection is not decoded and hashed hundreds of times during one witness search.
   const digests = new WeakMap<Uint8Array, string>();
@@ -3962,14 +3962,14 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
       // OP_INVOKE and OP_UTXOBYTECODE are the two operations that decide a subprogram call: the first shows the
       // operands a caller hands down (the callee consumes them immediately), the second shows which input a
       // participant check resolved to. Both are absent from the production observer set.
-      ? new Set([...PROBE_TRACE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160,
-        Op.OP_INVOKE, Op.OP_UTXOBYTECODE,
-        // `emitPickTrackedFromBottom` is `OP_DEPTH; n; OP_SUB; OP_PICK`, so observing these three names which frame
-        // slot (i.e. which hidden ABI witness) a participant check resolved its coordinate from.
-        Op.OP_PICK, Op.OP_DEPTH, Op.OP_INPUTINDEX])
-      : debugTraceOperationMode === 'project'
-        ? new Set([...PROBE_TRACE_OPCODES, Op.OP_HASH160])
-      : PROBE_TRACE_OPCODES,
+        ? new Set([...PROBE_TRACE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160,
+          Op.OP_INVOKE, Op.OP_UTXOBYTECODE,
+          // `emitPickTrackedFromBottom` is `OP_DEPTH; n; OP_SUB; OP_PICK`, so observing these three names which frame
+          // slot (i.e. which hidden ABI witness) a participant check resolved its coordinate from.
+          Op.OP_PICK, Op.OP_DEPTH, Op.OP_INPUTINDEX])
+        : debugTraceOperationMode === 'project'
+          ? new Set([...PROBE_TRACE_OPCODES, Op.OP_HASH160])
+          : PROBE_TRACE_OPCODES,
     beforeOperation: (unknownState) => {
       const state = unknownState as AuthenticationProgramStateCommon;
       const opcode = state.instructions[state.ip]?.opcode;
@@ -7114,7 +7114,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       derivedTokenContainerTransferNfts?: Array<{
         categoryId: string; lockingBytecode: Uint8Array; commitment: Uint8Array; capability: string;
       }>;
-  }> {
+    }> {
     const stateLayout = this.inner.stateLayout!;
     const {
       valueChunkWrites, persistedChunkWrite, persistWidthAtEntry,
@@ -7331,364 +7331,364 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           let phase2Insertion: ReturnType<typeof stb.insertBeforeLateValueSuffix> | undefined;
           let probeBuilder2!: ReturnType<typeof stb.build>;
           try {
-          const phase2IterProbe = deriveFullPhase2IterationProbeImpl(
-            {
-              inner: this.inner as any,
-              get lastDerivationIterations() { return phase2Host.lastDerivationIterations; },
-              set lastDerivationIterations(v: number) { phase2Host.lastDerivationIterations = v; },
-            },
-            stb,
-            {
-              iter,
-              dummyLbc,
-              delegatecallInputIndex,
-              debugTargetsThisDerivation,
-              previousProbeFingerprint,
-              lockingBytecodeFingerprintCache,
-              fingerprintLockingBytecode,
-              retainDiagnosticTrace,
-              debugIterationStartedAt,
-            },
-          );
-          phase2ParamSnap = phase2IterProbe.phase2ParamSnap;
-          phase2Insertion = phase2IterProbe.phase2Insertion;
-          probeBuilder2 = phase2IterProbe.probeBuilder2;
-          previousProbeFingerprint = phase2IterProbe.previousProbeFingerprint;
-          if (phase2IterProbe.fixedPoint) break;
-          const transaction2 = phase2IterProbe.transaction2!;
-          const sourceOutputs2 = phase2IterProbe.sourceOutputs2!;
-          const fullTrace2 = phase2IterProbe.fullTrace2!;
-          const faithfulProbeHadError = phase2IterProbe.faithfulProbeHadError!;
-          lastTrace = phase2IterProbe.lastTrace;
-          if (phase2IterProbe.lastFailProbeOutputs !== undefined) {
-            lastFailProbeOutputs = phase2IterProbe.lastFailProbeOutputs;
-          }
-          const debugIterationBuiltAt = phase2IterProbe.debugIterationBuiltAt ?? Date.now();
-
-// Extract commitments using output-index filtering to avoid capturing
-          // container identity checks, minting NFT uniqueness, or other non-commitment patterns.
-          let commitmentProgress = 0;
-          let nestedPinProgress = 0;
-          let nestedProbeHadError = false;
-
-          // A delegate implementation's complex keccak expression can depend on proxy state and authenticated
-          // nested returns, so only this complete transaction can evaluate it. Learn one runtime-reached preimage
-          // per probe; rebuilding the ordinary side-car advances execution to the next nested/outer hash.
-          if (stb.resolveDeferredKeccakPreimage(fullTrace2)) commitmentProgress += 1;
-          if (stb.resolveDeferredEcrecoverArgument(fullTrace2)) commitmentProgress += 1;
-
-          // Nested delegate implementations can pin computed value chunks at implementation-relative outputs.
-          // Phase 2 traces the root implementation, so recover those pins from each nested implementation input.
-          for (const [llcIndex, llc] of stb.getLowLevelCallUtxoGroups().entries()) {
-            const nestedValueChunkPin = applyDeriveFullNestedValueChunkPinImpl(
+            const phase2IterProbe = deriveFullPhase2IterationProbeImpl(
               {
-                categoryId: this.categoryId,
-                inner: this.inner,
+                inner: this.inner as any,
+                get lastDerivationIterations() { return phase2Host.lastDerivationIterations; },
+                set lastDerivationIterations(v: number) { phase2Host.lastDerivationIterations = v; },
               },
+              stb,
               {
-                stb,
-                probeBuilder2,
-                sourceOutputs2,
-                transaction2,
-                llc,
-                llcIndex,
-                delegatecallInputIndex,
-                skipNestedAfterPass,
-                debugTargetsThisDerivation,
                 iter,
+                dummyLbc,
+                delegatecallInputIndex,
+                debugTargetsThisDerivation,
+                previousProbeFingerprint,
+                lockingBytecodeFingerprintCache,
+                fingerprintLockingBytecode,
+                retainDiagnosticTrace,
+                debugIterationStartedAt,
               },
             );
-            if (nestedValueChunkPin.skipped) continue;
-            commitmentProgress += nestedValueChunkPin.commitmentProgressDelta;
-            nestedPinProgress += nestedValueChunkPin.nestedPinProgressDelta;
-            nestedProbeHadError ||= nestedValueChunkPin.nestedProbeHadError;
-            const {
-              nestedTrace,
-              implInputIndex,
-              proxyGroup,
-              proxyGroupIndex,
-              proxyPhysicalGroup,
-              nestedOutputBase,
-              chunkCategory,
-              valueChunkWrites,
-              attachedGroups,
-              band,
-              allChunks,
-              fallbackBase,
-              pin,
-            } = nestedValueChunkPin;
-            // nested-value-chunk-pin-iteration (size-guarded; entry-NFT remainder follows)
-            const nestedEntryPins = applyDeriveFullNestedEntryPinsImpl(
-              {
-                categoryId: this.categoryId,
-                inner: this.inner,
-              },
-              {
+            phase2ParamSnap = phase2IterProbe.phase2ParamSnap;
+            phase2Insertion = phase2IterProbe.phase2Insertion;
+            probeBuilder2 = phase2IterProbe.probeBuilder2;
+            previousProbeFingerprint = phase2IterProbe.previousProbeFingerprint;
+            if (phase2IterProbe.fixedPoint) break;
+            const transaction2 = phase2IterProbe.transaction2!;
+            const sourceOutputs2 = phase2IterProbe.sourceOutputs2!;
+            const fullTrace2 = phase2IterProbe.fullTrace2!;
+            const faithfulProbeHadError = phase2IterProbe.faithfulProbeHadError!;
+            lastTrace = phase2IterProbe.lastTrace;
+            if (phase2IterProbe.lastFailProbeOutputs !== undefined) {
+              lastFailProbeOutputs = phase2IterProbe.lastFailProbeOutputs;
+            }
+            const debugIterationBuiltAt = phase2IterProbe.debugIterationBuiltAt ?? Date.now();
+
+            // Extract commitments using output-index filtering to avoid capturing
+            // container identity checks, minting NFT uniqueness, or other non-commitment patterns.
+            let commitmentProgress = 0;
+            let nestedPinProgress = 0;
+            let nestedProbeHadError = false;
+
+            // A delegate implementation's complex keccak expression can depend on proxy state and authenticated
+            // nested returns, so only this complete transaction can evaluate it. Learn one runtime-reached preimage
+            // per probe; rebuilding the ordinary side-car advances execution to the next nested/outer hash.
+            if (stb.resolveDeferredKeccakPreimage(fullTrace2)) commitmentProgress += 1;
+            if (stb.resolveDeferredEcrecoverArgument(fullTrace2)) commitmentProgress += 1;
+
+            // Nested delegate implementations can pin computed value chunks at implementation-relative outputs.
+            // Phase 2 traces the root implementation, so recover those pins from each nested implementation input.
+            for (const [llcIndex, llc] of stb.getLowLevelCallUtxoGroups().entries()) {
+              const nestedValueChunkPin = applyDeriveFullNestedValueChunkPinImpl(
+                {
+                  categoryId: this.categoryId,
+                  inner: this.inner,
+                },
+                {
+                  stb,
+                  probeBuilder2,
+                  sourceOutputs2,
+                  transaction2,
+                  llc,
+                  llcIndex,
+                  delegatecallInputIndex,
+                  skipNestedAfterPass,
+                  debugTargetsThisDerivation,
+                  iter,
+                },
+              );
+              if (nestedValueChunkPin.skipped) continue;
+              commitmentProgress += nestedValueChunkPin.commitmentProgressDelta;
+              nestedPinProgress += nestedValueChunkPin.nestedPinProgressDelta;
+              nestedProbeHadError ||= nestedValueChunkPin.nestedProbeHadError;
+              const {
+                nestedTrace,
+                implInputIndex,
+                proxyGroup,
+                proxyGroupIndex,
+                proxyPhysicalGroup,
+                nestedOutputBase,
+                chunkCategory,
+                valueChunkWrites,
+                attachedGroups,
+                band,
+                allChunks,
+                fallbackBase,
+                pin,
+              } = nestedValueChunkPin;
+              // nested-value-chunk-pin-iteration (size-guarded; entry-NFT remainder follows)
+              const nestedEntryPins = applyDeriveFullNestedEntryPinsImpl(
+                {
+                  categoryId: this.categoryId,
+                  inner: this.inner,
+                },
+                {
+                  stb,
+                  probeBuilder2,
+                  llc,
+                  nestedTrace,
+                  implInputIndex,
+                  proxyGroup,
+                  chunkCategory,
+                  valueChunkWrites,
+                  band,
+                  allChunks,
+                  fallbackBase,
+                  pin,
+                },
+              );
+              commitmentProgress += nestedEntryPins.commitmentProgressDelta;
+              nestedPinProgress += nestedEntryPins.nestedPinProgressDelta;
+              // nested-entry-pins-complete (size-guarded; commits/event pinning follows)
+
+              const nestedCommitsEventPins = applyDeriveFullNestedCommitsEventPinsImpl({
                 stb,
                 probeBuilder2,
                 llc,
                 nestedTrace,
+                nestedOutputBase,
                 implInputIndex,
                 proxyGroup,
                 chunkCategory,
                 valueChunkWrites,
                 band,
                 allChunks,
-                fallbackBase,
                 pin,
-              },
-            );
-            commitmentProgress += nestedEntryPins.commitmentProgressDelta;
-            nestedPinProgress += nestedEntryPins.nestedPinProgressDelta;
-            // nested-entry-pins-complete (size-guarded; commits/event pinning follows)
+              });
+              commitmentProgress += nestedCommitsEventPins.commitmentProgressDelta;
+              nestedPinProgress += nestedCommitsEventPins.nestedPinProgressDelta;
+              // nested-commits-event-pins-complete (size-guarded end of nested LLC iteration)
 
-            const nestedCommitsEventPins = applyDeriveFullNestedCommitsEventPinsImpl({
-              stb,
-              probeBuilder2,
-              llc,
-              nestedTrace,
-              nestedOutputBase,
-              implInputIndex,
-              proxyGroup,
-              chunkCategory,
-              valueChunkWrites,
-              band,
-              allChunks,
-              pin,
+
+            }
+            if (debugTargetsThisDerivation) console.error('derive-phase2-nested-complete', {
+              iter, elapsedMs: Date.now() - debugIterationBuiltAt,
             });
-            commitmentProgress += nestedCommitsEventPins.commitmentProgressDelta;
-            nestedPinProgress += nestedCommitsEventPins.nestedPinProgressDelta;
-            // nested-commits-event-pins-complete (size-guarded end of nested LLC iteration)
 
+            if (debugTargetsThisDerivation) console.error('derive-phase2-nested-complete', {
+              iter, elapsedMs: Date.now() - debugIterationBuiltAt,
+            });
+            let phaseCheckpointAt = debugTargetsThisDerivation ? Date.now() : 0;
+            const phaseCheckpoint = (stage: string): void => {
+              if (!debugTargetsThisDerivation) return;
+              const now = Date.now();
+              console.error('derive-phase2-postprocess', { iter, stage, ms: now - phaseCheckpointAt });
+              phaseCheckpointAt = now;
+            };
+            if (!nestedProbeHadError && persistWidth > 0) skipNestedAfterPass = true;
 
-          }
-          if (debugTargetsThisDerivation) console.error('derive-phase2-nested-complete', {
-            iter, elapsedMs: Date.now() - debugIterationBuiltAt,
-          });
-
-          if (debugTargetsThisDerivation) console.error('derive-phase2-nested-complete', {
-            iter, elapsedMs: Date.now() - debugIterationBuiltAt,
-          });
-          let phaseCheckpointAt = debugTargetsThisDerivation ? Date.now() : 0;
-          const phaseCheckpoint = (stage: string): void => {
-            if (!debugTargetsThisDerivation) return;
-            const now = Date.now();
-            console.error('derive-phase2-postprocess', { iter, stage, ms: now - phaseCheckpointAt });
-            phaseCheckpointAt = now;
-          };
-          if (!nestedProbeHadError && persistWidth > 0) skipNestedAfterPass = true;
-
-          let latestEntryCommits: string[] = [];
-          let latestEventCommits: string[] = [];
-          let latestLoopEntryCommits: string[] = [];
-          let stateCommits: string[] = [];
-          {
-            const applied = deriveFullPhase2ApplyStateAndEntriesImpl(
-              { categoryId: this.categoryId },
-              stb,
-              {
-                probeBuilder2,
-                fullTrace2,
-                commitmentProgress,
-                derivedAState,
-                derivedStateCount,
-                stateCount,
-                entryCount,
-                stateLayout,
-                requiredNftIndices,
-                entryAccesses,
-                delegatecallInputIndex,
-                phaseCheckpoint,
-              },
-            );
-            commitmentProgress = applied.commitmentProgress;
-            derivedAState = applied.derivedAState;
-            derivedStateCount = applied.derivedStateCount;
-            stateCommits = applied.stateCommits;
-            latestEntryCommits = applied.latestEntryCommits;
-            latestEventCommits = applied.latestEventCommits;
-            latestLoopEntryCommits = applied.latestLoopEntryCommits;
-          }
-
-          let chunkVars = stb.getDynamicChunkVars();
-          let getPhysicalChunkOutputBase = (): number => stb.getChunkOutputBase();
-          {
-            const appliedDyn = deriveFullPhase2ApplyDynamicChunksImpl(
-              {
-                categoryId: this.categoryId,
-                inner: this.inner as any,
-              },
-              stb,
-              {
-                probeBuilder2,
-                fullTrace2,
-                commitmentProgress,
-                derivedAState,
-                stateLayout,
-                iter,
-                phaseCheckpoint,
-              },
-            );
-            commitmentProgress = appliedDyn.commitmentProgress;
-            derivedAState = appliedDyn.derivedAState;
-            chunkVars = appliedDyn.chunkVars;
-            getPhysicalChunkOutputBase = appliedDyn.getPhysicalChunkOutputBase;
-          }
-
-          {
-            const appliedLoop = deriveFullPhase2ApplyLoopEntriesImpl(
-              stb,
-              {
-                probeBuilder2,
-                fullTrace2,
-                commitmentProgress,
-                latestLoopEntryCommits,
-                stateLayout,
-                probedSortedLoop,
-                delegatecallInputIndex,
-                iter,
-                phaseCheckpoint,
-              },
-            );
-            commitmentProgress = appliedLoop.commitmentProgress;
-            latestLoopEntryCommits = appliedLoop.latestLoopEntryCommits;
-          }
-          {
-            const appliedRtLoop = deriveFullPhase2ApplyRuntimeLoopImpl(
-              {
-                extractExpectedOutputCommitmentFromTrace,
-                parseNftCapability,
-              },
-              stb,
-              {
-                probeBuilder2,
-                fullTrace2,
-                commitmentProgress,
-                derivedFlags: {
-                  bytecodesDerived: runtimeLoopTransferBytecodesDerived,
-                  amountsDerived: runtimeLoopTransferAmountsDerived,
-                  commitmentsDerived: runtimeLoopTransferCommitmentsDerived,
-                  capabilitiesDerived: runtimeLoopTransferCapabilitiesDerived,
+            let latestEntryCommits: string[] = [];
+            let latestEventCommits: string[] = [];
+            let latestLoopEntryCommits: string[] = [];
+            let stateCommits: string[] = [];
+            {
+              const applied = deriveFullPhase2ApplyStateAndEntriesImpl(
+                { categoryId: this.categoryId },
+                stb,
+                {
+                  probeBuilder2,
+                  fullTrace2,
+                  commitmentProgress,
+                  derivedAState,
+                  derivedStateCount,
+                  stateCount,
+                  entryCount,
+                  stateLayout,
+                  requiredNftIndices,
+                  entryAccesses,
+                  delegatecallInputIndex,
+                  phaseCheckpoint,
                 },
-                phaseCheckpoint,
-              },
-            );
-            commitmentProgress = appliedRtLoop.commitmentProgress;
-          }
-          {
-            const appliedValueChunks = deriveFullPhase2ApplyValueChunksImpl(
-              {
-                categoryId: this.categoryId,
-                inner: this.inner as any,
-              },
+              );
+              commitmentProgress = applied.commitmentProgress;
+              derivedAState = applied.derivedAState;
+              derivedStateCount = applied.derivedStateCount;
+              stateCommits = applied.stateCommits;
+              latestEntryCommits = applied.latestEntryCommits;
+              latestEventCommits = applied.latestEventCommits;
+              latestLoopEntryCommits = applied.latestLoopEntryCommits;
+            }
+
+            let chunkVars = stb.getDynamicChunkVars();
+            let getPhysicalChunkOutputBase = (): number => stb.getChunkOutputBase();
+            {
+              const appliedDyn = deriveFullPhase2ApplyDynamicChunksImpl(
+                {
+                  categoryId: this.categoryId,
+                  inner: this.inner as any,
+                },
+                stb,
+                {
+                  probeBuilder2,
+                  fullTrace2,
+                  commitmentProgress,
+                  derivedAState,
+                  stateLayout,
+                  iter,
+                  phaseCheckpoint,
+                },
+              );
+              commitmentProgress = appliedDyn.commitmentProgress;
+              derivedAState = appliedDyn.derivedAState;
+              chunkVars = appliedDyn.chunkVars;
+              getPhysicalChunkOutputBase = appliedDyn.getPhysicalChunkOutputBase;
+            }
+
+            {
+              const appliedLoop = deriveFullPhase2ApplyLoopEntriesImpl(
+                stb,
+                {
+                  probeBuilder2,
+                  fullTrace2,
+                  commitmentProgress,
+                  latestLoopEntryCommits,
+                  stateLayout,
+                  probedSortedLoop,
+                  delegatecallInputIndex,
+                  iter,
+                  phaseCheckpoint,
+                },
+              );
+              commitmentProgress = appliedLoop.commitmentProgress;
+              latestLoopEntryCommits = appliedLoop.latestLoopEntryCommits;
+            }
+            {
+              const appliedRtLoop = deriveFullPhase2ApplyRuntimeLoopImpl(
+                {
+                  extractExpectedOutputCommitmentFromTrace,
+                  parseNftCapability,
+                },
+                stb,
+                {
+                  probeBuilder2,
+                  fullTrace2,
+                  commitmentProgress,
+                  derivedFlags: {
+                    bytecodesDerived: runtimeLoopTransferBytecodesDerived,
+                    amountsDerived: runtimeLoopTransferAmountsDerived,
+                    commitmentsDerived: runtimeLoopTransferCommitmentsDerived,
+                    capabilitiesDerived: runtimeLoopTransferCapabilitiesDerived,
+                  },
+                  phaseCheckpoint,
+                },
+              );
+              commitmentProgress = appliedRtLoop.commitmentProgress;
+            }
+            {
+              const appliedValueChunks = deriveFullPhase2ApplyValueChunksImpl(
+                {
+                  categoryId: this.categoryId,
+                  inner: this.inner as any,
+                },
+                stb,
+                {
+                  probeBuilder2,
+                  fullTrace2,
+                  commitmentProgress,
+                  stateLayout,
+                  delegatecallInputIndex,
+                  iter,
+                  phaseCheckpoint,
+                },
+              );
+              commitmentProgress = appliedValueChunks.commitmentProgress;
+            }
+            {
+              const appliedEvents = deriveFullPhase2ApplyDynamicRescanAndEventsImpl(
+                { extractExpectedOutputCommitmentFromTrace },
+                stb,
+                {
+                  fullTrace2,
+                  commitmentProgress,
+                  latestEventCommits,
+                  chunkVars,
+                  getPhysicalChunkOutputBase,
+                  eventCount,
+                  emitInfos,
+                  eventBlockLayout,
+                  probeBuilder2,
+                  transaction2,
+                  sourceOutputs2,
+                  delegatecallInputIndex,
+                  iter,
+                  phaseCheckpoint,
+                },
+              );
+              commitmentProgress = appliedEvents.commitmentProgress;
+              latestEventCommits = appliedEvents.latestEventCommits;
+            }
+            {
+              const appliedTransfers = deriveFullPhase2ApplyTransfersImpl(
+                { parseNftCapability },
+                stb,
+                {
+                  fullTrace2,
+                  satoshiTransferCount,
+                  ftOps,
+                  nftOps,
+                  dummyLbc,
+                  delegatecallInputIndex,
+                  derivedTransfers,
+                  derivedFtTransfers,
+                  derivedNftTransfers,
+                  satoshiAmountsFullyDerived,
+                  ftAmountsFullyDerived,
+                  phaseCheckpoint,
+                },
+              );
+              derivedTransfers = appliedTransfers.derivedTransfers;
+              derivedFtTransfers = appliedTransfers.derivedFtTransfers;
+              derivedNftTransfers = appliedTransfers.derivedNftTransfers;
+              satoshiAmountsFullyDerived = appliedTransfers.satoshiAmountsFullyDerived;
+              ftAmountsFullyDerived = appliedTransfers.ftAmountsFullyDerived;
+            }
+            const {
+              convergenceKey,
+              anyProbeHadError,
+              needsPassingProbe,
+            } = deriveFullPhase2ConvergenceImpl(
               stb,
               {
-                probeBuilder2,
-                fullTrace2,
                 commitmentProgress,
-                stateLayout,
-                delegatecallInputIndex,
-                iter,
-                phaseCheckpoint,
-              },
-            );
-            commitmentProgress = appliedValueChunks.commitmentProgress;
-          }
-          {
-            const appliedEvents = deriveFullPhase2ApplyDynamicRescanAndEventsImpl(
-              { extractExpectedOutputCommitmentFromTrace },
-              stb,
-              {
-                fullTrace2,
-                commitmentProgress,
-                latestEventCommits,
+                derivedAState,
                 chunkVars,
-                getPhysicalChunkOutputBase,
-                eventCount,
-                emitInfos,
-                eventBlockLayout,
-                probeBuilder2,
-                transaction2,
-                sourceOutputs2,
-                delegatecallInputIndex,
-                iter,
-                phaseCheckpoint,
-              },
-            );
-            commitmentProgress = appliedEvents.commitmentProgress;
-            latestEventCommits = appliedEvents.latestEventCommits;
-          }
-          {
-            const appliedTransfers = deriveFullPhase2ApplyTransfersImpl(
-              { parseNftCapability },
-              stb,
-              {
-                fullTrace2,
-                satoshiTransferCount,
-                ftOps,
-                nftOps,
-                dummyLbc,
-                delegatecallInputIndex,
                 derivedTransfers,
                 derivedFtTransfers,
                 derivedNftTransfers,
-                satoshiAmountsFullyDerived,
-                ftAmountsFullyDerived,
+                stateCommits,
+                latestEntryCommits,
+                latestEventCommits,
+                latestLoopEntryCommits,
+                faithfulProbeHadError,
+                nestedProbeHadError,
+                nestedPinProgress,
+                runtimeLoopTransferBytecodesDerived,
+                runtimeLoopTransferAmountsDerived,
+                runtimeLoopTransferCommitmentsDerived,
+                runtimeLoopTransferCapabilitiesDerived,
+                fullTrace2,
+                iter,
+                debugTargetsThisDerivation,
+                debugIterationStartedAt,
                 phaseCheckpoint,
               },
             );
-            derivedTransfers = appliedTransfers.derivedTransfers;
-            derivedFtTransfers = appliedTransfers.derivedFtTransfers;
-            derivedNftTransfers = appliedTransfers.derivedNftTransfers;
-            satoshiAmountsFullyDerived = appliedTransfers.satoshiAmountsFullyDerived;
-            ftAmountsFullyDerived = appliedTransfers.ftAmountsFullyDerived;
-          }
-          const {
-            convergenceKey,
-            anyProbeHadError,
-            needsPassingProbe,
-          } = deriveFullPhase2ConvergenceImpl(
-            stb,
-            {
-              commitmentProgress,
-              derivedAState,
-              chunkVars,
-              derivedTransfers,
-              derivedFtTransfers,
-              derivedNftTransfers,
-              stateCommits,
-              latestEntryCommits,
-              latestEventCommits,
-              latestLoopEntryCommits,
-              faithfulProbeHadError,
-              nestedProbeHadError,
-              nestedPinProgress,
-              runtimeLoopTransferBytecodesDerived,
-              runtimeLoopTransferAmountsDerived,
-              runtimeLoopTransferCommitmentsDerived,
-              runtimeLoopTransferCapabilitiesDerived,
-              fullTrace2,
-              iter,
-              debugTargetsThisDerivation,
-              debugIterationStartedAt,
-              phaseCheckpoint,
-            },
-          );
-          // A successful probe proves the builder's current commitments and output geometry satisfy the complete
-          // covenant. Continuing can only revisit the same authenticated observations and falsely classify that
-          // stable fixed point as an oscillation.
-          // The root marketplace covenant can pass while a nested publishJobEvent still
-          // lacks later value-chunk outputs (nNew>1). Keep probing until those pins settle.
-          if (!anyProbeHadError && nestedPinProgress === 0) break;
-          if (convergenceKey === prevConvergenceKey && (!needsPassingProbe || !anyProbeHadError)) break;
-          if (seenConvergenceKeys.has(convergenceKey) && (!needsPassingProbe || !anyProbeHadError)) {
-            throw new AutoDerivationError(
-              'Auto-derivation oscillation detected: derivation state is cycling without converging. '
+            // A successful probe proves the builder's current commitments and output geometry satisfy the complete
+            // covenant. Continuing can only revisit the same authenticated observations and falsely classify that
+            // stable fixed point as an oscillation.
+            // The root marketplace covenant can pass while a nested publishJobEvent still
+            // lacks later value-chunk outputs (nNew>1). Keep probing until those pins settle.
+            if (!anyProbeHadError && nestedPinProgress === 0) break;
+            if (convergenceKey === prevConvergenceKey && (!needsPassingProbe || !anyProbeHadError)) break;
+            if (seenConvergenceKeys.has(convergenceKey) && (!needsPassingProbe || !anyProbeHadError)) {
+              throw new AutoDerivationError(
+                'Auto-derivation oscillation detected: derivation state is cycling without converging. '
             + 'This may indicate conflicting covenant constraints.',
-            );
-          }
-          seenConvergenceKeys.add(convergenceKey);
-          prevConvergenceKey = convergenceKey;
+              );
+            }
+            seenConvergenceKeys.add(convergenceKey);
+            prevConvergenceKey = convergenceKey;
           } finally {
             if (phase2ParamSnap) {
               stb.restoreBuilderReturnOutputParams(probeBuilder2, phase2ParamSnap, phase2Insertion);
@@ -8423,7 +8423,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const earlyArgsHost: MaterializeCreateBuilderEarlyArgsHost = {
       getExternalTargetEntriesByInterface: (interfaceName) =>
         this.inner.getExternalTargetEntriesByInterface(interfaceName) as ReturnType<
-          MaterializeCreateBuilderEarlyArgsHost['getExternalTargetEntriesByInterface']
+        MaterializeCreateBuilderEarlyArgsHost['getExternalTargetEntriesByInterface']
         >,
     };
     const earlyArgs = await materializeCreateBuilderEarlyArgsImpl(
@@ -8819,27 +8819,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // selected route rows can supply (the array itself plus that row's loop occurrence). Scoped to that
               // label form and to a routed call, so an ordinary computed key keeps its established fallbacks.
               // A compiler-described key (`keySources[i].kind === 'expression'`) can name a state read that no ABI
-            // parameter carries - for example a counter member (`field:_value(state:escrowIdCounter)`). Resolve the
-            // label against the same decoded state view the value evaluator uses: the slot is the hash of the
-            // on-chain key bytes, so a placeholder key proves an absent entry at the wrong slot and mints a node the
-            // covenant never accepts.
-            if (source?.kind === 'expression') {
-              const described = evalComputedKey(paramName, entryArgs, entryAbiFunction!.inputs, describedState);
-              if (described !== undefined) return described;
-            }
-            const ov = overrides?.entryKeyOverrides?.get(slotIndex);
-            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-              ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+              // parameter carries - for example a counter member (`field:_value(state:escrowIdCounter)`). Resolve the
+              // label against the same decoded state view the value evaluator uses: the slot is the hash of the
+              // on-chain key bytes, so a placeholder key proves an absent entry at the wrong slot and mints a node the
+              // covenant never accepts.
+              if (source?.kind === 'expression') {
+                const described = evalComputedKey(paramName, entryArgs, entryAbiFunction!.inputs, describedState);
+                if (described !== undefined) return described;
+              }
+              const ov = overrides?.entryKeyOverrides?.get(slotIndex);
+              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
               // A composer-supplied entry key is the remaining authority that can resolve `msg.sender` correctly
               // while the frame's category witness stays zero; print it next to the collection so the two halves of
               // one identity can be compared in a single run.
-              console.error('entry-key-override', JSON.stringify({
-                functionName, abiFunction: abiFunction?.name, slotIndex,
-                collection: access.collection,
-                override: ov === undefined ? undefined
-                  : ov instanceof Uint8Array ? `b${ov.length}:${binToHex(ov).slice(0, 24)}` : String(ov),
-              }));
-            }
+                console.error('entry-key-override', JSON.stringify({
+                  functionName, abiFunction: abiFunction?.name, slotIndex,
+                  collection: access.collection,
+                  override: ov === undefined ? undefined
+                    : ov instanceof Uint8Array ? `b${ov.length}:${binToHex(ov).slice(0, 24)}` : String(ov),
+                }));
+              }
               if (ov !== undefined) {
                 return ov instanceof Uint8Array ? ov
                   : typeof ov === 'bigint' ? bigIntToVmNumber(ov) : bigIntToVmNumber(ov ? 1n : 0n);
@@ -8915,7 +8915,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? (collection.keyType === 'string' ? utf8ToBin(kv)
               : /^bytes(?:\d+)?$/.test(collection.keyType) && kv.startsWith('0x') ? hexToBin(kv.slice(2))
                 : /^(?:u?int(?:\d+)?|bigint)$/.test(collection.keyType) ? BigInt(kv)
-                : kv)
+                  : kv)
             : kv;
           const entryBase = {
             slotIndex, collection: access.collection, keyType: collection.keyType, valueType: collection.valueType,
@@ -8941,50 +8941,50 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (current.length > 0) out.push(current);
             return out;
           };
-              // A described value mixes encoded leaves (bytes from `evalComputedKey`) with positional struct
-              // members, so normalise every member to the shape the value encoder expects for its declared type.
-              const normalizeForType = (member: unknown, type: string | undefined): unknown => {
-                if (type === undefined) return member;
-                if (type === 'address' || type === 'pubkey' || /^bytes\d*$/.test(type)) {
-                  if (typeof member === 'string') {
-                    return member.includes(':') ? addressToLockScript(member)
-                      : hexToBin(member.replace(/^0x/, ''));
-                  }
-                  if (typeof member === 'bigint') return member === 0n ? new Uint8Array(0) : bigIntToVmNumber(member);
-                  if (typeof member === 'number') {
-                    return member === 0 ? new Uint8Array(0) : bigIntToVmNumber(BigInt(member));
-                  }
-                  // An address member that carries extra framing must be reduced to the address itself.
-                  if (type === 'address' && member instanceof Uint8Array
+          // A described value mixes encoded leaves (bytes from `evalComputedKey`) with positional struct
+          // members, so normalise every member to the shape the value encoder expects for its declared type.
+          const normalizeForType = (member: unknown, type: string | undefined): unknown => {
+            if (type === undefined) return member;
+            if (type === 'address' || type === 'pubkey' || /^bytes\d*$/.test(type)) {
+              if (typeof member === 'string') {
+                return member.includes(':') ? addressToLockScript(member)
+                  : hexToBin(member.replace(/^0x/, ''));
+              }
+              if (typeof member === 'bigint') return member === 0n ? new Uint8Array(0) : bigIntToVmNumber(member);
+              if (typeof member === 'number') {
+                return member === 0 ? new Uint8Array(0) : bigIntToVmNumber(BigInt(member));
+              }
+              // An address member that carries extra framing must be reduced to the address itself.
+              if (type === 'address' && member instanceof Uint8Array
                     && member.length !== 25 && member.length !== 35) {
-                    for (let start = 0; start + 25 <= member.length; start += 1) {
-                      if (start + 35 <= member.length && member[start] === 0xaa && member[start + 1] === 0x20
+                for (let start = 0; start + 25 <= member.length; start += 1) {
+                  if (start + 35 <= member.length && member[start] === 0xaa && member[start + 1] === 0x20
                         && member[start + 34] === 0x87) return member.slice(start, start + 35);
-                      if (member[start] === 0x76 && member[start + 1] === 0xa9 && member[start + 2] === 0x14
+                  if (member[start] === 0x76 && member[start + 1] === 0xa9 && member[start + 2] === 0x14
                         && member[start + 23] === 0x88 && member[start + 24] === 0xac) {
-                        return member.slice(start, start + 25);
-                      }
-                    }
-                    if (member.length > 35) return member.slice(0, 35);
+                    return member.slice(start, start + 25);
                   }
-                  return member;
                 }
-                if (/^(?:u?int\d*|bigint)$/.test(type)) {
-                  if (member instanceof Uint8Array) {
-                    return vmNumberToBigInt(member, { requireMinimalEncoding: false });
-                  }
-                  if (typeof member === 'boolean') return member ? 1n : 0n;
-                  if (typeof member === 'number') return BigInt(member);
-                  if (typeof member === 'string' && /^-?\d+$/.test(member)) return BigInt(member);
-                  return member;
-                }
-                if (type === 'string' && typeof member === 'string') return utf8ToBin(member);
-                if (type === 'bool') {
-                  if (typeof member === 'bigint') return member !== 0n;
-                  if (member instanceof Uint8Array) return member.length > 0 && (member[0] ?? 0) !== 0;
-                }
-                return member;
-              };
+                if (member.length > 35) return member.slice(0, 35);
+              }
+              return member;
+            }
+            if (/^(?:u?int\d*|bigint)$/.test(type)) {
+              if (member instanceof Uint8Array) {
+                return vmNumberToBigInt(member, { requireMinimalEncoding: false });
+              }
+              if (typeof member === 'boolean') return member ? 1n : 0n;
+              if (typeof member === 'number') return BigInt(member);
+              if (typeof member === 'string' && /^-?\d+$/.test(member)) return BigInt(member);
+              return member;
+            }
+            if (type === 'string' && typeof member === 'string') return utf8ToBin(member);
+            if (type === 'bool') {
+              if (typeof member === 'bigint') return member !== 0n;
+              if (member instanceof Uint8Array) return member.length > 0 && (member[0] ?? 0) !== 0;
+            }
+            return member;
+          };
           const toBig = (value: unknown): bigint | undefined => (typeof value === 'bigint' ? value
             : typeof value === 'boolean' ? (value ? 1n : 0n)
               : typeof value === 'number' ? BigInt(value)
@@ -9265,23 +9265,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 try {
                   decodePushdataValue(encodedValue, 0, collection.valueType, stateLayout.structs);
                   console.error('chunk-frames', JSON.stringify({
-                  frames: stateLayout.structs?.find((candidate) => candidate.name === collection.valueType)?.fields
-                    .map((field) => {
-                      const member = (value as Record<string, unknown>)[field.name];
-                      if (member === undefined) return `${field.name}:absent`;
-                      try {
-                        return `${field.name}:${binToHex(encodePushdataValue(member as never, field.type,
-                          stateLayout.structs))}`;
-                      } catch (frameError) {
-                        return `${field.name}:ERR`;
-                      }
-                    }) ?? null,
-                }));
-                console.error('chunk-value-roundtrip', JSON.stringify({ ok: true, bytes: encodedValue.length,
-                record: (value as Record<string, unknown>) && Object.entries(value as Record<string, unknown>)
-                  .map(([key, member]) => `${key}=${member instanceof Uint8Array ? `b${member.length}:${binToHex(member).slice(0, 12)}`
-                    : Array.isArray(member) ? `[${member.map((element) => String(element)).join('|')}]`
-                      : String(member)}`) }));
+                    frames: stateLayout.structs?.find((candidate) => candidate.name === collection.valueType)?.fields
+                      .map((field) => {
+                        const member = (value as Record<string, unknown>)[field.name];
+                        if (member === undefined) return `${field.name}:absent`;
+                        try {
+                          return `${field.name}:${binToHex(encodePushdataValue(member as never, field.type,
+                            stateLayout.structs))}`;
+                        } catch (frameError) {
+                          return `${field.name}:ERR`;
+                        }
+                      }) ?? null,
+                  }));
+                  console.error('chunk-value-roundtrip', JSON.stringify({ ok: true, bytes: encodedValue.length,
+                    record: (value as Record<string, unknown>) && Object.entries(value as Record<string, unknown>)
+                      .map(([key, member]) => `${key}=${member instanceof Uint8Array ? `b${member.length}:${binToHex(member).slice(0, 12)}`
+                        : Array.isArray(member) ? `[${member.map((element) => String(element)).join('|')}]`
+                          : String(member)}`) }));
                 } catch (decodeError) {
                   console.error('chunk-value-roundtrip', JSON.stringify({
                     ok: false, bytes: encodedValue.length, error: String(decodeError).slice(0, 160),
@@ -10687,7 +10687,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const input = abiFunction.inputs[finalArgs.length];
             if (!input?.name.startsWith('__internal__')) {
               throw new Error(
-                `Internal error: cannot place value witness before unresolved user argument `
+                'Internal error: cannot place value witness before unresolved user argument '
                 + `'${input?.name ?? finalArgs.length}' in '${abiFunction.name}'.`,
               );
             }
@@ -10989,771 +10989,771 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       };
       let loopPredicateState: Record<string, unknown> = onChainState.state;
       for (const info of loopAbiFunction.sortedUpsertLoopInfo ?? []) {
-      const domainKeys = await resolveCreateBuilderUpsertLoopDomainKeysImpl(
-        {
-          categoryId: this.categoryId,
-          inner: this.inner,
-          signer: this._signer,
-          hydrateExternalPredicateState: (...a: any[]) => (this as any)._hydrateExternalPredicateState(...a),
-          evaluateExternalExpression: (...a: any[]) => (this as any)._evaluateExternalExpression(...a),
-          vmapCounterDomain: (...a: any[]) => (this as any)._vmapCounterDomain(...a),
-        },
-        {
-          info,
-          loopAbiFunction,
-          upsertFrame,
-          loopArgs,
-          entryArtifact,
-          stateLayout,
-          onChainState,
-          loopPredicateState,
-          executionSelfAddress,
-          insertLoopPredecessorsLength: insertLoopPredecessors.length,
-          runtimeJournalMaterializationIntentsLength: runtimeJournalMaterializationIntents.length,
-          selectedRowArgument,
-          replaceLoopArgument,
-        },
-      );
-      if (domainKeys.skipped) continue;
-      const {
-        collection,
-        list,
-        entryAddr,
-        entries,
-        argOf,
-        visibleInputs,
-        conditionArgs,
-        valueTraceDomain,
-        sourceOccurrences,
-        selectedSourceValues,
-        keyTypes,
-        encKey,
-        fixedSources,
-        keyExpressions,
-        varyingKeyIndices,
-        varyingKeyIndexSet,
-        fixedKeyIndices,
-        fixedBins,
-        varyType,
-        runtimeFiltered,
-        runtimeInputStart,
-        runtimeJournalIntentStart,
-      } = domainKeys;
-      let keysArr = domainKeys.keysArr;
-      loopPredicateState = domainKeys.loopPredicateState;
-      // upsert-loop-domain-keys-complete (size-guarded; counter-step / topology follow)
-
-      const keyTopology = await prepareCreateBuilderUpsertLoopKeyTopologyImpl(
-        {
-          signer: this._signer,
-          vmapCounterStep: (...a: any[]) => (this as any)._vmapCounterStep(...a),
-          hydrateExternalPredicateState: (...a: any[]) => (this as any)._hydrateExternalPredicateState(...a),
-          evaluateExternalExpression: (...a: any[]) => (this as any)._evaluateExternalExpression(...a),
-        },
-        {
-          info,
-          loopAbiFunction,
-          entryArtifact,
-          entryArgs,
-          loopArgs,
-          conditionArgs,
+        const domainKeys = await resolveCreateBuilderUpsertLoopDomainKeysImpl(
+          {
+            categoryId: this.categoryId,
+            inner: this.inner,
+            signer: this._signer,
+            hydrateExternalPredicateState: (...a: any[]) => (this as any)._hydrateExternalPredicateState(...a),
+            evaluateExternalExpression: (...a: any[]) => (this as any)._evaluateExternalExpression(...a),
+            vmapCounterDomain: (...a: any[]) => (this as any)._vmapCounterDomain(...a),
+          },
+          {
+            info,
+            loopAbiFunction,
+            upsertFrame,
+            loopArgs,
+            entryArtifact,
+            stateLayout,
+            onChainState,
+            loopPredicateState,
+            executionSelfAddress,
+            insertLoopPredecessorsLength: insertLoopPredecessors.length,
+            runtimeJournalMaterializationIntentsLength: runtimeJournalMaterializationIntents.length,
+            selectedRowArgument,
+            replaceLoopArgument,
+          },
+        );
+        if (domainKeys.skipped) continue;
+        const {
+          collection,
+          list,
+          entryAddr,
+          entries,
+          argOf,
           visibleInputs,
-          loopPredicateState,
-          executionSelfAddress,
-          keysArr,
-          keyExpressions,
-          fixedBins,
+          conditionArgs,
+          valueTraceDomain,
+          sourceOccurrences,
+          selectedSourceValues,
           keyTypes,
           encKey,
-          fixedKeyIndices,
+          fixedSources,
+          keyExpressions,
+          varyingKeyIndices,
           varyingKeyIndexSet,
-          collection,
-          valueTraceDomain,
-          selectedSourceValues,
-          sourceOccurrences,
-          argOf,
-          replaceLoopArgument,
-        },
-      );
-      keysArr = keyTopology.keysArr;
-      loopPredicateState = keyTopology.loopPredicateState;
-      const counterSpec = keyTopology.counterSpec;
-      const resolveCounterStep = keyTopology.resolveCounterStep;
-      const occurrenceOf = keyTopology.occurrenceOf;
-      const valueTrace = keyTopology.valueTrace;
-      const keyExpressionBindings = keyTopology.keyExpressionBindings;
-      const keyBinsFor = keyTopology.keyBinsFor;
-      const slotForKey = keyTopology.slotForKey;
-      const isDelete = keyTopology.isDelete;
-      // upsert-loop-key-topology-complete (size-guarded; value materialization follows)
+          fixedKeyIndices,
+          fixedBins,
+          varyType,
+          runtimeFiltered,
+          runtimeInputStart,
+          runtimeJournalIntentStart,
+        } = domainKeys;
+        let keysArr = domainKeys.keysArr;
+        loopPredicateState = domainKeys.loopPredicateState;
+        // upsert-loop-domain-keys-complete (size-guarded; counter-step / topology follow)
 
-      // A loop-INVARIANT value (fixed-amount airdrop `+= amount` / batch-set-const `= 100`): the same amount for every
-      // key, from a scalar param arg or an int literal. Otherwise the value is the per-key array valsArr[i].
-      const toBig = (v: unknown): bigint => (typeof v === 'bigint' ? v : BigInt(v as number | string));
-      // A rawbytes VALUE (whole bytes/string/array/bytesN param `m[k[i]] = a`): the covenant stores the value tail
-      // (len4 ++ value inline for a chunkable type, verbatim for bytesN); the SDK mirrors it. Only op==='set' reaches
-      // here for rawbytes (the guard gates RMW/const to int). scalarTail is the invariant value's on-chain bytes.
-      // On-chain value bytes for a rawbytes value.
-      const encodeValueTail = (v: unknown): Uint8Array => {
-        const vB = v instanceof Uint8Array ? v
+        const keyTopology = await prepareCreateBuilderUpsertLoopKeyTopologyImpl(
+          {
+            signer: this._signer,
+            vmapCounterStep: (...a: any[]) => (this as any)._vmapCounterStep(...a),
+            hydrateExternalPredicateState: (...a: any[]) => (this as any)._hydrateExternalPredicateState(...a),
+            evaluateExternalExpression: (...a: any[]) => (this as any)._evaluateExternalExpression(...a),
+          },
+          {
+            info,
+            loopAbiFunction,
+            entryArtifact,
+            entryArgs,
+            loopArgs,
+            conditionArgs,
+            visibleInputs,
+            loopPredicateState,
+            executionSelfAddress,
+            keysArr,
+            keyExpressions,
+            fixedBins,
+            keyTypes,
+            encKey,
+            fixedKeyIndices,
+            varyingKeyIndexSet,
+            collection,
+            valueTraceDomain,
+            selectedSourceValues,
+            sourceOccurrences,
+            argOf,
+            replaceLoopArgument,
+          },
+        );
+        keysArr = keyTopology.keysArr;
+        loopPredicateState = keyTopology.loopPredicateState;
+        const counterSpec = keyTopology.counterSpec;
+        const resolveCounterStep = keyTopology.resolveCounterStep;
+        const occurrenceOf = keyTopology.occurrenceOf;
+        const valueTrace = keyTopology.valueTrace;
+        const keyExpressionBindings = keyTopology.keyExpressionBindings;
+        const keyBinsFor = keyTopology.keyBinsFor;
+        const slotForKey = keyTopology.slotForKey;
+        const isDelete = keyTopology.isDelete;
+        // upsert-loop-key-topology-complete (size-guarded; value materialization follows)
+
+        // A loop-INVARIANT value (fixed-amount airdrop `+= amount` / batch-set-const `= 100`): the same amount for every
+        // key, from a scalar param arg or an int literal. Otherwise the value is the per-key array valsArr[i].
+        const toBig = (v: unknown): bigint => (typeof v === 'bigint' ? v : BigInt(v as number | string));
+        // A rawbytes VALUE (whole bytes/string/array/bytesN param `m[k[i]] = a`): the covenant stores the value tail
+        // (len4 ++ value inline for a chunkable type, verbatim for bytesN); the SDK mirrors it. Only op==='set' reaches
+        // here for rawbytes (the guard gates RMW/const to int). scalarTail is the invariant value's on-chain bytes.
+        // On-chain value bytes for a rawbytes value.
+        const encodeValueTail = (v: unknown): Uint8Array => {
+          const vB = v instanceof Uint8Array ? v
+            : typeof v === 'string' ? utf8ToBin(v)
+              : encodePushdataValue(v as StateValue, collection.valueType, stateLayout.structs);
+          if (!collection.chunkableValue) return vB; // fixed rawbytes (bytesN/address): stored verbatim, no tail
+          return encodeChunkableValueTail(vB);
+        };
+        const rawValueBytes = (v: unknown): Uint8Array => v instanceof Uint8Array ? v
           : typeof v === 'string' ? utf8ToBin(v)
             : encodePushdataValue(v as StateValue, collection.valueType, stateLayout.structs);
-        if (!collection.chunkableValue) return vB; // fixed rawbytes (bytesN/address): stored verbatim, no tail
-        return encodeChunkableValueTail(vB);
-      };
-      const rawValueBytes = (v: unknown): Uint8Array => v instanceof Uint8Array ? v
-        : typeof v === 'string' ? utf8ToBin(v)
-          : encodePushdataValue(v as StateValue, collection.valueType, stateLayout.structs);
-      const rawScalar = !isDelete && info.valueScalarParam !== undefined ? argOf(info.valueScalarParam) : undefined;
-      const isRawbytesVal = rawScalar !== undefined
+        const rawScalar = !isDelete && info.valueScalarParam !== undefined ? argOf(info.valueScalarParam) : undefined;
+        const isRawbytesVal = rawScalar !== undefined
         && typeof rawScalar !== 'bigint' && typeof rawScalar !== 'boolean' && typeof rawScalar !== 'number';
-      const scalarTail: Uint8Array | undefined = isRawbytesVal ? encodeValueTail(rawScalar) : undefined;
-      let scalarAmt: bigint | undefined;
-      if (!isRawbytesVal && !isDelete && info.valueScalarParam !== undefined) {
-        scalarAmt = toBig(argOf(info.valueScalarParam));
-      } else if (!isRawbytesVal && !isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
-      let perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
-      let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
-      if (Array.isArray(valsArr) && info.valueArrayIndexParam) {
-        const sourceValues = valsArr as unknown[];
-        const logicalIndices = info.valueArrayIndexParam === info.varyingArrayParam
-          ? keysArr : argOf(info.valueArrayIndexParam);
-        if (!Array.isArray(logicalIndices)) {
-          throw new Error(`vmap upsert loop ${info.collection}: value index array `
+        const scalarTail: Uint8Array | undefined = isRawbytesVal ? encodeValueTail(rawScalar) : undefined;
+        let scalarAmt: bigint | undefined;
+        if (!isRawbytesVal && !isDelete && info.valueScalarParam !== undefined) {
+          scalarAmt = toBig(argOf(info.valueScalarParam));
+        } else if (!isRawbytesVal && !isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
+        let perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
+        let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
+        if (Array.isArray(valsArr) && info.valueArrayIndexParam) {
+          const sourceValues = valsArr as unknown[];
+          const logicalIndices = info.valueArrayIndexParam === info.varyingArrayParam
+            ? keysArr : argOf(info.valueArrayIndexParam);
+          if (!Array.isArray(logicalIndices)) {
+            throw new Error(`vmap upsert loop ${info.collection}: value index array `
             + `'${info.valueArrayIndexParam}' is missing`);
-        }
-        valsArr = logicalIndices.map((logicalIndex) => {
-          const numeric = typeof logicalIndex === 'bigint' ? logicalIndex : BigInt(logicalIndex as number | string);
-          const index = Number(numeric);
-          if (!Number.isSafeInteger(index) || index < 0 || index >= sourceValues.length) {
-            throw new Error(`vmap upsert loop ${info.collection}: value index ${numeric} is out of bounds`);
           }
-          return sourceValues[index];
-        });
-      }
-      if (valueTrace) {
-        valsArr = keysArr.map((key) => valueTrace![occurrenceOf(key)]);
-        perKey = true;
-      }
-      if (info.valueRuntimeExpression) {
+          valsArr = logicalIndices.map((logicalIndex) => {
+            const numeric = typeof logicalIndex === 'bigint' ? logicalIndex : BigInt(logicalIndex as number | string);
+            const index = Number(numeric);
+            if (!Number.isSafeInteger(index) || index < 0 || index >= sourceValues.length) {
+              throw new Error(`vmap upsert loop ${info.collection}: value index ${numeric} is out of bounds`);
+            }
+            return sourceValues[index];
+          });
+        }
+        if (valueTrace) {
+          valsArr = keysArr.map((key) => valueTrace![occurrenceOf(key)]);
+          perKey = true;
+        }
+        if (info.valueRuntimeExpression) {
         // Counter-affine `i` / `i+K` publishes valueArrayOffset while keeping the on-script runtime expression.
         // Seed from the key vector so the shared offset pass below materializes concrete commitment tails —
         // required for mixed int+bytes compose where OTC derivation alone does not settle the scalar stream.
-        if (info.valueArrayOffset !== undefined
+          if (info.valueArrayOffset !== undefined
           && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)) {
-          valsArr = keysArr.map((key) => toBig(key));
-        } else {
+            valsArr = keysArr.map((key) => toBig(key));
+          } else {
           // The first VM probe only needs a correctly typed placeholder; trace derivation replaces its commitment
           // with the value computed by the row. A numeric zero is not encodable as a struct/array and made direct
           // structural RMWs fail before the verifier could derive their real outputs.
-          valsArr = keysArr.map(() => getDefaultStateValue(collection.valueType, stateLayout.structs));
+            valsArr = keysArr.map(() => getDefaultStateValue(collection.valueType, stateLayout.structs));
+          }
+          perKey = true;
+          runtimeExpressionLoopCollections.add(info.collection);
         }
-        perKey = true;
-        runtimeExpressionLoopCollections.add(info.collection);
-      }
-      if (Array.isArray(valsArr) && info.valueArrayOffset !== undefined) {
-        valsArr = (valsArr as unknown[]).map((v) => toBig(v) + BigInt(info.valueArrayOffset!));
-      }
-      if (info.oldValuesWitnessParam?.startsWith(VMAP_COUNTER_OLD_PREFIX)) {
-        const witnessIndex = loopAbiFunction.inputs.findIndex(
-          (input) => input.name === info.oldValuesWitnessParam,
-        );
-        if (witnessIndex < 0) {
-          throw new Error(`vmap runtime expression loop ${info.collection}: missing old-value witness ABI input`);
+        if (Array.isArray(valsArr) && info.valueArrayOffset !== undefined) {
+          valsArr = (valsArr as unknown[]).map((v) => toBig(v) + BigInt(info.valueArrayOffset!));
         }
-        // A routed nested-key RMW authenticates an existing entry value, but its current fixed-prefix settlement
-        // cannot materialize a missing selected entry as an insertion. Fail before transaction construction rather
-        // than publishing a route which verifies yet omits the requested post-state. Direct execution and the
-        // proven single-key/default-value route retain their existing insertion semantics.
-        if (upsertFrame.routed && info.op !== 'read' && info.fixedKeyParams.length > 0
+        if (info.oldValuesWitnessParam?.startsWith(VMAP_COUNTER_OLD_PREFIX)) {
+          const witnessIndex = loopAbiFunction.inputs.findIndex(
+            (input) => input.name === info.oldValuesWitnessParam,
+          );
+          if (witnessIndex < 0) {
+            throw new Error(`vmap runtime expression loop ${info.collection}: missing old-value witness ABI input`);
+          }
+          // A routed nested-key RMW authenticates an existing entry value, but its current fixed-prefix settlement
+          // cannot materialize a missing selected entry as an insertion. Fail before transaction construction rather
+          // than publishing a route which verifies yet omits the requested post-state. Direct execution and the
+          // proven single-key/default-value route retain their existing insertion semantics.
+          if (upsertFrame.routed && info.op !== 'read' && info.fixedKeyParams.length > 0
           && keysArr.some((key) => !list.find(slotForKey(key)))) {
-          throw new Error(`vmap runtime expression loop ${info.collection}: `
+            throw new Error(`vmap runtime expression loop ${info.collection}: `
             + 'selected absent old-value witness cannot be materialized as an insertion');
-        }
-        const oldValues = await Promise.all(keysArr.map(async (key) => {
-          const slot = slotForKey(key);
-          const entry = list.find(slot);
-          if (collection.valueType === 'bool') return entry
-            ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) !== 0n
-            : false;
-          const structuredValue = collection.chunkableValue
+          }
+          const oldValues = await Promise.all(keysArr.map(async (key) => {
+            const slot = slotForKey(key);
+            const entry = list.find(slot);
+            if (collection.valueType === 'bool') return entry
+              ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) !== 0n
+              : false;
+            const structuredValue = collection.chunkableValue
             || stateLayout.structs?.some((struct) => struct.name === collection.valueType);
-          if (structuredValue) {
-            if (!entry) return getDefaultStateValue(collection.valueType, stateLayout.structs);
-            const tail = entry.value;
-            if (tail.length < 4) {
-              throw new Error(`vmap runtime struct value for ${info.collection} has an invalid tail`);
-            }
-            const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
-            let raw: Uint8Array;
-            if (len <= 60) {
-              raw = tail.slice(4, 4 + len);
-            } else {
-              const root = tail.slice(4, 36);
-              const headData = tail.slice(36, 64);
-              const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, info.collection, slot, root);
-              const chunks = (await this.inner.provider.getUtxos(chunkAddr))
-                .filter((utxo) => utxo.token?.category === this.categoryId
+            if (structuredValue) {
+              if (!entry) return getDefaultStateValue(collection.valueType, stateLayout.structs);
+              const tail = entry.value;
+              if (tail.length < 4) {
+                throw new Error(`vmap runtime struct value for ${info.collection} has an invalid tail`);
+              }
+              const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
+              let raw: Uint8Array;
+              if (len <= 60) {
+                raw = tail.slice(4, 4 + len);
+              } else {
+                const root = tail.slice(4, 36);
+                const headData = tail.slice(36, 64);
+                const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, info.collection, slot, root);
+                const chunks = (await this.inner.provider.getUtxos(chunkAddr))
+                  .filter((utxo) => utxo.token?.category === this.categoryId
                   && !!utxo.token?.nft?.commitment && utxo.token.nft.commitment.length > 0)
-                .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment))
-                .sort((left, right) => left.chunkIndex - right.chunkIndex);
-              raw = joinValueChunks(headData, chunks, len);
-              if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
-                throw new Error('vmap runtime struct value chunks do not match the authenticated root');
+                  .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment))
+                  .sort((left, right) => left.chunkIndex - right.chunkIndex);
+                raw = joinValueChunks(headData, chunks, len);
+                if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
+                  throw new Error('vmap runtime struct value chunks do not match the authenticated root');
+                }
+                if (info.op !== 'read') {
+                  valueChunkGc.push({
+                    collection: info.collection, slotHex: binToHex(slot), oldDigestHex: binToHex(root),
+                  });
+                }
               }
-              if (info.op !== 'read') {
-                valueChunkGc.push({
-                  collection: info.collection, slotHex: binToHex(slot), oldDigestHex: binToHex(root),
-                });
-              }
+              // Chunkable entry tails store bytes/string payloads verbatim. Structs and arrays retain their
+              // recursive pushdata framing, but feeding a raw string payload (for example `hello`) to the generic
+              // decoder interprets its first character as an opcode and rejects an otherwise authenticated value.
+              if (collection.valueType === 'bytes') return raw;
+              if (collection.valueType === 'string') return binToUtf8(raw);
+              return decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value;
             }
-            // Chunkable entry tails store bytes/string payloads verbatim. Structs and arrays retain their
-            // recursive pushdata framing, but feeding a raw string payload (for example `hello`) to the generic
-            // decoder interprets its first character as an opcode and rejects an otherwise authenticated value.
-            if (collection.valueType === 'bytes') return raw;
-            if (collection.valueType === 'string') return binToUtf8(raw);
-            return decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value;
-          }
-          if (!/^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)) {
-            return entry?.value ?? getDefaultStateValue(collection.valueType, stateLayout.structs);
-          }
-          return entry
-            ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint
-            : 0n;
-        }));
-        if (info.op === 'read' && counterSpec && info.oldValuesWitnessDomain === 'selected-source'
+            if (!/^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)) {
+              return entry?.value ?? getDefaultStateValue(collection.valueType, stateLayout.structs);
+            }
+            return entry
+              ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint
+              : 0n;
+          }));
+          if (info.op === 'read' && counterSpec && info.oldValuesWitnessDomain === 'selected-source'
           && !info.sourceOrderIndexParam) {
           // A path-conditioned source-order consumer has no occurrence on untaken frames. Keep this witness
           // compact and restore source order after the entry planner's physical slot sort.
-          const selectedValues = keysArr.map((key, index) => ({
-            occurrence: occurrenceOf(key), value: oldValues[index],
-          })).sort((left, right) => left.occurrence - right.occurrence).map(({ value }) => value);
-          replaceLoopArgument(witnessIndex, selectedValues as FunctionArgument);
-        } else if (info.op === 'read' && counterSpec && info.oldValuesWitnessDomain === 'selected-source') {
+            const selectedValues = keysArr.map((key, index) => ({
+              occurrence: occurrenceOf(key), value: oldValues[index],
+            })).sort((left, right) => left.occurrence - right.occurrence).map(({ value }) => value);
+            replaceLoopArgument(witnessIndex, selectedValues as FunctionArgument);
+          } else if (info.op === 'read' && counterSpec && info.oldValuesWitnessDomain === 'selected-source') {
           // The inverse permutation authenticates source-order selection independently, so retain the old-value
           // witness in the same physical slot order used by the synthetic read stream.
-          replaceLoopArgument(witnessIndex, oldValues as FunctionArgument);
-        } else if (info.op === 'read' && counterSpec) {
+            replaceLoopArgument(witnessIndex, oldValues as FunctionArgument);
+          } else if (info.op === 'read' && counterSpec) {
           // Cross-mapping reads may use a different physical permutation than their destination. Publish the
           // authenticated values by logical source occurrence so each stream can select the same value through its
           // own permutation. Unselected positions are never consumed, but must retain an ABI-encodable typed value.
-          const witnessLength = valueTraceDomain?.length
+            const witnessLength = valueTraceDomain?.length
             ?? keysArr.reduce<number>((length, key) => Math.max(length, occurrenceOf(key) + 1), 0);
-          const logicalValues = Array.from(
-            { length: witnessLength },
-            () => getDefaultStateValue(collection.valueType, stateLayout.structs),
-          );
-          keysArr.forEach((key, index) => { logicalValues[occurrenceOf(key)] = oldValues[index]; });
-          replaceLoopArgument(witnessIndex, logicalValues as FunctionArgument);
-        } else {
-          replaceLoopArgument(witnessIndex, oldValues as FunctionArgument);
+            const logicalValues = Array.from(
+              { length: witnessLength },
+              () => getDefaultStateValue(collection.valueType, stateLayout.structs),
+            );
+            keysArr.forEach((key, index) => { logicalValues[occurrenceOf(key)] = oldValues[index]; });
+            replaceLoopArgument(witnessIndex, logicalValues as FunctionArgument);
+          } else {
+            replaceLoopArgument(witnessIndex, oldValues as FunctionArgument);
+          }
+          if (info.op === 'read') {
+            valsArr = oldValues;
+            perKey = true;
+          }
         }
-        if (info.op === 'read') {
-          valsArr = oldValues;
-          perKey = true;
-        }
-      }
-      if (info.valueRuntimeExpression && collection.chunkableValue) {
+        if (info.valueRuntimeExpression && collection.chunkableValue) {
         // One speculative run per concrete storage identity lets derivation distinguish several long values in
         // the same loop, while short iterations naturally shed their empty placeholder at convergence.
-        for (const key of keysArr) addComputedValueChunkRun(info.collection, slotForKey(key));
-      }
-      // Per-key RAWBYTES value `m[k[i]] = vs[i]` (vs a bytes[]/array-of-array param): each vs[i] is committed as its own
-      // inline tail. Detected from the arg (an empty array does no work). op is always 'set' here (the guard gates it).
-      let perKeyRawbytes = perKey && Array.isArray(valsArr) && (valsArr as unknown[]).length > 0
+          for (const key of keysArr) addComputedValueChunkRun(info.collection, slotForKey(key));
+        }
+        // Per-key RAWBYTES value `m[k[i]] = vs[i]` (vs a bytes[]/array-of-array param): each vs[i] is committed as its own
+        // inline tail. Detected from the arg (an empty array does no work). op is always 'set' here (the guard gates it).
+        let perKeyRawbytes = perKey && Array.isArray(valsArr) && (valsArr as unknown[]).length > 0
         && ((): boolean => {
           const v0 = (valsArr as unknown[])[0];
           return !(typeof v0 === 'bigint' || typeof v0 === 'number' || typeof v0 === 'boolean');
         })();
-      // Value bytes for a commitment: the per-key/invariant rawbytes tail (already a Uint8Array), else the int as a
-      // minimal VM number.
-      const commitValue = (nv: bigint | Uint8Array): Uint8Array =>
-        nv instanceof Uint8Array ? nv : (scalarTail ?? bigIntToVmNumber(nv));
-      if (!Array.isArray(keysArr)
+        // Value bytes for a commitment: the per-key/invariant rawbytes tail (already a Uint8Array), else the int as a
+        // minimal VM number.
+        const commitValue = (nv: bigint | Uint8Array): Uint8Array =>
+          nv instanceof Uint8Array ? nv : (scalarTail ?? bigIntToVmNumber(nv));
+        if (!Array.isArray(keysArr)
         || (perKey && !info.mutation && !info.valueRuntimeLocal && !Array.isArray(valsArr))) continue;
-      if (perKey && !info.mutation && !info.valueRuntimeLocal
+        if (perKey && !info.mutation && !info.valueRuntimeLocal
         && (valsArr as unknown[]).length !== keysArr.length) {
-        throw new Error(`vmap upsert loop ${info.collection}: recipients/amounts length mismatch`);
-      }
-      const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
-      // DUPLICATE RECIPIENT: the same key listed 2+ times. Solidity ACCUMULATES for += / -= ([a,a],[10,20] -> a += 30),
-      // takes the LAST for = ([a,a],[10,20] -> a = 20), and delete is idempotent. Since the covenant co-spends one
-      // entry per recipient, combine duplicates into ONE entry (co-spent once) with the merged amount, BEFORE the
-      // self-transfer filter / reorder. For += the merged sum equals the original sum, so a coexisting `bal[msg.sender]
-      // -= amounts[i]` debit is unchanged. Scalar/const-value: a `set` (= amount / = 100) duplicate is idempotent, so
-      // dedupe (keep one); compiler-owned counter streams retain every occurrence because their row loop and effect
-      // domains cannot be shortened. Those streams use the pending transition below for set/delete/`+=`/`-=`.
-      if (!counterSpec && !info.mutation && Array.isArray(keysArr) && keysArr.length > 1
+          throw new Error(`vmap upsert loop ${info.collection}: recipients/amounts length mismatch`);
+        }
+        const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
+        // DUPLICATE RECIPIENT: the same key listed 2+ times. Solidity ACCUMULATES for += / -= ([a,a],[10,20] -> a += 30),
+        // takes the LAST for = ([a,a],[10,20] -> a = 20), and delete is idempotent. Since the covenant co-spends one
+        // entry per recipient, combine duplicates into ONE entry (co-spent once) with the merged amount, BEFORE the
+        // self-transfer filter / reorder. For += the merged sum equals the original sum, so a coexisting `bal[msg.sender]
+        // -= amounts[i]` debit is unchanged. Scalar/const-value: a `set` (= amount / = 100) duplicate is idempotent, so
+        // dedupe (keep one); compiler-owned counter streams retain every occurrence because their row loop and effect
+        // domains cannot be shortened. Those streams use the pending transition below for set/delete/`+=`/`-=`.
+        if (!counterSpec && !info.mutation && Array.isArray(keysArr) && keysArr.length > 1
         && !info.valueArrayIndexParam && (isDelete || perKey || info.op === 'set')) {
-        const kArr = keysArr as unknown[];
-        const slotHexes = kArr.map((key) => binToHex(slotForKey(key)));
-        if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
-          const seen = new Set<string>();
-          const order: number[] = [];
-          const merged = new Map<string, unknown>();
-          const vArr = perKey ? (valsArr as unknown[]) : undefined;
-          slotHexes.forEach((h, i) => {
-            if (!seen.has(h)) { seen.add(h); order.push(i); }
-            // 'set' is last-wins (store the value VERBATIM - a rawbytes value has no toBig); '+'/'-' accumulate (int).
-            if (vArr) merged.set(h, info.op === 'set' || info.op === 'read'
-              ? vArr[i] : toBig(merged.get(h) ?? 0n) + toBig(vArr[i]));
-          });
-          keysArr = order.map((i) => kArr[i]);
-          const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-          if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
-          if (vArr) {
-            valsArr = order.map((i) => merged.get(slotHexes[i])!);
-            const amtIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.valueArrayParam);
-            if (!runtimeFiltered && !info.valueArrayIndexParam
-              && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
-              replaceLoopArgument(amtIdx, valsArr as FunctionArgument);
-            }
-          }
-        }
-      }
-      // SCALAR `+=` / `-=` DUPLICATE: a fixed-amount airdrop/debit (`+= amount` / `-= amount`) has no per-key array to
-      // merge, so GROUP a duplicated key's occurrences adjacent (stable, by first occurrence). The covenant's isDup
-      // accumulate then applies the scalar once per occurrence to the single co-spent entry (the SDK accumulates it into
-      // the pending commitment in the loop below). Order-independent (accumulates); scalar `set` is deduped above.
-      if ((info.op === '+' || info.op === '-') && !perKey && !isDelete && Array.isArray(keysArr) && keysArr.length > 1) {
-        const kArr = keysArr as unknown[];
-        const slotHexes = kArr.map((key) => binToHex(slotForKey(key)));
-        if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
-          const groups = new Map<string, number[]>();
-          const firstOrder: string[] = [];
-          slotHexes.forEach((h, i) => {
-            if (!groups.has(h)) { groups.set(h, []); firstOrder.push(h); }
-            groups.get(h)!.push(i);
-          });
-          keysArr = firstOrder.flatMap((h) => groups.get(h)!).map((i) => kArr[i]);
-          const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-          if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
-        }
-      }
-      // SELF-TRANSFER: a recipient == the debited msg.sender nets out (`bal[msg.sender] -= a; bal[msg.sender] += a`).
-      // Since the debit and the credit share amounts[i], dropping that entry from recipients+amounts leaves the debit
-      // summing (total - own) and never credits msg.sender separately - the identical net, with msg.sender co-spent
-      // ONCE (the debit) instead of twice. Solidity allows a self-transfer in a batch; this matches it.
-      if (!info.mutation && foldActive && this._signer && Array.isArray(keysArr) && keysArr.length > 0) {
-        const debitE = entryNfts.find((e) => e.collection === info.collection && e.exists && e.utxo);
-        let senderKey: Uint8Array | null = null;
-        try { senderKey = addressToLockScript(this._signer.getAddress()); } catch { senderKey = null; }
-        if (debitE && senderKey) {
-          const senderSlotHex = binToHex(keyToSlotMulti([...fixedBins, senderKey], collection));
           const kArr = keysArr as unknown[];
-          const keepIdx: number[] = [];
-          kArr.forEach((k, i) => {
-            if (binToHex(slotForKey(k)) !== senderSlotHex) keepIdx.push(i);
-          });
-          if (keepIdx.length < kArr.length) {
-            keysArr = keepIdx.map((i) => kArr[i]);
+          const slotHexes = kArr.map((key) => binToHex(slotForKey(key)));
+          if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
+            const seen = new Set<string>();
+            const order: number[] = [];
+            const merged = new Map<string, unknown>();
+            const vArr = perKey ? (valsArr as unknown[]) : undefined;
+            slotHexes.forEach((h, i) => {
+              if (!seen.has(h)) { seen.add(h); order.push(i); }
+              // 'set' is last-wins (store the value VERBATIM - a rawbytes value has no toBig); '+'/'-' accumulate (int).
+              if (vArr) merged.set(h, info.op === 'set' || info.op === 'read'
+                ? vArr[i] : toBig(merged.get(h) ?? 0n) + toBig(vArr[i]));
+            });
+            keysArr = order.map((i) => kArr[i]);
             const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
             if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
-            if (perKey && Array.isArray(valsArr)) {
-              const vArr = valsArr as unknown[];
-              valsArr = keepIdx.map((i) => vArr[i]);
+            if (vArr) {
+              valsArr = order.map((i) => merged.get(slotHexes[i])!);
               const amtIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.valueArrayParam);
               if (!runtimeFiltered && !info.valueArrayIndexParam
-                && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
+              && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
                 replaceLoopArgument(amtIdx, valsArr as FunctionArgument);
               }
             }
           }
         }
-      }
-      // CASE (b) ADJACENCY REORDER: the covenant folds a new recipient into a credited predecessor P only when P is
-      // processed IMMEDIATELY before it. The multiTransfer result is order-independent, so reorder recipients+amounts
-      // (as a PAIR, preserving each recipient's amount) to place each such new recipient right after P. Chains /
-      // two-in-gap can't be made adjacent and stay fail-closed. Crediting loops only (foldActive); write back to args
-      // so the encoded tx argument matches the commitment order the covenant verifies.
-      if (foldActive && Array.isArray(keysArr) && keysArr.length > 1) {
-        const kArr = keysArr as unknown[];
-        const slotsB = kArr.map((key) => slotForKey(key));
-        const isUpd = slotsB.map((s) => !!list.find(s));
-        const updBySlot = new Map<string, number>();
-        slotsB.forEach((s, i) => { if (isUpd[i]) updBySlot.set(binToHex(s), i); });
-        // Group inserts by their predecessor slot (a recipient-update, an untouched entry, or the HEAD sentinel). Each
-        // such gap forms a chain that the covenant walks in ASCENDING order, so its inserts must be consecutive +
-        // ascending in the tx. A case-b gap (predecessor is a credited update) additionally sits right after that update.
-        const insertsByPred = new Map<string, number[]>();
-        slotsB.forEach((s, i) => {
-          if (isUpd[i]) return;
-          const ph = binToHex(list.predecessorOf(s).slot);
-          if (!insertsByPred.has(ph)) insertsByPred.set(ph, []);
-          insertsByPred.get(ph)!.push(i);
-        });
-        // Reorder only when it changes something: a gap with >1 insert (chain) or an insert bracketed by a credited
-        // update (case-b adjacency). Result is order-independent, so this is transparent.
-        let needsReorder = false;
-        for (const [ph, arr] of insertsByPred) if (arr.length > 1 || updBySlot.has(ph)) needsReorder = true;
-        if (needsReorder) {
-          for (const [, arr] of insertsByPred) {
-            arr.sort((a, b) => (bytesToSlotValue(slotsB[a]) < bytesToSlotValue(slotsB[b]) ? -1 : 1));
+        // SCALAR `+=` / `-=` DUPLICATE: a fixed-amount airdrop/debit (`+= amount` / `-= amount`) has no per-key array to
+        // merge, so GROUP a duplicated key's occurrences adjacent (stable, by first occurrence). The covenant's isDup
+        // accumulate then applies the scalar once per occurrence to the single co-spent entry (the SDK accumulates it into
+        // the pending commitment in the loop below). Order-independent (accumulates); scalar `set` is deduped above.
+        if ((info.op === '+' || info.op === '-') && !perKey && !isDelete && Array.isArray(keysArr) && keysArr.length > 1) {
+          const kArr = keysArr as unknown[];
+          const slotHexes = kArr.map((key) => binToHex(slotForKey(key)));
+          if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
+            const groups = new Map<string, number[]>();
+            const firstOrder: string[] = [];
+            slotHexes.forEach((h, i) => {
+              if (!groups.has(h)) { groups.set(h, []); firstOrder.push(h); }
+              groups.get(h)!.push(i);
+            });
+            keysArr = firstOrder.flatMap((h) => groups.get(h)!).map((i) => kArr[i]);
+            const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+            if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
           }
-          const order: number[] = [];
-          const placed = new Set<number>();
-          const emitGap = (ph: string): void => {
-            for (const r of insertsByPred.get(ph) ?? []) if (!placed.has(r)) { order.push(r); placed.add(r); }
-          };
-          for (let i = 0; i < kArr.length; i++) {
-            if (placed.has(i)) continue;
-            if (isUpd[i]) {
-              order.push(i); placed.add(i); emitGap(binToHex(slotsB[i])); continue;
-            } // its gap's inserts follow
-            const ph = binToHex(list.predecessorOf(slotsB[i]).slot);
-            if (updBySlot.has(ph)) continue; // an insert placed via its credited-update predecessor
-            emitGap(ph); // untouched / HEAD gap: place the whole ascending group here
-          }
-          for (let i = 0; i < kArr.length; i++) if (!placed.has(i)) { order.push(i); placed.add(i); } // safety net
-          if (runtimeFiltered && order.some((sourceIndex, targetIndex) => sourceIndex !== targetIndex)) {
-            throw new Error(`vmap upsert loop ${info.collection}: predicate-selected keys require topology reordering; `
-              + 'split the action sequence so each selected mapping transition is already adjacent.');
-          }
-          keysArr = order.map((i) => kArr[i]);
-          // Write the reordered arrays to BOTH args (read by other derivations) AND finalArgs (already copied from
-          // args by the msg.sender/synthetic injection above - it builds the master unlocker, so the ENCODED tx
-          // argument must carry the same order the commitments were built in, else the covenant OP_VERIFY fails).
-          const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-          if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
-          // Array-mutation operand arrays use the same loop index as the key array and must follow any covenant
-          // adjacency reorder exactly.
-          for (const [pname, indexName] of [
-            [info.mutationValueArrayParam, info.mutationValueArrayIndexParam],
-            [info.mutationIndexArrayParam, info.mutationIndexArrayIndexParam],
-          ]) {
-            if (!pname) continue;
-            // A compiler-owned logical index keeps the public operand array in source order; the hidden key
-            // permutation selects the matching element during each physical iteration.
-            if (indexName) continue;
-            const pi = loopAbiFunction.inputs.findIndex((p) => p.name === pname);
-            const pv = pi >= 0 ? loopArgs[pi] : undefined;
-            if (Array.isArray(pv)) {
-              const reordered = order.map((i) => pv[i]);
-              if (!runtimeFiltered) {
-                replaceLoopArgument(pi, reordered);
+        }
+        // SELF-TRANSFER: a recipient == the debited msg.sender nets out (`bal[msg.sender] -= a; bal[msg.sender] += a`).
+        // Since the debit and the credit share amounts[i], dropping that entry from recipients+amounts leaves the debit
+        // summing (total - own) and never credits msg.sender separately - the identical net, with msg.sender co-spent
+        // ONCE (the debit) instead of twice. Solidity allows a self-transfer in a batch; this matches it.
+        if (!info.mutation && foldActive && this._signer && Array.isArray(keysArr) && keysArr.length > 0) {
+          const debitE = entryNfts.find((e) => e.collection === info.collection && e.exists && e.utxo);
+          let senderKey: Uint8Array | null = null;
+          try { senderKey = addressToLockScript(this._signer.getAddress()); } catch { senderKey = null; }
+          if (debitE && senderKey) {
+            const senderSlotHex = binToHex(keyToSlotMulti([...fixedBins, senderKey], collection));
+            const kArr = keysArr as unknown[];
+            const keepIdx: number[] = [];
+            kArr.forEach((k, i) => {
+              if (binToHex(slotForKey(k)) !== senderSlotHex) keepIdx.push(i);
+            });
+            if (keepIdx.length < kArr.length) {
+              keysArr = keepIdx.map((i) => kArr[i]);
+              const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+              if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
+              if (perKey && Array.isArray(valsArr)) {
+                const vArr = valsArr as unknown[];
+                valsArr = keepIdx.map((i) => vArr[i]);
+                const amtIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.valueArrayParam);
+                if (!runtimeFiltered && !info.valueArrayIndexParam
+                && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
+                  replaceLoopArgument(amtIdx, valsArr as FunctionArgument);
+                }
               }
             }
           }
-          if (perKey && Array.isArray(valsArr)) {
-            const vArr = valsArr as unknown[];
-            valsArr = order.map((i) => vArr[i]);
-            const amtIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.valueArrayParam);
-            if (!runtimeFiltered && !info.valueArrayIndexParam
+        }
+        // CASE (b) ADJACENCY REORDER: the covenant folds a new recipient into a credited predecessor P only when P is
+        // processed IMMEDIATELY before it. The multiTransfer result is order-independent, so reorder recipients+amounts
+        // (as a PAIR, preserving each recipient's amount) to place each such new recipient right after P. Chains /
+        // two-in-gap can't be made adjacent and stay fail-closed. Crediting loops only (foldActive); write back to args
+        // so the encoded tx argument matches the commitment order the covenant verifies.
+        if (foldActive && Array.isArray(keysArr) && keysArr.length > 1) {
+          const kArr = keysArr as unknown[];
+          const slotsB = kArr.map((key) => slotForKey(key));
+          const isUpd = slotsB.map((s) => !!list.find(s));
+          const updBySlot = new Map<string, number>();
+          slotsB.forEach((s, i) => { if (isUpd[i]) updBySlot.set(binToHex(s), i); });
+          // Group inserts by their predecessor slot (a recipient-update, an untouched entry, or the HEAD sentinel). Each
+          // such gap forms a chain that the covenant walks in ASCENDING order, so its inserts must be consecutive +
+          // ascending in the tx. A case-b gap (predecessor is a credited update) additionally sits right after that update.
+          const insertsByPred = new Map<string, number[]>();
+          slotsB.forEach((s, i) => {
+            if (isUpd[i]) return;
+            const ph = binToHex(list.predecessorOf(s).slot);
+            if (!insertsByPred.has(ph)) insertsByPred.set(ph, []);
+            insertsByPred.get(ph)!.push(i);
+          });
+          // Reorder only when it changes something: a gap with >1 insert (chain) or an insert bracketed by a credited
+          // update (case-b adjacency). Result is order-independent, so this is transparent.
+          let needsReorder = false;
+          for (const [ph, arr] of insertsByPred) if (arr.length > 1 || updBySlot.has(ph)) needsReorder = true;
+          if (needsReorder) {
+            for (const [, arr] of insertsByPred) {
+              arr.sort((a, b) => (bytesToSlotValue(slotsB[a]) < bytesToSlotValue(slotsB[b]) ? -1 : 1));
+            }
+            const order: number[] = [];
+            const placed = new Set<number>();
+            const emitGap = (ph: string): void => {
+              for (const r of insertsByPred.get(ph) ?? []) if (!placed.has(r)) { order.push(r); placed.add(r); }
+            };
+            for (let i = 0; i < kArr.length; i++) {
+              if (placed.has(i)) continue;
+              if (isUpd[i]) {
+                order.push(i); placed.add(i); emitGap(binToHex(slotsB[i])); continue;
+              } // its gap's inserts follow
+              const ph = binToHex(list.predecessorOf(slotsB[i]).slot);
+              if (updBySlot.has(ph)) continue; // an insert placed via its credited-update predecessor
+              emitGap(ph); // untouched / HEAD gap: place the whole ascending group here
+            }
+            for (let i = 0; i < kArr.length; i++) if (!placed.has(i)) { order.push(i); placed.add(i); } // safety net
+            if (runtimeFiltered && order.some((sourceIndex, targetIndex) => sourceIndex !== targetIndex)) {
+              throw new Error(`vmap upsert loop ${info.collection}: predicate-selected keys require topology reordering; `
+              + 'split the action sequence so each selected mapping transition is already adjacent.');
+            }
+            keysArr = order.map((i) => kArr[i]);
+            // Write the reordered arrays to BOTH args (read by other derivations) AND finalArgs (already copied from
+            // args by the msg.sender/synthetic injection above - it builds the master unlocker, so the ENCODED tx
+            // argument must carry the same order the commitments were built in, else the covenant OP_VERIFY fails).
+            const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+            if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
+            // Array-mutation operand arrays use the same loop index as the key array and must follow any covenant
+            // adjacency reorder exactly.
+            for (const [pname, indexName] of [
+              [info.mutationValueArrayParam, info.mutationValueArrayIndexParam],
+              [info.mutationIndexArrayParam, info.mutationIndexArrayIndexParam],
+            ]) {
+              if (!pname) continue;
+              // A compiler-owned logical index keeps the public operand array in source order; the hidden key
+              // permutation selects the matching element during each physical iteration.
+              if (indexName) continue;
+              const pi = loopAbiFunction.inputs.findIndex((p) => p.name === pname);
+              const pv = pi >= 0 ? loopArgs[pi] : undefined;
+              if (Array.isArray(pv)) {
+                const reordered = order.map((i) => pv[i]);
+                if (!runtimeFiltered) {
+                  replaceLoopArgument(pi, reordered);
+                }
+              }
+            }
+            if (perKey && Array.isArray(valsArr)) {
+              const vArr = valsArr as unknown[];
+              valsArr = order.map((i) => vArr[i]);
+              const amtIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.valueArrayParam);
+              if (!runtimeFiltered && !info.valueArrayIndexParam
               && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
-              replaceLoopArgument(amtIdx, valsArr as FunctionArgument);
+                replaceLoopArgument(amtIdx, valsArr as FunctionArgument);
+              }
             }
           }
         }
-      }
-      const journalArgumentIndex = loopAbiFunction.inputs.findIndex(
-        (input) => input.name === KERNEL_JOURNAL_ACCESS_STREAMS,
-      );
-      if (journalArgumentIndex >= 0) {
+        const journalArgumentIndex = loopAbiFunction.inputs.findIndex(
+          (input) => input.name === KERNEL_JOURNAL_ACCESS_STREAMS,
+        );
+        if (journalArgumentIndex >= 0) {
         // An unconditional compiler-owned counter stream still executes at source occurrences 0..N-1. Publish
         // those coordinates explicitly so two write sites in the same loop are planned A0,B0,A1,B1 after their
         // key arrays have independently been permuted for physical topology.
-        const journalSourceOccurrences = sourceOccurrences
+          const journalSourceOccurrences = sourceOccurrences
           ?? (counterSpec ? keysArr.map((_key, occurrence) => occurrence) : undefined);
-        const streamIndex = info.journalAccessStreamIndex;
-        const streamCount = loopAbiFunction.sortedUpsertLoopInfo?.length ?? 0;
-        if (!Number.isSafeInteger(streamIndex) || streamIndex < 0 || streamIndex >= streamCount) {
-          throw new Error(
-            `Kernel runtime loop in '${loopAbiFunction.name}' has invalid journal stream ordinal ${streamIndex}.`,
-          );
-        }
-        // Mapping `delete` resets the value but retains the verified-list node, so it has ordinary write topology.
-        // `remove` is reserved by the journal codec for a future physical linked-list splice.
-        const operation: KernelEntryJournalTopologyOperation = info.op === 'read' ? 'read' : 'write';
-        runtimeKernelJournalStreams.push({
-          collection: info.collection,
-          collectionHash: computeCollectionHash(collection.signature),
-          frameIndex: upsertFrameIndex,
-          executionGroup: Number.isSafeInteger(info.journalExecutionGroup) && info.journalExecutionGroup! >= 0
-            ? info.journalExecutionGroup! : info.journalAccessStreamIndex,
-          executionOrder: info.journalAccessStreamIndex,
-          accessStreamIndex: info.journalAccessStreamIndex,
-          ...(info.settlementIdentity && { settlementIdentity: info.settlementIdentity }),
-          ...(journalSourceOccurrences && { sourceOccurrences: journalSourceOccurrences }),
-          list,
-          writes: keysArr.map((key) => ({ slot: slotForKey(key), operation })),
-          publish: (encoded) => {
-            const current = argOf(KERNEL_JOURNAL_ACCESS_STREAMS);
-            const initialized = current === undefined || (Array.isArray(current) && current.length === 0)
-              ? kernelJournalAccessStreamPlaceholders(loopAbiFunction) : current;
-            if (!Array.isArray(initialized) || initialized.length !== streamCount
-              || initialized.some((stream) => !(stream instanceof Uint8Array))) {
-              const actual = !Array.isArray(initialized) ? typeof initialized
-                : `${initialized.length} (${initialized.map((stream) => (
-                  stream instanceof Uint8Array ? 'bytes' : typeof stream
-                )).join(', ')})`;
-              throw new Error(
-                `Kernel handler '${loopAbiFunction.name}' requires ${streamCount} journal access streams; `
-                + `received ${actual}.`,
-              );
-            }
-            const streams = [...initialized] as Uint8Array[];
-            streams[streamIndex] = encoded;
-            replaceLoopArgument(journalArgumentIndex, streams);
-          },
-        });
-      }
-      if (info.valueRuntimeLocal) {
-        const oldWitnesses: ConstructorArgument[] = [];
-        const runtimeSlots = new Set<string>();
-        const consumedInputs = new Set<string>();
-        let outputCount = 0;
-        // The covenant defers a present update, then can re-point it for the next absent key in its gap.
-        // Mirror that physical input schedule here: the re-point consumes no second predecessor input and
-        // contributes one additional entry output. Consecutive new keys in one gap chain in the same way.
-        let deferred: { slot: Uint8Array; nextKey: Uint8Array } | undefined;
-        const runtimeUnlocker = createEntryNftUnlocker(
-          this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
-        );
-        for (let i = 0; i < keysArr.length; i++) {
-          const slot = slotForKey(keysArr[i]);
-          const slotHex = binToHex(slot);
-          if (runtimeSlots.has(slotHex)) {
-            throw new Error(`vmap runtime struct loop ${info.collection}: duplicate keys require a journaled `
-              + 'read-your-writes transition and cannot be co-spent twice');
-          }
-          runtimeSlots.add(slotHex);
-          const entry = list.find(slot);
-          let raw: Uint8Array;
-          if (entry) {
-            const inputId = `${entry.utxo.txid}:${entry.utxo.vout}`;
-            if (consumedInputs.has(inputId)) {
-              throw new Error(`vmap runtime struct loop ${info.collection}: entry ${i} is already co-spent`);
-            }
-            consumedInputs.add(inputId);
-            captureRuntimeJournalInputIntent({ ...entry.utxo, unlocker: runtimeUnlocker }, info.collection);
-            const tail = entry.value;
-            if (tail.length < 4) throw new Error(`vmap runtime struct value for ${info.collection} has an invalid tail`);
-            const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
-            if (len <= 60) {
-              raw = tail.slice(4, 4 + len);
-            } else {
-              const root = tail.slice(4, 36);
-              const headData = tail.slice(36, 64);
-              const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, info.collection, slot, root);
-              const chunks = (await this.inner.provider.getUtxos(chunkAddr))
-                .filter((utxo) => utxo.token?.category === this.categoryId
-                  && !!utxo.token?.nft?.commitment && utxo.token.nft.commitment.length > 0)
-                .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment))
-                .sort((a, b) => a.chunkIndex - b.chunkIndex);
-              raw = joinValueChunks(headData, chunks, len);
-              if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
-                throw new Error('vmap runtime struct value chunks do not match the authenticated root');
-              }
-              valueChunkGc.push({ collection: info.collection, slotHex, oldDigestHex: binToHex(root) });
-            }
-            deferred = { slot: entry.slot, nextKey: entry.nextKey };
-            outputCount += 1;
-          } else {
-            raw = encodePushdataValue(
-              getDefaultStateValue(collection.valueType, stateLayout.structs),
-              collection.valueType, stateLayout.structs,
+          const streamIndex = info.journalAccessStreamIndex;
+          const streamCount = loopAbiFunction.sortedUpsertLoopInfo?.length ?? 0;
+          if (!Number.isSafeInteger(streamIndex) || streamIndex < 0 || streamIndex >= streamCount) {
+            throw new Error(
+              `Kernel runtime loop in '${loopAbiFunction.name}' has invalid journal stream ordinal ${streamIndex}.`,
             );
-            const predecessor = list.predecessorOf(slot);
-            const slotValue = bytesToSlotValue(slot);
-            const rePointsDeferred = deferred !== undefined
-              && bytesToSlotValue(deferred.slot) < slotValue
-              && (bytesToSlotValue(deferred.nextKey) === 0n || slotValue < bytesToSlotValue(deferred.nextKey));
-            if (rePointsDeferred) {
-              deferred = { slot, nextKey: deferred!.nextKey };
-              outputCount += 1;
-            } else {
-              const inputId = `${predecessor.utxo.txid}:${predecessor.utxo.vout}`;
-              if (consumedInputs.has(inputId)) {
-                throw new Error(`vmap runtime struct loop ${info.collection}: absent key ${i} shares a non-adjacent predecessor`);
-              }
-              consumedInputs.add(inputId);
-              captureRuntimeJournalInputIntent({ ...predecessor.utxo, unlocker: runtimeUnlocker }, info.collection);
-              deferred = { slot, nextKey: predecessor.nextKey };
-              outputCount += 2;
-            }
           }
-          oldWitnesses.push(info.oldValuesWitnessParam?.startsWith(VMAP_COUNTER_OLD_PREFIX)
-            ? decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value as ConstructorArgument
-            : raw);
-        }
-        const witnessIndex = loopAbiFunction.inputs.findIndex((input) => input.name === info.oldValuesWitnessParam);
-        if (witnessIndex < 0) {
-          throw new Error(`vmap runtime struct loop ${info.collection}: missing old-value witness ABI input`);
-        }
-        replaceLoopArgument(witnessIndex, oldWitnesses);
-        const priorOutputCount = runtimeLoopDerivedCounts.get(info.collection) ?? 0;
-        runtimeLoopDerivedCounts.set(info.collection, priorOutputCount + outputCount);
-        if (upsertFrame.routed && selectedUpsertRows.length > 1 && outputCount > 0) {
-          const rowIndex = routeRowIndex(upsertFrame.row!);
-          if (rowIndex < 0) throw new Error('Message-bus runtime loop row is missing from its route frame');
-          runtimeLoopEntrySegments.push({
-            rowIndex, collection: info.collection, offset: priorOutputCount, count: outputCount,
+          // Mapping `delete` resets the value but retains the verified-list node, so it has ordinary write topology.
+          // `remove` is reserved by the journal codec for a future physical linked-list splice.
+          const operation: KernelEntryJournalTopologyOperation = info.op === 'read' ? 'read' : 'write';
+          runtimeKernelJournalStreams.push({
+            collection: info.collection,
+            collectionHash: computeCollectionHash(collection.signature),
+            frameIndex: upsertFrameIndex,
+            executionGroup: Number.isSafeInteger(info.journalExecutionGroup) && info.journalExecutionGroup! >= 0
+              ? info.journalExecutionGroup! : info.journalAccessStreamIndex,
+            executionOrder: info.journalAccessStreamIndex,
+            accessStreamIndex: info.journalAccessStreamIndex,
+            ...(info.settlementIdentity && { settlementIdentity: info.settlementIdentity }),
+            ...(journalSourceOccurrences && { sourceOccurrences: journalSourceOccurrences }),
+            list,
+            writes: keysArr.map((key) => ({ slot: slotForKey(key), operation })),
+            publish: (encoded) => {
+              const current = argOf(KERNEL_JOURNAL_ACCESS_STREAMS);
+              const initialized = current === undefined || (Array.isArray(current) && current.length === 0)
+                ? kernelJournalAccessStreamPlaceholders(loopAbiFunction) : current;
+              if (!Array.isArray(initialized) || initialized.length !== streamCount
+              || initialized.some((stream) => !(stream instanceof Uint8Array))) {
+                const actual = !Array.isArray(initialized) ? typeof initialized
+                  : `${initialized.length} (${initialized.map((stream) => (
+                    stream instanceof Uint8Array ? 'bytes' : typeof stream
+                  )).join(', ')})`;
+                throw new Error(
+                  `Kernel handler '${loopAbiFunction.name}' requires ${streamCount} journal access streams; `
+                + `received ${actual}.`,
+                );
+              }
+              const streams = [...initialized] as Uint8Array[];
+              streams[streamIndex] = encoded;
+              replaceLoopArgument(journalArgumentIndex, streams);
+            },
           });
         }
-        materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
-        addRuntimeLoopCardinality(
-          info.collection, insertLoopPredecessors.length - runtimeInputStart, outputCount,
-        );
-        if (collection.chunkableValue) {
-          for (const key of keysArr) addComputedValueChunkRun(info.collection, slotForKey(key));
-        }
-        continue;
-      }
-      if (info.mutation) {
-        const mutationExpressions = [
-          info.mutationValueExpression, info.mutationIndexExpression,
-        ].filter((expression): expression is ExternalCallExpression => expression !== undefined);
-        if (mutationExpressions.length > 0) {
-          loopPredicateState = await this._hydrateExternalPredicateState(
-            mutationExpressions,
-            conditionArgs,
-            entryArtifact,
-            loopPredicateState,
-            visibleInputs,
-            executionSelfAddress,
-            keysArr.map(occurrenceOf),
+        if (info.valueRuntimeLocal) {
+          const oldWitnesses: ConstructorArgument[] = [];
+          const runtimeSlots = new Set<string>();
+          const consumedInputs = new Set<string>();
+          let outputCount = 0;
+          // The covenant defers a present update, then can re-point it for the next absent key in its gap.
+          // Mirror that physical input schedule here: the re-point consumes no second predecessor input and
+          // contributes one additional entry output. Consecutive new keys in one gap chain in the same way.
+          let deferred: { slot: Uint8Array; nextKey: Uint8Array } | undefined;
+          const runtimeUnlocker = createEntryNftUnlocker(
+            this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
           );
-        }
-        const readRawValue = async (slot: Uint8Array): Promise<Uint8Array> => {
-          const entry = list.find(slot);
-          if (!entry) return encodePushdataValue([], collection.valueType, stateLayout.structs);
-          const tail = entry.value;
-          if (tail.length < 4) throw new Error(`vmap array value for ${info.collection} has an invalid tail`);
-          const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
-          if (len <= 60) return tail.slice(4, 4 + len);
-          const root = tail.slice(4, 36);
-          const headData = tail.slice(36, 64);
-          const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, info.collection, slot, root);
-          const chunks = (await this.inner.provider.getUtxos(chunkAddr))
-            .filter((u) => u.token?.category === this.categoryId
-              && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0)
-            .map((u) => parseValueChunkCommitment(u.token!.nft!.commitment))
-            .sort((a, b) => a.chunkIndex - b.chunkIndex);
-          const raw = joinValueChunks(headData, chunks, len);
-          if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
-            throw new Error('vmap value chunks do not match the authenticated root');
-          }
-          return raw;
-        };
-        const operand = (arrayName: string | undefined, arrayIndexName: string | undefined,
-          scalarName: string | undefined, constant: string | undefined,
-          expression: ExternalCallExpression | undefined, i: number): unknown => {
-          const av = argOf(arrayName);
-          if (arrayName && Array.isArray(av)) {
-            const indices = arrayIndexName === info.varyingArrayParam ? keysArr : argOf(arrayIndexName);
-            const rawIndex = Array.isArray(indices) ? indices[i] : i;
-            const index = Number(typeof rawIndex === 'bigint' ? rawIndex : BigInt(rawIndex as number | string));
-            if (!Number.isSafeInteger(index) || index < 0 || index >= av.length) {
-              throw new Error(`vmap array mutation ${info.collection}: operand index ${String(rawIndex)} out of bounds`);
+          for (let i = 0; i < keysArr.length; i++) {
+            const slot = slotForKey(keysArr[i]);
+            const slotHex = binToHex(slot);
+            if (runtimeSlots.has(slotHex)) {
+              throw new Error(`vmap runtime struct loop ${info.collection}: duplicate keys require a journaled `
+              + 'read-your-writes transition and cannot be co-spent twice');
             }
-            return av[index];
+            runtimeSlots.add(slotHex);
+            const entry = list.find(slot);
+            let raw: Uint8Array;
+            if (entry) {
+              const inputId = `${entry.utxo.txid}:${entry.utxo.vout}`;
+              if (consumedInputs.has(inputId)) {
+                throw new Error(`vmap runtime struct loop ${info.collection}: entry ${i} is already co-spent`);
+              }
+              consumedInputs.add(inputId);
+              captureRuntimeJournalInputIntent({ ...entry.utxo, unlocker: runtimeUnlocker }, info.collection);
+              const tail = entry.value;
+              if (tail.length < 4) throw new Error(`vmap runtime struct value for ${info.collection} has an invalid tail`);
+              const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
+              if (len <= 60) {
+                raw = tail.slice(4, 4 + len);
+              } else {
+                const root = tail.slice(4, 36);
+                const headData = tail.slice(36, 64);
+                const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, info.collection, slot, root);
+                const chunks = (await this.inner.provider.getUtxos(chunkAddr))
+                  .filter((utxo) => utxo.token?.category === this.categoryId
+                  && !!utxo.token?.nft?.commitment && utxo.token.nft.commitment.length > 0)
+                  .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment))
+                  .sort((a, b) => a.chunkIndex - b.chunkIndex);
+                raw = joinValueChunks(headData, chunks, len);
+                if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
+                  throw new Error('vmap runtime struct value chunks do not match the authenticated root');
+                }
+                valueChunkGc.push({ collection: info.collection, slotHex, oldDigestHex: binToHex(root) });
+              }
+              deferred = { slot: entry.slot, nextKey: entry.nextKey };
+              outputCount += 1;
+            } else {
+              raw = encodePushdataValue(
+                getDefaultStateValue(collection.valueType, stateLayout.structs),
+                collection.valueType, stateLayout.structs,
+              );
+              const predecessor = list.predecessorOf(slot);
+              const slotValue = bytesToSlotValue(slot);
+              const rePointsDeferred = deferred !== undefined
+              && bytesToSlotValue(deferred.slot) < slotValue
+              && (bytesToSlotValue(deferred.nextKey) === 0n || slotValue < bytesToSlotValue(deferred.nextKey));
+              if (rePointsDeferred) {
+                deferred = { slot, nextKey: deferred!.nextKey };
+                outputCount += 1;
+              } else {
+                const inputId = `${predecessor.utxo.txid}:${predecessor.utxo.vout}`;
+                if (consumedInputs.has(inputId)) {
+                  throw new Error(`vmap runtime struct loop ${info.collection}: absent key ${i} shares a non-adjacent predecessor`);
+                }
+                consumedInputs.add(inputId);
+                captureRuntimeJournalInputIntent({ ...predecessor.utxo, unlocker: runtimeUnlocker }, info.collection);
+                deferred = { slot, nextKey: predecessor.nextKey };
+                outputCount += 2;
+              }
+            }
+            oldWitnesses.push(info.oldValuesWitnessParam?.startsWith(VMAP_COUNTER_OLD_PREFIX)
+              ? decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value as ConstructorArgument
+              : raw);
           }
-          if (scalarName) return argOf(scalarName);
-          if (constant !== undefined) return BigInt(constant);
-          if (expression) {
-            const value = this._evaluateExternalExpression(
-              expression,
+          const witnessIndex = loopAbiFunction.inputs.findIndex((input) => input.name === info.oldValuesWitnessParam);
+          if (witnessIndex < 0) {
+            throw new Error(`vmap runtime struct loop ${info.collection}: missing old-value witness ABI input`);
+          }
+          replaceLoopArgument(witnessIndex, oldWitnesses);
+          const priorOutputCount = runtimeLoopDerivedCounts.get(info.collection) ?? 0;
+          runtimeLoopDerivedCounts.set(info.collection, priorOutputCount + outputCount);
+          if (upsertFrame.routed && selectedUpsertRows.length > 1 && outputCount > 0) {
+            const rowIndex = routeRowIndex(upsertFrame.row!);
+            if (rowIndex < 0) throw new Error('Message-bus runtime loop row is missing from its route frame');
+            runtimeLoopEntrySegments.push({
+              rowIndex, collection: info.collection, offset: priorOutputCount, count: outputCount,
+            });
+          }
+          materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
+          addRuntimeLoopCardinality(
+            info.collection, insertLoopPredecessors.length - runtimeInputStart, outputCount,
+          );
+          if (collection.chunkableValue) {
+            for (const key of keysArr) addComputedValueChunkRun(info.collection, slotForKey(key));
+          }
+          continue;
+        }
+        if (info.mutation) {
+          const mutationExpressions = [
+            info.mutationValueExpression, info.mutationIndexExpression,
+          ].filter((expression): expression is ExternalCallExpression => expression !== undefined);
+          if (mutationExpressions.length > 0) {
+            loopPredicateState = await this._hydrateExternalPredicateState(
+              mutationExpressions,
               conditionArgs,
               entryArtifact,
               loopPredicateState,
               visibleInputs,
-              undefined,
-              occurrenceOf(keysArr[i]),
-              false,
               executionSelfAddress,
+              keysArr.map(occurrenceOf),
             );
-            if (value === undefined) {
-              throw new Error(`vmap array mutation ${info.collection}: could not resolve operand expression`);
-            }
-            return value;
           }
-          return undefined;
-        };
-        const oldWitnesses: StateValue[] = [];
-        const mutated: StateValue[] = [];
-        const pendingArrays = new Map<string, StateValue[]>();
-        for (let i = 0; i < keysArr.length; i++) {
-          const slot = slotForKey(keysArr[i]);
-          const slotHex = binToHex(slot);
-          const pending = pendingArrays.get(slotHex);
-          const raw = pending === undefined ? await readRawValue(slot) : undefined;
-          const decoded = pending ?? decodePushdataValue(
-            raw!, 0, collection.valueType, stateLayout.structs,
-          ).value;
-          if (!Array.isArray(decoded)) throw new Error(`vmap mutation target ${info.collection} is not an array`);
-          oldWitnesses.push([...decoded]);
-          const next = [...decoded] as StateValue[];
-          if (info.mutation === 'push') {
-            next.push(operand(
-              info.mutationValueArrayParam, info.mutationValueArrayIndexParam,
-              info.mutationValueScalarParam, info.mutationValueConst,
-              info.mutationValueExpression, i,
-            ) as StateValue);
-          } else if (info.mutation === 'pop') {
-            if (next.length === 0) throw new Error(`vmap array mutation ${info.collection}: pop from empty array`);
-            next.pop();
-          } else {
-            const rawIndex = operand(
-              info.mutationIndexArrayParam, info.mutationIndexArrayIndexParam,
-              info.mutationIndexScalarParam, info.mutationIndexConst,
-              info.mutationIndexExpression, i,
-            );
-            const index = Number(typeof rawIndex === 'bigint' ? rawIndex : BigInt(rawIndex as number | string));
-            if (!Number.isSafeInteger(index) || index < 0 || index >= next.length) {
-              throw new Error(`vmap array mutation ${info.collection}: index ${index} out of bounds`);
+          const readRawValue = async (slot: Uint8Array): Promise<Uint8Array> => {
+            const entry = list.find(slot);
+            if (!entry) return encodePushdataValue([], collection.valueType, stateLayout.structs);
+            const tail = entry.value;
+            if (tail.length < 4) throw new Error(`vmap array value for ${info.collection} has an invalid tail`);
+            const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
+            if (len <= 60) return tail.slice(4, 4 + len);
+            const root = tail.slice(4, 36);
+            const headData = tail.slice(36, 64);
+            const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, info.collection, slot, root);
+            const chunks = (await this.inner.provider.getUtxos(chunkAddr))
+              .filter((u) => u.token?.category === this.categoryId
+              && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0)
+              .map((u) => parseValueChunkCommitment(u.token!.nft!.commitment))
+              .sort((a, b) => a.chunkIndex - b.chunkIndex);
+            const raw = joinValueChunks(headData, chunks, len);
+            if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
+              throw new Error('vmap value chunks do not match the authenticated root');
             }
-            next[index] = operand(
-              info.mutationValueArrayParam, info.mutationValueArrayIndexParam,
-              info.mutationValueScalarParam, info.mutationValueConst,
-              info.mutationValueExpression, i,
-            ) as StateValue;
+            return raw;
+          };
+          const operand = (arrayName: string | undefined, arrayIndexName: string | undefined,
+            scalarName: string | undefined, constant: string | undefined,
+            expression: ExternalCallExpression | undefined, i: number): unknown => {
+            const av = argOf(arrayName);
+            if (arrayName && Array.isArray(av)) {
+              const indices = arrayIndexName === info.varyingArrayParam ? keysArr : argOf(arrayIndexName);
+              const rawIndex = Array.isArray(indices) ? indices[i] : i;
+              const index = Number(typeof rawIndex === 'bigint' ? rawIndex : BigInt(rawIndex as number | string));
+              if (!Number.isSafeInteger(index) || index < 0 || index >= av.length) {
+                throw new Error(`vmap array mutation ${info.collection}: operand index ${String(rawIndex)} out of bounds`);
+              }
+              return av[index];
+            }
+            if (scalarName) return argOf(scalarName);
+            if (constant !== undefined) return BigInt(constant);
+            if (expression) {
+              const value = this._evaluateExternalExpression(
+                expression,
+                conditionArgs,
+                entryArtifact,
+                loopPredicateState,
+                visibleInputs,
+                undefined,
+                occurrenceOf(keysArr[i]),
+                false,
+                executionSelfAddress,
+              );
+              if (value === undefined) {
+                throw new Error(`vmap array mutation ${info.collection}: could not resolve operand expression`);
+              }
+              return value;
+            }
+            return undefined;
+          };
+          const oldWitnesses: StateValue[] = [];
+          const mutated: StateValue[] = [];
+          const pendingArrays = new Map<string, StateValue[]>();
+          for (let i = 0; i < keysArr.length; i++) {
+            const slot = slotForKey(keysArr[i]);
+            const slotHex = binToHex(slot);
+            const pending = pendingArrays.get(slotHex);
+            const raw = pending === undefined ? await readRawValue(slot) : undefined;
+            const decoded = pending ?? decodePushdataValue(
+              raw!, 0, collection.valueType, stateLayout.structs,
+            ).value;
+            if (!Array.isArray(decoded)) throw new Error(`vmap mutation target ${info.collection} is not an array`);
+            oldWitnesses.push([...decoded]);
+            const next = [...decoded] as StateValue[];
+            if (info.mutation === 'push') {
+              next.push(operand(
+                info.mutationValueArrayParam, info.mutationValueArrayIndexParam,
+                info.mutationValueScalarParam, info.mutationValueConst,
+                info.mutationValueExpression, i,
+              ) as StateValue);
+            } else if (info.mutation === 'pop') {
+              if (next.length === 0) throw new Error(`vmap array mutation ${info.collection}: pop from empty array`);
+              next.pop();
+            } else {
+              const rawIndex = operand(
+                info.mutationIndexArrayParam, info.mutationIndexArrayIndexParam,
+                info.mutationIndexScalarParam, info.mutationIndexConst,
+                info.mutationIndexExpression, i,
+              );
+              const index = Number(typeof rawIndex === 'bigint' ? rawIndex : BigInt(rawIndex as number | string));
+              if (!Number.isSafeInteger(index) || index < 0 || index >= next.length) {
+                throw new Error(`vmap array mutation ${info.collection}: index ${index} out of bounds`);
+              }
+              next[index] = operand(
+                info.mutationValueArrayParam, info.mutationValueArrayIndexParam,
+                info.mutationValueScalarParam, info.mutationValueConst,
+                info.mutationValueExpression, i,
+              ) as StateValue;
+            }
+            mutated.push(next);
+            pendingArrays.set(slotHex, next);
           }
-          mutated.push(next);
-          pendingArrays.set(slotHex, next);
+          const wi = loopAbiFunction.inputs.findIndex((p) => p.name === info.oldValuesWitnessParam);
+          if (wi < 0) throw new Error(`vmap array mutation ${info.collection}: missing old-value witness ABI input`);
+          replaceLoopArgument(wi, oldWitnesses);
+          valsArr = mutated;
+          perKey = true;
+          perKeyRawbytes = true;
         }
-        const wi = loopAbiFunction.inputs.findIndex((p) => p.name === info.oldValuesWitnessParam);
-        if (wi < 0) throw new Error(`vmap array mutation ${info.collection}: missing old-value witness ABI input`);
-        replaceLoopArgument(wi, oldWitnesses);
-        valsArr = mutated;
-        perKey = true;
-        perKeyRawbytes = true;
-      }
-      const wUnlocker = createEntryNftUnlocker(
-        this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
-      );
-      // Commitments in CUMULATIVE OUTPUT order (matching the covenant's outCounter): an UPDATE contributes 1 (the
-      // updated node), an INSERT contributes 2 (P' = the re-pointed predecessor, then NEW). One co-spent input per
-      // recipient. cospent = co-spent UTXO ids for conflict detection (an entry / predecessor can be co-spent once).
-      const commitments: string[] = [];
-      const commitmentProducers: KernelEntryJournalDirtyFinalBodyCandidate['producer'][] = [];
-      const commitmentProducer = (
-        accessOrdinal: number,
-        recordRole: KernelEntryJournalDirtyFinalBodyCandidate['producer']['recordRole'],
-      ): KernelEntryJournalDirtyFinalBodyCandidate['producer'] => ({
-        frameIndex: upsertFrameIndex,
-        accessStreamIndex: info.journalAccessStreamIndex,
-        accessOrdinal,
-        recordRole,
-      });
-      const seenSlots = new Set<string>();
-      const cospent = new Set<string>();
-      const uidOf = (u: { txid: string; vout: number }): string => `${u.txid}:${u.vout}`;
-      // The on-chain read loop caches the last real node it authenticated and reproduced unchanged. Sorted keys
-      // which remain in that node's successor gap reuse the proof instead of attempting an invalid duplicate
-      // co-spend. Keep the exact same interval here so physical input/output counts match the covenant.
-      let priorReadProof: { uid: string; slot: Uint8Array; nextKey: Uint8Array } | undefined;
-      // Pre-seed with this collection's FIXED (non-loop) entry co-spends - notably the cached `bal[msg.sender] -=`
-      // DEBIT write. If a NEW recipient's bracketing predecessor is one of those already-co-spent entries, co-spending
-      // it again would make an invalid duplicate input; detect it here and fail closed with a clear message (else the
-      // tx builder throws an opaque "Duplicate input detected").
-      for (const e of entryNfts) {
-        if (e.collection === info.collection && e.exists && e.utxo) cospent.add(uidOf(e.utxo));
-      }
-      // MSG.SENDER MERGE: the single fixed (non-loop) co-spent entry of this collection is the cached msg.sender DEBIT.
-      // A new recipient whose bracketing predecessor IS that entry re-points the debit's single co-spend (the covenant
-      // does it via the loop's re-point register) instead of co-spending it again - so we mint only the NEW node.
-      const debitEntry = entryNfts.find((e) => e.collection === info.collection && e.exists && e.utxo);
-      let mergedNewCount = 0;
+        const wUnlocker = createEntryNftUnlocker(
+          this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
+        );
+        // Commitments in CUMULATIVE OUTPUT order (matching the covenant's outCounter): an UPDATE contributes 1 (the
+        // updated node), an INSERT contributes 2 (P' = the re-pointed predecessor, then NEW). One co-spent input per
+        // recipient. cospent = co-spent UTXO ids for conflict detection (an entry / predecessor can be co-spent once).
+        const commitments: string[] = [];
+        const commitmentProducers: KernelEntryJournalDirtyFinalBodyCandidate['producer'][] = [];
+        const commitmentProducer = (
+          accessOrdinal: number,
+          recordRole: KernelEntryJournalDirtyFinalBodyCandidate['producer']['recordRole'],
+        ): KernelEntryJournalDirtyFinalBodyCandidate['producer'] => ({
+          frameIndex: upsertFrameIndex,
+          accessStreamIndex: info.journalAccessStreamIndex,
+          accessOrdinal,
+          recordRole,
+        });
+        const seenSlots = new Set<string>();
+        const cospent = new Set<string>();
+        const uidOf = (u: { txid: string; vout: number }): string => `${u.txid}:${u.vout}`;
+        // The on-chain read loop caches the last real node it authenticated and reproduced unchanged. Sorted keys
+        // which remain in that node's successor gap reuse the proof instead of attempting an invalid duplicate
+        // co-spend. Keep the exact same interval here so physical input/output counts match the covenant.
+        let priorReadProof: { uid: string; slot: Uint8Array; nextKey: Uint8Array } | undefined;
+        // Pre-seed with this collection's FIXED (non-loop) entry co-spends - notably the cached `bal[msg.sender] -=`
+        // DEBIT write. If a NEW recipient's bracketing predecessor is one of those already-co-spent entries, co-spending
+        // it again would make an invalid duplicate input; detect it here and fail closed with a clear message (else the
+        // tx builder throws an opaque "Duplicate input detected").
+        for (const e of entryNfts) {
+          if (e.collection === info.collection && e.exists && e.utxo) cospent.add(uidOf(e.utxo));
+        }
+        // MSG.SENDER MERGE: the single fixed (non-loop) co-spent entry of this collection is the cached msg.sender DEBIT.
+        // A new recipient whose bracketing predecessor IS that entry re-points the debit's single co-spend (the covenant
+        // does it via the loop's re-point register) instead of co-spending it again - so we mint only the NEW node.
+        const debitEntry = entryNfts.find((e) => e.collection === info.collection && e.exists && e.utxo);
+        let mergedNewCount = 0;
       // CASE (b) FOLD: mirror the covenant's pending-defer register. On a crediting loop (+/set) each UPDATE defers its
       // mint; the NEXT recipient, if it is a NEW node bracketed by that update, re-points the update's commitment in
       // place + appends its own NEW node (the predecessor is co-spent ONCE). lastDeferred = the immediately-prior
@@ -12646,7 +12646,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ) as Uint8Array;
       if (encodedKernelJournalCarrier.length > 520) {
         throw new Error(
-          `Kernel entry journal requires segmented carrier inputs, but this compiler published only the legacy `
+          'Kernel entry journal requires segmented carrier inputs, but this compiler published only the legacy '
           + `${encodedKernelJournalCarrier.length}-byte monolithic carrier.`,
         );
       }
@@ -14931,6 +14931,7 @@ export class StatefulFunctionCall {
     handler: NonNullable<NonNullable<Artifact['messageBus']>['handlers']>[number];
     executionArtifact: Artifact;
   }> = [];
+
   private tokenContainerTransfers: Array<{
     tokenContainerCategoryId: string; lockingBytecode: Uint8Array; amount: bigint;
   }> = [];
@@ -15833,6 +15834,7 @@ export class StatefulFunctionCall {
       },
     });
   }
+
   private async _applyOverrides(): Promise<StatefulTransactionBuilder> {
     return applyOverridesImpl(this._applyOverridesHost());
   }

@@ -3,12 +3,10 @@
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
-import { binToHex } from '@bitauth/libauth';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import {
   clampViewTailPlacement,
   groupOwnsInBlockReturnEvent,
-  logicalReturnGroupIndex,
   physicalParticipantWidth,
   tokenWriterReturnIndex,
   type PhysicalReturnGroup,
@@ -78,8 +76,9 @@ export function gatherContiguousPlainFunders<T extends {
     available += 1;
   }
   while (available < required) {
+    const minimumIndex = insertionIndex + available;
     const source = inputs.findLastIndex((candidate, index) => (
-      index >= insertionIndex + available
+      index >= minimumIndex
       && !candidate.token
       && funderOutpoints.has(`${candidate.txid}:${candidate.vout}`)
     ));
@@ -161,7 +160,7 @@ export function assignPhysicalReturnIndices(
 ): Map<number, number> {
   const assigned = new Map<number, number>();
   let occupied = extraOccupied;
-  for (const [groupIdx, group] of groups.entries()) {
+  for (const group of groups) {
     if (group.sharedGroupIndex !== undefined) continue;
     const master = findMintingInputIndex(group.categoryId);
     if (master < 0) continue;

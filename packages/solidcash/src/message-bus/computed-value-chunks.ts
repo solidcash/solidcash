@@ -98,6 +98,18 @@ export interface ComputedValueChunkValueObservation {
   chunkCount: number;
 }
 
+function traceComputedValueChunkObservation(
+  inputIndex: number,
+  observation: ComputedValueChunkValueObservation,
+): void {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_VALUE_CHUNKS !== '1') return;
+  console.error('computed-value-convergence-observation', JSON.stringify({
+    inputIndex, resource: valueChunkWriteResourceIdentity(observation.write),
+    bytes: observation.value.length, lock: binToHex(observation.lockingBytecode),
+  }));
+}
+
 export interface IndexedComputedValueChunkValueObservation extends ComputedValueChunkValueObservation {
   inputIndex: number;
   requiresMaterialization: boolean;
@@ -143,10 +155,10 @@ export function matchComputedValueChunkStack(
       locks: [lockHex],
       writes: writes.map((write) => ({
         resource: valueChunkWriteResourceIdentity(write),
-        candidates: stack.filter((value) => value.length > VALUE_INLINE_LIMIT).map((value) => ({
-          bytes: value.length,
-          value: binToHex(value),
-          lock: binToHex(persistValueChunkLock(write.categoryId, value, write) ?? new Uint8Array()),
+        candidates: stack.filter((candidate) => candidate.length > VALUE_INLINE_LIMIT).map((candidate) => ({
+          bytes: candidate.length,
+          value: binToHex(candidate),
+          lock: binToHex(persistValueChunkLock(write.categoryId, candidate, write) ?? new Uint8Array()),
         })),
       })),
       matches: found.map((match) => ({
@@ -406,7 +418,8 @@ export function convergeMessageBusComputedValueChunkOutputs(
   }
 
   const changedOutputs = new Set<number>();
-  // constraint fixpoint / item-10 follow-on: value-chunk repairs progress on the same monotone lattice as fixed-state resources.
+  // Constraint fixpoint: value-chunk repairs progress on the same
+  // monotone lattice as fixed-state resources.
   const commitmentLattice = new MonotoneCell<string>();
   const seenStates = new Set<string>();
   const maximumRounds = owners.size * 2 + 1;
@@ -471,13 +484,7 @@ export function convergeMessageBusComputedValueChunkOutputs(
           if (opcode === Op.OP_EQUALVERIFY && state.instructions[state.ip - 1]?.opcode === Op.OP_DROP
             && !state.controlStack.some((frame) => frame === false)) {
             for (const observation of matchComputedValueChunkStack(state.stack, inputWrites)) {
-              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-                console.error('computed-value-convergence-observation', JSON.stringify({
-                  inputIndex, resource: valueChunkWriteResourceIdentity(observation.write),
-                  bytes: observation.value.length, lock: binToHex(observation.lockingBytecode),
-                }));
-              }
+              traceComputedValueChunkObservation(inputIndex, observation);
               const chunks = chunksFromValue(observation.value, {
                 lockingBytecode: observation.lockingBytecode,
                 write: observation.write,

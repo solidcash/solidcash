@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: Compose phase-boundary extract — inventory fixed/runtime event + resource/value/token/sidecar slots.
+ * Compose phase-boundary extract: inventory fixed/runtime event and
+ * resource/value/token/sidecar slots.
  */
 
 import { hexToBin } from '@bitauth/libauth';
@@ -179,7 +180,8 @@ export function pruneComposeSlotInventoryByEffectPlans(
     if (plan.activeWrites.length > 0) return true;
     return slot.kind !== 'dataNft' && slot.kind !== 'entry' && slot.kind !== 'readOnlyDataNft';
   });
-  // settle-time ExecutionContext: prune tcTransfer token slots with transfers; prune sidecars when participant is fully inactive.
+  // Settle-time ExecutionContext: prune token slots with transfers;
+  // prune sidecars when the participant is fully inactive.
   const tokenSlots = inventory.tokenSlots.filter((slot) => {
     const plan = byParticipant.get(slot.participant);
     if (plan === undefined) return true;
@@ -213,22 +215,18 @@ export function pruneComposeSlotInventoryByEffectPlans(
     });
     if (kept.length > 0) runtimeEventSlots.set(key, kept);
   }
-  const eventSlots = (): ReturnType<ComposeSlotInventory['eventSlots']> => [
-    ...fixedEventSlots,
-    ...[...runtimeEventSlots.values()].flat(),
-  ];
   // settle-time ExecutionContext: plan-driven width/offset remap — dense offsets per participant after prune.
   const remapDense = <T extends { participant: number; offset: number }>(
     slots: readonly T[],
   ): T[] => {
-    const byParticipant = new Map<number, T[]>();
+    const slotsByParticipant = new Map<number, T[]>();
     for (const slot of slots) {
-      const list = byParticipant.get(slot.participant) ?? [];
+      const list = slotsByParticipant.get(slot.participant) ?? [];
       list.push(slot);
-      byParticipant.set(slot.participant, list);
+      slotsByParticipant.set(slot.participant, list);
     }
     const remapped: T[] = [];
-    for (const [participant, list] of [...byParticipant.entries()].sort((a, b) => a[0] - b[0])) {
+    for (const [participant, list] of [...slotsByParticipant.entries()].sort((a, b) => a[0] - b[0])) {
       const ordered = [...list].sort((left, right) => left.offset - right.offset);
       ordered.forEach((slot, index) => {
         remapped.push({ ...slot, participant, offset: index });

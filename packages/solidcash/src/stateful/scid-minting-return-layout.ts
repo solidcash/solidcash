@@ -7,17 +7,11 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { addressToLockScript } from '../utils.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
-import {
-  commitmentHexOf,
-  cloneToken,
-  outputMatchesLock,
-} from './stb-output-utils.js';
+import { commitmentHexOf } from './stb-output-utils.js';
 import {
   isDisposableAlignmentPad,
-  isP2sh32LockScript,
   isViewReturnTailOutput,
 } from './value-chunk-band-helpers.js';
-import { isEmptyValueChunkCommitment } from './value-chunk-persist.js';
 
 /**
  * The covenant counts outputs at the value-chunk redeem lock and EQUALVERIFYs

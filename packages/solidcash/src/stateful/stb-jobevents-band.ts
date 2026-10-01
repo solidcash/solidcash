@@ -8,7 +8,6 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import { shouldUseLegacyPersistDigestLockForValueChunks } from './delegate-event-jobevent-helpers.js';
 import { applyRedeemLockToChunks, chunksFromValue } from './early-value-chunk-helpers.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { movePostOpReturnBeforeJobsSuffix } from './mutable-output-reassert.js';
 import {
   packJobsAgainstOpReturn,
@@ -142,7 +141,7 @@ export function materializeJobEventsBand(
   }
   const repairOwner = selectTokenBandRepairOwner(
     host.externalCallUtxoGroups,
-    (categoryId) => host.findMintingInputIndex(categoryId),
+    (groupCategoryId) => host.findMintingInputIndex(groupCategoryId),
     band,
     host.messageBusConvention,
   );
@@ -289,7 +288,7 @@ export function materializeJobEventsBand(
   );
   const occupancyEnd = writerBlockOccupancyEnd(
     host.externalCallUtxoGroups,
-    (categoryId) => host.findMintingInputIndex(categoryId),
+    (groupCategoryId) => host.findMintingInputIndex(groupCategoryId),
   );
   const opReturnAt = builder.outputs.findIndex((output, index) => (
     index >= liveBand.start
@@ -426,7 +425,7 @@ export function ensureLiveJobEventsBand(
   }
   const occupancyEnd = writerBlockOccupancyEnd(
     host.externalCallUtxoGroups,
-    (categoryId) => host.findMintingInputIndex(categoryId),
+    (groupCategoryId) => host.findMintingInputIndex(groupCategoryId),
   );
   const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
   const suffixStart = builder.outputs.length - jobsCount - (jobsCount > 0 ? 1 : 0);
@@ -448,7 +447,9 @@ export function ensureLiveJobEventsBand(
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_PAD_HOLE === '1' && builder.outputs[6] && !builder.outputs[6]?.token) {
     console.error('pad-hole-at-6', {
-      lock: builder.outputs[6]?.to instanceof Uint8Array ? binToHex(builder.outputs[6]!.to as Uint8Array).slice(0, 20) : builder.outputs[6]?.to,
+      lock: builder.outputs[6]?.to instanceof Uint8Array
+        ? binToHex(builder.outputs[6]!.to as Uint8Array).slice(0, 20)
+        : builder.outputs[6]?.to,
       nearby: builder.outputs.slice(4, 10).map((output, offset) => ({
         index: 4 + offset,
         cap: output?.token?.nft?.capability,

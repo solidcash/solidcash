@@ -3,7 +3,7 @@
  * (phase-boundary extract from StatefulContract.ts).
  */
 
-import { binToHex, binToUtf8, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { binToHex, binToUtf8, utf8ToBin } from '@bitauth/libauth';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth';
 import {
   decodePushdataValue,
@@ -210,8 +210,9 @@ export function isCanonicalMixedReturnBlob(
         for (const type of typeGroups[row]) {
           const decoded = decodePushdataValue(vector, cursor, type, structs);
           const canonical = encodePushdataValue(decoded.value, type, structs);
+          const valueStart = cursor;
           if (canonical.length !== decoded.bytesConsumed
-            || canonical.some((byte, index) => byte !== vector[cursor + index])) return false;
+            || canonical.some((byte, index) => byte !== vector[valueStart + index])) return false;
           cursor += decoded.bytesConsumed;
         }
       } else return false;
@@ -276,14 +277,21 @@ export function extractEvmReturnCommitment(
   return selectEvmReturnCommitment(candidates, expectedTypeGroups, allowRaw, structs, enums);
 }
 
+function isBoundedNumericReturnType(type: string): boolean {
+  const numeric = /^u?int([1-9][0-9]*)$/.exec(type)
+    ?? /^u?fixed([1-9][0-9]*)x\d+$/.exec(type);
+  if (!numeric) return false;
+  const width = Number(numeric[1]);
+  return width >= 8 && width <= 256 && width % 8 === 0;
+}
+
 /** Recover a Solidity ABI value which is live immediately before a return-output comparison. */
 export function extractEvmScalarReturnCommitment(
   fullTrace: AuthenticationProgramStateCommon[], expectedTypes: readonly string[], allowRaw = true,
 ): string | undefined {
   if (expectedTypes.length === 0 || !expectedTypes.every((type) => (
     type === 'bool' || type === 'int' || type === 'uint' || type === 'bigint'
-    || /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)$/.test(type)
-    || /^u?fixed(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)x\d+$/.test(type)
+    || isBoundedNumericReturnType(type)
     || type === 'address' || /^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type)
   ))) return undefined;
   const candidates: Uint8Array[] = [];

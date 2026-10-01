@@ -3,9 +3,8 @@
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
-import { isScidIdentityCommitment } from './logical-identity.js';
 import {
   cloneToken,
   commitmentHexOf,
@@ -15,10 +14,6 @@ import {
   isDisposableAlignmentPad,
   isViewReturnTailOutput,
 } from './value-chunk-band-helpers.js';
-import {
-  assignedTailEnd,
-  findViewTailDestinations,
-} from './physical-return-layout.js';
 
 /**
  * Synthetic OP_TRUE outputs (view/loop tails, empty placeholders) are never a

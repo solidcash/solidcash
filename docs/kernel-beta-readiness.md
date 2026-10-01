@@ -85,6 +85,15 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   after the first conservation pass. Final-layout reassertion now returns that exposed surplus to the funder
   after those materializers settle, instead of treating nearly 200M sats as a fee. The fee cap and upstream test
   assertions were unchanged. This is focused evidence, not a comprehensive Marketplace or beta-gate result.
+- 2026-10-01 focused refusal and branch-sync checkpoint: the unchanged `refuse arbitration > job taken` title
+  passes individually (1 selected, 65 skipped), as does its immediately preceding `job not taken` title. A helper
+  called with a constant-false branch guard had left a computed whitelist key in provisional route metadata even
+  though its lowered handler had no entry access or physical slot. Late publication now omits only that inactive
+  expression witness, preserving the argument witness checked by the route; the focused compiler regression and
+  its preceding title pass. `yarn build` and repository `yarn lint` pass. The beta branch now contains the two
+  documentation-only commits added to `solidcash_v0.13.1`; the message-bus reference generator is idempotent
+  against the merged schema. The website build was not run because its dependencies are absent here. These are
+  focused results, not a current 66-title or beta-gate pass.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

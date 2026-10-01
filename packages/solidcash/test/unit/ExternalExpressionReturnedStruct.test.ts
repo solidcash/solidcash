@@ -1,4 +1,4 @@
-import type { FunctionArgument } from '@solidcash/utils';
+import type { FunctionArgument } from '../../src/Argument.js';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { evaluateExternalExpression } from '../../src/stateful/sc-evaluate-external-expression.js';

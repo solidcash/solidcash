@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: SC _deriveFullTransactionState extract — bind value-chunk writes / claims and select persisted write.
+ * phase-boundary extract: SC _deriveFullTransactionState extract — bind value-chunk
+ * writes / claims and select persisted write.
  */
 
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -72,15 +73,15 @@ export function prepareDeriveFullValueChunkWrites(
       ));
       const claim = group.valueChunkProducerClaims?.length ? undefined : write
         && terminalValueChunkProducerClaim({
-        rows: group.compilerRoute?.rowArguments ?? [],
-        collectionIdentities: [write.collection, write.collectionSignature],
-        fixedChunkableWriteSelectors:
+          rows: group.compilerRoute?.rowArguments ?? [],
+          collectionIdentities: [write.collection, write.collectionSignature],
+          fixedChunkableWriteSelectors:
           group.externalContract?.inner?.artifact.messageBus?.fixedChunkableWritePolicy?.selectors,
-        executionLockingBytecode: group.externalContract?.inner?.lockingBytecode ?? '',
-        stateOwnerCategoryId: group.valueChunkStateOwner.categoryId,
-        stateOwnerLockingBytecode: group.valueChunkStateOwner.lockingBytecode,
-        resourceIdentity: resource.identity,
-      });
+          executionLockingBytecode: group.externalContract?.inner?.lockingBytecode ?? '',
+          stateOwnerCategoryId: group.valueChunkStateOwner.categoryId,
+          stateOwnerLockingBytecode: group.valueChunkStateOwner.lockingBytecode,
+          resourceIdentity: resource.identity,
+        });
       if (claim) group.valueChunkProducerClaims = Object.freeze([claim]);
       for (const transportedClaim of group.transportedValueChunkProductions
         ? group.valueChunkProducerClaims ?? [] : []) {

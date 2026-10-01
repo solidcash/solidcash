@@ -10,7 +10,6 @@ import {
   type ArgSource,
   type ExternalCallAbi,
   type ExternalCallExpression,
-  type StateLayout,
   type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
@@ -103,7 +102,7 @@ export async function expandCreateBuilderLateTransitive(
   },
 ): Promise<ExpandCreateBuilderLateTransitiveBags> {
   const {
-    externalCallUtxoGroups, lowLevelCallUtxoGroups, preparedAtomicNodes,
+    externalCallUtxoGroups, preparedAtomicNodes,
     preparedAtomicNodeByExternalGroup, publicSelfAddress, bags,
   } = params;
 
@@ -148,7 +147,6 @@ export async function expandCreateBuilderLateTransitive(
     });
     const parentOutgoingSelfAddress = hexToBin(parentCallerIdentity.lockingBytecode);
     // Expressions inside this invocation observe its incoming caller, not its own outgoing identity
-    // and not the transaction signer. Keep this immutable frame value in authenticated-result refreshes too.
     const parentIncomingCallerAddress = parent.callerIdentity
       ? hexToBin(parent.callerIdentity.lockingBytecode) : undefined;
     const logicalParentFunctionName = parent.logicalFunctionName ?? parent.functionName;
@@ -199,10 +197,15 @@ export async function expandCreateBuilderLateTransitive(
       ) : Promise.resolve(undefined);
     const frames: Array<{ nested: ExternalCallAbi; iterationIndex: number; occurrenceIndex: number }> = [];
     for (const nested of parentFn.externalCalls) {
-      if (allGroupParentIndices.some((candidate, index) => candidate === parentGroupIndex
-        && (allGroupEcSlots[index] as ExternalCallAbi | undefined)?.callsiteId === nested.callsiteId)) {
-        continue;
+      let alreadyPublished = false;
+      for (let index = 0; index < allGroupParentIndices.length; index++) {
+        if (allGroupParentIndices[index] === parentGroupIndex
+          && (allGroupEcSlots[index] as ExternalCallAbi | undefined)?.callsiteId === nested.callsiteId) {
+          alreadyPublished = true;
+          break;
+        }
       }
+      if (alreadyPublished) continue;
       let iterationIndices = [0];
       if (nested.occurrence === 'loop') {
         const domain = nested.iterationDomain;
@@ -323,11 +326,11 @@ export async function expandCreateBuilderLateTransitive(
       const graphChildReturns = preparedAtomicNodes
         ? await expressionReturns(graphChildSources, [...graphParentArgs], true, iterationIndex) : childReturns;
       const graphChildArgs = logicalParentContract._resolveExternalArgs(
-          graphChildSources,
-          [...graphParentArgs], logicalParentArtifact, parentState,
-          parentFn.inputs, graphChildReturns, iterationIndex, false, parentOutgoingSelfAddress,
-          parentIncomingCallerAddress,
-        ) ?? childArgs;
+        graphChildSources,
+        [...graphParentArgs], logicalParentArtifact, parentState,
+        parentFn.inputs, graphChildReturns, iterationIndex, false, parentOutgoingSelfAddress,
+        parentIncomingCallerAddress,
+      ) ?? childArgs;
       const resolveGraphChildArgs = preparedAtomicNodes && graphChildSources
         ? (results: ReadonlyMap<number, FunctionArgument>, parentArgs?: readonly FunctionArgument[]):
         FunctionArgument[] | undefined => {

@@ -12,9 +12,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   direct callee with the same ABI. The four historically red `KernelAdmission` titles (raw-call signature fence
   and three child-genesis 10,000-byte checks) pass individually, with their immediately preceding titles checked.
   No comprehensive test suite or beta gate was rerun for this checkpoint.
-- The formal `yarn test:kernel-beta` gate stops at its application-name fence before running tests: the production
-  diff since the manifest census still contains application-specific planning names and literals. This requires a
-  semantic generalization of the legacy adapter boundary, not a waiver or a test-only rename.
+- 2026-10-01 static beta-fence checkpoint: the production added-line application-name check against the manifest
+  census and the complete kernel-implementation file scan both have zero hits. Focused lint and `yarn build` pass
+  after the final comment cleanup. The full beta gate was **not** invoked because it launches broad test suites;
+  static-fence success does not establish a beta-gate pass. The legacy SDK compatibility adapter remains fenced
+  separately from kernel planning.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite
@@ -65,9 +67,9 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
 
 ## Gate before the next leap
 
-Debug one title at a time (at most one adjacent title), never a contract-wide ladder or full suite. After it
-passes, validate a small set of affected compiler, SDK, and VM tests. Run comprehensive suites and the beta
-gate only at major milestones; record their exact scope and results.
+Debug one known-red title at a time. Once it passes, run only its immediately preceding title for regression.
+Do not launch comprehensive suites or the beta gate under the current testing instruction; record the exact
+scope and result of each focused check.
 
 1. Freeze the manifest. A successful fresh compile must have no hidden speculative stack/codegen failure, exactly one stable record per graph call, authenticated producer-result IDs, and the same `OP_INVOKE` boundary for graph handlers.
 2. Build and affected compiler/SDK/BCH-2026 tests pass. Resolve the broad compiler baseline and remove application-name dependencies without waivers; skipped tests are not passes. Supported kernel and legacy cases must agree on observable state, events, and results, while a separate size test keeps kernel route growth proportional to row logic rather than maximum unrolled rows.

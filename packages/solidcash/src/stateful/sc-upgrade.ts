@@ -292,7 +292,7 @@ export async function upgradeStatefulContract<T extends Artifact>(
 
   // Connect the new contract with the same categoryId
   const { StatefulContract: SC } = await import('./StatefulContract.js');
-    const statefulContract = SC.withCategory(newContract, categoryId);
+  const statefulContract = SC.withCategory(newContract, categoryId);
 
   return { contract: statefulContract, tx, categoryId };
 }

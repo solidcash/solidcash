@@ -107,7 +107,8 @@ export function constructCreateBuilderTransactionBuilder(
     dynamicReadChunkInputs: UnlockableUtxo[];
     topLevelDynamicChunkArgumentIndex: number;
     topLevelReturnWitnessGroups: number[];
-    refreshPhysicalDelegateInputIndex: ((builder: StatefulTransactionBuilder, materialized?: TransactionBuilder) => any) | undefined;
+    refreshPhysicalDelegateInputIndex:
+    ((builder: StatefulTransactionBuilder, materialized?: TransactionBuilder) => any) | undefined;
     buildStateInputUnlocker: () => any;
     allGroupEcSlots: any[];
     derivationMasterUtxo: Utxo | undefined;
@@ -436,8 +437,8 @@ export function constructCreateBuilderTransactionBuilder(
         : batchPredecessorCommitment(abiFunction, finalArgs, Number(slot), predecessorCommitment)
         ?? (targetSlot instanceof Uint8Array && targetSlot.length === 32
         && predecessorCommitment !== undefined && predecessorCommitment.length >= 128
-        ? `${predecessorCommitment.slice(0, 64)}${binToHex(targetSlot)}${predecessorCommitment.slice(128)}`
-        : undefined);
+          ? `${predecessorCommitment.slice(0, 64)}${binToHex(targetSlot)}${predecessorCommitment.slice(128)}`
+          : undefined);
       // A proof shared with another active target is recreated by that target's fixed output, not a separate P'.
       // Preserve its sentinel even if the current target is absent; otherwise the structural fallback below
       // invents an extra predecessor and the compiler's exact collection cardinality must reject the transaction.

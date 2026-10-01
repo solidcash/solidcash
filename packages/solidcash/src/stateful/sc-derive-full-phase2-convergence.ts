@@ -12,7 +12,7 @@ import { computeConvergenceKey } from './trace-verified-value-helpers.js';
 const MAX_SPECULATIVE_CHUNK_OUTPUTS = 32;
 
 export type DeriveFullPhase2DynamicChunkVar = ReturnType<
-  StatefulTransactionBuilder['getDynamicChunkVars']
+StatefulTransactionBuilder['getDynamicChunkVars']
 >[number];
 
 export type DeriveFullPhase2ConvergenceResult = {

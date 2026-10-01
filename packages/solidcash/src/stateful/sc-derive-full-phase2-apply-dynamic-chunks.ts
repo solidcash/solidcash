@@ -36,7 +36,7 @@ export interface DeriveFullPhase2DynamicChunksHost {
 }
 
 export type DeriveFullPhase2DynamicChunkVar = ReturnType<
-  StatefulTransactionBuilder['getDynamicChunkVars']
+StatefulTransactionBuilder['getDynamicChunkVars']
 >[number];
 
 export type DeriveFullPhase2DynamicChunksResult = {

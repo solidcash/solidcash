@@ -71,9 +71,9 @@ export function planCreateBuilderNestedBases(params: {
       ? lowLevelCallInputBase + legacyRouteTrailingBase
         + iterationEntryInputs.length + insertLoopPredecessors.length
         + delegatedDynamicWriteChunkCount
-    : hasNestedDelegate
-      ? 1 + requiredNftIndices.length + delegateInputCount
-      : 1 + requiredNftIndices.length + externalReadUtxos.length
+      : hasNestedDelegate
+        ? 1 + requiredNftIndices.length + delegateInputCount
+        : 1 + requiredNftIndices.length + externalReadUtxos.length
         + outStateInputCount + iterationEntryInputs.length;
   // A sorted INSERT consumes one predecessor but emits the rewritten predecessor plus a new node. The
   // transaction builder balances that output-only expansion with a funder before nested callees; publish the

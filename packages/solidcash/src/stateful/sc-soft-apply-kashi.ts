@@ -59,8 +59,8 @@ export interface SoftApplyKashiHost {
  * getters reflect borrow/asset/accrue side-effects that the real covenant could not commit.
  */
 export async function softApplyKashiStateSideEffects(
-host: SoftApplyKashiHost,
-receipt: TransactionDetails,
+  host: SoftApplyKashiHost,
+  receipt: TransactionDetails,
 ): Promise<void> {
   const sc = host.parentContract;
   if (!sc) return;

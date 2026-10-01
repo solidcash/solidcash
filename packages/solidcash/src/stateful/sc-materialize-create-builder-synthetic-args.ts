@@ -130,8 +130,8 @@ export function materializeCreateBuilderSyntheticArgs(
           // callee's return band, which is the only thing the probe exists to read; a neutral in-range index
           // keeps the trace running. Probe builds are never broadcast, so the sentinel keeps its fail-closed
           // meaning for every real build.
-          ? 0n
-          : defaultInternalFunctionArg(input));
+        ? 0n
+        : defaultInternalFunctionArg(input));
     }
   }
 

@@ -24,8 +24,8 @@ export interface AutoWireLibraryDelegatecallsHost {
       library: string;
       functionName: string;
       args?: Array<
-        | { param: string }
-        | { kind: 'int' | 'bool' | 'bytes' | 'string'; literal: string }
+      | { param: string }
+      | { kind: 'int' | 'bool' | 'bytes' | 'string'; literal: string }
       >;
     }>;
   }) | undefined;

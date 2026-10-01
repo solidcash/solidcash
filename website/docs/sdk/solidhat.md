@@ -537,7 +537,7 @@ mnemonic with Electrum or a non-regtest Bitcoin RPC network.
 ### Deployment needs a `vout: 0` UTXO
 
 CashToken category genesis requires spending output index zero. Ordinary wallet UTXOs at other indices cannot be
-substituted. Prepare genesis funding as described in the [deployment guide](/docs/guides/deployment#token-ids-and-vout0-utxos).
+substituted. Prepare genesis funding as described in the [deployment guide](/docs/guides/deployment#exact-input-deployment).
 
 ### A mock deployment succeeds but regtest fails
 

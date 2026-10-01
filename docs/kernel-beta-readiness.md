@@ -92,8 +92,9 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   expression witness, preserving the argument witness checked by the route; the focused compiler regression and
   its preceding title pass. `yarn build` and repository `yarn lint` pass. The beta branch now contains the two
   documentation-only commits added to `solidcash_v0.13.1`; the message-bus reference generator is idempotent
-  against the merged schema. The website build was not run because its dependencies are absent here. These are
-  focused results, not a current 66-title or beta-gate pass.
+  against the merged schema. A website build exposed one stale SolidHat deployment anchor; after correcting the
+  link, the production website build passes without broken-anchor warnings. These are focused results, not a
+  current 66-title or beta-gate pass.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

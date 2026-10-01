@@ -188,4 +188,24 @@ describe('chai revert assertions', () => {
       expect(transaction).to.be.revertedWithCustomError({}, 'ExampleError').withArgs(1n),
     ).rejects.toThrow(/cannot yet verify its arguments/);
   });
+
+  it('rejects an unrelated runtime failure under relaxed mock limits', async () => {
+    const transaction = {
+      functionName: 'mutate',
+      parentContract: {
+        inner: {
+          provider: { consensusLimits: { maximumInputBytes: 1_000_000 } },
+          artifact: { abi: [{ name: 'mutate', writesState: true }] },
+        },
+      },
+      send: async (): Promise<void> => { throw new Error('unrelated runtime failure'); },
+    };
+    await vitestExpect(
+      expect(transaction).to.be.revertedWithCustomError({}, 'ExpectedError'),
+    ).rejects.toThrow(/unrelated runtime failure/);
+    await expect({
+      ...transaction,
+      send: async (): Promise<void> => { throw new Error('revert ExpectedError(...)'); },
+    }).to.be.revertedWithCustomError({}, 'ExpectedError');
+  });
 });

@@ -733,6 +733,9 @@ class Assertion {
         (error) => {
           // A failed layout/derivation is not the Solidity require named in the assertion.
           if (isConstructionFailure(error)) throw error;
+          const message = String((error as { message?: unknown })?.message ?? error);
+          const matches = reason instanceof RegExp ? reason.test(message) : message.includes(reason);
+          if (!matches) throw error;
         },
       );
     }

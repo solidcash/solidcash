@@ -35,6 +35,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   actual value. The unchanged `take job > take job` title now **passes** (1 selected, 65 skipped). Its immediately
   preceding `take job > sanity checks` title is **red** at the Chai adapter's unsupported custom-error argument
   check for `ECDSAInvalidSignatureLength(0)`. No broader Marketplace run was made.
+- 2026-10-01 rejection-verifier checkpoint: the relaxed-network Chai adapter was accepting any non-construction
+  failure as a requested revert reason. It now requires the observed error message to match, with a focused red-to-
+  green matcher regression and adjacent title. This exposed the earlier actual failure in the unchanged
+  `take job > sanity checks` title: recipe-mode composition cannot materialize deferred compute for the
+  `not whitelisted` rejection path. The custom-error argument case was not reached under the stronger matcher;
+  no negative-path waiver or `devOracle` release behavior was introduced.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

@@ -121,6 +121,8 @@ export interface MasterSpend {
   readonly records: readonly PlacedRecord[];
   /** A declaration that differs from the one the records state. */
   readonly declared?: readonly RecordEntry[];
+  /** The `retval` the frame declares; empty when unset. */
+  readonly retval?: Uint8Array;
 }
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
@@ -153,7 +155,7 @@ export function evaluateMasterSpend(
     sender: USER_LOCK,
     self: master.address,
     value: 0n,
-    retval: EMPTY,
+    retval: spend.retval ?? EMPTY,
     calls: [],
     segments: [[...(spend.declared ?? declarationOf(spend.records))]],
     events: [],

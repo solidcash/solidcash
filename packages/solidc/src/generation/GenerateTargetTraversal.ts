@@ -1621,6 +1621,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // last write. Pinning each intermediate value to the same fixed output is unsatisfiable (and reads stale input).
   private sortedCompositeWritesRemaining: Map<number, number> = new Map();
   private sortedCompositeValueCache: Map<number, string> = new Map();
+  // A per-call frame's last write to a sorted entry keeps the value it wrote for the reads after it: per slot, the
+  // segment the kept value was written in, and the reads and writes of the slot the body has yet to emit.
+  private sortedWrittenValueSegment: Map<number, number> = new Map();
+  private sortedReadsAhead: Map<number, number> = new Map();
+  private sortedWritesAhead: Map<number, number> = new Map();
   // Depth of plain counting loops (while / do-while / for) currently being emitted. A mapping WRITE inside such
   // a loop is unsound: the entry-write model reserves ONE output slot per (mapping, key-descriptor), so a loop
   // that writes distinct runtime keys keeps only the LAST entry (silent data loss), and a read-modify-write
@@ -7856,6 +7861,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       };
       scan(node.body);
     }
+    this.countSortedEntryAccesses(node);
 
     // C1/piece-5: a conditional delegatecall needs a runtime "the delegate edge was reached" flag. The state
     // covenant skip is per-function, the co-spend pin is per-callsite, so the epilogue must know which paths
@@ -22756,7 +22762,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         `The verified-mapping read on '${collection.name}' in '${this.currentFunction.name}' has no allocated entry slot.`);
     }
     const cached = this.sortedCompositeValueCache.get(slotIndex);
-    if (cached !== undefined) {
+    // A value kept by a per-call write serves the reads of its own segment; past a call the next segment's view does.
+    const writtenIn = this.sortedWrittenValueSegment.get(slotIndex);
+    if (cached !== undefined && (writtenIn === undefined || writtenIn === this.perCallSegmentIndex)) {
       const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
       if (debugEnv?.SOLIDC_DEBUG_DYNAMIC_FRAME === '1'
         && (!debugEnv.SOLIDC_DEBUG_DYNAMIC_FRAME_FUNCTION
@@ -22916,6 +22924,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.collection?.sorted) {
       // Whole value read, or (for a chunkable array value) element read: materialize the array via the vmap read,
       // then extract element [i]. emitSortedSetRead already co-spends the proving entry and reassembles chunks.
+      this.passSortedEntryAccess(this.sortedReadsAhead, node.entrySlotIndex);
       this.emitSortedSetRead(node);
       if (node.arrayIndex) {
         this.emitArrayElementExtract(node, { location: node.location, positionHint: PositionHint.START });
@@ -23365,6 +23374,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     const routeScalarWitness = this.isCompilerMessageBusRoute() && !inBatch
       && this.getStackIndex(`__internal__vmapBatchSlot_${slotIndex}`, true) >= 0;
+    const mayKeepValue = !routeScalarWitness && this.sortedWriteMayKeepValue(node);
+    let keptValue = false;
     const loopWrites = (this.currentFunction.entryLoopWrites ??= []);
     if (!loopWrites.includes(collection.name)) loopWrites.push(collection.name);
     this.sortedWrittenCollections.add(collection.name);
@@ -23452,6 +23463,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // normalized to a minimal number (matches SDK bigIntToVmNumber); a bytesN value is CAT'd into the tail verbatim.
     emitValue();
     if (this.sortedValueKind(collection.innermostValueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
+    // The body's last write to the entry, with a read of it still ahead: the read sees the value written here.
+    if (mayKeepValue && (this.sortedReadsAhead.get(slotIndex) ?? 0) > 0
+      && (this.sortedWritesAhead.get(slotIndex) ?? 0) <= 0) {
+      keptValue = this.keepSortedWrittenValue(slotIndex, loc);
+    }
     if (this.isChunkableValue(collection.innermostValueType)) {
       // Design D: pin the value chunks from the on-stack value BEFORE transforming it into the digest tail. This
       // works for ANY value (computed or a direct param) and rejects forged/absent chunks at write time.
@@ -23565,7 +23581,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // that hash even though the write body (which normally consumes it) is skipped. Leaving it behind widens
         // the runtime stack and eventually corrupts the caller's frame. Balance the guard at its source.
         this.emit(Op.OP_ELSE, loc);
-        this.emit(Op.OP_DROP, loc);
+        if (keptValue) {
+          // The hash holds the kept value's place, and the arm fails: a per-call frame derives every target's
+          // predecessor output, which never reads as an inactive row, so no read can take the hash as the value.
+          this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc);
+        } else {
+          this.emit(Op.OP_DROP, loc);
+        }
         this.emit(Op.OP_ENDIF, loc);
       }
       return node;
@@ -23775,6 +23797,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitMappingAssign(node: MappingAssignNode): Node {
     this.emitGraphStaticDirty(node);
+    if (node.collection?.sorted) this.passSortedEntryWrite(node.entrySlotIndex);
     // A vmap (sorted linked-list) mapping write inside a DYNAMIC runtime loop (`for(i<n) m[k[i]]=v`) is a per-iteration
     // sorted INSERT: each iteration co-spends the bracketing predecessor and mints one NEW node (emitSortedInsertLoop
     // Body), the SDK derives the evolving list. Fixed-bound loops are unrolled before codegen and reach here at
@@ -23941,6 +23964,108 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const name = `(__vmap_composite_${slotIndex})`;
     this.stack[0] = name;
     this.sortedCompositeValueCache.set(slotIndex, name);
+  }
+
+  /** Counts a per-call master's reads and writes of each sorted entry slot, ahead of emitting its body. */
+  private countSortedEntryAccesses(fn: FunctionDefinitionNode): void {
+    this.sortedWrittenValueSegment.clear();
+    this.sortedReadsAhead.clear();
+    this.sortedWritesAhead.clear();
+    if (!this.perCallMaster || fn.body === undefined) return;
+    const count = (counts: Map<number, number>, slot: number): void => {
+      if (slot >= 0) counts.set(slot, (counts.get(slot) ?? 0) + 1);
+    };
+    walkInvocationAst(fn.body, (candidate) => {
+      if (candidate instanceof MappingAccessNode && candidate.collection?.sorted
+        && !candidate.isTokenContainerAccess && !candidate.isGenesisRead) {
+        count(this.sortedReadsAhead, candidate.entrySlotIndex);
+      } else if ((candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode
+        || candidate instanceof MappingDeleteNode) && candidate.collection?.sorted) {
+        count(this.sortedWritesAhead, candidate.entrySlotIndex);
+      }
+    });
+  }
+
+  /** Marks one access of a sorted entry slot as emitted, so it no longer counts as ahead of the code. */
+  private passSortedEntryAccess(counts: Map<number, number>, slot: number): void {
+    const ahead = counts.get(slot);
+    if (ahead !== undefined) counts.set(slot, ahead - 1);
+  }
+
+  /** Marks a write of a sorted entry slot as emitted; a value an earlier write kept no longer serves the slot. */
+  private passSortedEntryWrite(slot: number): void {
+    this.passSortedEntryAccess(this.sortedWritesAhead, slot);
+    if (!this.sortedWrittenValueSegment.delete(slot)) return;
+    this.sortedCompositeValueCache.delete(slot);
+  }
+
+  /**
+   * True when a per-call frame's write to a sorted entry may keep the value it writes for the reads after it.
+   *
+   * The write is straight-line code of a body whose calls the source fixes, so every read emitted before the next
+   * call runs in the segment the write closes against. Its keys name one entry wherever the body reads the slot:
+   * literals, the sender, the origin, or names the body neither reassigns nor declares twice.
+   */
+  private sortedWriteMayKeepValue(node: MappingAssignNode | MappingDeleteNode): boolean {
+    const entry = this.entrySlots[node.entrySlotIndex];
+    if (!this.readsRecordsFromFrame || this.isDefineSubTraversal || this.scopeDepth > 0 || this.plainLoopDepth > 0
+      || entry === undefined || entry.aliasCondDeleteSlot !== undefined
+      || (entry.runtimeAliasPriorSlots?.length ?? 0) > 0 || this.sortedUpsertPendingRepoint
+      || callsVaryOnPaths(this.currentFunction.body)) {
+      return false;
+    }
+    const changed = this.namesChangedIn(this.currentFunction);
+    return node.keys.every((key) => key instanceof IntLiteralNode || key instanceof BoolLiteralNode
+      || key instanceof HexLiteralNode || key instanceof StringLiteralNode || key instanceof DecimalLiteralNode
+      || (key instanceof NullaryOpNode
+        && (key.operator === NullaryOperator.MSG_SENDER || key.operator === NullaryOperator.TX_ORIGIN))
+      || (key instanceof IdentifierNode && !changed.has(key.name)));
+  }
+
+  /** The names a function's body assigns, deletes, steps, or declares more than once counting its parameters. */
+  private namesChangedIn(fn: FunctionDefinitionNode): Set<string> {
+    const changed = new Set<string>();
+    const declared = new Set(fn.parameters.map((parameter) => parameter.name));
+    const declare = (name: string): void => {
+      if (declared.has(name)) changed.add(name);
+      declared.add(name);
+    };
+    const steps = [
+      UnaryOperator.PREFIX_INCREMENT, UnaryOperator.PREFIX_DECREMENT,
+      UnaryOperator.POSTFIX_INCREMENT, UnaryOperator.POSTFIX_DECREMENT,
+    ];
+    walkInvocationAst(fn.body, (candidate) => {
+      if (candidate instanceof AssignNode || candidate instanceof DeleteLocalNode) {
+        changed.add(candidate.identifier.name);
+      } else if (candidate instanceof VariableDefinitionNode) {
+        declare(candidate.name);
+      } else if (candidate instanceof TupleAssignmentNode) {
+        for (const element of candidate.elements) {
+          if (element.name === undefined || element.skip === true) continue;
+          if (element.existing === true) changed.add(element.name);
+          else declare(element.name);
+        }
+      } else if (candidate instanceof UnaryOpNode && steps.includes(candidate.operator)
+        && candidate.expression instanceof IdentifierNode) {
+        changed.add(candidate.expression.name);
+      }
+    });
+    return changed;
+  }
+
+  /**
+   * Leaves a copy of the value a sorted write is about to store beneath it, as the slot's kept value: a later read
+   * of the entry in the same segment takes it rather than the view the segment declared before the write.
+   */
+  private keepSortedWrittenValue(slotIndex: number, loc: SingleLocationData): boolean {
+    if (this.sortedCompositeValueCache.has(slotIndex)) return false;
+    const name = `(__vmap_written_${slotIndex})`;
+    this.emit(Op.OP_DUP, loc);
+    this.stack[0] = name;
+    this.pushToStack('(value)');
+    this.sortedCompositeValueCache.set(slotIndex, name);
+    this.sortedWrittenValueSegment.set(slotIndex, this.perCallSegmentIndex);
+    return true;
   }
 
   // Whether an expression subtree reads the entry at `slotIndex` (a MappingAccess resolving to that slot).
@@ -24513,6 +24638,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // reads the key||value commitment (wrong for the slot||next||value vmap entry) and the chunkable len4 tail, so
     // route it through the chunk-aware ops - read the whole struct (materialized), replace field f, re-store
     // (re-chunk + pin). Reuses emitSortedSetRead + emitSortedValueUpsert like a scalar RMW, co-spending once.
+    if (node.collection?.sorted) this.passSortedEntryWrite(node.entrySlotIndex);
     if (node.collection?.sorted && this.isChunkableValue(node.collection.innermostValueType)) {
       return this.emitSortedStructFieldWrite(node);
     }
@@ -24823,6 +24949,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitMappingDelete(node: MappingDeleteNode): Node {
     this.emitGraphStaticDirty(node);
+    if (node.collection?.sorted) this.passSortedEntryWrite(node.entrySlotIndex);
     // A sorted (vmap) mapping `delete m[k]` == assign the type default (Solidity semantics: delete is an assignment,
     // never a physical removal - libsolidity storageSetToZero). Route it through the upsert with value = default:
     // present -> update to 0/false/empty (nullify, node stays), absent -> insert the default. Works for bool sets

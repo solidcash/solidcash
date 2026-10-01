@@ -341,6 +341,8 @@ export async function applyOverrides(
           emitReturn: host.compilerRoute.emitReturn,
           returnBlob: host.compilerRoute.returnBlob,
           omitLocalFeeTail: host.compilerRoute.omitLocalFeeTail,
+          logicalIdentity: host.compilerRoute.logicalIdentity,
+          valueChunkProductions: host.compilerRoute.valueChunkProductions,
         }),
       },
     );
@@ -381,6 +383,8 @@ export async function applyOverrides(
             emitReturn: host.compilerRoute.emitReturn,
             returnBlob: host.compilerRoute.returnBlob,
             omitLocalFeeTail: host.compilerRoute.omitLocalFeeTail,
+            logicalIdentity: host.compilerRoute.logicalIdentity,
+            valueChunkProductions: host.compilerRoute.valueChunkProductions,
           }),
         },
       );

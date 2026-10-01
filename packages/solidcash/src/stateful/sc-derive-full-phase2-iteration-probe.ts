@@ -62,11 +62,11 @@ export function deriveFullPhase2IterationProbe(
   } = params;
   let previousProbeFingerprint = params.previousProbeFingerprint;
 
-    const probeBuilder2 = stb.build();
-    const debugBuilderBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
-    if (debugTargetsThisDerivation) console.error('derive-phase2-builder-built', {
-      iter, buildMs: debugBuilderBuiltAt - debugIterationStartedAt,
-    });
+  const probeBuilder2 = stb.build();
+  const debugBuilderBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
+  if (debugTargetsThisDerivation) console.error('derive-phase2-builder-built', {
+    iter, buildMs: debugBuilderBuiltAt - debugIterationStartedAt,
+  });
   // Delegate dynamic chunks are authenticated from TXOUTPUTCOUNT-1-nNew. send() inserts fee
   // change *before* that [chunks][one suffix] region. A probe remainder appended after the
   // suffix makes the covenant read OP_RETURN / the dummy as a chunk (Marketplace jobs).
@@ -78,37 +78,37 @@ export function deriveFullPhase2IterationProbe(
     ? stb.insertBeforeLateValueSuffix(probeBuilder2, { to: dummyLbc, amount: 1000n }, {
       rebindReturnWitnessesOnly: probeBuilder2.outputs.length > 30,
     }) : undefined;
-    const { transaction: transaction2, sourceOutputs: sourceOutputs2 } = buildParticipantProbeProgram(
-      probeBuilder2, stb.getComposedBlockBase(),
-    );
-    const debugProgramBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
-    if (debugTargetsThisDerivation) console.error('derive-phase2-program-built', {
-      iter, programMs: debugProgramBuiltAt - debugBuilderBuiltAt,
-    });
+  const { transaction: transaction2, sourceOutputs: sourceOutputs2 } = buildParticipantProbeProgram(
+    probeBuilder2, stb.getComposedBlockBase(),
+  );
+  const debugProgramBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
+  if (debugTargetsThisDerivation) console.error('derive-phase2-program-built', {
+    iter, programMs: debugProgramBuiltAt - debugBuilderBuiltAt,
+  });
   // If applying the previous trace did not change either the candidate transaction or any spent output,
   // evaluating it again is guaranteed to produce the same trace. This commonly occurs for an intentional
   // source-level revert in a contract that also has dynamic/loop storage: those layouts raise the general
   // derivation ceiling to 64, but no commitment can make the rejected call advance. Detect the fixed point
   // from the complete VM program rather than a partial commitment fingerprint, so legitimate multi-probe
   // derivations continue whenever even one input/output byte changes.
-    const transactionFingerprint = fingerprintLibauthTransaction(
-      transaction2, lockingBytecodeFingerprintCache,
-    );
-    const debugTransactionHashedAt = debugTargetsThisDerivation ? Date.now() : 0;
-    const sourceOutputFingerprint = sourceOutputs2.map((output) => [
-      output.valueSatoshis.toString(),
-      fingerprintLockingBytecode(output.lockingBytecode),
+  const transactionFingerprint = fingerprintLibauthTransaction(
+    transaction2, lockingBytecodeFingerprintCache,
+  );
+  const debugTransactionHashedAt = debugTargetsThisDerivation ? Date.now() : 0;
+  const sourceOutputFingerprint = sourceOutputs2.map((output) => [
+    output.valueSatoshis.toString(),
+    fingerprintLockingBytecode(output.lockingBytecode),
     output.token?.category === undefined ? '' : binToHex(output.token.category),
     output.token?.amount?.toString() ?? '',
     output.token?.nft?.capability ?? '',
-      output.token?.nft?.commitment === undefined ? '' : binToHex(output.token.nft.commitment),
-    ].join(':')).join('|');
-    if (debugTargetsThisDerivation) console.error('derive-phase2-program-fingerprinted', {
-      iter,
-      transactionMs: debugTransactionHashedAt - debugProgramBuiltAt,
-      sourceOutputsMs: Date.now() - debugTransactionHashedAt,
-    });
-    const probeFingerprint = `${transactionFingerprint}|${sourceOutputFingerprint}`;
+    output.token?.nft?.commitment === undefined ? '' : binToHex(output.token.nft.commitment),
+  ].join(':')).join('|');
+  if (debugTargetsThisDerivation) console.error('derive-phase2-program-fingerprinted', {
+    iter,
+    transactionMs: debugTransactionHashedAt - debugProgramBuiltAt,
+    sourceOutputsMs: Date.now() - debugTransactionHashedAt,
+  });
+  const probeFingerprint = `${transactionFingerprint}|${sourceOutputFingerprint}`;
   if (probeFingerprint === previousProbeFingerprint) {
     return {
       fixedPoint: true,
@@ -194,9 +194,9 @@ export function deriveFullPhase2IterationProbe(
       out34: dumpNearby ? outputAt(34) : undefined,
     });
   }
-    // Only the terminal diagnostic tail is needed after this iteration. Retaining the complete trace here
-    // keeps every intermediate stack item alive while the next oversized probe executes, doubling the peak
-    // heap for multi-megabyte routed contracts and forcing long stop-the-world collections.
+  // Only the terminal diagnostic tail is needed after this iteration. Retaining the complete trace here
+  // keeps every intermediate stack item alive while the next oversized probe executes, doubling the peak
+  // heap for multi-megabyte routed contracts and forcing long stop-the-world collections.
   const nextLastTrace = retainDiagnosticTrace(fullTrace2);
   let nextLastFailProbeOutputs: Output[] | undefined;
   if (faithfulProbeHadError) {

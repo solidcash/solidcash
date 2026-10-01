@@ -70,7 +70,7 @@ export type PrepareCreateBuilderLowLevelNestedCachesResult = {
   preparedChildProducerPath: (
     parent: PreparedAtomicMessageBusCall | undefined,
     source: Pick<Parameters<typeof deriveValueChunkProducerChildPath>[0],
-      'sourceCallsiteId' | 'sourceLogicalIndex' | 'occurrenceIndex' | 'sourceEffectOrdinal'>,
+    'sourceCallsiteId' | 'sourceLogicalIndex' | 'occurrenceIndex' | 'sourceEffectOrdinal'>,
   ) => ValueChunkProducerPathDisposition;
   nestedFunderIndex: number;
 };
@@ -101,203 +101,203 @@ export async function prepareCreateBuilderLowLevelNestedCaches(
     externalCallUtxoGroups, identityAnchors, identityAnchorBandByAddress,
   } = params;
 
-// Handle low-level calls (address.call / address.staticcall)
-const lowLevelCalls = abiFunction?.lowLevelCalls;
-let lowLevelCallUtxoGroups: ExternalCallUtxoGroup[] = [];
-// Nested delegate composition needs the same positional funders as top-level external calls. Previously the
-// shared pool was initialized only by `externalCalls`, so a delegate-only caller minted one mock UTXO at a
-// time while assembling each nested block. Besides being unnecessary indexer mutation, that becomes
-// pathologically expensive for large artifacts under GC pressure. Reuse the already-captured signer snapshot.
-if (!sharedFunderPool && lowLevelCalls && lowLevelCalls.length > 0 && host.signer) {
-  const signerUtxos = earlySignerUtxos ?? await host.signer.getUtxos();
-  sharedFunderPool = signerUtxos.filter((utxo: Utxo) => !utxo.token).map((utxo: Utxo) => ({
-    ...utxo, unlocker: host.signer!.unlockP2PKH(),
-  }));
-  sharedFunderSnapshot = [...(sharedFunderPool ?? [])];
-}
-const nestedProxyReadCache = new Map<string, Promise<StateValue>>();
-const nestedFullStateCache = new Map<string, Promise<OnChainState>>();
-const nestedMasterStateCache = new Map<string, Promise<OnChainState>>();
-const nestedIdentityCache = new Map<string, Promise<Awaited<ReturnType<typeof resolveLogicalIdentity>> | undefined>>();
-const resolvedNestedIdentityCache = new Map<string, Awaited<ReturnType<typeof resolveLogicalIdentity>>>();
-const nestedAddressUtxoCache = new Map<string, Promise<Utxo[]>>();
-const nestedSortedListCache = new Map<string, SortedList>();
-const nestedAddressUtxos = async (address: string): Promise<Utxo[]> => {
+  // Handle low-level calls (address.call / address.staticcall)
+  const lowLevelCalls = abiFunction?.lowLevelCalls;
+  let lowLevelCallUtxoGroups: ExternalCallUtxoGroup[] = [];
+  // Nested delegate composition needs the same positional funders as top-level external calls. Previously the
+  // shared pool was initialized only by `externalCalls`, so a delegate-only caller minted one mock UTXO at a
+  // time while assembling each nested block. Besides being unnecessary indexer mutation, that becomes
+  // pathologically expensive for large artifacts under GC pressure. Reuse the already-captured signer snapshot.
+  if (!sharedFunderPool && lowLevelCalls && lowLevelCalls.length > 0 && host.signer) {
+    const signerUtxos = earlySignerUtxos ?? await host.signer.getUtxos();
+    sharedFunderPool = signerUtxos.filter((utxo: Utxo) => !utxo.token).map((utxo: Utxo) => ({
+      ...utxo, unlocker: host.signer!.unlockP2PKH(),
+    }));
+    sharedFunderSnapshot = [...(sharedFunderPool ?? [])];
+  }
+  const nestedProxyReadCache = new Map<string, Promise<StateValue>>();
+  const nestedFullStateCache = new Map<string, Promise<OnChainState>>();
+  const nestedMasterStateCache = new Map<string, Promise<OnChainState>>();
+  const nestedIdentityCache = new Map<string, Promise<Awaited<ReturnType<typeof resolveLogicalIdentity>> | undefined>>();
+  const resolvedNestedIdentityCache = new Map<string, Awaited<ReturnType<typeof resolveLogicalIdentity>>>();
+  const nestedAddressUtxoCache = new Map<string, Promise<Utxo[]>>();
+  const nestedSortedListCache = new Map<string, SortedList>();
+  const nestedAddressUtxos = async (address: string): Promise<Utxo[]> => {
   // Always hit the provider. A same-assembly sibling write (or pad sync) can
   // land entry NFTs after an earlier HEAD-only fetch; caching the first Promise
   // froze INSERT layouts for later nested picks in the same prepare/send.
-  const utxos = await host.inner.provider.getUtxos(address);
-  nestedAddressUtxoCache.set(address, Promise.resolve(utxos));
-  return utxos;
-};
-const nestedIdentity = (address: string): Promise<Awaited<ReturnType<typeof resolveLogicalIdentity>> | undefined> => {
-  const bandKey = logicalIdentityBandKey(address);
-  let pending = nestedIdentityCache.get(bandKey);
-  if (!pending) {
-    if (timingEnabled) console.error('nested-identity-fetch-start', { address, bandKey });
-    pending = resolveLogicalIdentity(host.inner.provider, address).then((resolved) => {
-      resolvedNestedIdentityCache.set(bandKey, resolved);
-      if (timingEnabled) console.error('nested-identity-fetch-complete', {
-        address, bandKey, txid: resolved.anchor.txid, vout: resolved.anchor.vout,
+    const utxos = await host.inner.provider.getUtxos(address);
+    nestedAddressUtxoCache.set(address, Promise.resolve(utxos));
+    return utxos;
+  };
+  const nestedIdentity = (address: string): Promise<Awaited<ReturnType<typeof resolveLogicalIdentity>> | undefined> => {
+    const bandKey = logicalIdentityBandKey(address);
+    let pending = nestedIdentityCache.get(bandKey);
+    if (!pending) {
+      if (timingEnabled) console.error('nested-identity-fetch-start', { address, bandKey });
+      pending = resolveLogicalIdentity(host.inner.provider, address).then((resolved) => {
+        resolvedNestedIdentityCache.set(bandKey, resolved);
+        if (timingEnabled) console.error('nested-identity-fetch-complete', {
+          address, bandKey, txid: resolved.anchor.txid, vout: resolved.anchor.vout,
+        });
+        return resolved;
+      }).catch((error) => {
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1') {
+          console.error('nested-identity-miss', address, error instanceof Error ? error.message : error);
+        }
+        if (!/missing or invalid/.test(error instanceof Error ? error.message : String(error))) throw error;
+        // Do not cache a miss: a prefetch can run before the CREATE anchor is indexed.
+        nestedIdentityCache.delete(bandKey);
+        return undefined;
       });
-      return resolved;
-    }).catch((error) => {
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1') {
-        console.error('nested-identity-miss', address, error instanceof Error ? error.message : error);
+      nestedIdentityCache.set(bandKey, pending);
+    }
+    return pending;
+  };
+  const ensureNestedIdentityAnchorBand = async (address: string): Promise<number | undefined> => {
+    const bandKey = logicalIdentityBandKey(address);
+    const existing = identityAnchorBandByAddress.get(bandKey);
+    if (existing !== undefined) return existing;
+    const resolved = resolvedNestedIdentityCache.get(bandKey) ?? await nestedIdentity(address);
+    if (!resolved) return undefined;
+    const band = identityAnchors.length;
+    identityAnchors.push({ ...resolved.anchor, unlocker: resolved.unlocker } as UnlockableUtxo);
+    identityAnchorBandByAddress.set(bandKey, band);
+    return band;
+  };
+  const resolveNestedIdentityAnchorBands = async (
+    ownerFunction: AbiFunction,
+    visibleArgs: readonly FunctionArgument[],
+    groupIndexForSlot: (slot: number) => number | undefined,
+    ownerContext?: {
+      contract: any;
+      artifact: Artifact;
+      state: Record<string, unknown>;
+      executionSelfAddress: FunctionArgument;
+    },
+  ): Promise<{ anchorBandBySlot: Map<number, number>; proxyAnchorSlots: Set<number> }> => {
+    const anchorBandBySlot = new Map<number, number>();
+    const proxyAnchorSlots = new Set<number>();
+    for (const input of ownerFunction.inputs) {
+      const witness = input.name.match(/^__internal__extcallAnchorIdx(\d+)$/);
+      if (!witness) continue;
+      const slot = Number(witness[1]);
+      const nestedGroupIndex = groupIndexForSlot(slot);
+      const nestedGroup = nestedGroupIndex === undefined
+        ? undefined : externalCallUtxoGroups[nestedGroupIndex];
+      const callee = nestedGroup?.externalContract as any | undefined;
+      const logicalAddress = callee?._logicalAddress ?? callee?.target ?? callee?.address;
+      if (!logicalAddress) continue;
+      const logicalLbc = binToHex(addressToLockScript(logicalAddress));
+      const spentUnlocker = nestedGroup?.masterUtxo && 'unlocker' in nestedGroup.masterUtxo
+        ? nestedGroup.masterUtxo.unlocker : undefined;
+      const spentLock = spentUnlocker
+        ? binToHex(spentUnlocker.generateLockingBytecode())
+        : callee!.inner.lockingBytecode;
+      // A source expression that already names the exact spent master needs no CREATE/SCID indirection. The
+      // hidden anchor witness exists for both physical and logical address values; select it only for the latter.
+      const call = ownerFunction.externalCalls?.[slot];
+      const resolvedAddressSource = call?.addressSource && ownerContext
+        ? ownerContext.contract._resolveExternalArgs(
+          [call.addressSource], [...visibleArgs], ownerContext.artifact, ownerContext.state,
+          ownerFunction.inputs, undefined, 0, false, ownerContext.executionSelfAddress,
+        )?.[0]
+        : call?.addressStateVar && ownerContext
+          ? ownerContext.state[call.addressStateVar] as FunctionArgument | undefined
+          : undefined;
+      const sourceArgumentLock = externalCallTargetSourceLockingBytecodeHex(
+        ownerFunction, slot, visibleArgs, resolvedAddressSource,
+      );
+      if (sourceArgumentLock === spentLock) continue;
+      // Direct identity is valid only when the spent master is locked at the Solidity-visible address.
+      if (logicalLbc === spentLock) continue;
+      const band = await ensureNestedIdentityAnchorBand(logicalAddress);
+      if (band === undefined) continue;
+      anchorBandBySlot.set(slot, band);
+      if (nestedGroup?.functionName === '__forward' || nestedGroup?.delegateCallGroupIndex !== undefined) {
+        proxyAnchorSlots.add(slot);
       }
-      if (!/missing or invalid/.test(error instanceof Error ? error.message : String(error))) throw error;
-      // Do not cache a miss: a prefetch can run before the CREATE anchor is indexed.
-      nestedIdentityCache.delete(bandKey);
-      return undefined;
-    });
-    nestedIdentityCache.set(bandKey, pending);
-  }
-  return pending;
-};
-const ensureNestedIdentityAnchorBand = async (address: string): Promise<number | undefined> => {
-  const bandKey = logicalIdentityBandKey(address);
-  const existing = identityAnchorBandByAddress.get(bandKey);
-  if (existing !== undefined) return existing;
-  const resolved = resolvedNestedIdentityCache.get(bandKey) ?? await nestedIdentity(address);
-  if (!resolved) return undefined;
-  const band = identityAnchors.length;
-  identityAnchors.push({ ...resolved.anchor, unlocker: resolved.unlocker } as UnlockableUtxo);
-  identityAnchorBandByAddress.set(bandKey, band);
-  return band;
-};
-const resolveNestedIdentityAnchorBands = async (
-  ownerFunction: AbiFunction,
-  visibleArgs: readonly FunctionArgument[],
-  groupIndexForSlot: (slot: number) => number | undefined,
-  ownerContext?: {
-    contract: any;
-    artifact: Artifact;
-    state: Record<string, unknown>;
-    executionSelfAddress: FunctionArgument;
-  },
-): Promise<{ anchorBandBySlot: Map<number, number>; proxyAnchorSlots: Set<number> }> => {
-  const anchorBandBySlot = new Map<number, number>();
-  const proxyAnchorSlots = new Set<number>();
-  for (const input of ownerFunction.inputs) {
-    const witness = input.name.match(/^__internal__extcallAnchorIdx(\d+)$/);
-    if (!witness) continue;
-    const slot = Number(witness[1]);
-    const nestedGroupIndex = groupIndexForSlot(slot);
+    }
+    return { anchorBandBySlot, proxyAnchorSlots };
+  };
+  const directNestedIdentityWitness = (
+    ownerFunction: AbiFunction,
+    slot: number,
+    nestedGroupIndex: number | undefined,
+  ): bigint => {
     const nestedGroup = nestedGroupIndex === undefined
       ? undefined : externalCallUtxoGroups[nestedGroupIndex];
-    const callee = nestedGroup?.externalContract as any | undefined;
-    const logicalAddress = callee?._logicalAddress ?? callee?.target ?? callee?.address;
-    if (!logicalAddress) continue;
-    const logicalLbc = binToHex(addressToLockScript(logicalAddress));
-    const spentUnlocker = nestedGroup?.masterUtxo && 'unlocker' in nestedGroup.masterUtxo
-      ? nestedGroup.masterUtxo.unlocker : undefined;
-    const spentLock = spentUnlocker
-      ? binToHex(spentUnlocker.generateLockingBytecode())
-      : callee!.inner.lockingBytecode;
-    // A source expression that already names the exact spent master needs no CREATE/SCID indirection. The
-    // hidden anchor witness exists for both physical and logical address values; select it only for the latter.
-    const call = ownerFunction.externalCalls?.[slot];
-    const resolvedAddressSource = call?.addressSource && ownerContext
-      ? ownerContext.contract._resolveExternalArgs(
-        [call.addressSource], [...visibleArgs], ownerContext.artifact, ownerContext.state,
-        ownerFunction.inputs, undefined, 0, false, ownerContext.executionSelfAddress,
-      )?.[0]
-      : call?.addressStateVar && ownerContext
-        ? ownerContext.state[call.addressStateVar] as FunctionArgument | undefined
-        : undefined;
-    const sourceArgumentLock = externalCallTargetSourceLockingBytecodeHex(
-      ownerFunction, slot, visibleArgs, resolvedAddressSource,
-    );
-    if (sourceArgumentLock === spentLock) continue;
-    // Direct identity is valid only when the spent master is locked at the Solidity-visible address.
-    if (logicalLbc === spentLock) continue;
-    const band = await ensureNestedIdentityAnchorBand(logicalAddress);
-    if (band === undefined) continue;
-    anchorBandBySlot.set(slot, band);
-    if (nestedGroup?.functionName === '__forward' || nestedGroup?.delegateCallGroupIndex !== undefined) {
-      proxyAnchorSlots.add(slot);
-    }
-  }
-  return { anchorBandBySlot, proxyAnchorSlots };
-};
-const directNestedIdentityWitness = (
-  ownerFunction: AbiFunction,
-  slot: number,
-  nestedGroupIndex: number | undefined,
-): bigint => {
-  const nestedGroup = nestedGroupIndex === undefined
-    ? undefined : externalCallUtxoGroups[nestedGroupIndex];
-  const physicalGroup = nestedGroup === undefined ? undefined
-    : externalCallUtxoGroups[nestedGroup.sharedGroupIndex ?? nestedGroupIndex!];
-  const physicalDelegate = physicalGroup?.delegateCallGroupIndex === undefined
-    ? undefined : lowLevelCallUtxoGroups[physicalGroup.delegateCallGroupIndex];
-  const logicalFunction = ownerFunction.externalCalls?.[slot]?.functionName;
-  const selectedFunction = physicalDelegate?.functionName ?? physicalGroup?.functionName;
-  return physicalGroup?.compilerRoute || physicalDelegate?.compilerRoute
+    const physicalGroup = nestedGroup === undefined ? undefined
+      : externalCallUtxoGroups[nestedGroup.sharedGroupIndex ?? nestedGroupIndex!];
+    const physicalDelegate = physicalGroup?.delegateCallGroupIndex === undefined
+      ? undefined : lowLevelCallUtxoGroups[physicalGroup.delegateCallGroupIndex];
+    const logicalFunction = ownerFunction.externalCalls?.[slot]?.functionName;
+    const selectedFunction = physicalDelegate?.functionName ?? physicalGroup?.functionName;
+    return physicalGroup?.compilerRoute || physicalDelegate?.compilerRoute
     || (logicalFunction !== undefined && selectedFunction !== logicalFunction) ? -2n : -1n;
-};
-const nestedFullState = (contract: any): Promise<OnChainState> => {
-  let pending = nestedFullStateCache.get(contract.categoryId);
-  if (!pending) {
-    pending = (async () => {
-      await host.syncMockParticipantOracle(contract);
-      return contract.getFullState();
-    })();
-    nestedFullStateCache.set(contract.categoryId, pending);
-  }
-  return pending;
-};
-const nestedMasterState = (contract: any): Promise<OnChainState> => {
-  let pending = nestedMasterStateCache.get(contract.categoryId);
-  if (!pending) {
-    pending = (async () => {
-      await host.syncMockParticipantOracle(contract);
-      return contract._getMasterOnlyState();
-    })();
-    nestedMasterStateCache.set(contract.categoryId, pending);
-  }
-  return pending;
-};
-let lowLevelCallRawInputs: UnlockableUtxo[] = [];
-let lowLevelCallInputBase = 0; // hoisted: the delegatecall-index auto-fill (below) needs it in this scope
-let activeDelegateGroupIndex: number | undefined;
-let hasDelegatedDynamicReadChunks = false;
-// Output-only (event/transfer) slots contributed by delegatecall'd impls: they are verified at
-// proxyMaster+offset, so they reserve funder inputs + outputs in the PROXY block, shifting the co-spent
-// impl UTXOs after them. Populated once below; drives lowLevelCallInputBase, block layout, and funders.
-let delegateEventSlots: { kind: BlockSlotKind; offset: number; slotIndex?: number }[] = [];
-// X56. Where a delegatecall'd impl that ALSO returns resolves its own return event, once the co-spent
-// implementation is known. The forwarder's reserved returnEvent slot moves here; the impl's event keeps the
-// position the forwarder had reserved for the return.
-let delegateReturnEventOffset: number | undefined;
+  };
+  const nestedFullState = (contract: any): Promise<OnChainState> => {
+    let pending = nestedFullStateCache.get(contract.categoryId);
+    if (!pending) {
+      pending = (async () => {
+        await host.syncMockParticipantOracle(contract);
+        return contract.getFullState();
+      })();
+      nestedFullStateCache.set(contract.categoryId, pending);
+    }
+    return pending;
+  };
+  const nestedMasterState = (contract: any): Promise<OnChainState> => {
+    let pending = nestedMasterStateCache.get(contract.categoryId);
+    if (!pending) {
+      pending = (async () => {
+        await host.syncMockParticipantOracle(contract);
+        return contract._getMasterOnlyState();
+      })();
+      nestedMasterStateCache.set(contract.categoryId, pending);
+    }
+    return pending;
+  };
+  let lowLevelCallRawInputs: UnlockableUtxo[] = [];
+  let lowLevelCallInputBase = 0; // hoisted: the delegatecall-index auto-fill (below) needs it in this scope
+  let activeDelegateGroupIndex: number | undefined;
+  let hasDelegatedDynamicReadChunks = false;
+  // Output-only (event/transfer) slots contributed by delegatecall'd impls: they are verified at
+  // proxyMaster+offset, so they reserve funder inputs + outputs in the PROXY block, shifting the co-spent
+  // impl UTXOs after them. Populated once below; drives lowLevelCallInputBase, block layout, and funders.
+  let delegateEventSlots: { kind: BlockSlotKind; offset: number; slotIndex?: number }[] = [];
+  // X56. Where a delegatecall'd impl that ALSO returns resolves its own return event, once the co-spent
+  // implementation is known. The forwarder's reserved returnEvent slot moves here; the impl's event keeps the
+  // position the forwarder had reserved for the return.
+  let delegateReturnEventOffset: number | undefined;
 
-// Track per-group proxy master index for delegatecall composability
-const groupProxyMasterIndices: number[] = [];
-// External calls made by a delegate implementation are still independent co-spends:
-// the implementation executes against the proxy's state, but its callees must be
-// materialized in the ordinary external-call section. Keep the child group indices
-// per delegate group so its hidden witnesses can point at the real inputs/outputs.
-const delegateExternalGroupIndices = new Map<number, number[]>();
-const delegateExternalGroupByCallsite = new Map<number, Map<number, number>>();
-/** Latest logical writer allowed to publish producer metadata onto one shared physical call owner. */
-const routeValueChunkProducerEpochByPhysicalGroup = new WeakMap<ExternalCallUtxoGroup, number>();
-const lateTransitiveGroupIndices = new Set<number>();
-const nestedDelegateProxyGroupByLowLevel = new Map<number, number>();
-const selectActiveRootDelegateGroup = (): number | undefined => {
-  if (!physicalAbiFunction?.delegateForwarding) return undefined;
-  const candidateIndexes = lowLevelCallUtxoGroups.flatMap((group, groupIndex) => (
-    group.callMode === 'delegatecall' && !nestedDelegateProxyGroupByLowLevel.has(groupIndex)
-      ? [groupIndex] : []
-  ));
-  if (candidateIndexes.length === 0) return undefined;
-  return selectKernelDelegateForwardingGroupIndex({
-    forwarding: physicalAbiFunction.delegateForwarding,
-    encodedProxyConstructorArgs: host.inner.encodedConstructorArgs,
-    groups: lowLevelCallUtxoGroups,
-    candidateIndexes,
-  });
-};
+  // Track per-group proxy master index for delegatecall composability
+  const groupProxyMasterIndices: number[] = [];
+  // External calls made by a delegate implementation are still independent co-spends:
+  // the implementation executes against the proxy's state, but its callees must be
+  // materialized in the ordinary external-call section. Keep the child group indices
+  // per delegate group so its hidden witnesses can point at the real inputs/outputs.
+  const delegateExternalGroupIndices = new Map<number, number[]>();
+  const delegateExternalGroupByCallsite = new Map<number, Map<number, number>>();
+  /** Latest logical writer allowed to publish producer metadata onto one shared physical call owner. */
+  const routeValueChunkProducerEpochByPhysicalGroup = new WeakMap<ExternalCallUtxoGroup, number>();
+  const lateTransitiveGroupIndices = new Set<number>();
+  const nestedDelegateProxyGroupByLowLevel = new Map<number, number>();
+  const selectActiveRootDelegateGroup = (): number | undefined => {
+    if (!physicalAbiFunction?.delegateForwarding) return undefined;
+    const candidateIndexes = lowLevelCallUtxoGroups.flatMap((group, groupIndex) => (
+      group.callMode === 'delegatecall' && !nestedDelegateProxyGroupByLowLevel.has(groupIndex)
+        ? [groupIndex] : []
+    ));
+    if (candidateIndexes.length === 0) return undefined;
+    return selectKernelDelegateForwardingGroupIndex({
+      forwarding: physicalAbiFunction.delegateForwarding,
+      encodedProxyConstructorArgs: host.inner.encodedConstructorArgs,
+      groups: lowLevelCallUtxoGroups,
+      candidateIndexes,
+    });
+  };
 type PreparedAtomicNode = PreparedAtomicMessageBusCall & {
   parent: number | null;
   callsiteId?: number;
@@ -348,42 +348,42 @@ const preparedChildProducerPath: PrepareCreateBuilderLowLevelNestedCachesResult[
 };
 let nestedFunderIndex = 0;
 
-  return {
-    lowLevelCalls,
-    lowLevelCallUtxoGroups,
-    sharedFunderPool,
-    sharedFunderSnapshot,
-    nestedProxyReadCache,
-    nestedFullStateCache,
-    nestedMasterStateCache,
-    nestedIdentityCache,
-    resolvedNestedIdentityCache,
-    nestedAddressUtxoCache,
-    nestedSortedListCache,
-    nestedAddressUtxos,
-    nestedIdentity,
-    ensureNestedIdentityAnchorBand,
-    resolveNestedIdentityAnchorBands,
-    directNestedIdentityWitness,
-    nestedFullState,
-    nestedMasterState,
-    lowLevelCallRawInputs,
-    lowLevelCallInputBase,
-    activeDelegateGroupIndex,
-    hasDelegatedDynamicReadChunks,
-    delegateEventSlots,
-    delegateReturnEventOffset,
-    groupProxyMasterIndices,
-    delegateExternalGroupIndices,
-    delegateExternalGroupByCallsite,
-    routeValueChunkProducerEpochByPhysicalGroup,
-    lateTransitiveGroupIndices,
-    nestedDelegateProxyGroupByLowLevel,
-    selectActiveRootDelegateGroup,
-    preparedAtomicNodes,
-    preparedAtomicNodeByExternalGroup,
-    latestPreparedAtomicNodeByPhysicalGroup,
-    preparedChildProducerPath,
-    nestedFunderIndex,
-  };
+return {
+  lowLevelCalls,
+  lowLevelCallUtxoGroups,
+  sharedFunderPool,
+  sharedFunderSnapshot,
+  nestedProxyReadCache,
+  nestedFullStateCache,
+  nestedMasterStateCache,
+  nestedIdentityCache,
+  resolvedNestedIdentityCache,
+  nestedAddressUtxoCache,
+  nestedSortedListCache,
+  nestedAddressUtxos,
+  nestedIdentity,
+  ensureNestedIdentityAnchorBand,
+  resolveNestedIdentityAnchorBands,
+  directNestedIdentityWitness,
+  nestedFullState,
+  nestedMasterState,
+  lowLevelCallRawInputs,
+  lowLevelCallInputBase,
+  activeDelegateGroupIndex,
+  hasDelegatedDynamicReadChunks,
+  delegateEventSlots,
+  delegateReturnEventOffset,
+  groupProxyMasterIndices,
+  delegateExternalGroupIndices,
+  delegateExternalGroupByCallsite,
+  routeValueChunkProducerEpochByPhysicalGroup,
+  lateTransitiveGroupIndices,
+  nestedDelegateProxyGroupByLowLevel,
+  selectActiveRootDelegateGroup,
+  preparedAtomicNodes,
+  preparedAtomicNodeByExternalGroup,
+  latestPreparedAtomicNodeByPhysicalGroup,
+  preparedChildProducerPath,
+  nestedFunderIndex,
+};
 }

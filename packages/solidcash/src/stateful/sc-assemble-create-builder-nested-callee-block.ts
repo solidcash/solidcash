@@ -226,13 +226,13 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
             const entryDiagnostic: Record<string, unknown> | undefined = (globalThis as {
               process?: { env?: Record<string, string> };
             }).process?.env?.SOLIDC_DEBUG_EXTERNAL_ENTRY === '1' ? {
-              callee: callInfo.externalContract?.inner.artifact.contractName,
-              frame: compilerRoute ? 'route' : 'concrete',
-              calleeFunction: callInfo.functionName,
-              blockSlot: slot.offset,
-              slotIndex: slot.slotIndex,
-              accesses: (bEntryAccesses ?? []).map((access) => `${access.slotIndex}:${access.collection}`),
-            } : undefined;
+                callee: callInfo.externalContract?.inner.artifact.contractName,
+                frame: compilerRoute ? 'route' : 'concrete',
+                calleeFunction: callInfo.functionName,
+                blockSlot: slot.offset,
+                slotIndex: slot.slotIndex,
+                accesses: (bEntryAccesses ?? []).map((access) => `${access.slotIndex}:${access.collection}`),
+              } : undefined;
             if (bEntryAccess && bSc) {
               const bCollection = bSc.inner.stateLayout?.collections?.find(
                 (c: { name: string; signature: string }) => c.name === bEntryAccess.collection

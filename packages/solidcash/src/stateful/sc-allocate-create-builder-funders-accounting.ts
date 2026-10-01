@@ -420,83 +420,83 @@ export async function allocateCreateBuilderFunders(
           if (!overrides?.returnProbeOnly) retireSignerUtxos(host.signer, selected);
           timing?.('funders-reused');
         } else {
-        if (timingEnabled) console.error('builder-funder-fetch-start', {
-          functionName, entryFunction: entryAbiFunction?.name, neededFunders: walletFunderCount,
-          sharedFunders: sharedFunderPool?.length ?? 0,
-        });
-        // Delegate/proxy routes start this snapshot before expanding their large composed transaction.
-        // Reuse it here even when there are no `externalCalls` (delegate calls are represented by
-        // `lowLevelCalls`), otherwise a second wallet scan runs while the full route is resident.
-        const signerUtxos = earlySignerUtxos ?? await host.signer.getUtxos();
-        timing?.('funder-fetch-complete');
-        // The shared pool contains the still-available snapshot tail. Excluding that tail inverted ownership:
-        // a fallback wallet scan could select only the outpoints already shifted into nested participant
-        // blocks, serializing one funder twice. Exclude the allocations themselves and leave the pool tail
-        // eligible for the caller's remaining structural slots.
-        const consumedTxids: Set<string> = new Set<string>([...consumedSharedFunders]);
-        const orderPlain = (utxos: Utxo[]): Utxo[] => utxos
-          .filter((u) => !u.token && !consumedTxids.has(`${u.txid.toLowerCase()}:${u.vout}`))
+          if (timingEnabled) console.error('builder-funder-fetch-start', {
+            functionName, entryFunction: entryAbiFunction?.name, neededFunders: walletFunderCount,
+            sharedFunders: sharedFunderPool?.length ?? 0,
+          });
+          // Delegate/proxy routes start this snapshot before expanding their large composed transaction.
+          // Reuse it here even when there are no `externalCalls` (delegate calls are represented by
+          // `lowLevelCalls`), otherwise a second wallet scan runs while the full route is resident.
+          const signerUtxos = earlySignerUtxos ?? await host.signer.getUtxos();
+          timing?.('funder-fetch-complete');
+          // The shared pool contains the still-available snapshot tail. Excluding that tail inverted ownership:
+          // a fallback wallet scan could select only the outpoints already shifted into nested participant
+          // blocks, serializing one funder twice. Exclude the allocations themselves and leave the pool tail
+          // eligible for the caller's remaining structural slots.
+          const consumedTxids: Set<string> = new Set<string>([...consumedSharedFunders]);
+          const orderPlain = (utxos: Utxo[]): Utxo[] => utxos
+            .filter((u) => !u.token && !consumedTxids.has(`${u.txid.toLowerCase()}:${u.vout}`))
           // A token-free vout 0 is still a potential CashTokens genesis input, so introspection exposes its
           // outpoint hash as a category. Prefer category-neutral sibling outputs for vmap absence witnesses.
-          .sort((a, b) => Number(a.vout === 0) - Number(b.vout === 0));
-        let plainUtxos = orderPlain(signerUtxos);
-        if (timingEnabled) console.error('builder-funder-demand', {
-          functionName, entryFunction: entryAbiFunction?.name, neededFunders: walletFunderCount,
-          availablePlain: plainUtxos.length, blockSize: effectiveBlockLayout.blockSize,
-          trailingCapacity, existingTrailingInputs: iterationEntryInputs.length
+            .sort((a, b) => Number(a.vout === 0) - Number(b.vout === 0));
+          let plainUtxos = orderPlain(signerUtxos);
+          if (timingEnabled) console.error('builder-funder-demand', {
+            functionName, entryFunction: entryAbiFunction?.name, neededFunders: walletFunderCount,
+            availablePlain: plainUtxos.length, blockSize: effectiveBlockLayout.blockSize,
+            trailingCapacity, existingTrailingInputs: iterationEntryInputs.length
             + insertLoopPredecessors.length + dynamicChunkInputs.length + trailingDisposalInputs.length,
-        });
-        if (plainUtxos.length < walletFunderCount) {
+          });
+          if (plainUtxos.length < walletFunderCount) {
           // Wallets accumulate value rather than outpoint count. Fan out one large coin before declaring a
           // multi-slot call underfunded; the genesis path uses the same operation.
-          const { fanOutPlainUtxos } = await import('./ContractFactory.js');
-          const fanned = await fanOutPlainUtxos(host.signer, walletFunderCount, consumedTxids);
-          if (fanned) {
+            const { fanOutPlainUtxos } = await import('./ContractFactory.js');
+            const fanned = await fanOutPlainUtxos(host.signer, walletFunderCount, consumedTxids);
+            if (fanned) {
             // Fan-out creates a new wallet UTXO generation. Refresh the shared snapshot before selecting from
             // it so `retireSignerUtxos` can reserve those new outpoints across independently built atomic
             // participants; selecting from an uncached direct query let the next participant reuse them.
-            invalidateSignerUtxos(host.signer);
-            plainUtxos = orderPlain(await signerUtxoSnapshot(host.signer));
+              invalidateSignerUtxos(host.signer);
+              plainUtxos = orderPlain(await signerUtxoSnapshot(host.signer));
+            }
           }
-        }
-        const selectedPlain = plainUtxos.slice(0, walletFunderCount);
-        const selected: UnlockableUtxo[] = selectedPlain.map((u) => ({
-          ...u, unlocker: host.signer!.unlockP2PKH(),
-        }));
-        if (selected.length < walletFunderCount) {
-          const mockProvider = host.inner.provider as typeof host.inner.provider & {
-            addUtxo?: (lockingBytecode: string, utxo: Utxo) => Promise<void>;
-          };
-          if (!mockProvider.addUtxo) {
-            throw new Error(
-              `Signer has ${plainUtxos.length} available plain UTXO(s) but ${walletFunderCount} funder(s) needed, `
+          const selectedPlain = plainUtxos.slice(0, walletFunderCount);
+          const selected: UnlockableUtxo[] = selectedPlain.map((u) => ({
+            ...u, unlocker: host.signer!.unlockP2PKH(),
+          }));
+          if (selected.length < walletFunderCount) {
+            const mockProvider = host.inner.provider as typeof host.inner.provider & {
+              addUtxo?: (lockingBytecode: string, utxo: Utxo) => Promise<void>;
+            };
+            if (!mockProvider.addUtxo) {
+              throw new Error(
+                `Signer has ${plainUtxos.length} available plain UTXO(s) but ${walletFunderCount} funder(s) needed, `
               + 'and splitting a larger coin did not yield enough. '
               + `Fund the signer address: ${host.signer.getAddress()}`,
-            );
-          }
-          // Mock providers can materialize neutral structural slots without another wallet fan-out. Keep every
-          // synthetic outpoint namespaced to this physical owner so independently-built transactions cannot
-          // alias one another, and retain any real signer input selected above for tx.origin/msg.sender.
-          for (let i = selected.length; i < walletFunderCount; i++) {
-            const seed = new TextEncoder().encode(
-              `SolidCash mock layout funder\0${host.categoryId}:${masterUtxo.txid}:${masterUtxo.vout}`
+              );
+            }
+            // Mock providers can materialize neutral structural slots without another wallet fan-out. Keep every
+            // synthetic outpoint namespaced to this physical owner so independently-built transactions cannot
+            // alias one another, and retain any real signer input selected above for tx.origin/msg.sender.
+            for (let i = selected.length; i < walletFunderCount; i++) {
+              const seed = new TextEncoder().encode(
+                `SolidCash mock layout funder\0${host.categoryId}:${masterUtxo.txid}:${masterUtxo.vout}`
               + `:${overrides?.blockBase ?? 0}:${i}`,
-            );
-            const dummy: Utxo = { txid: binToHex(sha256Sync(seed)), vout: 0, satoshis: 5000n };
-            void mockProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
-            selected.push({
-              ...dummy,
-              unlocker: {
-                generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
-                generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
-              },
-            });
+              );
+              const dummy: Utxo = { txid: binToHex(sha256Sync(seed)), vout: 0, satoshis: 5000n };
+              void mockProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
+              selected.push({
+                ...dummy,
+                unlocker: {
+                  generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
+                  generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+                },
+              });
+            }
           }
-        }
-        installFunders(await withRelocationReserve(selected));
-        if (!overrides?.returnProbeOnly) {
-          retireSignerUtxos(host.signer, selectedPlain);
-        }
+          installFunders(await withRelocationReserve(selected));
+          if (!overrides?.returnProbeOnly) {
+            retireSignerUtxos(host.signer, selectedPlain);
+          }
         }
       } else if ((host.inner.provider as any).addUtxo) {
         const dummyFunders: UnlockableUtxo[] = [];

@@ -150,13 +150,13 @@ export async function buildStatefulFunctionCall(
       const offset = localOffset + composedBlockBase;
       if (computedValueChunks.some((candidate) => candidate.offset === offset)) continue;
       computedValueChunks.push(Object.freeze({
-      offset,
-      commitment: chunk.commitment,
-      lockingBytecode: chunk.lockingBytecode.slice(),
-      categoryId: chunk.categoryId,
-      fixedIndex: chunk.fixedIndex,
-      resourceIdentity: chunk.resourceIdentity,
-      resourcePart: chunk.resourcePart,
+        offset,
+        commitment: chunk.commitment,
+        lockingBytecode: chunk.lockingBytecode.slice(),
+        categoryId: chunk.categoryId,
+        fixedIndex: chunk.fixedIndex,
+        resourceIdentity: chunk.resourceIdentity,
+        resourcePart: chunk.resourcePart,
       }));
     }
     // Every lock this participant may publish, tagged by the resource family it belongs to. The composer merges
@@ -712,27 +712,27 @@ export async function buildStatefulFunctionCall(
             }) as { stack?: Uint8Array[] } | undefined;
             const handlerSnapshots = Array.from({ length: 8 }, (_, offset) => ip - 7 + offset)
               .flatMap((wantedIp) => {
-              const state = [...trace].reverse().find((raw) => {
-                const candidate = raw as { ip?: number; instructions?: Array<{ opcode: number }> };
-                return candidate.ip === wantedIp
+                const state = [...trace].reverse().find((raw) => {
+                  const candidate = raw as { ip?: number; instructions?: Array<{ opcode: number }> };
+                  return candidate.ip === wantedIp
                   && candidate.instructions?.length === terminal?.instructions?.length;
-              }) as {
-                ip?: number; stack?: Uint8Array[]; alternateStack?: Uint8Array[];
-                instructions?: Array<{ opcode: number }>;
-              } | undefined;
-              if (!state?.stack) return [];
-              return [{
-                ip: state.ip,
-                opcode: state.instructions?.[wantedIp]?.opcode,
-                stackSize: state.stack.length,
-                altSize: state.alternateStack?.length,
-                top: state.stack.slice(-40).map((item, index, stack) => ({
-                  depth: stack.length - 1 - index,
-                  bytes: item.length,
-                  hex: binToHex(item).slice(0, 160),
-                })),
-              }];
-            });
+                }) as {
+                  ip?: number; stack?: Uint8Array[]; alternateStack?: Uint8Array[];
+                  instructions?: Array<{ opcode: number }>;
+                } | undefined;
+                if (!state?.stack) return [];
+                return [{
+                  ip: state.ip,
+                  opcode: state.instructions?.[wantedIp]?.opcode,
+                  stackSize: state.stack.length,
+                  altSize: state.alternateStack?.length,
+                  top: state.stack.slice(-40).map((item, index, stack) => ({
+                    depth: stack.length - 1 - index,
+                    bytes: item.length,
+                    hex: binToHex(item).slice(0, 160),
+                  })),
+                }];
+              });
             const diagnostic = {
               executionInput,
               inputBase,

@@ -41,9 +41,10 @@
  *
  * A shape the constructor frame or the master head does not serve — a call, a value send, a hidden parameter, an
  * event emitted from a loop, a mapping write that spans several collections — is refused by name rather than
- * probed, because this module has no plan for its witnesses. Everything else is the shipped deployment: the
- * placeholders are filled by `deployMaster`, the address is `addrV(category)`, and the master lock is the P2SH32 of
- * the filled program.
+ * probed, because this module has no plan for its witnesses. A constructor the compiler itself refused is refused
+ * with the reason the artifact publishes for it, before anything is built. Everything else is the shipped
+ * deployment: the placeholders are filled by `deployMaster`, the address is `addrV(category)`, and the master lock
+ * is the P2SH32 of the filled program.
  */
 
 import {
@@ -80,6 +81,7 @@ import { headSentinelCommitment } from '../../stateful/SortedList.js';
 import {
   layOutChunkRun, planChunkRun, type ChunkRecordPlacement, type ChunkRunPlan,
 } from '../composer/chunk-plan.js';
+import { publishedEntryName } from '../composer/shipped-host.js';
 import {
   layOutMappingBatch, layOutMappingWrites, planMappingBatch, planMappingWrite,
   type MappingBatchPlan, type MappingNodePlacement, type MappingNodePlacements, type MappingWritePlan,
@@ -259,6 +261,15 @@ export function derivePerCallGenesis(options: PerCallGenesisOptions): PerCallGen
   const stateLayout = artifact.stateLayout;
   if (stateLayout === undefined) {
     throw new PerCallGenesisError(`artifact "${artifact.contractName}" is not a stateful contract`);
+  }
+  // A constructor the compiler refused is emitted as a body that fails whenever the head dispatches to it, so no
+  // genesis can run it: the artifact publishes why, and the deployment answers with that before it builds anything.
+  const constructorName = publishedEntryName(artifact.contractName, '__construct');
+  const refused = artifact.composition?.refusedEntries?.find((entry) => entry.functionName === constructorName);
+  if (refused !== undefined) {
+    throw new PerCallGenesisError(
+      `the constructor of "${artifact.contractName}" is refused by the compiler (${constructorName}): ${refused.reason}`,
+    );
   }
 
   const master = deployMaster(artifact, options.category, options.validatorProgram);

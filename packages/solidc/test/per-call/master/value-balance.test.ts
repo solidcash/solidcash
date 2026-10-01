@@ -53,9 +53,9 @@ const OTHER_SOURCE = 'pragma solidcash ^0.13.0;'
 
 const artifact: Artifact = compileString(SOURCE, { composition: 'per-call' });
 
-function deployed(): { program: Uint8Array; lock: Uint8Array } {
-  const { placeholders } = artifact.composition!;
-  const program = fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), placeholders, {
+function deployed(target: Artifact = artifact): { program: Uint8Array; lock: Uint8Array } {
+  const { placeholders } = target.composition!;
+  const program = fillPlaceholders(scriptToBytecode(asmToScript(target.bytecode)), placeholders, {
     category: categorySlotValue(CATEGORY),
     contractAddress: ADDRESS,
     ...(placeholders.templateHashOffset === undefined ? {} : { templateHash: TEMPLATE_HASH }),
@@ -63,12 +63,14 @@ function deployed(): { program: Uint8Array; lock: Uint8Array } {
   return { program, lock: encodeLockingBytecodeP2sh32(hash256(program)) };
 }
 
-const selectorOf = (entry: string): Uint8Array =>
-  Uint8Array.from(Buffer.from(artifact.abi.find((row) => row.name === entry)!.selector!, 'hex'));
+const selectorOf = (entry: string, target: Artifact = artifact): Uint8Array =>
+  Uint8Array.from(Buffer.from(target.abi.find((row) => row.name === entry)!.selector!, 'hex'));
 const container = (value: bigint): VmOutput => ({ lockingBytecode: CONTAINER_LOCK, valueSatoshis: value });
 const payment = (value: bigint): VmOutput => ({ lockingBytecode: USER_LOCK, valueSatoshis: value });
 
 interface Spend {
+  /** The master the spend runs; the bank by default. */
+  readonly artifact?: Artifact;
   readonly entry: string;
   readonly args: readonly Uint8Array[];
   readonly value?: bigint;
@@ -79,7 +81,8 @@ interface Spend {
 }
 
 function verdict(spend: Spend): { accepted: boolean; objection?: string } {
-  const { program, lock } = deployed();
+  const target = spend.artifact ?? artifact;
+  const { program, lock } = deployed(target);
   const block: WitnessBlock = {
     kind: 0, callerRef: 1, originRef: 1, validatorRef: 0xffff, sender: USER_LOCK, self: ADDRESS,
     value: spend.value ?? 0n, retval: new Uint8Array(0), calls: [], segments: [[]], events: [],
@@ -98,7 +101,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
     inputs: [
       input(1, new Uint8Array([
         ...encodeDataPush(encodeWitnessBlock(block)),
-        ...encodeArgumentList([selectorOf(spend.entry), ...spend.args]),
+        ...encodeArgumentList([selectorOf(spend.entry, target), ...spend.args]),
         ...encodeDataPush(program),
       ])),
       input(2, callerUnlockingBytecode()),
@@ -168,5 +171,97 @@ describe('address(this).balance, compiled per-call', () => {
     const refused = other.composition!.refusedEntries ?? [];
     expect(refused.map((entry) => entry.functionName)).toStrictEqual(['Peek.peek()']);
     expect(refused[0]!.reason).toMatch(/reads the balance of an address other than its own/);
+  });
+});
+
+/**
+ * A constructor's balance read (spec 4b): the constructor runs only at its genesis, and no genesis shows a balance.
+ * Another address's balance shows only in the inputs a transaction spends, and the contract's own is the
+ * containers a transaction spends beside one of its masters, which do not exist before the genesis. A read is
+ * refused by name and published as the constructor's refusal, while the bodies the master serves keep serving.
+ */
+const constructorSource = (name: string, members: string): string => 'pragma solidcash ^0.13.0;'
+  + ` contract ${name} {${members}`
+  + '   function note() { require(true); }'
+  + ' }';
+
+const OTHER_BALANCE_CONSTRUCTORS: Readonly<Record<string, string>> = {
+  Param: constructorSource('Param', ' int public seen; constructor(address who) { this.seen = who.balance; }'),
+  Sender: constructorSource('Sender', ' int public seen; constructor() { this.seen = msg.sender.balance; }'),
+  Helper: constructorSource('Helper', ' int public seen; constructor(address who) { this.seen = peek(who); }'
+    + ' function peek(address w) internal view returns (int) { return w.balance; }'),
+};
+
+const OWN_BALANCE_CONSTRUCTORS: Readonly<Record<string, string>> = {
+  Cast: constructorSource('Cast', ' int public seen; constructor() { this.seen = address(this).balance; }'),
+  Self: constructorSource('Self', ' int public seen; constructor() { this.seen = this.balance; }'),
+};
+
+const SOLIDITY_OWN_BALANCE_SOURCE = 'pragma solidity ^0.8.0;'
+  + ' contract Sol { uint256 public seen; constructor() { seen = address(this).balance; }'
+  + '   function note() public { seen = seen + 1; } }';
+
+const KEPT_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Kept {'
+  + '   constructor() { require(address(this).balance >= 0); }'
+  + '   function check(int expected) { require(address(this).balance == expected); }'
+  + ' }';
+
+const SERVED_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Served {'
+  + '   constructor() { require(true); }'
+  + '   function check(int expected) { require(address(this).balance == expected); }'
+  + ' }';
+
+describe('a constructor that reads a balance, compiled per-call', () => {
+  it('is refused by name when it reads another address\'s balance, itself or through a body it runs', () => {
+    for (const [name, source] of Object.entries(OTHER_BALANCE_CONSTRUCTORS)) {
+      expect(compileString(source, { composition: 'per-call' }).composition!.refusedEntries, name).toStrictEqual([{
+        functionName: `${name}.__construct()`,
+        reason: 'the constructor reads the balance of an address other than its own, which a transaction shows '
+          + 'only in the inputs it spends',
+      }]);
+    }
+  });
+
+  it('is refused by name when it reads its own contract\'s balance, in either spelling', () => {
+    const own = [
+      ...Object.entries(OWN_BALANCE_CONSTRUCTORS).map(([name, source]) => ({
+        name, compiled: compileString(source, { composition: 'per-call' }),
+      })),
+      {
+        name: 'Sol',
+        compiled: compileString(SOLIDITY_OWN_BALANCE_SOURCE, {
+          composition: 'per-call', solidityImportCompat: true,
+        } as never),
+      },
+    ];
+    for (const { name, compiled } of own) {
+      expect(compiled.composition!.refusedEntries, name).toStrictEqual([{
+        functionName: `${name}.__construct()`,
+        reason: 'the constructor reads its contract\'s balance, which no genesis shows: the balance is the '
+          + 'containers a transaction spends beside a master of the contract, and the contract has no master '
+          + 'before its genesis',
+      }]);
+      // A refused constructor is not one a builder spends the contract's containers for.
+      expect(compiled.composition!.balanceReaders, name).toBeUndefined();
+    }
+  });
+
+  it('fails at the refused constructor while an entry that reads its balance keeps settling', () => {
+    const kept = compileString(KEPT_SOURCE, { composition: 'per-call' });
+    expect(kept.composition!.refusedEntries!.map((entry) => entry.functionName)).toStrictEqual(['Kept.__construct()']);
+    expect(kept.composition!.balanceReaders).toStrictEqual(['Kept.check()']);
+    expect(verdict({
+      artifact: kept, entry: 'check', args: [int(50_000n)], containersIn: [30_000n, 20_000n],
+      trailing: [container(50_000n)],
+    })).toStrictEqual({ accepted: true });
+    expect(verdict({ artifact: kept, entry: '__construct', args: [], containersIn: [], trailing: [] }))
+      .toStrictEqual({ accepted: false, objection: 'Program failed an OP_VERIFY operation.' });
+    // The control: the same master with a constructor that reads no balance serves the same frame.
+    const served = compileString(SERVED_SOURCE, { composition: 'per-call' });
+    expect(served.composition!.refusedEntries).toBeUndefined();
+    expect(verdict({ artifact: served, entry: '__construct', args: [], containersIn: [], trailing: [] }))
+      .toStrictEqual({ accepted: true });
   });
 });

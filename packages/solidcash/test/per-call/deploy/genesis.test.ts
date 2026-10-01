@@ -739,3 +739,80 @@ describe('a per-call genesis whose constructor writes a dynamic value', () => {
     expect(chunkOutput!.token?.nft?.commitment).toStrictEqual(run.written.chunks[0]);
   });
 });
+
+/**
+ * A constructor the compiler refused.
+ *
+ * The refused body is emitted as one that fails whenever the head dispatches to it, so a genesis that probed it
+ * would stop at that stub with an opcode. Before the compiler refused a constructor's balance read, the probe
+ * answered it with the derivation's own synthetic inputs and the deployment minted that as state. The artifact
+ * publishes the refusal, and the deployment reads it and refuses by name before it builds or broadcasts anything.
+ */
+const BALANCE_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Peek {'
+  + '   int public seen;'
+  + '   constructor(address who) { this.seen = who.balance; }'
+  + '   function note() { this.seen = this.seen + 1; require(true); }'
+  + ' }';
+
+const PEEK_REFUSAL = 'the constructor of "Peek" is refused by the compiler (Peek.__construct()): the constructor reads '
+  + 'the balance of an address other than its own, which a transaction shows only in the inputs it spends';
+
+describe('a per-call genesis whose constructor the compiler refused', () => {
+  const refusedArtifact = compileString(BALANCE_SOURCE, { composition: 'per-call' });
+
+  it('is refused by name, with the reason the artifact publishes', () => {
+    expect(refusedArtifact.composition?.refusedEntries?.map((entry) => entry.functionName))
+      .toStrictEqual(['Peek.__construct()']);
+    expect(() => derivePerCallGenesis({
+      artifact: refusedArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+      provider: compositionProvider(), constructorArgs: [OWNER_LOCK], senderLockingBytecode: OWNER_LOCK,
+    })).toThrow(PEEK_REFUSAL);
+  });
+
+  it('answers with the publication whatever the refusal, rather than probing the body', () => {
+    // The served constructor of the vault, with a refusal stated on its artifact: the derivation reads the
+    // publication, so a body it could have run is still refused by the reason stated.
+    const stated = {
+      ...artifact,
+      composition: {
+        ...artifact.composition!,
+        refusedEntries: [{ functionName: 'Vault.__construct()', reason: 'stated for this case' }],
+      },
+    };
+    const options = {
+      category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM, provider: compositionProvider(),
+      constructorArgs: [5n], senderLockingBytecode: OWNER_LOCK,
+    };
+    expect(() => derivePerCallGenesis({ ...options, artifact: stated }))
+      .toThrow('the constructor of "Vault" is refused by the compiler (Vault.__construct()): stated for this case');
+    // An entry's refusal is not the constructor's: the same artifact refusing only `check` still derives.
+    const entryRefused = {
+      ...artifact,
+      composition: {
+        ...artifact.composition!,
+        refusedEntries: [{ functionName: 'Vault.check()', reason: 'stated for this case' }],
+      },
+    };
+    expect(derivePerCallGenesis({ ...options, artifact: entryRefused }).commitments[0])
+      .toBe(Buffer.from(expectedCommitment(6n)).toString('hex'));
+  });
+
+  it('refuses through the shipped deployment, which builds and broadcasts nothing', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = { txid: '25'.repeat(31) + 'da', vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(funding.address, fundingUtxo);
+
+    await expect(StatefulContract.deploy(refusedArtifact, [OWNER_LOCK], {
+      provider,
+      fundingUtxo,
+      funder: funding.unlock.spend(alicePub, signature),
+      changeAddress: funding.address,
+    })).rejects.toThrow(PEEK_REFUSAL);
+    // The funding coin is still unspent and the category it would have minted holds nothing.
+    expect((await provider.getUtxos(funding.address)).map((utxo) => utxo.txid)).toContain(fundingUtxo.txid);
+    expect(await provider.getUtxosByTokenCategory(fundingUtxo.txid)).toStrictEqual([]);
+  });
+});

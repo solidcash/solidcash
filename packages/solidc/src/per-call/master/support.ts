@@ -1233,6 +1233,31 @@ function balanceReads(body: BlockNode | undefined): { readonly own: boolean; rea
 }
 
 /**
+ * The balances the constructor reads, in its own body or in any body it runs.
+ *
+ * A body the lowering left as a subroutine keeps its own definition, so a read inside it is reached through the
+ * invocation graph rather than found in the constructor's statements.
+ */
+function constructorBalanceReads(
+  constructorDef: FunctionDefinitionNode,
+  bodies: readonly FunctionDefinitionNode[],
+  invokes: ReadonlyMap<string, ReadonlySet<string>>,
+): { readonly own: boolean; readonly other: boolean } {
+  const byName = new Map(bodies.map((fn) => [fn.name, fn]));
+  const reached = new Set<string>();
+  const pending = [...invokedFunctionNames(constructorDef.body)];
+  while (pending.length > 0) {
+    const name = pending.pop()!;
+    if (reached.has(name)) continue;
+    reached.add(name);
+    pending.push(...(invokes.get(name) ?? []));
+  }
+  const reads = [constructorDef.body, ...[...reached].map((name) => byName.get(name)?.body)]
+    .map((body) => balanceReads(body));
+  return { own: reads.some((read) => read.own), other: reads.some((read) => read.other) };
+}
+
+/**
  * Marks every body that touches dynamic state, so the head derives the value's chunk-run coordinate from the
  * record block the frame declares and leaves it where the body reads it, rather than the body addressing the run
  * from the input it happens to run on.
@@ -1396,6 +1421,21 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     if (reads.own && invoked.has(fn.name)) {
       refuseBody(fn, 'the body reads its contract\'s balance and is invoked as its own subroutine, which has no '
         + 'frame to read it from');
+    }
+  }
+  // The constructor runs only at its genesis, and no genesis shows a balance: another address's shows only in the
+  // inputs a transaction spends, and the contract's own is the containers a transaction spends beside one of its
+  // masters, which do not exist before the genesis. A read the constructor makes, itself or through a body it runs,
+  // is refused by name rather than answered with the inputs a genesis happens to carry.
+  if (contract.constructorDef !== undefined) {
+    const reads = constructorBalanceReads(contract.constructorDef, entryBodies, invokes);
+    if (reads.other) {
+      refuseBody(contract.constructorDef, 'the constructor reads the balance of an address other than its own, '
+        + 'which a transaction shows only in the inputs it spends');
+    } else if (reads.own) {
+      refuseBody(contract.constructorDef, 'the constructor reads its contract\'s balance, which no genesis shows: '
+        + 'the balance is the containers a transaction spends beside a master of the contract, and the contract '
+        + 'has no master before its genesis');
     }
   }
   // The entries that read their own balance, through any body they reach.

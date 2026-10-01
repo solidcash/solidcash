@@ -128,6 +128,12 @@ export function evaluateExternalExpression(
     if (locking.length === 35) return hash160Sync(locking);
     return locking.slice(3, 23);
   };
+  const addressBytes = (value: string): Uint8Array | undefined => {
+    if (/^0x(?:[0-9a-fA-F]{2})*$/.test(value)
+      && [42, 48, 52, 66, 72].includes(value.length)) return hexToBin(value.slice(2));
+    if (value.includes(':')) return addressToLockScript(value);
+    return undefined;
+  };
   const readsAuthenticatedState = (
     candidate: ExternalCallExpression | undefined,
     seen = new Set<object>(),
@@ -179,6 +185,10 @@ export function evaluateExternalExpression(
     if (typeof value === 'string') {
       const canonicalHex = /^0x(?:[0-9a-fA-F]{2})*$/.test(value);
       if (typeHint === 'uint160' && isZeroAddressValue(value)) return new Uint8Array();
+      if (solidityImportCompat && typeHint === 'uint160') {
+        const locking = addressBytes(value);
+        return locking === undefined ? undefined : narrowAddress(locking);
+      }
       if (canonicalHex && typeHint === 'uint160' && value.length === 42) {
         return concat([hexToBin(value.slice(2)), new Uint8Array([0])]);
       }
@@ -218,7 +228,7 @@ export function evaluateExternalExpression(
       // Match the compiler's packed address-as-integer extension: native locks remain intact, but a
       // Solidity ABI word contributes only its address identity, not its twelve framing bytes. Check this
       // before zero-address handling because a zero ABI word still packs twenty bytes.
-      if (solidityImportCompat && typeHint === 'uint160' && value.length === 32) return value.slice(12);
+      if (solidityImportCompat && typeHint === 'uint160') return narrowAddress(value);
       if (typeHint === 'uint160' && isZeroAddressValue(value)) return new Uint8Array();
       // Native artifacts retain their established unprojected representation.
       if (typeHint === 'uint160' && value.length === 32) return value;
@@ -433,6 +443,16 @@ export function evaluateExternalExpression(
     const value = evaluate(expression.expression);
     if (value === undefined) return undefined;
     if (expression.type === 'bytes' && typeof value === 'string') return utf8ToBin(value);
+    if (expression.type === 'uint160'
+      && (value instanceof Uint8Array || (solidityImportCompat && typeof value === 'string'
+        && ['address', 'address payable'].includes(inferredType(expression.expression))))) {
+      const raw = typeof value === 'string' ? addressBytes(value) : value;
+      if (raw === undefined) return undefined;
+      const bytes = narrowAddress(raw);
+      return solidityImportCompat
+        ? bytes.reduce((number, byte) => (number << 8n) | BigInt(byte), 0n)
+        : [...bytes].reverse().reduce((number, byte) => (number << 8n) | BigInt(byte), 0n);
+    }
     if (expression.type?.startsWith('uint') || expression.type?.startsWith('int')) {
       if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
       if (value instanceof Uint8Array) {

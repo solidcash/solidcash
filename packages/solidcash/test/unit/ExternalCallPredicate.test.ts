@@ -549,14 +549,32 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toEqual(Uint8Array.of(...identity, 1));
   });
 
-  it('preserves Solidity-compatible BCH locks in packed uint160 expressions', () => {
+  it('narrows Solidity-compatible BCH locks in packed uint160 expressions', () => {
     const lock = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x53), 0x87);
     const expression: ExternalCallExpression = {
       kind: 'abiEncodePacked', fields: ['uint160'], args: [source(0)],
     };
     expect(evaluator._evaluateExternalExpression(
       expression, [lock], artifact, undefined, [{ type: 'address' }],
-    )).toEqual(lock);
+    )).toEqual(hash160(lock));
+    expect(evaluator._evaluateExternalExpression(
+      expression, [`0x${binToHex(lock)}`], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(hash160(lock));
+  });
+
+  it('narrows a typed address cast before Solidity-compatible packed encoding', () => {
+    const lock = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x64), 0x87);
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: ['uint160'], args: [{
+        kind: 'cast', type: 'uint160', expression: source(0),
+      }],
+    };
+    expect(evaluator._evaluateExternalExpression(
+      expression, [lock], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(hash160(lock));
+    expect(evaluator._evaluateExternalExpression(
+      expression, [`0x${binToHex(lock)}`], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(hash160(lock));
   });
 });
 

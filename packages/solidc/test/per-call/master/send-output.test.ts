@@ -11,7 +11,7 @@ import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { categorySlotValue, seededCategory } from './validator-input.js';
+import { categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
 
 /**
  * A compiled per-call entry that makes a value send, driven through the real entry point.
@@ -192,7 +192,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
     lockingBytecode: lock, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'minting'),
   };
   const recordOutput: VmOutput[] = record === undefined ? [] : [{
-    lockingBytecode: USER_LOCK,
+    lockingBytecode: dataRecordLock(CATEGORY),
     valueSatoshis: MASTER_VALUE,
     token: token(CATEGORY, 'mutable', record.written),
   }];
@@ -206,7 +206,10 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
     masterOutput,
     ...(record === undefined
       ? []
-      : [{ lockingBytecode: USER_LOCK, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'mutable', record.committed) }]),
+      : [{
+        lockingBytecode: dataRecordLock(CATEGORY), valueSatoshis: MASTER_VALUE,
+        token: token(CATEGORY, 'mutable', record.committed),
+      }]),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const vm = compositionMachine();

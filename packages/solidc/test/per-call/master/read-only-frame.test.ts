@@ -20,8 +20,8 @@ import {
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
-  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
-  validatorSpend,
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, dataRecordLock, seededCategory,
+  validatorFacetPlacements, validatorSpend,
 } from './validator-input.js';
 
 /**
@@ -359,7 +359,10 @@ function buildMutant(): MutantComposition {
     { lockingBytecode: mutantLock, valueSatoshis: masterValue, token: token(CATEGORY_MUTANT, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
     ...facets.map((facet) => facet.output),
-    { lockingBytecode: USER_LOCK, valueSatoshis: masterValue, token: token(CATEGORY_MUTANT, 'mutable', AFTER) },
+    {
+      lockingBytecode: dataRecordLock(CATEGORY_MUTANT), valueSatoshis: masterValue,
+      token: token(CATEGORY_MUTANT, 'mutable', AFTER),
+    },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const sourceOutputs = [
@@ -367,7 +370,10 @@ function buildMutant(): MutantComposition {
     { lockingBytecode: mutantLock, valueSatoshis: masterValue, token: token(CATEGORY_MUTANT, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
     ...facets.map((facet) => facet.output),
-    { lockingBytecode: USER_LOCK, valueSatoshis: masterValue, token: token(CATEGORY_MUTANT, 'mutable', BEFORE) },
+    {
+      lockingBytecode: dataRecordLock(CATEGORY_MUTANT), valueSatoshis: masterValue,
+      token: token(CATEGORY_MUTANT, 'mutable', BEFORE),
+    },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   return { transaction: { version: 2, inputs, outputs, locktime: 0 }, sourceOutputs };
@@ -554,7 +560,10 @@ function buildStateful(viewIn: Uint8Array): StatefulComposition {
     { lockingBytecode: answerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_STATEFUL, 'mutable') },
     ...facets.map((facet) => facet.output),
-    { lockingBytecode: USER_LOCK, valueSatoshis: masterValue, token: token(CATEGORY_STATEFUL, 'mutable', COUNTER_AFTER) },
+    {
+      lockingBytecode: dataRecordLock(CATEGORY_STATEFUL), valueSatoshis: masterValue,
+      token: token(CATEGORY_STATEFUL, 'mutable', COUNTER_AFTER),
+    },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const sourceOutputs = [
@@ -562,7 +571,10 @@ function buildStateful(viewIn: Uint8Array): StatefulComposition {
     { lockingBytecode: answerLock, valueSatoshis: masterValue, token: token(CATEGORY_CALLEE, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_STATEFUL, 'mutable') },
     ...facets.map((facet) => facet.output),
-    { lockingBytecode: USER_LOCK, valueSatoshis: masterValue, token: token(CATEGORY_STATEFUL, 'mutable', COUNTER_BEFORE) },
+    {
+      lockingBytecode: dataRecordLock(CATEGORY_STATEFUL), valueSatoshis: masterValue,
+      token: token(CATEGORY_STATEFUL, 'mutable', COUNTER_BEFORE),
+    },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   return { transaction: { version: 2, inputs, outputs, locktime: 0 }, sourceOutputs };

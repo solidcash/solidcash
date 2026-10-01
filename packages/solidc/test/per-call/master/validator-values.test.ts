@@ -12,8 +12,8 @@ import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
-  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
-  validatorSpend,
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, dataRecordLock, seededCategory,
+  validatorFacetPlacements, validatorSpend,
 } from './validator-input.js';
 
 /**
@@ -108,14 +108,14 @@ function verdicts(
   const sourceOutputs: VmProgram['sourceOutputs'] = [
     master, master, validatorOutput,
     ...facets.map((facet) => facet.output),
-    { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n, token: token('mutable', view(frames[0].views[0])) },
+    { lockingBytecode: dataRecordLock(CATEGORY), valueSatoshis: 20_000n, token: token('mutable', view(frames[0].views[0])) },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
     ...containersIn.map(container),
   ];
   const outputs: VmOutput[] = [
     master, master, validatorOutput,
     ...facets.map((facet) => facet.output),
-    { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n, token: token('mutable', view(frames[1].views[1])) },
+    { lockingBytecode: dataRecordLock(CATEGORY), valueSatoshis: 20_000n, token: token('mutable', view(frames[1].views[1])) },
     payment(1_000n),
     ...trailing,
   ];

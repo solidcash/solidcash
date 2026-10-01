@@ -79,6 +79,8 @@ interface Payment {
   readonly payerIn?: readonly bigint[];
   readonly payerOut?: readonly bigint[];
   readonly vaultOut?: readonly bigint[];
+  /** The validator the payer's frame names; the `u16` sentinel claims the frame stands alone. */
+  readonly payerValidatorRef?: number;
 }
 
 /** Every contract input's verdict for one payment. */
@@ -94,7 +96,7 @@ function verdicts(payment: Payment = {}): Record<'payer' | 'vault' | 'validator'
     kind: 0,
     callerRef: USER_INDEX,
     originRef: USER_INDEX,
-    validatorRef: VALIDATOR_INDEX,
+    validatorRef: payment.payerValidatorRef ?? VALIDATOR_INDEX,
     sender: USER_LOCK,
     self: ADDRESS_PAYER,
     value: 0n,
@@ -191,6 +193,13 @@ describe('a contract paying another contract through its receive(), compiled per
     expect(relabelled.payer).toBe(false);
     // The record and the recipient's frame agree, so the refusal is the payer's own site.
     expect(relabelled.validator).toBe(true);
+  });
+
+  it('is refused by the payer when its frame claims to stand alone while it makes the call (T35)', () => {
+    // The head's call count does not cover the call, and no validator would bind the callee, so the site requires one.
+    expect(verdicts({ payerValidatorRef: 0xffff }).payer).toBe(false);
+    // The control: the same payment naming its validator is accepted.
+    expect(verdicts().payer).toBe(true);
   });
 
   it('is refused by a recipient that has no receive(), even one whose sole entry is payable', () => {

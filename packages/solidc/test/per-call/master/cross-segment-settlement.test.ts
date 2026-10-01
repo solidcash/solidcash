@@ -11,7 +11,9 @@ import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory, validatorSpend,
+} from './validator-input.js';
 
 /**
  * A compiled master whose execution is split at a call settles its record across both its segments.
@@ -196,16 +198,17 @@ function build(options: Options = {}): VmProgram {
     lockingBytecode: validator.lock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable'),
   };
   const userOutput = { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n };
+  const recordLock = dataRecordLock(CATEGORY_CALLER);
   const recordOutput = {
-    lockingBytecode: USER_LOCK,
+    lockingBytecode: recordLock,
     valueSatoshis: options.outputValue ?? VALUE,
     token: token(CATEGORY_CALLER, 'mutable', options.outputCommitment ?? AFTER),
   };
   const stateInput = {
-    lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', BEFORE),
+    lockingBytecode: recordLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', BEFORE),
   };
   const spentState = options.undeclaredState === true
-    ? { lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', MIDDLE) }
+    ? { lockingBytecode: recordLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', MIDDLE) }
     : stateInput;
 
   const inputs: VmInput[] = [];

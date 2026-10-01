@@ -11,7 +11,7 @@ import { compileString } from '../../../src/compiler.js';
 import { assertPlaceholders, fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { categorySlotValue, seededCategory } from './validator-input.js';
+import { categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
 
 /**
  * A contract whose constructor body runs behind the master head.
@@ -32,6 +32,8 @@ const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52]); // OP_1 OP_2, any progra
 const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
 const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
+/** The data record sits at the data-NFT covenant, which the master pins. */
+const RECORD_LOCK = dataRecordLock(CATEGORY);
 const VALUE = 20_000n;
 
 const ADMIN = new Uint8Array(20).fill(0x11);
@@ -148,10 +150,10 @@ function verdict(options: Options): boolean {
   sourceOutputs[SPARE_INDEX] = outputs[SPARE_INDEX];
   inputs[RECORD_INDEX] = plainInput(RECORD_INDEX + 2);
   outputs[RECORD_INDEX] = {
-    lockingBytecode: OWNER_LOCK, valueSatoshis: VALUE, token: token('mutable', options.after),
+    lockingBytecode: RECORD_LOCK, valueSatoshis: VALUE, token: token('mutable', options.after),
   };
   sourceOutputs[RECORD_INDEX] = {
-    lockingBytecode: OWNER_LOCK, valueSatoshis: VALUE, token: token('mutable', options.before),
+    lockingBytecode: RECORD_LOCK, valueSatoshis: VALUE, token: token('mutable', options.before),
   };
 
   const vm = compositionMachine();

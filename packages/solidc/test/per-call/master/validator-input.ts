@@ -1,4 +1,4 @@
-import { encodeDataPush, Opcodes } from '@bitauth/libauth';
+import { binToHex, encodeDataPush, Opcodes } from '@bitauth/libauth';
 import {
   chainCategory,
   encodeTranscript,
@@ -8,10 +8,16 @@ import {
   type Transcript,
 } from '@solidcash/utils';
 import { buildValidatorFacets, buildValidatorProgram, validatorFacetSpends } from '../../../src/per-call/validator/index.js';
+import { stateRecordLockingBytecode } from '../../../../solidcash/src/per-call/deploy/index.js';
 
 /** A category that is not a repeated byte, so the chain's order differs from the display order. */
 export function seededCategory(label: string): Uint8Array {
   return sha256(new TextEncoder().encode(label));
+}
+
+/** The lock a contract's data record sits at: the data-NFT covenant for its category, which the master pins. */
+export function dataRecordLock(category: Uint8Array): Uint8Array {
+  return stateRecordLockingBytecode(binToHex(category));
 }
 
 /** The validator program a master recognises and a validator input runs. */

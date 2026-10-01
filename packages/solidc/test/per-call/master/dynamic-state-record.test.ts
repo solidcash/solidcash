@@ -12,7 +12,7 @@ import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
+import { REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
 
 /**
  * A per-call master whose state is a string, settled on the BCH-2026 machine.
@@ -37,7 +37,7 @@ const TEMPLATE_HASH = sha256(REAL_VALIDATOR_PROGRAM);
 const ADDRESS = validatorAddress(CATEGORY, REAL_VALIDATOR_PROGRAM);
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 /** The state record's lock: the entry only requires the input and output to agree, so any lock serves. */
-const STATE_LOCK = encodeLockingBytecodeP2sh32(hash256(new Uint8Array([9, 9, 9])));
+const STATE_LOCK = dataRecordLock(CATEGORY);
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Named {'

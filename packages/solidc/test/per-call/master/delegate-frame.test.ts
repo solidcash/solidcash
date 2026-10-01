@@ -13,7 +13,9 @@ import { findPlaceholderOffsets } from '../../../src/per-call/master/master-prog
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory, validatorSpend,
+} from './validator-input.js';
 
 /**
  * A compiled master that runs as a DELEGATE frame on another contract's records.
@@ -39,7 +41,7 @@ const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 const ADDRESS_IMPL = validatorAddress(CATEGORY_IMPL, VALIDATOR_PROGRAM);
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 /** A record's lock: the entry only requires input and output to agree, so any lock serves. */
-const RECORD_LOCK = encodeLockingBytecodeP2sh32(hash256(new Uint8Array([9, 9, 9])));
+const RECORD_LOCK = dataRecordLock(CATEGORY_PROXY);
 
 const CALLER_INDEX = 0;
 const IMPL_INDEX = 1;

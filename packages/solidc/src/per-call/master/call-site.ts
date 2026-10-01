@@ -42,6 +42,9 @@ import {
 } from './witness-reader.js';
 import { skipCallRecordsScript } from './frame-tail.js';
 
+/** The `u16` sentinel a standalone frame's validator reference carries, in the block's own encoding. */
+const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]);
+
 /**
  * The checks one call site makes against its own record.
  *
@@ -79,6 +82,11 @@ export function callSiteCheckScript(
      * its arguments to the bytes the caller received; only the constant selector equality is left out.
      */
     readonly skipSelectorCheck?: boolean;
+    /**
+     * True for a site the head's call count does not cover, whose frame may claim to stand alone: the frame must
+     * name a validator, which binds the callee (N1, V5, V11).
+     */
+    readonly requiresValidator?: boolean;
   } = {},
 ): Uint8Array {
   const digestFromStack = options.digestFromStack === true;
@@ -97,7 +105,13 @@ export function callSiteCheckScript(
   emit(...readOwnWitnessBlockScript());
   // The magic and version are required; the four fixed header fields are only walked past.
   emit(...readFrameHeaderScript());
-  emit(Opcodes.OP_TOALTSTACK, Opcodes.OP_2DROP, Opcodes.OP_2DROP, Opcodes.OP_FROMALTSTACK);
+  if (options.requiresValidator === true) {
+    // The validator reference, topmost of the four, is not the u16 sentinel.
+    emit(Opcodes.OP_TOALTSTACK, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL, Opcodes.OP_NOT,
+      Opcodes.OP_VERIFY, Opcodes.OP_2DROP, Opcodes.OP_DROP, Opcodes.OP_FROMALTSTACK);
+  } else {
+    emit(Opcodes.OP_TOALTSTACK, Opcodes.OP_2DROP, Opcodes.OP_2DROP, Opcodes.OP_FROMALTSTACK);
+  }
   // `sender`, `self` and `value` are read only to advance the cursor to the tail.
   emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);
   emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);

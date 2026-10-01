@@ -15,8 +15,8 @@ import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
-  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
-  validatorSpend,
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, dataRecordLock, seededCategory,
+  validatorFacetPlacements, validatorSpend,
 } from './validator-input.js';
 
 /**
@@ -222,7 +222,10 @@ function build(options: Options = {}): Composition {
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(callee.category, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
     ...facets.map((facet) => facet.output),
-    { lockingBytecode: USER_LOCK, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable', COUNTER_AFTER) },
+    {
+      lockingBytecode: dataRecordLock(CATEGORY_CALLER), valueSatoshis: masterValue,
+      token: token(CATEGORY_CALLER, 'mutable', COUNTER_AFTER),
+    },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const sourceOutputs = [
@@ -230,7 +233,10 @@ function build(options: Options = {}): Composition {
     { lockingBytecode: calleeLock, valueSatoshis: masterValue, token: token(callee.category, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable') },
     ...facets.map((facet) => facet.output),
-    { lockingBytecode: USER_LOCK, valueSatoshis: masterValue, token: token(CATEGORY_CALLER, 'mutable', COUNTER_BEFORE) },
+    {
+      lockingBytecode: dataRecordLock(CATEGORY_CALLER), valueSatoshis: masterValue,
+      token: token(CATEGORY_CALLER, 'mutable', COUNTER_BEFORE),
+    },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   return { transaction: { version: 2, inputs, outputs, locktime: 0 }, sourceOutputs };

@@ -11,7 +11,7 @@ import { compileString, compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
+import { REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
 import { publishedRefusals, refusalOf } from './refused-entry.js';
 
 /**
@@ -296,7 +296,7 @@ const INITIALIZER_WRITE_SOURCE = 'pragma solidity ^0.8.19;'
 const STORE_CATEGORY = seededCategory('initializer implementation');
 const STORE_ADDRESS = validatorAddress(STORE_CATEGORY, REAL_VALIDATOR_PROGRAM);
 /** A record's lock: the entry only requires input and output to agree, so any lock serves. */
-const STORE_STATE_LOCK = encodeLockingBytecodeP2sh32(hash256(new Uint8Array([9, 9, 9])));
+const STORE_STATE_LOCK = dataRecordLock(STORE_CATEGORY);
 const STORE_USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 /** The value the record holds before the entry runs, and the one the entry writes. */
 const STORE_BEFORE = 42n;

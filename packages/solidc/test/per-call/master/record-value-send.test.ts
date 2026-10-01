@@ -11,7 +11,7 @@ import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
+import { REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
 
 /**
  * A master that settles its record alone keeps the record's value whether or not its frame sends (D2, T39).
@@ -25,7 +25,7 @@ const CATEGORY = seededCategory('record value send');
 const ADDRESS = validatorAddress(CATEGORY, REAL_VALIDATOR_PROGRAM);
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 /** A state record's lock: the master only requires the record's input and output to agree. */
-const STATE_LOCK = encodeLockingBytecodeP2sh32(hash256(new Uint8Array([9, 9, 9])));
+const STATE_LOCK = dataRecordLock(CATEGORY);
 const CONTAINER_LOCK = encodeLockingBytecodeP2sh32(
   hash256(scriptToBytecode(buildSatoshiContainerCovenantScript(CATEGORY))),
 );

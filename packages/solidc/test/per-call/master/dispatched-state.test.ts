@@ -11,7 +11,7 @@ import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
+import { REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory } from './validator-input.js';
 
 /**
  * A stateful master whose entries are reached through its own dispatcher reads its state where its frame says it
@@ -29,6 +29,8 @@ const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
 const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
+/** The data record sits at the data-NFT covenant, which the master pins. */
+const RECORD_LOCK = dataRecordLock(CATEGORY);
 const VALUE = 20_000n;
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
@@ -133,12 +135,12 @@ function build(options: Options = {}): VmProgram {
   }
   inputs[record] = plainInput(record + 2);
   outputs[record] = {
-    lockingBytecode: OWNER_LOCK,
+    lockingBytecode: RECORD_LOCK,
     valueSatoshis: VALUE,
     token: token(CATEGORY, 'mutable', options.outputCommitment ?? AFTER),
   };
   sourceOutputs[record] = {
-    lockingBytecode: OWNER_LOCK, valueSatoshis: VALUE, token: token(CATEGORY, 'mutable', BEFORE),
+    lockingBytecode: RECORD_LOCK, valueSatoshis: VALUE, token: token(CATEGORY, 'mutable', BEFORE),
   };
 
   return { sourceOutputs, transaction: { version: 2, inputs, outputs, locktime: 0 } };

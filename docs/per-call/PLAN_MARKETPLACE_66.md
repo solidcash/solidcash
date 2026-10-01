@@ -479,8 +479,11 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
 - [x] B3 V3: completeness.
 - [x] B4 V4: roots, and the forest rule.
 - [ ] B5 V5 (partial): edges, for each kind. Emitted for an ordinary call: caller, kind, origin, value, sender,
-  address, result, and the callee's own pushes hashed against the recorded digest. Not emitted: the `DELEGATE` target
-  rule and the `INTERNAL` same-contract rule.
+  address, result, and the callee's own pushes hashed against the recorded digest; the `DELEGATE` target rule is
+  emitted too (`fe87a8b22`: the target is the address of the callee master's own category). Not emitted: the
+  `INTERNAL` same-contract rule, which the reference model checks (`V5_INTERNAL_CATEGORY_MISMATCH`). No compiled
+  caller makes an `INTERNAL` call (4.7 defers them) and a callee's kind must match the record its caller computed,
+  so no transaction carries such an edge until code-split contracts land.
   - `CALL`, `STATIC`, `CREATE`: sender is the caller's `self`, and `self` is the recorded target;
   - `DELEGATE`: passthrough, and the callee's category matches the target (T37);
   - `INTERNAL`: passthrough, same contract;
@@ -574,7 +577,10 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
     `.staticcall` run a static frame, and an explicit `.call` a message frame, as on the EVM;
   - `try` must succeed (T22, ticked): no witness selects a `catch` branch, and the conformance suite's `try this.g()`
     row answers as the EVM's does.
-- [ ] C9 W3: events at their listed outputs; `sends[]` for P2PKH value sends; a value send to a contract as a `CALL`.
+- [x] C9 W3: events at their listed outputs; `sends[]` for P2PKH value sends; a value send to a contract as a `CALL`.
+  Events by the census (`abe0de286`; T13, T41), P2PKH sends paid from the contract's containers (`5e671af32`;
+  `hostile/send-list`, `hostile/send-output-binding`), and a payment to a contract as a `CALL` into its `receive()`
+  (`9786657b4`; `hostile/contract-payment-plain-output`).
 - [x] C10 Stop-site metadata emitted (A5). The per-call compiler derives each entry's sites from the calls it
   already compiles at their call sites and the segments they split the execution into — one `call` site per external
   call in execution order, then one `segmentClose` per segment, so `k` calls publish `2k + 1` sites — validates the
@@ -583,7 +589,7 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   `read` site is published: the compiler does not hold the record identity a read resolves to, and an invented one
   would be worse than an omitted one.
 - [x] C11 A code constant slot for `addrX`; stream F fills it at deployment.
-- [ ] C12 SafeERC20 low-level calls (OpenZeppelin 5.0.2 and 4.9.3) lowered to typed calls; the `code.length` rule.
+- [x] C12 SafeERC20 low-level calls (OpenZeppelin 5.0.2 and 4.9.3) lowered to typed calls; the `code.length` rule.
   **Landed for the payloads the compiler can name** (`907cd7ed3`). A low-level call whose payload statically names
   an interface method — `address(t).call(abi.encodeCall(I.f, (args)))` or the `abi.encodeWithSelector(I.f.selector,
   args)` spelling, in the result-binding, result-ignoring and `return` positions — is rewritten before semantic
@@ -591,10 +597,10 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   from the same code path a written typed call uses; the low-level result is rebuilt as `success = true` and
   `returndata = abi.encode(<f's return values>)`, so `abi.decode(data, (bool))` round-trips. Measured: the derived
   call record matches the written typed call on every field and every contract input accepts
-  (`edges/low-level-token-call-lowering.test.ts`). **Still refused by name**: a payload held in a local (`bytes data
-  = abi.encodeCall(...); address(t).call(data)` — the vendored 4.9.3 `Address.functionCall` indirection, pinned in
-  `shapes/proxied-root-append.test.ts`), a run-time selector, an opaque `bytes` payload, `abi.encodeCall(this.f, …)`
-  and a method no known interface names. The `code.length` gate answers zero for a plain account or the zero
+  (`edges/low-level-token-call-lowering.test.ts`). A payload held in a local and the vendored 4.9.3
+  `Address.functionCall` indirection are lowered too (`693e8d441`, `e3eccbc7a`). **Refused by name**, by design: a
+  run-time selector, an opaque `bytes` payload, `abi.encodeCall(this.f, ...)` and a method no known interface
+  names. The `code.length` gate answers zero for a plain account or the zero
   address, as the EVM does for an account without code (log row "a target with no script answers empty code"), and a
   P2SH target answers its script when the transaction spends it.
   `address(this).balance` constant-folded for value 0 (spec 17; section 23 rows 9-11).
@@ -678,13 +684,8 @@ risk. Take the slices in order, each with its own tests.
     (`deploy/genesis.test.ts`; `planConstructorMappingWrite` in `deploy/genesis.ts`, `entryRecordLockingBytecode` in
     `deploy/records.ts`). Mutating the created node's value or the relinked head's successor is refused, and a
     constructor writing two collections is refused by name.
-  - **`classifyPerCallDeployment` has no mapping-node bucket.** The live UTXOs of a contract that keeps a mapping
-    are its nodes: a mutable commitment whose first 32 bytes are a slot and whose tail is the value, which does not
-    parse as a data-NFT, so `nftIndexOf` answers `undefined` and the node is classified as a **validator**. Nothing
-    that reads a contract's pools today is misled — the genesis and `readPerCallState` read data-NFT records by
-    index — but a composition that re-derives pool membership would see a mapping contract's nodes as validators. The
-    smallest change is to hand the classifier the collection signatures and match a mutable commitment's leading slot
-    against them (and slot 0 against the head sentinel's shape) before the validator fallback.
+  - **`classifyPerCallDeployment` buckets mapping nodes** (`7ecca441f`): a node is matched by its collection's
+    entry lock, so a mapping contract's nodes are never taken for validators.
   - **A frame that keeps a data-NFT record and writes a mapping batch settles for a frame that owns its records**
     (two fixes: `073632a9d` and the round whose Log row follows it). The batch derivation read its target groups from
     the head of the segment's record list while a segment declares the frame's own state records first, so the walk
@@ -750,7 +751,7 @@ risk. Take the slices in order, each with its own tests.
   composer planner for a batch whose inserts share a predecessor: `layOutMappingWrites` chains inserts one after
   another, so it relinks a node the batch has only just created, which the head refuses as a record created
   twice. The test lays that batch out from the shipped encoders.
-- [ ] R5 Dynamic `string`, `bytes`, `T[]`: consume every old chunk and create every new one. (partial: the master
+- [x] R5 Dynamic `string`, `bytes`, `T[]`: consume every old chunk and create every new one. (partial: the master
   head now derives a body's chunk-run coordinate from the record block its own frame declares, and the machine
   accepts a compiled master whose entry appends to a `string` value — the old chunk consumed, the new one written,
   the length header updated — with a control refused when the run is undeclared or carries a value the code did not
@@ -762,14 +763,22 @@ risk. Take the slices in order, each with its own tests.
   **A write that changes the run's width is served** (`50b33ec71`, verified and widened this round): `layOutChunkRun`
   places kept, created and removed chunks, and the run that grows and the run that shrinks both settle — the
   `PER_CALL_CHUNK_UNPLANNABLE` refusal this note used to cite had already been removed when the planner landed, and
-  `chunk-run.test.ts` now also drives a write that creates two chunks at once (`9f00b1286`). What is still
-  unexercised is `bytes` and `T[]` runs. **A body that both touches a dynamic value and makes a call
+  `chunk-run.test.ts` now also drives a write that creates two chunks at once (`9f00b1286`). `bytes` and `T[]`
+  runs are exercised as of the run census below. **A body that both touches a dynamic value and makes a call
   is now refused by name rather than crashing** (`110dfb155`): a call ends the segment the code before it runs in,
   so such a body declares its records per segment and has no single declaration the head can locate the run from -
   code generation used to ask for the direct convention's return-event operand and die with a stack-variable error,
   and the reason now names what cannot be located (`dynamic-value-call.test.ts`, with the write-without-a-call and
   the call-without-a-dynamic-value controls still served).
-- [ ] R6 Mappings inside structs and nested mappings, through today's flattening and composite slots (spec 20).
+  - **The run census (2026-10-01).** A write of a `string`, `bytes` or `T[]` value checks its segment's run record
+    by record: every chunk the old value held is consumed from the value's chunk address, positions past them are
+    created from nothing, nothing is written past the new value and nothing is declared past the run; read loops
+    tie each chunk record to that address on both sides, and a write keeps the chunks of values it only reads.
+    23 forgeries the machine accepted before are refused (`dynamic-bytes-record`, `dynamic-array-record`,
+    `frames/chunk-run-kinds`). Refused by name: two dynamic values written in one body when the first's chunk
+    count changes, and a run that shrinks beside a sorted batch. A read-only element access with no other access
+    to the array fails closed (`touchesDynamicState` in `support.ts`, the ladder stream's file).
+- [x] R6 Mappings inside structs and nested mappings, through today's flattening and composite slots (spec 20).
   - The composite slot of a nested `m[a][b]` write is derived as of `7273d613e`: both derivation builders hash each
     target's keys in source order, concatenate the per-key hashes, hash them once more and mask the result the way
     the write path and the SDK's `keyToSlotMulti` do, so a two-key insert, its update and its read-modify-write are
@@ -782,8 +791,55 @@ risk. Take the slices in order, each with its own tests.
     emits a removal's record group for the derivation to read — the group it declares is the default write's, whose
     written node the derivation does read, and the machine accepts both the update and the insert shape. Refused
     controls: a segment declaring the target removed and a written node declared under the empty view a splice would
-    carry (`mapping-delete-write.test.ts`). Mappings inside structs and keys below the second level are
-    unexercised.
+    carry (`mapping-delete-write.test.ts`).
+  - **Keys below the second level and mappings held in structs are served** (this round). The derivation already
+    hashed every key of a target, so `m[a][b][c]` and `m[a][b][c][d]` settle as an insert, an update, a
+    read-modify-write, a removal, a read beside a write and with `msg.sender` as the outer key, with a key prefix and
+    every other key order refused (`deep-composite-key-write.test.ts`). A struct's mapping field is a collection of
+    its own, `<variable>__<field>`, keyed by a mapped struct's outer keys first: a state struct's mapping (its scalar
+    kept or written in the data record ahead of the groups), a mapped struct's (`[o, k]`), both fields of a mapped
+    struct in one body, a struct nested in a struct, a mapping of mappings of structs, a nested mapping in a mapped
+    struct and a storage-parameter helper all settle, with the field key's slot alone, a key prefix, another value
+    and the data record left out or declared after the groups refused (`struct-mapping-write.test.ts`).
+  - **Found on the way and fixed: the master never checked which collection a node sits at (T45).** It reads a
+    node's views from its declaration and settlement ties them to the commitments at the coordinate, but a commitment
+    does not name its collection, so two collections keyed alike (two mappings by address, or a struct's `allowed`
+    and `blocked`) were interchangeable: measured on the machine, an entry writing `b[k] = v` rewrote `a[k]`'s node
+    in place with the master and the node's own covenant both accepting. The master now holds every node it reads or
+    writes to its collection's covenant, at the output the node lands at and at a record of the category spent at
+    its coordinate; a node of the sibling field rewritten, moved, relinked, created or read through the other
+    field's entry is refused. Masters that touch mapping nodes emit different bytes; the validator program and every
+    address are unchanged.
+  - **The data record's own lock is now pinned to the data-NFT covenant (T46).** The same gap as T45 but for the
+    data-NFT covenant: the master held a data record's input lock equal to its output lock, but never equal to
+    `buildDataNftCovenantScript(category)`, so a data record at a plain lock, or a mapping node or value chunk of the
+    same contract whose commitment decodes as the record's fields, was accepted (confirmed on the machine, and
+    independently via the R5 agent's `bytes data; uint n` chunk construction). `emitDataNftPreservationInline` now
+    holds both sides to the covenant via `emitDataNftLbc` under `readsRecordsFromFrame` for a non-delegate frame,
+    keeping the token-category preservation. Pinned in `data-record-lock.test.ts`: a read-only and a written record
+    accept at the covenant and are refused at a plain lock (either side) and at a node/chunk covenant of the same
+    contract. This moved every stateful per-call master's bytes, so 19 master fixtures that placed their data record at
+    an arbitrary lock were repointed at `stateRecordLockingBytecode(category)` (shared `dataRecordLock` helper in
+    `validator-input.ts`), 2 SDK fixtures (`hostile/record-census`, `records/state-record-composition`), and the
+    genesis derivation probe (`deploy/genesis.ts`, now at the covenant, matching the real deployment).
+    - A delegate frame's records belong to its proxy, whose hop lays them out, so the pin is skipped there and the
+      lock is the proxy/composer lane's to guard. **Wall** (`ahead/job-threads-and-refusals.test.ts`, two tests
+      repinned): the proxy hop's exploratory derivation of a *reverting* proxied composition does not place the
+      proxied data record where the master's covenant pin accepts it, so a reverting proxied call now stalls at the
+      record close rather than at its later call. The refusal is still caught and attributed to the entry; valid
+      (non-reverting) proxied data-record compositions settle (the SDK proxy suites are green). The proxy/composer
+      lane should place the proxied record at the covenant in that derivation to restore the call-site stall.
+  - **A local storage pointer to a mapped struct is served** (this round): `Account storage a = accounts[o];
+    a.parts[k] = v` used to fail to compile (`Undefined mapping 'accounts'`) because the AstBuilder substituted the
+    alias to the container name but lowered the write through the plain struct-field-mapping path, dropping the outer
+    key. The mapped-struct-value write path now also fires when the base is a storage alias whose container is a
+    mapping of struct-with-mapping, so it lands on the same flattened `accounts__parts` keyed by the outer key then
+    the field key as the direct form. Machine accept and refuse in `struct-mapping-write.test.ts`.
+  - **A struct value held in a struct-held mapping is pinned** (this round): `acc.positions[k].a = v`, where
+    `positions` is `mapping(address => Pos)`, reads the node's `Pos`, sets one field and writes the whole struct
+    back; the node tail is the struct value's blob. Accepted on the machine with the set field and the kept field
+    carrying what the body computed, refused otherwise, for a state struct and for a mapped struct
+    (`accounts[o].positions[k].a = v`, keyed by the outer key).
 - [x] R7 Value pin (the spec's D2 rule) for mapping nodes and chunks, which carried none (T39). Every record a
   segment declares, a mapping node and a chunk included, keeps at least its value whether or not its frame sends,
   since spec 4b pays a send from the contract's containers: where a master settles alone (log row "a record a master
@@ -1145,10 +1201,23 @@ risk. Take the slices in order, each with its own tests.
     two roots name one input and that the machine accepts, beside the faithful composition.
   - [x] T33: a witness block the master and the validator would read differently (trailing items, non-minimal pushes).
   - [x] T34: a `STATIC` callee that writes a record or emits.
-  - [x] T35: a value send to a contract made as a plain output. **Ruled unreachable, recorded here (2026-09-28)**:
-    the compiler refuses a value send, so no compiled master carries one and there is no spend to mutate. The
-    refusal is asserted in `edges/refused-contract-shapes.test.ts`, which is the criterion's answer rather than a
-    missing test.
+  - [x] T35: a value send to a contract made as a plain output. **Closed 2026-10-01** by
+    `hostile/contract-payment-plain-output.test.ts`. The 2026-09-28 ruling (the compiler refuses a value send, so no
+    master carries one) is withdrawn: value sends have landed since, and a body paying a lock that is not a user's
+    makes a `CALL` into the recipient's `receive()` carrying the amount (spec 4b). The payment is composed through the
+    shipped path and accepted at every input, and each case changes one thing and names the input that refuses:
+    (a) a plain output at the recipient's address listed as a send, with the recipient's frame and the call record
+    left out, is refused by the payer, with its validator or standing alone; (b) the call record kept and the
+    recipient's master left out is refused by the payer and the validator, also with the value paid into the
+    recipient's container and no send listed; (c) a send listed to a P2SH32 lock the body pays through a call (the
+    recipient's container, or a second output at its address) is refused by the payer; (d) another contract's
+    `receive()` taking the payment the body named is refused by the validator, another payable body taking it by
+    the payer and the validator, and a container short of the value by the recipient. **Found and fixed:** a payer
+    whose frame claimed to stand alone (`validatorRef` the sentinel) while it made the value call was accepted by its
+    own master. N1 was checked only against the head's call count, which does not cover a value call, so no
+    validator bound the callee (V5, V11). The receive call site now requires the frame to name a validator
+    (`requiresValidator` in `callSiteCheckScript`); `master/value-receive-call.test.ts` pins the master's refusal
+    beside the composed control, and both refusal cases fail with the check off.
   - [x] T36: a master whose `self` is not `addrV` of its category (V11), and a fake contract presenting another
     contract's address. **Ticked 2026-09-28** (`hostile/address-category-binding.test.ts`, 6 cases): on chain, a
     reference composition is accepted and the same bytes with the root frame presenting the *other* contract's own

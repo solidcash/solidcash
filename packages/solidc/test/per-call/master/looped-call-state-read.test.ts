@@ -10,7 +10,9 @@ import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory, validatorSpend,
+} from './validator-input.js';
 
 /**
  * A body whose calls repeat reads and writes its own record, and the segment each read resolves against is the
@@ -173,11 +175,12 @@ function build(options: Options): VmProgram {
   sourceOutputs[CALLER_INDEX] = callerOutput;
 
   // The record sits right after its master, which is where the body reads it from.
+  const recordLock = dataRecordLock(CATEGORY_CALLER);
   const spent = {
-    lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', commitment(BASE)),
+    lockingBytecode: recordLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', commitment(BASE)),
   };
   const written = {
-    lockingBytecode: USER_LOCK,
+    lockingBytecode: recordLock,
     valueSatoshis: VALUE,
     token: token(CATEGORY_CALLER, 'mutable', commitment(BASE + BigInt(options.trips))),
   };

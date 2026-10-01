@@ -16,7 +16,7 @@ import {
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
+import { REAL_VALIDATOR_PROGRAM, dataRecordLock, seededCategory } from './validator-input.js';
 
 /**
  * A per-call master whose entry inserts a mapping target the live list does not hold, beside a dynamic append.
@@ -32,7 +32,7 @@ const CATEGORY = seededCategory('insert beside append');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 /** The record's lock: the entry only requires the input and the output to agree, so any lock serves. */
-const STATE_LOCK = encodeLockingBytecodeP2sh32(hash256(new Uint8Array([9, 9, 9])));
+const STATE_LOCK = dataRecordLock(CATEGORY);
 const TO = new Uint8Array(20).fill(0x33);
 const IMPLEMENTATION = new Uint8Array(20).fill(0x55);
 const AMOUNT = 42;
@@ -157,7 +157,8 @@ function evaluate(shape: Shape, options: SpendOptions = {}): { accepted: boolean
     { in: STATE_INDEX, out: STATE_INDEX, viewIn: shape.stateIn, viewOut: shape.stateOut },
     { in: PRED_INDEX, out: PRED_INDEX, viewIn: HEAD_BEFORE, viewOut: HEAD_AFTER },
     { in: 0xffff, out: CREATED_INDEX, viewIn: EMPTY, viewOut: NODE_COMMITMENT },
-    { in: CHUNK_INDEX, out: CHUNK_INDEX, viewIn: shape.chunkIn, viewOut: shape.chunkOut },
+    // A run the deployment holds nothing of is created: its chunk names no input.
+    { in: shape.holdsRun ? CHUNK_INDEX : 0xffff, out: CHUNK_INDEX, viewIn: shape.chunkIn, viewOut: shape.chunkOut },
   ];
   const block: WitnessBlock = {
     kind: 0,
@@ -354,7 +355,7 @@ const CREATED_HEAD_RECORDS: RecordEntry[] = [
   { in: STATE_INDEX, out: STATE_INDEX, viewIn: STATE_EMPTY, viewOut: STATE_HELD },
   { in: 0xffff, out: PRED_INDEX, viewIn: EMPTY, viewOut: HEAD_AFTER_PADDED },
   { in: 0xffff, out: CREATED_INDEX, viewIn: EMPTY, viewOut: NODE_COMMITMENT },
-  { in: CHUNK_INDEX, out: CHUNK_INDEX, viewIn: EMPTY, viewOut: CHUNK_HELD },
+  { in: 0xffff, out: CHUNK_INDEX, viewIn: EMPTY, viewOut: CHUNK_HELD },
 ];
 
 /** The created-head segment with the head's record changed by `change`. */

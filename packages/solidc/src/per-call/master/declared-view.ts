@@ -112,6 +112,86 @@ export function declaredRecordOrdinalIndexScript(options: DeclaredRecordOrdinalO
   });
 }
 
+/**
+ * Builds the script that leaves every field of the record at a given ordinal in the running segment.
+ *
+ * Entry `[..., ordinal]`, exit `[..., in, out, viewIn, viewOut]`. Both indices are numbers, the no-index sentinel
+ * reading negative; `viewIn` is empty for a record the segment creates and `viewOut` for one it consumes. A body uses
+ * it to hold a run of records to what its code consumes, keeps and creates; an ordinal past the segment's declared
+ * count fails the read.
+ */
+export function declaredRecordOrdinalFieldsScript(options: DeclaredViewCounts): Uint8Array {
+  return buildOrdinalWalk({ ...options, side: 'in' }, ({ op, raw }) => {
+    raw(takeFixedWidthField(2)); // in
+    op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP);
+    raw(takeFixedWidthField(2)); // out
+    op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP);
+    raw(takeLengthPrefixedField32()); // viewIn
+    raw(takeLengthPrefixedField32()); // viewOut
+    op(Opcodes.OP_DROP); // [count, ordinal, in, out, viewIn, viewOut]
+    op(Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK);
+    op(Opcodes.OP_2DROP); // count, ordinal
+    op(Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK);
+  });
+}
+
+/**
+ * Builds the script that leaves how many records the running segment declares.
+ *
+ * Entry `[...]` (or `[..., segmentIndex]` for run-time counts), exit `[..., count]`. A body that accounts for every
+ * record past a position holds the segment to that many, so no record it did not account for is declared beside
+ * them.
+ */
+export function declaredSegmentRecordCountScript(options: DeclaredViewCounts): Uint8Array {
+  const bytes: number[] = [];
+  const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
+  const raw = (script: Uint8Array): void => { bytes.push(...script); };
+  const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
+  const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
+
+  if (options.runtimeCounts === true) op(Opcodes.OP_TOALTSTACK); // the segment index, taken as the walk reaches it
+  raw(readOwnWitnessBlockScript());
+  raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
+  skipField(takeLengthPrefixedField()); // sender
+  skipField(takeLengthPrefixedField()); // self
+  skipField(takeFixedWidthField(8)); // value
+  skipField(takeLengthPrefixedField32()); // retval
+  stepDeclaredCallRecords(bytes, options, op, raw, num);
+  skipField(takeFixedWidthField(2)); // declared segment count
+  stepDeclaredSegments(options, op, raw, num);
+  raw(takeFixedWidthField(2)); // [countBytes, rest]
+  op(Opcodes.OP_DROP, Opcodes.OP_BIN2NUM);
+  return new Uint8Array(bytes);
+}
+
+/**
+ * Builds the script that leaves whether a validator settles the frame's records beside another master of its
+ * contract: the block references a validator and another input holds the category's minting token.
+ *
+ * Entry `[...]`, exit `[..., flag]`. It is the condition under which `declaredRecordsKeptScript` admits a record
+ * another frame created: V7 then holds a created record's first view to nothing, so a declared view of such a
+ * record is one an earlier frame wrote. A master settling alone holds no created view to anything, so without the
+ * flag a declared view that no input carries is the declaration's word alone.
+ */
+export function validatorSettledScript(): Uint8Array {
+  const bytes: number[] = [];
+  const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
+  const raw = (script: Uint8Array): void => { bytes.push(...script); };
+  const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
+
+  raw(readOwnWitnessBlockScript());
+  num(WITNESS_BLOCK_HEADER_LENGTH - 2); op(Opcodes.OP_SPLIT, Opcodes.OP_NIP);
+  num(2); op(Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+  raw(encodeDataPush(INDEX_NONE_BYTES)); op(Opcodes.OP_EQUAL, Opcodes.OP_NOT);
+  op(Opcodes.OP_IF, Opcodes.OP_0, Opcodes.OP_0, Opcodes.OP_BEGIN);
+  op(Opcodes.OP_DUP, Opcodes.OP_UTXOTOKENCATEGORY, Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY, Opcodes.OP_EQUAL);
+  op(Opcodes.OP_ROT, Opcodes.OP_ADD, Opcodes.OP_SWAP, Opcodes.OP_1ADD);
+  op(Opcodes.OP_DUP, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_UNTIL);
+  op(Opcodes.OP_DROP); num(2); op(Opcodes.OP_GREATERTHANOREQUAL);
+  op(Opcodes.OP_ELSE, Opcodes.OP_0, Opcodes.OP_ENDIF);
+  return new Uint8Array(bytes);
+}
+
 interface OrdinalWalkEmitters {
   readonly op: (...opcodes: number[]) => void;
   readonly raw: (script: Uint8Array) => void;

@@ -314,14 +314,14 @@ describe('a stateful composition whose record sits away from its master', () => 
   });
 
   it('refuses the record\'s spend under a lock that does not pin the category', () => {
-    // The composed spend is the covenant's: the same unlocking on a plain user lock is refused, which is what
-    // makes the accept above the covenant's rule and not an input the machine never evaluated.
+    // The master pins the record to the data-NFT covenant on both sides (T46), so a record at a plain user lock is
+    // refused by the master itself: it fills no witness closing the segment, which the derivation reports as a stall
+    // (the record's own covenant would refuse the spend too).
     const { plan, artifacts: compiled } = buildComposition({ recordLockingBytecode: USER_LOCK });
-    const { host, draft } = createComposedDerivationHost({
+    const composed = createComposedDerivationHost({
       vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
-    deriveDepthFirst(ROOT, host);
-    expect(masterVerdict(draft).objection ?? 'accepted').toBe('accepted');
-    expect(recordVerdict(draft).accepted).toBe(false);
+    expect(masterVerdict(composed.draft).accepted).toBe(false);
+    expect(() => deriveDepthFirst(ROOT, composed.host)).toThrow(/PER_CALL_DERIVATION_STALLED/);
   });
 
   it('refuses the same transaction when the segments declare no record', () => {

@@ -11,7 +11,8 @@ import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
-  REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorFacetPlacements, validatorSpend,
+  REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory, validatorFacetPlacements,
+  validatorSpend,
 } from './validator-input.js';
 
 /**
@@ -160,14 +161,26 @@ function verdicts(written: bigint, split: boolean): Record<string, boolean> {
   ];
   const sourceOutputs: VmProgram['sourceOutputs'] = [
     ...masters,
-    { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n, token: token(CATEGORY_COUNTER, 'mutable', counterView(5n)) },
-    { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n, token: token(CATEGORY_POKER, 'mutable', POKER_VIEW) },
+    {
+      lockingBytecode: dataRecordLock(CATEGORY_COUNTER), valueSatoshis: 20_000n,
+      token: token(CATEGORY_COUNTER, 'mutable', counterView(5n)),
+    },
+    {
+      lockingBytecode: dataRecordLock(CATEGORY_POKER), valueSatoshis: 20_000n,
+      token: token(CATEGORY_POKER, 'mutable', POKER_VIEW),
+    },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const outputs: VmOutput[] = [
     ...masters,
-    { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n, token: token(CATEGORY_COUNTER, 'mutable', counterView(written)) },
-    { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n, token: token(CATEGORY_POKER, 'mutable', POKER_VIEW) },
+    {
+      lockingBytecode: dataRecordLock(CATEGORY_COUNTER), valueSatoshis: 20_000n,
+      token: token(CATEGORY_COUNTER, 'mutable', counterView(written)),
+    },
+    {
+      lockingBytecode: dataRecordLock(CATEGORY_POKER), valueSatoshis: 20_000n,
+      token: token(CATEGORY_POKER, 'mutable', POKER_VIEW),
+    },
     { lockingBytecode: USER_LOCK, valueSatoshis: 90_000n },
   ];
   const transaction: VmTransaction = { version: 2, inputs, outputs, locktime: 0 };

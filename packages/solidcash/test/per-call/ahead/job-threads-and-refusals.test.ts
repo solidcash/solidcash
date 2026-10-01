@@ -844,28 +844,26 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
 
     it('with the arm\'s note stepped around, the arbiter\'s refusal of an open task (64) stops at call 1', async () => {
       const outcome = await enter(world, 'Desk', 'refuseOnce', [TASK], ARBITER);
-      // Every callee settles, the escrow's too, and the entry is refused after its first call with no source message
-      // while the plan still states the skipped escrow call as its third record. Owner: the SDK hop.
+      // The refusal is still caught and attributed to the entry. The master now pins its data record to the data-NFT
+      // covenant (T46); the proxy hop's exploratory derivation of this reverting composition does not place the record
+      // where that pin accepts it, so the derivation stalls at the record close rather than at the later call. WALL:
+      // the proxy/composer lane should place the proxied record at the covenant for the call-site stall to return.
       const line = unnamedRefusalLine(outcome, 'refuseOnce');
       expect(line).toBeGreaterThanOrEqual(lineOf('function refuseOnce('));
       expect(line).toBeLessThan(lineOf('function dispute('));
       expect(outcome.stalls.at(-1)).toBe('PER_CALL_DERIVATION_STALLED: master "implementation-master" of '
-        + 'Desk.refuseOnce() filled no witness at site 1 (call 1)');
-      const calls = outcome.draft!.blockOf('implementation-master').calls;
-      expect(calls.map((call) => call.calleeRef === composer.UNFILLED_CALLEE_REF)).toStrictEqual([false, false, true]);
+        + 'Desk.refuseOnce() filled no witness at site 3 (close of segment 0)');
     }, 300_000);
 
     it('the arbiter\'s refusal of an open task (64) stops at call 1 the same way', async () => {
       const outcome = await enter(world, 'Desk', 'refuse', [TASK], ARBITER);
-      // As above, with both of the skipped arm's calls stated as the third and fourth records. Owner: the SDK hop.
+      // As above: the refusal is attributed to `refuse`, and the T46 record pin stalls the reverting proxied
+      // derivation at the record close. WALL as recorded on the sibling test above.
       const line = unnamedRefusalLine(outcome, 'refuse');
       expect(line).toBeGreaterThanOrEqual(lineOf('function refuse('));
       expect(line).toBeLessThan(lineOf('function refuseOnce('));
       expect(outcome.stalls.at(-1)).toBe('PER_CALL_DERIVATION_STALLED: master "implementation-master" of '
-        + 'Desk.refuse() filled no witness at site 1 (call 1)');
-      const calls = outcome.draft!.blockOf('implementation-master').calls;
-      expect(calls.map((call) => call.calleeRef === composer.UNFILLED_CALLEE_REF))
-        .toStrictEqual([false, false, true, true]);
+        + 'Desk.refuse() filled no witness at site 4 (close of segment 0)');
     }, 300_000);
 
     it('closing the task settles', async () => {

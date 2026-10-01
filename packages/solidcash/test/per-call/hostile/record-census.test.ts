@@ -10,7 +10,9 @@ import { compileString } from '../../../../solidc/src/compiler.js';
 import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from '../frames/caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory,
+} from '../../../../solidc/test/per-call/master/validator-input.js';
 
 /**
  * The census a standalone master runs over the transaction's own state UTXOs.
@@ -30,7 +32,7 @@ const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 /** A state record's lock: the entry only requires input and output to agree, so any lock serves. */
-const STATE_LOCK = encodeLockingBytecodeP2sh32(hash256(new Uint8Array([9, 9, 9])));
+const STATE_LOCK = dataRecordLock(CATEGORY);
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Counter {'

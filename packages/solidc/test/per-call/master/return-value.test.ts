@@ -14,8 +14,8 @@ import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
-  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
-  validatorSpend,
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, dataRecordLock, seededCategory,
+  validatorFacetPlacements, validatorSpend,
 } from './validator-input.js';
 
 /**
@@ -331,7 +331,7 @@ const VIEW_SOURCE = 'pragma solidcash ^0.13.0;'
 const VIEW_CATEGORY = seededCategory('stateful view return');
 const VIEW_ADDRESS = validatorAddress(VIEW_CATEGORY, VALIDATOR_PROGRAM);
 /** A state record's lock: the entry only requires input and output to agree, so any lock serves. */
-const STATE_LOCK = encodeLockingBytecodeP2sh32(hash256(new Uint8Array([9, 9, 9])));
+const VIEW_STATE_LOCK = dataRecordLock(VIEW_CATEGORY);
 const VIEW_INDEX = { master: 0, state: 1, user: 2 } as const;
 
 const viewArtifact = compileString(VIEW_SOURCE, { composition: 'per-call' });
@@ -365,7 +365,7 @@ function acceptedView(retval: Uint8Array): boolean {
   const masterValue = 20_000n;
   const sourceOutputs = [
     { lockingBytecode: viewLock, valueSatoshis: masterValue, token: token(VIEW_CATEGORY, 'minting') },
-    { lockingBytecode: STATE_LOCK, valueSatoshis: masterValue, token: token(VIEW_CATEGORY, 'mutable', VIEW_COMMITMENT) },
+    { lockingBytecode: VIEW_STATE_LOCK, valueSatoshis: masterValue, token: token(VIEW_CATEGORY, 'mutable', VIEW_COMMITMENT) },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const transaction = {
@@ -419,6 +419,7 @@ const WRITE_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 const WRITE_CATEGORY = seededCategory('stateful write return');
+const WRITE_STATE_LOCK = dataRecordLock(WRITE_CATEGORY);
 const WRITE_ADDRESS = validatorAddress(WRITE_CATEGORY, VALIDATOR_PROGRAM);
 const writeArtifact = compileString(WRITE_SOURCE, { composition: 'per-call' });
 const writeProgram = fillPlaceholders(scriptBytes(writeArtifact), writeArtifact.composition!.placeholders, {
@@ -445,7 +446,7 @@ function acceptedWrite(retval: Uint8Array, outCommitment: Uint8Array = WRITE_OUT
   const sourceOutputs = [
     { lockingBytecode: writeLock, valueSatoshis: masterValue, token: token(WRITE_CATEGORY, 'minting') },
     {
-      lockingBytecode: STATE_LOCK, valueSatoshis: masterValue,
+      lockingBytecode: WRITE_STATE_LOCK, valueSatoshis: masterValue,
       token: token(WRITE_CATEGORY, 'mutable', WRITE_IN_COMMITMENT),
     },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
@@ -471,7 +472,7 @@ function acceptedWrite(retval: Uint8Array, outCommitment: Uint8Array = WRITE_OUT
     outputs: [
       { lockingBytecode: writeLock, valueSatoshis: masterValue, token: token(WRITE_CATEGORY, 'minting') },
       {
-        lockingBytecode: STATE_LOCK, valueSatoshis: masterValue,
+        lockingBytecode: WRITE_STATE_LOCK, valueSatoshis: masterValue,
         token: token(WRITE_CATEGORY, 'mutable', outCommitment),
       },
       { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },

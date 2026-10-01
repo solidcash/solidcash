@@ -86,7 +86,7 @@ import {
 } from '../composer/mapping-plan.js';
 import { readComputedDeclaration, type DeclarationReading } from './declaration.js';
 import { deployMaster, type DeployedMaster } from './material.js';
-import { chunkRecordLockingBytecode, entryRecordLockingBytecode } from './records.js';
+import { chunkRecordLockingBytecode, entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 
 /** Raised when a per-call genesis cannot be derived from the artifact. */
 export class PerCallGenesisError extends Error {
@@ -1220,14 +1220,17 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
   outputs[layout.master] = masterOutput;
   sourceOutputs[layout.master] = masterOutput;
 
+  // The data record sits at the data-NFT covenant, which the master pins on both sides (the deployment mints it
+  // there too); a probe placing it at the sender's lock no longer runs the constructor past that pin.
+  const recordLock = stateRecordLockingBytecode(binToHex(category));
   layout.records.forEach((index, nftIndex) => {
     inputs[index] = plainInput(index);
     outputs[index] = {
-      lockingBytecode: userLock, valueSatoshis: 20_000n,
+      lockingBytecode: recordLock, valueSatoshis: 20_000n,
       token: { category, amount: 0n, nft: { capability: 'mutable', commitment: options.viewOuts[nftIndex]! } },
     };
     sourceOutputs[index] = {
-      lockingBytecode: userLock, valueSatoshis: 20_000n,
+      lockingBytecode: recordLock, valueSatoshis: 20_000n,
       token: { category, amount: 0n, nft: { capability: 'mutable', commitment: options.preState[nftIndex]! } },
     };
   });

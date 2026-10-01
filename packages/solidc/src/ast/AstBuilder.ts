@@ -5749,11 +5749,22 @@ export default class AstBuilder
     // Mapping-of-flattened-struct write: `providers[k].data[k2] op= v` / `providers[k].data[k2].valid op= v` /
     // `providers[k].scalar op= v` -> the flattened nested state mapping `providers__<field>` with all keys and a
     // trailing scalar field. All the index keys index the flattened nested mapping (outer key + field-mapping key).
-    if (!isThis && !isIncDec && fieldName && this.mappingStructValueVars.has(rawName)
-      && this.mappingStructValueVars.get(rawName)!.fields.some((f) => f.name === fieldName)) {
-      const flatName = `${rawName}__${fieldName}`;
+    // A storage-pointer local to a mapped-struct element (`Account storage a = accounts[o]; a.parts[k] = v`) writes
+    // the same flattened collection as the direct `accounts[o].parts[k]`: the container is the alias's, and its
+    // outer keys lead the field's own. Routing it here, not through the generic struct-field-mapping path below,
+    // keeps the mapping-of-struct lowering (`accounts__parts` keyed by the outer key then the field key).
+    const valueStructAlias = !isThis ? this.storageAliases.get(rawName) : undefined;
+    const valueStructContainer = this.mappingStructValueVars.has(rawName) ? rawName
+      : valueStructAlias && this.mappingStructValueVars.has(valueStructAlias.container)
+        ? valueStructAlias.container : undefined;
+    if (!isThis && !isIncDec && fieldName && valueStructContainer
+      && this.mappingStructValueVars.get(valueStructContainer)!.fields.some((f) => f.name === fieldName)) {
+      const flatName = `${valueStructContainer}__${fieldName}`;
+      const prefixKeys = valueStructContainer === rawName ? [] : valueStructAlias!.keys;
       const trailing = members.slice(1); // field chain into the flattened mapping's value struct
-      const keys = (): ExpressionNode[] => keyFns.map((fn) => fn());
+      const keys = (): ExpressionNode[] => [
+        ...prefixKeys.map((k) => cloneNode(k) as ExpressionNode), ...keyFns.map((fn) => fn()),
+      ];
       if (trailing.length <= 1) {
         const read = (): ExpressionNode => {
           const acc = new MappingAccessNode(flatName, keys());

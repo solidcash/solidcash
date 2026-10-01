@@ -14,7 +14,7 @@ import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stat
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
+import { REAL_VALIDATOR_PROGRAM, dataRecordLock, seededCategory } from './validator-input.js';
 
 /**
  * A per-call master whose entry writes a mapping keyed by a value the frame already holds.
@@ -292,6 +292,8 @@ const stateCommitment = (value: number): Uint8Array => new Uint8Array(Buffer.fro
   buildPushdataCommitment(STATE_ARTIFACT.stateLayout!, { next: { value: BigInt(value) } }, 0), 'hex',
 ));
 const STATE_RECORD = stateCommitment(STATE_FIELD_VALUE);
+/** The data record sits at the data-NFT covenant; its mapping nodes sit at the collection covenant. */
+const STATE_RECORD_LOCK = dataRecordLock(CATEGORY);
 
 const STATE_MASTER_INDEX = 0;
 const STATE_USER_INDEX = 1;
@@ -362,7 +364,7 @@ function evaluateStateKey(options: { readonly recordField?: number } = {}): {
     outputs: [
       { lockingBytecode: STATE_MASTER_LOCK, valueSatoshis: 20_000n, token: token('minting', EMPTY) },
       { lockingBytecode: STATE_ENTRY_LOCK, valueSatoshis: 20_000n, token: token('mutable', nodeCommitment) },
-      { lockingBytecode: STATE_ENTRY_LOCK, valueSatoshis: 20_000n, token: token('mutable', record) },
+      { lockingBytecode: STATE_RECORD_LOCK, valueSatoshis: 20_000n, token: token('mutable', record) },
       { lockingBytecode: STATE_ENTRY_LOCK, valueSatoshis: 20_000n, token: token('mutable', headAfter) },
     ],
     locktime: 0,
@@ -370,7 +372,7 @@ function evaluateStateKey(options: { readonly recordField?: number } = {}): {
   const sourceOutputs = [
     { lockingBytecode: STATE_MASTER_LOCK, valueSatoshis: 20_000n, token: token('minting', EMPTY) },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
-    { lockingBytecode: STATE_ENTRY_LOCK, valueSatoshis: 20_000n, token: token('mutable', record) },
+    { lockingBytecode: STATE_RECORD_LOCK, valueSatoshis: 20_000n, token: token('mutable', record) },
     { lockingBytecode: STATE_ENTRY_LOCK, valueSatoshis: 20_000n, token: token('mutable', headBefore) },
   ];
   const vm = compositionMachine();

@@ -11,7 +11,9 @@ import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory, validatorSpend,
+} from './validator-input.js';
 
 /**
  * Value received by a per-call master (spec 4b): `receive()` and payable entries, driven through the real entry.
@@ -161,7 +163,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
     master,
     ...(record === undefined
       ? []
-      : [{ lockingBytecode: USER_LOCK, valueSatoshis: MASTER_VALUE, token: token('mutable', record.committed) }]),
+      : [{ lockingBytecode: dataRecordLock(CATEGORY), valueSatoshis: MASTER_VALUE, token: token('mutable', record.committed) }]),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
     ...(spend.validator?.secondMaster === true ? [master] : []),
     ...(validator === undefined
@@ -174,7 +176,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
     master,
     ...(record === undefined
       ? []
-      : [{ lockingBytecode: USER_LOCK, valueSatoshis: MASTER_VALUE, token: token('mutable', record.written) }]),
+      : [{ lockingBytecode: dataRecordLock(CATEGORY), valueSatoshis: MASTER_VALUE, token: token('mutable', record.written) }]),
     { lockingBytecode: USER_LOCK, valueSatoshis: 1_000n },
     ...(spend.validator?.secondMaster === true ? [master] : []),
     ...(validator === undefined

@@ -25,6 +25,7 @@ export interface ReassertSendFinalLayoutHost {
   learnFinalizedDelegateEvents(builder: TransactionBuilder): boolean;
   relocateCollidingDerivedValueChunkRuns(builder: TransactionBuilder): void;
   bindMaterializedValueChunkWitnesses(builder: TransactionBuilder): void;
+  rebalanceFunderSurplus(): void;
   syncBuilderUnlockers(builder: TransactionBuilder): void;
 }
 
@@ -89,6 +90,10 @@ export function reassertSendFinalLayout(
   // Bind only after every final materializer has settled physical coordinates. Kernel ownership is selected
   // by compiler resource identity; the provisional base is not allowed to override an authenticated run.
   host.bindMaterializedValueChunkWitnesses(finalBuilder);
+  // Derived chunks and learned delegate events can replace funder pass-through or change cells
+  // after the earlier conservation pass. Return that newly exposed value to a funder before
+  // serializing, rather than accepting it as an accidental transaction fee.
+  host.rebalanceFunderSurplus();
   debugBal12('after-reverseSuffix');
   host.syncBuilderUnlockers(finalBuilder);
 }

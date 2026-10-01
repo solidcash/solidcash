@@ -25,7 +25,7 @@ export interface CreateSendFinalLayoutReassertHost {
     options: { rebindAbsoluteWitnesses?: boolean },
   ): unknown;
   buildConservationHost(rebalanceFunderSurplus: () => void): ReassertSendFinalConservationHost;
-  buildFinalLayoutHost(reassertFinalConservation: () => void): ReassertSendFinalLayoutHost;
+  buildFinalLayoutHost(reassertFinalConservation: () => void): Omit<ReassertSendFinalLayoutHost, 'rebalanceFunderSurplus'>;
 }
 
 /**
@@ -60,7 +60,10 @@ export function createSendFinalLayoutReassert(
       finalBuilder,
     );
   };
-  const finalLayoutHost = host.buildFinalLayoutHost(reassertFinalConservation);
+  const finalLayoutHost: ReassertSendFinalLayoutHost = {
+    ...host.buildFinalLayoutHost(reassertFinalConservation),
+    rebalanceFunderSurplus: rebalanceFunderSurplusCb,
+  };
   return (): void => {
     reassertSendFinalLayout(finalLayoutHost, finalBuilder);
   };

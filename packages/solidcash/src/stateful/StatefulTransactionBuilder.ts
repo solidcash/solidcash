@@ -2595,7 +2595,7 @@ export class StatefulTransactionBuilder {
 
   private _reassertSendFinalLayoutHost(
     reassertFinalConservation: () => void,
-  ): ReassertSendFinalLayoutHost {
+  ): Omit<ReassertSendFinalLayoutHost, 'rebalanceFunderSurplus'> {
     return {
       reconcileMaterializedValueChunkWitnesses: (b) => {
         this._reconcileMaterializedValueChunkWitnesses(b);

@@ -6833,13 +6833,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }> {
     const stateLayout = this.inner.stateLayout!;
     const {
-      valueChunkWrites, persistedChunkWrite, persistWidthAtEntry,
+      persistWidthAtEntry,
     } = prepareDeriveFullValueChunkWritesImpl(stb);
 
     // Atomic participant extraction evaluates a compiler-routed delegate in a transaction-local coordinate
     // system before embedding that participant in the final graph. Temporarily rebase proxy identity witnesses.
     const {
-      probeDelegate, rebasedProbeWitnesses, restoreProbeWitnesses,
+      probeDelegate, restoreProbeWitnesses,
     } = rebaseDeriveFullProbeDelegateWitnessesImpl(stb, delegatecallInputIndex, debugTargetDerivation);
     try {
       // Wrap the entire derivation body so any error becomes AutoDerivationError.
@@ -6942,12 +6942,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           );
           let probeBuilder = phase1Front.probeBuilder;
           const transaction = phase1Front.transaction;
-          const sourceOutputs = phase1Front.sourceOutputs;
           let fullTrace = phase1Front.fullTrace;
           const bMasterIdx = phase1Front.bMasterIdx;
-          const entryMasterIdx = phase1Front.entryMasterIdx;
-          const builtMasterIdx = phase1Front.builtMasterIdx;
-          const builtStateMasterIdx = phase1Front.builtStateMasterIdx;
           const valueChunkWitness = phase1Front.valueChunkWitness;
 
           const phase1PostEval = deriveFullPhase1PostEvaluateDataCommitmentsImpl(
@@ -7122,12 +7118,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 nestedTrace,
                 implInputIndex,
                 proxyGroup,
-                proxyGroupIndex,
-                proxyPhysicalGroup,
                 nestedOutputBase,
                 chunkCategory,
                 valueChunkWrites,
-                attachedGroups,
                 band,
                 allChunks,
                 fallbackBase,
@@ -8103,7 +8096,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const {
       masterUtxo,
       derivationMasterUtxo,
-      allDataNftUtxos,
       filteredDataNftUtxos,
     } = resolveCreateBuilderMasterAndDataNftsImpl({
       functionName,
@@ -8134,7 +8126,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     );
     args = vmapMaterialized.args;
     finalArgs = vmapMaterialized.finalArgs;
-    let directPredicateState: Record<string, unknown> = vmapMaterialized.directPredicateState;
 
     const earlyArgsHost: MaterializeCreateBuilderEarlyArgsHost = {
       getExternalTargetEntriesByInterface: (interfaceName) =>
@@ -10433,7 +10424,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
     );
     entryNfts = entryDeleteFinalized.entryNfts;
-    const aliasSkipSlots = entryDeleteFinalized.aliasSkipSlots;
     const entryDeleteSlots = entryDeleteFinalized.entryDeleteSlots;
     const condSoftDeleteSlots = entryDeleteFinalized.condSoftDeleteSlots;
     const entryNftLockingBytecodes = entryDeleteFinalized.entryNftLockingBytecodes;
@@ -10735,7 +10725,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           collection,
           list,
           entryAddr,
-          entries,
           argOf,
           visibleInputs,
           conditionArgs,
@@ -10744,13 +10733,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           selectedSourceValues,
           keyTypes,
           encKey,
-          fixedSources,
           keyExpressions,
-          varyingKeyIndices,
           varyingKeyIndexSet,
           fixedKeyIndices,
           fixedBins,
-          varyType,
           runtimeFiltered,
           runtimeInputStart,
           runtimeJournalIntentStart,
@@ -10794,11 +10780,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         keysArr = keyTopology.keysArr;
         loopPredicateState = keyTopology.loopPredicateState;
         const counterSpec = keyTopology.counterSpec;
-        const resolveCounterStep = keyTopology.resolveCounterStep;
         const occurrenceOf = keyTopology.occurrenceOf;
         const valueTrace = keyTopology.valueTrace;
-        const keyExpressionBindings = keyTopology.keyExpressionBindings;
-        const keyBinsFor = keyTopology.keyBinsFor;
         const slotForKey = keyTopology.slotForKey;
         const isDelete = keyTopology.isDelete;
         // upsert-loop-key-topology-complete (size-guarded; value materialization follows)
@@ -12499,7 +12482,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
     );
     const rootProducerPath = externalCallsOrchestrated.rootProducerPath;
-    let externalCalls = externalCallsOrchestrated.externalCalls;
     let externalCallUtxoGroups = externalCallsOrchestrated.externalCallUtxoGroups;
     let allGroupEcSlots = externalCallsOrchestrated.allGroupEcSlots;
     let allGroupParentIndices = externalCallsOrchestrated.allGroupParentIndices;
@@ -12510,7 +12492,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const markSharedFunder = externalCallsOrchestrated.markSharedFunder;
     const identityAnchors = externalCallsOrchestrated.identityAnchors;
     const identityAnchorBandByAddress = externalCallsOrchestrated.identityAnchorBandByAddress;
-    const externalCallAnchorIndices = externalCallsOrchestrated.externalCallAnchorIndices;
     finalArgs = externalCallsOrchestrated.finalArgs;
     const pendingAnchorFills = externalCallsOrchestrated.pendingAnchorFills;
     const pendingExternalCallInputFills = externalCallsOrchestrated.pendingExternalCallInputFills;
@@ -12533,7 +12514,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         proxyRoute: false,
       });
     }
-    const topLevelReturnWitnessPlan = externalCallsOrchestrated.topLevelReturnWitnessPlan;
     const topLevelReturnWitnessGroups = externalCallsOrchestrated.topLevelReturnWitnessGroups;
     externalOutStateUtxoGroups = externalCallsOrchestrated.externalOutStateUtxoGroups;
     outStateInputCount = externalCallsOrchestrated.outStateInputCount;
@@ -12564,11 +12544,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     sharedFunderPool = lowLevelNestedCaches.sharedFunderPool;
     sharedFunderSnapshot = lowLevelNestedCaches.sharedFunderSnapshot;
     const nestedProxyReadCache = lowLevelNestedCaches.nestedProxyReadCache;
-    const nestedFullStateCache = lowLevelNestedCaches.nestedFullStateCache;
-    const nestedMasterStateCache = lowLevelNestedCaches.nestedMasterStateCache;
-    const nestedIdentityCache = lowLevelNestedCaches.nestedIdentityCache;
-    const resolvedNestedIdentityCache = lowLevelNestedCaches.resolvedNestedIdentityCache;
-    const nestedAddressUtxoCache = lowLevelNestedCaches.nestedAddressUtxoCache;
     const nestedSortedListCache = lowLevelNestedCaches.nestedSortedListCache;
     const nestedAddressUtxos = lowLevelNestedCaches.nestedAddressUtxos;
     const nestedIdentity = lowLevelNestedCaches.nestedIdentity;
@@ -12601,7 +12576,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       source: Parameters<typeof lowLevelNestedCaches.preparedChildProducerPath>[1],
     ) => lowLevelNestedCaches.preparedChildProducerPath(preparedAtomicNodes?.[parentIndex], source);
     let nestedFunderIndex = lowLevelNestedCaches.nestedFunderIndex;
-    type PreparedAtomicNode = NonNullable<typeof preparedAtomicNodes>[number];
     // low-level-nested-caches-complete (size-guarded end marker for prepareCreateBuilderLowLevelNestedCaches)
 
     if (lowLevelCalls && lowLevelCalls.length > 0) {

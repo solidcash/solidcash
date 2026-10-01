@@ -12,7 +12,8 @@ import {
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { getEntryNftLockingBytecode } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { LEGACY_JOB_EVENTS_COLLECTION_ALIASES } from './legacy-planning-heuristics.js';
+import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
+import { legacyNamedJobEventCollectionFallback } from './legacy-planning-heuristics.js';
 import {
   resolveChunkableEntryCollection,
   resolvePublishedEntryBlockOffset,
@@ -84,19 +85,23 @@ export function applyDeriveFullNestedEntryPins(
     const entryCollections = nestedEntryAbi
       ? chunkableValueWriteCollections(llc, nestedEntryAbi)
       : [];
+    const convention = host.inner.artifact.messageBus?.convention
+      ?? (nestedEntryAbi as MessageBusRuntimeAbiFunction | undefined)
+        ?.messageBusConvention
+      ?? llc.logicalArtifact?.messageBus?.convention
+      ?? llc.externalContract?.inner.artifact.messageBus?.convention;
+    const legacyGroups = [llc, proxyGroup].filter((group): group is ExternalCallUtxoGroup => group !== undefined);
     const entryCollection = resolveChunkableEntryCollection({
       writes: valueChunkWrites,
       categoryId: chunkCategory,
       publishedCollections: entryCollections,
       // The enclosing dispatcher owns the convention. A legacy or descriptor-free child nested below
       // a kernel route must not re-enable the compatibility fallback.
-      convention: host.inner.artifact.messageBus?.convention
-      ?? (nestedEntryAbi as MessageBusRuntimeAbiFunction | undefined)
-        ?.messageBusConvention
-      ?? llc.logicalArtifact?.messageBus?.convention
-      ?? llc.externalContract?.inner.artifact.messageBus?.convention,
-      // Compatibility for descriptor-free legacy artifacts only.
-      legacyFallback: LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0],
+      convention,
+      // Compatibility for a descriptor-free historical publisher only.
+      legacyFallback: legacyNamedJobEventCollectionFallback(
+        legacyGroups, permitsLegacyNamedValueChunkFallback(legacyGroups, convention),
+      ),
     });
     const blockSize = nestedEntryAbi?.blockLayout?.blockSize
     ?? llc.blockLayout?.blockSize

@@ -31,8 +31,7 @@ import {
   type KernelEntryJournalSettlementOutputPlanEntry,
 } from './KernelEntryJournal.js';
 import {
-  LEGACY_JOB_EVENTS_COLLECTION_ALIASES,
-  legacyGroupLooksLikePublishJobEvent,
+  legacyNamedJobEventCollectionFallback,
 } from './legacy-planning-heuristics.js';
 import type { ValueChunkWriteDescriptor, ValueChunkWriteStagingSession } from './value-chunk-persist.js';
 
@@ -224,11 +223,11 @@ export function selectProtectedLoopEntryCollections(
     if (declared.length > 0) return { status: 'exact', collections: declared };
     // Descriptor-free legacy artifacts retain their historical adapter, but unrelated or empty group sets
     // cannot claim this application's collection merely because the owner uses legacy-unroll.
-    const legacyPublisher = permitsLegacyNamedValueChunkFallback(groups, ownerConvention)
-      && groups.some(legacyGroupLooksLikePublishJobEvent);
     return {
       status: 'absent',
-      collections: legacyPublisher ? [LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0]] : [],
+      collections: [legacyNamedJobEventCollectionFallback(
+        groups, permitsLegacyNamedValueChunkFallback(groups, ownerConvention),
+      )].filter((collection): collection is string => collection !== undefined),
     };
   }
   return {

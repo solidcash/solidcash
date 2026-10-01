@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   legacyInitialValueChunkWrite,
+  legacyNamedJobEventCollectionFallback,
   legacyIsJobEventsCollection,
   legacyIsPublishJobEventName,
   legacyScalarNameHints,
@@ -63,5 +64,15 @@ describe('legacy planning heuristics isolation (item 1)', () => {
       functionName: 'publishJobPost', plannedEntryInserts: [{ blockSlot: 1 }],
     }], [])).toBe(true);
     expect(legacyInitialValueChunkWrite([], [{ functionName: 'updateRecord' }])).toBe(false);
+  });
+
+  it('requires a matching historical publisher before selecting the legacy collection fallback', () => {
+    expect(legacyNamedJobEventCollectionFallback([], true)).toBeUndefined();
+    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'appendNotice' }], true))
+      .toBeUndefined();
+    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }], true))
+      .toBe('jobEvents');
+    expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }], false))
+      .toBeUndefined();
   });
 });

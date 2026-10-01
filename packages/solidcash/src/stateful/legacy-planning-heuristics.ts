@@ -69,6 +69,15 @@ export const LEGACY_JOB_EVENTS_COLLECTION_ALIASES: readonly string[] = Object.fr
   'jobEvents:mapping(uint256=>JobEventData[])',
 ]);
 
+/** A descriptor-free collection fallback requires the historical publisher, not merely a legacy owner. */
+export function legacyNamedJobEventCollectionFallback(
+  groups: readonly Parameters<typeof legacyGroupLooksLikePublishJobEvent>[0][],
+  permitted: boolean,
+): string | undefined {
+  return permitted && groups.some(legacyGroupLooksLikePublishJobEvent)
+    ? LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0] : undefined;
+}
+
 /**
  * Whether leftover integer/bool fields may be seeded from function-name regexes.
  * Kernel convention always returns false — typed arg→field matching may still run.

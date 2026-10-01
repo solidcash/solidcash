@@ -11430,24 +11430,27 @@ function synthesizeMessageBusRoute(
             bigint directPushCount = 0;
             bigint directPreviousAt = -1;
             bigint directLastAt = -1;
+            bytes directFirstPayload;
             while (directAt < directUnlock.length) {
               bytes directPayload;
               bigint directNextAt;
               (directPayload, directNextAt) = __message_bus_direct_push(directUnlock, directAt);
               if (directPushCount == 0) {
-                // An unplanned nested low-level call must fail at OP_INPUTBYTECODE, even if a currently
-                // dormant source branch later becomes active. No neighbouring participant can be aliased.
-                require(int(bytes.concat(directPayload, hex"00")) == tx.inputs.length);
+                directFirstPayload = directPayload;
               }
               directPreviousAt = directLastAt;
               directLastAt = directAt;
               directPushCount = directPushCount + 1;
               directAt = directNextAt;
             }
-            // Last push is the P2SH redeem (consensus binds it to the manifest LBC); the one canonical
-            // scalar ABI argument immediately before it must equal the source-authenticated row argument.
-            require(directPushCount >= 3 && directPreviousAt >= 5
+            // Two pushes mean a scalar-only direct ABI (argument + redeem). Additional hidden witnesses are
+            // allowed only when the first is the compiler-authored call index. Bind it to the complete
+            // transaction so a dormant nested call cannot alias a neighbouring participant.
+            require(directPushCount >= 2 && directPreviousAt >= 5
               && directUnlock.slice(directPreviousAt, directLastAt) == rowArguments);
+            if (directPushCount > 2) {
+              require(int(bytes.concat(directFirstPayload, hex"00")) == tx.inputs.length);
+            }
           }` : ''}
           if (rowSignatureFrame.length > 0) {
             transactionSignatureRows = transactionSignatureRows + 1;

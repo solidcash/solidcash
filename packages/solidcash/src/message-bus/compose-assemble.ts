@@ -376,11 +376,13 @@ export async function assembleAtomicComposition(
         }
         const hiddenIndices = masterUnlocker.abiFunction.inputs.flatMap((input, index) =>
           input.name === '__internal__callInputIndex' ? [index] : []);
-        if (hiddenIndices.length !== 1 || !masterUnlocker.syncEncodedArgsFromParams) {
-          throw new Error(`messageBus: direct participant ${participant.participant} lacks one canonical call-index witness`);
+        if (hiddenIndices.length > 1 || (hiddenIndices.length === 1 && !masterUnlocker.syncEncodedArgsFromParams)) {
+          throw new Error(`messageBus: direct participant ${participant.participant} has a non-canonical call-index witness`);
         }
-        masterUnlocker.params[hiddenIndices[0]] = BigInt(graph.layout.totalSlots);
-        masterUnlocker.syncEncodedArgsFromParams(hiddenIndices);
+        if (hiddenIndices.length === 1) {
+          masterUnlocker.params[hiddenIndices[0]] = BigInt(graph.layout.totalSlots);
+          masterUnlocker.syncEncodedArgsFromParams!(hiddenIndices);
+        }
         actualSizes.push(blockSize);
         for (let localIndex = 0; localIndex < local.inputs.length; localIndex += 1) {
           registerAggregateInput(local.inputs[localIndex], participant.participant, localIndex, 'direct participant block');

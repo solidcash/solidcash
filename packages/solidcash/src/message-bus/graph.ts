@@ -2292,8 +2292,11 @@ export function planCompiledGraph(
       || directAbi.entryAccesses?.some((access) => access.keySources?.some((source) =>
         source.kind === 'msgSender' && source.senderOp === 'msg.sender'))
       || directAbi.externalCalls?.some((call) => call.addressIsMsgSender === true)
-      || directAbi.inputs.filter((input) => input.name === '__internal__callInputIndex').length !== 1
-      || directAbi.inputs[directAbi.inputs.length - 1]?.name !== '__internal__callInputIndex'
+      || directAbi.inputs.filter((input) => input.name === '__internal__callInputIndex').length > 1
+      || (directAbi.inputs.some((input) => input.name === '__internal__callInputIndex')
+        && directAbi.inputs[directAbi.inputs.length - 1]?.name !== '__internal__callInputIndex')
+      || (!directAbi.inputs.some((input) => input.name === '__internal__callInputIndex')
+        && directAbi.inputs.some((input) => input.name.startsWith('__internal__')))
       || directVisibleInputs.length !== 1 || !/^uint\d*$/.test(directVisibleInputs[0].type)
       || invocations.some((invocation) => invocation.parent === directInvocationIndex)
       || participant.outputLockingBytecode !== undefined

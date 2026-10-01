@@ -46,6 +46,14 @@ describe('kernel repeated writes beside a direct-only participant', () => {
           this.visits = this.visits + 1;
         }
       }
+      contract AlternatePayer {
+        uint256 public visits;
+        function initialize() public { require(true); }
+        function visit(uint256 key) public {
+          this.visits = this.visits + 10;
+          require(key >= 0);
+        }
+      }
       contract Coordinator {
         address public ledger;
         address public payer;
@@ -72,7 +80,11 @@ describe('kernel repeated writes beside a direct-only participant', () => {
     // This scenario intentionally mixes a direct-only participant with kernel-routed siblings. Keep that
     // selection explicit instead of depending on whether a low-level call happens to pass kernel admission.
     const payerArtifact = compileString(source, { ...options, primaryContractName: 'Payer', messageBus: false });
+    const alternatePayerArtifact = compileString(source, {
+      ...options, primaryContractName: 'AlternatePayer', messageBus: false,
+    });
     expect(payerArtifact.messageBus).toBeUndefined();
+    expect(alternatePayerArtifact.messageBus).toBeUndefined();
     for (const name of ['bump', 'append']) {
       expect(artifacts.Ledger.delegateArtifact!.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: true });
@@ -84,6 +96,7 @@ describe('kernel repeated writes beside a direct-only participant', () => {
     });
     const ledger = await upgrades.deployProxy(getContractFactory(artifacts.Ledger, signer), []);
     const payer = await getContractFactory(payerArtifact, signer).deploy();
+    const alternatePayer = await getContractFactory(alternatePayerArtifact, signer).deploy();
     const coordinator = await upgrades.deployProxy(getContractFactory(artifacts.Coordinator, signer), []);
     coordinator.implementation._registerResolvedExternal(calleeType, ledger.proxy);
     coordinator.implementation._registerResolvedExternal('Payer', payer);
@@ -115,7 +128,7 @@ describe('kernel repeated writes beside a direct-only participant', () => {
         funder: { ...feeUtxo, unlocker: signer.unlockP2PKH() },
         changeAddress: signer.getAddress(),
       }).build();
-      const matchingInputs = (categoryId: string, lockingBytecode: string, functionName: string) => builder.inputs
+      const matchingInputs = (categoryId: string, lockingBytecode: string, functionName: string): number[] => builder.inputs
         .map((input, index) => ({ input, index }))
         .filter(({ input }) => input.token?.category === categoryId
           && binToHex(input.unlocker.generateLockingBytecode()) === lockingBytecode
@@ -168,9 +181,9 @@ describe('kernel repeated writes beside a direct-only participant', () => {
           ...payerInput,
           unlocker: {
             ...originalUnlocker,
-            generateUnlockingBytecode(options) {
+            generateUnlockingBytecode(unlockOptions) {
               const instructions = decodeAuthenticationInstructions(
-                originalUnlocker.generateUnlockingBytecode(options),
+                originalUnlocker.generateUnlockingBytecode(unlockOptions),
               );
               if (instructions.length !== inputs.length + 2 || !instructions[pushIndex]) {
                 throw new Error('direct Payer unlocking frame differs from selector/reversed-ABI/redeem layout');
@@ -208,5 +221,65 @@ describe('kernel repeated writes beside a direct-only participant', () => {
     const messages = await ledger.proxy.getEntries('messages');
     expect(messages).toHaveLength(1);
     expect(messages[0].value).toEqual([new Uint8Array([0x11]), new Uint8Array([0x22])]);
+    // The caller's Payer-typed state is an address, not a static bytecode pin. Switch it to a separately
+    // compiled implementation with the same visit(uint256) ABI, then spend that direct covenant in V5.
+    await coordinator.forward('seed', [ledger.proxy.inner.lockingBytecode, alternatePayer.inner.lockingBytecode]).send();
+    coordinator.implementation._registerResolvedExternal('Payer', alternatePayer);
+    if (calleeType === 'Ledger') {
+      type PreparedBuilder = {
+        __preparedAtomicCalls?: Parameters<typeof messageBus.compose>[0]['preparedCalls'];
+        build(): TransactionBuilder;
+      };
+      const preparation = coordinator.forward('run', [7n]) as unknown as {
+        _applyOverrides(): Promise<PreparedBuilder>;
+      };
+      const prepared = await preparation._applyOverrides();
+      if (!prepared.__preparedAtomicCalls) throw new Error('alternate direct target has no prepared atomic graph');
+      const usedOutpoints = new Set(prepared.build().inputs.map((input) => `${input.txid}:${input.vout}`));
+      const feeUtxo = (await signer.getUtxos()).find((utxo) =>
+        utxo.token === undefined && !usedOutpoints.has(`${utxo.txid}:${utxo.vout}`));
+      if (!feeUtxo) throw new Error('alternate direct target has no fee input');
+      const builder = await messageBus.compose({
+        preparedCalls: prepared.__preparedAtomicCalls,
+        funder: { ...feeUtxo, unlocker: signer.unlockP2PKH() },
+        changeAddress: signer.getAddress(),
+      }).build();
+      const directIndex = builder.inputs.findIndex((input) => input.token?.category === alternatePayer.categoryId
+        && 'contract' in input.unlocker && input.unlocker.abiFunction.name === 'visit');
+      const verifierIndex = builder.inputs.findIndex((input) => input.token?.nft?.commitment.toLowerCase()
+        .startsWith(binToHex(MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN)));
+      expect(directIndex).toBeGreaterThanOrEqual(0);
+      expect(verifierIndex).toBeGreaterThanOrEqual(0);
+      const original = builder.inputs[directIndex];
+      const replacement = decodeAuthenticationInstructions(scriptToBytecode([bigIntToVmNumber(8n)]))[0];
+      if (!replacement) throw new Error('alternate direct argument has no replacement push');
+      builder.inputs[directIndex] = {
+        ...original,
+        unlocker: {
+          ...original.unlocker,
+          generateUnlockingBytecode(unlockOptions) {
+            const instructions = decodeAuthenticationInstructions(
+              original.unlocker.generateUnlockingBytecode(unlockOptions),
+            );
+            if (instructions.length !== 3 || !instructions[1]) {
+              throw new Error('alternate direct scalar frame is not selector/argument/redeem');
+            }
+            instructions[1] = replacement;
+            return encodeAuthenticationInstructions(instructions);
+          },
+        },
+      };
+      const transaction = builder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+      const accepts = (inputIndex: number): boolean => vm.stateSuccess(
+        vm.evaluate({ inputIndex, sourceOutputs, transaction }),
+      ) === true;
+      expect(accepts(directIndex)).toBe(true);
+      expect(accepts(verifierIndex)).toBe(false);
+    }
+    await expect(coordinator.forward('run', [7n]).send()).resolves.toBeDefined();
+    expect((await alternatePayer.getState()).visits).toBe(10n);
+    expect((await payer.getState()).visits).toBe(1n);
   }, 180_000);
 });

@@ -833,8 +833,19 @@ const assertDirectParticipantFrames = (
     }
     const indices = unlocker.abiFunction.inputs.flatMap((input, index) =>
       input.name === '__internal__callInputIndex' ? [index] : []);
-    const expected = BigInt(assembly.totalSlots);
     const selector = readPush(encoded, 0);
+    if (indices.length === 0) {
+      const argument = selector && readPush(encoded, selector.nextOffset);
+      const redeem = argument && readPush(encoded, argument.nextOffset);
+      if (unlocker.abiFunction.inputs.some((input) => input.name.startsWith('__internal__'))
+        || !selector || encoded[0] !== 4
+        || binToHex(selector.data) !== unlocker.abiFunction.selector?.toLowerCase()
+        || !argument || !redeem || redeem.nextOffset !== encoded.length) {
+        throw new Error(`messageBus: direct participant ${block.participant} has a non-canonical scalar frame`);
+      }
+      continue;
+    }
+    const expected = BigInt(assembly.totalSlots);
     const hidden = selector && readPush(encoded, selector.nextOffset);
     const canonicalHidden = scriptToBytecode([bigIntToVmNumber(expected)]);
     if (indices.length !== 1 || indices[0] !== unlocker.abiFunction.inputs.length - 1
@@ -3141,6 +3152,10 @@ const readPush = (
   let length = 0;
   if (opcode === 0) {
     width = 1;
+  } else if (opcode === 0x4f) {
+    return { data: Uint8Array.of(0x81), nextOffset: offset + 1 };
+  } else if (opcode >= 0x51 && opcode <= 0x60) {
+    return { data: Uint8Array.of(opcode - 0x50), nextOffset: offset + 1 };
   } else if (opcode >= 1 && opcode <= 75) {
     width = 1;
     length = opcode;

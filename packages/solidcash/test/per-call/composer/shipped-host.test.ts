@@ -390,7 +390,7 @@ describe('a host driving a caller whose entry makes no call', () => {
     // A master compiled before the table existed, or one compiled for the direct convention, publishes nothing:
     // the host has to refuse it rather than derive against a guessed set of sites.
     const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Caller!;
-    const withoutTable: { [key: string]: unknown } = { ...artifact.composition as { [key: string]: unknown } };
+    const withoutTable = { ...artifact.composition! };
     delete withoutTable.stopSites;
     expect(() => readPublishedStopSites({ composition: withoutTable }))
       .toThrow(/PER_CALL_HOST_STOP_SITES_UNPUBLISHED/);
@@ -402,9 +402,10 @@ describe('a host driving a caller whose entry makes no call', () => {
     // The schema is frozen with a version, so a table written by a later compiler is refused by name rather than
     // read as if it had today's shape.
     const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Caller!;
-    const composition = artifact.composition as { stopSites?: { version?: number } };
-    const future = { ...composition, stopSites: { ...composition.stopSites, version: 2 } };
-    expect(() => readPublishedStopSites({ composition: future }))
+    const composition = artifact.composition!;
+    // A version today's type does not admit, so the table is handed over as untyped data.
+    const future: unknown = { ...composition, stopSites: { ...composition.stopSites!, version: 2 } };
+    expect(() => readPublishedStopSites({ composition: future as typeof composition }))
       .toThrow(/PER_CALL_HOST_STOP_SITES_VERSION/);
   });
 });

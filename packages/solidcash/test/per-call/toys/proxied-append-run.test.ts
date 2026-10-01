@@ -11,6 +11,7 @@ import {
   encodeIntegerValue,
   packFixedWidthElement,
   splitValueIntoChunks,
+  type Artifact,
   type RecordEntry,
   type StateLayout,
 } from '@solidcash/utils';
@@ -187,7 +188,7 @@ interface CompiledContracts {
 
 interface Built {
   readonly plan: CompositionDraftPlan;
-  readonly artifacts: readonly { readonly composition?: unknown }[];
+  readonly artifacts: readonly Pick<Artifact, 'composition'>[];
   readonly layout: StateLayout;
   readonly proxy: DeployedContract;
   readonly impl: DeployedContract;

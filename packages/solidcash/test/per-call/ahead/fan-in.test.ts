@@ -496,7 +496,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
     const { journal, coin, panel, vault, desk } = compiled();
     for (const artifact of [journal, coin, panel, vault, desk]) {
       expect(artifact.composition?.convention).toBe('per-call');
-      expect((artifact.composition as { refusedEntries?: unknown[] }).refusedEntries ?? []).toStrictEqual([]);
+      expect(artifact.composition!.refusedEntries ?? []).toStrictEqual([]);
     }
     expect(publishedSites(desk, 'take')).toStrictEqual([
       'IJournal.isMember', 'IJournal.noteCount', 'IJournal.post', 'ICoin.approve', 'IJournal.feeOf', 'IVault.pay',

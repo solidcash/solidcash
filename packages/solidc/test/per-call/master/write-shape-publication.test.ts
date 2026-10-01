@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import type { Artifact, PublishedRefusedEntry, PublishedWriteSegment } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { COMPOSITION_LIMITS, compositionMachine } from '../machine.js';
 import { Contract, SignatureTemplate } from '../../../../solidcash/src/index.js';
@@ -30,35 +31,21 @@ import { fundShippedFacets } from '../../../../solidcash/test/per-call/shapes/ha
  */
 
 /** One write as the artifact publishes it. */
-interface PublishedWrite {
-  readonly record?: number;
-  readonly collection?: string;
-  readonly variable?: string;
-  readonly segment: number | 'last';
-}
+type PublishedWrite = PublishedWriteSegment;
 
 /** The writes the artifact publishes for one entry, keyed the way a builder reads the table. */
 function publishedWrites(
-  artifact: { readonly composition?: unknown },
+  artifact: Pick<Artifact, 'composition'>,
   contractName: string,
   entryName: string,
 ): {
   readonly single?: number | 'last';
   readonly writes?: readonly PublishedWrite[];
-  readonly refused: readonly { readonly functionName: string; readonly reason: string }[];
+  readonly refused: readonly PublishedRefusedEntry[];
 } {
-  const composition = artifact.composition as {
-    readonly refusedEntries?: readonly { readonly functionName: string; readonly reason: string }[];
-    readonly stopSites?: {
-      readonly entries?: readonly {
-        readonly functionName?: string;
-        readonly writeSegment?: number | 'last';
-        readonly writeSegments?: readonly PublishedWrite[];
-      }[];
-    };
-  } | undefined;
+  const { composition } = artifact;
   const entry = composition?.stopSites?.entries
-    ?.find((candidate) => candidate.functionName === `${contractName}.${entryName}()`);
+    .find((candidate) => candidate.functionName === `${contractName}.${entryName}()`);
   return {
     ...(entry?.writeSegment === undefined ? {} : { single: entry.writeSegment }),
     ...(entry?.writeSegments === undefined ? {} : { writes: entry.writeSegments }),

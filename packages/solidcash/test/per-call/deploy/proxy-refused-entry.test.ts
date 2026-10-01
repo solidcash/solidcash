@@ -105,15 +105,11 @@ async function funded(network: MockNetworkProvider): Promise<{
 describe('a hop whose implementation entry the compiler refused', () => {
   it('publishes the refusal by name and emits no served body for it', () => {
     const artifacts = compileStringMulti(REFUSED_SOURCE, COMPILE_OPTIONS);
-    const refusals = (artifacts.Impl!.composition as {
-      readonly refusedEntries?: readonly { readonly functionName: string; readonly reason: string }[];
-    } | undefined)?.refusedEntries ?? [];
+    const refusals = artifacts.Impl!.composition?.refusedEntries ?? [];
 
     expect(refusals.map((refused) => refused.functionName)).toStrictEqual(['Impl.initialize()']);
     expect(refusals[0]!.reason).toContain("the call to '__raw__'");
-    const published = (artifacts.Impl!.composition as {
-      readonly stopSites?: { readonly entries: readonly { readonly functionName: string }[] };
-    } | undefined)?.stopSites?.entries ?? [];
+    const published = artifacts.Impl!.composition?.stopSites?.entries ?? [];
     expect(published.map((entry) => entry.functionName)).not.toContain('Impl.initialize()');
   });
 
@@ -190,9 +186,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
     // input index; a per-call master serves a delegate frame from the records its own block declares. So the
     // marking no longer runs for this convention, the entries stay ordinary bodies, and the hop settles.
     const artifacts = compileStringMulti(INITIALIZER_SOURCE, SOLIDITY_OPTIONS);
-    const refusals = (artifacts.Impl!.composition as {
-      readonly refusedEntries?: readonly { readonly functionName: string }[];
-    } | undefined)?.refusedEntries ?? [];
+    const refusals = artifacts.Impl!.composition?.refusedEntries ?? [];
     expect(refusals).toStrictEqual([]);
     expect(artifacts.Impl!.abi.some((entry) => entry.inputs.some(
       (input) => input.name === '__internal__proxyMasterIndex',

@@ -90,7 +90,7 @@ const FORWARD_SOURCE = 'pragma solidity ^0.8.0;'
 describe('spec section 23 row 10: address(this).balance compared with 0', () => {
   it('serves the value-0 guard: the entry answers its balance and records the branch it took', async () => {
     const vault = compileStringMulti(VAULT_SOURCE, { composition: 'per-call', solidityImportCompat: true }).Vault!;
-    expect((vault.composition as { balanceReaders?: readonly string[] } | undefined)?.balanceReaders)
+    expect(vault.composition?.balanceReaders)
       .toStrictEqual(['Vault.guarded()']);
     const deployed = await deployedFor(vault);
     // The seed pays the contract's container through its receive(), which is the balance the guard reads.
@@ -121,7 +121,7 @@ describe('spec section 23 row 10: address(this).balance compared with 0', () => 
     const forwarder = compileStringMulti(FORWARD_SOURCE, { composition: 'per-call', solidityImportCompat: true })
       .Forwarder!;
     // The body itself compiles: the value-0 call lowers, so the refusal is the call path's, not the compiler's.
-    expect((forwarder.composition as { refusedEntries?: unknown } | undefined)?.refusedEntries).toBeUndefined();
+    expect(forwarder.composition?.refusedEntries).toBeUndefined();
     const deployed = await deployedFor(forwarder);
     const coin = freshCoin();
     await deployed.provider.addUtxo(binToHex(deployed.callerLock), coin);

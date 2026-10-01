@@ -125,7 +125,7 @@ describe.each(KINDS)('a per-call master whose state is $type', (kind) => {
   it('is emitted as a chunk-packed per-call master for every entry', () => {
     for (const contract of [push, put, pop, check, elementOnly]) {
       expect(contract.artifact.composition?.convention).toBe('per-call');
-      expect((contract.artifact.composition as { refusedEntries?: unknown }).refusedEntries).toBeUndefined();
+      expect(contract.artifact.composition!.refusedEntries).toBeUndefined();
       expect(contract.artifact.stateLayout?.variables).toStrictEqual([
         { name: 'items', type: kind.type, nftIndex: 0, fieldIndex: 0, dynamic: true },
       ]);

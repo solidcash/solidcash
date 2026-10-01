@@ -444,7 +444,7 @@ async function deployWorld(): Promise<World> {
 
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: an address packed into a store call\'s argument', () => {
   it('publishes the fixture\'s struct field reads untyped and the controls typed', () => {
-    expect((compiled().Desk!.composition as { refusedEntries?: unknown[] }).refusedEntries ?? []).toStrictEqual([]);
+    expect(compiled().Desk!.composition!.refusedEntries ?? []).toStrictEqual([]);
     // `refund` and `arbitrate` read through the storage pointer, `refuseArbitration` through its inlined index read,
     // exactly as the fixture's MarketplaceV1 publishes them: no type on the address field, none on the packed value.
     expect(eventArgs('packField')[1]).toStrictEqual(packedUntyped(roleRead('arbitrator', 'stateAccess')));

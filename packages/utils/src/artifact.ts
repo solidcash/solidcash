@@ -1,3 +1,5 @@
+import type { StopSiteMetadata } from './per-call/stop-site.js';
+
 export interface ResolvedImport {
   source: string;  // The source code of the imported file
   id: string;      // Canonical identifier (for dedup + nested import context)
@@ -1652,6 +1654,85 @@ export interface CompositionPlaceholders {
   templateHashOffset?: number;
 }
 
+/** One external call of a per-call entry, as published: the call's index and what it targets. */
+export interface PublishedCallSite {
+  /**
+   * The call's position in the entry's own call list, which a call site's `descriptor` names. Two exclusive arms
+   * share one site `callIndex` (the record they bind) but keep their own positions here.
+   */
+  readonly callIndex: number;
+  /** The interface the call goes through, for diagnostics and callee resolution. */
+  readonly interfaceName: string;
+  /** The method called, whose entry the callee runs. */
+  readonly functionName: string;
+  /** The address called, as hex; empty when the caller's own code computes the target, which a driver reads at the
+   * call site rather than from this table. */
+  readonly target: string;
+  /** The callee's four-byte dispatcher selector, as hex. */
+  readonly selector: string;
+}
+
+/**
+ * One write of a per-call entry, and the segment its records are declared in.
+ *
+ * Exactly one identity field is set: `record` names one of the entry's own data-NFT records by its record index,
+ * `collection` names the verified mapping a batch write targets, and `variable` names the dynamic value whose run
+ * of chunk records the write occupies.
+ */
+export interface PublishedWriteSegment {
+  readonly record?: number;
+  readonly collection?: string;
+  readonly variable?: string;
+  readonly segment: number | 'last';
+}
+
+/** One per-call entry's stop sites, plus the call facts a driver resolves a callee through. */
+export interface PublishedEntryStopSites {
+  /** The entry's identity, `Contract.entry()`, which a `FrameRequest.functionName` matches. */
+  readonly functionName: string;
+  /** One record per external call, in call order. */
+  readonly calls: readonly PublishedCallSite[];
+  /**
+   * The segment the entry's own record write is declared in, when the entry writes one.
+   *
+   * The records are the frame's own: a data-NFT field, a dynamic value's record, or a verified mapping's nodes. A
+   * fixed number is the count of external calls the entry makes before the write; `'last'` is the last segment the
+   * run opens, which is where a write every call precedes lands and where a write to a field whose bytes the record
+   * only sizes lands whatever the source order. A builder declares the write's records in that one segment; absent
+   * means the entry writes no record, or writes one whose segment the source does not fix.
+   */
+  readonly writeSegment?: number | 'last';
+  /**
+   * One fact per write the entry makes, each naming the segment that write's records are declared in.
+   *
+   * The fact is published whenever every write's segment is fixed, so a body whose writes do not all land in one
+   * segment still tells a builder where each of them lands. An empty list is an entry that writes no record of its
+   * own; absent means a write's segment is not fixed, which the builder refuses by name rather than declaring its
+   * records in a guessed segment.
+   */
+  readonly writeSegments?: readonly PublishedWriteSegment[];
+  /** The sites in the order the driver reaches them, validated before publication. */
+  readonly sites: StopSiteMetadata;
+}
+
+/** The stop-site table a per-call artifact publishes on `composition.stopSites`: one entry per served entry. */
+export interface PublishedPerCallStopSites {
+  readonly version: 1;
+  readonly entries: readonly PublishedEntryStopSites[];
+}
+
+/**
+ * A body a per-call master cannot serve, published on `composition.refusedEntries`.
+ *
+ * The entry stays in the ABI and the dispatcher, its program fails whenever it is reached, and `reason` is the fact
+ * that refuses it, so a builder reports which function is unsupported rather than a failed spend.
+ */
+export interface PublishedRefusedEntry {
+  /** The body's identity, `Contract.entry()`; the constructor's is `Contract.__construct()`. */
+  readonly functionName: string;
+  readonly reason: string;
+}
+
 export interface Artifact {
   contractName: string;
   constructorInputs: readonly AbiInput[];
@@ -1694,6 +1775,15 @@ export interface Artifact {
   composition?: {
     convention: 'per-call';
     placeholders: CompositionPlaceholders;
+    /** The stop sites a builder resumes each served entry from; absent on a master compiled before the table. */
+    stopSites?: PublishedPerCallStopSites;
+    /** The bodies the master refuses; absent when it serves every body. */
+    refusedEntries?: readonly PublishedRefusedEntry[];
+    /**
+     * The entries that read their own balance, as `Contract.entry()`: a builder spends every container of the
+     * contract for them. Absent when no entry reads it.
+     */
+    balanceReaders?: readonly string[];
   };
   messageBus?: {
     version: 1;

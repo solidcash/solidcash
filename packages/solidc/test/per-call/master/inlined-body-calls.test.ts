@@ -2,6 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
+import type { Artifact, ArtifactMap } from '@solidcash/utils';
 import { compileFileMulti } from '../../../src/compileFile.js';
 import { publishedRefusals } from './refused-entry.js';
 
@@ -47,22 +48,20 @@ interface PublishedEntry {
 }
 
 /** Compiles one `.sol` source through the shipped multi-contract entry, in the per-call convention. */
-function compileSol(source: string, name = 'Helper'): Record<string, { composition?: unknown }> {
+function compileSol(source: string, name = 'Helper'): ArtifactMap {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'percall-sol-'));
   const file = path.join(dir, `${name}.sol`);
   fs.writeFileSync(file, source);
   try {
-    return compileFileMulti(file, { composition: 'per-call', solidityImportCompat: true } as never) as
-      Record<string, { composition?: unknown }>;
+    return compileFileMulti(file, { composition: 'per-call', solidityImportCompat: true } as never);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
 /** The entry table one artifact's composition publishes, empty when it publishes none. */
-function entriesOf(artifact: { composition?: unknown }): readonly PublishedEntry[] {
-  const composition = artifact.composition as { stopSites?: { entries?: PublishedEntry[] } } | undefined;
-  return composition?.stopSites?.entries ?? [];
+function entriesOf(artifact: Pick<Artifact, 'composition'>): readonly PublishedEntry[] {
+  return artifact.composition?.stopSites?.entries ?? [];
 }
 
 describe('a body folded into its callers', () => {

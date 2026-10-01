@@ -76,7 +76,7 @@ describe('a per-call master whose state is bytes', () => {
   it('is emitted as a per-call master for every shape below', () => {
     for (const contract of [append, set, read, copy]) {
       expect(contract.artifact.composition?.convention).toBe('per-call');
-      expect((contract.artifact.composition as { refusedEntries?: unknown }).refusedEntries).toBeUndefined();
+      expect(contract.artifact.composition!.refusedEntries).toBeUndefined();
     }
     expect(append.artifact.stateLayout?.variables).toStrictEqual([
       { name: 'data', type: 'bytes', nftIndex: 0, fieldIndex: 0, dynamic: true },

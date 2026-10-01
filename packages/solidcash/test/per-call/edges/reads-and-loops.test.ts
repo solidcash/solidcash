@@ -109,15 +109,7 @@ describe('a call whose execution depends on a run-time value', () => {
     const { artifacts, contracts } = compileAndDeploy(SOURCE, {
       Caller: 'reads and loops caller', Chooser: 'reads and loops chooser', Cal: 'reads and loops cal',
     });
-    const composition = artifacts.Chooser!.composition as {
-      refusedEntries?: readonly { readonly functionName: string }[];
-      stopSites?: {
-        readonly entries: readonly {
-          readonly functionName: string;
-          readonly calls: readonly { readonly functionName: string }[];
-        }[];
-      };
-    };
+    const composition = artifacts.Chooser!.composition!;
     expect(composition.refusedEntries ?? []).toStrictEqual([]);
     expect(composition.stopSites?.entries.find((entry) => entry.functionName === 'Chooser.go()')
       ?.calls.map((call) => call.functionName)).toStrictEqual(['ping']);
@@ -220,8 +212,7 @@ describe('a call whose execution depends on a run-time value', () => {
       + ' contract Chooser { function go(uint sel) {'
       + `   switch (sel) { case 0: ICal(0x${hexOf(CAL)}).ping.call(); break; default: require(true); }`
       + '   require(true); } }';
-    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
-      Record<string, { composition?: unknown }>);
+    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }));
     expect(refusals.map((refused) => refused.reason).join(' | '))
       .toMatch(/is in a body that switches, and its arms need not make the same number of calls/);
   });

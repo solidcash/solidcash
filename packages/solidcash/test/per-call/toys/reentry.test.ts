@@ -12,6 +12,7 @@ import {
   encodeResultList,
   scriptToBytecode,
   splitFirstPush,
+  type PublishedEntryStopSites,
 } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
@@ -79,16 +80,9 @@ const PAIRED_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function markClaimed(int id) { this.recs[id] = 2; require(true); }'
   + ' }';
 
-/** One entry as the artifact publishes it: its stop sites, and the calls its own code makes. */
-interface PublishedEntry {
-  readonly functionName: string;
-  readonly calls: readonly { readonly callIndex: number; readonly functionName: string; readonly selector: string }[];
-}
-
 /** The entries a contract publishes, in the order the artifact lists them. */
-function entriesOf(artifacts: ArtifactMap, contract: string): readonly PublishedEntry[] {
-  const composition = artifacts[contract]!.composition as { stopSites?: { entries: PublishedEntry[] } };
-  return composition.stopSites?.entries ?? [];
+function entriesOf(artifacts: ArtifactMap, contract: string): readonly PublishedEntryStopSites[] {
+  return artifacts[contract]!.composition!.stopSites?.entries ?? [];
 }
 
 /** One master's witness block, read back from the unlocking bytecode the composer built, through the shipped codec. */

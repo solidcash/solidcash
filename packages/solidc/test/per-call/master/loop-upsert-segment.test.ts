@@ -6,11 +6,10 @@ import {
 import {
   asmToScript, buildEntryNftCovenantScript, computeCollectionHash, encodePushdataValue, encodeWitnessBlock,
   scriptToBytecode, sha256, validatorAddress,
-  type CompositionPlaceholders, type RecordEntry, type WitnessBlock,
+  type Artifact, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
-import type { PublishedPerCallStopSites } from '../../../src/per-call/master/stop-sites.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { COMPOSITION_LIMITS, compositionMachine } from '../machine.js';
@@ -123,10 +122,9 @@ const PING_SELECTOR = new Uint8Array(Buffer.from(
   loopArtifacts.Other!.abi.find((entry) => entry.name === 'ping')!.selector!, 'hex',
 ));
 
-function fill(artifact: { readonly bytecode: string; readonly composition?: unknown }, category: Uint8Array,
+function fill(artifact: Pick<Artifact, 'bytecode' | 'composition'>, category: Uint8Array,
   address: Uint8Array): Uint8Array {
-  const composition = artifact.composition as { readonly placeholders: CompositionPlaceholders };
-  return fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), composition.placeholders, {
+  return fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition!.placeholders, {
     category: categorySlotValue(category), contractAddress: address, templateHash: TEMPLATE_HASH,
   });
 }
@@ -303,10 +301,9 @@ const LAST_SEGMENT = 1;
 describe('a per-call master whose entry upserts a mapping in a run-time loop beside a call', () => {
   it('serves the body, declares the collection its entry slot and publishes the access, with the segment unstated', () => {
     expect(ledger.composition?.convention).toBe('per-call');
-    const composition = ledger.composition as
-      { stopSites: PublishedPerCallStopSites; refusedEntries?: unknown } | undefined;
+    const composition = ledger.composition;
     expect(composition?.refusedEntries).toBeUndefined();
-    const entry = composition!.stopSites.entries.find(
+    const entry = composition!.stopSites!.entries.find(
       (candidate) => candidate.functionName === 'Ledger.move()',
     )!;
     // No write fact is published for the upsert today, so a builder has no segment to declare its records in.
@@ -363,10 +360,9 @@ describe('a per-call master whose entry upserts a mapping in a run-time loop bes
  */
 describe('the fixture\'s own shape: the loop body both upserts the mapping and makes the call', () => {
   it('serves the body, declares the collection its entry slot, and still states no segment for its records', () => {
-    const composition = insideArtifacts.Ledger!.composition as
-      { stopSites: PublishedPerCallStopSites; refusedEntries?: unknown } | undefined;
+    const composition = insideArtifacts.Ledger!.composition;
     expect(composition?.refusedEntries).toBeUndefined();
-    const entry = composition!.stopSites.entries.find(
+    const entry = composition!.stopSites!.entries.find(
       (candidate) => candidate.functionName === 'Ledger.move()',
     )!;
     // A varying key is not one write the walk places, so no segment states where its records are declared: the

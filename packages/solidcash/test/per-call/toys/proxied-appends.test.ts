@@ -353,8 +353,8 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
     // dynamic value but makes no call of its own, so it too is served: the delegate hop is the proxy's body, and it
     // does not count as the implementation's own call.
     expect(proxy.composition?.convention).toBe('per-call');
-    expect((proxy.composition as { refusedEntries?: unknown } | undefined)?.refusedEntries).toBeUndefined();
-    expect((artifacts.Impl!.composition as { refusedEntries?: unknown } | undefined)?.refusedEntries).toBeUndefined();
+    expect(proxy.composition?.refusedEntries).toBeUndefined();
+    expect(artifacts.Impl!.composition?.refusedEntries).toBeUndefined();
   });
 
   it('serves an implementation whose entry both writes the dynamic value and calls', () => {
@@ -371,7 +371,7 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
       + ' }';
     const artifact = compileStringMulti(source, { composition: 'per-call' }).Impl!;
     expect(artifact.composition?.convention).toBe('per-call');
-    expect((artifact.composition as { refusedEntries?: unknown } | undefined)?.refusedEntries).toBeUndefined();
+    expect(artifact.composition?.refusedEntries).toBeUndefined();
     expect(artifact.abi.map((entry) => entry.name)).toStrictEqual(['append']);
   });
 

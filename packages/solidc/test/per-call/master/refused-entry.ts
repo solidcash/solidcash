@@ -1,3 +1,4 @@
+import type { Artifact, PublishedRefusedEntry } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 
 /**
@@ -10,17 +11,13 @@ import { compileStringMulti } from '../../../src/compiler.js';
  */
 
 /** One entry the compiler refused, as it is published. */
-export interface PublishedRefusal {
-  readonly functionName: string;
-  readonly reason: string;
-}
+export type PublishedRefusal = PublishedRefusedEntry;
 
 /** Every entry refusal the artifacts of a compile publish, in contract order. */
-export function publishedRefusals(artifacts: Record<string, { composition?: unknown }>): PublishedRefusal[] {
+export function publishedRefusals(artifacts: Readonly<Record<string, Pick<Artifact, 'composition'>>>): PublishedRefusal[] {
   const refusals: PublishedRefusal[] = [];
   for (const artifact of Object.values(artifacts)) {
-    const composition = artifact.composition as { refusedEntries?: PublishedRefusal[] } | undefined;
-    for (const refused of composition?.refusedEntries ?? []) refusals.push(refused);
+    for (const refused of artifact.composition?.refusedEntries ?? []) refusals.push(refused);
   }
   return refusals;
 }
@@ -35,8 +32,7 @@ export function refusalOf(
   entryName?: string,
   options: Record<string, unknown> = {},
 ): { code?: string; message: string } {
-  const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call', ...options } as never) as
-    Record<string, { composition?: unknown }>);
+  const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call', ...options } as never));
   const wanted = entryName === undefined
     ? refusals
     : refusals.filter((refused) => refused.functionName.startsWith(`${entryName}.`));
@@ -56,8 +52,7 @@ export function refusalOf(
  * source the convention serves.
  */
 export function refusalMessageOf(source: string, entryName?: string): string {
-  const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
-    Record<string, { composition?: unknown }>);
+  const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }));
   const wanted = entryName === undefined
     ? refusals
     : refusals.filter((refused) => refused.functionName.startsWith(`${entryName}.`));
@@ -66,6 +61,5 @@ export function refusalMessageOf(source: string, entryName?: string): string {
 
 /** True when the compile serves the source, i.e. publishes no refusal for it. */
 export function isServed(source: string): boolean {
-  return publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
-    Record<string, { composition?: unknown }>).length === 0;
+  return publishedRefusals(compileStringMulti(source, { composition: 'per-call' })).length === 0;
 }

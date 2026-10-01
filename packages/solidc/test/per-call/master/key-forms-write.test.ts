@@ -426,8 +426,7 @@ const COLLECTION_FIELD_TERNARY_SOURCE = 'pragma solidcash ^0.13.0;'
 /** The refusals a per-call compile publishes, or the empty list when it serves every body. */
 function publishedRefusals(source: string, options: Record<string, unknown> = {}): string[] {
   const artifact = compileString(source, { composition: 'per-call', ...options });
-  const composition = artifact.composition as { refusedEntries?: { reason: string }[] } | undefined;
-  return (composition?.refusedEntries ?? []).map((refused) => refused.reason);
+  return (artifact.composition?.refusedEntries ?? []).map((refused) => refused.reason);
 }
 
 describe('a per-call master keyed by a ternary over a field read through a collection', () => {

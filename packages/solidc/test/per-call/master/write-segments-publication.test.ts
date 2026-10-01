@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Artifact, PublishedWriteSegment } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 
 /**
@@ -11,32 +12,19 @@ import { compileStringMulti } from '../../../src/compiler.js';
  */
 
 /** One write as the artifact publishes it. */
-interface PublishedWrite {
-  readonly record?: number;
-  readonly collection?: string;
-  readonly variable?: string;
-  readonly segment: number | 'last';
-}
+type PublishedWrite = PublishedWriteSegment;
 
 /** The identity a published write is looked up by. */
 type WriteIdentity = Omit<PublishedWrite, 'segment'>;
 
 /** The writes the artifact publishes for one entry, keyed the way a builder reads the table. */
 function publishedWrites(
-  artifact: { readonly composition?: unknown },
+  artifact: Pick<Artifact, 'composition'>,
   contractName: string,
   entryName: string,
 ): { readonly single?: number | 'last'; readonly writes?: readonly PublishedWrite[] } {
-  const entries = (artifact.composition as {
-    readonly stopSites?: {
-      readonly entries?: readonly {
-        readonly functionName?: string;
-        readonly writeSegment?: number | 'last';
-        readonly writeSegments?: readonly PublishedWrite[];
-      }[];
-    };
-  } | undefined)?.stopSites?.entries;
-  const entry = entries?.find((candidate) => candidate.functionName === `${contractName}.${entryName}()`);
+  const entry = artifact.composition?.stopSites?.entries
+    .find((candidate) => candidate.functionName === `${contractName}.${entryName}()`);
   return {
     ...(entry?.writeSegment === undefined ? {} : { single: entry.writeSegment }),
     ...(entry?.writeSegments === undefined ? {} : { writes: entry.writeSegments }),
@@ -100,7 +88,7 @@ const identityOf = (write: WriteIdentity): string => (write.record !== undefined
   : write.collection !== undefined ? `mapping:${write.collection}` : `dynamic:${String(write.variable)}`);
 
 /** The segment of one published write, or undefined when the entry publishes no such write. */
-function segmentOf(artifact: { readonly composition?: unknown }, write: WriteIdentity): number | 'last' | undefined {
+function segmentOf(artifact: Pick<Artifact, 'composition'>, write: WriteIdentity): number | 'last' | undefined {
   const published = publishedWrites(artifact, 'Ledger', 'move');
   return published.writes?.find((candidate) => identityOf(candidate) === identityOf(write))?.segment;
 }

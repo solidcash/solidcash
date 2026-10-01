@@ -242,7 +242,7 @@ export interface ShapeOutcome {
 /** Composes, derives and evaluates a shape; every participant's input is asked of the real machine. */
 export function composeAndDerive(
   plan: CompositionDraftPlan,
-  artifacts: readonly { readonly composition?: unknown }[],
+  artifacts: readonly Pick<Artifact, 'composition'>[],
   roots: readonly FrameRequest[],
 ): ShapeOutcome {
   const { host, draft } = createComposedDerivationHost({

@@ -28,7 +28,7 @@ const artifact = artifacts.Cache!;
 
 describe('a per-call master whose dynamic-value bodies disagree on the chunk run width', () => {
   it('serves every body rather than refusing the widths that differ', () => {
-    expect(publishedRefusals({ Cache: artifact as unknown as { composition?: unknown } })).toStrictEqual([]);
+    expect(publishedRefusals({ Cache: artifact })).toStrictEqual([]);
     expect(artifact.composition?.convention).toBe('per-call');
   });
 

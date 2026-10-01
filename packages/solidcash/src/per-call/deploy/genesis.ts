@@ -805,10 +805,8 @@ export function eventSentinel(
  * entries make calls, and an entry the compiler refused is not one the head runs, so only the listed entries count.
  */
 function masterCannotStandAlone(artifact: Artifact): boolean {
-  const entries = (artifact.composition as {
-    readonly stopSites?: { readonly entries?: readonly { readonly sites?: { readonly sites?: readonly { readonly kind?: string }[] } }[] };
-  } | undefined)?.stopSites?.entries ?? [];
-  return entries.some((entry) => (entry.sites?.sites ?? []).some((site) => site.kind === 'call'));
+  const entries = artifact.composition?.stopSites?.entries ?? [];
+  return entries.some((entry) => entry.sites.sites.some((site) => site.kind === 'call'));
 }
 
 /** The satoshi value each chunk output carries; a kept chunk keeps the input's value in a composition. */

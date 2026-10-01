@@ -110,8 +110,7 @@ function spendSelector(programBytes: Uint8Array, selector: Uint8Array): boolean 
 
 describe('a body the master cannot serve', () => {
   it('is refused by name while the entries the master can serve keep compiling', () => {
-    const reasons = publishedRefusals(compileStringMulti(SOURCE, { composition: 'per-call' }) as
-      Record<string, { composition?: unknown }>);
+    const reasons = publishedRefusals(compileStringMulti(SOURCE, { composition: 'per-call' }));
     expect(reasons.map((refused) => refused.functionName).sort()).toStrictEqual([
       'Choice.bad()', 'Choice.callsBad()',
     ]);
@@ -172,13 +171,11 @@ const refusedCallSelector = (name: string): Uint8Array =>
 
 describe('a refused call-making entry', () => {
   it('is refused by name and publishes no call site', () => {
-    const refusals = publishedRefusals(compileStringMulti(REFUSED_CALL_SOURCE, { composition: 'per-call' }) as
-      Record<string, { composition?: unknown }>);
+    const refusals = publishedRefusals(compileStringMulti(REFUSED_CALL_SOURCE, { composition: 'per-call' }));
     expect(refusals.map((refused) => refused.functionName)).toStrictEqual(['Feed.pick()']);
     expect(refusals.find((refused) => refused.functionName === 'Feed.pick()')!.reason)
       .toContain('is in a body that switches');
-    const { stopSites } = (refusedCallArtifact.composition as
-      { stopSites: { entries: { calls: unknown[] }[] } } | undefined)!;
+    const stopSites = refusedCallArtifact.composition!.stopSites!;
     expect(stopSites.entries.flatMap((entry) => entry.calls)).toStrictEqual([]);
   });
 
@@ -224,11 +221,9 @@ const servedCallSelector = (name: string): Uint8Array =>
 
 describe('a call-making entry the master serves', () => {
   it('publishes no refusal and the call site for the read it makes', () => {
-    const refusals = publishedRefusals(compileStringMulti(SERVED_CALL_SOURCE, { composition: 'per-call' }) as
-      Record<string, { composition?: unknown }>);
+    const refusals = publishedRefusals(compileStringMulti(SERVED_CALL_SOURCE, { composition: 'per-call' }));
     expect(refusals).toStrictEqual([]);
-    const entry = (servedCallArtifact.composition as
-      { stopSites: { entries: { functionName: string; calls: unknown[] }[] } } | undefined)!.stopSites.entries
+    const entry = servedCallArtifact.composition!.stopSites!.entries
       .find((candidate) => candidate.functionName === 'Feed.readBack()')!;
     expect(entry.calls).toHaveLength(1);
   });
@@ -266,7 +261,7 @@ describe('a Solidity-compatible proxy implementation', () => {
     const artifacts = compileStringMulti(INITIALIZER_SOURCE, {
       composition: 'per-call', solidityImportCompat: true,
     });
-    expect(publishedRefusals(artifacts as Record<string, { composition?: unknown }>)).toStrictEqual([]);
+    expect(publishedRefusals(artifacts)).toStrictEqual([]);
     for (const artifact of Object.values(artifacts)) {
       for (const entry of artifact.abi) {
         expect(entry.inputs.map((input) => input.name)).not.toContain('__internal__proxyMasterIndex');

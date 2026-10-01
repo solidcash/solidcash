@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { asmToScript, scriptToBytecode } from '@solidcash/utils';
+import { asmToScript, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import {
   declaredSegmentsSkipRuntimeScript, declaredSegmentsSkipScript,
@@ -19,14 +19,10 @@ const entryIdentity = (contractName: string, entryName: string): string => `${co
 
 /** The segment the artifact publishes for one entry, reading the table the way a builder does. */
 function publishedWriteSegment(
-  artifact: { readonly composition?: unknown }, contractName: string, entryName: string,
+  artifact: Pick<Artifact, 'composition'>, contractName: string, entryName: string,
 ): number | 'last' | undefined {
-  const entries = (artifact.composition as {
-    readonly stopSites?: {
-      readonly entries?: readonly { readonly functionName?: string; readonly writeSegment?: number | 'last' }[];
-    };
-  } | undefined)?.stopSites?.entries;
-  return entries?.find((entry) => entry.functionName === entryIdentity(contractName, entryName))?.writeSegment;
+  return artifact.composition?.stopSites?.entries
+    .find((entry) => entry.functionName === entryIdentity(contractName, entryName))?.writeSegment;
 }
 
 /** The emitted program of an artifact, so a derivation recipe can be found in the bytes code generation produced. */

@@ -5,7 +5,7 @@ import {
 } from '@bitauth/libauth';
 import {
   asmToScript, ecrecoverComputeLockingBytecode, encodeWitnessBlock, keccakComputeLockingBytecode,
-  scriptToBytecode, sha256, SHARED_LIBRARY_SALT, validatorAddress, type WitnessBlock,
+  scriptToBytecode, sha256, SHARED_LIBRARY_SALT, validatorAddress, type ArtifactMap, type WitnessBlock,
 } from '@solidcash/utils';
 import { ethers } from 'ethers';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
@@ -92,10 +92,8 @@ const BARE_NAME_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-type Artifacts = Record<string, { composition?: unknown; abi?: readonly { ecrecoverCompute?: boolean }[] }>;
-
-const compilePerCall = (source: string, options: Record<string, unknown> = {}): Artifacts =>
-  compileStringMulti(source, { composition: 'per-call', ...options } as never) as Artifacts;
+const compilePerCall = (source: string, options: Record<string, unknown> = {}): ArtifactMap =>
+  compileStringMulti(source, { composition: 'per-call', ...options } as never);
 
 /** The refusal a per-call compile publishes, as `entry: reason`, or '' when every body is served. */
 const refusalMessage = (source: string, options: Record<string, unknown> = {}): string =>
@@ -228,9 +226,9 @@ async function splittableSigner(): Promise<Recovery> {
 }
 
 /** The finished bytes of a compiled contract's master program, with its deployment slots filled. */
-function masterProgram(artifacts: Artifacts, name: string): Uint8Array {
-  const artifact = artifacts[name]! as { bytecode: string; composition: { placeholders: never } };
-  return fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition.placeholders, {
+function masterProgram(artifacts: ArtifactMap, name: string): Uint8Array {
+  const artifact = artifacts[name]!;
+  return fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition!.placeholders, {
     category: categorySlotValue(CATEGORY), contractAddress: CONTRACT_ADDRESS, templateHash: TEMPLATE_HASH,
   });
 }

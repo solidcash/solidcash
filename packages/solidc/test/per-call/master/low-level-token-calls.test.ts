@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { computeFunctionSelector, computeFunctionSignature } from '@solidcash/utils';
+import {
+  computeFunctionSelector, computeFunctionSignature, type ArtifactMap, type PublishedCallSite,
+} from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
 import { publishedRefusals } from './refused-entry.js';
 
@@ -104,9 +106,7 @@ const HELPER_PARAMETER_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-type Artifacts = Record<string, { composition?: unknown }>;
-
-const compile = (source: string): Artifacts => compileStringMulti(source, { composition: 'per-call' }) as Artifacts;
+const compile = (source: string): ArtifactMap => compileStringMulti(source, { composition: 'per-call' });
 
 /** The refusal a source's compile publishes, as `entry: reason`, or '' when every body is served. */
 const refusalMessage = (source: string): string =>
@@ -117,16 +117,14 @@ const TRANSFER_SELECTOR =
   Buffer.from(computeFunctionSelector(computeFunctionSignature('transfer', ['address', 'int256']))).toString('hex');
 
 /** The call sites one entry publishes, or a failure naming the entries the artifact does carry. */
-function publishedCallSites(artifacts: Artifacts, functionName: string): unknown[] {
-  const composition = artifacts.Caller!.composition as {
-    stopSites?: { entries?: { functionName: string; calls: unknown[] }[] };
-  };
-  const entry = composition.stopSites?.entries?.find((item) => item.functionName === functionName);
+function publishedCallSites(artifacts: ArtifactMap, functionName: string): readonly PublishedCallSite[] {
+  const composition = artifacts.Caller!.composition!;
+  const entry = composition.stopSites?.entries.find((item) => item.functionName === functionName);
   if (entry === undefined) {
     throw new Error(`the artifact publishes no entry "${functionName}"; it carries `
       + `${(composition.stopSites?.entries ?? []).map((item) => item.functionName).join(', ') || 'none'}`);
   }
-  return entry.calls as unknown[];
+  return entry.calls;
 }
 
 describe('SafeERC20 token-call shapes under per-call', () => {
@@ -159,10 +157,8 @@ describe('SafeERC20 token-call shapes under per-call', () => {
   it('serves the address.code.length gate the helper uses beside the call', () => {
     const artifacts = compile(CODE_LENGTH_SOURCE);
     expect(publishedRefusals(artifacts)).toEqual([]);
-    const composition = artifacts.Caller!.composition as {
-      stopSites?: { entries?: { functionName: string; calls: unknown[]; sites: { sites: unknown[] } }[] };
-    };
-    const entry = composition.stopSites?.entries?.find((item) => item.functionName === 'Caller.check()');
+    const composition = artifacts.Caller!.composition!;
+    const entry = composition.stopSites?.entries.find((item) => item.functionName === 'Caller.check()');
     expect(entry).toBeDefined();
     // No call is admitted or published: the gate is a plain predicate over the target's own script length.
     expect(entry!.calls).toEqual([]);

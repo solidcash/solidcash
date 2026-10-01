@@ -60,6 +60,7 @@ import {
 import { assessPerCallMasterShape, stripFrameParameters } from './per-call/master/support.js';
 import type { MasterCallSite } from './per-call/master/frame-tail.js';
 import {
+  entryFunctionName,
   publishPerCallStopSites,
   type PublishedPerCallStopSites,
 } from './per-call/master/stop-sites.js';
@@ -14313,36 +14314,28 @@ function compileResolvedAst(
     const reservesValidatorHash = (mergedCompilerOptions as InternalCompilerOptions)
       .__perCallReservesValidatorHash === true;
     const offsets = findPlaceholderOffsets(scriptToBytecode(optimisationResult.script), reservesValidatorHash);
-    artifact.composition = {
+    const composition: NonNullable<Artifact['composition']> = {
       convention: 'per-call',
       placeholders: { version: 1, ...offsets },
     };
-    // The stop-site table rides on the composition object. It is not part of the frozen placeholder type, which
-    // `@solidcash/utils` owns, so it is attached by a widened view of the same object rather than by changing it.
+    // The stop sites a builder resumes each served entry from.
     const stopSites = (mergedCompilerOptions as InternalCompilerOptions).__perCallStopSites;
-    if (stopSites !== undefined) {
-      const publication = artifact.composition as NonNullable<typeof artifact.composition>
-        & { stopSites: PublishedPerCallStopSites };
-      publication.stopSites = stopSites;
-    }
+    if (stopSites !== undefined) composition.stopSites = stopSites;
     // The bodies the master cannot serve are published beside the table: the entry stays callable by selector, its
     // program refuses every frame, and a builder reads why here rather than guessing from a failed spend.
     const refused = (mergedCompilerOptions as InternalCompilerOptions).__perCallRefusedEntries;
     if (refused !== undefined && refused.size > 0) {
-      const publication = artifact.composition as NonNullable<typeof artifact.composition>
-        & { refusedEntries: { functionName: string; reason: string }[] };
-      publication.refusedEntries = [...refused].map(([name, reason]) => ({
-        functionName: `${ast.contract.name}.${name}()`,
+      composition.refusedEntries = [...refused].map(([name, reason]) => ({
+        functionName: entryFunctionName(ast.contract.name, name),
         reason,
       }));
     }
     // The entries that read their own balance: a builder spends every container of the contract for them.
     const balanceReaders = (mergedCompilerOptions as InternalCompilerOptions).__perCallBalanceReaders ?? [];
     if (balanceReaders.length > 0) {
-      const publication = artifact.composition as NonNullable<typeof artifact.composition>
-        & { balanceReaders: string[] };
-      publication.balanceReaders = balanceReaders.map((name) => `${ast.contract.name}.${name}()`);
+      composition.balanceReaders = balanceReaders.map((name) => entryFunctionName(ast.contract.name, name));
     }
+    artifact.composition = composition;
   }
   let verifiedKernelEntryJournal:
   NonNullable<NonNullable<Artifact['messageBus']>['kernelEntryJournal']> | undefined;

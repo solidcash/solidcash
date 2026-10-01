@@ -13,8 +13,7 @@ import { publishedRefusals } from '../../../../solidc/test/per-call/master/refus
 /** The message the compiler raises for a per-call shape it will not emit. */
 function refusal(source: string, options: Record<string, unknown> = {}): string {
   try {
-    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call', ...options }) as
-      Record<string, { composition?: unknown }>);
+    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call', ...options }));
     if (refusals.length === 0) return '';
     return `PER_CALL_CODEGEN_UNAVAILABLE: ${refusals.map((refused) => `${refused.functionName}: `
       + `${refused.reason}`).join(' | ')}`;

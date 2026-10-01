@@ -903,7 +903,7 @@ describe('the obstacles this flow replica works around', () => {
       + ` contract Root { function run() { int fee = IStore(0x${hexOf(STORE_ADDRESS)}).getFee(); `
       + `   IEscrow(0x${hexOf(ESCROW_ADDRESS)}).pay(Rec("tag", fee), fee); require(true); } }`;
     const root = compileStringMulti(source, { composition: 'per-call' }).Root!;
-    expect((root.composition as { readonly refusedEntries?: readonly unknown[] }).refusedEntries ?? [])
+    expect(root.composition!.refusedEntries ?? [])
       .toStrictEqual([]);
   });
 

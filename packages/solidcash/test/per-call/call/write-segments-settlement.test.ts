@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
 import {
   buildPushdataCommitment, bytesToHex, encodeIntegerValue, validatorAddress, type Artifact,
+  type PublishedWriteSegment,
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -90,26 +91,13 @@ const dynamicArtifacts = compileStringMulti(DYNAMIC_SOURCE, { composition: 'per-
 const dynamicImpl = dynamicArtifacts.Impl!;
 
 /** One write as the artifact publishes it. */
-interface PublishedWrite {
-  readonly record?: number;
-  readonly collection?: string;
-  readonly variable?: string;
-  readonly segment: number | 'last';
-}
+type PublishedWrite = PublishedWriteSegment;
 
 /** The write facts the artifact publishes for one entry. */
 function publishedWrites(artifact: Artifact, functionName: string): {
   readonly single?: number | 'last'; readonly writes?: readonly PublishedWrite[];
 } {
-  const entries = (artifact.composition as {
-    readonly stopSites?: {
-      readonly entries?: readonly {
-        readonly functionName?: string; readonly writeSegment?: number | 'last';
-        readonly writeSegments?: readonly PublishedWrite[];
-      }[];
-    };
-  } | undefined)?.stopSites?.entries;
-  const entry = entries?.find((candidate) =>
+  const entry = artifact.composition?.stopSites?.entries.find((candidate) =>
     candidate.functionName === `${artifact.contractName}.${functionName}()`);
   return {
     ...(entry?.writeSegment === undefined ? {} : { single: entry.writeSegment }),

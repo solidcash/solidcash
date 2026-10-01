@@ -3,6 +3,7 @@ import {
   computeFunctionSelector,
   computeFunctionSignature,
   validateStopSiteMetadata,
+  type Artifact,
   type StopSite,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
@@ -63,10 +64,9 @@ const twoEntrySource = (): string => 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The composition publication, which carries the stop-site table beside the placeholder descriptor. */
-const publicationOf = (artifact: { composition?: unknown }): PublishedPerCallStopSites => {
-  const composition = artifact.composition as { stopSites?: PublishedPerCallStopSites } | undefined;
-  expect(composition?.stopSites).toBeDefined();
-  return composition!.stopSites!;
+const publicationOf = (artifact: Pick<Artifact, 'composition'>): PublishedPerCallStopSites => {
+  expect(artifact.composition?.stopSites).toBeDefined();
+  return artifact.composition!.stopSites!;
 };
 
 describe('the stop-site table published from a real compile', () => {

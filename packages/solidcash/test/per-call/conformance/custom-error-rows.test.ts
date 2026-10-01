@@ -143,7 +143,7 @@ const TO = new Uint8Array(25).fill(0x33);
 describe('spec section 23 row 6: custom errors raised in a callee and re-raised', () => {
   it('serves the custom error: its name and the values it was raised with come back through the decoder', async () => {
     const ledger = compileStringMulti(SELF_SOURCE, { composition: 'per-call', solidityImportCompat: true }).Ledger!;
-    expect((ledger.composition as { refusedEntries?: unknown } | undefined)?.refusedEntries).toBeUndefined();
+    expect(ledger.composition?.refusedEntries).toBeUndefined();
     const deployed = await selfDeployed(ledger);
     const result = await enter(deployed, ledger, 'pull', [FROM, TO, 50n]);
     expect(result.accepted).toBe(false);
@@ -170,10 +170,8 @@ describe('spec section 23 row 6: custom errors raised in a callee and re-raised'
   it('refuses the cross-contract spelling by name: the call path plans no callee frames', async () => {
     const artifacts = compileStringMulti(CROSS_SOURCE, { composition: 'per-call', solidityImportCompat: true });
     // The body compiles and publishes the callee it lowered the low-level call to.
-    const callSite = (artifacts.Caller!.composition as {
-      readonly stopSites?: { readonly entries: readonly { readonly functionName: string;
-        readonly calls: readonly { readonly interfaceName: string; readonly functionName: string }[] }[] };
-    } | undefined)?.stopSites?.entries.find((entry) => entry.functionName === 'Caller.pull()')?.calls[0];
+    const callSite = artifacts.Caller!.composition?.stopSites?.entries
+      .find((entry) => entry.functionName === 'Caller.pull()')?.calls[0];
     expect(callSite).toMatchObject({ interfaceName: 'IToken', functionName: 'transferFrom' });
     const deployed = await deployedFor(artifacts.Caller!);
     await expect(enter(deployed, artifacts.Caller!, 'pull', [new Uint8Array(35).fill(0x11), FROM, TO, 50n]))

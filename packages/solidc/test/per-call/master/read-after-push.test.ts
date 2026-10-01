@@ -127,7 +127,7 @@ describe('a per-call body that reads a mapping entry after writing it', () => {
   it('publishes every body as a per-call master within the input-script limit and with no refused entry', () => {
     for (const master of [JOURNAL, LEDGER, REWRITE, NESTED]) {
       expect(master.artifact.composition?.convention).toBe('per-call');
-      expect((master.artifact.composition as { refusedEntries?: unknown }).refusedEntries).toBeUndefined();
+      expect(master.artifact.composition!.refusedEntries).toBeUndefined();
       expect(master.script.length).toBeLessThanOrEqual(10_000);
     }
   });

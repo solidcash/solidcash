@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   FrameKind, argsHash, decodeWitnessBlock, encodeArgumentList, encodeIntegerValue, encodeResultList,
-  splitFirstPush,
+  splitFirstPush, type Artifact,
 } from '@solidcash/utils';
 import {
   USER_LOCK, compileAndDeploy, composeAndDerive, hexOf, masterInput, rootOf, seededAddress, selectorOf,
@@ -66,7 +66,7 @@ function draftMaster(spec: Partial<DraftMaster> & MasterIdentity): DraftMaster {
 /** The plan every case drives, with `id` supplied however the source under test takes it. */
 interface Built {
   readonly plan: CompositionDraftPlan;
-  readonly artifacts: readonly { readonly composition?: unknown }[];
+  readonly artifacts: readonly Pick<Artifact, 'composition'>[];
   readonly id: bigint;
   readonly idPush: Uint8Array;
   readonly feePush: Uint8Array;

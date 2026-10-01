@@ -299,7 +299,7 @@ describe('an entry that pays through a value-carrying low-level call, compiled p
 
   it('is a listed send: served for a user\'s lock, refused for a contract\'s, in either spelling', () => {
     for (const source of [VALUE_CALL_SOURCE, VALUE_CALL_STATEMENT_SOURCE]) {
-      expect((compile(source).composition as { refusedEntries?: unknown }).refusedEntries ?? []).toStrictEqual([]);
+      expect(compile(source).composition!.refusedEntries ?? []).toStrictEqual([]);
       expect(spend(source, OTHER_LOCK)).toStrictEqual({ accepted: true });
       expect(spend(source, ADDRESS).accepted).toBe(false);
     }

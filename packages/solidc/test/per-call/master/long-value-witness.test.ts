@@ -61,6 +61,6 @@ describe('a per-call master whose body reads a long mapping value', () => {
     // it compiles both before and after the change that made the split shape compile.
     const single = compileString(SINGLE_BODY_SOURCE, { composition: 'per-call' });
     expect(single.composition?.convention).toBe('per-call');
-    expect(publishedRefusals({ Tags: single as unknown as { composition?: unknown } })).toStrictEqual([]);
+    expect(publishedRefusals({ Tags: single })).toStrictEqual([]);
   });
 });

@@ -334,7 +334,7 @@ async function deployWorld(): Promise<World> {
 
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: an integer packed into a store call\'s argument', () => {
   it('publishes a parameter, a cast and a one-level field typed, and the other reads untyped', () => {
-    expect((compiled().Desk!.composition as { refusedEntries?: unknown[] }).refusedEntries ?? []).toStrictEqual([]);
+    expect(compiled().Desk!.composition!.refusedEntries ?? []).toStrictEqual([]);
     expect(packedData('packParam')).toStrictEqual({
       kind: 'abiEncodePacked', args: [{ kind: 'source', source: { kind: 'forward', paramIndex: 1 } }], fields: [''],
     });

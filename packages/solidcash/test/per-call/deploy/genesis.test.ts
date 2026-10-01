@@ -633,15 +633,7 @@ describe('a per-call genesis beside a call-making entry the master serves', () =
   });
 
   it('serves the call-making entry and publishes the call site for its read', () => {
-    const composition = servedCallArtifact.composition as {
-      refusedEntries?: readonly { readonly functionName: string }[];
-      stopSites?: {
-        readonly entries: readonly {
-          readonly functionName: string;
-          readonly calls: readonly { readonly functionName: string }[];
-        }[];
-      };
-    };
+    const composition = servedCallArtifact.composition!;
     expect(composition.refusedEntries ?? []).toStrictEqual([]);
     const entry = (name: string): readonly { readonly functionName: string }[] =>
       composition.stopSites?.entries.find((candidate) => candidate.functionName === name)?.calls ?? [];

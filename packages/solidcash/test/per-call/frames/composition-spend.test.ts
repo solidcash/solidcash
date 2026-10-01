@@ -227,8 +227,8 @@ describe('a composed transaction through the shipped compile, deployment and com
     // fills and the stop-site tables the derivation resumes at, not a convention the test supplies.
     expect(artifacts.Caller!.composition?.convention).toBe('per-call');
     expect(artifacts.Caller!.composition!.placeholders).toBeTruthy();
-    expect((artifacts.Caller!.composition as { stopSites?: unknown }).stopSites).toBeTruthy();
-    expect((artifacts.Callee!.composition as { stopSites?: unknown }).stopSites).toBeTruthy();
+    expect(artifacts.Caller!.composition!.stopSites).toBeTruthy();
+    expect(artifacts.Callee!.composition!.stopSites).toBeTruthy();
 
     const { draft } = deriveComposition();
     expect(participant(draft.layout, CALLER_MASTER).index).toBe(0);

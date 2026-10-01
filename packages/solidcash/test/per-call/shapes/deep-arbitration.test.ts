@@ -6,6 +6,7 @@ import {
   encodePushdataValue,
   encodeResultList,
   type Artifact,
+  type CallStopSite,
   type RecordEntry,
 } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -641,17 +642,13 @@ describe('a root, a rater, a vault and a claimer composed through the shipped pa
     for (const name of ['Root', 'Store', 'Rater', 'Vault', 'Claimer', 'Token']) {
       expect(run.artifacts[name]?.composition?.convention).toBe('per-call');
     }
-    expect(publishedRefusals(run.artifacts as Record<string, { composition?: unknown }>)).toStrictEqual([]);
+    expect(publishedRefusals(run.artifacts)).toStrictEqual([]);
     // The payout is one call site the source repeats, beside four the source fixes: readFlag, calc, readRecord and
     // setClaimed. The repeated site sits at call 4, so its visits fill the plan's calls from there on: one
     // sendShare per turn, which is the bound the composer's fill (`site.callIndex + visit`) can bind.
-    const claimer = run.artifacts.Claimer!.composition as {
-      stopSites?: {
-        entries: { functionName: string; sites: { sites: { kind: string; callIndex: number; repeated?: boolean }[] } }[];
-      };
-    };
-    const claim = claimer.stopSites!.entries.find((entry) => entry.functionName === entryName('Claimer', 'claim'))!;
-    expect(claim.sites.sites.filter((site) => site.kind === 'call')
+    const claim = run.artifacts.Claimer!.composition!.stopSites!.entries
+      .find((entry) => entry.functionName === entryName('Claimer', 'claim'))!;
+    expect(claim.sites.sites.filter((site): site is CallStopSite => site.kind === 'call')
       .map((site) => ({ callIndex: site.callIndex, repeated: site.repeated ?? false })))
       .toStrictEqual([
         { callIndex: 0, repeated: false }, { callIndex: 1, repeated: false },

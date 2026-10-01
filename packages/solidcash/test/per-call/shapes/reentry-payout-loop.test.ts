@@ -6,6 +6,7 @@ import {
   encodeIntegerValue,
   encodeResultList,
   type Artifact,
+  type CallStopSite,
   type RecordEntry,
 } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -520,10 +521,10 @@ describe('a claimer that pays once per share, driven through the shipped path', 
     // payout loop - derives in one execution. Only the loop's own call site is marked one the source does not fix;
     // the fixed calls keep their positions, so they and the loop's turns all fill, in order.
     const { run, outcome } = derived(2);
-    const claimer = run.artifacts.Claimer!.composition as
-      { stopSites?: { entries: { functionName: string; sites: { sites: { kind: string; repeated?: boolean }[] } }[] } };
-    const claim = claimer.stopSites!.entries.find((entry) => entry.functionName === entryName('Claimer', 'claim'))!;
-    expect(claim.sites.sites.filter((site) => site.kind === 'call').map((site) => site.repeated ?? false))
+    const claim = run.artifacts.Claimer!.composition!.stopSites!.entries
+      .find((entry) => entry.functionName === entryName('Claimer', 'claim'))!;
+    expect(claim.sites.sites.filter((site): site is CallStopSite => site.kind === 'call')
+      .map((site) => site.repeated ?? false))
       .toStrictEqual([false, false, false, true]);
 
     // The two reads, the guarded write and the loop's two turns each run on their own master, and `claim` resumes

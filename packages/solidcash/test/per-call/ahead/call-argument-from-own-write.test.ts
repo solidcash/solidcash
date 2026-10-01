@@ -419,7 +419,7 @@ async function deployWorld(): Promise<World> {
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a call argument read from the entry\'s own write', () => {
   it('publishes a written struct field as its written value and a written state variable as a state read', () => {
     const { Desk } = compiled();
-    expect((Desk!.composition as { refusedEntries?: unknown[] }).refusedEntries ?? []).toStrictEqual([]);
+    expect(Desk!.composition!.refusedEntries ?? []).toStrictEqual([]);
     // The post's own spelling: the storage-pointer field is published as `allowedWorkers_.length > 0`.
     const post = compileStringMulti(POST_SOURCE, { composition: 'per-call', solidityImportCompat: true } as never);
     expect(noteData(post.Post, 'publishJobPost').args![1]).toStrictEqual(forwardedGate(1));

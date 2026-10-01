@@ -114,7 +114,6 @@ describe('an entry whose write follows a call the source does not fix', () => {
       + '     require(true);'
       + '   }'
       + ' }';
-    expect(publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
-      Record<string, { composition?: unknown }>)).toStrictEqual([]);
+    expect(publishedRefusals(compileStringMulti(source, { composition: 'per-call' }))).toStrictEqual([]);
   });
 });

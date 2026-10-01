@@ -193,7 +193,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
 describe('receive(), compiled per-call', () => {
   it('is an entry of the master, published under its selector', () => {
     const artifact = compile(RECEIVE_SOURCE);
-    expect((artifact.composition as { refusedEntries?: unknown }).refusedEntries ?? []).toStrictEqual([]);
+    expect(artifact.composition!.refusedEntries ?? []).toStrictEqual([]);
     expect(artifact.abi.find((row) => row.name === '__receive')?.selector).toMatch(/^[0-9a-f]{8}$/);
   });
 
@@ -251,7 +251,7 @@ describe('payable and non-payable entries behind one dispatcher, compiled per-ca
   });
 
   it('dispatches receive() by its selector', () => {
-    expect((compile(MIXED_SOURCE).composition as { refusedEntries?: unknown }).refusedEntries ?? []).toStrictEqual([]);
+    expect(compile(MIXED_SOURCE).composition!.refusedEntries ?? []).toStrictEqual([]);
     expect(call('__receive', AMOUNT)).toStrictEqual({ accepted: true });
   });
 

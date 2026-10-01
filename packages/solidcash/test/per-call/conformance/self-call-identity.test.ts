@@ -268,9 +268,7 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Role; readonly
   } catch (error) {
     return { refusal: String((error as Error).message) };
   }
-  const refused = (artifact.composition as {
-    readonly refusedEntries?: readonly { readonly functionName: string; readonly reason: string }[];
-  } | undefined)?.refusedEntries?.find((entry) => entry.functionName.includes(row.entry));
+  const refused = artifact.composition?.refusedEntries?.find((entry) => entry.functionName.includes(row.entry));
   if (refused !== undefined) return { refusal: `${refused.functionName}: ${refused.reason}` };
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signature = new SignatureTemplate(alicePriv);

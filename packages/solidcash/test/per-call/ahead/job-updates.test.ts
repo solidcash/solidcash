@@ -572,7 +572,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): a job updated, c
   it('compiles every entry with the call sites, records and writes the fixture publishes', () => {
     for (const artifact of Object.values(compiled('allowance'))) {
       if (artifact.composition === undefined) continue;
-      expect((artifact.composition as { refusedEntries?: unknown[] }).refusedEntries ?? []).toStrictEqual([]);
+      expect(artifact.composition.refusedEntries ?? []).toStrictEqual([]);
     }
     const desk = compiled('allowance').Desk!;
     expect(desk.stateLayout?.dataNftCount).toBe(2);

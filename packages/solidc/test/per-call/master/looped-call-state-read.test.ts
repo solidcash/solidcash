@@ -241,14 +241,11 @@ function verdict(options: Options): { accepted: boolean; objection?: string; ip?
 
 describe('a compiled master whose calls repeat reads its own record', () => {
   it('publishes the loop call as a repeated site and refuses no entry', () => {
-    const composition = callerArtifact.composition as {
-      stopSites: { entries: { functionName: string; sites: { sites: { repeated?: boolean }[] } }[] };
-      refusedEntries?: unknown;
-    } | undefined;
-    const entry = composition!.stopSites.entries[0]!;
+    const composition = callerArtifact.composition!;
+    const entry = composition.stopSites!.entries[0]!;
     expect(entry.functionName).toBe('Caller.go()');
-    expect(entry.sites.sites.filter((site) => site.repeated === true)).toHaveLength(1);
-    expect(composition?.refusedEntries).toBeUndefined();
+    expect(entry.sites.sites.filter((site) => site.kind === 'call' && site.repeated === true)).toHaveLength(1);
+    expect(composition.refusedEntries).toBeUndefined();
   });
 
   it('accepts one turn, over the declaration its own segment carries', () => {

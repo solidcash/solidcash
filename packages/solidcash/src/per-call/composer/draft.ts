@@ -806,7 +806,7 @@ export function composeDraft(
 
 /** The composed host: the derivation driven by the draft the composer built from a plan. */
 export function createComposedDerivationHost(options: {
-  readonly artifacts: readonly { readonly composition?: unknown }[];
+  readonly artifacts: ShippedHostOptions['artifacts'];
   readonly plan: CompositionDraftPlan;
   readonly vm?: ShippedHostOptions['vm'];
   readonly maximumCommitmentBytes?: number;

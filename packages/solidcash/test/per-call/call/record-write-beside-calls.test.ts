@@ -76,13 +76,8 @@ const heldImpl = compileStringMulti(HELD_SOURCE, { composition: 'per-call' }).Im
 
 /** The segment the artifact publishes for the entry's own record write. */
 function publishedWriteSegment(artifact: Artifact, functionName: string): number | 'last' | undefined {
-  const entries = (artifact.composition as {
-    readonly stopSites?: {
-      readonly entries?: readonly { readonly functionName?: string; readonly writeSegment?: number | 'last' }[];
-    };
-  } | undefined)?.stopSites?.entries;
-  return entries?.find((entry) => entry.functionName === `${artifact.contractName}.${functionName}()`)
-    ?.writeSegment;
+  return artifact.composition?.stopSites?.entries
+    .find((entry) => entry.functionName === `${artifact.contractName}.${functionName}()`)?.writeSegment;
 }
 
 /** The contracts the entry calls, keyed by the interface each call goes through. */

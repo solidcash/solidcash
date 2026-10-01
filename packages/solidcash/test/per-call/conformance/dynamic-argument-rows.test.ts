@@ -68,9 +68,7 @@ async function enter(source: string, functionName: string, args: readonly unknow
   } catch (error) {
     return { refusal: String((error as Error).message) };
   }
-  const refusals = (artifact.composition as {
-    readonly refusedEntries?: readonly { readonly functionName: string; readonly reason: string }[];
-  } | undefined)?.refusedEntries ?? [];
+  const refusals = artifact.composition?.refusedEntries ?? [];
   const refused = refusals.find((each) => each.functionName.includes(functionName));
   if (refused !== undefined) return { refusal: `${refused.functionName}: ${refused.reason}` };
 

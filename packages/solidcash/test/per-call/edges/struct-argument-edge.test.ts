@@ -87,12 +87,6 @@ const deployed = edgeDeployment({
   scope: 'struct argument edge', callee: artifacts.Archive!, caller: artifacts.Desk!, interfaceName: 'IArchive',
 });
 
-/** One entry's published stop-site facts: the segment each of its own writes is declared in. */
-interface PublishedEntry {
-  readonly functionName: string;
-  readonly writeSegments?: readonly { readonly record?: number; readonly segment: number | 'last' }[];
-}
-
 const LOG_ID = 7n;
 const FIRST = { kind: 2n, from: hexToBin('a1b2c3d4'), body: hexToBin('0102030405'), memo: 'first note' };
 const SECOND = { kind: 5n, from: hexToBin('0e0f'), body: hexToBin('6a6b6c6d6e6f'), memo: 'second note' };
@@ -161,9 +155,7 @@ describe('known walls on the struct edge', () => {
     // Owner: the compiler's write-segment publication (`solidc/src/per-call/master/support.ts`,
     // `perCallWriteSteps`). The two spellings write the same record after the same call; only the local's is
     // published in the segment the body writes it in.
-    const { entries } = (artifacts.Desk!.composition as unknown as {
-      readonly stopSites: { readonly entries: readonly PublishedEntry[] };
-    }).stopSites;
+    const { entries } = artifacts.Desk!.composition!.stopSites!;
     const segmentsOf = (entry: string): readonly unknown[] => entries.find((each) => each.functionName === entry)
       ?.writeSegments ?? [];
     const record = artifacts.Desk!.stateLayout!.variables.find((variable) => variable.name === 'lastLength')!.nftIndex;

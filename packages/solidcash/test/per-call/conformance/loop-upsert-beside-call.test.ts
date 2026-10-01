@@ -84,11 +84,9 @@ const MAPPING_WALL_SOURCE = `pragma solidcash ^0.13.0;${MAPPING_HEAD()}`
 
 /** The published write facts of one entry, as a builder reads them. */
 function publishedWrites(artifact: Artifact, entryName: string): { writeSegment?: unknown; writeSegments?: unknown } {
-  const entry = (artifact.composition as { readonly stopSites?: { readonly entries?: readonly unknown[] } } | undefined)
-    ?.stopSites?.entries?.find((candidate) =>
-      String((candidate as { functionName?: string }).functionName ?? '').includes(`.${entryName}()`));
-  const stops = entry as { readonly writeSegment?: unknown; readonly writeSegments?: unknown } | undefined;
-  return { writeSegment: stops?.writeSegment, writeSegments: stops?.writeSegments };
+  const entry = artifact.composition?.stopSites?.entries
+    .find((candidate) => candidate.functionName.includes(`.${entryName}()`));
+  return { writeSegment: entry?.writeSegment, writeSegments: entry?.writeSegments };
 }
 
 /** The commitment the shipped encoder materializes from one state of a layout. */
@@ -282,7 +280,7 @@ describe('the mapping node of the same shape, through the same path', () => {
     expect(publishedWrites(run.impl, 'move')).toStrictEqual({
       writeSegment: 1, writeSegments: [{ collection: 'balances', segment: 1 }],
     });
-    expect((run.impl.composition as { refusedEntries?: unknown } | undefined)?.refusedEntries).toBeUndefined();
+    expect(run.impl.composition?.refusedEntries).toBeUndefined();
     // `balances` is one the initialize never writes. While the hop minted such a head in the call, the frame was
     // refused inside the upsert body (PW3's reproducer, `OP_VERIFY`); a head is minted only at genesis now, so the
     // turns splice through the head the transaction spends, and every participant accepts.

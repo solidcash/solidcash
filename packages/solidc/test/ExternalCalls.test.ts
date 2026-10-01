@@ -1090,10 +1090,7 @@ describe('an interface method named split is called as the interface method', ()
   });
 
   it('serves the entry under the per-call convention, publishing the call site as IScale.split', () => {
-    const composition = compileStringMulti(NATIVE, { composition: 'per-call' }).Payer!.composition as {
-      refusedEntries?: unknown[];
-      stopSites?: { entries: { functionName: string; calls: { interfaceName: string; functionName: string }[] }[] };
-    };
+    const composition = compileStringMulti(NATIVE, { composition: 'per-call' }).Payer!.composition!;
     expect(composition.refusedEntries).toBeUndefined();
     const pay = composition.stopSites!.entries.find((entry) => entry.functionName === 'Payer.pay()')!;
     expect(pay.calls.map((call) => `${call.interfaceName}.${call.functionName}`)).toEqual(['IScale.split']);
@@ -1387,10 +1384,7 @@ describe('built-in member names on a contract receiver under the per-call conven
           IBox(target).transfer(v);
           require(r > 0);
         }
-      }`, { composition: 'per-call' }).Payer!.composition as {
-      refusedEntries?: unknown[];
-      stopSites?: { entries: { functionName: string; calls: { interfaceName: string; functionName: string }[] }[] };
-    };
+      }`, { composition: 'per-call' }).Payer!.composition!;
     expect(composition.refusedEntries).toBeUndefined();
     const pay = composition.stopSites!.entries.find((entry) => entry.functionName === 'Payer.pay()')!;
     expect(pay.calls.map((call) => `${call.interfaceName}.${call.functionName}`))

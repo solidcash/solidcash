@@ -36,40 +36,22 @@ import {
   FrameKind,
   validateStopSiteMetadata,
   witnessKindOf,
+  type Artifact,
+  type PublishedEntryStopSites,
+  type PublishedPerCallStopSites,
   type StopSite,
   type StopSiteMetadata,
   type WitnessBlock,
 } from '@solidcash/utils';
 import type { DerivationHost, FrameRequest, StepOutcome } from './derivation.js';
 
+// The table a per-call artifact publishes on `artifact.composition.stopSites`.
+export type { PublishedCallSite, PublishedEntryStopSites, PublishedPerCallStopSites } from '@solidcash/utils';
+
 type VirtualMachine = ReturnType<typeof createVirtualMachineBch2026>;
 
 /** The exact program a master runs: the transaction, its source outputs, and the input under evaluation. */
 export type ShippedVmProgram = Parameters<VirtualMachine['evaluate']>[0];
-
-/** One external call as the compiler published it: the index, and what the call targets. */
-export interface PublishedCallSite {
-  readonly callIndex: number;
-  readonly interfaceName: string;
-  readonly functionName: string;
-  /** The address called, as hex. */
-  readonly target: string;
-  /** The callee's dispatcher selector, as hex. */
-  readonly selector: string;
-}
-
-/** One entry's sites, plus the call facts a driver resolves a callee through. */
-export interface PublishedEntryStopSites {
-  readonly functionName: string;
-  readonly calls: readonly PublishedCallSite[];
-  readonly sites: StopSiteMetadata;
-}
-
-/** The table a per-call artifact publishes on `artifact.composition.stopSites`. */
-export interface PublishedPerCallStopSites {
-  readonly version: 1;
-  readonly entries: readonly PublishedEntryStopSites[];
-}
 
 /** Raised when the host is asked for something the artifact or the runs do not describe. */
 export class ShippedHostError extends Error {
@@ -84,11 +66,8 @@ export class ShippedHostError extends Error {
 }
 
 /** Reads and validates the stop-site table an artifact publishes. */
-export function readPublishedStopSites(
-  artifact: { readonly composition?: unknown },
-): PublishedPerCallStopSites {
-  const composition = artifact.composition as { readonly stopSites?: unknown } | undefined;
-  const published = composition?.stopSites as PublishedPerCallStopSites | undefined;
+export function readPublishedStopSites(artifact: Pick<Artifact, 'composition'>): PublishedPerCallStopSites {
+  const published = artifact.composition?.stopSites;
   if (published === undefined || typeof published !== 'object') {
     throw new ShippedHostError(
       'PER_CALL_HOST_STOP_SITES_UNPUBLISHED',
@@ -156,7 +135,7 @@ export interface ExecutionStop {
 
 export interface ShippedHostOptions {
   /** Every contract in the composition, whose published tables are merged into one lookup. */
-  readonly artifacts: readonly { readonly composition?: unknown }[];
+  readonly artifacts: readonly Pick<Artifact, 'composition'>[];
   /** Every execution the derivation may reach, keyed by `master`. */
   readonly runs: readonly ShippedMasterRun[];
   /** The BCH-2026 machine to run masters in. Defaults to the consensus machine. */
@@ -227,9 +206,7 @@ export function createShippedDerivationHost(options: ShippedHostOptions): Deriva
   // fails for a reason it cannot name.
   const refused = new Map<string, string>();
   for (const artifact of options.artifacts) {
-    const listed = (artifact.composition as { refusedEntries?: { functionName: string; reason: string }[] })
-      ?.refusedEntries ?? [];
-    for (const entry of listed) refused.set(entry.functionName, entry.reason);
+    for (const entry of artifact.composition?.refusedEntries ?? []) refused.set(entry.functionName, entry.reason);
   }
   const runs = new Map<string, ShippedMasterRun>();
   for (const run of options.runs) {

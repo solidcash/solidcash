@@ -66,7 +66,7 @@ describe.each(['string', 'bytes'])('a per-call master that overwrites two %s val
 
   it('is emitted as a per-call master', () => {
     expect(pair.artifact.composition?.convention).toBe('per-call');
-    expect((pair.artifact.composition as { refusedEntries?: unknown }).refusedEntries).toBeUndefined();
+    expect(pair.artifact.composition!.refusedEntries).toBeUndefined();
   });
 
   it('accepts both values rewritten at the same widths', () => {
@@ -325,7 +325,7 @@ describe.each(KINDS)('a per-call master that writes a string beside $label', (ki
   it('is emitted as a per-call master for every entry, with the shapes crossing chunk boundaries as stated', () => {
     for (const contract of [grow, shrink, pushFirst, itemsFirst]) {
       expect(contract.artifact.composition?.convention).toBe('per-call');
-      expect((contract.artifact.composition as { refusedEntries?: unknown }).refusedEntries).toBeUndefined();
+      expect(contract.artifact.composition!.refusedEntries).toBeUndefined();
     }
     expect(kind.encode(held(kind.perChunk)).length).toBeLessThanOrEqual(120);
     expect(kind.encode(held(kind.perChunk + 1)).length).toBeGreaterThan(120);
@@ -476,7 +476,7 @@ describe('a per-call master that writes a mapping beside its dynamic values', ()
   it('is emitted as a per-call master for both entries', () => {
     for (const contract of [one, two]) {
       expect(contract.artifact.composition?.convention).toBe('per-call');
-      expect((contract.artifact.composition as { refusedEntries?: unknown }).refusedEntries).toBeUndefined();
+      expect(contract.artifact.composition!.refusedEntries).toBeUndefined();
     }
   });
 

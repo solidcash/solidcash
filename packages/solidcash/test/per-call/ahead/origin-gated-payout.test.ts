@@ -317,7 +317,7 @@ async function coinLive(market: Market, flow: Flow): Promise<boolean> {
 function escrowWriteSegments(artifacts: Artifacts): unknown {
   const entry = readPublishedStopSites(artifacts.Escrow!).entries
     .find((candidate) => candidate.functionName === 'Escrow.refund()');
-  return (entry as { readonly writeSegments?: unknown } | undefined)?.writeSegments;
+  return entry?.writeSegments;
 }
 
 let guardedMarket: Promise<Market> | undefined;

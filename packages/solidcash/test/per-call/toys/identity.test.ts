@@ -250,8 +250,7 @@ function refusalOf(run: () => unknown): { readonly name?: string; readonly code?
 /** The refusals a compile publishes, or the error it throws, as one record. */
 function compileRefusal(source: string): { readonly name?: string; readonly code?: string; readonly message: string } {
   try {
-    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
-      Record<string, { composition?: unknown }>);
+    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }));
     if (refusals.length === 0) {
       throw new Error('the shipped per-call compiler served the source, so there is no refusal to record');
     }
@@ -342,8 +341,7 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
     // compiles, with or without an internal helper declared beside it.
     const withHelper = MAPPING_SWEEP_SOURCE.replace(/ }$/, ' function h(int x) private returns (int) { return x + 1; } }');
     for (const source of [MAPPING_SWEEP_SOURCE, withHelper]) {
-      const artifacts = compileStringMulti(source, { composition: 'per-call' }) as
-        Record<string, { bytecode?: string; composition?: unknown }>;
+      const artifacts = compileStringMulti(source, { composition: 'per-call' });
       expect(publishedRefusals(artifacts)).toStrictEqual([]);
       expect(artifacts.Tok!.bytecode!.length).toBeGreaterThan(0);
     }

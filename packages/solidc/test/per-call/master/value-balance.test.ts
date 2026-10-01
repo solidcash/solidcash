@@ -12,7 +12,6 @@ import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
-import type { PublishedRefusal } from './refused-entry.js';
 
 /**
  * `address(this).balance` in a per-call master (spec 4b): the value of the containers the transaction spends, with
@@ -160,13 +159,13 @@ describe('address(this).balance, compiled per-call', () => {
   });
 
   it('is published for the builder, which spends every container for an entry that reads it', () => {
-    const readers = (artifact.composition as { balanceReaders?: readonly string[] }).balanceReaders;
+    const readers = artifact.composition!.balanceReaders;
     expect(readers).toStrictEqual(['Bank.check()', 'Bank.top()', 'Bank.sweep()', 'Bank.spend()']);
   });
 
   it('refuses by name a body that reads another address\'s balance', () => {
     const other = compileString(OTHER_SOURCE, { composition: 'per-call' });
-    const refused = (other.composition as { refusedEntries?: PublishedRefusal[] }).refusedEntries ?? [];
+    const refused = other.composition!.refusedEntries ?? [];
     expect(refused.map((entry) => entry.functionName)).toStrictEqual(['Peek.peek()']);
     expect(refused[0]!.reason).toMatch(/reads the balance of an address other than its own/);
   });

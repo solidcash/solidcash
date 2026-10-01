@@ -196,8 +196,7 @@ const RAW_REFUSAL =
 
 /** The calls a source's compiled artifacts publish as refused, or the empty list when every body is served. */
 function refusalsOf(source: string): { functionName: string; reason: string }[] {
-  return publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
-    Record<string, { composition?: unknown }>);
+  return publishedRefusals(compileStringMulti(source, { composition: 'per-call' }));
 }
 
 interface Run {

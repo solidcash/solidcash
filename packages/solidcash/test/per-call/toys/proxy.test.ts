@@ -183,17 +183,11 @@ const FALLBACK_BESIDE_ENTRY_SOURCE = PROLOGUE
 const RECEIVE_SOURCE = PROLOGUE
   + ' contract Proxy { address implementation; receive() external payable { require(true); } }';
 
-/** One entry the compiler refused, as the artifact publishes it. */
-interface PublishedRefusal {
-  readonly functionName: string;
-  readonly reason: string;
-}
-
 /** The refusal the shipped compile publishes or throws for a source, so a test can name the shape that stops it. */
 function refusalOf(source: string, options: Record<string, unknown> = {}): { code?: string; message: string } {
-  let artifact: { composition?: { refusedEntries?: readonly PublishedRefusal[] } };
+  let artifact: Artifact;
   try {
-    artifact = compileString(source, { composition: 'per-call', ...options } as never) as never;
+    artifact = compileString(source, { composition: 'per-call', ...options } as never);
   } catch (error) {
     return { code: (error as { code?: string }).code, message: (error as Error).message };
   }
@@ -210,9 +204,7 @@ function refusalOf(source: string, options: Record<string, unknown> = {}): { cod
 /** True when the shipped compile serves the source, i.e. throws nothing and publishes no refusal. */
 function isServed(source: string): boolean {
   try {
-    const artifact = compileString(source, { composition: 'per-call' }) as {
-      composition?: { refusedEntries?: readonly PublishedRefusal[] };
-    };
+    const artifact = compileString(source, { composition: 'per-call' });
     return (artifact.composition?.refusedEntries ?? []).length === 0;
   } catch {
     return false;
@@ -304,8 +296,8 @@ describe('a proxy whose fallback forwards its call data to its implementation', 
     expect(artifacts.Proxy?.composition?.convention).toBe('per-call');
     expect(artifacts.Impl?.composition?.convention).toBe('per-call');
     // The fallback is the proxy's only entry, so it is served rather than refused.
-    expect((artifacts.Proxy?.composition as { refusedEntries?: unknown } | undefined)?.refusedEntries).toBeUndefined();
-    expect((artifacts.Proxy?.composition as { stopSites?: unknown } | undefined)?.stopSites).toBeTruthy();
+    expect(artifacts.Proxy?.composition?.refusedEntries).toBeUndefined();
+    expect(artifacts.Proxy?.composition?.stopSites).toBeTruthy();
   });
 
   it('records a DELEGATE call whose target is the address the proxy\'s record holds', () => {

@@ -463,9 +463,7 @@ function publishedFacts(functionName: string): Record<string, unknown> {
     readonly dynamicReads?: readonly string[];
     readonly dynamicWrites?: readonly string[];
   };
-  const stops = (desk.composition as unknown as {
-    readonly stopSites: { readonly entries: readonly { functionName: string; writeSegments?: unknown }[] };
-  }).stopSites.entries.find((entry) => entry.functionName === `Desk.${functionName}()`);
+  const stops = desk.composition!.stopSites!.entries.find((entry) => entry.functionName === `Desk.${functionName}()`);
   return {
     calls: (row.externalCalls ?? []).map((call) => `${call.interfaceName}.${call.functionName}@${call.occurrence}`),
     reads: row.dynamicReads ?? [],
@@ -603,7 +601,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
   it('compiles every entry with the call sites, occurrences, reads and write facts the fixture publishes', () => {
     for (const artifact of Object.values(compiled())) {
       if (artifact.composition === undefined) continue;
-      expect((artifact.composition as { refusedEntries?: unknown[] }).refusedEntries ?? []).toStrictEqual([]);
+      expect(artifact.composition.refusedEntries ?? []).toStrictEqual([]);
     }
     // As `postThreadMessage`: reads the task array, writes nothing of its own.
     expect(publishedFacts('message')).toStrictEqual({

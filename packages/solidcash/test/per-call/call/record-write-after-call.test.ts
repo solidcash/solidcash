@@ -66,13 +66,8 @@ const escrow = artifacts.Escrow!;
 
 /** The segment the artifact publishes for the entry's own record write. */
 function publishedWriteSegment(artifact: Artifact, functionName: string): number | 'last' | undefined {
-  const entries = (artifact.composition as {
-    readonly stopSites?: {
-      readonly entries?: readonly { readonly functionName?: string; readonly writeSegment?: number | 'last' }[];
-    };
-  } | undefined)?.stopSites?.entries;
-  return entries?.find((entry) => entry.functionName === `${artifact.contractName}.${functionName}()`)
-    ?.writeSegment;
+  return artifact.composition?.stopSites?.entries
+    .find((entry) => entry.functionName === `${artifact.contractName}.${functionName}()`)?.writeSegment;
 }
 
 /** The commitment the shipped encoder materializes from one state of a layout. */

@@ -22,73 +22,17 @@ import { binToHex } from '@bitauth/libauth';
 import {
   STOP_SITE_METADATA_VERSION,
   validateStopSiteMetadata,
+  type PublishedPerCallStopSites,
+  type PublishedWriteSegment,
   type StopSite,
   type StopSiteMetadata,
 } from '@solidcash/utils';
 import type { MasterCallSite } from './frame-tail.js';
 
-/** One external call as the driver needs to see it: the call's index and what it targets. */
-export interface PublishedCallSite {
-  readonly callIndex: number;
-  /** The interface the call goes through, for diagnostics and callee resolution. */
-  readonly interfaceName: string;
-  /** The method called, whose entry the callee runs. */
-  readonly functionName: string;
-  /** The address called, as hex; empty when the caller's own code computes the target, which a driver reads at
-   * the call site rather than from this table. */
-  readonly target: string;
-  /** The callee's four-byte dispatcher selector, as hex. */
-  readonly selector: string;
-}
-
-/** One entry's stop sites plus the call facts a driver resolves a callee through. */
-export interface PublishedEntryStopSites {
-  /** The entry's identity, `Contract.entry()`, which a `FrameRequest.functionName` matches. */
-  readonly functionName: string;
-  /** One record per external call, in call order. */
-  readonly calls: readonly PublishedCallSite[];
-  /**
-   * The segment the entry's own record write is declared in, when the entry writes one.
-   *
-   * The records are the frame's own: a data-NFT field, a dynamic value's record, or a verified mapping's nodes. A
-   * fixed number is the count of external calls the entry makes before the write; `'last'` is the last segment the
-   * run opens, which is where a write every call precedes lands and where a write to a field whose bytes the record
-   * only sizes lands whatever the source order. A builder declares the write's records in that one segment; absent
-   * means the entry writes no record, or writes one whose segment the source does not fix.
-   */
-  readonly writeSegment?: number | 'last';
-  /**
-   * One fact per write the entry makes, each naming the segment that write's records are declared in.
-   *
-   * The fact is published whenever every write's segment is fixed, so a body whose writes do not all land in one
-   * segment still tells a builder where each of them lands. An empty list is an entry that writes no record of its
-   * own; absent means a write's segment is not fixed, which the builder refuses by name rather than declaring its
-   * records in a guessed segment.
-   */
-  readonly writeSegments?: readonly PublishedWriteSegment[];
-  /** The sites in the order the driver reaches them, validated before publication. */
-  readonly sites: StopSiteMetadata;
-}
-
-/**
- * One write of an entry, and the segment its records are declared in.
- *
- * Exactly one identity field is set: `record` names one of the entry's own data-NFT records by its record index,
- * `collection` names the verified mapping a batch write targets, and `variable` names the dynamic value whose run
- * of chunk records the write occupies.
- */
-export interface PublishedWriteSegment {
-  readonly record?: number;
-  readonly collection?: string;
-  readonly variable?: string;
-  readonly segment: number | 'last';
-}
-
-/** Every entry of one contract, as published on its artifact. */
-export interface PublishedPerCallStopSites {
-  readonly version: 1;
-  readonly entries: readonly PublishedEntryStopSites[];
-}
+// The published table is the artifact's own type, `Artifact.composition.stopSites`.
+export type {
+  PublishedCallSite, PublishedEntryStopSites, PublishedPerCallStopSites, PublishedWriteSegment,
+} from '@solidcash/utils';
 
 /** The identity a driver's `FrameRequest.functionName` uses for an entry. */
 export function entryFunctionName(contractName: string, entryName: string): string {

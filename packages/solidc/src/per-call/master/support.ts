@@ -1198,13 +1198,14 @@ export interface PerCallMasterShapeAssessment {
    *
    * A master is one program, but a body it cannot emit is not the contract's problem: the entry stays in the ABI
    * and the dispatcher, its body is emitted as a refusal that fails whenever it is reached, and the reason is
-   * published so a builder reports which function is unsupported instead of the whole contract.
+   * published so a builder reports which function is unsupported instead of the whole contract. The names are the
+   * bodies' own; the artifact publishes each as `Contract.entry()` (`PublishedRefusedEntry.functionName`).
    */
   readonly refusedEntries?: readonly { readonly entryName: string; readonly reason: string }[];
   /**
    * The entries that read their own contract's balance, directly or through a body they reach: a builder spends
    * every container of the contract for them, since the balance a frame reads is the containers its transaction
-   * spends.
+   * spends. The names are the bodies' own; the artifact publishes each as `Contract.entry()`.
    */
   readonly balanceReaders?: readonly string[];
 }

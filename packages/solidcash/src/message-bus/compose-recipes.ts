@@ -10,7 +10,7 @@ import {
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   decodePushdataValue, encodePushdataValue,
-  buildEntryCommitment, bytecodeToScript, scriptToAsm,
+  bytecodeToScript, scriptToAsm,
   AddressType, BytesType, FixedType, IntType,
   parseArrayTypeString, parseTypeStrict, PrimitiveType,
   getDefaultStateValue, hash160, hash256, ripemd160, sha256,
@@ -548,10 +548,17 @@ export const materializeChildDeploymentEntryValue = (
   return materializeChildDeploymentEntryScalar(value, typeName, solidityAbi);
 };
 
+const boundedNumericResultType = (type: string): boolean => {
+  const numeric = /^u?int([1-9][0-9]*)$/.exec(type)
+    ?? /^u?fixed([1-9][0-9]*)x\d+$/.exec(type);
+  if (!numeric) return false;
+  const width = Number(numeric[1]);
+  return width >= 8 && width <= 256 && width % 8 === 0;
+};
+
 const evmStaticResultType = (type: string): boolean => type === 'bool'
   || type === 'int' || type === 'uint' || type === 'bigint'
-  || /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)$/.test(type)
-  || /^u?fixed(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)x\d+$/.test(type)
+  || boundedNumericResultType(type)
   || type === 'address' || type === 'address payable'
   || /^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type);
 

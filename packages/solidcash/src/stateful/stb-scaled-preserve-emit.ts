@@ -15,7 +15,6 @@ import {
   permitsLegacyNamedValueChunkFallbackForGroups,
   type ChunkableWritePlanningHost,
 } from './stb-chunkable-write-planning.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { externalCallEventDestinations } from './value-chunk-base-writer-select.js';
 import { chunkableWriterEventOutputIndex } from './same-index-twin-emit.js';
 import { writerBlockOccupancyEnd } from './persist-predecessor-layout.js';

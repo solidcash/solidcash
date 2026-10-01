@@ -7,7 +7,6 @@
 import { binToHex } from '@bitauth/libauth';
 import type {
   AbiFunction,
-  Artifact,
   EntryAccessAbi,
   EventDefinitionAbi,
   FunctionBlockLayout,
@@ -171,8 +170,8 @@ export type ProtectedLoopEntryCollectionSelection =
 /** Select collection locks which same-index INSERT repair must not use as disposable relocation pads. */
 export function selectProtectedLoopEntryCollections(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
-    'functionName' | 'logicalFunctionName' | 'compilerRoute' | 'logicalArtifact' | 'externalContract'
-    | 'blockLayout' | 'plannedEntryInserts' | 'valueChunkWrites'>>,
+  'functionName' | 'logicalFunctionName' | 'compilerRoute' | 'logicalArtifact' | 'externalContract'
+  | 'blockLayout' | 'plannedEntryInserts' | 'valueChunkWrites'>>,
   ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): ProtectedLoopEntryCollectionSelection {
   let described = false;
@@ -246,7 +245,7 @@ export function selectExternalEventProbeInput(
 }
 
 export type CompilerWriterEventCandidate = Pick<ExternalCallUtxoGroup,
-  'categoryId' | 'blockLayout' | 'compilerRoute' | 'eventOutputs'>;
+'categoryId' | 'blockLayout' | 'compilerRoute' | 'eventOutputs'>;
 
 export type CompilerWriterEventSelection =
   | { status: 'absent' }

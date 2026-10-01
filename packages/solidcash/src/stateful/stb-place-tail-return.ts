@@ -4,7 +4,7 @@
 
 import { binToHex, binsAreEqual } from '@bitauth/libauth';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import type { Output, UnlockableUtxo } from '../interfaces.js';
+import type { Output } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   isOpReturnLockingBytecode,
@@ -191,11 +191,11 @@ export function placeTailReturnAfterSwappedTokenBlock(
         outputs: builder.outputs,
       });
       if (redirected === undefined) {
-        const host = (suffixStart ?? placedIndex) + 1;
-        while (host >= builder.outputs.length) {
+        const nextIndex = (suffixStart ?? placedIndex) + 1;
+        while (nextIndex >= builder.outputs.length) {
           builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
         }
-        redirected = host;
+        redirected = nextIndex;
       }
       placedIndex = redirected;
       // Hard refuse: never write authenticated view data onto OP_RETURN.
@@ -206,11 +206,11 @@ export function placeTailReturnAfterSwappedTokenBlock(
             ? builder.outputs[placedIndex]!.to as string
             : undefined,
       )) {
-        const host = placedIndex + 1;
-        while (host >= builder.outputs.length) {
+        const nextIndex = placedIndex + 1;
+        while (nextIndex >= builder.outputs.length) {
           builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
         }
-        placedIndex = host;
+        placedIndex = nextIndex;
       }
       const rawCommitment = binToHex(event.commitment);
       const commitment = rawCommitment === '' ? '0101' : returnEventNftCommitment(event.commitment);

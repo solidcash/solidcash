@@ -24228,8 +24228,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Exact collection-address output cardinality: every target is one node; each distinct nonnegative predOut
       // is one recreated non-target predecessor. Read-only accesses to this collection are preserved separately.
+      // A direct singleton and a linear two-target batch have no inactive/alias (-2) rows. Nonlinear batches
+      // must retain the general sentinel and duplicate accounting below.
+      const directSmallCensus = (targets.length === 1 || (targets.length === 2 && batch.linear === true))
+        && aliasWrite === undefined
+        && !this.isCompilerMessageBusRoute(node)
+        && !runtimeCollections.has(batch.collection)
+        && !this.entrySlots.some((info, i) => info.collection === batch.collection
+          && !targets.includes(i) && !info.operations.includes('write')
+          && !info.operations.includes('delete'));
       const expected = `(__vmap_batch_expected_${batch.collection})`;
-      if (batch.linear) {
+      if (directSmallCensus) {
+        // Every active write contributes one output and each nonnegative predOut contributes one recreated
+        // predecessor. No read-only rows or runtime rows remain to accumulate into this count.
+        for (const slot of targets) {
+          arg(`__internal__vmapBatchPredOut_${slot}`);
+          bin(Op.OP_0); bin(Op.OP_GREATERTHANOREQUAL);
+        }
+        if (targets.length === 2) bin(Op.OP_ADD);
+        this.emit(encodeInt(BigInt(targets.length)), loc); bin(Op.OP_ADD);
+      } else if (batch.linear) {
         this.emit(encodeInt(BigInt(targets.length)), loc);
       } else if (aliasWrite !== undefined && aliasOwner !== undefined) {
         arg(`__internal__vmapBatchSlot_${aliasWrite}`); arg(`__internal__vmapBatchSlot_${aliasOwner}`, 1);
@@ -24252,7 +24270,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitPickVMapWitness(vmapRuntimeOutputCountName(batch.collection), loc);
         this.emit(Op.OP_ADD, loc);
       }
-      for (let i = 0; i < targets.length; i++) {
+      for (let i = 0; !directSmallCensus && i < targets.length; i++) {
         const slot = targets[i];
         arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP);
         bin(Op.OP_0); bin(Op.OP_GREATERTHANOREQUAL); // [pout, include]
@@ -24275,9 +24293,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       const inputExpected = `(__vmap_batch_input_expected_${batch.collection})`;
-      this.emit(encodeInt(0n), loc);
+      if (directSmallCensus) {
+        arg(`__internal__vmapBatchProof_${targets[0]}`);
+        if (targets.length === 1) {
+          bin(Op.OP_0); bin(Op.OP_GREATERTHAN);
+        } else {
+          arg(`__internal__vmapBatchProof_${targets[1]}`);
+          // Count positive proof ordinals once each. Both logical writes may share the same predecessor input.
+          bin(Op.OP_OVER); bin(Op.OP_0); bin(Op.OP_GREATERTHAN); // [p0, p1, include0]
+          bin(Op.OP_SWAP); // [p0, include0, p1]
+          bin(Op.OP_DUP); bin(Op.OP_0); bin(Op.OP_GREATERTHAN); // [p0, include0, p1, positive1]
+          bin(Op.OP_SWAP); this.emit(encodeInt(3n), loc); bin(Op.OP_PICK);
+          bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_BOOLAND); // [p0, include0, include1]
+          bin(Op.OP_ADD); bin(Op.OP_NIP); // [distinct positive proof count]
+        }
+      } else this.emit(encodeInt(0n), loc);
       this.pushToStack(inputExpected);
-      for (let i = 0; i < targets.length; i++) {
+      for (let i = 0; !directSmallCensus && i < targets.length; i++) {
         const slot = targets[i];
         arg(`__internal__vmapBatchProof_${slot}`); bin(Op.OP_DUP);
         bin(Op.OP_0); bin(Op.OP_GREATERTHAN); // [proof, include]

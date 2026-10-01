@@ -14,13 +14,11 @@ import {
   groupIndexForExternalCallSlot,
   isSdkResolvedExternalCallTopologyWitness,
   isSdkResolvedParticipantStorageWitness,
-  nestedProxyImplementationInputIndex,
   physicalExternalCallSelectorHex,
   participantGroupForTarget,
   selectorParamSlot,
   vmapBatchWitnessFallback,
 } from './physical-external-call.js';
-import { selectVisibleCallArguments } from './route-expression-key.js';
 import {
   addressArgumentLockingBytecodeHex, externalCallTargetSourceLockingBytecodeHex,
 } from './mapping-key-lookup.js';
@@ -123,13 +121,12 @@ export async function fixCreateBuilderDelegateUnlockers(
     lowLevelCallUtxoGroups, externalCallUtxoGroups, nestedDelegateProxyGroupByLowLevel,
     lowLevelCallInputBase, delegateExternalGroupIndices, delegateExternalGroupByCallsite,
     allGroupEcSlots, allGroupParentIndices, physicalReturnIndexForGroup,
-    nestedMasterIndices, nestedOutputBases, relocatedPredOutBase,
+    nestedMasterIndices, nestedOutputBases,
     pendingDelegateInputFills, pendingAnchorFills, pendingExternalCallInputFills,
     entryAbiFunction,
   } = params;
   const resolveNestedIdentityAnchorBands = host.resolveNestedIdentityAnchorBands;
   const nestedFullState = host.nestedFullState;
-  const selectProxyForwardInput = host.selectProxyForwardInput;
   const directNestedIdentityWitness = host.directNestedIdentityWitness;
   const timingEnabled = params.timingEnabled;
   const publicSelfAddress = params.publicSelfAddress;
@@ -147,6 +144,10 @@ export async function fixCreateBuilderDelegateUnlockers(
   const identityAnchors = params.identityAnchors as UnlockableUtxo[];
   const entryArgs = params.entryArgs as FunctionArgument[];
   const entryArtifact = params.entryArtifact as Artifact;
+  // Keep debug lookups live without capturing mutable globals in the per-group argument mapper.
+  const debugEnv = (): Record<string, string> | undefined =>
+    (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+  const debugLog = (...args: unknown[]): void => { console.error(...args); };
 
   // Fix data NFT unlockers with correct master input index
   let currentBase = lowLevelCallInputBase;
@@ -160,27 +161,27 @@ export async function fixCreateBuilderDelegateUnlockers(
       routeBlobBytes: group.compilerRoute?.blob.length,
       routeArgs: group.compilerRoute?.args.length,
     });
-    const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
-    const proxyPhysicalSize = proxyExternalGroup === undefined ? 0
-      : (externalCallUtxoGroups[proxyExternalGroup].blockInputs?.length
-        ?? 1 + externalCallUtxoGroups[proxyExternalGroup].dataNftUtxos.length);
+    const delegateProxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
+    const proxyPhysicalSize = delegateProxyExternalGroup === undefined ? 0
+      : (externalCallUtxoGroups[delegateProxyExternalGroup].blockInputs?.length
+        ?? 1 + externalCallUtxoGroups[delegateProxyExternalGroup].dataNftUtxos.length);
     // A route block lays every implementation out contiguously right after the block, ahead of the callee
     // band, so `currentBase` already names this one. Only the legacy interleaved layout puts a nested
     // proxy's implementation after that proxy's own block.
-    const proxyGroup = proxyExternalGroup === undefined
-      ? undefined : externalCallUtxoGroups[proxyExternalGroup];
-    const delegateOutgoingSelfAddress = proxyGroup === undefined
+    const delegateProxyGroup = delegateProxyExternalGroup === undefined
+      ? undefined : externalCallUtxoGroups[delegateProxyExternalGroup];
+    const delegateOutgoingSelfAddress = delegateProxyGroup === undefined
       ? publicSelfAddress
-      : hexToBin(proxyGroup.externalContract.inner.lockingBytecode);
-    const embeddedDelegateOffset = proxyGroup?.delegateEmbeddedInBlock
-      ? proxyGroup.blockInputs?.findIndex((input) => input !== undefined
+      : hexToBin(delegateProxyGroup.externalContract.inner.lockingBytecode);
+    const embeddedDelegateOffset = delegateProxyGroup?.delegateEmbeddedInBlock
+      ? delegateProxyGroup.blockInputs?.findIndex((input) => input !== undefined
         && input.txid.toLowerCase() === group.masterUtxo!.txid.toLowerCase()
         && input.vout === group.masterUtxo!.vout)
       : undefined;
     const masterInputIndex = embeddedDelegateOffset !== undefined && embeddedDelegateOffset >= 0
-      ? nestedMasterIndices[proxyExternalGroup!] + embeddedDelegateOffset
-      : proxyExternalGroup === undefined || compilerRouteDelegateLayout
-        ? currentBase : nestedMasterIndices[proxyExternalGroup] + proxyPhysicalSize;
+      ? nestedMasterIndices[delegateProxyExternalGroup!] + embeddedDelegateOffset
+      : delegateProxyExternalGroup === undefined || compilerRouteDelegateLayout
+        ? currentBase : nestedMasterIndices[delegateProxyExternalGroup] + proxyPhysicalSize;
     group.dataNftUtxos = group.dataNftUtxos.map((nftUtxo) => ({
       ...nftUtxo,
       unlocker: createDataNftUnlocker(
@@ -254,8 +255,8 @@ export async function fixCreateBuilderDelegateUnlockers(
         visibleFunctionArgs,
         nestedGroupIndexForSlot,
         await (async () => {
-          const contract = (proxyGroup?.logicalContract
-            ?? proxyGroup?.externalContract ?? host.selfContract) as any;
+          const contract = (delegateProxyGroup?.logicalContract
+            ?? delegateProxyGroup?.externalContract ?? host.selfContract) as any;
           return {
             contract,
             artifact: (group.logicalArtifact ?? bArt) as Artifact,
@@ -313,15 +314,13 @@ export async function fixCreateBuilderDelegateUnlockers(
           // Decrease updateJobPost left idx2 at 20, so the return pin EQUALVERIFYed
           // a jobEvents chunk (mutable leftover 0x01) against an empty capability.
           if (nestedGroup === undefined && occurrence && occurrence !== 'once') {
-            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-              ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1') {
-              console.error('omit-conditional-return', { input: inp.name, slot, occurrence });
+            if (debugEnv()?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1') {
+              debugLog('omit-conditional-return', { input: inp.name, slot, occurrence });
             }
             return -1n;
           }
-          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_RETURN === '1') {
-            console.error('external-return-witness-fill', {
+          if (debugEnv()?.SOLIDC_DEBUG_RETURN === '1') {
+            debugLog('external-return-witness-fill', {
               input: inp.name,
               groupLocalIdx,
               nestedGroups,
@@ -487,9 +486,8 @@ export async function fixCreateBuilderDelegateUnlockers(
               categoryId: proxyCategoryId,
             });
           }
-          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_PROXY_BASE === '1') {
-            console.error('delegate-proxy-master-context', {
+          if (debugEnv()?.SOLIDC_DEBUG_PROXY_BASE === '1') {
+            debugLog('delegate-proxy-master-context', {
               groupLocalIdx,
               contract: bArt.contractName,
               functionName: group.functionName,
@@ -515,9 +513,8 @@ export async function fixCreateBuilderDelegateUnlockers(
         }
         if (inp.name === '__internal__proxyMasterOutputIndex') {
           const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
-          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_VMAP_PROOF === '1') {
-            console.error('proxy-master-output-context', {
+          if (debugEnv()?.SOLIDC_DEBUG_VMAP_PROOF === '1') {
+            debugLog('proxy-master-output-context', {
               groupLocalIdx, compilerRoute: !!compilerRouteDelegateLayout,
               blockBase: overrides?.blockBase,
               proxyExternalGroup,
@@ -684,8 +681,8 @@ export async function fixCreateBuilderDelegateUnlockers(
             ?? (graphCompilerRoute ? undefined : group.compilerRoute?.internalArgs?.[inp.name]);
           if (routeWitness !== undefined) return routeWitness;
           if (['SOLIDC_DEBUG_COLLECTION_FETCH', 'SOLIDC_DEBUG_VALUE_WITNESS'].some((name) =>
-            (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
-            console.error('delegate-value-witness-fill', {
+            debugEnv()?.[name] === '1')) {
+            debugLog('delegate-value-witness-fill', {
               functionName: group.functionName, input: inp.name,
               length: valueWitness instanceof Uint8Array ? valueWitness.length : valueWitness.length,
               head: valueWitness instanceof Uint8Array ? binToHex(valueWitness.slice(0, 64)) : '<chunks>',
@@ -897,11 +894,11 @@ export async function fixCreateBuilderDelegateUnlockers(
         pendingExternalCallInputFills.push({ group, positions: externalCallInputPositions });
       }
       if (bFunc.inputs.some((input) => input.name === '__internal__dynamicChunkInputBase')) {
-        const resources = group.dynamicChunkResources ?? proxyGroup?.dynamicChunkResources ?? [];
+        const resources = group.dynamicChunkResources ?? delegateProxyGroup?.dynamicChunkResources ?? [];
         const first = [...resources].sort((left, right) => left.blockSlot - right.blockSlot)[0];
         pendingDynamicChunkInputFills.push({
           group,
-          root: proxyExternalGroup === undefined,
+          root: delegateProxyExternalGroup === undefined,
           ...(first !== undefined && group.blockInputs?.[first.blockSlot]
             ? { target: group.blockInputs[first.blockSlot] } : {}),
         });
@@ -919,7 +916,7 @@ export async function fixCreateBuilderDelegateUnlockers(
       }
     }
 
-    if (proxyExternalGroup === undefined) currentBase += 1 + group.dataNftUtxos.length;
+    if (delegateProxyExternalGroup === undefined) currentBase += 1 + group.dataNftUtxos.length;
     if (timingEnabled) console.error('delegate-unlocker-group-complete', { groupLocalIdx });
   }
   host.timing('delegate-unlockers-complete');

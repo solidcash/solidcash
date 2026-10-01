@@ -1,7 +1,10 @@
+import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import {
+  createFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos,
+} from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
 // A contract with a single variable-length `string` state var. Today this lives in ONE data NFT
@@ -351,14 +354,25 @@ describe('string state variable: orphan-bound (write leaves exactly the right ch
     await sc.setText('hello', alicePub, sig()).send(); // valid baseline
 
     // Derive a valid single-chunk write, then append a duplicate chunk commitment so the builder emits
-    // nNew+1 chunk outputs. The covenant's orphan-bound (count == nNew) must reject it.
-    const call = sc.setText('world', alicePub, sig());
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const stb: any = await (call as any)._applyOverrides();
-    const cur = stb.getChunkRawCommitments('text');
-    stb.setChunkRawCommitments('text', [...cur, cur[0]]);
-    let rejected = false;
-    try { await stb.send(); } catch { rejected = true; }
-    expect(rejected).toBe(true);
+    // nNew+1 chunk outputs. The covenant's orphan-bound (count == nNew) must reject it. `send()` re-derives the
+    // chunk set the covenant accepts and drops the duplicate before anything is broadcast, so the write is built
+    // as given, funded and broadcast raw. The same write without the duplicate is the control: it settles, so the
+    // refusal comes from the duplicate, not from a fee or value fault of the raw path.
+    const write = async (duplicate: boolean): Promise<string> => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const stb: any = await (sc.setText('world', alicePub, sig()) as any)._applyOverrides();
+      const cur = stb.getChunkRawCommitments('text');
+      if (duplicate) stb.setChunkRawCommitments('text', [...cur, cur[0]]);
+      const builder = stb.build();
+      const { utxo, unlocker } = await createFeeFunder(provider, 20_000n);
+      builder.addInput(utxo, unlocker);
+      return provider.sendRawTransaction(binToHex(encodeTransaction(builder.buildLibauthTransaction())))
+        .then(() => 'ACCEPTED')
+        .catch((error: Error) => `REJECTED ${error.message}`);
+    };
+    const forged = await write(true);
+    expectScriptRejection(forged, 0);
+    expect(forged).toContain('OP_VERIFY');
+    expect(await write(false)).toBe('ACCEPTED');
   });
 });

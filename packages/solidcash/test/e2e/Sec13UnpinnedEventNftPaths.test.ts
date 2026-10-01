@@ -11,6 +11,7 @@ import {
   readEventsFromChain, upgrades,
 } from '../../src/index.js';
 import { ContractUnlocker, Utxo } from '../../src/interfaces.js';
+import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { addressToLockScript, createUnlockingBytecode, scriptToAddress } from '../../src/utils.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
@@ -27,7 +28,15 @@ const FORGED_COMMITMENT = binToHex(new Uint8Array([0x03, 0x3f, 0x42, 0x0f])); //
 const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
 
-interface Row { outcome: string; events: bigint[]; state?: bigint; eventSlot?: string }
+/** One input's own verdict on the built transaction; a broadcast names only the first input that fails. */
+const inputVerdict = (builder: TransactionBuilder, provider: MockNetworkProvider, inputIndex: number): string => {
+  const { transaction, sourceOutputs } = builder.buildLibauthProgram();
+  const vm = createVirtualMachineBch2026ForProvider(provider);
+  const success = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));
+  return success === true ? 'ACCEPTED' : `REJECTED: ${success}`;
+};
+
+interface Row { outcome: string; events: bigint[]; state?: bigint; eventSlot?: string; implVerdict?: string }
 
 function expectRejectedAt(outcome: string, inputIndex: number): void {
   expect(outcome).toContain('mandatory-script-verify-flag-failed');
@@ -274,7 +283,10 @@ const runDelegatecall = async (
       binToHex(out.token!.nft!.commitment), proxyArtifact.stateLayout!, 0,
     ).counter as bigint;
   }
-  return { outcome, events, state };
+  // Input 2 is the implementation. Its own verdict is measured on its own input, since the broadcast reports only
+  // the first input that refuses.
+  const implVerdict = omitImpl ? undefined : inputVerdict(builder, provider, 2);
+  return { outcome, events, state, implVerdict };
 };
 
 // ---------------------------------------------------------------------------
@@ -357,8 +369,11 @@ describe('SEC-13 forged event NFTs on paths the SEC-10/SEC-11 pin did not reach'
 
   it('refuses an appended own-category event NFT beside a non-emitting delegate', async () => {
     const row = await runDelegatecall(DELEGATE_IMPL, 'own');
-    // Input index 2 is the implementation: its delegate covenant carries the pin, not the proxy's.
-    expectRejectedAt(row.outcome, 2);
+    // The proxy declares `Fired`, the signature the forged log is read against, and a delegatecall proxy that
+    // declares an event carries the pin itself, so input 0 refuses first. Input index 2 is the implementation:
+    // its delegate covenant pins the proxy's category too, measured on its own input.
+    expectRejectedAt(row.outcome, 0);
+    expect(row.implVerdict).toBe('REJECTED: Program failed an OP_VERIFY operation.');
     expect(row.events).toEqual([]);
   }, 300_000);
 
@@ -386,23 +401,22 @@ describe('SEC-13 forged event NFTs on paths the SEC-10/SEC-11 pin did not reach'
   }, 300_000);
 
   /**
-   * OPEN RESIDUAL, measured not reasoned. A `delegatecall` proxy is not pinned: its honest own-category
-   * immutable outputs are the co-spent implementation's event NFTs, at an offset only that implementation's
-   * layout names (measured above: output 4 = implInput 2 + implEventOffset 2, while the proxy block is [0,1]).
-   * The implementation's own pin covers them - so the residual is exactly a proxy that does not force the
-   * implementation co-spend. This proxy hardcodes a NON-covenant p2pkh implementation address, so nothing runs.
+   * OPEN RESIDUAL, measured not reasoned. A proxy that does not force its implementation co-spend cedes its
+   * state. This proxy hardcodes a NON-covenant p2pkh implementation address, so nothing runs, and the same shape
+   * rewrites the proxy's ENTIRE state with no implementation at all, which the row below asserts. That is
+   * already SECURITY-AUDIT C1, not a new class.
    *
-   * That is already SECURITY-AUDIT C1, not a new class: the same shape rewrites the proxy's ENTIRE state with
-   * no implementation at all, which the row below asserts. A forged log adds nothing to a proxy that has
-   * already ceded its state.
+   * The forged log is no longer part of that residual. The proxy declares `Fired`, the signature the forged log
+   * is read against, and a delegatecall proxy that declares an event carries the own-category immutable pin
+   * itself, so it refuses the appended log at input 0 even with no implementation co-spent.
    */
   it('leaves a proxy that does not force its implementation co-spend open (C1, not a new class)', async () => {
     const control = await runDelegatecall(DELEGATE_IMPL, undefined, true, 987654321n);
     expect(control.outcome).toBe('ACCEPTED');
     expect(control.state).toBe(987654321n); // arbitrary state written with NO implementation co-spent
     const forged = await runDelegatecall(DELEGATE_IMPL, 'own', true);
-    expect(forged.outcome).toBe('ACCEPTED');
-    expect(forged.events).toEqual([999999n]);
+    expectRejectedAt(forged.outcome, 0);
+    expect(forged.events).toEqual([]);
   }, 300_000);
 
   /**

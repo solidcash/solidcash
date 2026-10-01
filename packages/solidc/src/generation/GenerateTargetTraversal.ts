@@ -5402,11 +5402,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && dispatchFunctions[0].modifiers.includes(FunctionModifier.DELEGATE)
       && (!node.isLibraryContract || node.isSplitFacet);
     const outlineLoc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
-    // A contract whose only entry body is its fallback has nothing to dispatch: the fallback is inlined, and the
-    // call data it takes is the user's, which the master's frame supplies to the body directly.
-    // A per-call fallback other than the proxy's is dispatched to, as the EVM's is.
+    // A per-call proxy whose only entry body is its fallback has nothing to dispatch: the fallback is inlined, and
+    // the call data it takes is the user's, which the master's frame supplies to the body directly.
+    // A per-call fallback other than the proxy's is dispatched to, as the EVM's is. So is a direct one: a direct
+    // input's own unlocking pushes are its call data, led by a selector (a delegatecall proxy's is its
+    // implementation's, which the forwarded call data must begin with). The dispatcher consumes that selector, and
+    // an inlined body would leave it on the stack, so the spend could not end with the one item a P2SH input needs.
     const fallbackIsSoleEntry = dispatchFunctions.length === 1 && dispatchFunctions[0] === node.fallbackDef
-      && allFunctions.length === 0 && (!this.perCallMaster || this.perCallProxyFallback);
+      && allFunctions.length === 0 && this.perCallMaster && this.perCallProxyFallback;
     if (fallbackIsSoleEntry
       || (dispatchFunctions.length === 1 && !hasFallback && !hasReceive && !soleFnNeedsSelectorDispatch)) {
       this.outlineSharedFunctionBodies(outlineLoc);
@@ -39252,10 +39255,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * emitMasterInputIndex). The implementation's OWN category is not pinned here; no genuine log is ever written
    * there, so a reader has no reason to look.
    *
-   * Residual: a `delegatecall` proxy is not pinned. Its honest own-category immutable outputs are the co-spent
-   * implementation's event NFTs, at an offset only that implementation's layout names, so the proxy cannot
-   * express the rule; the implementation's own pin covers them. A proxy that does not pin its delegate co-spend
-   * therefore keeps the residual - but that proxy already cedes its whole state (SECURITY-AUDIT C1).
+   * Residual: a `delegatecall` proxy that declares no event, has no return slot and witnesses no call input is not
+   * pinned. Its honest own-category immutable outputs are the co-spent implementation's event NFTs, at an offset
+   * only that implementation's layout names, so the proxy cannot express the rule; the implementation's own pin
+   * covers them. A proxy that does not pin its delegate co-spend therefore keeps the residual - but that proxy
+   * already cedes its whole state (SECURITY-AUDIT C1).
    */
   private emitOwnCategoryImmutableNftOutputPin(node: FunctionDefinitionNode): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
@@ -39341,12 +39345,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // delegate frame pinning the proxy's category) cannot witness its siblings' indices at all. Excluding that
     // class keeps the forgery refusal for every addressable own-category immutable - an appended OP_TRUE carrier
     // is not reachable through any event address - and stops the pin from refusing the platform's own carriers.
-    this.emit(Op.OP_OVER, loc);                    // [cat, base, j, candidate, j]
-    this.emit(Op.OP_OUTPUTBYTECODE, loc);
-    this.emit(hexToBin('51'), loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_NOT, loc);
-    this.emit(Op.OP_BOOLAND, loc);                 // [cat, base, j, isAddressableEventCandidate]
+    //
+    // X1. A split facet's own delegate entry that witnesses its return carrier is not such a frame. The facet runs
+    // once in its transaction, for the one root call it serves, so the only OP_TRUE own-category immutable it can
+    // honestly sit beside is the return carrier at its witnessed `__internal__returnOutputIdx`. Exempting the class
+    // there admits a third own-category immutable appended beside the delegated emitReturn pair, which a reader
+    // can take for the call's return; keeping it in the census admits the witnessed carrier alone.
+    const facetWitnessesItsReturnCarrier = !this.perCallMaster && this.currentContractIsSplitFacet
+      && this.currentFunctionIsDelegate && this.usesDelegateExecutorBlockBase()
+      && hasReturnSlot && this.getStackIndex('__internal__returnOutputIdx', true) >= 0;
+    if (!facetWitnessesItsReturnCarrier) {
+      this.emit(Op.OP_OVER, loc);                  // [cat, base, j, candidate, j]
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.emit(hexToBin('51'), loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_NOT, loc);
+      this.emit(Op.OP_BOOLAND, loc);               // [cat, base, j, isAddressableEventCandidate]
+    }
     this.emit(Op.OP_IF, loc);
     // Leave one `allowed` boolean on top of [cat, base, j], then OP_VERIFY it.
     const perCallSlots = this.perCallMaster ? this.perCallEventOutputSlots(node.emitInfos?.length ?? 0) : undefined;

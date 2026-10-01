@@ -385,3 +385,48 @@ describe('a Solidity-compatible initializer the master serves', () => {
     expect(spendInitializer(storeCommitment(STORE_WRITTEN + 1n))).toBe(false);
   });
 });
+
+/**
+ * A constructor that runs a body the master cannot serve.
+ *
+ * The constructor is dispatched behind the same head, so a body it invokes is the refusal an entry would reach: it
+ * is refused with that body, by name, as an entry is, and its genesis answers with the published reason rather
+ * than stopping at the body's stub.
+ */
+const constructorRunning = (name: string, members: string): string => 'pragma solidcash ^0.13.0;'
+  + ` contract ${name} {`
+  + '   int public seen;'
+  + members
+  + '   function bad() returns (function(int) external returns (int)) { revert("no"); }'
+  + '   function note() { this.seen = this.seen + 1; require(true); }'
+  + ' }';
+
+const BAD_REASON = 'the entry point \'bad\' returns a function pointer, but a frame\'s `retval` is compared with one '
+  + 'scalar value the entry computed, which a composite value is not yet';
+
+const refusalsOfConstructor = (name: string, members: string): ReturnType<typeof publishedRefusals> =>
+  publishedRefusals(compileStringMulti(constructorRunning(name, members), { composition: 'per-call' }));
+
+describe('a constructor that runs a body the master cannot serve', () => {
+  it('is refused by name with the body it runs, however it reaches the body', () => {
+    const shapes: Readonly<Record<string, string>> = {
+      Direct: ' constructor() { bad(); this.seen = 1; }',
+      Helper: ' constructor() { this.seen = viaHelper(); }'
+        + ' function viaHelper() internal returns (int) { bad(); return 1; }',
+      // A body on one arm refuses the constructor as it refuses an entry: the closure is over the bodies the
+      // constructor can run, not over the arm one genesis takes.
+      Branch: ' constructor(bool flag) { if (flag) { bad(); } this.seen = 1; }',
+    };
+    for (const [name, members] of Object.entries(shapes)) {
+      expect(refusalsOfConstructor(name, members), name).toStrictEqual([
+        { functionName: `${name}.__construct()`, reason: `it runs 'bad', which the master cannot serve: ${BAD_REASON}` },
+        { functionName: `${name}.bad()`, reason: BAD_REASON },
+      ]);
+    }
+  });
+
+  it('leaves a constructor that runs no refused body served', () => {
+    expect(refusalsOfConstructor('Control', ' constructor() { this.seen = 1; }'))
+      .toStrictEqual([{ functionName: 'Control.bad()', reason: BAD_REASON }]);
+  });
+});

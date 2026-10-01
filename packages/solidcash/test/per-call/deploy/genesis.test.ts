@@ -815,4 +815,30 @@ describe('a per-call genesis whose constructor the compiler refused', () => {
     expect((await provider.getUtxos(funding.address)).map((utxo) => utxo.txid)).toContain(fundingUtxo.txid);
     expect(await provider.getUtxosByTokenCategory(fundingUtxo.txid)).toStrictEqual([]);
   });
+
+  it('refuses by name a constructor that runs a body the master cannot serve', async () => {
+    // The constructor invokes a refused entry, whose stub its probe used to stop at with an opcode; the closure
+    // refuses the constructor with that body, and the deployment answers with the reason.
+    const runner = compileString('pragma solidcash ^0.13.0;'
+      + ' contract Runner {'
+      + '   int public seen;'
+      + '   constructor() { bad(); this.seen = 1; }'
+      + '   function bad() returns (function(int) external returns (int)) { revert("no"); }'
+      + '   function note() { this.seen = this.seen + 1; require(true); }'
+      + ' }', { composition: 'per-call' });
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = { txid: '26'.repeat(31) + 'd9', vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(funding.address, fundingUtxo);
+
+    await expect(StatefulContract.deploy(runner, [], {
+      provider,
+      fundingUtxo,
+      funder: funding.unlock.spend(alicePub, signature),
+      changeAddress: funding.address,
+    })).rejects.toThrow('the constructor of "Runner" is refused by the compiler (Runner.__construct()): it runs '
+      + '\'bad\', which the master cannot serve');
+    expect(await provider.getUtxosByTokenCategory(fundingUtxo.txid)).toStrictEqual([]);
+  });
 });

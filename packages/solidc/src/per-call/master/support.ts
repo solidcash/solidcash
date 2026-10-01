@@ -1483,12 +1483,16 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     }
   }
   // An entry that reaches a body the master cannot serve is refused itself: the body it would run is a refusal, so
-  // the entry could never settle. The reach is what makes this a closure rather than a list.
-  const refusedClosure = closeRefusalsOverInvocations(invokes, refusals);
-  for (const entry of entryPoints) {
-    const reached = refusedClosure.get(entry.name);
+  // the entry could never settle. The reach is what makes this a closure rather than a list. The constructor is
+  // dispatched behind the same head and closed over the same way, so its genesis answers with the refusal.
+  const reaches = contract.constructorDef === undefined ? invokes : new Map([
+    ...invokes, [contract.constructorDef.name, invokedFunctionNames(contract.constructorDef.body)],
+  ]);
+  const refusedClosure = closeRefusalsOverInvocations(reaches, refusals);
+  for (const body of [...entryPoints, ...(contract.constructorDef ? [contract.constructorDef] : [])]) {
+    const reached = refusedClosure.get(body.name);
     if (reached !== undefined) {
-      refuseBody(entry, `it runs '${reached.name}', which the master cannot serve: ${reached.reason}`);
+      refuseBody(body, `it runs '${reached.name}', which the master cannot serve: ${reached.reason}`);
     }
   }
   const served = entryPoints.filter((entry) => !refusals.has(entry.name));

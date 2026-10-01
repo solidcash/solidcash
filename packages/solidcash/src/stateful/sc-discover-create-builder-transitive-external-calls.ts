@@ -28,6 +28,14 @@ export type TransitiveExternalContract = {
   _deriveReturnValue(...args: any[]): Promise<StateValue>;
 };
 
+/** A standalone return probe cannot materialize this transitive edge before the aggregate graph exists. */
+export class DeferredTransitiveReturnProbeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DeferredTransitiveReturnProbeError';
+  }
+}
+
 /**
  * For each direct nested callee with its own externalCalls, resolve C from B's
  * connect-time registry, load C's master/data NFTs, and append transitive groups.
@@ -51,7 +59,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       // Resolve C from B's external registry
       const cRegistered = bContract._externalRegistry.get(bEc.interfaceName);
       if (!cRegistered) {
-        throw new Error(
+        throw new DeferredTransitiveReturnProbeError(
           `Transitive external call: ${bEc.interfaceName}.${bEc.functionName} not found `
           + `in ${directGroup.functionName}'s connect-time externals. `
           + 'Register it via StatefulContract.withCategory(bContract, bCategoryId, '
@@ -63,7 +71,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
 
       // Detect circular calls (B->A): the transitive target is the primary contract
       if (cContract.categoryId === primaryCategoryId) {
-        throw new Error(
+        throw new DeferredTransitiveReturnProbeError(
           `Circular external call detected: ${directGroup.functionName} calls `
           + `${bEc.interfaceName}.${bEc.functionName} which targets the primary contract. `
           + 'Circular A->B->A calls are not supported in auto-resolution.',

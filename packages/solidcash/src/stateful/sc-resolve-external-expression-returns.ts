@@ -22,6 +22,7 @@ import {
   findDeploymentByLockingBytecode,
   findDeploymentByName,
 } from './deployment-registry.js';
+import { DeferredTransitiveReturnProbeError } from './sc-discover-create-builder-transitive-external-calls.js';
 import { encodeExternalReturnValues } from './external-return-encoding.js';
 import {
   createGraphPlanningProducerResultContext,
@@ -324,7 +325,8 @@ export async function resolveExternalExpressionReturns(
       ) as FunctionArgument;
     } catch (error) {
       if (!allowProvisional || !(error instanceof Error)
-        || !error.message.includes('Could not derive the return value')) throw error;
+        || (!(error instanceof DeferredTransitiveReturnProbeError)
+          && !error.message.includes('Could not derive the return value'))) throw error;
       if (!returnTypes?.length) return 0n;
       // Planning may need an aggregate's elements before its state-dependent producer can execute.
       // Preserve the published type shape; these seeds still cannot satisfy an exact result request.

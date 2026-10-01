@@ -7,16 +7,23 @@ import {
   resolveExternalExpressionReturns, type ResolveExternalExpressionReturnsHost,
 } from '../../src/stateful/sc-resolve-external-expression-returns.js';
 import { createGraphPlanningProducerResultContext } from '../../src/stateful/graph-planning-producer-result.js';
+import {
+  DeferredTransitiveReturnProbeError,
+} from '../../src/stateful/sc-discover-create-builder-transitive-external-calls.js';
 import type { StatefulContract } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider } from '../test-util.js';
 
-function fixture(type: string, structs: StructDefinitionInfo[] = []): {
+type ProvisionalFixture = {
   derive: Mock<() => Promise<FunctionArgument>>;
   resolve: (provisional?: boolean) => Promise<FunctionArgument | undefined>;
   unavailable: Error;
-} {
+};
+
+function fixture(
+  type: string, structs: StructDefinitionInfo[] = [],
+  unavailable: Error = new Error('Could not derive the return value of the selected producer'),
+): ProvisionalFixture {
   const artifact = { abi: [], constructorInputs: [], structs } as unknown as Artifact;
-  const unavailable = new Error('Could not derive the return value of the selected producer');
   const derive = vi.fn(async (): Promise<FunctionArgument> => { throw unavailable; });
   const producer = {
     inner: { artifact, lockingBytecode: '51' }, categoryId: '01'.repeat(32),
@@ -50,6 +57,14 @@ describe('provisional aggregate producer results', () => {
     const test = fixture('uint256[3]');
     expect(await test.resolve()).toEqual([0n, 0n, 0n]);
     await expect(test.resolve(false)).rejects.toBe(test.unavailable);
+    expect(test.derive).toHaveBeenCalledTimes(2);
+  });
+
+  it('defers an unmaterializable transitive return probe only while graph planning is provisional', async () => {
+    const unavailable = new DeferredTransitiveReturnProbeError('Transitive callback needs the aggregate graph');
+    const test = fixture('uint256[5]', [], unavailable);
+    expect(await test.resolve()).toEqual([0n, 0n, 0n, 0n, 0n]);
+    await expect(test.resolve(false)).rejects.toBe(unavailable);
     expect(test.derive).toHaveBeenCalledTimes(2);
   });
 

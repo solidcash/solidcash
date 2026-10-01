@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isOpReturnLockingBytecode,
   redirectViewTailOffOpReturn as redirectValueWitnessOffSeparator,
-  movePostOpReturnBeforeJobsSuffix as moveTrailingPadsBeforeValueChunkSuffix,
+  moveTrailingOutputsBeforeValueChunkSuffix as moveTrailingPadsBeforeValueChunkSuffix,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
 describe('value witness placement around the OP_RETURN separator', () => {

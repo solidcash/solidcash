@@ -120,7 +120,7 @@ import {
   legacyFillValueChunkBandHoles,
   writerBlockOccupancyEnd,
   relocateChangeAfterOccupancy,
-  packJobsAgainstOpReturn,
+  packMutableValueChunkRunAgainstSeparator,
   moveLateOutputsBeforeReverseSuffix,
   valueChunkIndexFromCommitment,
   isPersistValueChunkCommitment,
@@ -3307,7 +3307,7 @@ describe('assignPhysicalReturnIndices', () => {
       { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: '01bb' } } },
       { to: Uint8Array.of(0x6a), amount: 0n },
     ];
-    expect(packJobsAgainstOpReturn(suffix, jobsLock, 0)).toBe(2);
+    expect(packMutableValueChunkRunAgainstSeparator(suffix, jobsLock, 0)).toBe(2);
     expect(suffix[1]?.token?.nft?.commitment).toBe('00aa');
     expect(suffix[2]?.token?.nft?.commitment).toBe('01bb');
     expect(suffix[3]?.to).toEqual(Uint8Array.of(0x6a));

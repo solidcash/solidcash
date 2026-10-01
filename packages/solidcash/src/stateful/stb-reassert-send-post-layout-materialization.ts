@@ -9,7 +9,7 @@ export interface ReassertSendPostLayoutMaterializationHost {
   ensureAuthenticatedViewReturns(builder: TransactionBuilder): void;
   reconcileMaterializedReturnWitnesses(builder: TransactionBuilder): void;
   ensureDistinctJobEventNfts(builder: TransactionBuilder): void;
-  finalizeReverseSuffixJobsLayout(builder: TransactionBuilder): void;
+  finalizeReverseSuffixValueChunkLayout(builder: TransactionBuilder): void;
   enforceDeclaredCollectionOutputCardinality(builder: TransactionBuilder): void;
   syncBuilderUnlockers(builder: TransactionBuilder): void;
 }
@@ -30,7 +30,7 @@ export function reassertSendPostLayoutMaterialization(
   // Tail-return / distinct-event materializers may append after the OP_RETURN
   // trailer and shift TXOUTPUTCOUNT-1-nNew. Re-pin jobs as the last layout write
   // before unlocker sync and covenant preflight (post two jobs growth path).
-  host.finalizeReverseSuffixJobsLayout(finalBuilder);
+  host.finalizeReverseSuffixValueChunkLayout(finalBuilder);
   host.enforceDeclaredCollectionOutputCardinality(finalBuilder);
   host.syncBuilderUnlockers(finalBuilder);
 }

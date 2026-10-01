@@ -11,7 +11,7 @@ import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   isInsertBandDustToken,
   isOpReturnLockingBytecode,
-  movePostOpReturnBeforeJobsSuffix,
+  moveTrailingOutputsBeforeValueChunkSuffix,
 } from './mutable-output-reassert.js';
 import {
   isDisposableAlignmentPad,
@@ -136,7 +136,7 @@ export function ensureAuthenticatedViewReturns(
     if (host.delegateDynamicChunksAtSuffix) {
       const suffixVar = host.getDynamicChunkVars().find((variable) => variable.delegateSuffix === true)
         ?? host.dynamicChunkVars[0];
-      movePostOpReturnBeforeJobsSuffix(builder.outputs, suffixVar?.lockingBytecode);
+      moveTrailingOutputsBeforeValueChunkSuffix(builder.outputs, suffixVar?.lockingBytecode);
     }
     const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
     const liveOpReturn = builder.outputs.findIndex((output) => isOpReturnLockingBytecode(

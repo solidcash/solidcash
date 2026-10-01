@@ -148,17 +148,17 @@ export function reassertStagedValueChunkOutputs(
   return added;
 }
 /**
- * Final send() only: repair reverse-suffix jobs after late value-chunk appends.
+ * Final send() only: repair reverse-indexed value chunks after late appends.
  * Probe builds keep the append-time order so derivation does not thrash.
  */
-export function finalizeReverseSuffixJobsLayout(
+export function finalizeReverseSuffixValueChunkLayout(
   host: ReverseSuffixValueChunkHost,
   builder: TransactionBuilder,
 ): number {
   if (!host.delegateDynamicChunksAtSuffix) return 0;
   // Probe-derived commitments can be absent on the final builder while
-  // derivedChunkOutputs / spent chunk inputs still know the jobs run width
-  // (second publishJobPost growth). Seed raw commitments before counting.
+  // derivedChunkOutputs / spent chunk inputs still know the run width.
+  // Seed raw commitments before counting.
   for (const dv of host.dynamicChunkVars) {
     const existing = host.chunkRawCommitments.get(dv.name) ?? [];
     if (existing.some((commitment) => commitment.length > 0 && commitment !== '00')) continue;

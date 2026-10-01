@@ -8,9 +8,9 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import { shouldUseLegacyPersistDigestLockForValueChunks } from './delegate-event-jobevent-helpers.js';
 import { applyRedeemLockToChunks, chunksFromValue } from './early-value-chunk-helpers.js';
-import { movePostOpReturnBeforeJobsSuffix } from './mutable-output-reassert.js';
+import { moveTrailingOutputsBeforeValueChunkSuffix } from './mutable-output-reassert.js';
 import {
-  packJobsAgainstOpReturn,
+  packMutableValueChunkRunAgainstSeparator,
   writerBlockOccupancyEnd,
 } from './persist-predecessor-layout.js';
 import { stripSurplusValueChunkLocks } from './scid-minting-return-layout.js';
@@ -89,27 +89,27 @@ export interface JobEventsBandHost extends ScaledPreserveEmitHost {
   reassertInBlockWriterReturns(builder: TransactionBuilder): void;
 }
 
-/** Pack jobs-suffix mutables against the OP_RETURN trailer after the JobEvents band. */
-export function packJobsSuffix(
+/** Pack a reverse-indexed mutable value-chunk run against the OP_RETURN trailer. */
+export function packReverseIndexedValueChunkSuffix(
   host: JobEventsBandHost,
   builder: TransactionBuilder,
 ): void {
   const band = host.getChunkableValueWriteBand();
   const tailStart = band ? band.end + 1 : 0;
   const chunkHex = host.jobEventsRedeemLock ? binToHex(host.jobEventsRedeemLock) : '';
-  let jobsLock: Uint8Array | undefined;
+  let suffixLock: Uint8Array | undefined;
   for (let index = builder.outputs.length - 1; index >= tailStart; index--) {
     const lock = builder.outputs[index]?.to instanceof Uint8Array
       ? builder.outputs[index]!.to as Uint8Array : undefined;
     if (!lock || lock.length !== 35 || lock[0] !== 0xaa) continue;
     if (chunkHex && binToHex(lock) === chunkHex) continue;
     if (builder.outputs[index]?.token?.nft?.capability !== 'mutable') continue;
-    jobsLock = lock;
+    suffixLock = lock;
     break;
   }
-  if (jobsLock) packJobsAgainstOpReturn(builder.outputs, jobsLock, tailStart);
+  if (suffixLock) packMutableValueChunkRunAgainstSeparator(builder.outputs, suffixLock, tailStart);
   if (host.delegateDynamicChunksAtSuffix) {
-    movePostOpReturnBeforeJobsSuffix(builder.outputs, jobsLock);
+    moveTrailingOutputsBeforeValueChunkSuffix(builder.outputs, suffixLock);
   }
 }
 
@@ -457,7 +457,7 @@ export function ensureLiveJobEventsBand(
       })),
     });
   }
-  packJobsSuffix(host, builder);
+  packReverseIndexedValueChunkSuffix(host, builder);
   host.applyDerivedEntryOutputs(builder);
   host.reassertInBlockWriterReturns(builder);
 }

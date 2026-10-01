@@ -23,7 +23,7 @@ export interface ReassertBuildConservationRepairsHost {
   reassertTokenInsertNewLocks(builder: TransactionBuilder): void;
   scidReservedIndices(outputCount: number): Set<number>;
   isPersistedChunkableValueWriteReady(): boolean;
-  packJobsSuffix(builder: TransactionBuilder): void;
+  packReverseIndexedValueChunkSuffix(builder: TransactionBuilder): void;
 }
 
 /**
@@ -54,5 +54,5 @@ export function reassertBuildConservationRepairs(
   );
   host.reassertNestedEmitEvents(builder);
   host.reassertDelegateImplEvents(builder);
-  if (host.isPersistedChunkableValueWriteReady()) host.packJobsSuffix(builder);
+  if (host.isPersistedChunkableValueWriteReady()) host.packReverseIndexedValueChunkSuffix(builder);
 }

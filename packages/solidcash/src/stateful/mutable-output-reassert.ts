@@ -197,35 +197,35 @@ export function redirectViewTailOffOpReturn(parts: {
 }
 
 /**
- * Move every output after the jobs OP_RETURN in front of the jobs chunk run so
+ * Move every output after OP_RETURN in front of the mutable value-chunk run so
  * the separator is the unique trailer for `TXOUTPUTCOUNT - 1 - nNew`.
  *
- * Only contiguous outputs that match `jobsLock` immediately before the separator
- * count as the jobs run. A planned count without matching locks would splice
+ * Only contiguous outputs that match `suffixLock` immediately before the separator
+ * count as the run. A planned count without matching locks would splice
  * pads into the contract block (e.g. output 6) and strip their tokens.
  */
-export function movePostOpReturnBeforeJobsSuffix<T extends {
+export function moveTrailingOutputsBeforeValueChunkSuffix<T extends {
   to?: Uint8Array | string;
   token?: { nft?: { capability?: string } };
-}>(outputs: T[], jobsLock?: Uint8Array): number {
+}>(outputs: T[], suffixLock?: Uint8Array): number {
   const opReturn = outputs.findIndex((output) => isOpReturnLockingBytecode(output?.to));
   if (opReturn < 0 || opReturn === outputs.length - 1) return 0;
-  const wanted = jobsLock && jobsLock.length === 35 && jobsLock[0] === 0xaa
-    ? binToHex(jobsLock) : undefined;
-  let jobsBefore = 0;
+  const wanted = suffixLock && suffixLock.length === 35 && suffixLock[0] === 0xaa
+    ? binToHex(suffixLock) : undefined;
+  let chunksBefore = 0;
   if (wanted) {
     for (let index = opReturn - 1; index >= 0; index -= 1) {
       const lock = outputs[index]?.to instanceof Uint8Array
         ? outputs[index]!.to as Uint8Array : undefined;
       if (!lock || lock.length !== 35 || binToHex(lock) !== wanted
         || outputs[index]?.token?.nft?.capability !== 'mutable') break;
-      jobsBefore += 1;
+      chunksBefore += 1;
     }
   }
   const trailing = outputs.splice(opReturn + 1);
   if (trailing.length === 0) return 0;
-  // No matched jobs yet: park pads immediately before OP_RETURN (not deep in the block).
-  const insertAt = Math.max(0, opReturn - jobsBefore);
+  // No matched chunks yet: park pads immediately before OP_RETURN (not deep in the block).
+  const insertAt = Math.max(0, opReturn - chunksBefore);
   outputs.splice(insertAt, 0, ...trailing);
   return trailing.length;
 }
@@ -234,7 +234,7 @@ export function movePostOpReturnBeforeJobsSuffix<T extends {
  * Final-layout repair: build() may append a reverse-indexed resource run, then late
  * derived outputs, then OP_RETURN — so TXOUTPUTCOUNT-1-nNew lands on the late outputs.
  * Lift the early resource run to sit immediately before the trailer.
- * Probe builds must not call this (late-before-jobs during derivation hung).
+ * Probe builds must not call this (late-before-suffix during derivation hung).
  */
 export function moveLateOutputsBeforeReverseSuffix<T extends {
   to?: Uint8Array | string;

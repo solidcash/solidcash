@@ -20,7 +20,7 @@ export interface ReassertSendFinalLayoutHost {
   stripSurplusLinearBatchEntryClones(builder: TransactionBuilder): void;
   ensureDistinctJobEventNfts(builder: TransactionBuilder): void;
   applyDerivedEntryOutputs(builder: TransactionBuilder): void;
-  finalizeReverseSuffixJobsLayout(builder: TransactionBuilder): void;
+  finalizeReverseSuffixValueChunkLayout(builder: TransactionBuilder): void;
   enforceDeclaredCollectionOutputCardinality(builder: TransactionBuilder): void;
   learnFinalizedDelegateEvents(builder: TransactionBuilder): boolean;
   relocateCollidingDerivedValueChunkRuns(builder: TransactionBuilder): void;
@@ -79,7 +79,7 @@ export function reassertSendFinalLayout(
   debugBal12('after-applyDerived');
   // After entry/event materializers: late chunks / distinct NFTs can sit after jobs or
   // grow TXOUTPUTCOUNT. Pin reverse-suffix jobs as the last layout write in this pass.
-  host.finalizeReverseSuffixJobsLayout(finalBuilder);
+  host.finalizeReverseSuffixValueChunkLayout(finalBuilder);
   host.enforceDeclaredCollectionOutputCardinality(finalBuilder);
   // Delegate event values can only be observed after collection cardinality and all absolute coordinates have
   // settled. Discovery is compiler-metadata-gated and replaces the existing fixed-value event placeholder in

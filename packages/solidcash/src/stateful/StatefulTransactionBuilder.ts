@@ -244,7 +244,7 @@ export {
   assignPersistPredecessors,
   persistOccupantDisplaceable,
   writerBlockOccupancyEnd,
-  packJobsAgainstOpReturn,
+  packMutableValueChunkRunAgainstSeparator,
   relocateChangeAfterOccupancy,
 } from './persist-predecessor-layout.js';
 
@@ -288,7 +288,7 @@ export {
   reassertBatchPredecessorOutputsAtDeclaredSlots,
   isOpReturnLockingBytecode,
   redirectViewTailOffOpReturn,
-  movePostOpReturnBeforeJobsSuffix,
+  moveTrailingOutputsBeforeValueChunkSuffix,
   moveLateOutputsBeforeReverseSuffix,
   hasEquivalentMutableNftOutput,
   stripRelocatedMutableDuplicates,
@@ -461,7 +461,7 @@ import {
 import {
   ensureLiveJobEventsBand,
   materializeJobEventsBand,
-  packJobsSuffix,
+  packReverseIndexedValueChunkSuffix,
   persistPlacedJobEventsBand,
   type JobEventsBandHost,
 } from './stb-jobevents-band.js';
@@ -481,7 +481,7 @@ import {
   type DerivedValueChunkApplyHost,
 } from './stb-derived-value-chunk-apply.js';
 import {
-  finalizeReverseSuffixJobsLayout,
+  finalizeReverseSuffixValueChunkLayout,
   reassertReverseSuffixDynamicChunks,
   reassertStagedValueChunkOutputs,
   type ReverseSuffixValueChunkHost,
@@ -2028,7 +2028,7 @@ export class StatefulTransactionBuilder {
       reassertTokenInsertNewLocks: (b) => { this._reassertTokenInsertNewLocks(b); },
       scidReservedIndices: (outputCount) => this._scidReservedIndices(outputCount),
       isPersistedChunkableValueWriteReady: () => this._isPersistedChunkableValueWriteReady(),
-      packJobsSuffix: (b) => { this._packJobsSuffix(b); },
+      packReverseIndexedValueChunkSuffix: (b) => { this._packReverseIndexedValueChunkSuffix(b); },
     };
   }
 
@@ -2368,8 +2368,8 @@ export class StatefulTransactionBuilder {
       ensureDistinctJobEventNfts: (builder) => {
         this._ensureDistinctJobEventNfts(builder);
       },
-      finalizeReverseSuffixJobsLayout: (builder) => {
-        this._finalizeReverseSuffixJobsLayout(builder);
+      finalizeReverseSuffixValueChunkLayout: (builder) => {
+        this._finalizeReverseSuffixValueChunkLayout(builder);
       },
       enforceDeclaredCollectionOutputCardinality: (builder) => {
         this._enforceDeclaredCollectionOutputCardinality(builder);
@@ -2625,7 +2625,7 @@ export class StatefulTransactionBuilder {
       },
       ensureDistinctJobEventNfts: (b) => { this._ensureDistinctJobEventNfts(b); },
       applyDerivedEntryOutputs: (b) => { this._applyDerivedEntryOutputs(b); },
-      finalizeReverseSuffixJobsLayout: (b) => { this._finalizeReverseSuffixJobsLayout(b); },
+      finalizeReverseSuffixValueChunkLayout: (b) => { this._finalizeReverseSuffixValueChunkLayout(b); },
       enforceDeclaredCollectionOutputCardinality: (b) => {
         this._enforceDeclaredCollectionOutputCardinality(b);
       },
@@ -2839,11 +2839,6 @@ export class StatefulTransactionBuilder {
 
   isInitialChunkableValueWrite(): boolean {
     return this._isInitialChunkableValueWrite();
-  }
-
-  /** @deprecated Compatibility name for callers predating compiler-described value writes. */
-  isRootPublishJobPost(): boolean {
-    return this.isInitialChunkableValueWrite();
   }
 
   private _persistDigestCategories(): string[] {
@@ -4582,11 +4577,11 @@ export class StatefulTransactionBuilder {
    * survive. Returns whether any output changed.
    */
   /**
-   * Final send() only: repair reverse-suffix jobs after late value-chunk appends.
+   * Final send() only: repair reverse-indexed value chunks after late appends.
    * Probe builds keep the append-time order so derivation does not thrash.
    */
-  private _finalizeReverseSuffixJobsLayout(builder: TransactionBuilder): number {
-    return finalizeReverseSuffixJobsLayout(this._reverseSuffixValueChunkHost(), builder);
+  private _finalizeReverseSuffixValueChunkLayout(builder: TransactionBuilder): number {
+    return finalizeReverseSuffixValueChunkLayout(this._reverseSuffixValueChunkHost(), builder);
   }
 
   /**
@@ -4639,8 +4634,8 @@ export class StatefulTransactionBuilder {
     ensureLiveJobEventsBand(this._jobEventsBandHost(), builder);
   }
 
-  private _packJobsSuffix(builder: TransactionBuilder): void {
-    packJobsSuffix(this._jobEventsBandHost(), builder);
+  private _packReverseIndexedValueChunkSuffix(builder: TransactionBuilder): void {
+    packReverseIndexedValueChunkSuffix(this._jobEventsBandHost(), builder);
   }
 
   /**

@@ -669,8 +669,9 @@ const expressionSource = (
  *     if (flip) chosen = right;
  *     this.label = chosen;
  *
- * Only a value assigned exactly once on every path is published. An expression which reads state, calls a
- * helper, crosses an unsupported control-flow construct, or otherwise cannot be represented by
+ * Only a final value determined after at least one write on every path is published. A later replayable write
+ * may supersede an earlier one, including on just one branch. An expression which reads state, calls a helper,
+ * crosses an unsupported control-flow construct, or otherwise cannot be represented by
  * ExternalCallExpression remains absent. The SDK then uses its authoritative VM-probe fallback.
  */
 const dynamicWriteSourcesOf = (
@@ -891,7 +892,7 @@ const dynamicWriteSourcesOf = (
 
   const completed = processBlock(func.body, initial);
   return Object.fromEntries([...completed.writes]
-    .filter(([, write]) => write.minimum === 1 && write.maximum === 1 && write.value !== undefined)
+    .filter(([, write]) => write.minimum >= 1 && Number.isFinite(write.maximum) && write.value !== undefined)
     .map(([name, write]) => [name, write.value!]));
 };
 
@@ -929,7 +930,7 @@ const transferEffects = (
     transferIndex: number; recipient: ExpressionNode; amount: ExpressionNode; callOption?: 'value';
     condition?: ExpressionNode; conditionUnsupported?: true;
     node?: TransferStatementNode | AddressTransferStatementNode | AddressSendExpressionNode
-      | ExternalFunctionCallNode | InstantiationNode;
+    | ExternalFunctionCallNode | InstantiationNode;
   }[] = [];
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
@@ -1314,8 +1315,7 @@ const indexBody = (fn: FunctionDefinitionNode): ProvenanceIndex => {
     else if (value instanceof AssignNode) {
       index.reassigned.add(value.identifier.name);
       bindName(index, value.identifier.name, value.expression);
-    }
-    else if (value instanceof TupleAssignmentNode) {
+    } else if (value instanceof TupleAssignmentNode) {
       for (const element of value.elements) if (!element.skip && element.name) {
         index.reassigned.add(element.name);
         bindName(index, element.name);

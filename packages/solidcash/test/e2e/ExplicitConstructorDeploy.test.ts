@@ -69,6 +69,40 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
       .toHaveLength(artifact.stateLayout!.dataNftCount);
   });
 
+  it('retains a conditional dynamic write after an initial empty literal', async () => {
+    const artifact = compileString(`
+      contract C() {
+          string label;
+          constructor(bool replace) {
+              this.label = "";
+              if (replace) { this.label = "nonempty"; }
+          }
+          function read() view returns (string) { return this.label; }
+      }
+    `);
+    const { result: empty } = await deploy(artifact, [], 'e1f2', {}, [false]);
+    expect((await empty.contract.getState()).label).toBe('');
+    const { result: replaced } = await deploy(artifact, [], 'e2f3', {}, [true]);
+    expect((await replaced.contract.getState()).label).toBe('nonempty');
+  });
+
+  it('deploys the final dynamic value after repeated conditional writes', async () => {
+    const artifact = compileString(`
+      contract C() {
+          string label;
+          constructor(bool choose, string left, string right) {
+              if (choose) { this.label = left; } else { this.label = right; }
+              if (choose) { this.label = right; } else { this.label = left; }
+          }
+          function read() view returns (string) { return this.label; }
+      }
+    `);
+    const { result: trueBranch } = await deploy(artifact, [], 'e3f4', {}, [true, 'left', 'right']);
+    expect((await trueBranch.contract.getState()).label).toBe('right');
+    const { result: falseBranch } = await deploy(artifact, [], 'e4f5', {}, [false, 'left', 'right']);
+    expect((await falseBranch.contract.getState()).label).toBe('left');
+  });
+
   it('progressively derives multiple NFTs from one fixed constructor pre-state', async () => {
     const artifact = compileString(`
       contract C() {

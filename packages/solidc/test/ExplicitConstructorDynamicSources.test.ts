@@ -42,7 +42,7 @@ describe('explicit constructor dynamic-write replay metadata', () => {
     });
   });
 
-  it('omits an incomplete arm and a value written more than once on every path', () => {
+  it('omits an incomplete arm but replays the final value after repeated writes', () => {
     const incomplete = constructorSources(`
       contract C() {
         string selected;
@@ -62,7 +62,7 @@ describe('explicit constructor dynamic-write replay metadata', () => {
         }
       }
     `);
-    expect(repeated?.selected).toBeUndefined();
+    expect(repeated?.selected).toMatchObject({ kind: 'ternary' });
   });
 
   it('omits metadata when abrupt control can bypass an otherwise unconditional write', () => {

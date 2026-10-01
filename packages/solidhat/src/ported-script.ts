@@ -152,7 +152,9 @@ export async function runPortedScript(
     if (load) await load();
     else await import(pathToFileURL(scriptPath).href);
     const timeout = new Promise<PortedScriptResult>((resolve) => {
-      const timer = setTimeout(() => resolve({ error: new PortedScriptTimeout(scriptPath, timeoutMs), stdout, stderr }), timeoutMs);
+      const timer = setTimeout(() => resolve({
+        error: new PortedScriptTimeout(scriptPath, timeoutMs), stdout, stderr,
+      }), timeoutMs);
       timer.unref?.();
     });
     const result = await Promise.race([finished, timeout]);

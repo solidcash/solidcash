@@ -339,7 +339,6 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       // project DAG/cache fast path for ordinary contracts rather than independently recompiling every source.
       const shardFailures: string[] = [];
       for (const full of args['skip-split'] ? [] : solFiles) {
-        const source = fs.readFileSync(full, 'utf8');
         const declarations = solidityDeclarations(full);
         const needsSplit = declarations.some((name) => {
           const artifact = result.artifacts[name];

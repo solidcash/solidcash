@@ -30,7 +30,7 @@ export interface SolidHatOfflineRuntime {
 }
 
 declare global {
-  // eslint-disable-next-line no-var -- the runtime is intentionally shared across every module in the worker
+  // eslint-disable-next-line no-var, @typescript-eslint/naming-convention -- stable worker-global runtime name
   var __solidhatOffline: SolidHatOfflineRuntime | undefined;
 }
 
@@ -64,8 +64,9 @@ if (!globalThis.__solidhatOffline) {
     allow: parseAllowList(process.env.SOLIDCASH_OFFLINE_ALLOW),
     onUnexpected: process.env.SOLIDCASH_OFFLINE_MODE === 'record' ? 'record' : 'throw',
   });
-  const provider = (getActiveHre() as { ethers?: { provider?: { send?(method: string, params?: unknown[]): Promise<unknown> } } })
-    .ethers?.provider;
+  const provider = (getActiveHre() as {
+    ethers?: { provider?: { send?(method: string, params?: unknown[]): Promise<unknown> } };
+  }).ethers?.provider;
   const rpc = provider && typeof provider.send === 'function'
     ? installOfflineRpcShims(provider as { send(method: string, params?: unknown[]): Promise<unknown> })
     : { rawTransactions: [], calls: [], reset: (): void => {}, restore: (): void => {} };

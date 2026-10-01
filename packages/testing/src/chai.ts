@@ -424,7 +424,10 @@ class EmitAssertion implements PromiseLike<void> {
                 mismatch: mismatch instanceof Error ? mismatch.message : String(mismatch),
               });
             }
-            throw mismatch ?? new Error(`event '${this.event}' arguments did not match`);
+            if (mismatch instanceof Error) throw mismatch;
+            throw new Error(mismatch === undefined
+              ? `event '${this.event}' arguments did not match`
+              : String(mismatch));
           }
         }
         if (this.negate) throw new Error(`expected not to emit '${this.event}'`);
@@ -551,6 +554,7 @@ class Assertion {
     }
     return this;
   }
+
   get with(): this { return this; }
   get at(): this { return this; }
   get of(): this { return this; }

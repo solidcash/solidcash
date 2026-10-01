@@ -165,7 +165,7 @@ describe('incremental compile task', () => {
   it('expands a focused request when the published artifact compile context changed', async () => {
     const root = tempProject();
     fs.writeFileSync(path.join(root, 'contracts', 'Unrelated.sol'), 'contract Unrelated {}');
-    const configured = (extra: Record<string, unknown>) => resolveConfig({
+    const configured = (extra: Record<string, unknown>): ReturnType<typeof resolveConfig> => resolveConfig({
       paths: {
         contracts: './contracts', artifacts: './artifacts', cache: './cache', tests: './test',
       },
@@ -187,7 +187,7 @@ describe('incremental compile task', () => {
   it('keeps iteration compiles focused while leaving changed compiler context stale', async () => {
     const root = tempProject();
     fs.writeFileSync(path.join(root, 'contracts', 'Unrelated.sol'), 'contract Unrelated {}');
-    const configured = (extra: Record<string, unknown>) => resolveConfig({
+    const configured = (extra: Record<string, unknown>): ReturnType<typeof resolveConfig> => resolveConfig({
       paths: {
         contracts: './contracts', artifacts: './artifacts', cache: './cache', tests: './test',
       },

@@ -95,6 +95,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   against the merged schema. A website build exposed one stale SolidHat deployment anchor; after correcting the
   link, the production website build passes without broken-anchor warnings. These are focused results, not a
   current 66-title or beta-gate pass.
+- 2026-10-01 cold-compile spot check: two fresh, cache-disabled MarketplaceV1 kernel compiles agree exactly
+  (19,367 route bytes, 262,494 full debug bytes, identical route/full/metadata hashes, zero caught compiler
+  attempts; compiler times 8.15s and 7.94s). One fresh UnicrowClaim kernel compile produced a 2,640-byte route
+  with zero caught attempts. The frozen beta manifest still pins 12,102 and 2,918 route bytes respectively, so
+  its cold-baseline comparison is stale; do not repin it from a partial sample. Marketplace remains over the
+  10,000-byte P2SH route ceiling. No legacy-mode or complete cold-matrix comparison was run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

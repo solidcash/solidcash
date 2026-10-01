@@ -22,7 +22,10 @@ import {
 } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider } from '../test-util.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { expandResolveCreateBuilderExternalCalls } from '../../src/stateful/sc-expand-resolve-create-builder-external-calls.js';
+import {
+  expandResolveCreateBuilderExternalCalls,
+  type ExpandResolveCreateBuilderExternalCallsHost,
+} from '../../src/stateful/sc-expand-resolve-create-builder-external-calls.js';
 import { fillCreateBuilderDirectCallArgWitnesses } from '../../src/stateful/sc-fill-create-builder-direct-call-arg-witnesses.js';
 
 type PredicateEvaluator = {
@@ -657,6 +660,60 @@ describe('conditional external-call topology', () => {
     expect(resolved.resolvedExternalCalls).toEqual([{
       externalContract: callee, functionName: 'pay', args: [7n],
     }]);
+  });
+
+  it('resolves later call arguments from the exact published producer result', async () => {
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const producerResult: ExternalCallExpression = {
+      kind: 'producerResult', callsiteId: 4, resultIndex: 0, type: 'Escrow',
+    };
+    const fn = {
+      name: 'arbitrate', inputs: [{ name: 'escrowId', type: 'uint256' }],
+      externalCalls: [
+        { callsiteId: 4, interfaceName: 'IEscrow', functionName: 'getEscrow',
+          requiredDataNftIndices: [], returnTypes: ['Escrow'],
+          argSources: [{ kind: 'forward', paramIndex: 0 }] },
+        { callsiteId: 7, interfaceName: 'IEscrow', functionName: 'settle',
+          requiredDataNftIndices: [], argSources: [
+            { kind: 'forward', paramIndex: 0 },
+            { kind: 'expression', expression: { kind: 'field', name: 'split', expression: producerResult } },
+            { kind: 'expression', expression: { kind: 'field', name: 'consensus', expression: producerResult } },
+          ] },
+      ],
+    } as unknown as Artifact['abi'][number];
+    const makeHost = (exact: boolean): ExpandResolveCreateBuilderExternalCallsHost => ({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: () => callee,
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+      resolveExternalExpressionReturns: async (
+        sources: readonly ArgSource[], _args: FunctionArgument[], _state: Record<string, unknown>,
+        _inputs: readonly { type: string }[] | undefined, _self: FunctionArgument | undefined,
+        producers: readonly ExternalCallAbi[],
+      ) => {
+        expect(sources).toEqual(fn.externalCalls![1].argSources);
+        expect(producers.map((call) => call.callsiteId)).toEqual([4, 7]);
+        return exact ? new Map([[JSON.stringify(producerResult), {
+          split: [2500n, 7500n], consensus: [1n, 0n],
+        }]]) : new Map();
+      },
+    });
+    const resolved = await expandResolveCreateBuilderExternalCalls(
+      makeHost(true), fn, [3n], artifact, undefined, undefined,
+    );
+    expect(resolved.resolvedExternalCalls).toEqual([
+      { externalContract: callee, functionName: 'getEscrow', args: [3n] },
+      { externalContract: callee, functionName: 'settle', args: [3n, [2500n, 7500n], [1n, 0n]] },
+    ]);
+    await expect(expandResolveCreateBuilderExternalCalls(
+      makeHost(false), fn, [3n], artifact, undefined, undefined,
+    )).rejects.toThrow('expression-based argSources that cannot be auto-resolved');
   });
 
   it('omits a false mapping-backed call without renumbering a later required callsite', async () => {

@@ -238,6 +238,12 @@ export async function orchestrateCreateBuilderExternalCalls(
         host.inner.getExternalTargetEntriesByInterface(interfaceName),
       resolveExternalArgs: (...a: any[]) => host.resolveExternalArgs(...a),
       evaluateExternalExpression: (...a: any[]) => host.callerContract._evaluateExternalExpression(...a),
+      resolveExternalExpressionReturns: (
+        sources, functionArgs, state, callerInputs, executionSelfAddress, producerCalls,
+      ) => host.callerContract._resolveExternalExpressionReturns(
+        sources, functionArgs, host.callerContract, state, callerInputs,
+        executionSelfAddress, producerCalls, false,
+      ),
       hydrateExternalPredicateState: (...a: any[]) => host.callerContract._hydrateExternalPredicateState(...a),
       getExternalRegistryEntry: (interfaceName) => host.externalRegistry.get(interfaceName),
       getExternalDeploymentByAddressValue: (value) =>

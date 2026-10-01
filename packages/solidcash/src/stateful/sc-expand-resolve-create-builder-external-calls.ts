@@ -4,6 +4,7 @@
 
 import type {
   AbiFunction,
+  ArgSource,
   Artifact,
   ExternalCallAbi,
   ExternalCallExpression,
@@ -32,6 +33,14 @@ export interface ExpandResolveCreateBuilderExternalCallsHost {
   }>;
   resolveExternalArgs(...args: any[]): FunctionArgument[] | undefined;
   evaluateExternalExpression(...args: any[]): FunctionArgument | undefined;
+  resolveExternalExpressionReturns?(
+    sources: readonly ArgSource[],
+    functionArgs: FunctionArgument[],
+    state: Record<string, unknown>,
+    callerInputs: readonly { type: string }[] | undefined,
+    executionSelfAddress: FunctionArgument | undefined,
+    producerCalls: readonly ExternalCallAbi[],
+  ): Promise<ReadonlyMap<string, FunctionArgument>>;
   hydrateExternalPredicateState?(
     expressions: readonly ExternalCallExpression[],
     functionArgs: FunctionArgument[],
@@ -52,6 +61,16 @@ export interface ExpandResolveCreateBuilderExternalCallsResult {
   resolvedExternalCalls: CreateBuilderResolvedExternalCall[] | undefined;
   callerStateSnapshot: Record<string, StateValue> | undefined;
 }
+
+function containsReturningExpression(value: unknown, seen = new Set<object>()): boolean {
+  if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
+  seen.add(value as object);
+  if (['producerResult', 'externalCall'].includes((value as { kind?: string }).kind ?? '')) return true;
+  return Object.values(value).some((child) => Array.isArray(child)
+    ? child.some((item) => containsReturningExpression(item, seen))
+    : containsReturningExpression(child, seen));
+}
+
 /**
  * Expand `IFoo(arr[i]).m()` slots into one concrete call per registered target, then
  * auto-resolve registry callees + expression args when overrides omit `externalCalls`.
@@ -214,6 +233,19 @@ export async function expandResolveCreateBuilderExternalCalls(
         resolvedArgs = host.resolveExternalArgs(
           argSources, args, artifact, callerStateSnapshot, abiFunction?.inputs,
           undefined, 0, false, publicSelfAddress,
+        );
+      }
+      if (resolvedArgs === undefined && argSources && host.resolveExternalExpressionReturns
+        && argSources.some((source) => containsReturningExpression(source))) {
+        // A later call can consume an earlier call's result after local edits. Resolve that exact published
+        // producer first; never substitute a provisional aggregate for a transaction argument.
+        const returns = await host.resolveExternalExpressionReturns(
+          argSources, args, callerStateSnapshot, abiFunction?.inputs, publicSelfAddress,
+          abiFunction?.externalCalls ?? [],
+        );
+        resolvedArgs = host.resolveExternalArgs(
+          argSources, args, artifact, callerStateSnapshot, abiFunction?.inputs,
+          returns, 0, false, publicSelfAddress,
         );
       }
       if (resolvedArgs === undefined && argSources?.some((s) => s.kind === 'expression')) {

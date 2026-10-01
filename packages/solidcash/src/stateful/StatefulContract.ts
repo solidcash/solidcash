@@ -50,24 +50,19 @@ import {
   KernelJournalDispositionsAbi,
   peekPushdataEncodedLength,
 } from '@solidcash/utils';
-import './runtime-loop-event-domain.js';
 import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
 import { nextBuildId, peekBuildId } from './buildSequence.js';
 import { appendComputedValueChunkRun } from './computed-value-chunk-runs.js';
 import { encodeEvmInvocationResult } from './evm-abi-result.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
-import '../ecrecover/ecrecoverComputeSidecar.js';
 import { encodeMessageBatch, evaluateFixedEffectPredicate } from '../message-bus/message-bus.js';
-import '../message-bus/internal-batch-authority.js';
 import { evaluateChildDeploymentRecipe } from '../message-bus/compose-recipes.js';
 import { loadFixedEffectEntries, type FixedEffectEntryResolver } from '../message-bus/fixed-effect-entries.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
-import '../message-bus/resource-fold.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import { type ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 // X186. The covenant-annotating gate moved to `message-bus/preflight.ts` when `TransactionBuilder.send` became its
 // second caller. The four lifecycle-admin sites below route through it; none calls the bare gate.
-import '../message-bus/preflight.js';
 import {
   binToHex,
   hexToBin,
@@ -90,7 +85,6 @@ import { AbiToFunctionMap } from '../types/type-inference.js';
 import { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import NetworkProvider from '../network/NetworkProvider.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
-import './legacy-job-event-helpers.js';
 import { isScidIdentityCommitment, resolveLogicalIdentity, type ResolvedLogicalIdentity } from './logical-identity.js';
 
 import { addressToLockScript, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode } from '../utils.js';
@@ -132,7 +126,6 @@ import {
 } from './KernelEntryJournal.js';
 import { resolveKernelDelegateForwardingTarget, resolveKernelDelegatePromotion } from './KernelDelegateForwarding.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
-import '../wait.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import {
@@ -611,15 +604,12 @@ export {
   kernelReadCarrierRouteIsCurrent,
 } from './kernel-read-carrier-route.js';
 import { decodeScriptNumber } from './trace-commitment-helpers.js';
-import './route-value-chunk-helpers.js';
-import './faithful-probe-trace.js';
 export {
   compactFaithfulProbeTrace,
   evaluateBoundedProbeCandidates,
   evaluateProbeTrace,
   MAX_BOUNDED_PROBE_STATES,
 } from './faithful-probe-trace.js';
-import './trace-verified-value-helpers.js';
 import { isCanonicalEvmScalarReturnVector, probeRequireMessage } from './external-return-encoding.js';
 export {
   isCanonicalEvmScalarReturnVector,

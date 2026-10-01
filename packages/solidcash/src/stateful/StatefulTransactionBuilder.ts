@@ -14,25 +14,16 @@ import {
   encodeChunkableValueTail,
 } from '@solidcash/utils';
 import { binToHex, binsAreEqual, hexToBin, isHex, encodeTransaction } from '@bitauth/libauth';
-import '@mem-cash/validation';
-import './buildSequence.js';
-import './ValueChunkProducerIdentity.js';
 import { buildSidecarRedeem, sidecarLockingBytecode, scriptToBytecode } from '@solidcash/utils';
 import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
-import '../ecrecover/ecrecoverComputeSidecar.js';
-import './CovenantTransactionBuilder.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
-import '../wait.js';
-import '../network/createVirtualMachine.js';
 import { onMockNetworkProviderReset } from '../network/MockNetworkProvider.js';
 import { clearCollectionValueRecords } from './ValueChunkPersistence.js';
 import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
 import { Utxo, UnlockableUtxo, TransactionDetails, isContractUnlocker, Unlocker } from '../interfaces.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
-import './covenant-helpers.js';
-import './computed-output-repair.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 
 /** Select a continuation lock without allowing compatibility state to override a live covenant pin. */
@@ -69,12 +60,10 @@ import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import { legacyGroupLooksLikePublishJobEvent } from './legacy-planning-heuristics.js';
-import '../message-bus/layout-resolver.js';
 export {
   collectionValuePhysicalBindings,
   planCompilerTrailingResources,
 } from './compiler-trailing-resources.js';
-import '../message-bus/materialization-mode.js';
 
 
 export {
@@ -258,7 +247,6 @@ export {
   packJobsAgainstOpReturn,
   relocateChangeAfterOccupancy,
 } from './persist-predecessor-layout.js';
-import './persist-predecessor-layout.js';
 
 export {
   isP2sh32LockScript,
@@ -294,7 +282,6 @@ export {
   packTailReturnPlacements,
   assignedTailEnd,
 } from './physical-return-layout.js';
-import './physical-return-layout.js';
 
 export {
   isPredOutReusableHole,
@@ -323,7 +310,6 @@ export {
   selectBalancedEntryOutputIdentity,
   stripSurplusEmptyCollectionEntries,
 } from './collection-lock-strip.js';
-import './collection-lock-strip.js';
 
 export {
   SLOT_HEX,
@@ -332,7 +318,6 @@ export {
   isSortedEntryNodeCommitment,
   synthesizePredNewCommitment,
 } from './sorted-entry-commitment.js';
-import './sorted-entry-commitment.js';
 
 export {
   permitsLegacyNamedValueChunkFallback,
@@ -542,12 +527,10 @@ import {
   type AssembleConstructorInputsHost,
 } from './stb-assemble-constructor-inputs.js';
 import { type AppendEarlyDelegateOutputsHost } from './stb-append-early-delegate-outputs.js';
-import './stb-materialize-late-build-chunk-frame.js';
 import {
   runSendPhase3FinalRebuild as runSendPhase3FinalRebuildImpl,
   type RunSendPhase3FinalRebuildHost,
 } from './stb-run-send-phase3-final-rebuild.js';
-import './stb-materialize-mid-build-outputs-cascade.js';
 import { runBuildEarlyFront as runBuildEarlyFrontImpl, type RunBuildEarlyFrontHost } from './stb-run-build-early-front.js';
 import {
   createSendTiming,
@@ -578,10 +561,8 @@ import {
 import { measureAndFundCovenantFee, type MeasureAndFundCovenantFeeHost } from './stb-measure-and-fund-covenant-fee.js';
 import { type ReassertSendFinalBuilderHost } from './stb-reassert-send-final-builder.js';
 import { type PlaceSendChangeAndSidecarHost } from './stb-place-send-change-and-sidecar.js';
-import './stb-rebalance-funder-surplus.js';
 import { type ReassertSendFinalConservationHost } from './stb-reassert-send-final-conservation.js';
 import { type ReassertSendAfterViewRepackHost } from './stb-reassert-send-after-view-repack.js';
-import './stb-finalize-fee-before-validation.js';
 import { type PatchRelocatedDelegateOutputBasesHost } from './stb-patch-relocated-delegate-output-bases.js';
 import { type ReassertBuildConservationRepairsHost } from './stb-reassert-build-conservation-repairs.js';
 import { type FinalizeBuildJobsBandAndViewsHost } from './stb-finalize-build-jobs-band-and-views.js';
@@ -595,7 +576,6 @@ import { type MaterializeOwnerFrontOutputsHost } from './stb-materialize-owner-f
 import { type AppendDelegateOutputHelpersHost } from './stb-append-delegate-output-helpers.js';
 import { type SubmitFinalTransactionHost } from './stb-submit-final-transaction.js';
 import { type FinalizeBuildStampHost } from './stb-finalize-build-stamp.js';
-import './stb-finalize-build-tail.js';
 import { type RegisterStatefulInputsHost } from './stb-register-stateful-inputs.js';
 import { type MaterializeTrailingFrameAndPendingHost } from './stb-materialize-trailing-frame-and-pending.js';
 export {
@@ -630,7 +610,6 @@ export {
   type EntryInsertLockRepair,
   type LinearSortedBatchEntryBand,
 } from './token-insert-linear-batch.js';
-import './token-insert-linear-batch.js';
 
 export {
   stripSurplusValueChunkLocks,
@@ -642,7 +621,6 @@ export {
   shouldOverwriteForSameIndexTwin,
   type MaterializedReturnExpectation,
 } from './scid-minting-return-layout.js';
-import './scid-minting-return-layout.js';
 
 export {
   isJobEventEmitCommitment,
@@ -660,7 +638,6 @@ export {
   relocateJobEventEmitToDest,
   type SameIndexTwinOptions,
 } from './same-index-twin-emit.js';
-import './same-index-twin-emit.js';
 
 
 export {

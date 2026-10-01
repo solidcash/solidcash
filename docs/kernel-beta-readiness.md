@@ -49,6 +49,18 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   creator/arbitrator identity, and `not registered` checks; it remains red at the empty-signature custom-error
   case, where ecrecover is still deferred. The preceding marketplace title has not been rerun for this change
   because this title has not turned green.
+- 2026-10-01 focused negative-path checkpoint: runtime custom-error argument sideband now reports the executed
+  `ECDSAInvalidSignatureLength(0)` tuple, and the matcher checks that same rejected transaction. Exact active
+  `OP_INVOKE` bodies retain source-require attribution in preflight. Address-returning recovery now returns the
+  zero-address sentinel for an invalid `v` before reading recovery sidecars (empty native P2PKH address or 20-byte
+  EVM address); this is compiler behavior, not a deferred-compute planner waiver. The unchanged Marketplace
+  `take job > sanity checks` title **passes** (1 selected, 65 skipped), as does its immediately preceding
+  `withdraw collateral > withdraw collateral` title. Focused custom-error, VM-diagnostic, and invalid-`v` tests
+  pass; `yarn build` and targeted lint pass. This does not establish the remaining 66-title or broad beta gates.
+  The Marketplace iteration artifact context is stale until a normal complete project compile. That compile was
+  attempted: missing root fixture dependencies (`@sablier/lockup` and `@prb/math`) were declared and installed,
+  but the complete compile still exhausted an 8 GB Node heap. No complete artifact-context publication occurred;
+  the focused tests above used the successful iteration artifact. The project compile's memory wall remains open.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

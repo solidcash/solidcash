@@ -763,6 +763,21 @@ export class SortedMappingCodegenPendingError extends SolidCashError {
   }
 }
 
+/**
+ * A direct-convention body reads a verified-mapping entry after a write whose value the body does not keep: the read,
+ * or the one a push or a pop makes, would take the entry the transaction spends, which holds the value from before
+ * the write.
+ */
+export class DirectStaleReadError extends SolidCashError {
+  constructor(public node: Node, entry: string, shape: string, update?: 'push' | 'pop') {
+    super(node, update === undefined
+      ? `a read of \`${entry}\` after its write ${shape} is not supported on the direct convention: `
+        + 'read it before the write, or into a local'
+      : `a ${update} on \`${entry}\` after its write ${shape} is not supported on the direct convention: `
+        + 'update a local and write the entry once');
+  }
+}
+
 // A second element/push write to a mapping-entry ARRAY value chains from the prior write via the flat
 // drop+re-push, which consumes the pending value before the element value expression is evaluated - so a
 // read of the SAME entry inside that value (or index) reads the STALE input, not the pending write.

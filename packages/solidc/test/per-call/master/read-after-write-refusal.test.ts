@@ -117,8 +117,11 @@ describe('a per-call read of a mapping entry after a write the frame does not ke
       + ' Arb memory y = arbs[id]; this.count = y.buyer; }')).toContain(readOf('arbs[id]', 'in a branch arm'));
   });
 
-  it('leaves the direct convention to compile the same bodies', () => {
-    for (const { body } of REFUSED.slice(0, 3)) expect(refusal(`${STATE}${body}`, {})).toBeUndefined();
+  it('refuses the same bodies on the direct convention, whose read would take the entry the transaction spends', () => {
+    for (const { body, message } of REFUSED.slice(0, 3)) {
+      expect(() => refusal(`${STATE}${body}`, {}))
+        .toThrow(message.replace('the per-call convention', 'the direct convention'));
+    }
   });
 
   it('compiles a read past a call that every path makes, which the next segment\'s declaration serves', () => {

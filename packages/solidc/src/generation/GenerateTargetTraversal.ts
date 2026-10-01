@@ -271,6 +271,7 @@ import {
   ChainedEntryElementReadError, ConditionalDeployError, NegativeExponentError, SolidCashError,
   RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
   BlockLayoutUnavailableError, StackVariableUnavailableError, SolidcDiagnosticError,
+  DirectStaleReadError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
@@ -1619,6 +1620,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private entrySlots: EntryAccessInfo[] = [];
   private pendingEntryWrites: Map<number, { keyStackName: string; valueStackName: string }> = new Map();
   private pendingEntryDeletes: Set<number> = new Set();
+  // On the direct convention, the writes to a sorted entry whose value a later read takes, and the reads they serve.
+  private directKeptSortedWrites: WeakSet<Node> = new WeakSet();
+  private directServedSortedReads: WeakSet<Node> = new WeakSet();
   // Straight-line repeated RMWs of one chunkable vmap value are accumulated locally and covenant-pinned once at the
   // last write. Pinning each intermediate value to the same fixed output is unsatisfiable (and reads stale input).
   private sortedCompositeWritesRemaining: Map<number, number> = new Map();
@@ -7867,6 +7871,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       scan(node.body);
     }
     this.countSortedEntryAccesses(node);
+    this.refuseDirectStaleSortedReads(node);
 
     // C1/piece-5: a conditional delegatecall needs a runtime "the delegate edge was reached" flag. The state
     // covenant skip is per-function, the co-spend pin is per-callsite, so the epilogue must know which paths
@@ -22936,6 +22941,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         throw new PerCallStaleReadError(node, this.sortedEntryText(node.collection.name, node.keys),
           'whose value the frame does not keep');
       }
+      this.refuseUnservedDirectSortedRead(node);
       this.emitSortedSetRead(node);
       if (node.arrayIndex) {
         this.emitArrayElementExtract(node, { location: node.location, positionHint: PositionHint.START });
@@ -23478,6 +23484,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (mayKeepValue && (this.sortedReadsAhead.get(slotIndex) ?? 0) > 0
       && (this.sortedWritesAhead.get(slotIndex) ?? 0) <= 0) {
       keptValue = this.keepSortedWrittenValue(slotIndex, loc);
+    }
+    if (!keptValue && !routeScalarWitness && !hasRepoint && this.directSortedWriteMayKeepValue(node)) {
+      keptValue = this.keepDirectSortedWrittenValue(slotIndex, loc);
     }
     if (this.isChunkableValue(collection.innermostValueType)) {
       // Design D: pin the value chunks from the on-stack value BEFORE transforming it into the digest tail. This
@@ -24358,6 +24367,222 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     walk(node);
     return hit;
+  }
+
+  /**
+   * Refuses, on the direct convention, every read of a verified-mapping entry after a write to it whose value the
+   * body does not keep: the read would take the entry the transaction spends, which holds the value from before the
+   * write. A push or a pop reads the entry it rewrites, so it counts as such a read; a snapshot that only carries
+   * fields over into the entry's next write does not (`carriesSnapshotOver`): both writes pin the entry's one output,
+   * which a stale snapshot makes them disagree on.
+   *
+   * The walk follows the body's control flow: branch arms, loops, early exits and lazily evaluated operands join
+   * their paths. A write whose value a later read takes is recorded for `directSortedWriteMayKeepValue`, and the
+   * reads a kept or chained value serves for `refuseUnservedDirectSortedRead`.
+   */
+  private refuseDirectStaleSortedReads(fn: FunctionDefinitionNode): void {
+    this.directKeptSortedWrites = new WeakSet();
+    this.directServedSortedReads = new WeakSet();
+    if (this.perCallMaster || fn.body === undefined || this.ownsMessageBusParticipantBlock(fn)) return;
+    type Pending = { readonly shape?: string; readonly write?: Node };
+    type Flow = Map<number, Pending> | undefined;
+    type Scope = { readonly arm?: 'branch' | 'early'; readonly loop: boolean };
+    const isWrite = (node: Node): node is MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode =>
+      (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode)
+      && node.collection?.sorted === true;
+    const writesLeft = new Map<number, number>();
+    walkInvocationAst(fn.body, (candidate) => {
+      if (isWrite(candidate)) writesLeft.set(candidate.entrySlotIndex, (writesLeft.get(candidate.entrySlotIndex) ?? 0) + 1);
+    });
+    if (writesLeft.size === 0) return;
+    const changed = this.namesChangedIn(fn);
+    const isArrayOp = (node: Node): boolean => node instanceof MappingAssignNode
+      && node.collection !== undefined && this.isChunkableValue(node.collection.innermostValueType)
+      && (node.arrayIndex !== undefined || node.arrayPush === true || node.arrayPop === true);
+    const chainLeft = new Map(this.sortedCompositeWritesRemaining);
+    const loops: { breaks: Flow[]; continues: Flow[] }[] = [];
+    const join = (...flows: Flow[]): Flow => {
+      const live = flows.filter((flow): flow is Map<number, Pending> => flow !== undefined);
+      if (live.length === 0) return undefined;
+      const joined = new Map(live[0]);
+      for (const flow of live.slice(1)) {
+        for (const [slot, pending] of flow) {
+          const other = joined.get(slot);
+          joined.set(slot, other === undefined ? pending
+            : { shape: other.shape ?? pending.shape, write: other.write ?? pending.write });
+        }
+      }
+      return joined;
+    };
+    const copy = (flow: Flow): Flow => (flow === undefined ? undefined : new Map(flow));
+    const skipped = new Set(['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+      'referencedContract', 'stateVariable', 'packedStateVariable', 'collection', 'type', 'location', 'name',
+      'functionId', 'error', 'opRolls', 'selectorHex', 'abiType', 'catchClauses']);
+    const children = (node: Node): Node[] => {
+      const out: Node[] = [];
+      for (const key in node) {
+        if (skipped.has(key)) continue;
+        const child = (node as unknown as Record<string, unknown>)[key];
+        if (child instanceof Node) out.push(child);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) out.push(item);
+      }
+      return out;
+    };
+    const endsInReturn = (block: BlockNode | undefined): boolean =>
+      (block?.statements ?? []).at(-1) instanceof ReturnNode;
+    const uses = new Map<string, number>();
+    const survey = (node: Node): void => {
+      if (node instanceof IdentifierNode) uses.set(node.name, (uses.get(node.name) ?? 0) + 1);
+      for (const child of children(node)) survey(child);
+    };
+    survey(fn.body);
+    const carried = new WeakSet<Node>();
+    walkInvocationAst(fn.body, (candidate) => {
+      const statements = candidate instanceof BlockNode ? candidate.statements ?? [] : [];
+      statements.forEach((statement, index) => {
+        if (statement instanceof VariableDefinitionNode && statement.expression !== undefined
+          && this.carriesSnapshotOver(statement, statements[index + 1], uses)) carried.add(statement.expression);
+      });
+    });
+
+    const read = (node: MappingAccessNode, flow: Flow): void => {
+      if (flow === undefined || carried.has(node) || node.collection?.sorted !== true
+        || node.isTokenContainerAccess === true || node.isGenesisRead === true || node.entrySlotIndex < 0) return;
+      const pending = flow.get(node.entrySlotIndex);
+      if (pending === undefined) return;
+      if (pending.shape === undefined) {
+        this.directServedSortedReads.add(node);
+        if (pending.write !== undefined) this.directKeptSortedWrites.add(pending.write);
+        return;
+      }
+      throw new DirectStaleReadError(node, this.sortedEntryText(node.collection.name, node.keys), pending.shape);
+    };
+    const write = (node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode, flow: Flow, scope: Scope):
+    Flow => {
+      const slot = node.entrySlotIndex;
+      const writesAfter = (writesLeft.get(slot) ?? 1) - 1;
+      writesLeft.set(slot, writesAfter);
+      // A chained array write keeps its value as the next write's start, which serves the reads between them.
+      const arrayOp = isArrayOp(node);
+      const chained = arrayOp && (chainLeft.get(slot) ?? 1) > 1;
+      if (arrayOp) chainLeft.set(slot, (chainLeft.get(slot) ?? 1) - 1);
+      if (flow === undefined || slot < 0) return flow;
+      const pending = flow.get(slot);
+      if (node instanceof MappingAssignNode && (node.arrayPush === true || node.arrayPop === true)
+        && pending?.shape !== undefined) {
+        throw new DirectStaleReadError(node, this.sortedEntryText(node.collection?.name ?? node.name, node.keys),
+          pending.shape, node.arrayPush === true ? 'push' : 'pop');
+      }
+      const shape = chained && !scope.loop ? undefined : this.directSortedWriteShape(node, scope, writesAfter, changed);
+      const next = new Map(flow);
+      next.set(slot, { shape, write: chained || shape !== undefined ? undefined : node });
+      return next;
+    };
+    const walk = (node: Node, flow: Flow, scope: Scope): Flow => {
+      if (node instanceof BlockNode) {
+        let current = flow;
+        for (const statement of node.statements ?? []) current = walk(statement, current, scope);
+        return current;
+      }
+      if (node instanceof UncheckedNode) return walk(node.block, flow, scope);
+      if (node instanceof BranchNode) {
+        const tested = walk(node.condition, flow, scope);
+        const armOf = (side: BlockNode | undefined): Scope => ({
+          ...scope, arm: scope.arm === 'branch' || !endsInReturn(side) ? 'branch' : 'early',
+        });
+        const taken = walk(node.ifBlock, copy(tested), armOf(node.elseBlock));
+        const other = node.elseBlock === undefined ? tested : walk(node.elseBlock, copy(tested), armOf(node.ifBlock));
+        return join(taken, other);
+      }
+      if (node instanceof SwitchNode) {
+        const tested = walk(node.expression, flow, scope);
+        const arm: Scope = { ...scope, arm: 'branch' };
+        const arms = node.cases.map((entry) => walk(entry.body, copy(walk(entry.value, copy(tested), scope)), arm));
+        return join(...arms, node.defaultCase === undefined ? tested : walk(node.defaultCase, copy(tested), arm));
+      }
+      if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode) {
+        const body = node instanceof CollectionIterationNode ? node.body : node.block;
+        const condition = node instanceof CollectionIterationNode ? undefined : node.condition;
+        const entered = node instanceof WhileNode ? walk(node.condition, flow, scope) : flow;
+        loops.push({ breaks: [], continues: [] });
+        const ran = walk(body, copy(entered), { ...scope, loop: true });
+        const { breaks, continues } = loops.pop()!;
+        const turned = join(ran, ...continues);
+        const again = condition === undefined ? turned : walk(condition, turned, scope);
+        return node instanceof DoWhileNode ? join(again, ...breaks) : join(entered, again, ...breaks);
+      }
+      if (node instanceof TryCatchNode) return walk(node.tryBlock, walk(node.expression, flow, scope), scope);
+      if (node instanceof BreakNode || node instanceof ContinueNode) {
+        const loop = loops.at(-1);
+        if (loop === undefined) return flow;
+        (node instanceof BreakNode ? loop.breaks : loop.continues).push(copy(flow));
+        return undefined;
+      }
+      if (node instanceof TernaryOpNode) {
+        const tested = walk(node.condition, flow, scope);
+        return join(walk(node.ifTrue, copy(tested), scope), walk(node.ifFalse, copy(tested), scope));
+      }
+      if (node instanceof BinaryOpNode && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR)) {
+        const left = walk(node.left, flow, scope);
+        return join(left, walk(node.right, copy(left), scope));
+      }
+      let current = flow;
+      for (const child of children(node)) current = walk(child, current, scope);
+      if (node instanceof MappingAccessNode) read(node, current);
+      if (isWrite(node)) current = write(node, current, scope);
+      return node instanceof ReturnNode || node instanceof RevertNode ? undefined : current;
+    };
+    walk(fn.body, new Map(), { loop: false });
+  }
+
+  /**
+   * Why a direct-convention write to a sorted entry keeps no value for the reads after it, as the shape a refusal
+   * names, or undefined when it keeps one: a write on the body's straight line, the body's last write to the entry,
+   * whose keys name one entry wherever the body reads the slot.
+   */
+  private directSortedWriteShape(
+    node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode,
+    scope: { readonly arm?: 'branch' | 'early'; readonly loop: boolean },
+    writesAfter: number, changed: ReadonlySet<string>,
+  ): string | undefined {
+    const entry = this.entrySlots[node.entrySlotIndex];
+    if (this.isDefineSubTraversal) return 'inside an outlined internal function';
+    if (scope.loop) return 'in a loop';
+    if (scope.arm === 'branch') return 'in a branch arm';
+    if (scope.arm === 'early') return 'in the code after an early return';
+    const key = node.keys.find((candidate) => !this.sortedKeyInvariant(candidate, changed));
+    if (key !== undefined) return key instanceof IdentifierNode ? 'with a reassigned key' : 'with an expression key';
+    if (entry === undefined || entry.aliasCondDeleteSlot !== undefined
+      || (entry.runtimeAliasPriorSlots?.length ?? 0) > 0) return 'on an aliased entry';
+    if (writesAfter > 0) return 'when the body writes it again';
+    return undefined;
+  }
+
+  /** True when a direct-convention write to a sorted entry keeps the value it writes for a read the walk served. */
+  private directSortedWriteMayKeepValue(node: MappingAssignNode | MappingDeleteNode): boolean {
+    return this.directKeptSortedWrites.has(node) && !this.perCallMaster && !this.isDefineSubTraversal
+      && this.scopeDepth === 0 && this.plainLoopDepth === 0;
+  }
+
+  /**
+   * Leaves a copy of the value a direct-convention sorted write is about to store beneath it, as the slot's kept
+   * value: a later read of the entry takes it rather than the entry the transaction spends.
+   */
+  private keepDirectSortedWrittenValue(slotIndex: number, loc: SingleLocationData): boolean {
+    if (this.sortedCompositeValueCache.has(slotIndex)) return false;
+    const name = `(__vmap_kept_${slotIndex})`;
+    this.emit(Op.OP_DUP, loc);
+    this.stack[0] = name;
+    this.pushToStack('(value)');
+    this.sortedCompositeValueCache.set(slotIndex, name);
+    return true;
+  }
+
+  /** Fails closed on a direct-convention read the walk served whose write the emitted code kept no value for. */
+  private refuseUnservedDirectSortedRead(node: MappingAccessNode): void {
+    if (!this.directServedSortedReads.has(node) || this.sortedReadServed(node.entrySlotIndex)) return;
+    throw new DirectStaleReadError(node, this.sortedEntryText(node.collection?.name ?? node.name, node.keys),
+      'whose value the body does not keep');
   }
 
   /**

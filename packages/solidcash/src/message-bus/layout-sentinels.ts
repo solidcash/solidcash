@@ -33,8 +33,8 @@ export function encodeLayoutCoordinate(value: LayoutCoordinate): bigint {
       // Alias encodes as the target coordinate at the ABI boundary (covenant reads absolute).
       return BigInt(value.target);
     default: {
-      const _exhaustive: never = value;
-      return _exhaustive;
+      const exhaustive: never = value;
+      return exhaustive;
     }
   }
 }

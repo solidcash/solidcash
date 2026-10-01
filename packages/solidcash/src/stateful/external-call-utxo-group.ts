@@ -11,7 +11,6 @@ import type {
   ValueChunkProducerResourceClaim,
 } from './ValueChunkProducerIdentity.js';
 import type { ValueChunkWriteDescriptor } from './value-chunk-persist.js';
-import type { ValueChunkWriteStagingSession } from './value-chunk-persist.js';
 
 export interface EntryNftInfo {
   slotIndex: number;

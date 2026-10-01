@@ -310,8 +310,11 @@ export interface DirectMappingReadPlan {
 const canonicalIntegerAbiType = (type: string): string | undefined => {
   if (type === 'uint') return 'uint256';
   if (type === 'int') return 'int256';
-  return /^(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)|bigint)$/.test(type)
-    ? type : undefined;
+  if (type === 'bigint') return type;
+  const numeric = /^u?int([1-9][0-9]*)$/.exec(type);
+  if (!numeric) return undefined;
+  const width = Number(numeric[1]);
+  return width >= 8 && width <= 256 && width % 8 === 0 ? type : undefined;
 };
 
 /** Resolve a direct mapping-return shortcut from compiler proof, never source names. */

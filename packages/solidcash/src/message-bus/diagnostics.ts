@@ -220,7 +220,7 @@ export class MessageBusDiagnosticError extends Error {
   }
 }
 
-/** Layout-drift / ownership fail-closed path with layout invariant attribution attribution fields + structured plan-failure structured report. */
+/** Layout-drift / ownership fail-closed path with invariant attribution and a structured plan-failure report. */
 export function layoutInvariantError(params: {
   invariantId: string;
   message: string;

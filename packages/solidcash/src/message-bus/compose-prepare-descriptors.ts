@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: Compose phase-boundary extract — prepare call descriptors, fee funder, provider, upgrade targets, state cache.
+ * Compose phase-boundary extract: prepare call descriptors, fee funder,
+ * provider, upgrade targets, and state cache.
  */
 
 import type { FunctionArgument } from '../Argument.js';

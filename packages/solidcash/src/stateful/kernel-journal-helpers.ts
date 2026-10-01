@@ -3,7 +3,7 @@
  */
 
 import { hexToBin } from '@bitauth/libauth';
-import type { AbiFunction, AbiInput, Artifact, KernelJournalDispositionsAbi } from '@solidcash/utils';
+import type { AbiFunction, AbiInput, KernelJournalDispositionsAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS,

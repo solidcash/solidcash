@@ -98,7 +98,8 @@ export function authorizeComposeParticipantLayout(params: {
     ...params.usage,
   });
   const digest = digestKernelExecutionPlan(plan);
-  // KernelExecutionPlan bytecode commitment: execution-affecting bytecode fragment — transplanting digest metadata without this marker fails closed.
+  // KernelExecutionPlan bytecode commitment: transplanting digest metadata
+  // without the execution-affecting marker fails closed.
   const bytecodeCommitment = encodeKernelExecutionPlanBytecodeCommitment(digest);
   const mode = getMaterializationMode();
   const phase = advancePhase(

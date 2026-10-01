@@ -4,10 +4,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth';
-import {
-  isEmptyValueChunkCommitment,
-  valueChunkIndexFromCommitment,
-} from './value-chunk-persist.js';
+import { valueChunkIndexFromCommitment } from './value-chunk-persist.js';
 import {
   groupOwnsInBlockReturnEvent,
   type PhysicalReturnGroup,

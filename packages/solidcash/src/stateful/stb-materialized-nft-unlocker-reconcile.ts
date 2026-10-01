@@ -66,7 +66,7 @@ export function reconcileMaterializedDataNftUnlockers(
   host: MaterializedNftUnlockerReconcileHost,
   builder: TransactionBuilder,
 ): boolean {
-  let changed = false;
+  const status = { changed: false };
   const groups = [
     ...host.externalCallUtxoGroups.filter((group) => group.sharedGroupIndex === undefined),
     ...host.lowLevelCallUtxoGroups,
@@ -109,11 +109,11 @@ export function reconcileMaterializedDataNftUnlockers(
         const blockIndex = group.blockInputs.findIndex(matches);
         if (blockIndex >= 0) group.blockInputs[blockIndex] = rebound;
       }
-      changed = true;
+      status.changed = true;
       return rebound;
     });
   }
-  return changed;
+  return status.changed;
 }
 
 /** Rebind write-path entry covenants to their state owner's final physical minting-master input. */
@@ -121,7 +121,7 @@ export function reconcileMaterializedEntryNftUnlockers(
   host: MaterializedNftUnlockerReconcileHost,
   builder: TransactionBuilder,
 ): boolean {
-  let changed = false;
+  const status = { changed: false };
   const groups = [
     ...host.externalCallUtxoGroups.filter((group) => group.sharedGroupIndex === undefined),
     ...host.lowLevelCallUtxoGroups,
@@ -156,14 +156,14 @@ export function reconcileMaterializedEntryNftUnlockers(
           entryContract, masterInputIndex, categoryId, signature,
         );
         if (!binsAreEqual(candidate.generateLockingBytecode(), lockingBytecode)) continue;
-        changed = true;
+        status.changed = true;
         return candidate;
       }
       return undefined;
     });
   }
-  if (changed) host.syncBuilderUnlockers(builder);
-  return changed;
+  if (status.changed) host.syncBuilderUnlockers(builder);
+  return status.changed;
 }
 
 /** Rebind real container spends, leaving inactive funding pads at their original locks. */

@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: Compose phase-boundary extract — owner-local route witnesses + compiled graph plan from prepared calls.
+ * Compose phase-boundary extract: owner-local route witnesses
+ * and compiled graph plan from prepared calls.
  */
 
 import { binToHex } from '@bitauth/libauth';

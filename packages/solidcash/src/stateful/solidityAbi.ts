@@ -10,7 +10,13 @@ export function artifactUsesSolidityAbi(artifact: Pick<Artifact, 'compiler'>): b
     || artifact.compiler?.options?.solidityImportCompat === true;
 }
 
-const LEGACY_EVM_WORD_TYPE = /^(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|bigint|bool|address(?: payable)?|bytes(?:[1-9]|[12][0-9]|3[0-2])|u?fixed(?:\d+x\d+)?)$/;
+const LEGACY_EVM_WORD_TYPE = new RegExp(
+  '^(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|'
+  + '104|112|120|128|136|144|152|160|168|176|184|192|'
+  + '200|208|216|224|232|240|248|256)?|bigint|bool|'
+  + 'address(?: payable)?|bytes(?:[1-9]|[12][0-9]|3[0-2])|'
+  + String.raw`u?fixed(?:\d+x\d+)?)$`,
+);
 
 /**
  * Resolve an authenticated typed-result representation. Fresh artifacts publish this tuple-wide fact. Legacy

@@ -27,7 +27,8 @@ export function isVmValidationOnly(): boolean {
 }
 
 /**
- * VM-validator-only finalization: whether STB finalization may enter VM-mined computed-output repair after a covenant failure.
+ * VM-validator-only finalization: whether STB may enter VM-mined
+ * computed-output repair after a covenant failure.
  * Recipe → false (validator only). Explicit `devOracle` → true (legacy planner loop).
  */
 export function allowsFinalizationVmRepairs(): boolean {

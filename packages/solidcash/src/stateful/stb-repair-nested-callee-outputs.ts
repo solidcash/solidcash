@@ -434,7 +434,6 @@ export function repairNestedCalleeOutputs(
         && (!existingIsChunkAddress || binToHex(existingLock!) === binToHex(chunk.lockingBytecode))) {
         continue;
       }
-      const chunkCategory = chunk.categoryId ?? host.categoryId;
       // Trailing slots at impl+blockSize are this write's value chunks. A long UPDATE
       // changes sha256(value) and therefore the chunk P2SH32; the previous digest's
       // chunks must be replaced rather than preserved as same-category mutables.
@@ -482,8 +481,6 @@ export function repairNestedCalleeOutputs(
     if (!commitment) return new Uint8Array();
     return typeof commitment === 'string' ? hexToBin(commitment) : commitment;
   };
-  const isEmptyPubkeyDefault = (bytes: Uint8Array): boolean => bytes.length === 35
-    && bytes[1] === 0x21 && bytes.slice(2).every((byte) => byte === 0);
   // Rebuild of an immutable-only data NFT is not an identity. Restore the
   // co-spent input commitment so the callee's UTXO==OUTPUT pin succeeds.
   for (const group of host.externalCallUtxoGroups) {

@@ -1,5 +1,6 @@
 /**
- * phase-boundary extract: Compose phase-boundary extract — participant contract indexes, categories, identities, provisional results.
+ * Compose phase-boundary extract: participant contract indexes,
+ * categories, identities, and provisional results.
  */
 
 import { binToHex } from '@bitauth/libauth';

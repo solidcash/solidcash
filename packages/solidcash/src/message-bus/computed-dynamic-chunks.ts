@@ -152,7 +152,8 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
 
   const changedOutputs = new Set<number>();
   const authenticatedOutputs = new Set<number>();
-  // constraint fixpoint / item-10 follow-on: dynamic-chunk repairs progress on the same monotone lattice as fixed-state resources.
+  // Dynamic-chunk repairs progress on the same monotone lattice
+  // as fixed-state resources.
   const commitmentLattice = new MonotoneCell<string>();
   const seenStates = new Set<string>();
   const maximumRounds = owners.size * 2 + 1;

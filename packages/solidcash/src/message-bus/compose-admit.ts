@@ -92,7 +92,7 @@ export function admitCompositionBuilder(
       transfers: plan.activeTransfers,
     }))));
   }
-  // path-effect activation/settle-time ExecutionContext: settle-time ExecutionContext lifecycle (no-op when none registered).
+  // Settle-time ExecutionContext lifecycle (no-op when none registered).
   assertAndSettleExecutionContexts(ctx.executionContexts);
   // constraint fixpoint: resolve multi-domain converge fingerprints recorded during admit.
   finalizeActiveConstraintFixpoint(ctx.constraintFixpoint);

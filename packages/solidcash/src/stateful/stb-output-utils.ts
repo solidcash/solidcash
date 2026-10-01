@@ -4,7 +4,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth';
-import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
+import type { Utxo } from '../interfaces.js';
 import { addressToLockScript } from '../utils.js';
 
 export const cloneToken = <T extends Utxo['token']>(token: T): T => (token === undefined

@@ -1093,6 +1093,8 @@ interface SortedFlowHooks<F> {
   readonly copy: (flow: F) => F;
   /** The facts after a node's own access, once its children ran. */
   readonly access: (node: Node, flow: F | undefined, scope: SortedFlowScope) => F | undefined;
+  /** The facts on entering a loop, before its condition: every turn after the first runs after the earlier turns. */
+  readonly enterLoop?: (loop: Node, flow: F | undefined) => F | undefined;
 }
 
 const SORTED_FLOW_SKIPPED = new Set(['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
@@ -1145,7 +1147,8 @@ function walkSortedFlow<F>(root: Node, start: F, hooks: SortedFlowHooks<F>): voi
     if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode) {
       const body = node instanceof CollectionIterationNode ? node.body : node.block;
       const condition = node instanceof CollectionIterationNode ? undefined : node.condition;
-      const entered = node instanceof WhileNode ? walk(node.condition, flow, scope) : flow;
+      const before = hooks.enterLoop === undefined ? flow : hooks.enterLoop(node, flow);
+      const entered = node instanceof WhileNode ? walk(node.condition, before, scope) : before;
       loops.push({ breaks: [], continues: [] });
       const ran = walk(body, copy(entered), { ...scope, loop: true });
       const { breaks, continues } = loops.pop()!;
@@ -23038,6 +23041,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const gLoc = { location: node.location, positionHint: PositionHint.START };
       this.emitDefaultValue(gLoc, node.collection!.innermostValueType);
       this.pushToStack('(value)');
+      // An element of the default array: a fixed array's element is its default, any index past it fails.
+      if (node.arrayIndex) this.emitArrayElementExtract(node, gLoc);
       return node;
     }
 
@@ -24643,7 +24648,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * instead, as the EVM's does: it starts from the last write with the same keys, or the default, and takes each
    * later write whose key hash equals its own. Each such write keeps its value, and its key hash where the read
    * compares. A write in a branch arm, a loop, the code after an early return or an outlined helper keeps nothing,
-   * so a read it may reach is refused; keys that are distinct literals never name one entry.
+   * so a read it may reach is refused, and a loop's writes reach the reads of its later turns, before them in the
+   * body as well; keys that are distinct literals never name one entry.
    */
   private planGenesisReads(fn: FunctionDefinitionNode): void {
     this.genesisKeptWrites = new WeakSet();
@@ -24659,7 +24665,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     });
     if (!genesisReads) return;
     type Write = MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode;
-    type Pending = { readonly node: Write; readonly shape?: string };
+    // A loop's write is pending for the reads of its later turns before the walk reaches it (`earlier`).
+    type Pending = { readonly node: Write; readonly shape?: string; readonly earlier?: boolean };
     type Flow = Map<string, readonly Pending[]>;
     const isWrite = (node: Node): node is Write =>
       (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode)
@@ -24680,7 +24687,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const live = same < 0 ? reaching : reaching.slice(same);
       const blocked = live.find((write) => write.shape !== undefined);
       if (blocked !== undefined) {
-        throw new ConstructorStaleReadError(node, entryText(node), entryText(blocked.node), blocked.shape!);
+        throw new ConstructorStaleReadError(node, entryText(node), entryText(blocked.node),
+          blocked.earlier === true ? 'in an earlier turn of its loop' : blocked.shape!);
       }
       const base = same < 0 ? undefined : live[0].node;
       const compared = (same < 0 ? live : live.slice(1)).map((write) => write.node);
@@ -24698,7 +24706,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (flow === undefined) return flow;
       const name = node.collection!.name;
       const shape = chained ? 'when the body writes it again' : this.genesisWriteShape(node, scope);
-      return new Map(flow).set(name, [...(flow.get(name) ?? []), { node, shape }]);
+      const others = (flow.get(name) ?? []).filter((pending) => pending.node !== node);
+      return new Map(flow).set(name, [...others, { node, shape }]);
     };
     walkSortedFlow<Flow>(fn.body, new Map(), {
       join: (...flows) => {
@@ -24707,8 +24716,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const joined = new Map(live[0]);
         for (const flow of live.slice(1)) {
           for (const [name, writes] of flow) {
-            const known = joined.get(name) ?? [];
-            joined.set(name, [...known, ...writes.filter((pending) => !known.some((other) => other.node === pending.node))]);
+            const merged = [...joined.get(name) ?? []];
+            for (const pending of writes) {
+              const index = merged.findIndex((other) => other.node === pending.node);
+              if (index < 0) merged.push(pending);
+              else if (merged[index].earlier === true && pending.earlier !== true) merged[index] = pending;
+            }
+            joined.set(name, merged);
           }
         }
         return joined;
@@ -24717,6 +24731,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       access: (node, flow, scope) => {
         if (node instanceof MappingAccessNode) read(node, flow);
         return isWrite(node) ? write(node, flow, scope) : flow;
+      },
+      enterLoop: (loop, flow) => {
+        if (flow === undefined) return flow;
+        const next = new Map(flow);
+        walkInvocationAst(loop, (candidate) => {
+          if (!isWrite(candidate)) return;
+          const name = candidate.collection!.name;
+          const pending = next.get(name) ?? [];
+          if (pending.some((other) => other.node === candidate)) return;
+          next.set(name, [...pending, { node: candidate, shape: 'in a loop', earlier: true }]);
+        });
+        return next;
       },
     });
   }

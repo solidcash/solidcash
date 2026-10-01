@@ -28,7 +28,10 @@ import { compositionProvider } from './per-call/machine.js';
  * every input runs its own program. On the per-call convention the shipped genesis derivation runs the constructor
  * frame and refuses a frame the machine does not accept. Scalar writes the entry cache (`CacheMappingEntryInLoop`)
  * serves stand beside the shapes the kept values serve, and a read after a write the body keeps no value for is
- * refused at compile time.
+ * refused at compile time, as is a read a loop's earlier turns may have written.
+ *
+ * An element read takes its element from the value the read sees: an index past that value's length fails, as the
+ * EVM's does, so the deployment is refused rather than given a value.
  */
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
@@ -152,6 +155,12 @@ const pushedLogs: Created = {
   collection: 'logs', keys: [K], tail: encodeChunkableValueTail(encodePushdataValue([KIND], 'bytes4[]')),
 };
 const five: Created = { collection: 'totals', keys: [K], tail: num(5n) };
+const nine: Created = { collection: 'totals', keys: [K], tail: num(9n) };
+const TRIO = ' mapping(uint => uint[3]) trio;';
+/** A loop that counts the turns that found the entry unwritten, then writes it. */
+const COUNTED = `${TOTALS} constructor(uint k, uint n, uint v, uint e) { uint c = 0; for (uint i = 0; i < n; i++) {`
+  + ' if (this.totals[k] == 0) { c = c + 1; } this.totals[k] = v; } require(c == e); }';
+const FIXED = `${TRIO} constructor(uint k, uint i, uint e) { require(this.trio[k][i] == e); }`;
 
 /** A constructor body run on the direct convention, with the value its read must see and one it must not. */
 interface DirectCase {
@@ -225,6 +234,14 @@ const DIRECT: readonly DirectCase[] = [
       + ' require(this.totals[k] == e); }',
     args: { k: K }, created: five, right: 5n, wrong: 0n,
   },
+  {
+    name: 'the count an invariant-key loop left, which the entry cache serves',
+    members: COUNTED, args: { k: K, n: num(2n), v: num(9n) }, created: nine, right: 1n, wrong: 2n,
+  },
+  {
+    name: 'the element of a fixed array no write names',
+    members: FIXED, args: { k: K, i: num(1n) }, right: 0n, wrong: 5n,
+  },
 ];
 
 describe('a direct constructor that reads a mapping entry after writing it', () => {
@@ -274,6 +291,14 @@ const PER_CALL: readonly PerCallCase[] = [
     members: `${TOTALS} constructor(uint k, uint e) { this.totals[k] = 5; require(this.totals[k] == e); }`,
     args: [7n], right: 5n, wrong: 0n,
   },
+  {
+    name: 'the count an invariant-key loop left, which the entry cache serves',
+    members: COUNTED, args: [7n, 2n, 9n], right: 1n, wrong: 2n,
+  },
+  {
+    name: 'the element of a fixed array no write names',
+    members: FIXED, args: [7n, 1n], right: 0n, wrong: 5n,
+  },
 ];
 
 describe('a per-call constructor that reads a mapping entry after writing it', () => {
@@ -285,6 +310,40 @@ describe('a per-call constructor that reads a mapping entry after writing it', (
       expect(settlePerCall(artifact, [...shape.args, shape.wrong])).toContain('PerCallGenesisError');
     });
   }
+});
+
+// An element read whose index is past the value's length: the body reads it into a local it compares with itself, so
+// only the read itself can refuse the deployment.
+const UNWRITTEN_ELEMENT = `${LOGS} constructor(uint k, uint e) { bytes4 x = this.logs[k][0]; require(x == x);`
+  + ' require(e == e); }';
+const PUSHED_ELEMENT = `${LOGS} constructor(uint k, bytes4 v, uint i, bytes4 e) { this.logs[k].push(v);`
+  + ' require(this.logs[k][i] == e); }';
+
+describe('a constructor element read past the length of the value it reads', () => {
+  const compileFor = (members: string, convention: 'direct' | 'per-call'): Artifact =>
+    compileString(`${PRAGMA} contract Genesis {${members} function g() { require(true); } }`,
+      convention === 'direct' ? { messageBus: false } : { composition: 'per-call' });
+
+  it('refuses the deployment of an element of an entry no write names', () => {
+    expect(settleDirect(compileFor(UNWRITTEN_ELEMENT, 'direct'), { k: K }, undefined, num(0n)))
+      .toContain('Program failed an OP_VERIFY operation');
+    expect(settlePerCall(compileFor(UNWRITTEN_ELEMENT, 'per-call'), [7n, 0n])).toContain('PerCallGenesisError');
+  });
+
+  it('refuses the deployment of an index past a fixed array\'s length', () => {
+    expect(settleDirect(compileFor(FIXED, 'direct'), { k: K, i: num(3n) }, undefined, num(0n)))
+      .toContain('Program failed an OP_VERIFY operation');
+    expect(settlePerCall(compileFor(FIXED, 'per-call'), [7n, 3n, 0n])).toContain('PerCallGenesisError');
+  });
+
+  it('refuses an index past the length a push left, and takes the element the push appended', () => {
+    const artifact = compileFor(PUSHED_ELEMENT, 'direct');
+    const spend = (i: bigint, e: Uint8Array): true | string =>
+      settleDirect(artifact, { k: K, v: KIND, i: num(i) }, pushedLogs, e);
+    expect(spend(0n, KIND)).toBe(true);
+    expect(spend(1n, KIND)).toContain('Program failed an OP_VERIFY operation');
+    expect(spend(1n, new Uint8Array(4))).toContain('Program failed an OP_VERIFY operation');
+  });
 });
 
 const readOf = (entry: string, written: string, shape: string): string => `a read of \`${entry}\` in the `
@@ -321,6 +380,20 @@ const REFUSED: readonly { readonly shape: string; readonly members: string; read
       + ' this.totals[ks[i]] = 5; } require(this.totals[k] == e); }',
     message: readOf('totals[k]', 'totals[ks[i]]', 'in a loop'),
   },
+  {
+    shape: 'a read before a loop\'s own write, which its earlier turns may have written',
+    members: `${TOTALS} constructor(uint[] memory ks, uint v, uint e) { uint c = 0;`
+      + ' for (uint i = 0; i < ks.length; i++) { if (this.totals[ks[i]] == 0) { c = c + 1; }'
+      + ' this.totals[ks[i]] = v; } require(c == e); }',
+    message: readOf('totals[ks[i]]', 'totals[ks[i]]', 'in an earlier turn of its loop'),
+  },
+  {
+    shape: 'a loop that reads each key before writing it',
+    members: ' mapping(address => bool) isOwner; constructor(address[] memory owners) {'
+      + ' for (uint i = 0; i < owners.length; i++) { address o = owners[i]; require(!this.isOwner[o]);'
+      + ' this.isOwner[o] = true; } }',
+    message: readOf('isOwner[o]', 'isOwner[o]', 'in an earlier turn of its loop'),
+  },
 ];
 
 const COMPILED: readonly { readonly shape: string; readonly members: string }[] = [
@@ -334,10 +407,9 @@ const COMPILED: readonly { readonly shape: string; readonly members: string }[] 
     members: `${TOTALS} constructor(bool b, uint e) { if (b) { this.totals[7] = 5; } require(this.totals[8] == e); }`,
   },
   {
-    shape: 'a loop that reads each key before writing it',
-    members: ' mapping(address => bool) isOwner; constructor(address[] memory owners) {'
-      + ' for (uint i = 0; i < owners.length; i++) { address o = owners[i]; require(!this.isOwner[o]);'
-      + ' this.isOwner[o] = true; } }',
+    shape: 'a loop that reads a distinct literal key before writing another',
+    members: `${TOTALS} constructor(uint n, uint e) { for (uint i = 0; i < n; i++) {`
+      + ' require(this.totals[1] == e); this.totals[2] = 5; } }',
   },
 ];
 

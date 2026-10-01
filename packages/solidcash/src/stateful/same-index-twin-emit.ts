@@ -8,20 +8,15 @@ import { encodeEntryCommitment, isEmptyValueEntryCommitment } from './SortedList
 import {
   SLOT_HEX,
   isDataNftIndexCommitment,
-  isSortedEntryHeadCommitment,
-  isSortedEntryNodeCommitment,
 } from './sorted-entry-commitment.js';
 import {
   commitmentHexOf,
-  cloneToken,
   outputMatchesLock,
 } from './stb-output-utils.js';
 import {
   isDisposableAlignmentPad,
   isViewReturnTailOutput,
 } from './value-chunk-band-helpers.js';
-import { isEmptyValueChunkCommitment } from './value-chunk-persist.js';
-import { isOpReturnLockingBytecode } from './mutable-output-reassert.js';
 import { shouldOverwriteForSameIndexTwin } from './scid-minting-return-layout.js';
 
 /**

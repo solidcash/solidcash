@@ -1204,7 +1204,6 @@ export function planKernelEntryJournalPhysicalSettlement(
     }
     inputReferences.push(firstAuthenticator);
     for (const duplicate of authenticators.slice(1)) {
-      const occurrence = occurrences[duplicate.occurrenceIndex]!;
       if (!duplicate.cleanCarrier) {
         throw new Error(`kernel physical settlement record ${recordOrdinal} has multiple non-clean authenticators`);
       }
@@ -1212,10 +1211,12 @@ export function planKernelEntryJournalPhysicalSettlement(
       // The public access representation uses optional literal `true` flags; omit the selected flag so the
       // compact encoder emits canonical zero rather than widening the type with a non-canonical `false`.
       if (duplicate.recordRole === 'target') {
-        const { authenticatesTarget: _target, ...withoutAuthentication } = current;
+        const withoutAuthentication = { ...current };
+        delete withoutAuthentication.authenticatesTarget;
         rewritten[duplicate.occurrenceIndex] = withoutAuthentication;
       } else {
-        const { authenticatesPredecessor: _predecessor, ...withoutAuthentication } = current;
+        const withoutAuthentication = { ...current };
+        delete withoutAuthentication.authenticatesPredecessor;
         rewritten[duplicate.occurrenceIndex] = withoutAuthentication;
       }
       rewrites.add(duplicate.occurrenceIndex);

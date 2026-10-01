@@ -3,9 +3,7 @@
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { AbiFunction, Artifact, FunctionBlockLayout } from '@solidcash/utils';
-import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransportedContinuationResourceClaim } from './ValueChunkProducerIdentity.js';
 
 /**
@@ -249,7 +247,7 @@ export function isCompilerDescribedMintingBandWriter(
   // convention mean "not described", never permission to recover legacy geometry from an ABI name.
   if (ownerConvention === 'kernel-row-loop') return false;
   if ([group.logicalArtifact, group.externalContract?.inner?.artifact]
-    .some((artifact) => artifact?.messageBus?.convention === 'kernel-row-loop')) {
+    .some((candidateArtifact) => candidateArtifact?.messageBus?.convention === 'kernel-row-loop')) {
     return false;
   }
   const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;

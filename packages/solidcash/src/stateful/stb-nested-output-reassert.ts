@@ -90,7 +90,7 @@ export interface NestedOutputReassertHost {
 export function reassertNestedMintingMasters(
   host: NestedOutputReassertHost,
   builder: TransactionBuilder,
-  ): void {
+): void {
   const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
   const suffixStart = builder.outputs.length - jobsCount - (jobsCount > 0 ? 1 : 0);
   const tailStart = host.pendingReturnEventOutputs.length > 0
@@ -105,7 +105,7 @@ export function reassertNestedMintingMasters(
     )
     : suffixStart;
   const seen = new Set<string>();
-  for (const [groupIdx, group] of host.externalCallUtxoGroups.entries()) {
+  for (const group of host.externalCallUtxoGroups) {
     if (group.sharedGroupIndex !== undefined || !group.categoryId || seen.has(group.categoryId)) continue;
     seen.add(group.categoryId);
     const master = host.findMintingInputIndex(group.categoryId);
@@ -131,7 +131,7 @@ export function reassertNestedMintingMasters(
 export function stripSurplusEmptyCollectionEntriesForHost(
   host: NestedOutputReassertHost,
   builder: TransactionBuilder,
-  ): void {
+): void {
   // A compiler-owned balanced block already placed every in-block vmap node at a layout offset. The
   // leftover-HEAD strip is for 1:1 P'+NEW inserts; applying it here converts the other seeded keys to
   // OP_TRUE and fails the batch EQUALVERIFY.
@@ -189,7 +189,7 @@ export function stripSurplusEmptyCollectionEntriesForHost(
 export function reassertNestedSameIndexMutables(
   host: NestedOutputReassertHost,
   builder: TransactionBuilder,
-  ): void {
+): void {
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
     for (const [groupIndex, group] of host.externalCallUtxoGroups.entries()) {
@@ -425,7 +425,7 @@ export function reassertNestedSameIndexMutables(
 export function reassertFixedStateOutputs(
   host: NestedOutputReassertHost,
   builder: TransactionBuilder,
-  ): void {
+): void {
   type FixedStateOwner = {
     categoryId: string;
     stateLayout: StateLayout;

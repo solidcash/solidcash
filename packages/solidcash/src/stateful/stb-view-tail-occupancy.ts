@@ -58,9 +58,9 @@ export interface ViewTailOccupancyHost {
  * and leave collection/jobs coordinates unmoved.
  */
 export function writeViewTailsAfterWriterOccupancy(
-host: ViewTailOccupancyHost,
-builder: TransactionBuilder,
-returnOutputRefs?: Map<string, Output>,
+  host: ViewTailOccupancyHost,
+  builder: TransactionBuilder,
+  returnOutputRefs?: Map<string, Output>,
 ): void {
   const tailReturns = host.tailReturnEventOutputs();
   if (tailReturns.length === 0) return;
@@ -187,11 +187,11 @@ returnOutputRefs?: Map<string, Output>,
       outputs: builder.outputs,
     });
     if (redirected === undefined) {
-      const host = (typeof separator === 'number' ? separator : outputIndex) + 1;
-      while (host >= builder.outputs.length) {
+      const nextIndex = (typeof separator === 'number' ? separator : outputIndex) + 1;
+      while (nextIndex >= builder.outputs.length) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
       }
-      redirected = host;
+      redirected = nextIndex;
     }
     outputIndex = redirected;
     const rawCommitment = binToHex(event.commitment);
@@ -212,11 +212,11 @@ returnOutputRefs?: Map<string, Output>,
           ? builder.outputs[outputIndex]!.to as string
           : undefined,
     )) {
-      const host = outputIndex + 1;
-      while (host >= builder.outputs.length) {
+      const nextIndex = outputIndex + 1;
+      while (nextIndex >= builder.outputs.length) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
       }
-      outputIndex = host;
+      outputIndex = nextIndex;
     }
     builder.outputs[outputIndex] = output;
     returnOutputRefs?.set(event.identity, output);

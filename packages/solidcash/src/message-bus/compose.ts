@@ -1,6 +1,5 @@
 import type { TransactionDetails } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { StatefulFunctionCall } from '../stateful/StatefulContract.js';
 import {
   clearComposeKernelAuthorityResults,
 } from './compose-kernel-authority.js';
@@ -267,16 +266,16 @@ const snapshotPreparedCall = (call: PreparedAtomicMessageBusCall): PreparedAtomi
 export function compose(options: ComposeAtomicMessageBusOptions): AtomicMessageBusComposition {
   // Capture StatefulFunctionCall descriptors immediately. A prepared call is a value-level graph statement;
   // retaining the call object deferred both its externally-owned ABI args and any later imperative mutation.
-  if (!options.calls && !options.preparedCalls) {
+  const { calls, preparedCalls, ...rest } = options;
+  if (!calls && !preparedCalls) {
     throw new Error('messageBus: composition requires calls or preparedCalls');
   }
   clearComposeKernelAuthorityResults();
-  const preparedCalls = options.preparedCalls
-    ?? options.calls!.map((call) => call._messageBusCompositionDescriptor());
-  const { calls: _calls, preparedCalls: _preparedCalls, ...rest } = options;
+  const snapshotCalls = preparedCalls
+    ?? calls!.map((call) => call._messageBusCompositionDescriptor());
   return new AtomicMessageBusComposition(Object.freeze({
     ...snapshotCompositionValue(rest),
-    requirePreparedIdentity: options.preparedCalls !== undefined,
-    preparedCalls: Object.freeze(preparedCalls.map(snapshotPreparedCall)),
+    requirePreparedIdentity: preparedCalls !== undefined,
+    preparedCalls: Object.freeze(snapshotCalls.map(snapshotPreparedCall)),
   }));
 }

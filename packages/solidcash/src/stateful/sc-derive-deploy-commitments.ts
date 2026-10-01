@@ -81,6 +81,12 @@ export async function deriveDeployCommitments<T extends Artifact>(
   const transferCount = constructorAbi?.transferCount ?? 0;
   const emitInfos = constructorAbi?.emits ?? [];
   const emitCount = emitInfos.length;
+  // A runtime loop's writes are published as the loop, not as entry accesses, so the probe plans no node for them:
+  // a loop that writes an entry leaves the derivation without the node, which a refusal names as its cause.
+  const loopWrite = [...constructorAbi?.sortedUpsertLoopInfo ?? [], ...constructorAbi?.sortedInsertLoopInfo ?? []][0];
+  const unplannedCause = loopWrite === undefined ? ''
+    : ` The constructor writes verified mapping '${loopWrite.collection}' in a runtime loop, whose nodes a deployment `
+      + 'cannot plan.';
 
   // Explicit initial state seeds fields the constructor does not write (for example compiler-injected immutable
   // block-oracle ownership). Constructor execution still derives and authenticates its writes over this pre-state.
@@ -112,10 +118,12 @@ export async function deriveDeployCommitments<T extends Artifact>(
   }
   const resolveConstructorKey = (label: string | undefined): Uint8Array | undefined => {
     if (label === 'nullop:msg.sender' || label === 'sender:msg.sender') return senderLockingBytecode;
+    // A key that is one of the constructor's own parameters is published by its bare name.
+    const expression = label !== undefined && /^[A-Za-z_$][\w$]*$/.test(label) ? `id:${label}` : label;
     // A constructor body may reference either an explicit `__construct` argument or a contract parameter.
     // The latter is encoded into the redeem script and therefore is not repeated in the constructor ABI.
-    return evalComputedKey(label, initArgs, visibleInputs)
-      ?? evalComputedKey(label, contract.constructorArgs, artifact.constructorInputs);
+    return evalComputedKey(expression, initArgs, visibleInputs)
+      ?? evalComputedKey(expression, contract.constructorArgs, artifact.constructorInputs);
   };
   const sortedPlans = new Map<string, {
     proofOffset: number;
@@ -213,6 +221,12 @@ export async function deriveDeployCommitments<T extends Artifact>(
         internalInitArgs.push(plan.rows);
       } else if (input.name === '__internal__vmapBatchTrailingCount') {
         internalInitArgs.push(BigInt(sortedCollections.length));
+      } else if (/^__internal__(valueWitness|leadingPushValue)_\d+$/.test(input.name)) {
+        // At genesis no node holds a value to witness, and no earlier write pushes ahead of the constructor's.
+        internalInitArgs.push(new Uint8Array());
+      } else if (input.name === '__internal__valueChunkOutputBase') {
+        // A value's chunks would trail the block's entry outputs; an inline value has none.
+        internalInitArgs.push(BigInt((constructorAbi?.blockLayout?.blockSize ?? 1) + sortedCollections.length));
       } else {
         throw new Error(`Unsupported constructor internal witness '${input.name}'.`);
       }
@@ -729,7 +743,8 @@ export async function deriveDeployCommitments<T extends Artifact>(
         'Failed to derive initial state commitments from '
         + 'constructor. Ensure the constructor writes all '
         + 'state variables.'
-        + (vmError === undefined ? '' : ` VM error${vmLocation}: ${vmError}${vmStack}`),
+        + (vmError === undefined ? '' : ` VM error${vmLocation}: ${vmError}${vmStack}`)
+        + unplannedCause,
       );
     }
 
@@ -826,7 +841,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
       }
       throw new Error(
         'Deploy derivation oscillation detected: commitment state is cycling without converging. '
-        + 'This may indicate conflicting covenant constraints in the constructor.',
+        + (unplannedCause.trim() || 'This may indicate conflicting covenant constraints in the constructor.'),
       );
     }
     seenDeployKeys.add(deployKey);
@@ -834,7 +849,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
 
   if (!deployConverged) {
     throw new Error(
-      `Constructor commitment derivation did not converge after ${maxDeployIterations} probes.`,
+      `Constructor commitment derivation did not converge after ${maxDeployIterations} probes.${unplannedCause}`,
     );
   }
 

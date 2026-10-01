@@ -58,6 +58,41 @@ describe('message-bus compilation selection', () => {
     expect(optedIn.bytecode).not.toBe(direct.bytecode);
   });
 
+  it('admits only reachable modifier call graphs by default', () => {
+    const prelude = 'interface ISink { function ping(int value) external; }';
+    const unused = `${prelude} contract Simple(address target) {
+      int balance;
+      modifier foreignCall() { ISink(target).ping(1); _; }
+      function set(int next) public { balance = next; require(next >= 0); }
+    }`;
+    const automatic = compileString(unused, { suppressWarnings: true });
+    const direct = compileString(unused, { messageBus: false, suppressWarnings: true });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.bytecode).toBe(direct.bytecode);
+
+    const applied = unused.replace('public { balance', 'public foreignCall { balance');
+    expect(compileString(applied, { suppressWarnings: true }).compiler.options?.messageBus).toBe(true);
+
+    const dormantHelper = unused.replace('    }', `
+      function dormant(int next) internal foreignCall { balance = next; }
+    }`);
+    expect(compileString(dormantHelper, { suppressWarnings: true }).compiler.options?.messageBus)
+      .toBe(false);
+
+    const reachedHelper = dormantHelper.replace('balance = next; require(next >= 0);',
+      'dormant(next); require(next >= 0);');
+    expect(compileString(reachedHelper, { suppressWarnings: true }).compiler.options?.messageBus)
+      .toBe(true);
+
+    const typedReceiver = `${prelude} contract Typed(ISink sink) {
+      int balance;
+      modifier foreignCall() { sink.ping(1); _; }
+      function set(int next) public foreignCall { balance = next; require(next >= 0); }
+    }`;
+    expect(compileString(typedReceiver, { suppressWarnings: true }).compiler.options?.messageBus)
+      .toBe(true);
+  });
+
   it('selects the graph route for an interface-typed state receiver', () => {
     const artifact = compileString(`interface ISink { function note(int value) external; }
       contract TypedEdge {

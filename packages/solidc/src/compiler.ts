@@ -82,7 +82,7 @@ import {
   FunctionCallStatementNode,
   LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode,
-  MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode, RevertNode,
+  MethodCallNode, MethodCallStatementNode, ModifierDefinitionNode, Node, ParameterNode, RequireNode, RevertNode,
   NullaryOpNode, TupleAssignmentNode, TupleIndexOpNode, VariableDefinitionNode, DeleteLocalNode, DeleteStateNode,
   SourceFileNode, StatementNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
   TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
@@ -3899,22 +3899,55 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
     if (fn.isEntryPoint || fn === contract.constructorDef
       || fn === contract.fallbackDef || fn === contract.receiveDef) addClosure(fn);
   }
-  // Preserve graph edges in constructor initializers and custom modifiers. They are stored outside `functions`
-  // before expansion; a helper called from one of them must remain in the reachable survey too.
+  // Preserve graph edges in constructor initializers and other executable members. Modifier definitions are
+  // handled separately below: an unused modifier has no execution path and must not enable a graph route.
   const otherMembers: Node[] = [];
   for (const [key, member] of Object.entries(contract)) {
-    if (key === 'functions' || key === 'constructorDef' || key === 'fallbackDef' || key === 'receiveDef') continue;
+    if (key === 'functions' || key === 'constructorDef' || key === 'fallbackDef' || key === 'receiveDef'
+      || key === 'modifierDefinitions') continue;
     if (member instanceof Node) otherMembers.push(member);
     else if (Array.isArray(member)) {
       for (const item of member) if (item instanceof Node) otherMembers.push(item);
     }
   }
-  for (const member of otherMembers) {
+  const addMemberCalls = (member: Node): void => {
     walkInvocationAst(member, (node) => {
       if (!(node instanceof FunctionCallNode)) return;
       for (const fn of byName.get(node.identifier.name) ?? []) addClosure(fn);
     });
+  };
+  for (const member of otherMembers) addMemberCalls(member);
+  // Modifier bodies and their invocation arguments are executable only when attached to a reachable function.
+  // A modifier can call an internal helper whose own modifier adds another edge, so close this graph to a fixed
+  // point rather than admitting every declaration or looking only at source entry points.
+  const modifierByName = new Map([
+    ...ast.libraryModifierDefinitions, ...contract.modifierDefinitions,
+  ].map((modifier) => [modifier.name, modifier]));
+  const activeModifiers = new Set<ModifierDefinitionNode>();
+  const activeModifierArgs = new Set<Node>();
+  let changed = true;
+  while (changed) {
+    const priorReachableCount = reachableNames.size;
+    const priorModifierCount = activeModifiers.size;
+    const priorArgCount = activeModifierArgs.size;
+    for (const fn of functions) {
+      if (!reachableNames.has(fn.name)) continue;
+      for (const invocation of fn.customModifiers) {
+        for (const arg of invocation.args) {
+          if (activeModifierArgs.has(arg)) continue;
+          activeModifierArgs.add(arg);
+          addMemberCalls(arg);
+        }
+        const modifier = modifierByName.get(invocation.name);
+        if (!modifier || activeModifiers.has(modifier)) continue;
+        activeModifiers.add(modifier);
+        addMemberCalls(modifier);
+      }
+    }
+    changed = priorReachableCount !== reachableNames.size
+      || priorModifierCount !== activeModifiers.size || priorArgCount !== activeModifierArgs.size;
   }
+  otherMembers.push(...activeModifiers, ...activeModifierArgs);
   const reachableFunctions = functions.filter((fn) => reachableNames.has(fn.name));
   // Before semantic resolution a function value or indexed indirect call may target any same-contract helper.
   // Keep the old conservative survey in that case; narrowing only a statically named closure must never drop a
@@ -3936,20 +3969,28 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   // A call through an interface-typed variable parses as a namespaced FunctionCallNode (`sink.note`), not a
   // MethodCallNode. Detect it from declared receiver types before semantic lowering, while allowing a parameter
   // or local declaration to shadow a same-named contract state variable with an ordinary type.
-  const typedStateReceivers = new Map(contract.stateVariables.map((state) => [
-    state.name, state.type instanceof AddressType && state.type.interfaceName !== undefined,
+  const typedStateReceivers = new Map([
+    ...contract.parameters, ...contract.stateVariables,
+  ].map((declaration) => [
+    declaration.name,
+    declaration.type instanceof AddressType && declaration.type.interfaceName !== undefined,
   ]));
-  for (const fn of surveyedFunctions) {
-    if (!fn.body) continue;
+  const typedCallSurfaces: Array<{ parameters: readonly ParameterNode[]; body: Node | undefined }> = [
+    ...surveyedFunctions.map((fn) => ({ parameters: fn.parameters, body: fn.body })),
+    ...[...activeModifiers].map((modifier) => ({ parameters: modifier.parameters, body: modifier })),
+    ...[...activeModifierArgs].map((arg) => ({ parameters: [], body: arg })),
+  ];
+  for (const surface of typedCallSurfaces) {
+    if (!surface.body) continue;
     const typedReceivers = new Map(typedStateReceivers);
-    for (const parameter of fn.parameters) typedReceivers.set(parameter.name,
+    for (const parameter of surface.parameters) typedReceivers.set(parameter.name,
       parameter.type instanceof AddressType && parameter.type.interfaceName !== undefined);
-    walkInvocationAst(fn.body, (node) => {
+    walkInvocationAst(surface.body, (node) => {
       if (node instanceof VariableDefinitionNode) typedReceivers.set(node.name,
         node.type instanceof AddressType && node.type.interfaceName !== undefined);
     });
     let hasTypedEdge = false;
-    walkInvocationAst(fn.body, (node) => {
+    walkInvocationAst(surface.body, (node) => {
       if (!(node instanceof FunctionCallNode)) return;
       const parts = node.identifier.name.split('.');
       if (parts.length === 2 && typedReceivers.get(parts[0]) === true

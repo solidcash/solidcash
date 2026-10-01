@@ -369,9 +369,9 @@ export async function applyOverrides(
           entryKeyOverrides: host.entryKeyOverrides.size > 0 ? host.entryKeyOverrides : undefined,
           externalEntryKeyOverrides: host.externalEntryKeyOverrides.size > 0 ? host.externalEntryKeyOverrides : undefined,
           drainSatoshiContainer: wasSatoshiDrained || undefined,
-        ...(host.callerLockingBytecode !== undefined
+          ...(host.callerLockingBytecode !== undefined
           && { callerLockingBytecode: host.callerLockingBytecode }),
-        ...(host.callerCategoryId !== undefined
+          ...(host.callerCategoryId !== undefined
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
           drainTokenContainers: drainedTokenContainers,
           ...(host.compilerRoute && {

@@ -3,7 +3,7 @@ import {
 } from 'vitest';
 import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { compileFile, compileFileSplit } from 'solidc';
-import { asmToScript, scriptToBytecode, type Artifact } from '@solidcash/utils';
+import { asmToScript, buildChunkCommitment, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../src/interfaces.js';
 import {
   Contract, encodeEntryCommitment, SignatureTemplate, Signer, slotValueToBytes,
@@ -11,7 +11,9 @@ import {
 } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
-import { getEntryNftAddress, getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import {
+  getDynamicChunkAddress, getEntryNftAddress, getTokenContainerAddress,
+} from '../../src/stateful/covenant-helpers.js';
 import {
   aliceAddress, alicePriv, bobPriv,
 } from '../fixture/vars.js';
@@ -40,6 +42,29 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
       .toEqual(['_totalSupply', '_name', '_symbol']);
     expect(artifact.stateLayout?.collections.map((entry) => entry.name))
       .toEqual(['_balances', '_allowances']);
+  });
+
+  it('executes the outlined OZ name and symbol getter tails', async () => {
+    const provider = createTestProvider();
+    const inner = new Contract(artifact, [], { provider });
+    const labels = { _name: 'SolidCash Native', _symbol: 'SCN' };
+    const { categoryId } = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
+      _totalSupply: 0n,
+      ...labels,
+    }, {
+      saltContract: true,
+      extraOutputs: (category) => Object.entries(labels).map(([name, value]) => ({
+        address: getDynamicChunkAddress(inner, category, name, 'string'),
+        satoshis: 1_200n,
+        token: {
+          amount: 0n,
+          nft: { capability: 'mutable', commitment: buildChunkCommitment(0, new TextEncoder().encode(value)) },
+        },
+      })),
+    });
+    const token = StatefulContract.withCategory(inner, categoryId);
+    expect((await token.call.name().emitReturn().send()).txid).toMatch(/^[0-9a-f]{64}$/);
+    expect((await token.call.symbol().emitReturn().send()).txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('wraps, transfers, spends allowance, and unwraps through OZ storage', async () => {

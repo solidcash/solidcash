@@ -3,76 +3,38 @@
  * phase-boundary extract: Compose phase-boundary extract — AtomicMessageBusComposition._build nested `assemble`.
  */
 
-import { bigIntToVmNumber, binToHex, binToUtf8, hexToBin, sha1, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
+import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import {
-  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, encodePushdataValue, scriptToBytecode,
-  MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, ripemd160, hash160, hash256, buildEventNftCovenantScript,
-  buildAnonymousEventNftCovenantScript, computeEventNameHash, parseArrayTypeString,
-  buildEntryCommitment, buildInitialStateCommitments, buildPushdataCommitment, bytecodeToScript, scriptToAsm,
-  AddressType, BytesType, FixedType, IntType,
-  parsePushdataCommitment, parseTypeStrict, PrimitiveType,
-  childStateLayoutDigest,
-  validateChildDeploymentGenesisState,
-  getDefaultStateValue,
-  buildChunkCommitment, splitValueIntoChunks,
+  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN,
+  sha256, buildChunkCommitment, splitValueIntoChunks,
 } from '@solidcash/utils';
-import type {
-  AbiFunction, Artifact, ChildDeploymentValueRecipe, ExternalResultEncoding, FixedBchTransferAbi, StateLayout, StateValue,
-  StructDefinitionInfo,
-} from '@solidcash/utils';
-import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
-import type {
-  ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
-} from '../interfaces.js';
+import type { AbiFunction } from '@solidcash/utils';
+import type { FunctionArgument } from '../Argument.js';
+import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import { isContractUnlocker } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { Contract, withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope } from '../Contract.js';
-import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
+import { withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope } from '../Contract.js';
+import { addressToLockScript } from '../utils.js';
+import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
 import {
-  decodeAuthenticatedProducerResultVector, evalComputedKey, isCanonicalEvmScalarReturnVector,
-  StatefulContract, StatefulFunctionCall,
-} from '../stateful/StatefulContract.js';
-import {
-  chunksFromValue, persistValueChunkLock, valueChunkIndexFromCommitment,
-  valueChunkWriteResourceIdentity, type ValueChunkWriteDescriptor,
+  chunksFromValue, persistValueChunkLock, valueChunkWriteResourceIdentity,
 } from '../stateful/StatefulTransactionBuilder.js';
-import { artifactUsesSolidityAbi, resolveExternalResultEncoding } from '../stateful/solidityAbi.js';
+import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import type { ResolvedLogicalIdentity } from '../stateful/logical-identity.js';
 import {
-  resolveLogicalIdentity, type ResolvedLogicalIdentity,
-} from '../stateful/logical-identity.js';
-import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
-import { tryParseEventCommitment } from '../stateful/StateReader.js';
-import {
-  createDestroyDataNftUnlocker, createMessageBusVerifierUnlocker, getDataNftAddress,
-  getDynamicChunkAddress,
-  getEntryNftLockingBytecode, getMessageBusEnvelopeTransport,
+  createDestroyDataNftUnlocker, createMessageBusVerifierUnlocker,
+  getDynamicChunkAddress, getMessageBusEnvelopeTransport,
   getMessageBusVerifierLockingBytecodeForArtifact,
 } from '../stateful/covenant-helpers.js';
 import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
 import { peekBuilderBuildId } from '../stateful/StatefulContract.js';
-import { assertAtomicParticipantCapacity } from './capacity.js';
 import type { ExecutionContextLifecycle } from './execution-context.js';
 import {
-  finalizeAtomicInvocationGraph, graphInvocationCallerIdentity, selectedGraphEventOffsets,
-  type AtomicDeploymentSlotEffect, type AtomicEventSlotEffect, type AtomicResourceSlotEffect,
-  type AtomicSidecarSlotEffect, type AtomicTokenSlotEffect, type AtomicValueSlotEffect,
-  type PlannedGraphInvocation,
+  finalizeAtomicInvocationGraph, graphInvocationCallerIdentity, type AtomicSidecarSlotEffect,
 } from './graph.js';
-import {
-  encodeMessageBatch, preparedCallMatchesPlanInvocation,
-  resolveMessageBusAbiFunction, resolveMessageBusHandler,
-} from './message-bus.js';
-import {
-  convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
-} from './preflight.js';
-import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
 import { materializeTransportedContinuations } from './materialize-transported-continuations.js';
-import {
-  convergeMessageBusComputedDynamicChunkOutputs,
-  dynamicChunkPlaceholdersRemain,
-} from './computed-dynamic-chunks.js';
-import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
+import { deriveCompiledGraphPlan } from './worklist.js';
 import {
   applyParticipantAbsoluteWitnesses,
   resolveComposeTransactionLayoutAuthority,
@@ -81,10 +43,7 @@ import {
   type ComposeParticipantLayoutClaims,
   type SymbolicParticipantLayout,
 } from './layout-resolver.js';
-import {
-  authorizeComposeParticipantLayout,
-  clearComposeKernelAuthorityResults,
-} from './compose-kernel-authority.js';
+import { authorizeComposeParticipantLayout } from './compose-kernel-authority.js';
 import {
   findMessageBusHandlerForInvocation,
 } from './graph-handler-join.js';
@@ -102,56 +61,31 @@ import { recordActiveConstraintPass } from '../stateful/value-chunk-persist.js';
 import { bindBuilderConstraintFixpoint, type ConstraintFixpointSession } from './constraint-fixpoint-session.js';
 import {
   buildTransportedContinuationResourceClaim,
-  canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
+  canonicalValueChunkProducerIdentity,
   canonicalValueChunkProducerResourceClaim,
   canonicalValueChunkProducerResourceIdentity, canonicalValueChunkStateOwner,
   orderTransportedContinuationResourceClaims,
   type TransportedContinuationResourceClaim,
-  type ValueChunkProducerPathDisposition, type ValueChunkProducerResourceClaim,
 } from '../stateful/ValueChunkProducerIdentity.js';
 import {
-  canSeedComputedValueChunkClaim,
   evaluateChildDeploymentRecipe,
   materializeFixedBchTransfer,
-  materializeChildDeploymentEntryScalar,
-  materializeChildDeploymentEntryValue,
-  provisionalInvocationResult,
   minimumActualSizeForComputedValueChunkClaims,
   mergeComputedValueChunkSpanClaims,
-  evmInvocationResultLength,
-  // Internal helpers still used by AtomicMessageBusComposition orchestration:
   fixedVmNumber,
-  concatBytes,
-  canonicalNativeResultField,
-  preparedInvocationResult,
 } from './compose-recipes.js';
 import type { ComputedValueChunkSpanClaim } from './compose-recipes.js';
 import { loadFixedEffectEntries } from './fixed-effect-entries.js';
 import {
-  type AtomicMessageBusFunder,
   type ComposeAtomicMessageBusOptions,
   type PreparedAtomicMessageBusCall,
   type CallDescriptor,
-  type SemanticClaimObservation,
-  semanticJson,
-  assertPreparedInvocationIdentity,
-  rebuildPreparedInvocation,
-  applySemanticClaimObservationPass,
 } from './compose-prepared-invocation.js';
 import {
-  ownerParticipantArtifact,
-  delegateParticipantArtifact,
-  funderUtxo,
-  freezeStaticcallParticipantOutputs,
-  participantOf,
   concat,
   uint16,
-  framed,
-  hasDynamicStateMember,
-  appendOnlyStateSuffix,
   graphRouteContext,
   type DeferredComputeController,
-  type ComputedValueChunkClaim,
   type DeferredComputeBuilder,
 } from './compose-participant-helpers.js';
 

@@ -178,7 +178,7 @@ describe('transported continuation materialization', () => {
     const select = (claims: Parameters<typeof selectTransportedContinuationSlots>[3] = []): number[] | undefined =>
       selectTransportedContinuationSlots(
         builder, [2, 3, 4, 5, 6, 7, 8], transportedChunks, claims, 100,
-    );
+      );
     builder.inputs[8].token = {
       category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: '0000abcd' },
     };

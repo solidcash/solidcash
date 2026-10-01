@@ -76,8 +76,8 @@ export function selectTransportedContinuationSlots(
         return binToHex(lock) === '51'
           && (builder.inputs[offset]?.token === undefined || claims.length > 0)
           && claims.every((claim) => (
-          claim.resourceIdentity === chunk.resourceIdentity && claim.resourcePart === `chunk:${index}`
-        ));
+            claim.resourceIdentity === chunk.resourceIdentity && claim.resourcePart === `chunk:${index}`
+          ));
       }
       return output.token.category.toLowerCase() === chunk.categoryId.toLowerCase()
         && output.token.amount === 0n
@@ -232,8 +232,8 @@ export function materializeTransportedContinuations(
       && attributedOutput && actual === expected;
     const plannedVacantOutput = output?.token === undefined && binToHex(lock ?? Uint8Array.of()) === '51'
       && claims.length > 0 && claims.every((claim) => (
-        claim.resourceIdentity === chunk.resourceIdentity && claim.resourcePart === `chunk:${index}`
-      ));
+      claim.resourceIdentity === chunk.resourceIdentity && claim.resourcePart === `chunk:${index}`
+    ));
     if (exactClaimedOutput || exactUnclaimedOutput) {
       adopted.add(chunk.offset);
       continue;

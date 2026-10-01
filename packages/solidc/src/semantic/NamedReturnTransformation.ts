@@ -16,6 +16,43 @@ import { blockEndsWithReturn } from './EarlyReturnTransformation.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
+ * Empty-body VOID function (e.g. `receive() external payable {}`, an empty payable `deposit()`, an empty internal
+ * hook): Solidity accepts the call and does nothing. Synthesize `require(true);` so it compiles - a
+ * state-preserving no-op spend path (with a warning). Constructors may stay empty (parent-only) and abstract
+ * functions have no body, so both are excluded. (Default; was gated behind solidityImportCompat, except empty
+ * receive/fallback which were always synthesized.) Returns whether the body was synthesized.
+ */
+export function synthesizeEmptyVoidBody(node: FunctionDefinitionNode): boolean {
+  if (!node.body || (node.body.statements?.length ?? 0) !== 0
+    || node.returnTypes.length !== 0 || node.name === '__construct') {
+    return false;
+  }
+  const isReceiveOrFallback = node.name === '__receive' || node.name === '__fallback';
+  const label = isReceiveOrFallback ? (node.name === '__receive' ? 'receive()' : 'fallback()') : `${node.name}()`;
+  console.warn(`Warning: ${label} has an empty body; SolidCash synthesizes a state-preserving no-op spend `
+    + 'path (require(true)). Add explicit logic if it should do more.');
+  const cond = new BoolLiteralNode(true);
+  cond.location = node.location;
+  const req = new RequireNode(cond);
+  req.location = node.location;
+  node.body.statements = [req];
+  return true;
+}
+
+/**
+ * Apply only the empty-void-body step of the transformation, to the functions the transformation itself visits:
+ * free functions and the contract's functions, receive() and fallback(). The compiler skips the whole
+ * transformation when no function names its returns; this keeps an empty void function compiling in that case
+ * while every other function keeps exactly the lowering it had.
+ */
+export function synthesizeEmptyVoidBodies(ast: SourceFileNode): void {
+  const { contract } = ast;
+  for (const fn of [...ast.freeFunctions, ...contract.functions, contract.fallbackDef, contract.receiveDef]) {
+    if (fn) synthesizeEmptyVoidBody(fn);
+  }
+}
+
+/**
  * Desugars named return values into ordinary locals + explicit returns. For:
  *
  * ```
@@ -71,24 +108,7 @@ export default class NamedReturnTransformation extends AstTraversal {
       return node;
     }
 
-    // Empty-body VOID function (e.g. `receive() external payable {}`, an empty payable `deposit()`): Solidity
-    // accepts the call and does nothing. Synthesize `require(true);` so it compiles - a state-preserving no-op
-    // spend path (with a warning). Constructors may stay empty (parent-only) and abstract functions have no
-    // body, so both are excluded. (Default; was gated behind solidityImportCompat, except empty receive/fallback
-    // which were always synthesized.)
-    if (node.body && (node.body.statements?.length ?? 0) === 0
-      && node.returnTypes.length === 0 && node.name !== '__construct') {
-      const isReceiveOrFallback = node.name === '__receive' || node.name === '__fallback';
-      const label = isReceiveOrFallback ? (node.name === '__receive' ? 'receive()' : 'fallback()') : `${node.name}()`;
-      console.warn(`Warning: ${label} has an empty body; SolidCash synthesizes a state-preserving no-op spend `
-        + 'path (require(true)). Add explicit logic if it should do more.');
-      const cond = new BoolLiteralNode(true);
-      cond.location = node.location;
-      const req = new RequireNode(cond);
-      req.location = node.location;
-      node.body.statements = [req];
-      return node;
-    }
+    if (synthesizeEmptyVoidBody(node)) return node;
 
     if (node.returnNames.length === 0 || !node.body) {
       return node;

@@ -124,7 +124,7 @@ import EnsureFinalRequireTraversal, {
 } from './semantic/EnsureFinalRequireTraversal.js';
 import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversal.js';
 import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
-import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
+import NamedReturnTransformation, { synthesizeEmptyVoidBodies } from './semantic/NamedReturnTransformation.js';
 import MarkLegacyCheckedMath from './semantic/MarkLegacyCheckedMath.js';
 import LowerTailRecursion from './semantic/LowerTailRecursion.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
@@ -13142,6 +13142,10 @@ function compileResolvedAst(
 
   // Named-return desugar (before semantic analysis): named returns become default-init locals.
   if (needsNamedReturns) ast = ast.accept(new NamedReturnTransformation()) as Ast;
+  // The survey skips that pass when no function names its returns, but the pass is also where an empty void
+  // function gets its `require(true)` no-op body. Run that step alone then, so an empty hook or entry point still
+  // compiles and every other function keeps the lowering it had.
+  else synthesizeEmptyVoidBodies(ast);
 
   // A return nested under further conditions with fall-through (internal fns) -> flag + gated tail +
   // terminal return (after NamedReturn so implicit tails are explicit; before semantic so locals resolve).

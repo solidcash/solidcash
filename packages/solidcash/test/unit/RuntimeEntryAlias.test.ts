@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { runtimeEntryAliasOwners } from '../../src/stateful/StatefulContract.js';
+import { inactiveRouteEntrySlotsFromOperations } from '../../src/stateful/sorted-batch-activity.js';
 
 describe('runtime entry proof aliases', () => {
   it('does not deactivate distinct targets that share one predecessor proof', () => {
@@ -125,5 +126,11 @@ describe('runtime entry proof aliases', () => {
     expect(runtimeEntryAliasOwners(entries.map((entry) => (
       entry.slotIndex === 11 ? { ...entry, proof: 'proof:12' } : entry
     ))).size).toBe(0);
+  });
+
+  it('keeps selected read lanes while inactivating unselected union lanes with the same key', () => {
+    const accesses = Array.from({ length: 4 }, (_, slotIndex) => ({ slotIndex }));
+    const selected = new Map<number, readonly string[]>([[0, ['read']], [1, ['read']]]);
+    expect(inactiveRouteEntrySlotsFromOperations(accesses, selected)).toEqual([2, 3]);
   });
 });

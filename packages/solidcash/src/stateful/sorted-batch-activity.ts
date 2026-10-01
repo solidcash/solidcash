@@ -110,6 +110,17 @@ export function sortedBatchOperationsMutate(operations: readonly string[]): bool
   return operations.includes('write') || operations.includes('delete');
 }
 
+/** A selected route row cannot consume a union entry lane with no selected operation. */
+export function inactiveRouteEntrySlotsFromOperations(
+  accesses: readonly { slotIndex?: number }[],
+  activeOperations: ReadonlyMap<number, readonly string[]>,
+): number[] {
+  return accesses.flatMap((access, index) => {
+    const slotIndex = access.slotIndex ?? index;
+    return (activeOperations.get(slotIndex)?.length ?? 0) === 0 ? [slotIndex] : [];
+  });
+}
+
 export interface RuntimeEntryAliasCandidate {
   slotIndex: number;
   collection: string;

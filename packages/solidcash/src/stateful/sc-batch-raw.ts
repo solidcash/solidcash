@@ -56,6 +56,7 @@ import {
   visibleHandlerInputs,
   type RouteExpressionKeyRow,
 } from './route-expression-key.js';
+import { inactiveRouteEntrySlotsFromOperations } from './sorted-batch-activity.js';
 
 /** Apply route-published dynamic metadata to one callable row without aliasing selectorless handlers. */
 export function mergePublishedMessageBusHandlerMetadata(
@@ -665,7 +666,7 @@ export function batchRaw(
     const bare = name.startsWith('id:') ? name.slice(3) : name;
     return bare.startsWith('__message_bus_ek_') ? bare.slice('__message_bus_ek_'.length) : bare;
   };
-  const inactiveRouteEntrySlots = (capability.route.entryAccesses ?? []).flatMap((access, denseIndex) => {
+  let inactiveRouteEntrySlots = (capability.route.entryAccesses ?? []).flatMap((access, denseIndex) => {
     const keys = access.keyParams.map(routeKeyName);
     return keys.length > 0 && keys.every((key) => key.startsWith('__message_bus_key_'))
       && !keys.every((key) => activeRouteEntryKeys.has(key)) ? [access.slotIndex ?? denseIndex] : [];
@@ -810,6 +811,16 @@ export function batchRaw(
       }
     });
   });
+  if (reachedHandlers.length === rowCount && selectedHandlerAbis.every((handler) => handler !== undefined)) {
+    // Key witnesses can be shared by alternate route lanes even when only one selected handler owns a read.
+    // A key's presence in the envelope therefore does not activate every union slot carrying that key.
+    // The selector-exact operation projection is authoritative for the concrete row; leave inactive slots
+    // balanced by funders before they can co-spend the same entry proof as an active lane.
+    inactiveRouteEntrySlots = [...new Set([
+      ...inactiveRouteEntrySlots,
+      ...inactiveRouteEntrySlotsFromOperations(capability.route.entryAccesses ?? [], activeRouteEntryOperations),
+    ])];
+  }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ROUTE_ENTRY_PLAN === '1') {
     console.error('message-bus-active-entry-operations', JSON.stringify({

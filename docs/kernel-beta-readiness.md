@@ -27,6 +27,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   comparison. It remains **red** at a later duplicate `whitelistWorkers` entry input in the routed `takeJob` block;
   the duplicate-input refusal is intact. The iteration artifact context remains stale by design and requires a
   normal project compile before any merge-readiness claim.
+- 2026-10-01 selected-entry checkpoint: the duplicate `whitelistWorkers` proof was an inactive union lane whose
+  key witness was shared with the selected `takeJob` read. The route now uses selector-exact operation activity
+  to fund unselected entry slots, preserving the duplicate-input guard. The focused unit title and its adjacent
+  title pass. The unchanged `take job > take job` title advances past the duplicate and remains **red** at an
+  invocation-11 prepared/observed return mismatch; no adjacent Marketplace title was run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

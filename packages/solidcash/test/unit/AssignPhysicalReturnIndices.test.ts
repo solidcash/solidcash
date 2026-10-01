@@ -1030,8 +1030,14 @@ describe('generic persisted value-chunk write identity', () => {
     expect(selectProtectedLoopEntryCollections([planned])).toMatchObject({
       status: 'exact', collections: ['notices'],
     });
+    expect(selectProtectedLoopEntryCollections([makeGroup('appendNotice')])).toEqual({
+      status: 'exact', collections: ['notices'],
+    });
     expect(selectProtectedLoopEntryCollections([])).toEqual({
-      status: 'absent', collections: ['jobEvents'],
+      status: 'absent', collections: [],
+    });
+    expect(selectProtectedLoopEntryCollections([{ functionName: 'unrelated' }])).toEqual({
+      status: 'absent', collections: [],
     });
     const kernelArtifact = {
       messageBus: { convention: 'kernel-row-loop' },

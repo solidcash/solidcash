@@ -17,6 +17,7 @@ import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { absoluteValueChunkOutputBaseFromResolve } from '../message-bus/layout-resolver.js';
 import {
+  groupChunkableValueWriteCollections,
   permitsLegacyNamedValueChunkFallback,
 } from './chunkable-value-write-selection.js';
 import {
@@ -31,6 +32,7 @@ import {
 } from './KernelEntryJournal.js';
 import {
   LEGACY_JOB_EVENTS_COLLECTION_ALIASES,
+  legacyGroupLooksLikePublishJobEvent,
 } from './legacy-planning-heuristics.js';
 import type { ValueChunkWriteDescriptor, ValueChunkWriteStagingSession } from './value-chunk-persist.js';
 
@@ -171,7 +173,7 @@ export type ProtectedLoopEntryCollectionSelection =
 export function selectProtectedLoopEntryCollections(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
   'functionName' | 'logicalFunctionName' | 'compilerRoute' | 'logicalArtifact' | 'externalContract'
-  | 'blockLayout' | 'plannedEntryInserts' | 'valueChunkWrites'>>,
+  | 'blockLayout' | 'plannedEntryInserts' | 'valueChunkWrites' | 'stateLayout'>>,
   ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): ProtectedLoopEntryCollectionSelection {
   let described = false;
@@ -217,11 +219,18 @@ export function selectProtectedLoopEntryCollections(
       collections.add(access.collection);
     }
   }
-  if (!described) return {
-    status: 'absent',
-    collections: permitsLegacyNamedValueChunkFallback(groups, ownerConvention)
-      ? [LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0]] : [],
-  };
+  if (!described) {
+    const declared = [...new Set(groups.flatMap(groupChunkableValueWriteCollections))];
+    if (declared.length > 0) return { status: 'exact', collections: declared };
+    // Descriptor-free legacy artifacts retain their historical adapter, but unrelated or empty group sets
+    // cannot claim this application's collection merely because the owner uses legacy-unroll.
+    const legacyPublisher = permitsLegacyNamedValueChunkFallback(groups, ownerConvention)
+      && groups.some(legacyGroupLooksLikePublishJobEvent);
+    return {
+      status: 'absent',
+      collections: legacyPublisher ? [LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0]] : [],
+    };
+  }
   return {
     status: ambiguous ? 'ambiguous' : 'exact',
     collections: [...collections],

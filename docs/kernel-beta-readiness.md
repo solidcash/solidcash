@@ -143,7 +143,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   and review `git status` before committing. The previously documented `check:source-tree` script is not present.
 - The SDK still has an explicitly legacy-fenced `JobEvent` compatibility adapter and historical internal names around
   chunked continuation bands. Do not extend those names into kernel decisions; retire them behind compiler-published
-  resource metadata in a dedicated refactor, separately from capability work.
+  resource metadata in a dedicated refactor, separately from capability work. The band planner now reads the
+  historical `jobEvents` collection only for the selected historical publisher; a renamed selected writer cannot
+  inherit the name from another group, and multiple compiler-published collections fail closed. Both focused new
+  regression titles and their immediately preceding titles pass; this does not establish a broad SDK gate.
 - The focused `post two jobs` scenario is green after a fresh compile. A neutral BCH-2026 regression proves zero,
   one, and two repeated getter results whose exact affine domain consumes an authenticated earlier scalar result.
   The compiler preserves the source callsite-to-returned-array link before memory lowering; the SDK retains one

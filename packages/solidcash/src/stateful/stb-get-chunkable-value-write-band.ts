@@ -7,8 +7,8 @@ import { peekBuildId } from './buildSequence.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import {
-  LEGACY_JOB_EVENTS_COLLECTION_ALIASES,
   legacyIsPublishJobEventName,
+  legacyNamedJobEventCollectionFallback,
 } from './legacy-planning-heuristics.js';
 import {
   computePublishJobEventsBand,
@@ -26,7 +26,7 @@ import {
   type DerivedChunkOutputObservation,
 } from './value-chunk-persist.js';
 import {
-  groupChunkableValueWriteCollection,
+  groupChunkableValueWriteCollections,
   permitsLegacyNamedValueChunkFallback,
 } from './chunkable-value-write-selection.js';
 import type {
@@ -111,13 +111,21 @@ export function getChunkableValueWriteBand(
       ? [host.lowLevelCallUtxoGroups[publishLlcIndex].valueChunkOutputCount ?? 0]
       : []),
   );
-  const activeCollection = structural?.collection ?? groupChunkableValueWriteCollection(
-    publishLlcIndex >= 0
-      ? host.lowLevelCallUtxoGroups[publishLlcIndex]
-      : publishExternal as ExternalCallUtxoGroup,
-  ) ?? (permitsLegacyNamedValueChunkFallback([
-    ...host.lowLevelCallUtxoGroups, ...host.externalCallUtxoGroups,
-  ], host.messageBusConvention) ? LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0] : undefined);
+  const selectedGroups = [
+    ...(publishLlcIndex >= 0 ? [host.lowLevelCallUtxoGroups[publishLlcIndex]] : []),
+    ...(publishExternal ? [publishExternal] : []),
+  ];
+  const publishedCollections = [...new Set(selectedGroups.flatMap(groupChunkableValueWriteCollections))];
+  if (!structural && publishedCollections.length > 1) {
+    throw new Error('Ambiguous compiler-published chunkable-value band collections');
+  }
+  const activeCollection = structural?.collection ?? publishedCollections[0]
+    ?? legacyNamedJobEventCollectionFallback(
+      selectedGroups,
+      permitsLegacyNamedValueChunkFallback([
+        ...host.lowLevelCallUtxoGroups, ...host.externalCallUtxoGroups,
+      ], host.messageBusConvention),
+    );
   const valueChunkEntryCount = activeCollection === undefined ? 0 : new Set(
     host.getLoopEntryCommitments(activeCollection)
       .filter((commitment) => !isEmptyValueChunkCommitment(commitment)),

@@ -9,6 +9,7 @@ import {
 } from '../../src/stateful/legacy-planning-heuristics.js';
 import { permitsLegacyNamedValueChunkFallback } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { isInitialChunkableValueWrite } from '../../src/stateful/stb-chunkable-write-planning.js';
+import { getChunkableValueWriteBand } from '../../src/stateful/stb-get-chunkable-value-write-band.js';
 
 describe('legacy planning heuristics isolation (item 1)', () => {
   it('exposes JobEvent / jobEvents name matchers only via the legacy adapter module', () => {
@@ -74,5 +75,100 @@ describe('legacy planning heuristics isolation (item 1)', () => {
       .toBe('jobEvents');
     expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }], false))
       .toBeUndefined();
+  });
+
+  it('does not read the historical collection for a renamed descriptor-free band writer', () => {
+    const queriedCollections: string[] = [];
+    const group = {
+      categoryId: 'ab'.repeat(32),
+      functionName: 'appendNotice',
+      dataNftUtxos: [],
+      valueChunkOutputCount: 1,
+    };
+    const historical = { ...group, functionName: 'publishJobEvent' };
+    const host = {
+      // A different participant's historical name must not identify this selected writer's collection.
+      externalCallUtxoGroups: [group, historical],
+      lowLevelCallUtxoGroups: [],
+      messageBusConvention: 'legacy-unroll',
+      derivedChunkOutputs: new Map(),
+      allInputs: [],
+      composedParticipant: false,
+      chunkableValueWriteExecution: () => undefined,
+      chunkableValueWriteGroups: () => ({
+        external: group, externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,
+      }),
+      getLowLevelCallMasterInputIndex: () => -1,
+      findMintingInputIndex: () => 0,
+      getLoopEntryCommitments: (collection: string) => {
+        queriedCollections.push(collection);
+        return [];
+      },
+      chunkableValueWriteCategory: () => group.categoryId,
+      persistedChunkableValueWriteState: () => undefined,
+      isPersistedChunkableValueWriteReady: () => false,
+      isInitialChunkableValueWrite: () => true,
+      chunkableValueWriteInputIndex: () => 0,
+      entryScaledPreserveRange: () => undefined,
+    };
+
+    expect(getChunkableValueWriteBand(host as never)).toBeDefined();
+    expect(queriedCollections).toEqual([]);
+
+    expect(getChunkableValueWriteBand({
+      ...host,
+      externalCallUtxoGroups: [historical],
+      chunkableValueWriteGroups: () => ({
+        external: historical, externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,
+      }),
+    } as never)).toBeDefined();
+    expect(queriedCollections).toEqual(['jobEvents']);
+  });
+
+  it('rejects ambiguous compiler-published band collections before the legacy name fallback', () => {
+    const group = {
+      categoryId: 'ab'.repeat(32),
+      functionName: 'publishJobEvent',
+      dataNftUtxos: [],
+      valueChunkOutputCount: 1,
+      stateLayout: {
+        variables: [], collections: [
+          { name: 'notices', signature: 'notices:mapping(int => Notice[])', chunkableValue: true },
+          { name: 'records', signature: 'records:mapping(int => Record[])', chunkableValue: true },
+        ],
+      },
+      compilerRoute: { abiFunction: {
+        name: 'publishJobEvent',
+        inputs: [], outputs: [],
+        entryAccesses: [
+          { collection: 'notices', operations: ['write'] },
+          { collection: 'records', operations: ['write'] },
+        ],
+      } },
+    };
+    const host = {
+      externalCallUtxoGroups: [group],
+      lowLevelCallUtxoGroups: [],
+      messageBusConvention: 'legacy-unroll',
+      derivedChunkOutputs: new Map(),
+      allInputs: [],
+      composedParticipant: false,
+      chunkableValueWriteExecution: () => undefined,
+      chunkableValueWriteGroups: () => ({
+        external: group, externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,
+      }),
+      getLowLevelCallMasterInputIndex: () => -1,
+      findMintingInputIndex: () => 0,
+      getLoopEntryCommitments: () => [],
+      chunkableValueWriteCategory: () => group.categoryId,
+      persistedChunkableValueWriteState: () => undefined,
+      isPersistedChunkableValueWriteReady: () => false,
+      isInitialChunkableValueWrite: () => true,
+      chunkableValueWriteInputIndex: () => 0,
+      entryScaledPreserveRange: () => undefined,
+    };
+
+    expect(() => getChunkableValueWriteBand(host as never))
+      .toThrow('Ambiguous compiler-published chunkable-value band collections');
   });
 });

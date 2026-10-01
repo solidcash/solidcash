@@ -39,18 +39,27 @@ import {
   ExpressionNode,
   AssemblyStatementNode,
   AbiDecodeNode,
+  AssignmentExpressionNode,
+  ExternalFunctionCallNode,
+  MethodCallNode,
+  LowLevelCallNode,
+  ArrayPushNode,
+  ArrayPopNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { GlobalFunction } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { YulNode, YulPathNode, YulFunctionCallNode, YulAssignmentNode } from '../ast/YulAST.js';
-import { UnsupportedMemoryAliasingError } from '../Errors.js';
+import { IndexOutOfBoundsError, UnsupportedMemoryAliasingError } from '../Errors.js';
 import {
   YULMEM,
   memReservedInit as buildReservedInit,
   memWordStore,
   memWordStoreRun,
   memWordLoad,
+  memWordLoadOnce,
+  memBytesAt,
   memByteStore,
   memZeroBytes,
   wordDecodeType,
@@ -68,6 +77,32 @@ import {
 // `a.length`, and reference aliasing (`T[] memory b = a` shares the buffer). Structs and nested chains build on
 // the same primitives (Phase 3). Off by default; the flag gates the whole pass, so the value-copy path is intact.
 const WORD = 32n;
+
+/**
+ * An expression an access evaluates more than once: `first` where it is evaluated first, `again` at each later use.
+ * `single` marks an address a load must evaluate once, since `first` binds a value there.
+ */
+interface Once {
+  first: ExpressionNode;
+  again: () => ExpressionNode;
+  single?: boolean;
+}
+
+/** The length an allocated array keeps (see LowerMemoryModel.allocationSizes). */
+interface AllocationSize {
+  bound: string;
+  literal?: bigint;
+  after: StatementNode[];
+}
+
+const TRIVIAL_OPERATORS = new Set<BinaryOperator>([
+  BinaryOperator.PLUS, BinaryOperator.MINUS, BinaryOperator.MUL, BinaryOperator.DIV, BinaryOperator.MOD,
+]);
+const STEP_OPERATORS = new Set<UnaryOperator>([
+  UnaryOperator.POSTFIX_INCREMENT, UnaryOperator.POSTFIX_DECREMENT,
+  UnaryOperator.PREFIX_INCREMENT, UnaryOperator.PREFIX_DECREMENT,
+]);
+const PURE_GLOBALS = new Set<string>(Object.values(GlobalFunction));
 
 // The one linear-memory buffer (name + primitive lowerings imported from ./YulMemPrimitives) is shared with the Yul
 // runtime-memory lowering (LowerInlineAssembly, which runs after this pass and reuses the decl if it already
@@ -98,6 +133,15 @@ export default class LowerMemoryModel extends AstTraversal {
   // so flag-on can never regress. See analyzeConvertible + docs/experimental-memory-model.md SS6.
   private convertible = new Set<string>();
   private counter = 0;
+  // Declarations of the temporaries `once` binds, emitted ahead of the statement whose lowering asked for them.
+  private bindings: StatementNode[] = [];
+  private bindingCounter = 0;
+  // This function's parameters and locals, none of which a call can write.
+  private locals = new Set<string>();
+  // Element accesses an enclosing counted loop proves in range (see loopProvenAccesses).
+  private provenInRange = new Set<Node>();
+  // Arrays allocated with a literal size whose length stays that size (see allocationSizes).
+  private literalSizes = new Map<string, bigint>();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.byteConstantValues = new Map();
@@ -151,6 +195,17 @@ export default class LowerMemoryModel extends AstTraversal {
     if (node.body) this.inlinePassByRef(node.body);
     if (node.body) this.materializeInlineStructReferenceArgs(node.body);
     this.convertible = node.body ? this.analyzeConvertible(node.body) : new Set();
+    const savedLocals = this.locals;
+    const savedProven = this.provenInRange;
+    const savedSizes = this.literalSizes;
+    this.locals = new Set(node.parameters.map((parameter) => parameter.name));
+    if (node.body) {
+      this.eachDescendant(node.body, (n) => { if (n instanceof VariableDefinitionNode) this.locals.add(n.name); });
+    }
+    const sizes = node.body ? this.allocationSizes(node.body) : new Map<string, AllocationSize>();
+    this.literalSizes = new Map();
+    for (const [name, { literal }] of sizes) if (literal !== undefined) this.literalSizes.set(name, literal);
+    this.provenInRange = node.body ? this.loopProvenAccesses(node.body, sizes) : new Set();
     if (node.body) {
       // A first pass over the block rewrites decls/writes/reads; if any memory array is allocated, prepend the
       // buffer decl so every `__yulmem` reference resolves. The free-memory pointer lives IN the buffer at slot
@@ -168,6 +223,9 @@ export default class LowerMemoryModel extends AstTraversal {
     this.memBytes = savedBytes;
     this.usesMemory = savedUses;
     this.convertible = savedConv;
+    this.locals = savedLocals;
+    this.provenInRange = savedProven;
+    this.literalSizes = savedSizes;
     return node;
   }
 
@@ -1058,7 +1116,17 @@ export default class LowerMemoryModel extends AstTraversal {
   visitBlock(node: BlockNode): Node {
     const out: StatementNode[] = [];
     const blockStmts = node.statements ?? [];
+    // The temporaries a statement's lowering binds are declared ahead of everything that statement lowers to.
+    const savedBindings = this.bindings;
+    let mark = 0;
+    const declareBindings = (): void => {
+      out.splice(mark, 0, ...this.bindings);
+      this.bindings = [];
+      mark = out.length;
+    };
+    this.bindings = [];
     for (let si = 0; si < blockStmts.length; si += 1) {
+      declareBindings();
       const stmt = blockStmts[si];
       // A run of constant-indexed element writes to one memory array folds to a SINGLE buffer rebuild.
       const run = this.tryFuseElementWriteRun(blockStmts, si);
@@ -1086,8 +1154,11 @@ export default class LowerMemoryModel extends AstTraversal {
       // `delete d[i]` on a memory array -> store the element default (0) in place.
       if (stmt instanceof MappingDeleteNode && this.memArrays.has(stmt.name) && stmt.keys.length === 1) {
         const arrT = this.memArrays.get(stmt.name)!;
-        const addr = this.elemAddr(new IdentifierNode(stmt.name), this.visit(stmt.keys[0]) as ExpressionNode);
-        out.push(this.at(this.mstore(addr, this.intLit(0n), arrT.elementType), stmt));
+        const access = this.indexed(
+          arrT, new IdentifierNode(stmt.name), this.visit(stmt.keys[0]) as ExpressionNode, 2,
+          { proven: this.provenInRange.has(stmt) },
+        );
+        out.push(this.at(this.mstoreAt(access, this.intLit(0n), arrT.elementType), stmt));
         continue;
       }
       // `s = S(..)` on a memory struct (a field write `s.f=v` desugars to this) -> store each arg in place. Only a
@@ -1106,8 +1177,11 @@ export default class LowerMemoryModel extends AstTraversal {
         if (stmt.value.identifier.name === structT.name) {
           const sp = `__sp_${this.counter++}`;
           out.push(...this.allocStructBlock(sp, structT, stmt.value, stmt));
-          const addr = this.elemAddr(new IdentifierNode(stmt.name), this.visit(stmt.index) as ExpressionNode);
-          out.push(this.at(this.mstore(addr, new IdentifierNode(sp), this.uint()), stmt));
+          const access = this.indexed(
+            this.memStructArrays.get(stmt.name)!, new IdentifierNode(stmt.name), this.visit(stmt.index) as ExpressionNode,
+            2, { proven: this.provenInRange.has(stmt) },
+          );
+          out.push(this.at(this.mstoreAt(access, new IdentifierNode(sp), this.uint()), stmt));
           continue;
         }
       }
@@ -1116,7 +1190,9 @@ export default class LowerMemoryModel extends AstTraversal {
         const structT = this.memStructArrays.get(stmt.name)!.elementType as StructType;
         const fi = this.fieldIndex(structT, stmt.fieldName);
         if (fi >= 0) {
-          const elemPtr = this.structElemPtr(stmt.name, this.visit(stmt.keys[0]) as ExpressionNode);
+          const elemPtr = this.structElemPtr(
+            stmt.name, this.visit(stmt.keys[0]) as ExpressionNode, this.provenInRange.has(stmt),
+          );
           const addr = this.fieldAddr(elemPtr, fi);
           out.push(this.at(this.mstore(addr, this.visit(stmt.expression) as ExpressionNode, structT.fields[fi].type), stmt));
           continue;
@@ -1206,6 +1282,8 @@ export default class LowerMemoryModel extends AstTraversal {
       }
       out.push(this.visit(stmt) as StatementNode);
     }
+    declareBindings();
+    this.bindings = savedBindings;
     node.statements = out;
     return node;
   }
@@ -1219,7 +1297,7 @@ export default class LowerMemoryModel extends AstTraversal {
     const serName = `__ser_${this.counter++}`;
     if (arrT.bound !== undefined) {
       const elements = Array.from({ length: arrT.bound }, (_, i) =>
-        this.mload(this.elemAddr(new IdentifierNode(arrName), this.intLit(BigInt(i))), arrT.elementType));
+        this.mload(this.arrayElemAddr(arrT, new IdentifierNode(arrName), this.intLit(BigInt(i))), arrT.elementType));
       const literal = this.at(new ArrayNode(elements), src);
       literal.type = arrT;
       return {
@@ -1288,17 +1366,18 @@ export default class LowerMemoryModel extends AstTraversal {
       this.usesMemory = true;
       if (isStructArr) this.memStructArrays.set(node.name, arrT);
       else this.memArrays.set(node.name, arrT);
-      const n = node.expression.size;
+      // The size is evaluated once, where the bump evaluates it first.
+      const n = this.once(this.clone(node.expression.size), true);
       const ptr = new IdentifierNode(node.name);
       // uint a = mload(0x40);   (read the free pointer)
       const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.freePtr()), node);
       // mstore(0x40, a + 32 + n*32);   (bump the free pointer past this block)
-      const bump = this.at(this.setFreePtr(this.add(this.clone(ptr), this.blockBytes(this.clone(n)))), node);
+      const bump = this.at(this.setFreePtr(this.add(this.clone(ptr), this.blockBytes(n.first))), node);
       // __yulmem = bytes.concat(__yulmem, new bytes(32 + n*32));   (grow by the block size, zero-filled)
       const grow = this.at(this.assign(YULMEM,
-        new BytesConcatNode([this.mem(YULMEM), this.rawBytes(this.blockBytes(this.clone(n)))])), node);
+        new BytesConcatNode([this.mem(YULMEM), this.rawBytes(this.blockBytes(n.again()))])), node);
       // __yulmem = <store n at a>;   (the length word)
-      const setLen = this.at(this.mstore(this.at(this.clone(ptr), node), this.clone(n), arrT.elementType), node);
+      const setLen = this.at(this.mstore(this.at(this.clone(ptr), node), n.again(), arrT.elementType), node);
       return [decl, bump, grow, setLen];
     }
 
@@ -1329,7 +1408,7 @@ export default class LowerMemoryModel extends AstTraversal {
         new BytesConcatNode([this.mem(YULMEM), this.rawBytes(this.clone(size))])), node);
       const stores = node.expression instanceof ArrayNode
         ? node.expression.elements.map((element, i) => this.at(this.mstore(
-          this.elemAddr(this.clone(ptr), this.intLit(BigInt(i))), element, arrT.elementType,
+          this.arrayElemAddr(arrT, this.clone(ptr), this.intLit(BigInt(i))), element, arrT.elementType,
         ), node))
         : [];
       return [decl, bump, grow, ...stores];
@@ -1391,9 +1470,16 @@ export default class LowerMemoryModel extends AstTraversal {
     // Length: the runtime size expr for `new bytes(n)`, or the (zero) literal's byte length for the folded constant.
     const literal = isString ? encodeString((node.expression as StringLiteralNode).value)
       : isHex ? (node.expression as HexLiteralNode).value : undefined;
-    const n = (): ExpressionNode => (literal
+    // A runtime size is evaluated once, where the bump evaluates it first.
+    const size = this.once(literal
       ? this.intLit(BigInt(literal.length))
-      : this.clone((node.expression as NewArrayNode).size));
+      : this.clone((node.expression as NewArrayNode).size), true);
+    let sized = false;
+    const n = (): ExpressionNode => {
+      const use = sized ? size.again() : size.first;
+      sized = true;
+      return use;
+    };
     const ptr = new IdentifierNode(node.name);
     // uint b = mload(0x40);
     const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.freePtr()), node);
@@ -1481,14 +1567,19 @@ export default class LowerMemoryModel extends AstTraversal {
   // `a[i] = v` on a memory array -> single in-place store at `a + 32 + i*32`. `b[i] = v` on memory bytes ->
   // single-byte splice at `b + 32 + i`.
   visitArrayAssign(node: ArrayAssignNode): Node {
-    if (this.memBytes.has(node.name)) {
-      const addr = this.byteAddr(new IdentifierNode(node.name), this.visit(node.index) as ExpressionNode);
-      return this.at(this.mstoreByte(addr, this.visit(node.value) as ExpressionNode), node);
-    }
-    const arrT = this.memArrays.get(node.name);
-    if (!arrT) return super.visitArrayAssign(node);
-    const addr = this.arrayElemAddr(arrT, new IdentifierNode(node.name), this.visit(node.index) as ExpressionNode);
-    return this.at(this.mstore(addr, this.visit(node.value) as ExpressionNode, arrT.elementType), node);
+    const memType = this.memBytes.get(node.name) ?? this.memArrays.get(node.name);
+    if (!memType) return super.visitArrayAssign(node);
+    // The splice evaluates the index before the value and again after it, so an index the value could change - a
+    // state read past a call, or any name past an assignment - is bound before the value runs.
+    const bindIndex = this.hasEffects(node.value)
+      && (this.readsBeyondLocals(node.index) || this.writesVariables(node.value));
+    const access = this.indexed(
+      memType, new IdentifierNode(node.name), this.visit(node.index) as ExpressionNode, 2,
+      { proven: this.provenInRange.has(node), bindIndex },
+    );
+    const value = this.visit(node.value) as ExpressionNode;
+    if (memType instanceof BytesType) return this.at(this.mstoreByteAt(access, value), node);
+    return this.at(this.mstoreAt(access, value, (memType as ArrayType).elementType), node);
   }
 
   // `a[0]=x; a[1]=y; a[2]=z;` on ONE memory value-array at ascending consecutive constant indices -> a single
@@ -1503,7 +1594,9 @@ export default class LowerMemoryModel extends AstTraversal {
     stmts: StatementNode[], start: number,
   ): { statement: StatementNode; next: number } | undefined {
     const head = stmts[start];
-    if (!(head instanceof ArrayAssignNode) || !(head.index instanceof IntLiteralNode)) return undefined;
+    if (!(head instanceof ArrayAssignNode) || !(head.index instanceof IntLiteralNode) || head.index.value < 0n) {
+      return undefined;
+    }
     const arrT = this.memArrays.get(head.name);
     if (!arrT || this.isRefType(arrT.elementType)) return undefined;
 
@@ -1522,6 +1615,19 @@ export default class LowerMemoryModel extends AstTraversal {
     if (values.length < 2) return undefined;
 
     const addr = this.arrayElemAddr(arrT, new IdentifierNode(head.name), this.intLit(head.index.value));
+    // From a non-negative first index, the run is in range when its last index is: the splice heads with the last
+    // element's checked address, moved back to the first element's.
+    const span = BigInt(values.length - 1);
+    const lastIndex = head.index.value + span;
+    const size = arrT.bound === undefined ? this.literalSizes.get(head.name) : BigInt(arrT.bound);
+    const within = size !== undefined && lastIndex < size;
+    const run: Once = within ? { first: addr, again: () => this.clone(addr) } : {
+      first: new BinaryOpNode(
+        this.indexed(arrT, new IdentifierNode(head.name), this.intLit(lastIndex), 1).first,
+        BinaryOperator.MINUS, this.intLit(span * WORD),
+      ),
+      again: () => this.clone(addr),
+    };
     const raws = values.map((value, i) => {
       const elemT = arrT.elementType;
       const raw = elemT instanceof ValueType ? new CastNode(elemT.underlyingType, value, false) : value;
@@ -1529,7 +1635,7 @@ export default class LowerMemoryModel extends AstTraversal {
       return raw;
     });
     return {
-      statement: this.at(memWordStoreRun(() => this.clone(addr), raws), head),
+      statement: this.at(memWordStoreRun(this.uses(run), raws), head),
       next: end + 1,
     };
   }
@@ -1556,24 +1662,28 @@ export default class LowerMemoryModel extends AstTraversal {
   }
 
   // `a[i]` read (variable index) on a memory array -> load at `a + 32 + i*32`. `b[i]` on memory bytes -> the
-  // single byte at `b + 32 + i`.
+  // single byte at `b + 32 + i`. Either load checks the index against the length.
   visitArrayAccess(node: ArrayAccessNode): Node {
+    const proven = this.provenInRange.has(node);
     if (node.array instanceof IdentifierNode && this.memBytes.has(node.array.name)) {
-      const addr = this.byteAddr(new IdentifierNode(node.array.name), this.visit(node.index) as ExpressionNode);
-      return this.at(this.mloadByte(addr), node);
+      const access = this.indexed(
+        this.memBytes.get(node.array.name)!, new IdentifierNode(node.array.name), this.visit(node.index) as ExpressionNode,
+        1, { read: node, proven },
+      );
+      return this.at(this.mloadByteAt(access), node);
     }
     if (node.array instanceof IdentifierNode && this.memArrays.has(node.array.name)) {
       const arrT = this.memArrays.get(node.array.name)!;
-      const addr = this.arrayElemAddr(
-        arrT, new IdentifierNode(node.array.name), this.visit(node.index) as ExpressionNode,
+      const access = this.indexed(
+        arrT, new IdentifierNode(node.array.name), this.visit(node.index) as ExpressionNode, 1, { read: node, proven },
       );
-      return this.at(this.mload(addr, arrT.elementType), node);
+      return this.at(this.mloadAt(access, arrT.elementType), node);
     }
     // Chained base (`s.a[i]`): resolve the array pointer, load the value element.
     const b = this.resolvePtr(node.array);
     if (b && b.memType instanceof ArrayType && !this.isRefType(b.memType.elementType)) {
-      const addr = this.arrayElemAddr(b.memType, b.ptr, this.visit(node.index) as ExpressionNode);
-      return this.at(this.mload(addr, b.memType.elementType), node);
+      const access = this.indexed(b.memType, b.ptr, this.visit(node.index) as ExpressionNode, 1, { read: node });
+      return this.at(this.mloadAt(access, b.memType.elementType), node);
     }
     return super.visitArrayAccess(node);
   }
@@ -1581,21 +1691,24 @@ export default class LowerMemoryModel extends AstTraversal {
   // `a[0]` read (numeric-literal index) parses as a tuple index, not an ArrayAccess -> same load.
   visitTupleIndexOp(node: TupleIndexOpNode): Node {
     if (node.tuple instanceof IdentifierNode && this.memBytes.has(node.tuple.name)) {
-      const addr = this.byteAddr(new IdentifierNode(node.tuple.name), this.intLit(BigInt(node.index)));
-      return this.at(this.mloadByte(addr), node);
+      const access = this.indexed(
+        this.memBytes.get(node.tuple.name)!, new IdentifierNode(node.tuple.name), this.intLit(BigInt(node.index)), 1,
+        { read: node },
+      );
+      return this.at(this.mloadByteAt(access), node);
     }
     if (node.tuple instanceof IdentifierNode && this.memArrays.has(node.tuple.name)) {
       const arrT = this.memArrays.get(node.tuple.name)!;
-      const addr = this.arrayElemAddr(
-        arrT, new IdentifierNode(node.tuple.name), this.intLit(BigInt(node.index)),
+      const access = this.indexed(
+        arrT, new IdentifierNode(node.tuple.name), this.intLit(BigInt(node.index)), 1, { read: node },
       );
-      return this.at(this.mload(addr, arrT.elementType), node);
+      return this.at(this.mloadAt(access, arrT.elementType), node);
     }
     // Chained base (`s.a[0]`): resolve the array pointer, load the value element.
     const b = this.resolvePtr(node.tuple);
     if (b && b.memType instanceof ArrayType && !this.isRefType(b.memType.elementType)) {
-      const addr = this.arrayElemAddr(b.memType, b.ptr, this.intLit(BigInt(node.index)));
-      return this.at(this.mload(addr, b.memType.elementType), node);
+      const access = this.indexed(b.memType, b.ptr, this.intLit(BigInt(node.index)), 1, { read: node });
+      return this.at(this.mloadAt(access, b.memType.elementType), node);
     }
     return super.visitTupleIndexOp(node);
   }
@@ -1666,7 +1779,7 @@ export default class LowerMemoryModel extends AstTraversal {
     }
     if (name === undefined || index === undefined) return undefined;
     const structT = this.memStructArrays.get(name)!.elementType as StructType;
-    return { structT, elemPtr: this.structElemPtr(name, index) };
+    return { structT, elemPtr: this.structElemPtr(name, index, this.provenInRange.has(expr)) };
   }
 
   // ---- desugar building blocks (all normal AST that type-checks + codegens) ----
@@ -1688,20 +1801,145 @@ export default class LowerMemoryModel extends AstTraversal {
   }
 
   // mstore(addr, word): splice bytes32(word) in place at addr. UDVT elements first unwrap to their integer word;
-  // all other handled element types already have a directly word-encodable representation.
+  // all other handled element types already have a directly word-encodable representation. The splice evaluates
+  // the address twice, so an address beyond a literal or a name is bound once (see `once`).
   private mstore(addr: ExpressionNode, word: ExpressionNode, elemType: Type): AssignNode {
+    return this.mstoreAt(this.once(addr, true), word, elemType);
+  }
+
+  // mstore through an access: `first` heads the splice, which evaluates it before the word and the tail.
+  private mstoreAt(access: Once, word: ExpressionNode, elemType: Type): AssignNode {
     const raw = elemType instanceof ValueType
       ? new CastNode(elemType.underlyingType, word, false)
       : word;
     raw.location = word.location;
-    return memWordStore(() => this.clone(addr), raw);
+    return memWordStore(this.uses(access), raw);
   }
 
   // mload(addr): decode the 32-byte word at [addr : addr+32] back to the element type. No pad - the high-level side
-  // reads only allocated slots. Lowering lives in ./YulMemPrimitives.
+  // reads only allocated slots. Lowering lives in ./YulMemPrimitives. An address beyond a literal or a name is
+  // evaluated once.
   private mload(addr: ExpressionNode, elemType: Type): ExpressionNode {
-    const raw = memWordLoad(() => this.clone(addr), { decodeType: wordDecodeType(elemType) });
+    return this.mloadAt({ first: addr, again: () => this.clone(addr), single: !this.isTrivial(addr) }, elemType);
+  }
+
+  // mload through an access: a `single` address is evaluated once; any other one at both ends of the slice, `first`
+  // at its start.
+  private mloadAt(access: Once, elemType: Type): ExpressionNode {
+    const decode = { decodeType: wordDecodeType(elemType) };
+    const raw = access.single ? memWordLoadOnce(access.first, decode) : memWordLoad(this.uses(access), decode);
     return elemType instanceof ValueType ? new CastNode(elemType, raw, false) : raw;
+  }
+
+  // The address uses of a splice: `first` for the one evaluated first, `again` for each later one.
+  private uses(access: Once): () => ExpressionNode {
+    let first: ExpressionNode | undefined = access.first;
+    return () => {
+      const use = first ?? access.again();
+      first = undefined;
+      return use;
+    };
+  }
+
+  // `expr` evaluated once: `first` goes where the access evaluates it first, and `again` reads it back at each later
+  // use from a temporary that `first` assigns in place, so a condition or short circuit around the access still
+  // decides whether it runs. The temporary is declared ahead of the statement. A literal, a name, or arithmetic over
+  // them is evaluated again instead, as it observes nothing and costs no more than the temporary; `bind` forces the
+  // temporary for a name that a later part of the access could write.
+  private once(expr: ExpressionNode, reused: boolean, bind = false): Once {
+    if (!reused || (!bind && this.isTrivial(expr))) return { first: expr, again: () => this.clone(expr) };
+    const name = `__ix_${this.bindingCounter++}`;
+    this.bindings.push(new VariableDefinitionNode(PrimitiveType.BIGINT, [], name, this.intLit(0n)));
+    return {
+      first: new AssignmentExpressionNode(new AssignNode(new IdentifierNode(name), expr)),
+      again: () => new IdentifierNode(name),
+    };
+  }
+
+  // A literal, a name, a name's length, or arithmetic over them.
+  private isTrivial(expr: ExpressionNode): boolean {
+    if (expr instanceof IntLiteralNode || expr instanceof IdentifierNode) return true;
+    if (expr instanceof CastNode) return this.isTrivial(expr.expression);
+    if (expr instanceof UnaryOpNode) {
+      return (expr.operator === UnaryOperator.NEGATE && this.isTrivial(expr.expression))
+        || (expr.operator === UnaryOperator.SIZE && expr.expression instanceof IdentifierNode);
+    }
+    return expr instanceof BinaryOpNode && TRIVIAL_OPERATORS.has(expr.operator)
+      && this.isTrivial(expr.left) && this.isTrivial(expr.right);
+  }
+
+  // Whether `expr` can change a variable: a call, an assignment, or an increment anywhere in it.
+  private hasEffects(expr: Node): boolean {
+    let effects = false;
+    this.eachDescendant(expr, (n) => {
+      if (n instanceof AssignmentExpressionNode || (n instanceof UnaryOpNode && STEP_OPERATORS.has(n.operator))
+        || (n instanceof FunctionCallNode && !PURE_GLOBALS.has(n.identifier.name))
+        || n instanceof ExternalFunctionCallNode || n instanceof MethodCallNode || n instanceof LowLevelCallNode) {
+        effects = true;
+      }
+    });
+    return effects;
+  }
+
+  // Whether `expr` assigns or steps a variable in place.
+  private writesVariables(expr: Node): boolean {
+    let writes = false;
+    this.eachDescendant(expr, (n) => {
+      if (n instanceof AssignmentExpressionNode || (n instanceof UnaryOpNode && STEP_OPERATORS.has(n.operator))) {
+        writes = true;
+      }
+    });
+    return writes;
+  }
+
+  // Whether a call could change what `expr` reads: a call writes no local of this function, so an expression over
+  // literals and locals alone is safe from it.
+  private readsBeyondLocals(expr: ExpressionNode): boolean {
+    if (!this.isTrivial(expr)) return true;
+    let beyond = false;
+    this.eachDescendant(expr, (n) => { if (n instanceof IdentifierNode && !this.locals.has(n.name)) beyond = true; });
+    return beyond;
+  }
+
+  // `ptr[index]` on a memory array or byte buffer, for an access that evaluates its address `uses` times: `first`
+  // is the address where the access evaluates it first, `again` the address for each later use. The pointer and the
+  // index are each evaluated once. `first` checks the index against a fixed array's bound or the length word at
+  // `ptr`: any index outside [0, length) makes within() 0, and the division by zero fails the script, as Solidity
+  // reverts an out-of-range memory index where the bare address would name a neighbouring word. A literal index
+  // inside a fixed bound, or one the enclosing loop proves in range (`proven`), needs no check. The length word
+  // reads as a plain script number: one with its top bit set reads negative and admits no index. A read keeps the
+  // type checker's literal rules, which a lowered access never reaches: a negative literal, or a literal index past
+  // a fixed bound, is refused. `bindIndex` binds an index that a later part of the access could change.
+  private indexed(
+    memType: Type, ptr: ExpressionNode, index: ExpressionNode, uses: 1 | 2,
+    options: { read?: ArrayAccessNode | TupleIndexOpNode; proven?: boolean; bindIndex?: boolean } = {},
+  ): Once {
+    const { read } = options;
+    const at = (base: ExpressionNode, i: ExpressionNode): ExpressionNode => (memType instanceof ArrayType
+      ? this.arrayElemAddr(memType, base, i) : this.byteAddr(base, i));
+    const bound = memType instanceof ArrayType ? memType.bound : undefined;
+    if (read && index instanceof IntLiteralNode && (index.value < 0n
+      || (read instanceof TupleIndexOpNode && bound !== undefined && index.value >= BigInt(bound)))) {
+      throw new IndexOutOfBoundsError(read as TupleIndexOpNode);
+    }
+    const size = ptr instanceof IdentifierNode ? this.literalSizes.get(ptr.name) : undefined;
+    const literal = index instanceof IntLiteralNode && index.value >= 0n ? index.value : undefined;
+    const unchecked = options.proven === true || (literal !== undefined
+      && ((bound !== undefined && literal < BigInt(bound)) || (size !== undefined && literal < size)));
+    // A load evaluates a pointer or index beyond a literal or a name once, binding it where the check reads it again.
+    const single = uses === 1 && !(this.isTrivial(ptr) && this.isTrivial(index) && !options.bindIndex);
+    const reused = !single || !unchecked;
+    const base = this.once(ptr, reused);
+    const i = this.once(index, reused, options.bindIndex);
+    const again = (): ExpressionNode => at(base.again(), i.again());
+    if (unchecked) return { first: at(base.first, i.first), again, single };
+    // The address evaluates the pointer, then the index, then the length word and the check against it.
+    const length = bound === undefined
+      ? memWordLoad(() => base.again(), { decodeType: PrimitiveType.BIGINT })
+      : this.intLit(BigInt(bound));
+    const inRange = new FunctionCallNode(new IdentifierNode(GlobalFunction.WITHIN), [i.again(), this.intLit(0n), length]);
+    const checked = new BinaryOpNode(i.first, BinaryOperator.DIV, new CastNode(PrimitiveType.BIGINT, inRange, false));
+    return { first: at(base.first, checked), again, single };
   }
 
   // &a[i] = a + 32 + i*32
@@ -1736,16 +1974,19 @@ export default class LowerMemoryModel extends AstTraversal {
     return this.add(this.add(ptr, this.intLit(WORD)), index);
   }
 
-  // b[i] read -> the single byte at addr as bytes1: bytes1(__yulmem[addr : addr+1]).
-  private mloadByte(addr: ExpressionNode): ExpressionNode {
-    const slice = new SliceNode(this.mem(YULMEM), this.clone(addr), this.add(this.clone(addr), this.intLit(1n)));
+  // b[i] read -> the single byte at the access's address as bytes1: bytes1(__yulmem[addr : addr+1]), or with a
+  // `single` address evaluated once.
+  private mloadByteAt(access: Once): ExpressionNode {
+    if (access.single) return new CastNode(new BytesType(1), memBytesAt(access.first, 1n), false);
+    const uses = this.uses(access);
+    const slice = new SliceNode(this.mem(YULMEM), uses(), this.add(uses(), this.intLit(1n)));
     return new CastNode(new BytesType(1), slice, false);
   }
 
-  // b[i] = v write -> splice one byte in place at addr. `val` is byte-typed (b's element), so the byte encoding is
-  // fullWord:false (bytes1(v)). Lowering + encoding live in ./YulMemPrimitives.
-  private mstoreByte(addr: ExpressionNode, val: ExpressionNode): AssignNode {
-    return memByteStore(() => this.clone(addr), val, { fullWord: false });
+  // b[i] = v write -> splice one byte in place at the access's address. `val` is byte-typed (b's element), so the
+  // byte encoding is fullWord:false (bytes1(v)). Lowering + encoding live in ./YulMemPrimitives.
+  private mstoreByteAt(access: Once, val: ExpressionNode): AssignNode {
+    return memByteStore(this.uses(access), val, { fullWord: false });
   }
 
   // EVM memory arrays use one full 32-byte word per integer element regardless of source width. Decode through
@@ -1792,8 +2033,185 @@ export default class LowerMemoryModel extends AstTraversal {
   }
 
   // The struct-pointer stored at `arr[i]` = mload(arr + 32 + i*32).
-  private structElemPtr(arrName: string, index: ExpressionNode): ExpressionNode {
-    return this.mload(this.elemAddr(new IdentifierNode(arrName), index), this.uint());
+  private structElemPtr(arrName: string, index: ExpressionNode, proven: boolean): ExpressionNode {
+    const access = this.indexed(this.memStructArrays.get(arrName)!, new IdentifierNode(arrName), index, 1, { proven });
+    return this.mloadAt(access, this.uint());
+  }
+
+  // ---- index checks a counted loop makes redundant ----
+
+  // The element accesses `a[i]` that a counted loop proves in range, which then need no index check:
+  //   i = k; while (i < a.length) { turn; i = i + s; }                            (k, s non-negative literals)
+  //   T[] memory a = new T[](n); ... i = k; while (i < n) { turn; i = i + s; }
+  // The bound may be one conjunct of the condition. It holds at the top of every turn, and the turn never writes i
+  // or a and holds no assembly: only assembly rewrites a length word, and every other element write is checked or
+  // proven itself, so a.length stays what the condition compared. i is a local starting at k >= 0 that only grows.
+  // In the second form, a.length is n: a is allocated earlier in an enclosing block, neither a nor n (a local, or a
+  // literal size) is written after that, and the function holds no assembly. An access in the step is not covered.
+  private loopProvenAccesses(body: BlockNode, allocations: Map<string, AllocationSize>): Set<Node> {
+    const proven = new Set<Node>();
+    const isAssembly = (n: Node): boolean => n instanceof AssemblyStatementNode;
+    // `counters` holds the counters of the enclosing counted loops, which stay non-negative through their turns.
+    const walk = (node: Node, counters: ReadonlySet<string>): void => {
+      if (!(node instanceof BlockNode)) {
+        this.eachChild(node, (child) => walk(child, counters));
+        return;
+      }
+      const stmts = node.statements ?? [];
+      stmts.forEach((loop, k) => {
+        const counter = k > 0 && loop instanceof WhileNode ? this.loopCounter(stmts[k - 1], loop, counters) : undefined;
+        const turn = loop instanceof WhileNode ? (loop.block.statements ?? []).slice(0, -1) : [];
+        if (!(loop instanceof WhileNode) || counter === undefined || this.writes(loop.condition, counter)
+          || turn.some((s) => this.writes(s, counter) || this.contains(s, isAssembly))) {
+          walk(loop, counters);
+          return;
+        }
+        const bounds = this.loopBounds(loop.condition, counter);
+        for (const s of turn) {
+          this.eachDescendant(s, (n) => {
+            const array = this.indexedArray(n, counter);
+            if (array === undefined || this.writes(loop, array)) return;
+            const size = allocations.get(array);
+            if (bounds.some((b) => b === `${array}.length` || (size !== undefined && b === size.bound
+              && size.after.some((later) => this.contains(later, (m) => m === loop))))) {
+              proven.add(n);
+            }
+          });
+        }
+        walk(loop, new Set([...counters, counter]));
+      });
+    };
+    walk(body, new Set());
+    return proven;
+  }
+
+  // The counter of `init; while (cond) { ...; step }`: a local set right before the loop to a non-negative value - a
+  // literal, an enclosing loop's counter, or a sum of those - whose loop block ends in `i = i + s` (s a non-negative
+  // literal).
+  private loopCounter(init: StatementNode, loop: WhileNode, counters: ReadonlySet<string>): string | undefined {
+    const name = init instanceof VariableDefinitionNode ? init.name
+      : init instanceof AssignNode && init.identifier instanceof IdentifierNode ? init.identifier.name : undefined;
+    const start = init instanceof VariableDefinitionNode ? init.expression
+      : init instanceof AssignNode ? init.expression : undefined;
+    const nonNegative = (expr: ExpressionNode | undefined): boolean => (expr instanceof IntLiteralNode && expr.value >= 0n)
+      || (expr instanceof IdentifierNode && counters.has(expr.name))
+      || (expr instanceof BinaryOpNode && expr.operator === BinaryOperator.PLUS
+        && nonNegative(expr.left) && nonNegative(expr.right));
+    if (name === undefined || !this.locals.has(name) || !nonNegative(start)) return undefined;
+    const step = loop.block.statements?.[loop.block.statements.length - 1];
+    if (!(step instanceof AssignNode) || step.identifier?.name !== name) return undefined;
+    const next = step.expression;
+    const grows = next instanceof BinaryOpNode && next.operator === BinaryOperator.PLUS
+      && ((next.left instanceof IdentifierNode && next.left.name === name
+        && next.right instanceof IntLiteralNode && next.right.value >= 0n)
+        || (next.right instanceof IdentifierNode && next.right.name === name
+          && next.left instanceof IntLiteralNode && next.left.value >= 0n));
+    return grows ? name : undefined;
+  }
+
+  // What the condition bounds the counter below, as `a.length`, a local's name or a literal's decimal text, across
+  // the conjuncts of an `&&` chain: every conjunct holds when the turn runs.
+  private loopBounds(condition: ExpressionNode, counter: string): string[] {
+    if (condition instanceof BinaryOpNode && condition.operator === BinaryOperator.AND) {
+      return [...this.loopBounds(condition.left, counter), ...this.loopBounds(condition.right, counter)];
+    }
+    if (!(condition instanceof BinaryOpNode) || condition.operator !== BinaryOperator.LT
+      || !(condition.left instanceof IdentifierNode) || condition.left.name !== counter) return [];
+    const bound = condition.right;
+    if (bound instanceof UnaryOpNode && bound.operator === UnaryOperator.SIZE
+      && bound.expression instanceof IdentifierNode) {
+      return [`${bound.expression.name}.length`];
+    }
+    if (bound instanceof IdentifierNode && this.locals.has(bound.name)) return [bound.name];
+    return bound instanceof IntLiteralNode ? [bound.value.toString()] : [];
+  }
+
+  // Arrays and byte buffers `a = new T[](n)` declared once, whose length stays n: neither a nor n (a local, a
+  // literal, or `x.length` of a local x never written again) is written after the allocation, in a function without
+  // assembly. `after` holds the statements that follow the allocation in its block, where a loop can rely on it;
+  // `bound` is n as the loop condition spells it (a name, `x.length`, or a literal's decimal text), and `literal`
+  // the literal size, which bounds every literal index of `a` (an access follows the declaration).
+  private allocationSizes(body: BlockNode): Map<string, AllocationSize> {
+    const sizes = new Map<string, AllocationSize>();
+    if (this.contains(body, (n) => n instanceof AssemblyStatementNode)) return sizes;
+    const declared = new Map<string, number>();
+    const declarations = new Map<string, VariableDefinitionNode>();
+    this.eachDescendant(body, (n) => {
+      if (!(n instanceof VariableDefinitionNode)) return;
+      declared.set(n.name, (declared.get(n.name) ?? 0) + 1);
+      declarations.set(n.name, n);
+    });
+    // A local whose only write is its one declaration: a parameter, or a local declared once.
+    const fixed = (name: string): boolean => this.locals.has(name) && (declared.get(name) ?? 0) <= 1
+      && !this.writes(body, name, declarations.get(name));
+    this.eachDescendant(body, (block) => {
+      if (!(block instanceof BlockNode)) return;
+      const stmts = block.statements ?? [];
+      stmts.forEach((stmt, p) => {
+        if (!(stmt instanceof VariableDefinitionNode) || !(stmt.expression instanceof NewArrayNode)
+          || declared.get(stmt.name) !== 1 || this.writes(body, stmt.name, stmt)) return;
+        const size = stmt.expression.size;
+        const after = stmts.slice(p + 1);
+        if (size instanceof IntLiteralNode) {
+          sizes.set(stmt.name, { bound: size.value.toString(), literal: size.value, after });
+        } else if (size instanceof IdentifierNode && this.locals.has(size.name)
+          && !stmts.slice(p).some((s) => this.writes(s, size.name)) && !this.writtenOutside(body, block, size.name)) {
+          sizes.set(stmt.name, { bound: size.name, after });
+        } else if (size instanceof UnaryOpNode && size.operator === UnaryOperator.SIZE
+          && size.expression instanceof IdentifierNode && fixed(size.expression.name)) {
+          // `new T[](x.length)` for an x never written again: no push, pop or assignment changes its length.
+          sizes.set(stmt.name, { bound: `${size.expression.name}.length`, after });
+        }
+      });
+    });
+    return sizes;
+  }
+
+  // Whether `name` is written anywhere in `body` outside `block`: an allocation in `block` can then rely only on the
+  // writes in its own block, which it orders.
+  private writtenOutside(body: BlockNode, block: BlockNode, name: string): boolean {
+    let outside = false;
+    const walk = (n: Node): void => {
+      if (n === block) return;
+      if (this.writesHere(n, name)) outside = true;
+      this.eachChild(n, walk);
+    };
+    walk(body);
+    return outside;
+  }
+
+  // The array an element access `a[i]` reads or writes, for the counter `i`.
+  private indexedArray(n: Node, counter: string): string | undefined {
+    const isCounter = (index: ExpressionNode | undefined): boolean =>
+      index instanceof IdentifierNode && index.name === counter;
+    if (n instanceof ArrayAccessNode && n.array instanceof IdentifierNode && isCounter(n.index)) return n.array.name;
+    if (n instanceof ArrayAssignNode && isCounter(n.index)) return n.name;
+    if ((n instanceof MappingDeleteNode || n instanceof MappingFieldAssignNode) && n.keys.length === 1
+      && isCounter(n.keys[0])) return n.name;
+    return undefined;
+  }
+
+  // Whether `stmt` writes the variable `name` (other than the declaration `except`), at any depth.
+  private writes(stmt: Node, name: string, except?: Node): boolean {
+    return this.contains(stmt, (n) => n !== except && this.writesHere(n, name));
+  }
+
+  // Whether the node itself writes `name`: an assignment, a declaration, a delete, a push or pop, or a step of it.
+  private writesHere(n: Node, name: string): boolean {
+    return (n instanceof AssignNode && n.identifier instanceof IdentifierNode && n.identifier.name === name)
+      || ((n instanceof ArrayPushNode || n instanceof ArrayPopNode) && n.name === name)
+      || (n instanceof AssignmentExpressionNode && n.assign.identifier.name === name)
+      || (n instanceof VariableDefinitionNode && n.name === name)
+      || (n instanceof DeleteLocalNode && n.identifier.name === name)
+      || (n instanceof TupleAssignmentNode && n.elements.some((element) => element.name === name))
+      || (n instanceof UnaryOpNode && STEP_OPERATORS.has(n.operator)
+        && n.expression instanceof IdentifierNode && n.expression.name === name);
+  }
+
+  private contains(root: Node, test: (n: Node) => boolean): boolean {
+    let found = false;
+    this.eachDescendant(root, (n) => { if (!found && test(n)) found = true; });
+    return found;
   }
 
   // The field index of `f` in a struct type, or -1.
@@ -1828,7 +2246,8 @@ export default class LowerMemoryModel extends AstTraversal {
         ? this.visit(expr.index) as ExpressionNode : this.intLit(BigInt(expr.index));
       const base = this.resolvePtr(baseExpr);
       if (base && base.memType instanceof ArrayType && this.isRefType(base.memType.elementType)) {
-        return { ptr: this.mload(this.elemAddr(base.ptr, idx), this.uint()), memType: base.memType.elementType };
+        const access = this.indexed(base.memType, base.ptr, idx, 1);
+        return { ptr: this.mloadAt(access, this.uint()), memType: base.memType.elementType };
       }
       return undefined;
     }

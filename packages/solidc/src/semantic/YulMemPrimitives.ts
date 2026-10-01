@@ -15,6 +15,7 @@ import {
   StatementNode,
   ExpressionNode,
   FunctionCallNode,
+  TupleIndexOpNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { GlobalFunction } from '../ast/Globals.js';
@@ -133,6 +134,20 @@ export function memWordLoad(off: OffFactory, opts: { pad?: boolean; decodeType: 
   const slice = stamp(new SliceNode(base, off(), add(off(), intLit(MEM_WORD, src), src)), src);
   const raw = stamp(new CastNode(new BytesType(), slice, false), src);
   return stamp(new CastNode(opts.decodeType, raw, false), src);
+}
+
+// The `width` bytes at off, with off evaluated once: __yulmem.split(off)[1].split(width)[0]. The slice form above
+// evaluates off for both ends, so an offset that binds a value where it is first evaluated, or is costly to evaluate,
+// reads this way. An offset past the buffer, or too close to its end, fails the split.
+export function memBytesAt(off: ExpressionNode, width: bigint, src?: Src): ExpressionNode {
+  const rest = stamp(new TupleIndexOpNode(stamp(new BinaryOpNode(memId(src), BinaryOperator.SPLIT, off), src), 1), src);
+  const head = stamp(new BinaryOpNode(rest, BinaryOperator.SPLIT, intLit(width, src)), src);
+  return stamp(new CastNode(new BytesType(), stamp(new TupleIndexOpNode(head, 0), src), false), src);
+}
+
+// mload(off) with off evaluated once: decodeType(bytes32(__yulmem.split(off)[1].split(32)[0])).
+export function memWordLoadOnce(off: ExpressionNode, opts: { decodeType: Type }, src?: Src): ExpressionNode {
+  return stamp(new CastNode(opts.decodeType, memBytesAt(off, MEM_WORD, src), false), src);
 }
 
 // mstore8(off, val): splice val's low byte in place at off. The two encodings live here (single home of the

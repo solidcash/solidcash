@@ -1,7 +1,9 @@
 import { binToHex } from '@bitauth/libauth';
 import type { Artifact, ExternalCallAbi, ExternalCallExpression } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import type { PreparedAtomicMessageBusCall } from '../../src/message-bus/compose.js';
+import {
+  AtomicMessageBusComposition, compose, type PreparedAtomicMessageBusCall,
+} from '../../src/message-bus/compose.js';
 import {
   propagateResultDependentArguments, type ResultPropagationContext,
 } from '../../src/message-bus/compose-result-propagation.js';
@@ -130,6 +132,36 @@ describe('result-dependent topology propagation', () => {
       {} as never,
     );
     expect(strictIndexes.preparedResults[1]).toBe(binToHex(zero));
+  });
+
+  it('normalizes public composition entries before classifying a caller result seed', () => {
+    const ctx = fixture();
+    const transient = rebuildPreparedInvocation(ctx.descriptors[1], [], '01'.padStart(64, '0'));
+    const supplied = new Uint8Array(32);
+    supplied[31] = 7;
+    const callerObject = Object.assign(Object.create({}), transient, {
+      provisionalResultCommitment: supplied,
+    }) as PreparedAtomicMessageBusCall;
+    expect(hasTransientConvergenceResultSeed(callerObject)).toBe(true);
+    const options = {
+      preparedCalls: [ctx.descriptors[0], callerObject], funder: {} as never, changeAddress: '',
+    };
+    const preparedCall = (composition: AtomicMessageBusComposition): PreparedAtomicMessageBusCall => (
+      (composition as unknown as {
+        options: { preparedCalls: readonly PreparedAtomicMessageBusCall[] };
+      }).options.preparedCalls[1]
+    );
+
+    const direct = preparedCall(new AtomicMessageBusComposition(options));
+    expect(direct).not.toBe(callerObject);
+    expect(hasTransientConvergenceResultSeed(direct)).toBe(false);
+    expect(direct.provisionalResultCommitment).toEqual(supplied);
+    expect(direct.provisionalResultCommitment).not.toBe(supplied);
+
+    const wrapped = preparedCall(compose(options));
+    expect(wrapped).not.toBe(callerObject);
+    expect(hasTransientConvergenceResultSeed(wrapped)).toBe(false);
+    expect(wrapped.provisionalResultCommitment).toEqual(supplied);
   });
 
   it('keeps a speculative subtree while its guard producer is still unknown', async () => {

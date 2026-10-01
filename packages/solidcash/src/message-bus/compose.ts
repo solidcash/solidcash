@@ -73,12 +73,22 @@ import {
 } from './compose-settlement-context.js';
 
 
+// Only recursive composition may carry SDK-owned transient result provenance across descriptor spreads. A public
+// constructor call has no access to this capability and must normalize its descriptors like compose().
+const recursiveCompositionToken = Symbol('recursiveCompositionToken');
+
 /** One atomic message bus transaction, still mutable only through its explicit build/send methods. */
 export class AtomicMessageBusComposition {
+  private readonly options: ComposeAtomicMessageBusOptions;
+
   public constructor(
-    private readonly options: ComposeAtomicMessageBusOptions,
+    options: ComposeAtomicMessageBusOptions,
     private readonly resultPropagationDepth = 0,
-  ) {}
+    recursiveToken?: symbol,
+  ) {
+    this.options = recursiveToken === recursiveCompositionToken
+      ? options : snapshotExternalCompositionOptions(options);
+  }
 
   private async _build(): Promise<TransactionBuilder> {
     const {
@@ -140,6 +150,7 @@ export class AtomicMessageBusComposition {
       return new AtomicMessageBusComposition(
         { ...this.options, preparedCalls: initialPropagation.calls },
         this.resultPropagationDepth + 1,
+        recursiveCompositionToken,
       )._build();
     }
     const settlement = await createComposeSettlementContext({
@@ -220,6 +231,7 @@ export class AtomicMessageBusComposition {
         (calls) => new AtomicMessageBusComposition(
           { ...this.options, preparedCalls: calls },
           this.resultPropagationDepth + 1,
+          recursiveCompositionToken,
         )._build(),
       );
     }
@@ -261,21 +273,28 @@ const snapshotCompositionValue = <T>(value: T): T => {
 };
 
 const snapshotPreparedCall = (call: PreparedAtomicMessageBusCall): PreparedAtomicMessageBusCall =>
-  snapshotCompositionValue(call);
+  Object.freeze(Object.fromEntries(Object.entries(call).map(([key, value]) =>
+    [key, snapshotCompositionValue(value)]))) as PreparedAtomicMessageBusCall;
 
-export function compose(options: ComposeAtomicMessageBusOptions): AtomicMessageBusComposition {
-  // Capture StatefulFunctionCall descriptors immediately. A prepared call is a value-level graph statement;
-  // retaining the call object deferred both its externally-owned ABI args and any later imperative mutation.
+const snapshotExternalCompositionOptions = (
+  options: ComposeAtomicMessageBusOptions,
+): ComposeAtomicMessageBusOptions => {
   const { calls, preparedCalls, ...rest } = options;
   if (!calls && !preparedCalls) {
     throw new Error('messageBus: composition requires calls or preparedCalls');
   }
-  clearComposeKernelAuthorityResults();
   const snapshotCalls = preparedCalls
     ?? calls!.map((call) => call._messageBusCompositionDescriptor());
-  return new AtomicMessageBusComposition(Object.freeze({
+  return Object.freeze({
     ...snapshotCompositionValue(rest),
     requirePreparedIdentity: preparedCalls !== undefined,
     preparedCalls: Object.freeze(snapshotCalls.map(snapshotPreparedCall)),
-  }));
+  });
+};
+
+export function compose(options: ComposeAtomicMessageBusOptions): AtomicMessageBusComposition {
+  // Capture StatefulFunctionCall descriptors immediately. A prepared call is a value-level graph statement;
+  // retaining the call object deferred both its externally-owned ABI args and any later imperative mutation.
+  clearComposeKernelAuthorityResults();
+  return new AtomicMessageBusComposition(options);
 }

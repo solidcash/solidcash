@@ -334,7 +334,7 @@ export function buildInputs(
     }
     // Keep the full block width when delegate upsert predecessors must sit at
     // INPUTINDEX+blockSize. Compacting away a missing dataNft (or similar) hole
-    // parks HEAD on the returnEvent funder and fails publishJobPost's verify.
+    // parks the predecessor on the returnEvent funder and fails the writer's bytecode check.
     if (host.compilerRouteDelegateBlock || earlyInsertPredecessors.length > 0) {
       for (let i = 0; i < positioned.length; i++) {
         if (positioned[i] !== undefined) continue;
@@ -443,25 +443,25 @@ export function buildInputs(
         immediateDelegateLlc.push(...remainingLlc);
       }
     }
-    const llcBeforeJobs = splitActiveDelegateBand ? immediateDelegateLlc : [];
+    const immediateDelegateCallsBeforeResourceBand = splitActiveDelegateBand ? immediateDelegateLlc : [];
     // Dynamic chunks must occupy INPUTINDEX+blockSize before an insert band and nested callees.
     // Always carve dynamic-array old-chunk inputs out of trailingOverflow (not only whitelist INSERT).
-    // Otherwise nested LLC precedes chunks and post-two's emitDynamicReadLoop hits a non-chunk at
+    // Otherwise nested LLC precedes chunks and the dynamic read loop hits a non-chunk at
     // INPUTINDEX+blockSize (capability/chunkIndex EQUALVERIFY 01 vs empty). Iteration-entry
-    // predecessors stay whitelist-gated so ordinary publishJobPost band order is unchanged when
+    // predecessors are included only for an actual insert band, preserving ordinary band order when
     // there are no old chunks.
     const trailingOverflow = trailingInputs.slice(trailingIdx);
-    const jobsBand = trailingOverflow.filter((input) => (
+    const preInsertResourceBand = trailingOverflow.filter((input) => (
       host.dynamicChunkInputs.includes(input)
       || (earlyInsertPredecessors.length > 0 && host.iterationEntryInputs.includes(input))
     ));
-    const trailingRest = trailingOverflow.filter((input) => !jobsBand.includes(input));
+    const trailingRest = trailingOverflow.filter((input) => !preInsertResourceBand.includes(input));
     // When old chunks are present, pad the fixed block to full width so the first chunk is exactly
     // at INPUTINDEX+blockSize (compaction of empty dataNft holes would pull chunks forward).
     // Padding is applied below at assemble time via blockPadFunders.
     let returnEventPad: UnlockableUtxo | undefined;
     let newNodePad: UnlockableUtxo | undefined;
-    // Expanded after pad helpers exist: nested LLC masters (e.g. publishJobEvent) padded to ABI blockSize.
+    // Expanded after pad helpers exist: nested LLC masters padded to ABI blockSize.
     let nestedLlcWithBlockPads: UnlockableUtxo[] = nestedLlcAfterInsertBand;
     if (earlyInsertPredecessors.length > 0) {
       // Bare P2PKH pads would become tx.origin (first non-token input). Tag them as
@@ -471,7 +471,7 @@ export function buildInputs(
           amount: 0n,
           // Own category: returnEvent UTXOTOKENCATEGORY checks against the contract
           // category. Zero-cat is "no token" (tx.origin); foreign 01… kept the pad
-          // tokenful but failed EQUALVERIFY on whitelist publishJobPost.
+          // tokenful but failed EQUALVERIFY on the nested writer.
           category: host.categoryId,
           // 32-byte commitment so an accidental OP_SPLIT 32 on this pad cannot
           // fail with "stack item length 0" during early introspection.
@@ -617,9 +617,9 @@ export function buildInputs(
       const assembled = [
         ...result,
         ...(host.compilerRouteDelegateBlock ? lowLevelCallInputs : []),
-        ...llcBeforeJobs,
+        ...immediateDelegateCallsBeforeResourceBand,
         ...(returnEventPad ? [returnEventPad] : []),
-        ...jobsBand,
+        ...preInsertResourceBand,
         ...earlyInsertPredecessors,
         ...(newNodePad ? [newNodePad] : []),
         ...postBlockParticipants,
@@ -633,8 +633,8 @@ export function buildInputs(
         hasReturnEventPad: returnEventPad !== undefined,
         hasNewNodePad: newNodePad !== undefined,
         hasTokenFreeP2pkh,
-        jobsBand: jobsBand.length,
-        llcBeforeJobs: llcBeforeJobs.length,
+        preInsertResourceBand: preInsertResourceBand.length,
+        immediateDelegateCallsBeforeResourceBand: immediateDelegateCallsBeforeResourceBand.length,
         nestedLlcAfter: nestedLlcAfterInsertBand.length,
         slotsHaveReturnEvent: denseBlockLayout.slots.some((slot) => slot.kind === 'returnEvent'),
         remainingLlc: remainingLlc.length,
@@ -655,13 +655,13 @@ export function buildInputs(
       });
     }
     const blockPadFunders: UnlockableUtxo[] = [];
-    if (host.dynamicChunkInputs.some((input) => jobsBand.includes(input))) {
+    if (host.dynamicChunkInputs.some((input) => preInsertResourceBand.includes(input))) {
       const targetWidth = denseBlockLayout.blockSize
         + (host.compilerRouteDelegateBlock ? lowLevelCallInputs.length : 0)
-        + llcBeforeJobs.length;
+        + immediateDelegateCallsBeforeResourceBand.length;
       const currentWidth = result.length
         + (host.compilerRouteDelegateBlock ? lowLevelCallInputs.length : 0)
-        + llcBeforeJobs.length;
+        + immediateDelegateCallsBeforeResourceBand.length;
       while (currentWidth + blockPadFunders.length < targetWidth && funderPool.length > 0) {
         blockPadFunders.push(funderPool.shift()!);
       }
@@ -670,9 +670,9 @@ export function buildInputs(
       ...result,
       ...blockPadFunders,
       ...(host.compilerRouteDelegateBlock ? lowLevelCallInputs : []),
-      ...llcBeforeJobs,
+      ...immediateDelegateCallsBeforeResourceBand,
       ...(returnEventPad ? [returnEventPad] : []),
-      ...jobsBand,
+      ...preInsertResourceBand,
       ...earlyInsertPredecessors,
       ...(newNodePad ? [newNodePad] : []),
       ...postBlockParticipants,
@@ -681,7 +681,7 @@ export function buildInputs(
     // Ensure each nested materialized LLC master keeps its compiler-described contiguous band. Prefer the
     // group's real blockInputs over synthetic pads: UTXOBYTECODE(INPUTINDEX+slot) must inspect the resource
     // assigned to that physical slot, independent of the handler or application spelling.
-    if (earlyInsertPredecessors.length > 0 && jobsBand.length > 0) {
+    if (earlyInsertPredecessors.length > 0 && preInsertResourceBand.length > 0) {
       repairMaterializedLowLevelCallBlocks(assembled, host.lowLevelCallUtxoGroups);
     }
     return assembled;

@@ -118,10 +118,10 @@ export interface PerCallGenesisOptions {
   /** Explicit state a caller seeds for fields the constructor does not write. */
   readonly initialState?: Record<string, StateValue>;
   /**
-   * Sorted collections whose empty head sentinel the genesis mints because an entry writes them.
+   * Sorted collections whose empty head sentinel the genesis mints, since a head is minted only at genesis.
    *
-   * A collection a constructor writes is already seeded by the constructor's own plan; a collection nothing writes
-   * at genesis but an entry later does has no such plan, so a deployment that runs such an entry names it here.
+   * A collection a constructor writes is already seeded by the constructor's own plan; every other one is named
+   * here: the artifact's own, and for a proxy, every sorted collection of the implementation it fronts.
    */
   readonly headCollections?: readonly PerCallGenesisHeadCollection[];
   readonly maximumNftCommitmentBytes?: number;
@@ -143,13 +143,13 @@ export interface PerCallGenesisEntry {
   /**
    * The collection's canonical signature, present when the artifact's layout does not publish the collection.
    *
-   * A collection that only an entry writes is known from the entry, not from the genesis artifact's own layout; the
-   * signature is what derives the entry covenant the node sits at.
+   * A proxy's collections are its implementation's, not the genesis artifact's own; the signature is what derives
+   * the entry covenant the node sits at.
    */
   readonly signature?: string;
 }
 
-/** A sorted collection a genesis seeds with its empty head sentinel, named from the entry that later writes it. */
+/** A sorted collection a genesis seeds with its empty head sentinel, named by the deployment. */
 export interface PerCallGenesisHeadCollection {
   readonly name: string;
   readonly signature: string;
@@ -280,11 +280,11 @@ export function derivePerCallGenesis(options: PerCallGenesisOptions): PerCallGen
 }
 
 /**
- * The empty head sentinel of every collection a deployment names as one an entry later writes.
+ * The empty head sentinel of every collection the deployment names.
  *
- * A genesis that runs no constructor write has no other record to start from, so a collection an entry writes
- * needs its head minted here; a collection the constructor already plans is left to that plan, which carries the
- * head it relinked. Every commitment is the shipped encoder's for the empty list.
+ * A head is minted only at genesis, so every collection a later entry may write needs its head minted here; a
+ * collection the constructor already plans is left to that plan, which carries the head it relinked. Every
+ * commitment is the shipped encoder's for the empty list.
  */
 function headSentinelEntries(
   options: PerCallGenesisOptions,

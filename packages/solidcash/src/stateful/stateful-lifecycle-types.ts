@@ -18,9 +18,9 @@ export interface DeployOptions {
   initialState?: Record<string, StateValueType>;
   initArgs?: FunctionArgument[];  // arguments for constructor {} block
   /**
-   * Sorted collections whose empty head sentinel genesis mints, for a collection an entry writes before any
-   * constructor write touches it. Internal: a proxy's genesis starts the collection its implementation's entry
-   * writes, and the artifact's own layout carries no such collection.
+   * Sorted collections whose empty head sentinel genesis mints beside the artifact's own. Internal: a proxy's
+   * genesis mints the head of every sorted collection its implementation declares, which the proxy artifact's own
+   * layout does not carry, since a head is minted only at genesis.
    */
   headCollections?: readonly PerCallGenesisHeadCollection[];
   changeAddress: string;

@@ -6,7 +6,9 @@ import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { sharedNodeId } from '../../../src/per-call/proxy/entry-writes.js';
 import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -225,9 +227,12 @@ describe('a hop whose proxied callee only reads a mapping node', () => {
     expect(result.draft.layout.blocks.find((block) => block.contract === ledger.contractName)!.masters)
       .toHaveLength(4);
     expect(result.draft.blockOf('implementation-master').calls).toHaveLength(4);
-    // The node the reaches read is declared once, however many reaches read it, and holds the seeded value.
-    const readNodes = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-read-'));
-    expect(readNodes).toHaveLength(1);
+    // The node the reaches read is declared once, however many reaches read it, and holds the seeded value: it is
+    // placed under the callee proxy's category, the collection and its own slot.
+    expect(result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-'))
+      .map((placed) => placed.id)).toStrictEqual([
+      sharedNodeId(funded.ledgerProxyCategoryId, 'allowance', keyToSlotMulti([funded.deployerLock])),
+    ]);
     expect(await allowanceOf(network, funded.ledgerProxyCategoryId, funded.deployerLock)).toBe(500n);
   });
 

@@ -19,9 +19,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * a run of chunk records. The two unguarded reaches, the loop's two turns and the guarded reach the caller's
  * argument leaves untaken make four reaches in all, each appending under its own key.
  *
- * The store's initialize writes no element, so the deployment holds no node of the mapping: each reach plans its
- * insert against the empty list and mints the list's head itself. The hop settled that, and the mock accepted four
- * heads of one collection; the cross-reach check now refuses it by name before anything is broadcast.
+ * The store's initialize writes no element, so the mapping holds only the empty head its proxy's genesis minted (a
+ * head is minted only at genesis), and every reach splices its own key in through that one head.
  */
 
 const STORE_IMPL_CATEGORY = '33'.repeat(32);
@@ -138,13 +137,14 @@ async function deployAll(network: MockNetworkProvider): Promise<{
 }
 
 describe('a hop whose proxied callee appends to a chunked mapping', () => {
-  it('refuses the four reaches, each minting a head of the empty mapping, and broadcasts nothing', async () => {
+  it('refuses the four reaches, each splicing through the one genesis head, and broadcasts nothing', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployAll(network);
 
-    // It settled before the refusal, each reach reading back one element of its own kind under its own key beside
-    // a head of its own. Owner: the SDK hop planner (`proxy/external-calls.ts`, `requireSatisfiableReachWrites`),
-    // the interim refusal while the convention decides where a head may be created.
+    // Each reach plans its insert against the deployment alone, so all four relink the one head the genesis minted
+    // to their own key. The cross-reach check leaves a dynamic value's reaches to chain through a node, so the
+    // shape is settled and the second reach's frame refuses. Owner: the SDK hop planner, where reaches that touch one
+    // node are to share one participant with their views chained in execution order.
     await expect(callPerCallProxyEntry({
       provider: network,
       implementationArtifact: outer,
@@ -167,8 +167,8 @@ describe('a hop whose proxied callee appends to a chunked mapping', () => {
       changeAddress: funded.changeAddress,
       vm: compositionMachine(),
     })).rejects.toThrow(
-      `the hop reaches the entry "${store.contractName}.append()" 4 times, and 4 of them create the head of `
-      + 'collection "pieces", which one transaction must create once',
+      `the call's callee "${store.contractName}.append()" did not settle through the proxy: frame `
+      + `"callee-impl-master-2" of ${store.contractName}.append()`,
     );
     expect((await network.getUtxosForLockingBytecode(funded.deployerLock))
       .some((utxo) => utxo.txid === funded.callCoin.txid && utxo.vout === funded.callCoin.vout)).toBe(true);

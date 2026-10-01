@@ -3,7 +3,8 @@
  *
  *   1. the implementation's genesis: its category, master pool and validator pool (and the records its own
  *      constructor frame computed);
- *   2. the proxy's genesis: the same pools, with the proxy's one record carrying the implementation's address;
+ *   2. the proxy's genesis: the same pools, with the proxy's one record carrying the implementation's address and
+ *      the empty head of every sorted collection the implementation declares;
  *   3. `initialize` through the proxy: a root frame on the proxy's master whose body delegatecalls the
  *      implementation, which runs as a `DELEGATE` frame on the proxy's own records, so its `msg.sender` and
  *      `address(this)` are the deployer's and the proxy's.
@@ -53,7 +54,7 @@ import {
   PerCallComposerError, UNFILLED_CALLEE_REF, createComposedDerivationHost, deriveComposition, describeInnermost,
   facetId, layoutTransaction, participant, reportCompositionRefusal, requireLearnedViews, validatorFacetsOf,
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftCall, type DraftInput,
-  type DraftMaster, type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
+  type DraftMaster, type DraftRecordEntry, type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
 import { readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
 import { frameDataRecordIndices, orderLoopKeyArgs } from '../call/entry-records.js';
@@ -71,15 +72,18 @@ import {
 } from './entry-writes.js';
 import {
   calleeReadNodesOrNone,
+  chainedNodeIds,
   deploymentStateValues,
   planHopExternalCalls,
+  reachedResultKey,
   requireSatisfiableReachWrites,
-  shareReadNodeIds,
-  writtenNodeIds,
+  requireSettledNodeChains,
+  sharedNodeWritersBefore,
   type HopCallee,
   type HopCalleeReadNode,
   type HopCalleeRecord,
   type HopExternalPlan,
+  type HopPlanBlock,
   type PerCallProxyExternal,
 } from './external-calls.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
@@ -334,6 +338,11 @@ function resolvedWriteSegment(options: {
   readonly what: string;
   readonly write: LaidWriteIdentity;
   readonly calls: number;
+  /**
+   * True for a frame a stopped plan states only the first calls of. Such a frame is never settled on that plan, so a
+   * write past its last stated call is declared in its last segment rather than refused.
+   */
+  readonly truncated?: boolean;
 }): number {
   const published = publishedSegmentOfWrite(options.artifact, options.functionName, options.write);
   if (published === undefined) {
@@ -345,6 +354,7 @@ function resolvedWriteSegment(options: {
     );
   }
   const at = published === 'last' ? options.calls : published;
+  if (options.truncated === true && at > options.calls) return options.calls;
   if (at < 0 || at > options.calls) {
     throw new PerCallProxyDeployError(
       `${options.label} publishes segment ${String(at)} for ${options.what}, which the hop's `
@@ -407,13 +417,13 @@ function laidWriteRecords(options: {
   const { laid, writes } = options;
   const readIds = new Set(writes.readRunIds ?? []);
   const readIndices = new Set([...readIds].map((id) => options.indexOf(id)));
+  // The nodes a sorted batch spends, under whatever id the plan names them: the frame's own or a shared one.
+  const nodeIds = new Set(writes.reachWrites.flatMap((write) => write.spentIds));
   const runIndices = new Set<number>();
   for (const id of writes.participantIds) {
-    // The plan lists a sorted batch's nodes under a mapping id and a read run's chunks apart; every other
-    // participant belongs to the run the write grows.
-    if (mappingHeadCollection(id) === undefined && mappingNodeSlot(id) === undefined && !readIds.has(id)) {
-      runIndices.add(options.indexOf(id));
-    }
+    // The plan lists a sorted batch's nodes and a read run's chunks apart; every other participant belongs to the
+    // run the write grows.
+    if (!nodeIds.has(id) && !readIds.has(id)) runIndices.add(options.indexOf(id));
   }
   const runLock = options.dynamicVariable === undefined || options.dynamicType === undefined
     ? undefined : dynamicRunLock(options.category, options.dynamicVariable, options.dynamicType);
@@ -720,10 +730,9 @@ export async function deployPerCallProxy(
   const implementationMaster = deployMaster(implementationArtifact, implementationCategory, validatorProgram);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
 
-  // The records the entry's own body writes — mapping nodes today — are planned against the entry's published
-  // accesses and their stated values, so their commitments are declared outright rather than learned. A collection
-  // the entry writes has no record until then, so the proxy's genesis seeds its empty head; the implementation
-  // artifact is where that collection is published.
+  // The records the entry's own body writes (mapping nodes today) are planned against the entry's published
+  // accesses and their stated values, so their commitments are declared outright rather than learned. A first
+  // insert splices through the empty head the proxy's genesis mints.
   // A run-time loop's key array is handed to the frame in the order the emitted body walks it, so the plan's
   // per-turn nodes are the ones the body reaches; the caller's call data carries that same array.
   const initializeArgs = orderLoopKeyArgs({
@@ -738,9 +747,12 @@ export async function deployPerCallProxy(
     ...(initializeArgs.length === 0 ? {} : { args: initializeArgs }),
     callerLockingBytecode: options.callerLockingBytecode,
   });
-  // A sorted collection the entry writes has no node until it does, so the proxy's genesis seeds its empty head;
-  // a dynamic value's run has no head, so a write that only appends to one seeds nothing.
-  const headCollections = [...(entryWrites?.collections ?? [])];
+  // A head is minted only at genesis and a call never creates one. A delegate frame writes the proxy's records, so
+  // the proxy's genesis mints the empty head of every sorted collection the implementation declares, whether or not
+  // `initialize` writes it.
+  const headCollections = (implementationArtifact.stateLayout?.collections ?? [])
+    .filter((collection) => collection.sorted === true)
+    .map((collection) => ({ name: collection.name, signature: collection.signature }));
 
   // 1. The implementation's genesis and pools.
   const implementation = await deployStatefulContract(
@@ -748,8 +760,8 @@ export async function deployPerCallProxy(
     { ...options.implementationDeploy, provider },
   );
 
-  // 2. The proxy's genesis, its one record carrying the implementation's address, and the empty head of any
-  // collection the entry writes.
+  // 2. The proxy's genesis, its one record carrying the implementation's address, and the empty head of every
+  // sorted collection the implementation declares.
   const proxy = await deployStatefulContract(proxyArtifact, [], {
     ...options.proxyDeploy,
     provider,
@@ -812,7 +824,7 @@ export async function deployPerCallProxy(
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
   // values, the proxy's own address for `address(this)`, and the deployer's lock for `msg.sender`.
-  const settleWithPlan = (externalPlan: HopExternalPlan): Promise<SettledHop> => settleHop({
+  const settleOptionsFor = (externalPlan: HopExternalPlan, seed?: CalleeSettlement): SettleHopOptions => ({
     vm,
     proxyArtifact,
     implementationArtifact,
@@ -821,6 +833,7 @@ export async function deployPerCallProxy(
     recordCommitments,
     ...(entryWrites === undefined ? {} : { entryWrites }),
     ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees }),
+    ...(seed === undefined ? {} : { seed }),
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.initialize.functionName, proxyCategory, maximumCommitmentBytes,
     ),
@@ -852,19 +865,21 @@ export async function deployPerCallProxy(
       recordAmounts: recordCommitments.map(() => recordAmount),
       callerLockingBytecode: options.callerLockingBytecode,
       entry: { functionName: options.initialize.functionName, args: initializeArgs },
+      ...(externalPlan.blocked === undefined ? {} : { truncated: true }),
     }),
   });
   const { externalPlan, settled } = await planAndSettleHop({
-    plan: (externalReturns) => planHopExternalCalls({
+    plan: (externalReturns, reachedResults) => planHopExternalCalls({
       provider, artifact: implementationArtifact, functionName: options.initialize.functionName,
       args: initializeArgs, externals: options.externals ?? {}, validatorProgram,
       stateValues: deploymentStateValues(proxyArtifact.stateLayout!, proxy.categoryId, deployment),
       selfAddress: proxyMaster.address,
       senderAddress: options.callerLockingBytecode,
       externalReturns,
-      ...(entryWrites === undefined ? {} : { writtenNodeIds: writeNodeIdsOf(entryWrites) }),
+      reachedResults,
     }),
-    settle: settleWithPlan,
+    settle: (stated, seed) => settleHop(settleOptionsFor(stated, seed)),
+    settleCallees: (stated, only, seed) => settleHopCallees(settleOptionsFor(stated, seed), only),
   });
   const {
     draft, program, verdicts, accepted, writtenCommitments, writtenEventCommitments, retval,
@@ -994,6 +1009,8 @@ interface SettleHopOptions {
   readonly retvalPlaceholder?: Uint8Array;
   /** The callee frames the implementation frame's calls reach, in the order the entry reaches them. */
   readonly callees?: readonly HopCallee[];
+  /** What earlier settles of these callee frames learned, keyed by master, which their settle starts from. */
+  readonly seed?: CalleeSettlement;
   /** The entry, for the refusal's own words, e.g. `"initialize" entry`. */
   readonly entryLabel: string;
   /** The plan for a given set of per-record, per-entry-write, per-event and `retval` candidate end values. */
@@ -1009,6 +1026,45 @@ interface SettleHopOptions {
   ) => CompositionDraftPlan;
 }
 
+/** What callee frames' own bodies computed, keyed by master: each return, unstated write view and event payload. */
+interface CalleeSettlement {
+  readonly retvals: Map<string, Uint8Array>;
+  readonly writeViews: Map<string, readonly (Uint8Array | undefined)[]>;
+  readonly events: Map<string, readonly Uint8Array[]>;
+}
+
+/**
+ * The order the hop settles its callee frames in.
+ *
+ * Deepest first, so the frames a callee reaches answer before it is derived; and a frame that declares the view an
+ * earlier frame's write of a shared node left is settled after that writer, whose view is learned from its own
+ * frame (`sharedNodeWritersBefore`). A hop with no shared write keeps the deepest-first order unchanged. Only the
+ * frames being settled order each other: a frame this settle leaves out keeps the view an earlier settle learned.
+ */
+function calleeSettleOrder(callees: readonly HopCallee[], deepestFirst: readonly number[]): readonly number[] {
+  const writersBefore = sharedNodeWritersBefore(callees);
+  const inScope = new Set(deepestFirst);
+  const settled = new Set<number>();
+  const order: number[] = [];
+  const remaining = [...deepestFirst];
+  const ready = (index: number): boolean =>
+    callees.every((callee, at) => callee.enteredBy !== index || !inScope.has(at) || settled.has(at))
+    && (writersBefore.get(index) ?? []).every((writer) => !inScope.has(writer) || settled.has(writer));
+  while (remaining.length > 0) {
+    const at = remaining.findIndex(ready);
+    if (at < 0) {
+      throw new PerCallProxyDeployError(
+        'the hop\'s callee frames have no settle order that answers each frame\'s callees before it and each '
+        + 'shared node\'s writes before the frames that declare the views they left',
+      );
+    }
+    const index = remaining.splice(at, 1)[0]!;
+    settled.add(index);
+    order.push(index);
+  }
+  return order;
+}
+
 /**
  * Learns what each callee frame's entry computed, before the caller that reaches it is settled.
  *
@@ -1020,6 +1076,9 @@ interface SettleHopOptions {
  * A callee whose own entry makes calls reaches a frame below it, so the callees are settled deepest first: the
  * frame a callee reaches is derived (and its own answer learned) before the callee that reaches it, and a callee
  * that makes calls is settled by deriving its subtree rather than by asking its program outright.
+ *
+ * `seed` states what an earlier settle of the same frames learned, so each starts from it; `only` settles the named
+ * callee indices alone, which is how the frames before a stopped plan's site are settled to learn their results.
  */
 async function settleCallees(options: {
   readonly vm: Machine;
@@ -1031,20 +1090,18 @@ async function settleCallees(options: {
   ) => CompositionDraftPlan;
   readonly callees: readonly HopCallee[];
   readonly maximumCommitmentBytes: number;
-}): Promise<{
-  readonly retvals: Map<string, Uint8Array>;
-  readonly writeViews: Map<string, readonly (Uint8Array | undefined)[]>;
-  readonly events: Map<string, readonly Uint8Array[]>;
-}> {
+  readonly seed?: CalleeSettlement;
+  readonly only?: ReadonlySet<number>;
+}): Promise<CalleeSettlement> {
   const trace = hopTraceOn();
-  const learned = new Map<string, Uint8Array>();
-  const writeViews = new Map<string, readonly (Uint8Array | undefined)[]>();
+  const learned = new Map<string, Uint8Array>(options.seed?.retvals ?? []);
+  const writeViews = new Map<string, readonly (Uint8Array | undefined)[]>(options.seed?.writeViews ?? []);
   // Each callee's event payloads start from the sentinel the plan states there; the body's own comparison of the
   // payload it computed against that declaration is what hands the value back.
   const calleeEvents = new Map<string, readonly Uint8Array[]>(
     options.callees.map((callee): [string, readonly Uint8Array[]] => [
       callee.master,
-      hopEventSentinels(
+      options.seed?.events.get(callee.master) ?? hopEventSentinels(
         callee.artifact, callee.entry, calleeEventCategory(options.callees, callee),
         options.maximumCommitmentBytes,
       ),
@@ -1061,8 +1118,9 @@ async function settleCallees(options: {
   };
   const deepestFirst = options.callees
     .map((_callee, index) => index)
+    .filter((index) => options.only === undefined || options.only.has(index))
     .sort((left, right) => depthOf(right) - depthOf(left));
-  for (const calleeIndex of deepestFirst) {
+  for (const calleeIndex of calleeSettleOrder(options.callees, deepestFirst)) {
     const callee = options.callees[calleeIndex]!;
     const placeholder = hopRetvalPlaceholder(callee.contract, callee.entry);
     // One attempt per value the frame computes — its return, each unstated write, each event payload — plus the
@@ -1256,6 +1314,39 @@ function calleeEventCategory(callees: readonly HopCallee[], callee: HopCallee): 
 }
 
 /**
+ * Settles a hop's callee frames, every one or only those `only` names, from the plan its first attempt states.
+ *
+ * The implementation frame's own values are still its candidates here: no callee reads them. A plan stopped before
+ * a site is settled this way to learn what the calls before it returned, settling only those calls' frames.
+ * `entryWrites` is the entry's own writes as the first attempt states them, when the caller already planned them.
+ */
+async function settleHopCallees(
+  options: SettleHopOptions,
+  only?: ReadonlySet<number>,
+  entryWrites: HopEntryWrites | undefined = options.entryWritesFor === undefined
+    ? options.entryWrites : options.entryWritesFor(options.recordCommitments),
+): Promise<CalleeSettlement> {
+  const writtenCommitments = [...options.recordCommitments];
+  if (options.callees === undefined || options.callees.length === 0) {
+    return { retvals: new Map(), writeViews: new Map(), events: new Map() };
+  }
+  return settleCallees({
+    vm: options.vm,
+    artifacts: [
+      options.proxyArtifact, options.implementationArtifact, ...options.callees.map((callee) => callee.artifact),
+    ],
+    callees: options.callees,
+    maximumCommitmentBytes: options.maximumCommitmentBytes,
+    ...(options.seed === undefined ? {} : { seed: options.seed }),
+    ...(only === undefined ? {} : { only }),
+    planFor: (learned, calleeWriteViews, calleeEvents) => options.planFor(
+      writtenCommitments, entryWrites, entryWrites?.learningCandidates ?? [],
+      options.eventCommitments, options.retvalPlaceholder ?? new Uint8Array(0), learned, calleeWriteViews,
+      calleeEvents),
+  });
+}
+
+/**
  * Derives a delegate hop and learns what its entry computed.
  *
  * The state the entry leaves is not something the caller can state in advance — the entry computes it — so the plan
@@ -1284,21 +1375,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   // computed, so the plan cannot state the caller's records until the callees have answered.
   const artifacts: readonly Artifact[] =
     [proxyArtifact, implementationArtifact, ...(options.callees ?? []).map((callee) => callee.artifact)];
-  const calleeSettlement = options.callees === undefined || options.callees.length === 0
-    ? {
-      retvals: new Map<string, Uint8Array>(),
-      writeViews: new Map<string, readonly (Uint8Array | undefined)[]>(),
-      events: new Map<string, readonly Uint8Array[]>(),
-    }
-    : await settleCallees({
-      vm,
-      artifacts,
-      callees: options.callees,
-      maximumCommitmentBytes: options.maximumCommitmentBytes,
-      planFor: (learned, calleeWriteViews, calleeEvents) => options.planFor(
-        writtenCommitments, entryWrites, entryWrites?.learningCandidates ?? [],
-        writtenEvents, learnedRetval ?? new Uint8Array(0), learned, calleeWriteViews, calleeEvents),
-    });
+  const calleeSettlement = await settleHopCallees(options, undefined, entryWrites);
   const calleeRetvals = calleeSettlement.retvals;
   const calleeWriteViews = calleeSettlement.writeViews;
   const calleeEvents = calleeSettlement.events;
@@ -1552,35 +1629,207 @@ function samePlannedSites(left: HopExternalPlan, right: HopExternalPlan): boolea
     && left.callsiteIds.every((id, index) => id === right.callsiteIds[index]);
 }
 
+/** The most stopped plans one hop settles before the plan states every call, so a plan that never completes ends. */
+const MAXIMUM_PLAN_STOPS = 64;
+
+/** A frame's identity across the plans of one hop: its path and the entry it runs, which master ids are not. */
+function frameKey(callee: HopCallee): string {
+  return `${callee.path}|${callee.functionName}`;
+}
+
+/** What settles of stopped plans learned about each frame, keyed by `frameKey`, which later plans start from. */
+interface FrameLearning {
+  readonly retvals: Map<string, Uint8Array>;
+  readonly writeViews: Map<string, readonly (Uint8Array | undefined)[]>;
+  readonly events: Map<string, readonly Uint8Array[]>;
+}
+
+/** Keeps what a settle learned for the frames it settled, under each frame's own key. */
+function keepFrameLearning(
+  learning: FrameLearning, callees: readonly HopCallee[], settled: ReadonlySet<number>, from: CalleeSettlement,
+): void {
+  for (const index of settled) {
+    const callee = callees[index]!;
+    const key = frameKey(callee);
+    const retval = from.retvals.get(callee.master);
+    if (retval !== undefined) learning.retvals.set(key, retval);
+    const views = from.writeViews.get(callee.master);
+    if (views !== undefined) learning.writeViews.set(key, views);
+    const events = from.events.get(callee.master);
+    if (events !== undefined) learning.events.set(key, events);
+  }
+}
+
+/** What a plan's frames start their settle from: the learning kept for each frame the plan places. */
+function seedOf(learning: FrameLearning, callees: readonly HopCallee[]): CalleeSettlement {
+  const seed: CalleeSettlement = { retvals: new Map(), writeViews: new Map(), events: new Map() };
+  for (const callee of callees) {
+    const key = frameKey(callee);
+    const retval = learning.retvals.get(key);
+    if (retval !== undefined) seed.retvals.set(callee.master, retval);
+    const views = learning.writeViews.get(key);
+    if (views !== undefined) seed.writeViews.set(callee.master, views);
+    const events = learning.events.get(key);
+    if (events !== undefined) seed.events.set(callee.master, events);
+  }
+  return seed;
+}
+
 /**
- * Plans a hop's external calls and settles it, re-planning while an arm's condition waits on an earlier result.
+ * The callee indices a stopped plan settles to learn the results its waiting site reads: the frame each earlier
+ * call names, and every frame below it.
+ */
+function producerFramesOf(externalPlan: HopExternalPlan, block: HopPlanBlock): Set<number> {
+  const { callees } = externalPlan;
+  const roots = new Set<number>();
+  callees.forEach((callee, index) => {
+    if (callee.origin?.callerPath === block.path && callee.origin.occurrence === 0
+      && block.producers.includes(callee.origin.callsiteId)) roots.add(index);
+  });
+  const frames = new Set<number>();
+  callees.forEach((_callee, index) => {
+    for (let at: number | null = index; at !== null; at = callees[at]!.enteredBy) {
+      if (roots.has(at)) {
+        frames.add(index);
+        break;
+      }
+    }
+  });
+  return frames;
+}
+
+/**
+ * The results the earlier calls a stopped plan's site reads returned, keyed by `reachedResultKey`.
  *
- * An arm gated on an earlier call's result cannot be planned before that call is settled: the plan states the
- * sites the caller's own facts fix, the settle learns what each callee frame returned, and the next pass decides
- * the gated arms from those results. The loop stops when a pass's results leave the plan's sites unchanged, so the
- * plan that is settled is the one the execution's own arms imply; a plan that never stops changing is refused by
- * name rather than settled. A hop whose conditions read no earlier result is planned and settled exactly once.
+ * Each is what the callee frame the call's record names recorded in its `retval` (a proxy's fallback records its
+ * delegate frame's), decoded the way that entry declares its returns.
+ */
+function reachedCallResults(
+  externalPlan: HopExternalPlan, block: HopPlanBlock, calleeRetvals: ReadonlyMap<string, Uint8Array>,
+): Map<string, FunctionArgument> {
+  const results = new Map<string, FunctionArgument>();
+  for (const callee of externalPlan.callees) {
+    const origin = callee.origin;
+    if (origin === undefined || origin.callerPath !== block.path || origin.occurrence !== 0
+      || !block.producers.includes(origin.callsiteId)) continue;
+    const producer = callee.retvalFrom === undefined ? callee : externalPlan.callees[callee.retvalFrom];
+    const retval = producer === undefined ? undefined : calleeRetvals.get(producer.master);
+    if (producer === undefined || retval === undefined) continue;
+    const entry = producer.artifact.abi.find((candidate) => candidate.name === producer.entry);
+    const values = decodeReturnValues(
+      retval, entry?.outputs ?? [], structDefinitionsOf(producer.artifact), entry?.resultEncoding,
+      producer.artifact.enums,
+    );
+    if (values.length === 0) continue;
+    results.set(
+      reachedResultKey(block.path, origin.callsiteId), (values.length === 1 ? values[0] : values) as FunctionArgument);
+  }
+  return results;
+}
+
+/** A learned result as the hop trace prints it: bytes as hex, every other value as text. */
+function traceResultValue(value: unknown): string {
+  if (value instanceof Uint8Array) return binToHex(value).slice(0, 40);
+  if (Array.isArray(value)) return `[${value.map(traceResultValue).join(',')}]`;
+  return String(value);
+}
+
+/**
+ * Plans a hop's external calls in execution order and settles it, re-planning while an arm's condition waits on an
+ * earlier result.
+ *
+ * A site whose argument or loop bound reads an earlier call's result is planned once that call has settled: the
+ * planner stops before the site, the frames of the calls it reads are settled on the plan made so far, their results
+ * are decoded, and the hop is planned again from them. Each stop learns at least one result no earlier stop learned,
+ * from a frame whose own inputs are the execution's, so a refusal there is that frame's own verdict and is reported
+ * as it stands. What a stop's settle learned seeds the same frames' settle in every later plan.
+ *
+ * An arm gated on an earlier call's result is planned as before: the plan states the sites the caller's own facts
+ * fix, the settle learns what each callee frame returned, and the next pass decides the gated arms from those
+ * results. The loop stops when a pass's results leave the plan's sites unchanged, so the plan that is settled is the
+ * one the execution's own arms imply; a plan that never stops changing is refused by name rather than settled. A hop
+ * whose conditions, arguments and loop bounds read no earlier result is planned and settled exactly once.
  */
 async function planAndSettleHop(options: {
-  readonly plan: (externalReturns: ReadonlyMap<number, FunctionArgument>) => Promise<HopExternalPlan>;
-  readonly settle: (externalPlan: HopExternalPlan) => Promise<SettledHop>;
+  readonly plan: (
+    externalReturns: ReadonlyMap<number, FunctionArgument>, reachedResults: ReadonlyMap<string, FunctionArgument>,
+  ) => Promise<HopExternalPlan>;
+  readonly settle: (externalPlan: HopExternalPlan, seed?: CalleeSettlement) => Promise<SettledHop>;
+  /** Settles the named callee frames of a plan alone, from what `seed` states, and hands back what they computed. */
+  readonly settleCallees: (
+    externalPlan: HopExternalPlan, only: ReadonlySet<number>, seed: CalleeSettlement,
+  ) => Promise<CalleeSettlement>;
 }): Promise<{ readonly externalPlan: HopExternalPlan; readonly settled: SettledHop }> {
-  let externalPlan = await options.plan(new Map());
-  for (let pass = 0; ; pass += 1) {
+  // A node whose values chunk is not chained across frames, so a hop whose every frame settled beside such a chain
+  // is refused by name once settled, before it is broadcast.
+  const settledHop = (
+    plan: HopExternalPlan, settled: SettledHop,
+  ): { readonly externalPlan: HopExternalPlan; readonly settled: SettledHop } => {
+    requireSettledNodeChains(plan.callees);
+    return { externalPlan: plan, settled };
+  };
+  const trace = hopTraceOn();
+  const reached = new Map<string, FunctionArgument>();
+  const learning: FrameLearning = { retvals: new Map(), writeViews: new Map(), events: new Map() };
+  let externalReturns: ReadonlyMap<number, FunctionArgument> = new Map();
+  let externalPlan = await options.plan(externalReturns, reached);
+  let stops = 0;
+  for (let pass = 0; ;) {
+    const block = externalPlan.blocked;
+    if (block !== undefined) {
+      if (stops >= MAXIMUM_PLAN_STOPS) {
+        throw new PerCallProxyDeployError(
+          `the hop stopped its plan ${stops} time(s) to learn earlier calls' results and still waits on `
+          + `${block.where}, so the plan does not complete`,
+        );
+      }
+      const { callees } = externalPlan;
+      // The calls before the waiting site are planned from values the execution computes, so a pair of reaches the
+      // transaction cannot carry is refused here, before anything is settled for it.
+      requireSatisfiableReachWrites(callees);
+      const frames = producerFramesOf(externalPlan, block);
+      const seed = seedOf(learning, callees);
+      if (trace) {
+        const masters = [...frames].map((index) => callees[index]!.master);
+        hopTrace(`stop-plan n=${stops} path=${block.path === '' ? '<entry>' : block.path} reads=${block.reads} `
+          + `producers=[${block.producers.join(',')}] settle=[${masters.join(',')}]`);
+      }
+      const settlement = await options.settleCallees(externalPlan, frames, seed);
+      keepFrameLearning(learning, callees, frames, settlement);
+      const results = reachedCallResults(externalPlan, block, settlement.retvals);
+      const before = reached.size;
+      for (const [key, value] of results) reached.set(key, value);
+      if (trace) {
+        hopTrace(`stop-plan n=${stops} learned=[${[...results]
+          .map(([key, value]) => `${key}:${traceResultValue(value)}`).join(' ')}]`);
+      }
+      if (reached.size === before) {
+        throw new PerCallProxyDeployError(
+          `${block.where} reads the result of the earlier call(s) ${block.producers.join(', ')}, and settling them `
+          + 'returned nothing the hop could decode, so the call cannot be planned from it',
+        );
+      }
+      stops += 1;
+      externalPlan = await options.plan(externalReturns, reached);
+      continue;
+    }
     // Every reach's own write was planned on its own; the reaches are checked together here, before any frame of
     // this plan is settled, so a shape whose reaches cannot share one transaction is refused by name rather than
     // derived into a transaction the network rejects.
     requireSatisfiableReachWrites(externalPlan.callees);
-    const settled = await options.settle(externalPlan);
-    if (externalPlan.conditionalProducers.length === 0) return { externalPlan, settled };
-    const next = await options.plan(producedCallResults(externalPlan, settled));
-    if (samePlannedSites(next, externalPlan)) return { externalPlan, settled };
+    const settled = await options.settle(
+      externalPlan, stops === 0 ? undefined : seedOf(learning, externalPlan.callees));
+    if (externalPlan.conditionalProducers.length === 0) return settledHop(externalPlan, settled);
+    externalReturns = producedCallResults(externalPlan, settled);
+    const next = await options.plan(externalReturns, reached);
+    if (next.blocked === undefined && samePlannedSites(next, externalPlan)) return settledHop(externalPlan, settled);
     if (pass >= externalPlan.conditionalProducers.length) {
       throw new PerCallProxyDeployError(
         `the entry's arms an earlier call's result decides did not settle: the hop re-planned `
         + `${pass + 1} time(s) without its sites stopping`,
       );
     }
+    pass += 1;
     externalPlan = next;
   }
 }
@@ -1663,6 +1912,11 @@ interface HopPlanOptions {
   readonly callerLockingBytecode: Uint8Array;
   /** One output per event the entry emits, in emit order, with the commitment it carries. */
   readonly eventOutputs: readonly HopEventOutput[];
+  /**
+   * True for a plan stopped before one of its sites (`HopExternalPlan.blocked`): it states the entry's calls up to
+   * that point only, so it settles the callee frames before it and is never derived or broadcast as a whole.
+   */
+  readonly truncated?: boolean;
 }
 
 /** One event output a hop's delegate frame lists: the covenant lock the frame's context contract derives. */
@@ -1790,6 +2044,71 @@ function calleeDeclaredRecordsOfCategory(
     }
   }
   return ids;
+}
+
+/**
+ * Chains the views the frames declare for each node several of them touch, in the order the validator walks them.
+ *
+ * Every callee frame is planned against the deployment alone, so each declares a node as the deployment holds it,
+ * while the transaction spends the node once and the validator reads its declarations as one chain in execution
+ * order (V6): each frame's segments, a call's callee between the segment that makes it and the next. The walk
+ * restates the declarations in that order: a kept one keeps the view the last write before it left, and a write
+ * continues from that view to the one its own frame computed, which the hop learns from that frame. `ends` is the
+ * view each written node's chain ends at, which its output carries.
+ */
+function chainSharedNodeViews(
+  masters: readonly DraftMaster[],
+  root: string,
+  nodes: ReadonlySet<number>,
+  writes: ReadonlySet<DraftRecordEntry>,
+): { readonly masters: readonly DraftMaster[]; readonly ends: ReadonlyMap<number, Uint8Array> } {
+  if (nodes.size === 0) return { masters, ends: new Map() };
+  const byId = new Map(masters.map((master) => [master.master, master]));
+  const chained = new Map<string, DraftRecordEntry[][]>();
+  const views = new Map<number, Uint8Array>();
+  const visit = (id: string): void => {
+    const master = byId.get(id);
+    if (master === undefined || chained.has(id)) return;
+    const segments: DraftRecordEntry[][] = [];
+    chained.set(id, segments);
+    master.segments.forEach((segment, at) => {
+      segments.push(segment.map((entry): DraftRecordEntry => {
+        if (!nodes.has(entry.in) || entry.viewOut === undefined) return entry;
+        const view = views.get(entry.in) ?? entry.viewIn;
+        if (!writes.has(entry) || bytesEqual(entry.viewIn, entry.viewOut)) return { ...entry, viewIn: view, viewOut: view };
+        views.set(entry.in, entry.viewOut);
+        return { ...entry, viewIn: view };
+      }));
+      const call = master.calls[at];
+      if (call !== undefined) visit(call.callee);
+    });
+  };
+  visit(root);
+  return {
+    masters: masters.map((master) => {
+      const segments = chained.get(master.master);
+      return segments === undefined ? master : { ...master, segments };
+    }),
+    ends: views,
+  };
+}
+
+/** The inputs, each shared node a write touched recreated at the view its chain ends at. */
+function withChainEnds(
+  participants: readonly { readonly id: string; readonly index: number }[],
+  ends: ReadonlyMap<number, Uint8Array>,
+  inputs: Record<string, DraftInput>,
+): Record<string, DraftInput> {
+  for (const placed of participants) {
+    const end = ends.get(placed.index);
+    const input = inputs[placed.id];
+    const token = input?.output?.token;
+    if (end === undefined || input?.output === undefined || token?.nft === undefined) continue;
+    inputs[placed.id] = {
+      ...input, output: { ...input.output, token: { ...token, nft: { ...token.nft, commitment: end } } },
+    };
+  }
+  return inputs;
 }
 
 /** Lays out the delegate hop from the deployed masters and the proxy's records. */
@@ -1926,6 +2245,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     what: `writes record ${nftIndex}`,
     write: { record: nftIndex },
     calls: calls.length,
+    ...(options.truncated === true ? { truncated: true } : {}),
   }) : undefined));
   // Each record the entry rewrites is kept at the commitment the proxy spent until the segment its write opens,
   // written in that segment, and kept at the written commitment afterwards: its own code writes it exactly once,
@@ -1977,6 +2297,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         what,
         write,
         calls: calls.length,
+        ...(options.truncated === true ? { truncated: true } : {}),
       }),
       entryWritesLabel,
     ));
@@ -2147,6 +2468,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     stateInputs: entry.stateInputs,
     ...(entry.createdOutputs.length === 0 ? {} : { createdOutputs: entry.createdOutputs }),
   }));
+  // The declarations each callee frame's own write transitions a record with, as laid in its write's segment; the
+  // copies kept on either side of that segment are not.
+  const writeTransitions = new Set<RecordEntry>();
   const calleeMasterDrafts: DraftMaster[] = callees.map((callee, calleePosition) => {
     // A frame that owns the records it lists places them; a delegate frame reads the records of the proxy frame
     // that entered it, which are the first ones that frame declares.
@@ -2179,7 +2503,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     ]);
 
     if (laidCalleeWrites?.records !== undefined) {
-      placeLaidWrites(segments, resolveLaidWriteSegments(
+      const placed = resolveLaidWriteSegments(
         laidCalleeWrites.records,
         (write, what) => resolvedWriteSegment({
           artifact: callee.artifact,
@@ -2188,9 +2512,12 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
           what,
           write,
           calls: callee.calls.length,
+          ...(callee.truncated === true ? { truncated: true } : {}),
         }),
         `the callee's "${callee.functionName}" entry`,
-      ));
+      );
+      for (const { entry } of placed) writeTransitions.add(entry);
+      placeLaidWrites(segments, placed);
     }
     const valueWitnesses = calleeValueWitnesses(callee.readNodes, laidCalleeWrites?.laid);
     return {
@@ -2227,14 +2554,21 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       redeemScript: callee.deployed.script,
     };
   });
+  // A node several callee frames touch is one participant: the views they declare of it chain in the order the
+  // validator walks the frames, and its output carries the view the last write left.
+  const sharedNodeIndices = new Set([...chainedNodeIds(callees)].map((id) => participant(layout, id).index));
+  const chained = chainSharedNodeViews(
+    [proxyMasterDraft, implementationMasterDraft, ...calleeMasterDrafts], PROXY_MASTER_ID, sharedNodeIndices,
+    writeTransitions,
+  );
   const proxyMasterAmount = options.proxyMasterAmount;
   const implementationMasterAmount = options.implementationMasterAmount;
   const proxyRecordAmount = options.validatorAmount;
   const plan: CompositionDraftPlan = {
     blocks,
     userInputs: [{ id: USER_ID, index: layout.participantCount }],
-    masters: [proxyMasterDraft, implementationMasterDraft, ...calleeMasterDrafts],
-    inputs: {
+    masters: chained.masters,
+    inputs: withChainEnds(layout.participants, chained.ends, {
       [PROXY_MASTER_ID]: {
         source: masterSource(proxyMaster.lockingBytecode, options.proxyCategory, proxyMasterAmount),
       },
@@ -2305,7 +2639,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       ...(laidWrites?.inputs ?? {}),
       // Each callee frame's own write spends the collection nodes it names, which its own block already placed.
       ...Object.assign({}, ...calleeTrailing.map((written) => written?.laid?.inputs ?? {})),
-    },
+    }),
     validator: {
       id: VALIDATOR_ID,
       covers: [...new Set([implementationArtifact.contractName, ...callees.map((callee) => callee.contract)])],
@@ -2429,12 +2763,6 @@ function participantUtxo(
     : id === VALIDATOR_ID ? pools.validators
       : undefined;
   return pool?.[0];
-}
-
-
-/** The node ids a plan's own writes place, keyed by the outpoint each spends. */
-function writeNodeIdsOf(writes: HopEntryWrites): Map<string, string> {
-  return new Map([...writes.spentUtxos].map(([id, utxo]) => [`${utxo.txid}:${utxo.vout}`, id]));
 }
 
 /**
@@ -2913,7 +3241,7 @@ export async function callPerCallProxyEntry(
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
   // values, the proxy's own address for `address(this)`, and the caller's lock for `msg.sender`.
-  const settleWithPlan = (externalPlan: HopExternalPlan): Promise<SettledHop> => settleHop({
+  const settleOptionsFor = (externalPlan: HopExternalPlan, seed?: CalleeSettlement): SettleHopOptions => ({
     vm,
     proxyArtifact,
     implementationArtifact,
@@ -2922,6 +3250,7 @@ export async function callPerCallProxyEntry(
     recordCommitments,
     entryWritesFor,
     ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees }),
+    ...(seed === undefined ? {} : { seed }),
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.functionName, proxyCategory, maximumCommitmentBytes,
     ),
@@ -2934,7 +3263,7 @@ export async function callPerCallProxyEntry(
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments,
       ...(attemptWrites === undefined ? {} : { entryWrites: attemptWrites }),
-      ...(readNodes.length === 0 ? {} : { readNodes: shareReadNodeIds(readNodes, writtenNodeIds(externalPlan.callees)) }),
+      ...(readNodes.length === 0 ? {} : { readNodes }),
       entryWriteViews,
       implementationRetval,
       ...(externalPlan.calls.length === 0 ? {} : { calls: externalPlan.calls }),
@@ -2953,28 +3282,21 @@ export async function callPerCallProxyEntry(
       recordAmounts,
       callerLockingBytecode: options.callerLockingBytecode,
       entry: { functionName: options.functionName, args },
+      ...(externalPlan.blocked === undefined ? {} : { truncated: true }),
     }),
   });
-  // The caller's own frame is planned outside its callees, and a node it rewrites is one participant: a callee that
-  // only reads that node names it under the id the caller's own write places.
-  let callerWriteNodes = new Map<string, string>();
-  try {
-    const callerWritten = hopEntryWrites({ ...writesRequest, writtenCommitments: recordCommitments });
-    if (callerWritten !== undefined) callerWriteNodes = writeNodeIdsOf(callerWritten);
-  } catch {
-    // The caller's own writes are refused while it settles, which reports the reason; the plan states none here.
-  }
   const { externalPlan, settled } = await planAndSettleHop({
-    plan: (externalReturns) => planHopExternalCalls({
+    plan: (externalReturns, reachedResults) => planHopExternalCalls({
       provider, artifact: implementationArtifact, functionName: options.functionName,
       args, externals: options.externals ?? {}, validatorProgram,
       stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
       selfAddress: proxyMaster.address,
       senderAddress: options.callerLockingBytecode,
       externalReturns,
-      writtenNodeIds: callerWriteNodes,
+      reachedResults,
     }),
-    settle: settleWithPlan,
+    settle: (stated, seed) => settleHop(settleOptionsFor(stated, seed)),
+    settleCallees: (stated, only, seed) => settleHopCallees(settleOptionsFor(stated, seed), only),
   });
 
   const broadcast = await broadcastHop({

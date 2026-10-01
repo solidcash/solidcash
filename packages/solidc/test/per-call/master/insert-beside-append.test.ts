@@ -10,7 +10,9 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
-import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
+import {
+  encodeEntryCommitment, headSentinelCommitment, keyToSlot,
+} from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
@@ -340,17 +342,25 @@ function evaluateUpdate(): { accepted: boolean; objection?: string } {
 }
 
 /**
- * The segment the transaction creates the head in: the predecessor record carries the create sentinel in its `in`
- * field and an empty input view, because the record has no input for a view to describe. Its output view is the
- * empty list's head relinked to the target, which is the commitment the output it is created at must carry.
+ * A segment that creates the head in the transaction, as a hop laid it before heads were minted only at genesis: the
+ * predecessor record carries the create sentinel in its `in` field, and its output view is the empty list's head
+ * relinked to the target, which is the commitment the output it is created at carries.
  */
 const HEAD_AFTER_PADDED = encodeEntryCommitment(ZERO_SLOT, SLOT, new Uint8Array(64));
+/** The machine's refusal of a splice whose proof input is the create sentinel's coordinate, below every input. */
+const CREATED_PREDECESSOR_OBJECTION = 'Program attempted to read from an invalid transaction UTXO index. '
+  + 'Transaction UTXO count: 5; requested index: -32767.';
 const CREATED_HEAD_RECORDS: RecordEntry[] = [
   { in: STATE_INDEX, out: STATE_INDEX, viewIn: STATE_EMPTY, viewOut: STATE_HELD },
   { in: 0xffff, out: PRED_INDEX, viewIn: EMPTY, viewOut: HEAD_AFTER_PADDED },
   { in: 0xffff, out: CREATED_INDEX, viewIn: EMPTY, viewOut: NODE_COMMITMENT },
   { in: CHUNK_INDEX, out: CHUNK_INDEX, viewIn: EMPTY, viewOut: CHUNK_HELD },
 ];
+
+/** The created-head segment with the head's record changed by `change`. */
+function withCreatedHeadRecord(change: Partial<RecordEntry>): RecordEntry[] {
+  return CREATED_HEAD_RECORDS.map((record, index) => (index === 1 ? { ...record, ...change } : record));
+}
 
 /** The insert whose bracketing predecessor is created in the transaction rather than spent. */
 function evaluateCreatedHead(options: SpendOptions = {}): { accepted: boolean; objection?: string } {
@@ -376,22 +386,33 @@ describe('a per-call master whose entry inserts a mapping target beside a dynami
     expect(evaluateUpdate()).toStrictEqual({ accepted: true });
   });
 
-  it('settles the insert through a predecessor the transaction creates rather than spends', () => {
-    // The head is a trailing output the transaction mints, so the predecessor record names no input. The arm reads
-    // the splice from that record's declared output view and drops the proof-input bytecode comparison.
-    expect(evaluateCreatedHead()).toStrictEqual({ accepted: true });
+  it('settles the insert through the head a genesis minted, which the transaction spends', () => {
+    // The empty list's head sits at an input, as every genesis mints it, and the write spends and recreates it
+    // relinked to the target: the honest insert into a collection nothing has written yet.
+    expect(evaluate(EMPTY_RUN)).toStrictEqual({ accepted: true });
   });
 
-  it('is refused when the created predecessor is relinked to a slot the body did not splice', () => {
-    // The declaration and the output agree on a relink to some other slot, so the census admits the record and the
-    // body's own splice check is what refuses it.
+  it('refuses the insert when the transaction creates its predecessor rather than spending it', () => {
+    // The same insert with the head minted by the transaction itself, as a hop laid it: the predecessor record
+    // carries the create sentinel and states the empty list's own head as its input view. The splice reads that
+    // view, then holds the recreated head to the locking bytecode of its proof input, and the proof coordinate is
+    // the sentinel's, below every input. A relink to another slot meets the same refusal first.
     const elsewhere = keyToSlot(new Uint8Array([1, 1, 1]));
     const wrongHead = encodeEntryCommitment(ZERO_SLOT, elsewhere, new Uint8Array(64));
-    const records = CREATED_HEAD_RECORDS.map((record, index) => (
-      index === 1 ? { ...record, viewOut: wrongHead } : record
-    ));
-    expect(evaluateCreatedHead({ records, predCommitment: wrongHead }).accepted).toBe(false);
-    expect(evaluateCreatedHead().accepted).toBe(true);
+    const asLaid: SpendOptions[] = [
+      { records: withCreatedHeadRecord({ viewIn: headSentinelCommitment() }) },
+      {
+        records: withCreatedHeadRecord({ viewIn: headSentinelCommitment(), viewOut: wrongHead }),
+        predCommitment: wrongHead,
+      },
+    ];
+    for (const variant of asLaid) {
+      expect(evaluateCreatedHead(variant)).toStrictEqual({ accepted: false, objection: CREATED_PREDECESSOR_OBJECTION });
+    }
+    // With no input view at all, the splice's read of its predecessor finds nothing to bracket against.
+    expect(evaluateCreatedHead()).toStrictEqual({
+      accepted: false, objection: 'Program failed an OP_VERIFY operation.',
+    });
   });
 
   it('is refused when the created node carries a value the code did not compute', () => {

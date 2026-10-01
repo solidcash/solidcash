@@ -22,10 +22,11 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * the hop plans the records it names, and the machine's verdict on every participant is the assertion: the
  * well-formed spend is accepted, and the same spend with one byte of the record the entry wrote changed is refused.
  *
- * The mapping node of the same shape is the wall beside it. Its per-turn writes are carried by the sorted-batch
- * machinery rather than by one fixed record, and the frame the shipped path plans for it is refused in both orders
- * - loop then call, and call then loop - with `Program failed an OP_VERIFY operation.` inside the upsert body, so
- * the ladder's `updateJobWhitelist` family is pinned here as PW3's open reproducer.
+ * The mapping node of the same shape was the wall beside it. Its per-turn writes are carried by the sorted-batch
+ * machinery rather than by one fixed record, and while the hop minted the head of a collection the initialize never
+ * wrote in the call itself, the frame was refused with `Program failed an OP_VERIFY operation.` inside the upsert
+ * body (PW3's reproducer, the ladder's `updateJobWhitelist` family). A head is minted only at genesis now, and the
+ * loop-then-call body below settles through the head the transaction spends.
  */
 
 const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
@@ -275,17 +276,27 @@ describe('a run-time loop upsert beside a call, through the shipped proxy path',
 });
 
 describe('the mapping node of the same shape, through the same path', () => {
-  it('publishes the segment its batch lands in, and the machine refuses the frame for it', async () => {
+  it('publishes the segment its batch lands in, and settles the turns through the head the genesis minted', async () => {
     const run = await deployed(MAPPING_WALL_SOURCE);
     // The compiler states the fact a builder needs: the mapped node's write lands in the segment the call opened.
     expect(publishedWrites(run.impl, 'move')).toStrictEqual({
       writeSegment: 1, writeSegments: [{ collection: 'balances', segment: 1 }],
     });
     expect(run.impl.composition?.refusedEntries).toBeUndefined();
-    // The frame the shipped path plans for it is refused inside the upsert body, which is PW3's open reproducer:
-    // the node's per-turn operands are not the fixed record the loop's own code addresses.
-    await expect(callMove(run, 'move', [KEY, AMOUNT, TURNS])).rejects.toThrow(
-      /did not settle through the proxy: frame "implementation-master" of Impl\.move\(\) .*OP_VERIFY/,
-    );
+    // `balances` is one the initialize never writes. While the hop minted such a head in the call, the frame was
+    // refused inside the upsert body (PW3's reproducer, `OP_VERIFY`); a head is minted only at genesis now, so the
+    // turns splice through the head the transaction spends, and every participant accepts.
+    const answered = await callMove(run, 'move', [KEY, AMOUNT, TURNS]);
+    expect(answered.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(answered.accepted).toBe(true);
+    expect(answered.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    // The genesis head is recreated relinked to the key, and the one node the turns wrote carries the amount.
+    const head = answered.draft.layout.participants.find((placed) => placed.id === 'mapping-head-balances')!;
+    const relinked = commitmentOf(answered.transaction.outputs[head.index]!)!;
+    const created = answered.draft.trailingOutputs.map((output) => commitmentOf(output.output)!);
+    expect(created).toHaveLength(1);
+    expect(bytesToHex(relinked.slice(0, 32))).toBe(bytesToHex(new Uint8Array(32)));
+    expect(bytesToHex(relinked.slice(32, 64))).toBe(bytesToHex(created[0]!.slice(0, 32)));
+    expect(bytesToHex(created[0]!.slice(64))).toBe(bytesToHex(new Uint8Array([Number(AMOUNT)])));
   }, 600_000);
 });

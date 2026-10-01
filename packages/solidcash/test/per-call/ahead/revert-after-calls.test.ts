@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import type { Artifact } from '@solidcash/utils';
+import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { sha256, type Artifact } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
@@ -11,7 +11,9 @@ import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import * as composer from '../../../src/per-call/composer/index.js';
 import { PerCallProxyDeployError, buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
+import { sharedNodeId } from '../../../src/per-call/proxy/entry-writes.js';
 import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { aliceAddress, alicePkh, alicePriv, alicePub, bobAddress, bobPkh, bobPriv } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -26,6 +28,8 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * store proxy leg no attempt reached, refusing because its delegate reference is still the unfilled sentinel. The
  * error names that leg and carries neither the draft nor the report; the draft is reached here by spying on the
  * composer. Its report holds the failing frame's own reason, unless a callee the entry never reaches refuses first.
+ * With every check passing the entry settles and broadcasts: the token's `balanceOf` and `transferFrom` reaches touch
+ * Alice's balance node, which the hop places once and whose views it chains across the two frames.
  *
  * The registry is plain; a value a proxied callee returns reaches its caller since PW8, and that read settles
  * (pinned last).
@@ -160,8 +164,6 @@ interface Deployed {
   readonly externals: Record<string, PerCallProxyExternal>;
   readonly alice: Caller;
   readonly bob: Caller;
-  /** A caller of its own, for a case that broadcasts and so spends the coin it is given. */
-  readonly newCaller: (seed: string) => Promise<Caller>;
 }
 
 let compiled: Compiled;
@@ -242,7 +244,6 @@ async function deployAll(): Promise<Deployed> {
     },
     alice: await caller(ALICE_LOCK, aliceAddress, alicePriv, '39'),
     bob: await caller(BOB_LOCK, bobAddress, bobPriv, '3a'),
-    newCaller: (seed: string) => caller(ALICE_LOCK, aliceAddress, alicePriv, seed),
   };
 }
 
@@ -451,24 +452,36 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('a revert after calls through
     expect(reasonOf(report, 'callee-master-7')?.error?.name).toBe('ShortBalance');
   });
 
-  it('with every check passing, the read of a balance and the write of it share one participant and the hop settles',
+  it('with every check passing, the hop settles and broadcasts, the balance read and then debited one input',
     async () => {
-      // Alice's balance node is read by the `balanceOf` reach and rewritten by the `transferFrom` reach. One
-      // transaction carries one input at that outpoint, so the reading reach names the node under the id the
-      // writing reach places: the two reaches' records are records of one participant, one per segment.
-      const result = await settledCall(await deployed.newCaller('3b'), 'post',
+      // A coin of Alice's own for the hop this case broadcasts, so the later cases keep the one they share.
+      const coin = funding(binToHex(sha256(utf8ToBin('revert after calls: the settled post'))));
+      await deployed.network.addUtxo(binToHex(ALICE_LOCK), coin);
+      const result = await settledCall({ ...deployed.alice, coin }, 'post',
         [5n, 100n, 7n, BOB_LOCK, compiled.coinAddress]);
       expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
       expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-
-      // One input per outpoint, which is what the builder's duplicate check requires and what the reconciled plan
-      // states: the reach that only reads the balance spends the node the reach that writes it declares.
-      const spent = result.transaction.inputs.map(
+      // The transaction the provider accepted spends each outpoint once, and both token reaches ran.
+      const spent = result.broadcast!.inputs.map(
         (input) => `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
       expect(new Set(spent).size).toBe(spent.length);
-      // Both reaches still ran: the read-only one reads the node from the segment its own frame declares.
-      expect(result.completed.map((frame) => frame.functionName)).toContain('Coin.balanceOf()');
-      expect(result.completed.map((frame) => frame.functionName)).toContain('Coin.transferFrom()');
+      expect(result.completed.map((frame) => frame.functionName))
+        .toEqual(expect.arrayContaining(['Coin.balanceOf()', 'Coin.transferFrom()']));
+      // `balanceOf(msg.sender)` (callee-master-4) and `transferFrom(msg.sender, ...)` (callee-master-7) touch Alice's
+      // balance node, which is placed once under the token's category; the read keeps the view the deployment holds
+      // and the debit continues from it to the one its own frame computed, which the node's output carries.
+      const { draft } = result;
+      const node = sharedNodeId(COIN_CATEGORY, 'balances', keyToSlotMulti([ALICE_LOCK]));
+      expect(draft.layout.participants.filter((placed) => placed.id.includes('-balances-'))
+        .map((placed) => placed.id)).toStrictEqual([node]);
+      const index = draft.layout.participants.find((placed) => placed.id === node)!.index;
+      const value = (commitment: Uint8Array): string => binToHex(decodeEntryCommitment(commitment).value);
+      const views = (master: string): readonly string[] => draft.blockOf(master).segments.flat()
+        .filter((entry) => entry.in === index).map((entry) => `${value(entry.viewIn)}>${value(entry.viewOut)}`);
+      const [held, left] = [binToHex(bigIntToVmNumber(1000n)), binToHex(bigIntToVmNumber(900n))];
+      expect(views('callee-master-4')).toStrictEqual([`${held}>${held}`]);
+      expect(views('callee-master-7')).toStrictEqual([`${held}>${left}`]);
+      expect(value(Uint8Array.from(result.transaction.outputs[index]!.token!.nft!.commitment))).toBe(left);
     });
 
   it('a value a proxied store returns reaches its caller, and the read settles', async () => {

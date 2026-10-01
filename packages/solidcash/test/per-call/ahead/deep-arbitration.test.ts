@@ -30,9 +30,10 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * start from the hand-planned replica (`shapes/deep-arbitration.test.ts`), whose loop turns as often as the vault's
  * read returned; the token keeps balances per holder, as the marketplace's does.
  *
- * Pinned as it stands: the first wall of the flow; with the loop's count moved into the claimer's own record, the
- * next (every turn credits one holder); and with one turn, the vault's guard behind it. All three are the SDK hop's
- * (`src/per-call/proxy/**`), so the replica is a reproducer.
+ * Pinned as it stands: the flow, whose loop the hop plans from the count it learns in execution order, meets the
+ * same wall as the variant with the loop's count moved into the claimer's own record (every turn credits one
+ * holder); with one turn, the vault's guard behind it. All three are the SDK hop's (`src/per-call/proxy/**`), so the
+ * replica is a reproducer.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -326,18 +327,19 @@ function depthOf(callees: readonly HopCallee[], index: number): number {
 }
 
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS7): a deep 80-20 arbitration', () => {
-  it('stops at its first wall: the payout loop turns as often as an earlier call returned', async () => {
+  it('plans the payout loop from the count an earlier call returned, and meets the turns\' one-key wall', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const flow = artifactsFor('count');
     const deployed = await deployAll(network, flow);
     const before = await rootRecords(network, deployed, flow);
 
-    // Refused while the hop plans the claimer's frame, before any frame is settled: the loop's bound is the
-    // vault's `readRecord` result, which no fact the planner holds fixes. Owner: the SDK hop planner
-    // (`proxy/external-calls.ts`, `occurrenceCountOf`).
-    await expect(run(network, deployed, flow)).rejects.toThrow(
-      /the call to "IVault\.sendShare" runs a loop whose bound is not fixed by the caller's own arguments/,
-    );
+    // The loop's bound is the vault's `readRecord` result, so the hop plans in execution order: it stops before the
+    // loop, settles the read's frame alone, learns the count (`PER_CALL_HOP_TRACE=1`: `stop-plan ... reads=loop-bound`,
+    // `learned=[/1.0/2.0|2:5]`) and plans the five turns from it. The plan is then the second case's, refused by the
+    // reach check before the rest is settled. Owner: the SDK hop planner (`proxy/external-calls.ts`,
+    // `requireSatisfiableReachWrites`).
+    await expect(run(network, deployed, flow)).rejects.toThrow('the hop reaches the entry "Token.transfer()" '
+      + `${TURNS} times, and ${TURNS} of them write collection "balances" at the same key`);
     expect(await rootRecords(network, deployed, flow)).toStrictEqual(before);
   });
 

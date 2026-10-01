@@ -9,9 +9,10 @@
  *
  * The nodes come from the deployment's own classification: a genesis hop runs before the proxy's genesis, so its
  * collection holds only the empty head sentinel the proxy is about to mint, and a later call reads the nodes the
- * collection has grown. A body that reads and writes one key — `require(users[who].publicKey.length == 0)` then
- * `users[who] = ...` — touches the key once, so its batch plans one write and the read is whatever node that write
- * splices through. A key the entry only reads beside its write has no group of its own and is refused by name.
+ * collection has grown. A head is minted only at genesis, so a live collection that holds none is refused by name.
+ * A body that reads and writes one key (`require(users[who].publicKey.length == 0)` then `users[who] = ...`)
+ * touches the key once, so its batch plans one write and the read is whatever node that write splices through. A
+ * key the entry only reads beside its write has no group of its own and is refused by name.
  *
  * A written node's commitment carries the value the body computed. A collection whose values do not chunk states
  * that value from the access the artifact publishes and resolves it against the arguments the hop was given; a
@@ -86,8 +87,7 @@ import {
 } from '../composer/chunk-plan.js';
 import {
   layOutMappingBatch, layOutMappingWritten, mappingValueChunkLock, planMappingBatch,
-  type MappingBatchPlan, type MappingBatchRecord, type MappingNodePlacement, type MappingNodePlacements,
-  type MappingWrittenNode,
+  type MappingBatchPlan, type MappingNodePlacement, type MappingNodePlacements,
 } from '../composer/mapping-plan.js';
 import { planCallLoopWrites, type CallLoopWritePlan } from '../call/entry-records.js';
 import { PerCallProxyDeployError } from './errors.js';
@@ -109,6 +109,17 @@ export function mappingNodeSlot(id: string): Uint8Array | undefined {
   if (!id.startsWith(MAPPING_NODE_PREFIX)) return undefined;
   const hex = id.slice(MAPPING_NODE_PREFIX.length);
   return hex.length > 0 && hex.length % 2 === 0 && /^[0-9a-f]+$/.test(hex) ? hexToBin(hex) : undefined;
+}
+
+/**
+ * The participant id a callee contract's mapping node is placed under, whichever reach reads or writes it.
+ *
+ * The node is keyed by the category its records sit at, its collection and its own slot, so the reaches of one
+ * transaction that touch one node name one input and each frame declares the views it sees of it. An id that named
+ * the reach's role, or the key a read was resolved from, placed one node once per reach and spent its outpoint twice.
+ */
+export function sharedNodeId(categoryId: string, collection: string, slot: Uint8Array): string {
+  return `${MAPPING_NODE_PREFIX}${categoryId}-${collection}-${bytesToHex(slot)}`;
 }
 
 /** One key an entry's own write targets, with the node an insert splices through. */
@@ -141,13 +152,6 @@ export interface ReachWrite {
   readonly targets: readonly ReachWriteTarget[];
   /** The participant id of every node this collection's write spends. */
   readonly spentIds: readonly string[];
-  /**
-   * True when the deployment holds no node of the collection, so the write mints the collection's head sentinel.
-   *
-   * Each reach is planned against the deployment alone, so two reaches into an empty collection would each mint
-   * a head of their own, while one transaction must create a collection's head once.
-   */
-  readonly createsHead: boolean;
 }
 
 /** One sorted batch an entry performs against the collection it starts from. */
@@ -167,8 +171,6 @@ interface HopMappingBatch {
   readonly spent: readonly { readonly slot: Uint8Array; readonly before: Uint8Array; readonly id: string }[];
   /** Every key the batch writes, with the node an insert splices through. */
   readonly targets: readonly ReachWriteTarget[];
-  /** True when the batch mints the collection's head sentinel, the deployment holding no node of it. */
-  readonly createsHead: boolean;
   /** The slot of each value-dependent node, in learning order, whose end view the body computes. */
   readonly learningSlots: readonly Uint8Array[];
   /** The placeholder each value-dependent node's declaration starts from, in learning order. */
@@ -216,6 +218,12 @@ export interface HopEntryWritesRequest {
    * the batch is refused.
    */
   readonly declaredReadSlots?: readonly number[];
+  /**
+   * The id each node the batch spends is placed under, by its collection and its own slot. A callee frame names its
+   * contract's nodes so every reach that touches one shares it (`sharedNodeId`); absent names a node by its slot, or
+   * its collection's empty head by the collection.
+   */
+  readonly nodeIdOf?: (collection: string, slot: Uint8Array) => string;
 }
 
 /** The live deployment a call's hop reads its writes against, from the deployment's own classification. */
@@ -263,18 +271,10 @@ export interface LaidHopEntryWrites {
 /** The writes one entry performs, with the ids the plan places. */
 export interface HopEntryWrites {
   /**
-   * Every sorted collection the entry batches into, in the order the artifact publishes them.
+   * The first sorted collection the entry batches into, when it writes one.
    *
-   * A sorted list has no node until something writes it, so a deployment that a later entry writes has to mint the
-   * list's empty head, one per collection the entry writes.
-   */
-  readonly collections: readonly { readonly name: string; readonly signature: string }[];
-  /**
-   * The first sorted collection the entry batches into, when it writes one; the deployment seeds its empty head.
-   *
-   * A sorted list has no node until something writes it, so a deployment that a later entry writes has to mint the
-   * list's empty head. A dynamic value's chunks have no head — the empty value is no chunk at all — so a write that
-   * only appends to one names no collection here and the deployment seeds nothing.
+   * A dynamic value's chunks have no head (the empty value is no chunk at all), so a write that only appends to one
+   * names no collection here.
    */
   readonly collection?: string;
   /** The first collection's canonical signature, which derives the entry covenant lock its records sit at. */
@@ -913,38 +913,42 @@ function planHopCollectionBatch(
   const collectionNodes = request.liveDeployment?.nodesByCollection.get(collection.name) ?? [];
   const inventory: Uint8Array[] = [];
   const utxoBySlot = new Map<string, Utxo>();
-  // The empty list's head sentinel is what a first write splices through. A deployment's own entry mints it, and
-  // the genesis seeds it for that collection; a call into a collection the deployment holds no node of has only the
-  // sentinel's commitment to plan against, so the hop mints the head in its own transaction and spends nothing
-  // for it — the node the plan relinks is a record the transaction writes, not one it reads.
-  const createsHead = request.liveDeployment !== undefined && collectionNodes.length === 0;
-  if (collectionNodes.length === 0) {
-    // The genesis mints the empty list's head sentinel, so a hop before it plans against that commitment.
-    inventory.push(headSentinelCommitment());
-  } else {
-    for (const node of collectionNodes) {
-      const commitment = node.token?.nft?.commitment;
-      if (commitment === undefined) {
-        throw new PerCallProxyDeployError(
-          `the deployment holds a node of collection "${collection.name}" with no commitment`,
-        );
-      }
-      const bytes = new Uint8Array(hexToBin(commitment));
-      inventory.push(bytes);
-      utxoBySlot.set(bytesToHex(decodeEntryCommitment(bytes).slot), node);
+  // The empty list's head sentinel is what a first write splices through. A deployment's own first hop runs before
+  // the genesis that mints it, so that hop plans against the sentinel's commitment.
+  if (request.liveDeployment === undefined) inventory.push(headSentinelCommitment());
+  for (const node of collectionNodes) {
+    const commitment = node.token?.nft?.commitment;
+    if (commitment === undefined) {
+      throw new PerCallProxyDeployError(
+        `the deployment holds a node of collection "${collection.name}" with no commitment`,
+      );
     }
+    const bytes = new Uint8Array(hexToBin(commitment));
+    inventory.push(bytes);
+    utxoBySlot.set(bytesToHex(decodeEntryCommitment(bytes).slot), node);
   }
-  const planned = planMappingBatch({
+  // A head is minted only at genesis and a call never creates one, so every insert splices through a node the
+  // transaction spends. A live collection with no head was deployed without it, and is refused by name.
+  const isHead = (commitment: Uint8Array): boolean => {
+    const { slot } = decodeEntryCommitment(commitment);
+    return slot.length === 32 && slot.every((byte) => byte === 0);
+  };
+  if (!inventory.some(isHead)) {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${request.functionName}" entry writes mapping "${collection.name}", but the `
+      + `deployment's collection "${collection.name}" has no head; a head is minted only at genesis, so this `
+      + 'deployment was deployed without it',
+    );
+  }
+  const plan = planMappingBatch({
     writes, inventory,
     encodeValue: chunkable ? encodeChunkableValueTail : (encoded: Uint8Array) => encoded,
     ...(chunkable ? { chunkable: (value: Uint8Array) => value } : {}),
   });
 
   // A node the batch creates, and a target it rewrites, carry the value the body computed; a node it only relinks
-  // keeps its own value, so its end view is stated by the planner. The candidates are read from the plan the
-  // inventory fixed, before a created head is marked as one: the head's relink is structural — it is the target
-  // slot — so it is the planner's to state rather than the body's to compute.
-  const writtenSlots = new Set(planned.groups.map((group) => bytesToHex(group.slot)));
+  // keeps its own value, so its end view is stated by the planner.
+  const writtenSlots = new Set(plan.groups.map((group) => bytesToHex(group.slot)));
   const learningSlots: Uint8Array[] = [];
   const learningCandidates: Uint8Array[] = [];
   const learned = new Set<string>();
@@ -952,8 +956,8 @@ function planHopCollectionBatch(
   // target group. Either way the value-dependent nodes are the created ones and the targets, in that declaration
   // order, which is the order the body closes them in and the derivation learns them.
   const declared = loop === undefined
-    ? planned.groups.flatMap((group) => group.records)
-    : planned.written.map((node) => ({
+    ? plan.groups.flatMap((group) => group.records)
+    : plan.written.map((node) => ({
       slot: node.slot, existed: node.existed, viewIn: node.before, viewOut: node.after,
     }));
   for (const record of declared) {
@@ -964,11 +968,10 @@ function planHopCollectionBatch(
     learningSlots.push(record.slot);
     learningCandidates.push(record.viewOut);
   }
-  const plan = createsHead ? withCreatedHead(planned) : planned;
   // The key each write targets, and the node it splices through when the list did not hold it. The plan's groups
-  // are in write order, so each target reads its own group; a group the list did not hold names its predecessor
-  // first, whether that predecessor is a node the transaction spends or the head it creates.
-  const writeTargets = planned.groups.map((group): ReachWriteTarget => ({
+  // are in write order, so each target reads its own group; a group the list did not hold names its predecessor,
+  // a node the transaction spends, first.
+  const writeTargets = plan.groups.map((group): ReachWriteTarget => ({
     collection: collection.name,
     slot: group.slot,
     ...(group.existed ? {} : { predecessor: group.records[0]!.slot }),
@@ -977,10 +980,11 @@ function planHopCollectionBatch(
   const spent = plan.written.filter((node) => node.existed).map((node) => ({
     slot: node.slot,
     before: node.before,
-    // The empty head sentinel is named by its collection; any other spent node is named by its own slot.
-    id: bytesEqual(node.before, headCommitment)
+    // The empty head sentinel is named by its collection; any other spent node is named by its own slot, unless the
+    // caller names the nodes it shares across frames.
+    id: request.nodeIdOf?.(collection.name, node.slot) ?? (bytesEqual(node.before, headCommitment)
       ? `${MAPPING_HEAD_PREFIX}${collection.name}`
-      : `${MAPPING_NODE_PREFIX}${bytesToHex(node.slot)}`,
+      : `${MAPPING_NODE_PREFIX}${bytesToHex(node.slot)}`),
   }));
   return {
     collection: collection.name,
@@ -989,9 +993,6 @@ function planHopCollectionBatch(
     ...(loop === undefined ? {} : { loopWritten: true }),
     spent,
     targets: writeTargets,
-    // The head the hop mints is the sentinel the plan relinks, which every write into an empty list does.
-    createsHead: createsHead
-      && planned.written.some((node) => node.existed && bytesEqual(node.before, headCommitment)),
     learningSlots,
     learningCandidates,
     utxoBySlot,
@@ -1007,40 +1008,6 @@ function nodeToken(category: Uint8Array, commitment: Uint8Array): DraftToken {
 /** The identity one chunk of a value's run is keyed by: its node's slot and its index in the run. */
 function chunkKey(slot: Uint8Array, index: number): string {
   return `${bytesToHex(slot)}#${index}`;
-}
-
-/**
- * The plan with its empty head sentinel turned into a record the hop creates rather than spends.
- *
- * A call into a collection the deployment holds no node of plans its first write against the empty list, whose head
- * sentinel no live UTXO carries. The hop mints that head in its own transaction — the shipped encoder's commitment
- * for the empty list, at the collection's own entry covenant, which is what the genesis mints and what the body's
- * group walk reads — so the predecessor record declares no input and the hop lays it out at a trailing output. The
- * relink the planner computed is unchanged; only where the head comes from is.
- *
- * The record keeps the sentinel as its `viewIn`: its input side names no coordinate, but a body that reads the
- * predecessor through its segment declaration returns that view, and the empty list's head is the pre-state a
- * read of an absent key proves its bracket against. Emptying it would make that read resolve to nothing.
- */
-function withCreatedHead(plan: MappingBatchPlan): MappingBatchPlan {
-  const sentinel = headSentinelCommitment();
-  const isHead = (commitment: Uint8Array): boolean => bytesEqual(commitment, sentinel);
-  return {
-    ...plan,
-    groups: plan.groups.map((group) => ({
-      ...group,
-      records: group.records.map((record): MappingBatchRecord => (
-        record.existed && isHead(record.viewIn)
-          ? { ...record, existed: false }
-          : record
-      )),
-    })),
-    written: plan.written.map((node): MappingWrittenNode => (
-      node.existed && isHead(node.before)
-        ? { ...node, existed: false, before: new Uint8Array(0) }
-        : node
-    )),
-  };
 }
 
 /** The batch plan with each value-dependent node's end view replaced by the commitment the body computed. */
@@ -1552,7 +1519,6 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
   const readRunIds = reads.flatMap((run) => run.chunks.map((chunk) => chunk.id));
   for (const chunk of reads.flatMap((run) => run.chunks)) spentUtxos.set(chunk.id, chunk.utxo);
   return {
-    collections: batches.map((batch) => ({ name: batch.collection, signature: batch.signature })),
     ...(batches[0] === undefined ? {} : { collection: batches[0].collection, signature: batches[0].signature }),
     participantIds: [
       ...batches.flatMap((batch) => batch.spent.map((node) => node.id)),
@@ -1566,7 +1532,6 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
         .find((candidate) => candidate.name === batch.collection)?.chunkableValue === true,
       targets: batch.targets,
       spentIds: batch.spent.map((node) => node.id),
-      createsHead: batch.createsHead,
     })),
     learningCandidates: [
       ...batches.flatMap((batch) => batch.learningCandidates),

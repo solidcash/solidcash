@@ -7,9 +7,12 @@ import { bytesToHex, buildPushdataCommitment, sha256, type Artifact } from '@sol
 import { perCallValidator } from 'solidc';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { registerDeployment } from '../../../src/stateful/deployment-registry.js';
-import { deployMaster, stateRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
+import {
+  deployMaster, entryRecordLockingBytecode, stateRecordLockingBytecode,
+} from '../../../src/per-call/deploy/index.js';
 import { planHopExternalCalls, type PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
 import { readPublishedStopSites } from '../../../src/per-call/composer/index.js';
+import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 
 /**
@@ -39,12 +42,29 @@ function calleeInterface(artifact: Artifact): string {
   return `I${artifact.contractName}`;
 }
 
+/** The empty head a genesis mints for every sorted collection of `artifact`, at the collection's entry covenant. */
+async function seedHeads(network: MockNetworkProvider, artifact: Artifact, categoryId: string): Promise<void> {
+  const sorted = (artifact.stateLayout?.collections ?? []).filter((collection) => collection.sorted === true);
+  for (const [index, collection] of sorted.entries()) {
+    await network.addUtxo(binToHex(entryRecordLockingBytecode(categoryId, collection.signature)), {
+      txid: `${categoryId.slice(0, 60)}${(0x80 + index).toString(16).padStart(2, '0')}ee`, vout: index,
+      satoshis: 1200n,
+      token: {
+        category: categoryId, amount: 0n,
+        nft: { capability: 'mutable', commitment: binToHex(headSentinelCommitment()) },
+      },
+    });
+  }
+}
+
 /**
- * A live per-call deployment of `artifact`'s category: its master and one record per data NFT.
+ * A live per-call deployment of `artifact`'s category: its master, one record per data NFT, and the empty head of
+ * every sorted collection.
  *
  * The planner only needs a category the provider can enumerate, so the pools are seeded directly rather than
- * derived by a genesis: a minting NFT at the master's own address, and a mutable NFT at each data-NFT record's
- * covenant lock carrying a commitment that decodes through the shipped pushdata decoder.
+ * derived by a genesis: a minting NFT at the master's own address, a mutable NFT at each data-NFT record's
+ * covenant lock carrying a commitment that decodes through the shipped pushdata decoder, and the heads a genesis
+ * mints, since a call never creates one.
  */
 async function seedDeployment(
   network: MockNetworkProvider, artifact: Artifact, categoryId: string,
@@ -68,6 +88,7 @@ async function seedDeployment(
       },
     });
   }
+  await seedHeads(network, artifact, categoryId);
   return master;
 }
 
@@ -198,21 +219,30 @@ describePublished('the planner against the shipped published facts', () => {
     );
   });
 
-  it('refuses a loop whose width the caller arguments do not fix, naming the width', async () => {
+  it('stops before a loop whose width an earlier call returns, with that call placed', async () => {
     const network = new MockNetworkProvider();
     const readerArtifact = loadArtifact('MarketplaceDataV1.json');
     const facadeArtifact = loadArtifact('MarketplaceV1.json');
+    const facade = await seedDeployment(network, facadeArtifact, FACADE_CATEGORY);
 
-    // The reader's loop runs as many times as the callee reports, which no caller-held fact fixes.
-    await expect(planHopExternalCalls({
+    // The reader's loop runs as many times as the callee reports, which no caller-held fact fixes: the planner places
+    // the call that reports it and stops before the loop, so the hop can settle that call and plan the turns from
+    // what it returned.
+    const plan = await planHopExternalCalls({
       provider: network,
       artifact: readerArtifact,
       functionName: 'getJobs',
       args: [0n, 0n],
       externals: { [facadeArtifact.contractName]: { artifact: facadeArtifact, categoryId: FACADE_CATEGORY } },
-      stateValues: { marketplace: new Uint8Array(35).fill(0x44) },
+      stateValues: { marketplace: facade },
       validatorProgram: VALIDATOR_PROGRAM,
-    })).rejects.toThrow(/runs a loop whose bound is not fixed by the caller's own arguments/);
+    });
+
+    expect(plan.blocked?.path).toBe('');
+    expect(plan.blocked?.reads).toBe('loop-bound');
+    expect(plan.callees.map((callee) => callee.functionName)).toStrictEqual(['MarketplaceV1.jobsLength()']);
+    expect(plan.callees[0]!.origin?.callsiteId).toBe(plan.blocked?.producers[0]);
+    expect(plan.calls).toHaveLength(1);
   });
 });
 
@@ -290,7 +320,7 @@ function categoryOf(label: string): string {
   return bytesToHex(sha256(utf8ToBin(label)));
 }
 
-/** A live deployment of `artifact`: `masterCount` masters and one record per data NFT. */
+/** A live deployment of `artifact`: `masterCount` masters, one record per data NFT, and its collections' heads. */
 async function seedArtifact(
   network: MockNetworkProvider, artifact: Artifact, categoryId: string, masterCount: number,
 ): Promise<void> {
@@ -312,6 +342,7 @@ async function seedArtifact(
         nft: { capability: 'mutable', commitment: buildPushdataCommitment(layout, {}, nftIndex) } },
     });
   }
+  await seedHeads(network, artifact, categoryId);
 }
 
 describePublished('the plan against the shipped published call table', () => {

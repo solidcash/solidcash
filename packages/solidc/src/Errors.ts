@@ -779,6 +779,21 @@ export class ChainedEntryElementReadError extends SolidCashError {
   }
 }
 
+/**
+ * A per-call body reads a verified-mapping entry, in the segment it wrote it in, after a write whose value the frame
+ * does not keep: the read, or the one a push or a pop makes, would see the view the segment declared before the
+ * write.
+ */
+export class PerCallStaleReadError extends SolidCashError {
+  constructor(public node: Node, entry: string, shape: string, update?: 'push' | 'pop') {
+    super(node, update === undefined
+      ? `a read of \`${entry}\` after its write ${shape} is not supported on the per-call convention: `
+        + 'read it before the write, or into a local'
+      : `a ${update} on \`${entry}\` after its write ${shape} is not supported on the per-call convention: `
+        + 'update a local and write the entry once');
+  }
+}
+
 // A function-pointer ARRAY form the lowering passes cannot express (yet). Raised with a specific reason
 // instead of the misleading downstream "Undefined state variable '<name>'" once no pass claims the array.
 export class FnPtrArrayLoweringError extends SolidCashError {

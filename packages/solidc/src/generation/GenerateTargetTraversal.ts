@@ -149,6 +149,8 @@ import {
   SliceNode,
   DoWhileNode,
   WhileNode,
+  BreakNode,
+  ContinueNode,
   AssemblyStatementNode,
   StateAccessNode,
   StateAssignNode,
@@ -265,7 +267,7 @@ import { isNumericType } from '../utils.js';
 import { getLiteralIfDupEffect, getStackEffect } from '../asmStackEffects.js';
 import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
-  SortedMappingCodegenPendingError,
+  SortedMappingCodegenPendingError, PerCallStaleReadError,
   ChainedEntryElementReadError, ConditionalDeployError, NegativeExponentError, SolidCashError,
   RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
   BlockLayoutUnavailableError, StackVariableUnavailableError, SolidcDiagnosticError,
@@ -1626,6 +1628,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedWrittenValueSegment: Map<number, number> = new Map();
   private sortedReadsAhead: Map<number, number> = new Map();
   private sortedWritesAhead: Map<number, number> = new Map();
+  // The writes the body's flow lets keep their value, and the reads a kept or chained value has to serve.
+  private sortedKeptWrites: WeakSet<Node> = new WeakSet();
+  private sortedServedReads: WeakSet<Node> = new WeakSet();
   // Depth of plain counting loops (while / do-while / for) currently being emitted. A mapping WRITE inside such
   // a loop is unsound: the entry-write model reserves ONE output slot per (mapping, key-descriptor), so a loop
   // that writes distinct runtime keys keeps only the LAST entry (silent data loss), and a read-modify-write
@@ -8096,6 +8101,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }).__kernelReadCarrierAuthorizationBox;
       if (box) box.codegenMatchedKernelJournalDispositionCommitment = dispositionDigest;
     }
+    this.refuseStaleSortedReads(node);
     node.body = this.visit(node.body) as BlockNode;
     // After Instantiation visits, deployTargets carries the true child dataNftCount (including oracle
     // fields packed after semantic Instantiation). Expand deployDataNft layout slots so vmap tails and
@@ -22763,8 +22769,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const cached = this.sortedCompositeValueCache.get(slotIndex);
     // A value kept by a per-call write serves the reads of its own segment; past a call the next segment's view does.
-    const writtenIn = this.sortedWrittenValueSegment.get(slotIndex);
-    if (cached !== undefined && (writtenIn === undefined || writtenIn === this.perCallSegmentIndex)) {
+    if (cached !== undefined && this.sortedReadServed(slotIndex)) {
       const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
       if (debugEnv?.SOLIDC_DEBUG_DYNAMIC_FRAME === '1'
         && (!debugEnv.SOLIDC_DEBUG_DYNAMIC_FRAME_FUNCTION
@@ -22925,6 +22930,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Whole value read, or (for a chunkable array value) element read: materialize the array via the vmap read,
       // then extract element [i]. emitSortedSetRead already co-spends the proving entry and reassembles chunks.
       this.passSortedEntryAccess(this.sortedReadsAhead, node.entrySlotIndex);
+      // A read the flow walk left to a kept or chained value fails closed where the code emitting it holds none.
+      if (this.sortedServedReads.has(node) && !this.sortedReadServed(node.entrySlotIndex)) {
+        throw new PerCallStaleReadError(node, this.sortedEntryText(node.collection.name, node.keys),
+          'whose value the frame does not keep');
+      }
       this.emitSortedSetRead(node);
       if (node.arrayIndex) {
         this.emitArrayElementExtract(node, { location: node.location, positionHint: PositionHint.START });
@@ -24000,27 +24010,91 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * True when a per-call frame's write to a sorted entry may keep the value it writes for the reads after it.
-   *
-   * The write is straight-line code of a body whose calls the source fixes, so every read emitted before the next
-   * call runs in the segment the write closes against. Its keys name one entry wherever the body reads the slot:
-   * literals, the sender, the origin, or names the body neither reassigns nor declares twice.
+   * True when a per-call frame's write to a sorted entry keeps the value it writes for the reads after it: the flow
+   * walk admitted the write (`refuseStaleSortedReads`), and the code emitting it is the body's own straight line.
    */
   private sortedWriteMayKeepValue(node: MappingAssignNode | MappingDeleteNode): boolean {
+    return this.sortedKeptWrites.has(node) && this.readsRecordsFromFrame && !this.isDefineSubTraversal
+      && this.scopeDepth === 0 && this.plainLoopDepth === 0 && !this.sortedUpsertPendingRepoint;
+  }
+
+  /**
+   * Why a per-call frame's write to a sorted entry keeps no value for the reads after it, as the shape a refusal
+   * names, or undefined when it keeps one: a straight-line write of a body whose calls the source fixes, the body's
+   * last write to the entry, whose keys name one entry wherever the body reads the slot.
+   */
+  private sortedWriteShape(
+    node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode,
+    scope: { readonly arm?: 'branch' | 'early'; readonly loop: boolean },
+    writesAfter: number, varying: boolean, changed: ReadonlySet<string>,
+  ): string | undefined {
     const entry = this.entrySlots[node.entrySlotIndex];
-    if (!this.readsRecordsFromFrame || this.isDefineSubTraversal || this.scopeDepth > 0 || this.plainLoopDepth > 0
-      || entry === undefined || entry.aliasCondDeleteSlot !== undefined
-      || (entry.runtimeAliasPriorSlots?.length ?? 0) > 0 || this.sortedUpsertPendingRepoint
-      || callsVaryOnPaths(this.currentFunction.body)) {
-      return false;
+    if (this.isDefineSubTraversal) return 'inside an outlined internal function';
+    if (scope.loop) return 'in a loop';
+    if (scope.arm === 'branch') return 'in a branch arm';
+    if (scope.arm === 'early') return 'in the code after an early return';
+    if (varying) return 'in a body whose calls vary on paths';
+    const key = node.keys.find((candidate) => !this.sortedKeyInvariant(candidate, changed));
+    if (key !== undefined) return key instanceof IdentifierNode ? 'with a reassigned key' : 'with an expression key';
+    if (entry === undefined || entry.aliasCondDeleteSlot !== undefined
+      || (entry.runtimeAliasPriorSlots?.length ?? 0) > 0) return 'on an aliased entry';
+    if (writesAfter > 0) return 'when the body writes it again';
+    if (!this.readsRecordsFromFrame) return 'in a frame that reads no declared records';
+    return undefined;
+  }
+
+  /**
+   * True when `definition` is a snapshot `T x = m[k]` whose value only carries fields over into `next`, a whole
+   * write `m[k] = T(..)` of the same entry that keeps each field it does not set from `x`, at the field's own
+   * position, and names `x` nowhere else in the body (`uses` counts every name). A stale snapshot then makes that
+   * write disagree with the segment's earlier write of the entry, which the frame refuses, unless both write the
+   * value the body computes.
+   */
+  private carriesSnapshotOver(
+    definition: VariableDefinitionNode, next: Node | undefined, uses: ReadonlyMap<string, number>,
+  ): boolean {
+    const read = definition.expression;
+    if (!(read instanceof MappingAccessNode) || !(next instanceof MappingAssignNode)
+      || read.collection?.sorted !== true || next.collection?.sorted !== true || read.entrySlotIndex < 0
+      || next.entrySlotIndex !== read.entrySlotIndex || next.arrayIndex !== undefined || next.arrayPush === true
+      || next.arrayPop === true) return false;
+    const struct = next.collection.innermostValueType;
+    const build = next.expression;
+    if (!(struct instanceof StructType) || !(build instanceof FunctionCallNode)
+      || build.identifier.name !== struct.name || build.parameters.length !== struct.fields.length) return false;
+    const mentions = (node: Node): boolean => {
+      let found = false;
+      walkInvocationAst(node, (candidate) => {
+        if ((candidate instanceof IdentifierNode && candidate.name === definition.name)
+          || (candidate instanceof MappingAccessNode && candidate.entrySlotIndex === read.entrySlotIndex)) found = true;
+      });
+      return found;
+    };
+    let carried = 0;
+    for (const [index, parameter] of build.parameters.entries()) {
+      if (parameter instanceof FieldAccessNode && parameter.expression instanceof IdentifierNode
+        && parameter.expression.name === definition.name && parameter.name === struct.fields[index].name) {
+        carried += 1;
+      } else if (mentions(parameter)) {
+        return false;
+      }
     }
-    const changed = this.namesChangedIn(this.currentFunction);
-    return node.keys.every((key) => key instanceof IntLiteralNode || key instanceof BoolLiteralNode
-      || key instanceof HexLiteralNode || key instanceof StringLiteralNode || key instanceof DecimalLiteralNode
+    return uses.get(definition.name) === carried;
+  }
+
+  /** True when a mapping key names the same entry wherever the body spells it. */
+  private sortedKeyInvariant(key: Node, changed: ReadonlySet<string>): boolean {
+    return key instanceof IntLiteralNode || key instanceof BoolLiteralNode || key instanceof HexLiteralNode
+      || key instanceof StringLiteralNode || key instanceof DecimalLiteralNode
       || (key instanceof NullaryOpNode
         && (key.operator === NullaryOperator.MSG_SENDER || key.operator === NullaryOperator.TX_ORIGIN))
-      || (key instanceof IdentifierNode && !changed.has(key.name)));
+      || (key instanceof IdentifierNode && !changed.has(key.name));
   }
+
+  private static readonly STEP_OPERATORS: readonly UnaryOperator[] = [
+    UnaryOperator.PREFIX_INCREMENT, UnaryOperator.PREFIX_DECREMENT,
+    UnaryOperator.POSTFIX_INCREMENT, UnaryOperator.POSTFIX_DECREMENT,
+  ];
 
   /** The names a function's body assigns, deletes, steps, or declares more than once counting its parameters. */
   private namesChangedIn(fn: FunctionDefinitionNode): Set<string> {
@@ -24030,13 +24104,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (declared.has(name)) changed.add(name);
       declared.add(name);
     };
-    const steps = [
-      UnaryOperator.PREFIX_INCREMENT, UnaryOperator.PREFIX_DECREMENT,
-      UnaryOperator.POSTFIX_INCREMENT, UnaryOperator.POSTFIX_DECREMENT,
-    ];
     walkInvocationAst(fn.body, (candidate) => {
       if (candidate instanceof AssignNode || candidate instanceof DeleteLocalNode) {
         changed.add(candidate.identifier.name);
+      } else if (candidate instanceof ArrayAssignNode || candidate instanceof ArrayPushNode
+        || candidate instanceof ArrayPopNode || candidate instanceof ArrayDeleteNode) {
+        changed.add(candidate.name);
       } else if (candidate instanceof VariableDefinitionNode) {
         declare(candidate.name);
       } else if (candidate instanceof TupleAssignmentNode) {
@@ -24045,12 +24118,210 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           if (element.existing === true) changed.add(element.name);
           else declare(element.name);
         }
-      } else if (candidate instanceof UnaryOpNode && steps.includes(candidate.operator)
+      } else if (candidate instanceof UnaryOpNode
+        && GenerateTargetTraversalWithLocation.STEP_OPERATORS.includes(candidate.operator)
         && candidate.expression instanceof IdentifierNode) {
         changed.add(candidate.expression.name);
       }
     });
     return changed;
+  }
+
+  /** True when a cached value serves a read of the sorted slot at the code being emitted. */
+  private sortedReadServed(slotIndex: number): boolean {
+    const writtenIn = this.sortedWrittenValueSegment.get(slotIndex);
+    return this.sortedCompositeValueCache.has(slotIndex)
+      && (writtenIn === undefined || writtenIn === this.perCallSegmentIndex);
+  }
+
+  /** An entry as the source names it, its keys spelled out where they are plain. */
+  private sortedEntryText(name: string, keys: readonly Node[]): string {
+    const spell = (key: Node): string => {
+      if (key instanceof IdentifierNode) return key.name;
+      if (key instanceof NullaryOpNode) return key.operator;
+      if (key instanceof IntLiteralNode || key instanceof BoolLiteralNode) return String(key.value);
+      if (key instanceof StringLiteralNode) return JSON.stringify(key.value);
+      if (key instanceof HexLiteralNode) return `0x${binToHex(key.value)}`;
+      if (key instanceof ArrayAccessNode) return `${spell(key.array)}[${spell(key.index)}]`;
+      if (key instanceof FieldAccessNode) return `${spell(key.expression)}.${key.name}`;
+      if (key instanceof BinaryOpNode) return `${spell(key.left)} ${key.operator} ${spell(key.right)}`;
+      return '...';
+    };
+    return `${name}${keys.map((key) => `[${spell(key)}]`).join('')}`;
+  }
+
+  /**
+   * Refuses, in a per-call frame, every read of a verified-mapping entry that runs in the segment of a write to it
+   * whose value the frame does not keep: it would take the view the segment declared before the write. A push or a
+   * pop reads the entry it rewrites, so it counts as such a read; a snapshot that only carries fields over into the
+   * entry's next write does not (`carriesSnapshotOver`).
+   *
+   * The walk follows the body's control flow. A call moves the reads after it to the next segment's declaration on
+   * the paths it lies on; branch arms, loops, early exits and lazily evaluated operands join their paths with the
+   * fewest calls. The writes that keep their value are recorded for `sortedWriteMayKeepValue`, and the reads such a
+   * value, or a chained write's, has to serve for `visitMappingAccess`.
+   */
+  private refuseStaleSortedReads(fn: FunctionDefinitionNode): void {
+    this.sortedKeptWrites = new WeakSet();
+    this.sortedServedReads = new WeakSet();
+    if (!this.perCallMaster || fn.body === undefined) return;
+    type Pending = { readonly shape?: string; readonly calls: number };
+    type Flow = Map<number, Pending> | undefined;
+    type Scope = { readonly arm?: 'branch' | 'early'; readonly loop: boolean };
+    const varying = callsVaryOnPaths(fn.body);
+    const changed = this.namesChangedIn(fn);
+    const isWrite = (node: Node): node is MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode =>
+      (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode)
+      && node.collection?.sorted === true;
+    const isArrayOp = (node: Node): boolean => node instanceof MappingAssignNode
+      && node.collection !== undefined && this.isChunkableValue(node.collection.innermostValueType)
+      && (node.arrayIndex !== undefined || node.arrayPush === true || node.arrayPop === true);
+    const writesLeft = new Map<number, number>();
+    walkInvocationAst(fn.body, (candidate) => {
+      if (isWrite(candidate)) writesLeft.set(candidate.entrySlotIndex, (writesLeft.get(candidate.entrySlotIndex) ?? 0) + 1);
+    });
+    const chainLeft = new Map(this.sortedCompositeWritesRemaining);
+    const loops: { breaks: Flow[]; continues: Flow[] }[] = [];
+    const join = (...flows: Flow[]): Flow => {
+      const live = flows.filter((flow): flow is Map<number, Pending> => flow !== undefined);
+      if (live.length === 0) return undefined;
+      const joined = new Map(live[0]);
+      for (const flow of live.slice(1)) {
+        for (const [slot, pending] of flow) {
+          const other = joined.get(slot);
+          joined.set(slot, other === undefined ? pending
+            : { shape: other.shape ?? pending.shape, calls: Math.min(other.calls, pending.calls) });
+        }
+      }
+      return joined;
+    };
+    const copy = (flow: Flow): Flow => (flow === undefined ? undefined : new Map(flow));
+    const called = (flow: Flow): Flow => (flow === undefined ? undefined
+      : new Map([...flow].map(([slot, pending]) => [slot, { ...pending, calls: pending.calls + 1 }])));
+    const skipped = new Set(['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+      'referencedContract', 'stateVariable', 'packedStateVariable', 'collection', 'type', 'location', 'name',
+      'functionId', 'error', 'opRolls', 'selectorHex', 'abiType', 'catchClauses']);
+    const children = (node: Node): Node[] => {
+      const out: Node[] = [];
+      for (const key in node) {
+        if (skipped.has(key)) continue;
+        const child = (node as unknown as Record<string, unknown>)[key];
+        if (child instanceof Node) out.push(child);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) out.push(item);
+      }
+      return out;
+    };
+    const endsInReturn = (block: BlockNode | undefined): boolean =>
+      (block?.statements ?? []).at(-1) instanceof ReturnNode;
+    const uses = new Map<string, number>();
+    const survey = (node: Node): void => {
+      if (node instanceof IdentifierNode) uses.set(node.name, (uses.get(node.name) ?? 0) + 1);
+      for (const child of children(node)) survey(child);
+    };
+    survey(fn.body);
+    const carried = new WeakSet<Node>();
+    walkInvocationAst(fn.body, (candidate) => {
+      const statements = candidate instanceof BlockNode ? candidate.statements ?? [] : [];
+      statements.forEach((statement, index) => {
+        if (statement instanceof VariableDefinitionNode && statement.expression !== undefined
+          && this.carriesSnapshotOver(statement, statements[index + 1], uses)) carried.add(statement.expression);
+      });
+    });
+
+    const read = (node: MappingAccessNode, flow: Flow): void => {
+      if (flow === undefined || carried.has(node) || node.collection?.sorted !== true
+        || node.isTokenContainerAccess === true || node.isGenesisRead === true || node.entrySlotIndex < 0) return;
+      const pending = flow.get(node.entrySlotIndex);
+      if (pending === undefined || pending.calls > 0) return;
+      if (pending.shape === undefined) {
+        this.sortedServedReads.add(node);
+        return;
+      }
+      throw new PerCallStaleReadError(node, this.sortedEntryText(node.collection.name, node.keys), pending.shape);
+    };
+    const write = (node: MappingAssignNode | MappingFieldAssignNode | MappingDeleteNode, flow: Flow, scope: Scope):
+    Flow => {
+      const slot = node.entrySlotIndex;
+      const writesAfter = (writesLeft.get(slot) ?? 1) - 1;
+      writesLeft.set(slot, writesAfter);
+      // A chained array write keeps its value as the next write's start, which serves the reads between them.
+      const arrayOp = isArrayOp(node);
+      const chained = arrayOp && (chainLeft.get(slot) ?? 1) > 1;
+      if (arrayOp) chainLeft.set(slot, (chainLeft.get(slot) ?? 1) - 1);
+      if (flow === undefined || slot < 0) return flow;
+      const pending = flow.get(slot);
+      if (node instanceof MappingAssignNode && (node.arrayPush === true || node.arrayPop === true)
+        && pending?.shape !== undefined && pending.calls === 0) {
+        throw new PerCallStaleReadError(node, this.sortedEntryText(node.collection?.name ?? node.name, node.keys),
+          pending.shape, node.arrayPush === true ? 'push' : 'pop');
+      }
+      const shape = chained && !scope.loop ? undefined
+        : this.sortedWriteShape(node, scope, writesAfter, varying, changed);
+      if (!chained && shape === undefined) this.sortedKeptWrites.add(node);
+      const next = new Map(flow);
+      next.set(slot, { shape, calls: 0 });
+      return next;
+    };
+    const walk = (node: Node, flow: Flow, scope: Scope): Flow => {
+      if (node instanceof BlockNode) {
+        let current = flow;
+        for (const statement of node.statements ?? []) current = walk(statement, current, scope);
+        return current;
+      }
+      if (node instanceof UncheckedNode) return walk(node.block, flow, scope);
+      if (node instanceof BranchNode) {
+        const tested = walk(node.condition, flow, scope);
+        const armOf = (side: BlockNode | undefined): Scope => ({
+          ...scope, arm: scope.arm === 'branch' || !endsInReturn(side) ? 'branch' : 'early',
+        });
+        const taken = walk(node.ifBlock, copy(tested), armOf(node.elseBlock));
+        const other = node.elseBlock === undefined ? tested : walk(node.elseBlock, copy(tested), armOf(node.ifBlock));
+        return join(taken, other);
+      }
+      if (node instanceof SwitchNode) {
+        const tested = walk(node.expression, flow, scope);
+        const arm: Scope = { ...scope, arm: 'branch' };
+        const arms = node.cases.map((entry) => walk(entry.body, copy(walk(entry.value, copy(tested), scope)), arm));
+        return join(...arms, node.defaultCase === undefined ? tested : walk(node.defaultCase, copy(tested), arm));
+      }
+      if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode) {
+        const body = node instanceof CollectionIterationNode ? node.body : node.block;
+        const condition = node instanceof CollectionIterationNode ? undefined : node.condition;
+        const entered = node instanceof WhileNode ? walk(node.condition, flow, scope) : flow;
+        loops.push({ breaks: [], continues: [] });
+        const ran = walk(body, copy(entered), { ...scope, loop: true });
+        const { breaks, continues } = loops.pop()!;
+        const turned = join(ran, ...continues);
+        const again = condition === undefined ? turned : walk(condition, turned, scope);
+        return node instanceof DoWhileNode ? join(again, ...breaks) : join(entered, again, ...breaks);
+      }
+      if (node instanceof TryCatchNode) return walk(node.tryBlock, walk(node.expression, flow, scope), scope);
+      if (node instanceof BreakNode || node instanceof ContinueNode) {
+        const loop = loops.at(-1);
+        if (loop === undefined) return flow;
+        (node instanceof BreakNode ? loop.breaks : loop.continues).push(copy(flow));
+        return undefined;
+      }
+      if (node instanceof TernaryOpNode) {
+        const tested = walk(node.condition, flow, scope);
+        return join(walk(node.ifTrue, copy(tested), scope), walk(node.ifFalse, copy(tested), scope));
+      }
+      if (node instanceof BinaryOpNode && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR)) {
+        const left = walk(node.left, flow, scope);
+        return join(left, walk(node.right, copy(left), scope));
+      }
+      let current = flow;
+      for (const child of children(node)) current = walk(child, current, scope);
+      if (node instanceof MappingAccessNode) read(node, current);
+      if (isWrite(node)) current = write(node, current, scope);
+      if ((node instanceof ExternalFunctionCallNode && node.foldedIntoDeploy !== true)
+        || ((node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode)
+          && node.callMode === 'delegatecall')) {
+        current = called(current);
+      }
+      return node instanceof ReturnNode || node instanceof RevertNode ? undefined : current;
+    };
+    walk(fn.body, new Map(), { loop: false });
   }
 
   /**

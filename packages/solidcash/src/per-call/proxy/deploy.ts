@@ -2464,6 +2464,9 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   // hop's signature and every frame that reads `block.timestamp` were made over the derived locktime, so the
   // broadcast carries that same one.
   builder.setLocktime(program.transaction.locktime ?? 0);
+  // The outpoint every participant resolves to, so a hop that cannot broadcast a duplicated outpoint names the two
+  // participants that share it instead of only the transaction's input index.
+  const resolved = new Map<string, string>();
   for (const placed of draft.layout.participants) {
     const source = program.sourceOutputs[placed.index];
     const unlockingBytecode = program.transaction.inputs[placed.index]?.unlockingBytecode;
@@ -2495,6 +2498,11 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
       ? {}
       : { token: libauthTokenDetailsToSolidCashTokenDetails(source.token) };
     const utxo: Utxo = { txid: real.txid, vout: real.vout, satoshis: source.valueSatoshis, ...token };
+    const outpoint = `${utxo.txid}:${utxo.vout}`;
+    const shared = resolved.get(outpoint);
+    hopTrace(`participant ${placed.index} ${placed.id} ${placed.kind} ${outpoint}`
+      + (shared === undefined ? '' : ` shared with ${shared}`));
+    resolved.set(outpoint, placed.id);
     // The sequence the derived hop carries, so the broadcast is the same transaction the frames were evaluated
     // against rather than one the builder's own default rewrites.
     const sequence = program.transaction.inputs[placed.index]?.sequenceNumber;

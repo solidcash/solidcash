@@ -325,7 +325,10 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   struct-field address or an integer packed into a call argument), `block-oracle-beside-array.test.ts` (records an
   entry does not name, and a `view` read of a proxied store) and `read-only-dynamic-records.test.ts` and
   `hop-callee-read-beside-batch.test.ts` (the acceptance cases of the two hop patches in `docs/per-call/patches/`,
-  pinned where HEAD stands). The directory runs only under `PER_CALL_AHEAD=1`.
+  pinned where HEAD stands), `pushed-struct-fields-and-event.test.ts` (a wide struct appended with every field
+  written and one payload event, the same entry with a whitelist write its call does not take, and the same entry
+  with no guarded write) and `push-length-keyed-mapping-write.test.ts` (a loop write whose key the entry's own push
+  computes). The directory runs only under `PER_CALL_AHEAD=1`.
 
 ## Which refusals cover which attack
 

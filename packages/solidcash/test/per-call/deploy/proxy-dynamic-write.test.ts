@@ -130,6 +130,19 @@ const WIDE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
+/** A loop write whose keys the call's own array names, beside the append that names the run. */
+const LOOP_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   address public implementation;'
+  + '   address[] public items;'
+  + '   mapping(address => uint) public counts;'
+  + '   function initialize() { this.items.push(msg.sender); }'
+  + '   function bump(address[] who) {'
+  + '     for (uint i = 0; i < who.length; i = i + 1) { this.counts[who[i]] = this.counts[who[i]] + 1; }'
+  + '     this.items.push(msg.sender);'
+  + '   }'
+  + ' }';
+
 /** A fresh key the seeded deployment does not hold, so the call's write is an insert. */
 const FRESH_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x77));
 
@@ -356,6 +369,32 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     const chunks = await liveChunks(network, deployment.proxy.categoryId, layout, lock);
     expect(bytesToHex(chunks[0]!.data)).toBe(bytesToHex(grown));
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it('stops the loop write beside the append at the entry\'s own check', async () => {
+    // The next wall of this shape, pinned where it stands: an entry whose run-time loop writes a mapping *and*
+    // which appends to a dynamic value in the same segment is refused at `bump`'s own unnamed check, so the hop
+    // plans neither the loop's nodes nor the run beside them. Measured identical with and without the compiler's
+    // declared-record width rule (`9d50942cf`), so the wall is the hop's plan and not the frame's arithmetic: the
+    // two settlings above (a straight-line write beside the run, and a loop write with no run) are what the rule
+    // was measured on.
+    const { deployment, network, artifacts, funding } = await deploy(LOOP_BESIDE_SOURCE, [], true);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    const workers = [FRESH_LOCK, encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x78))];
+    await expect(callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'bump',
+      args: [workers],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    })).rejects.toThrow(/frame "implementation-master" of Impl\.bump\(\) at line 1: no source message/);
   });
 
   it('settles a chunked mapping value the live list holds beside the append, and broadcasts it', async () => {

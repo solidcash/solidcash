@@ -1,5 +1,5 @@
 /**
- * legacy JobEvent helper facade/legacy JobEvent naming retirement: JobEvent helper API routes through the legacy adapter facade.
+ * The legacy JobEvent helper API routes through the adapter facade.
  * legacy JobEvent naming retirement: JobEvent-branded public aliases deleted; only neutral legacy* exports remain.
  */
 import { describe, expect, it } from 'vitest';

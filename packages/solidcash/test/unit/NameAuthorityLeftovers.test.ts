@@ -1,5 +1,6 @@
 /**
- * sourceCallsite attribution / delegate ABI selector-first join / PredOut preflight claims name-authority and PredOut preflight leftovers.
+ * Source-callsite attribution, delegate ABI selector-first join, and PredOut
+ * preflight claims must not leave name-authority leftovers.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';

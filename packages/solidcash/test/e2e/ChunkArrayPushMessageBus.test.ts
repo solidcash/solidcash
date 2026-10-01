@@ -25,7 +25,13 @@ describe('chunk-array push through a message-bus route', () => {
   const a2 = hexToBin(`aa20${'22'.repeat(32)}87`);
 
   it('first push grows [] -> [a], second push -> [a, b]', async () => {
-    const artifact = compileString(SRC, { chunkedArrays: true, messageBus: true, messageBusKernel: true, optimizeForCompilationSpeed: true, suppressWarnings: true });
+    const artifact = compileString(SRC, {
+      chunkedArrays: true,
+      messageBus: true,
+      messageBusKernel: true,
+      optimizeForCompilationSpeed: true,
+      suppressWarnings: true,
+    });
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { keys: [] }, { saltContract: true },

@@ -220,7 +220,9 @@ describe('kernel proxy → foreign-proxy event compose', () => {
     const rootExecutorIndex = builder.inputs.findIndex((input) => 'contract' in input.unlocker
       && input.unlocker.contract.address === caller.implementation.inner.address);
     expect(rootExecutorIndex).toBeGreaterThan(0);
-    const expectOneSidedEnvelopeMutationRejected = (inputIndex: number, pushIndex: number, domainOffset: number) => {
+    const expectOneSidedEnvelopeMutationRejected = (
+      inputIndex: number, pushIndex: number, domainOffset: number,
+    ): void => {
       const originalInput = builder.inputs[inputIndex];
       const originalUnlocker = originalInput.unlocker;
       builder.inputs[inputIndex] = {

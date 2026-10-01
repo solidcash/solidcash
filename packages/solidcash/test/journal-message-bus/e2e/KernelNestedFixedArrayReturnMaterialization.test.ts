@@ -3,6 +3,7 @@ import { compileString } from 'solidc';
 import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract } from '../../../src/index.js';
+import { isContractUnlocker, type ContractUnlocker } from '../../../src/interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { setupStatefulUtxos } from '../../test-util.js';
@@ -156,12 +157,17 @@ describe('kernel nested fixed-array return materialization', () => {
       })}`)
         .toBe(true);
     }
-    const returnPreimageWitness = (contractName: string) => {
+    const returnPreimageWitness = (contractName: string): {
+      inputIndex: number;
+      unlocker: ContractUnlocker;
+      argumentIndex: number;
+      value: Uint8Array;
+    } => {
       const inputIndex = builder.inputs.findIndex((candidate) => 'contract' in candidate.unlocker
         && candidate.unlocker.contract.artifact.contractName === contractName);
       expect(inputIndex).toBeGreaterThanOrEqual(0);
       const unlocker = builder.inputs[inputIndex].unlocker;
-      if (!('params' in unlocker)) throw new Error(`${contractName} has no return witness`);
+      if (!isContractUnlocker(unlocker)) throw new Error(`${contractName} has no return witness`);
       const argumentIndex = unlocker.abiFunction.inputs.findIndex((argument) =>
         argument.name === '__internal__externalReturnPreimage');
       expect(argumentIndex).toBeGreaterThanOrEqual(0);

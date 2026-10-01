@@ -25,7 +25,9 @@ const abiWord = (identity: Uint8Array): Uint8Array => Uint8Array.of(
 );
 
 describe('Solidity-compatible address identity equality', () => {
-  const build = async (name: 'same' | 'different', left: Uint8Array, right: Uint8Array) => {
+  const build = async (
+    name: 'same' | 'different', left: Uint8Array, right: Uint8Array,
+  ): Promise<TransactionBuilder> => {
     const provider = createTestProvider();
     const contract = new Contract(compileString(SOURCE, { solidityImportCompat: true }), [], { provider });
     const utxo = randomUtxo();

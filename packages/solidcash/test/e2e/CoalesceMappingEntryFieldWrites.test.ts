@@ -95,7 +95,11 @@ describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
   // unrelated ABI-parameter and optimizer costs).
   it('publishes a sequential self-read recipe distinct from an independent second parameter', () => {
     const base = 'struct S { uint256 a; uint256 b; uint256 c; } mapping(uint256 => S) m;';
-    const accesses = (src: string) => compileString(src).abi.find((fn) => fn.name === 'f')?.entryAccesses;
+    const accesses = (
+      src: string,
+    ): ReturnType<typeof compileString>['abi'][number]['entryAccesses'] => (
+      compileString(src).abi.find((fn) => fn.name === 'f')?.entryAccesses
+    );
     const selfRead = accesses(`contract C() { ${base} function f(uint256 k, uint256 x) public { m[k].a = x; m[k].b = m[k].a; require(true); } }`);
     const noSelf = accesses(`contract C() { ${base} function f(uint256 k, uint256 x, uint256 y) public { m[k].a = x; m[k].b = y; require(true); } }`);
     expect(selfRead).toEqual([expect.objectContaining({

@@ -27,7 +27,8 @@ const KERNEL = {
 } as const;
 
 /**
- * path-effect activation/settle-time ExecutionContext settle-time ExecutionContext lifecycle: register → assert → settle (freeze).
+ * Path-effect activation and settle-time ExecutionContext lifecycle:
+ * register → assert → settle (freeze).
  */
 describe('path-effect activation/settle-time ExecutionContext ExecutionContext settle-time lifecycle', () => {
   const storeSource = `contract Store() {

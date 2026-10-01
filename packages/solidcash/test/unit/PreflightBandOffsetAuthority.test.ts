@@ -1,5 +1,6 @@
 /**
- * preflight band-offset authority: preflight layout assert covers published non-zero valueChunkBandOffset (+ optional PredOut).
+ * Preflight layout assertions cover published non-zero valueChunkBandOffset
+ * (and optional PredOut).
  */
 import { describe, expect, it } from 'vitest';
 import {

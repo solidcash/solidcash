@@ -30,7 +30,9 @@ const attach = (source: string): { artifact: Artifact; contract: StatefulContrac
   };
 };
 
-const abiEntry = (artifact: Artifact, name: string, types: readonly string[]) => {
+const abiEntry = (
+  artifact: Artifact, name: string, types: readonly string[],
+): { entry: Artifact['abi'][number]; selector: string } => {
   const entry = artifact.abi.find((candidate) => candidate.name === name
     && candidate.inputs.filter((input) => !input.name.startsWith('__internal__'))
       .map((input) => input.type).join(',') === types.join(','));
@@ -126,9 +128,7 @@ describe('StatefulContract overload selector identity', () => {
     const derive = vi.spyOn(contract as never, '_deriveReturnValue' as never).mockImplementation((
       _name: string, _args: FunctionArgument[], _calls: unknown, exact: Artifact['abi'][number],
     ) => Promise.resolve(exact.selector) as never);
-    const callStatic = contract.callStatic as unknown as Record<
-      string, (...args: FunctionArgument[]) => Promise<unknown>
-    >;
+    const callStatic = contract.callStatic as unknown as Record<string, (...args: FunctionArgument[]) => Promise<unknown>>;
 
     await expect(callStatic[signatureOf(intEntry.entry)](4n)).resolves.toBe(intEntry.selector);
     await expect(callStatic[signatureOf(boolEntry.entry)](true)).resolves.toBe(boolEntry.selector);

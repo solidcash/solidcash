@@ -20,7 +20,14 @@ const SOURCE = `pragma solidcash >=0.8.0;
   }
 `;
 
-const record = (value: bigint, status: bigint, noteLength: number) => ({
+const record = (
+  value: bigint, status: bigint, noteLength: number,
+): {
+  value: bigint;
+  detail: { tag: Uint8Array; status: bigint };
+  note: Uint8Array;
+  marks: Uint8Array[];
+} => ({
   value,
   detail: { tag: Uint8Array.of(Number(value), Number(value) + 1), status },
   note: Uint8Array.from({ length: noteLength }, (_unused, index) => Number(value) + index),

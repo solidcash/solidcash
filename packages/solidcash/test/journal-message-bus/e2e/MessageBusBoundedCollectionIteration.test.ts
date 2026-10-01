@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import {
-  Contract, SignatureTemplate, StatefulContract, messageBus, type TransactionBuilder,
+  Contract, SignatureTemplate, StatefulContract, type TransactionBuilder,
 } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../../src/utils.js';

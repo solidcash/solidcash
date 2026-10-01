@@ -23,7 +23,14 @@ contract NativeTerminal() {
   function echo(Rec[] values) public pure returns (Rec[]) { return values; }
 }`;
 
-const record = (value: bigint, status: bigint, note: number[]) => ({
+const record = (
+  value: bigint, status: bigint, note: number[],
+): {
+  value: bigint;
+  detail: { tag: Uint8Array; status: bigint };
+  note: Uint8Array;
+  marks: Uint8Array[];
+} => ({
   value,
   detail: { tag: Uint8Array.of(Number(value), Number(value) + 1), status },
   note: Uint8Array.from(note),

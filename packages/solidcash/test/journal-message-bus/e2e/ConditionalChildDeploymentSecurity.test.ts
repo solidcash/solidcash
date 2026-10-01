@@ -180,7 +180,9 @@ describe('explicit conditional child deployment transcript security', () => {
     const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const firstGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
     const secondGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
-    const build = (second: boolean, supplySecond = second) => messageBus.compose({
+    const build = (
+      second: boolean, supplySecond = second,
+    ): Promise<TransactionBuilder> => messageBus.compose({
       preparedCalls: [
         { contract: driver, functionName: 'run', args: [true, second] },
         { contract: factory, functionName: 'materialize', args: [true] },

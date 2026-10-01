@@ -161,7 +161,7 @@ describe('kernel cutover token-container compose', () => {
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const formatVm = (value: unknown): string => JSON.stringify(
       value,
-      (_key, inner) => (typeof inner === 'bigint' ? inner.toString() : inner),
+      (_key, nestedValue) => (typeof nestedValue === 'bigint' ? nestedValue.toString() : nestedValue),
     );
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
       const result = vm.evaluate({ inputIndex, sourceOutputs, transaction });

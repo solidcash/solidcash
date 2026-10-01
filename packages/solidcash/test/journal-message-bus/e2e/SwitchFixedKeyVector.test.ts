@@ -23,7 +23,7 @@ const SOURCE = `contract SwitchedFiniteKeys() {
   function check(int key, int expected) public { require(this.records[key] == expected); }
 }`;
 
-const compile = (kernel: boolean) => {
+const compile = (kernel: boolean): ReturnType<typeof compileString> => {
   const failures: unknown[] = [];
   const artifact = compileString(SOURCE, {
     forceStateful: true,
@@ -68,7 +68,7 @@ describe('switch fixed key vectors', () => {
         await expect(apply.send()).resolves.toBeDefined();
         for (const [key, value] of [
           [base, 20n], [selected, 21n], [base + 6n, 22n],
-          ...untaken.map((key) => [key, 0n] as const),
+          ...untaken.map((unselectedKey) => [unselectedKey, 0n] as const),
         ] as const) await expect(contract.call.check(key, value).send()).resolves.toBeDefined();
       }
     }

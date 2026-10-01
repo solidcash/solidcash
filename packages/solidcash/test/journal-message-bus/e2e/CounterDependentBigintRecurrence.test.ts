@@ -87,8 +87,8 @@ describe('counter-dependent bigint recurrence', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'foldXor'))
       .toMatchObject({ eligible: true });
     for (const name of ['divide', 'divideBeforeZero', 'remainder', 'foldMixed']) {
-      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name)
-        ).toMatchObject({ eligible: true });
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: true });
     }
 
     const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });

@@ -90,7 +90,7 @@ const mergeFrame = () => ({
   outputs: [point()],
 });
 
-const selfdestructTopology = () => ({
+const selfdestructTopology = (): Record<string, unknown> => ({
   version: 2,
   kind: 'selfdestruct',
   coordinate: 'participant',

@@ -36,7 +36,11 @@ const write = (
 
 describe('progressive route probe progress', () => {
   it('bounds a probe by only its reachable physical entry coordinates', () => {
-    const carrier = (txid: string, offsets: number[]) => ({
+    const carrier = (txid: string, offsets: number[]): {
+      categoryId: string;
+      masterUtxo: { txid: string; vout: number };
+      blockLayout: { slots: { kind: string; offset: number }[] };
+    } => ({
       categoryId: '71'.repeat(32),
       masterUtxo: { txid: txid.repeat(64), vout: 0 },
       blockLayout: {

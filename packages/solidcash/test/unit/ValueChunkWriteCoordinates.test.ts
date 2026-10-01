@@ -4,9 +4,10 @@ import {
   rebaseValueChunkWriteDescriptors,
   selectBuilderValueChunkOutputBase,
   transportedContinuationLocalBase,
+  type ValueChunkWriteDescriptor,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
-const write = (outputBase: number) => ({
+const write = (outputBase: number): ValueChunkWriteDescriptor => ({
   categoryId: '11'.repeat(32),
   collection: 'records',
   collectionSignature: 'records:mapping(bytes32 => Record[])',

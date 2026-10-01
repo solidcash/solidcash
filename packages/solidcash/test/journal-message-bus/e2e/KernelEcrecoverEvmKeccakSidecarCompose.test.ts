@@ -37,7 +37,7 @@ const vmRejects = (candidate: TransactionBuilder): boolean => {
 const leBytes = (value: string): Uint8Array =>
   hexToBin(value.replace(/^0x/, '')).reverse();
 
-const dummySc = (v: number) => ({
+const dummySc = (v: number): Parameters<typeof probeEcrecoverSplit>[2] => ({
   txid: (v ? 'bb' : 'aa').repeat(32),
   vout: v,
   satoshis: 100000n,

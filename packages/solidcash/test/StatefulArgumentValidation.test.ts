@@ -5,7 +5,7 @@ import { compileString } from './direct-compile.js';
 import { createTestProvider } from './test-util.js';
 
 describe('stateful ABI argument validation', () => {
-  const createFixedWidthContract = () => {
+  const createFixedWidthContract = (): StatefulContract => {
     const artifact = compileString(`contract FixedWidthArgument() {
       bytes32 stored;
       function set(bytes32 value) public {

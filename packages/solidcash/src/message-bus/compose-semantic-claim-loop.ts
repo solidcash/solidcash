@@ -110,7 +110,7 @@ export interface RunComposeSemanticClaimLoopContext {
   descriptorsLength: number;
   resultPropagationDepth: number;
   runtime: Pick<
-    ComposeAssemblyRuntime,
+  ComposeAssemblyRuntime,
   | 'constraintFixpoint'
   | 'rebalanceFeeTail'
   | 'eventLockingBytecodes'
@@ -159,7 +159,7 @@ export async function runComposeSemanticClaimLoop(
   let claimedSidecarEffects: readonly AtomicSidecarSlotEffect[] = provisionalSidecarEffects;
   let claimedComputedValueChunks: readonly ComputedValueChunkClaim[] = [];
   // Every value below is a claim which can feed a later assembly pass. Usage is one discovery pass per
-  // mutable claim plus a confirmation pass (`mutableClaimCount + 2`). published semantic-derivation ceiling: the compiler publishes
+  // mutable claim plus a confirmation pass (`mutableClaimCount + 2`). The compiler publishes
   // `resourceBudgets.maximumSemanticDerivationPasses` as the worst-case ceiling — refuse when usage
   // would exceed that plan-published bound (replaces the old undocumented `invocations + 5` class).
   const mutableClaimCount = returning.length + fixedEventSlots.length + resourceSlots.length
@@ -239,8 +239,9 @@ export async function runComposeSemanticClaimLoop(
     const derivedResults = deriveReturnResults(
       finalized, provisional, claimedResults, missingReturnParticipants,
     );
+    const previousResults = claimedResults;
     if (returning.some((invocation) =>
-      derivedResults[invocation.index] !== claimedResults[invocation.index])) {
+      derivedResults[invocation.index] !== previousResults[invocation.index])) {
       traceSemanticClaims('returns', pass, { previous: claimedResults, observed: derivedResults });
       // Some compiler-authored arguments contain an earlier invocation's result inside a larger expression
       // (for example a struct field or abi.encodePacked). Once the VM exposes an updated authenticated result,
@@ -260,18 +261,12 @@ export async function runComposeSemanticClaimLoop(
     // but do not restart until fixed resource/value/token/sidecar/event observations have also been collected;
     // otherwise an earlier provisional class can permanently starve a later class which it needs to pass.
     const semanticEffectClaims: ComposeSemanticEffectClaims = {
-      get computedValueChunks() { return claimedComputedValueChunks; },
-      set computedValueChunks(value) { claimedComputedValueChunks = value; },
-      get resourceEffects() { return claimedResourceEffects; },
-      set resourceEffects(value) { claimedResourceEffects = value; },
-      get valueEffects() { return claimedValueEffects; },
-      set valueEffects(value) { claimedValueEffects = value; },
-      get tokenEffects() { return claimedTokenEffects; },
-      set tokenEffects(value) { claimedTokenEffects = value; },
-      get sidecarEffects() { return claimedSidecarEffects; },
-      set sidecarEffects(value) { claimedSidecarEffects = value; },
-      get eventEffects() { return claimedEventEffects; },
-      set eventEffects(value) { claimedEventEffects = value; },
+      computedValueChunks: claimedComputedValueChunks,
+      resourceEffects: claimedResourceEffects,
+      valueEffects: claimedValueEffects,
+      tokenEffects: claimedTokenEffects,
+      sidecarEffects: claimedSidecarEffects,
+      eventEffects: claimedEventEffects,
     };
     const {
       semanticObservations,
@@ -315,10 +310,11 @@ export async function runComposeSemanticClaimLoop(
     const semanticClaimsChanged = applySemanticClaimObservationPass(semanticObservations);
     let stable = !semanticClaimsChanged;
     if (JSON.stringify(derivedEventEffects) !== JSON.stringify(claimedEventEffects)) stable = false;
+    claimedComputedValueChunks = semanticEffectClaims.computedValueChunks;
     if (stable) {
       if (missingReturnParticipants.size > 0) {
         throw new Error(
-          `messageBus: stable graph did not expose return vectors for participant(s) `
+          'messageBus: stable graph did not expose return vectors for participant(s) '
           + [...missingReturnParticipants].join(', '),
         );
       }

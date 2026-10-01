@@ -652,21 +652,21 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
         expect([planned(new Uint8Array(0)), planned(Uint8Array.of(1))]).toStrictEqual([true, false]);
       }, 300_000);
 
-    it('posting without an allowlist (18) stops at its push, its loop running no turn', async () => {
-      const outcome = await enter(world, 'Desk', 'post', [TITLE, 100n, CAROL_LOCK, []], CREATOR);
-      // The store reads' `true` reaches the root and the frame declares the records `postUnlisted` declares, which
-      // settles below; `post`'s block layout also publishes the loop's conditional entry slot, which a plan with no
-      // turn leaves unstated, and the frame fails an unnamed check at its push. Owner: the SDK hop's loop plan
-      // (`proxy/entry-writes.ts`, `planHopLoopBatch`) beside the compiler's conditional loop slot.
-      const line = unnamedRefusalLine(outcome, 'post');
-      expect(line).toBeGreaterThanOrEqual(lineOf('function post('));
-      expect(line).toBeLessThan(lineOf('function open('));
-      const draft = outcome.draft!;
-      const byIndex = new Map(draft.layout.participants.map((placed) => [placed.index, placed.id]));
-      expect(draft.blockOf('implementation-master').segments[0]!.map((entry) => byIndex.get(entry.in)))
+    it('posting without an allowlist (18) settles, its loop running no turn', async () => {
+      const settled = expectSettled(await enter(world, 'Desk', 'post', [TITLE, 100n, CAROL_LOCK, []], CREATOR));
+      // The loop takes no turn, so the frame declares no node for the collection `post`'s layout lists a slot for:
+      // the record the entry's own code names for the dynamic value's run is the one past its data record, and the
+      // walk that names a record by its position in the segment's declared list stays inside that list. The layout
+      // still publishes the conditional slot the loop would fill.
+      const byIndex = new Map(settled.draft.layout.participants.map((placed) => [placed.index, placed.id]));
+      expect(settled.draft.blockOf('implementation-master').segments[0]!.map((entry) => byIndex.get(entry.in)))
         .toStrictEqual(['proxy-record-0', 'proxy-record-1', 'dynamic-chunk-tasks-0']);
       expect(compiled().Desk!.abi.find((entry) => entry.name === 'post')!.blockLayout!.slots.at(-1))
         .toStrictEqual({ kind: 'entry', offset: 3, slotIndex: 0, conditional: true });
+      const tasks = await tasksOf(world);
+      expect(tasks).toHaveLength(2);
+      expect([tasks[1]!.state, tasks[1]!.gated, tasks[1]!.title, tasks[1]!.amount])
+        .toStrictEqual([0n, false, TITLE, 100n]);
     }, 300_000);
 
     it('a thread message from the creator (47) stops at its first read of the task array', async () => {
@@ -808,18 +808,19 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
     }, 300_000);
 
     it('with the allowlist loop stepped around, posting (18) settles and stores the task', async () => {
-      // Run last: it appends a second task. The store reads' `true` reaches the root (PW8).
+      // Run last: it appends a task of its own, a third beside the one the setup opened and the one the case above
+      // appended. The store reads' `true` reaches the root (PW8).
       const settled = expectSettled(await enter(world, 'Desk', 'postUnlisted', [TITLE, 100n, CAROL_LOCK], CREATOR));
       expect(settled.draft.blockOf('implementation-master').calls.map((call) => binToHex(call.result)))
         .toStrictEqual(['51', '51', '']);
       const tasks = await tasksOf(world);
-      expect(tasks).toHaveLength(2);
-      const task = tasks[1]!;
+      expect(tasks).toHaveLength(3);
+      const task = tasks[2]!;
       const roles = task.roles as Readonly<Record<string, Uint8Array>>;
       expect([task.state, task.gated, task.title, task.amount]).toStrictEqual([0n, false, TITLE, 100n]);
       expect([binToHex(roles.creator!), binToHex(roles.arbiter!)])
         .toStrictEqual([binToHex(ALICE_LOCK), binToHex(CAROL_LOCK)]);
-      expect(postedNotes(world, settled)).toStrictEqual([{ id: 1n, kind: 0n, data: binToHex(utf8ToBin(TITLE)) }]);
+      expect(postedNotes(world, settled)).toStrictEqual([{ id: 2n, kind: 0n, data: binToHex(utf8ToBin(TITLE)) }]);
     }, 300_000);
   });
 

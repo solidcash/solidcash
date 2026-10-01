@@ -81,6 +81,7 @@ import {
   KERNEL_JOURNAL_DISPOSITION_COMMITMENT_TAG_HEX,
   kernelJournalDispositionManifestDigest,
   blockInputSize,
+  isOutputOnlyBlockSlot,
   FrameKind,
   computeFunctionSelector,
   computeFunctionSignature,
@@ -3344,7 +3345,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         { function: this.currentFunction.name },
       );
     }
-    return blockInputSize(layout);
+    // A slot a body's own run-time loop writes holds no record in the frame's declared block until a turn mints
+    // one, so it is not part of the block that is always there: a loop that takes no turn declares nothing where
+    // the slot sits, and the run is addressed past the records that are always declared. The records the turns do
+    // add are counted where the run is addressed.
+    return blockInputSize(layout) - layout.slots.filter(
+      (slot) => slot.kind === 'entry' && slot.slotIndex !== undefined && !isOutputOnlyBlockSlot(slot)
+        && this.entrySlots[slot.slotIndex]?.inLoop === true,
+    ).length;
   }
 
   /**
@@ -3359,7 +3367,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.perCallMaster) {
       this.emit(encodeInt(BigInt(this.perCallDynamicChunkWidth())), loc);
       this.emit(Op.OP_ADD, loc);
+      this.emitLoopDeclaredNodeCount(loc, 1);
     }
+  }
+
+  /**
+   * Adds the node records the body's own run-time loops declare to the coordinate a chunk run is addressed at.
+   *
+   * A loop's nodes are declared as its turns mint them, so how many stand between the frame's own record block and
+   * the run is a fact about the running execution rather than about the layout: a loop that takes no turn declares
+   * none, and the run sits at the block's own width. The frame carries the count, so a coordinate built where the
+   * code holds it states the records the run really follows.
+   */
+  private emitLoopDeclaredNodeCount(loc: SingleLocationData, extraStackOffset = 0): void {
+    if (!this.perCallMaster || !this.runtimeLoopEntryOutputCountActive) return;
+    const depth = this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT, true);
+    if (depth < 0) return;
+    this.emit(encodeInt(BigInt(depth + extraStackOffset)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_ADD, loc);
   }
 
   /**
@@ -32123,6 +32149,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.perCallMaster) {
         this.emit(encodeInt(BigInt(this.perCallDynamicChunkWidth())), loc);
         this.emit(Op.OP_ADD, loc);
+        // The run follows the nodes the body's own loops declared for this frame, which is a count the frame
+        // carries: a loop that took no turn declared none.
+        this.emitLoopDeclaredNodeCount(loc, 1);
         // The read addresses the same record the write does, so it states the same batch surplus: without it the
         // run's coordinate names the record a spliced target's extra declaration displaced.
         this.emitSortedBatchRecordSurplus(loc);

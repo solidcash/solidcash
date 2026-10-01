@@ -18,14 +18,13 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * behind `allowedWorkers_.length > 0` and is not reached by that call, so no loop is under test here.
  *
  * Measured: the append, its field writes and the event **settle** through the shipped hop, on the mock network
- * (45 s for the pair). So the title's refusal is not the append by itself. Adding the entry's guarded write -
- * `if (allowedWorkers.length > 0) { ... }`, which the title's call does not take - refuses, and that case is this
- * file's wall: it is the same source as the settling one plus one slot, so the two cases together say which
- * declaration the entry's own code names and the plan does not.
- *
- * The file holds both boundaries: a wide struct push with every field written and one payload event is served, so a
- * change that stops serving it is a regression; and the guarded write is refused at the entry's own declared-record
- * walk, with the operands measured beside the case below.
+ * (45 s for the pair). Adding the entry's write - `if (allowedWorkers.length > 0) { ... }`, which the title's call
+ * does not take - refused for as long as the frame addressed its dynamic-value run one record too far: the layout
+ * lists a slot for the collection the write's loop fills, the loop takes no turn on this call, and the frame
+ * therefore declares nothing where that slot sits. The run's coordinate counted the slot anyway, so the walk that
+ * names the run's record by its position read one past the segment's declared records. The three cases here are the
+ * two boundaries of that arithmetic: the same entry without the write, with it, and with the write and the payload
+ * event, all of which settle.
  */
 const SOURCE = (fields: string, event: string, tail = ''): string => 'pragma solidcash ^0.13.0;'
   + ' contract Impl {'
@@ -86,26 +85,20 @@ const EVENT = '     emit PostEvent(id, EventData({ type_: uint8(1), who: abi.enc
 const WITH_THE_EVENT = SOURCE(FIELD_WRITES, EVENT);
 const WITHOUT_THE_EVENT = SOURCE(FIELD_WRITES, '');
 /**
- * The same entry with the guarded write the fixture's own entry holds, called with an empty worker list.
+ * The same entry with the write the fixture's own entry holds, called with an empty worker list.
  *
- * `if (allowedWorkers.length > 0)` is false for the call under test, so the loop's turns never run. The ladder's
- * first red title is this shape: it appends its element and then writes a worker mapping through a call its own
- * arguments make false. Measured, in seconds rather than in the title's twenty minutes:
+ * `if (allowedWorkers.length > 0)` is false for the call under test, so the loop's turns never run: the collection
+ * the loop fills holds no node in the frame's declared block, and the frame declares nothing where the slot the
+ * layout lists for it sits. The record the frame's own code names for the dynamic value's run is therefore the
+ * first record past the frame's data record, exactly as in the two cases above.
  *
- *   frame "implementation-master" of Impl.publish() at line 1: no source message
- *   (Program failed an OP_VERIFY operation.)
- *
- * The failing instruction is the declared-record ordinal walk's `ordinal < count` check (`OP_SWAP OP_1 OP_PICK
- * OP_3 OP_PICK OP_LESSTHAN OP_VERIFY` in the outlined helper that carries it). Measured at that check: the count
- * the segment declares is 3 - the plan is `[[3, 3], [65535, 5], [65535, 6]]`, the frame's own record and two
- * records the transaction creates - and the ordinal the body computed is 3, one past the segment's last record.
- *
- * The offset that produces it is slot arithmetic: the body names a created record by the coordinate the loop
- * computed, and that coordinate is the frame's record base plus the slot's own offset, which counts
- * `dataNftCount + 1 + every earlier entry slot the frame does not batch`. The guarded write adds an entry slot
- * (and its loop's trailing records) to the body's layout, so every record after it moves up two positions, while
- * the plan declares nothing for a loop that takes no turns. The same source without the guarded write settles,
- * which is what makes this two positions and not the append itself.
+ * Measured while the run's coordinate counted that slot anyway, one record more than the frame declares: the
+ * declared-record ordinal walk's `ordinal < count` check (`OP_SWAP OP_1 OP_PICK OP_3 OP_PICK OP_LESSTHAN
+ * OP_VERIFY` in the outlined helper that carries it) failed with the segment declaring three records - the frame's
+ * own data record and the two records the transaction creates - and the body computing ordinal three, its index as
+ * the read loop's turns reached it. The check names a record's position in the segment's declared list, so a
+ * coordinate that counts a record the frame did not declare lands past the list's end; a slot a run-time loop fills
+ * is declared per turn, so it belongs to the count the loop itself carries rather than to the layout's width.
  */
 const GUARDED_WRITE_SKIPPED = SOURCE(FIELD_WRITES, '',
   '     if (allowedWorkers.length > 0) { setAllowed(id, allowedWorkers); }');
@@ -199,11 +192,8 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the entry that appends a str
     expect(outcome.accepted, outcome.objection).toBe(true);
   }, 300_000);
 
-  it('refuses them while the entry holds the guarded write the call does not take', async () => {
+  it('settles them while the entry holds the write the call does not take', async () => {
     const outcome = await post(GUARDED_WRITE_SKIPPED, '5');
-    expect(outcome.accepted).toBe(false);
-    // The entry's own declared-record walk names a record its segment does not declare.
-    expect(outcome.objection).toMatch(/did not settle through the proxy: frame "implementation-master" of /);
-    expect(outcome.objection).toMatch(/no source message \(Program failed an OP_VERIFY operation\.\)/);
+    expect(outcome.accepted, outcome.objection).toBe(true);
   }, 300_000);
 });

@@ -2499,9 +2499,14 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
       : { token: libauthTokenDetailsToSolidCashTokenDetails(source.token) };
     const utxo: Utxo = { txid: real.txid, vout: real.vout, satoshis: source.valueSatoshis, ...token };
     const outpoint = `${utxo.txid}:${utxo.vout}`;
+    hopTrace(`participant ${placed.index} ${placed.id} ${placed.kind} ${outpoint}`);
     const shared = resolved.get(outpoint);
-    hopTrace(`participant ${placed.index} ${placed.id} ${placed.kind} ${outpoint}`
-      + (shared === undefined ? '' : ` shared with ${shared}`));
+    // Two participants on one outpoint is what the builder refuses, and both ids are wider than one trace line, so
+    // the pair gets a line each.
+    if (shared !== undefined) {
+      hopTrace(`shared ${outpoint} ${shared}`);
+      hopTrace(`shared ${outpoint} ${placed.id}`);
+    }
     resolved.set(outpoint, placed.id);
     // The sequence the derived hop carries, so the broadcast is the same transaction the frames were evaluated
     // against rather than one the builder's own default rewrites.

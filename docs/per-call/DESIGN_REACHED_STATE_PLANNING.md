@@ -1,8 +1,10 @@
 # Planning against the reached state: design, and a stage-1 prototype
 
-Status: design (2026-10-01, user direction). Stage 1 is prototyped as `patches/reached-state-arguments.diff`, not
+Status: design (2026-10-01, user direction). Stage 1 was prototyped as `patches/reached-state-arguments.diff`, not
 applied. Lane: the SDK hop (`packages/solidcash/src/per-call/proxy/`), which is the ladder stream's; the patch is the
 hand-over. The pins cited are those at `73fefbd2f`, the HEAD the patch is based on and checked against (section 4).
+Superseded for results: section 5 records the execution-order spike that landed on `per-call-next` in place of the
+fixed point (arguments and loop bounds from an earlier result, in any frame), and what it found about views.
 
 ## 1. The problem
 
@@ -262,3 +264,215 @@ The same 34 of 34 both ways at `2a85cd76f` and at `82e71560f`. Also green with t
 `call-argument-from-own-write` (11/11) at `82e71560f`, and `reentry-payout` (3/3), `deep-arbitration` (3/3),
 `origin-gated-payout` (6/6) and `job-updates` (23/23) at `2a85cd76f`. Their entries' arguments read no earlier
 result, so the patch plans and settles them exactly as HEAD does.
+
+## 5. Execution-order planning: the spike
+
+Status: spike (2026-10-01), landed on `per-call-next` with this section; measured at `171d1528b`, re-checked on the
+tip it was committed to (`ee1b55310`). It replaces the stage-1 patch of section 4:
+`patches/reached-state-arguments.diff` is superseded and should not be applied.
+
+### 5.1 The idea
+
+The fixed point of section 3 states a stand-in for every value the transaction reaches and settles the whole hop
+until nothing moves. The kernel's planner (`kernel-beta-candidate`, read only) works the same way: producer probes
+seed the stand-ins, every pass is a whole-transaction trace, a pass rebuilds when an argument or a reached call
+moves, the budget is the claims plus two, and a fingerprint stops a cycle; it avoids records an earlier call wrote
+only by composing every call to a contract into one input, which per-call does not do.
+
+Per-call allows something the kernel cannot. The validator checks frames in execution (V6) order and each frame is
+a body of its own, so a frame's result depends only on its call data and the records it reads, never on a frame
+after it. The hop already places frames in V6 order (a pre-order walk: a site's callee and its subtree before the
+next site). So the planner walks the execution and stops at the first site whose value it cannot state yet:
+
+```
+reached = {}
+loop:
+  plan = planHopExternalCalls(reached)       // stops before the first site that reads an unlearned result
+  if plan.blocked:
+    settle only the frames of the calls the site reads (and their subtrees), on the stopped plan
+    reached += what they returned            // keyed by the calling frame's path and the call's site
+    continue
+  settle the whole plan, starting each frame from what the stops learned
+```
+
+Nothing is stated that the execution does not compute, so nothing is deferred: a refusal while settling a stop is
+that frame's verdict on its real inputs, and a refusal while planning after a stop is a plan-time refusal on real
+values. Each stop learns at least one result no earlier stop learned, so the loop ends (`MAXIMUM_PLAN_STOPS`, 64,
+names a hop that would not).
+
+### 5.2 The prototype
+
+Three hop files, no compiler, program, witness or composer change:
+
+- `external-calls.ts`. `planEntryCalls(ctx, caller, enteredBy, path)` walks its sites in order (pass one is a loop
+  that can stop): `waitingProducers` names the earlier sites of the same frame whose result a loop's domain or a
+  visited site's argument sources read and no settle has learned; the walk stops there (`HopPlanBlock`: `path`,
+  `where`, `reads` = `argument` or `loop-bound`, `producers`). A site whose results are learned resolves its
+  arguments through `argumentReturnsOf` and `makeCallResolver({ argumentReturns })`, and `occurrenceCountOf`
+  evaluates a loop's domain with them (`conditionExternalReturns`). Pass two places the resolved sites in order and
+  stops after a callee whose own walk stopped (`ctx.stop`); `placeCalleeMasters` and `placeProxiedCallee` place no
+  later visit and mark the frames above the stop `truncated`. Every frame carries its `path` (`/site.visit` per
+  level, `''` for the entry; a proxied reach's two frames share it) and the site that names it (`origin`).
+  `knownResultsOf` hands a frame only its own results. `HopExternalPlan.blocked` and
+  `HopExternalPlanOptions.reachedResults` (keyed `path|callsiteId`) carry the loop's state.
+- `call-resolution.ts`. `HopCallInputs.argumentReturns` and `CallResolver.resolveArgument`, as in stage 1: an
+  argument may read a learned result, a target never does.
+- `deploy.ts`. `planAndSettleHop` gains the stop branch: the reach check on the stopped plan (all its values are
+  real, so a clash there stands), `producerFramesOf`, `settleHopCallees(options, only)` (factored out of
+  `settleHop`) with `settleCallees({ only, seed })`, `reachedCallResults` (a proxy's result through `retvalFrom`, as
+  `producedCallResults`), and `keepFrameLearning`/`seedOf`, which key what a stop learned (each frame's `retval`,
+  unstated write views and event payloads) by `path|functionName` and hand it to the same frames in every later
+  plan, including the full plan's settle. `HopPlanOptions.truncated` and `resolvedWriteSegment({ truncated })`
+  declare a truncated frame's write past its last stated call in its last segment: a stopped plan never settles
+  that frame, it only has to compose.
+
+A stop happens only where the base refuses: an argument or a loop bound reading an earlier result was refused by
+`resolveCallArguments` and `occurrenceCountOf` at plan time. A hop without one plans and settles exactly as before:
+the seed is absent, `only` is absent, the conditional re-plan of `f2e34600d` is untouched.
+
+### 5.3 Results
+
+| Case | Base `171d1528b` | Execution order |
+| --- | --- | --- |
+| `fan-in` take | refused while planning: `IJournal.post` argument 1 (`noteCount`'s count) | two stops: settles `noteCount`'s two frames alone (`learned=[\|1:1]`), then `feeOf`'s (`[\|4:250]`); refused while planning `pay`: `Vault.pay()`'s `deals` write (stage 3, the wall section 4 named) |
+| `fan-in` pay start | refused while planning: `IVault.pay` argument 3 (`feeOf`'s fee) | one stop (`[\|2:250]`), then the same `deals` refusal |
+| `packed-address-argument` arbitrate | refused while planning: argument 1 (`split`'s `uint256[5]`) | one stop: settles `split`'s frame alone, which refuses its own record write (`calls = calls + 1`; stage 3). The consumer is never planned (`stated` holds `split`'s argument only); stage 1 settled the consumer's delegate frame first (3.4's order problem) |
+| `reentry-payout`, first case | refused while planning: the loop's bound | one stop inside `Claimer.claim` (path `/0.0/0.0`, depth 2): settles `readRecord`'s frame, learns 4, plans four turns; refused by the reach check, the second case's wall (stage 1b and 2 of section 3.7) |
+| `deep-arbitration`, first case | refused while planning: the loop's bound | one stop (path `/1.0/2.0`), learns 5, refused by the reach check as its second case |
+| `call/argument-from-earlier-result` (new) | refused while planning | `chain` (price, `twice(price)`, `thrice(...)`, stored) and `sum` (a loop bounded by a returned count) settle and broadcast, with the values the bodies computed |
+| `call/proxy-external-calls-published` loop width | refused while planning | with the facade seeded, the plan stops before `getJobs`'s loop with `jobsLength` placed (the pin is flipped to that) |
+
+Unchanged, each run alone with the prototype at `171d1528b`, `740139083`, `0af2d6331` and `ee1b55310` (the tip it
+was committed on): the nine hop suites (`call/proxy-call` 4, `call/proxy-external-calls` 7,
+`call/proxy-proxied-callee-return` 5, `call/write-segments-settlement` 3, `call/conditional-return-gated-arms` 1,
+`call/branch-predicate-after-arm-write` 3, `call/loop-turns` 7, `deploy/proxy-entry-writes` 7, `toys/proxied-entry` 7:
+44 of 44, as without it at each); `call/proxy-external-calls-loop-state` (6, 1 skipped), `reverts/zero-target-call`
+(3), `call/proxy-guarded-write-call` (2), `call/proxy-callee-proxy` (3), `call/reach-write-check` (4) and
+`call/two-created-heads` (4); under `PER_CALL_AHEAD=1` the four ahead files (19 of 19 with the flipped pins) and
+`origin-gated-payout` (6), and, at the first two, `packed-integer-argument` (6), `call-argument-from-own-write` (11)
+and `job-updates` (23) on their own pins. (The tip moved under the spike three times: genesis-only heads and a
+batch-verification fix; each re-sync was re-run before the commit.) Ladder titles whose first wall was one of these refusals
+(`PLAN_MARKETPLACE_66.md`, "Walls ahead": MS3, MS4, MS7, arbitrate) were not run; their rows move to the walls
+above.
+
+### 5.4 Cost
+
+Measured in one scratch copy at `171d1528b`, each variant installed in turn, every count the same in two untraced
+runs and a traced one (wall time within 5 %); "attempts" are frame attempts, each a full composition build
+(`buildHopPlan` and `composeDraft`) and one or more VM runs, counted from `PER_CALL_HOP_TRACE=1`; VM runs are counted
+by wrapping the machine's `evaluate`. `chain` and `sum` are `call/argument-from-earlier-result`'s entries; `deep` is
+`chain` with two more links (`twice`, `thrice`), in an uncommitted measurement copy of that file.
+
+| Shape | Stage-1 fixed point | Execution order |
+| --- | --- | --- |
+| `chain`: two dependent arguments | 3 settles, 22 attempts, 100 VM runs, 2.9 s | 2 stops and 1 settle, 10 attempts, 52 runs, 1.5 s |
+| `deep`: four dependent arguments | 5 settles, 56 attempts, 218 runs, 7.1 s | 4 stops and 1 settle, 16 attempts, 74 runs, 2.4 s |
+| `sum`: a loop bounded by a result | refused while planning | 1 stop and 1 settle, 11 attempts, 61 runs, 1.9 s |
+| `fan-in` take, to the reach check (1) | 2 settles, 22 attempts, 58 runs, 4.6 s | 2 stops, 6 attempts, 16 runs, 0.57 s |
+| `fan-in` pay start, to the reach check (1) | 2 settles, 14 attempts, 42 runs, 2.2 s | 1 stop, 3 attempts, 8 runs, 0.30 s |
+| `fan-in` take, as it stands | refused while planning (`deals`), 0 runs, 49 ms | 2 stops, 6 attempts, 16 runs, 0.59 s, then the same refusal |
+
+(1) With `calleeEntryWrites`'s refusal bypassed for the measurement only, which is how the hop planned `pay` at
+`82e71560f`, where section 3.10 measured two settles, 15.4 s and 5.9 s with the trace on (another base and load).
+Both approaches then meet the reach check (`approve` and `transferFrom` write `allowances[desk][vault]`); stage 1
+settles every frame twice and stops inside `pay` at `transferFrom`, execution order settles two leaf reads.
+
+Why: a stop settles only the frames of the calls the waiting site reads (two attempts for a leaf that returns,
+three for a proxied one), and the full settle starts each frame from what the stops learned (one attempt for a frame
+already settled). The fixed point settles every frame on every pass, so its cost grows with dependency depth times
+the number of frames; execution order grows with the number of frames plus the number of stops. Re-planning from the
+start at each stop is cheap beside a settle (a plan-time refusal at the base takes 10 to 50 ms).
+
+### 5.5 How far it extends
+
+- **Arguments and loop bounds, at any depth.** Done in the prototype: the hop's own entry and callee frames alike,
+  through proxies, keyed by frame path. Not waited for, and refused as before: a result a loop returns once per turn,
+  a result of a site the plan places no call for, and a loop whose domain the artifact does not publish.
+- **Conditions.** Unchanged (`f2e34600d`'s full settle and re-plan), because those shapes are served today. A
+  condition that reads an unlearned result would be one more stop: decided in the next plan from the learned result,
+  in callee frames too, where a gated site is planned today as no visit and never revisited.
+- **Targets** computed from a result: the same stop, once `resolveCallTarget` reads through `resolveArgument`.
+- **A record an earlier frame wrote (re-entry, stage 3): not without a compiler change.** A result is exposed when
+  its frame returns, which precedes its consumer in V6 order; a view a frame writes in the middle of its body is
+  not. The shipped masters close every segment at their end: `entryStopSites` (`solidc/src/per-call/master/
+  stop-sites.ts`) publishes "every call in order, then every segment close", and a frame `W.f()` that writes, calls,
+  writes and calls publishes `call 0, call 1, close of segment 0, close of segment 1, close of segment 2`. So the
+  view `Escrow.release` leaves before it calls `claim` (the guard `claiming = 1`) is compared, and can be learned,
+  only once `claim` has returned, while the frames inside `claim` that read it (`readRecord`, `setClaimed`) have to
+  be planned with it first. Section 3.4's premise ("a frame's segment `k` closes at its call `k`, before that call's
+  result is needed") does not hold for the shipped programs. Two ways out:
+  1. **Close each segment at the call that ends it** (a master-program change in `solidc`; the validator, whose
+     bytes the addresses derive from, is untouched): compare segment `k` and publish its close before `call k`, so
+     the derivation learns each view in execution order, the order spec section 18's loop assumes when it reads "the
+     computed records" at a stop site. Then the stop mechanism covers re-entry with no stand-in: a stop for "this
+     frame declares a record an earlier frame wrote, at a view no settle learned" (found from the writers' published
+     `writeSegments`), a derivation of the truncated writer on the stopped plan that learns the view at that close
+     (the composer already learns an unstated `viewOut` where the body compares it, `learnComputedValues`) before it
+     stalls at the call it cannot bind yet, and the reader planned from it. The kill criterion of
+     `EVAL_REMOVE_BATCH_ENTRYPOINT.md` ("re-entry forces a cross-slot fixpoint") would not trigger.
+  2. **Keep the programs and confine the fixed point to re-entered views.** State the reader's view at the live
+     commitment, settle the writer to its end (its own body needs only its callees' results, which the stale view
+     often does not change: `readRecord` returns `shares` either way, and a void `setClaimed` returns nothing), learn
+     the written view there, and plan the reader again. This needs a settle that keeps learning past a frame whose
+     verdict is not needed for the value being learned (`setClaimed` refuses under the stale guard), and it is a
+     cross-frame fixpoint in the EVAL document's sense, bounded by the re-entry depth.
+  Either way the hop's representation has to change as stage 3 says: `buildHopPlan` stating each callee segment's
+  `viewIn`/`viewOut` from a per-record ledger built in V6 order instead of the live commitment, spending a written
+  record on the write path with its output at the chain's end (`declaredChainEnd`), and `calleeEntryWrites` and
+  `calleeReadNodes` planning against the reached node, two reaches of one key sharing one participant (the parallel
+  worker's change), with `requireSatisfiableReachWrites` narrowed to what a chain cannot carry.
+- **The entry's own reached state (stage 4).** The same holds for the implementation frame: its views at call `k`
+  are compared at its end, so planning site `k` from the state its own body wrote needs closes at calls (way 1) or a
+  plan, settle and re-plan on the entry's learned records (way 2, what section 3's stage 4 proposes).
+
+### 5.6 What had to be restructured
+
+- **Planning order.** `planEntryCalls`'s pass one became a loop that can stop, and pass two stops after a callee
+  that stopped. The whole entry is no longer validated before any live record is read when it stops: the sites
+  after a stop are validated once their results are learned.
+- **Incremental placement.** A stopped plan is re-made from the start rather than extended: placement is
+  deterministic, so the frames before the stop are placed again identically (same master ids, same pool slots,
+  same participants), and learned values are re-keyed by frame path at each plan (`seedOf`) so nothing depends on
+  that identity.
+- **The participant layout.** `buildHopPlan` lays whatever the plan places: a stopped plan's later calls, their
+  masters and records are simply absent, and input indices shift as the plan grows, which is why nothing learned is
+  keyed by index. The one change is the truncated frames' write segments (above).
+- **The settle.** `settleCallees` takes `only` and `seed`, and `settleHopCallees` is factored out of `settleHop`.
+  The loop is bounded by learning: each stop adds at least one result (or the hop is refused by name, "returned
+  nothing the hop could decode"), and `MAXIMUM_PLAN_STOPS` names a plan that never completes.
+- **Refusals.** A refusal while settling a stop is the producer frame's own and stands (arbitrate's `split`). A
+  plan-time refusal after a stop is reported as at the base (fan-in's `deals`). The gap: the entry's own frame is not
+  evaluated at a stop, so an entry that reverts before a stopped site (a `require` on its own state, say) is reported
+  as the first planner or settle refusal that follows, as the base reports a plan-time refusal before any settle.
+  The fix is to derive the truncated entry at each stop and read a stall before the stopped site's own call site as
+  the entry's revert.
+
+### 5.7 Recommendation
+
+Adopt execution-order planning for every value an earlier call returns, and do not apply the stage-1 fixed point.
+
+- It is sound without deferral: nothing is stated that the execution does not compute, so every refusal is a
+  verdict, and the machine checks the final plan as it checks any.
+- It is cheaper, and the gap grows with depth: 1.9 to 3 times faster and 2 to 3 times fewer VM runs on the
+  dependent chains, 7 to 8 times faster to fan-in's next wall.
+- It covers stage 1b (callee frames) and stage 2 (loop bounds) with the same mechanism and no extra state.
+- It stays inside the hop's three files, and shapes served today keep their path.
+
+For views (re-entry, stage 3, and the entry's own state, stage 4) execution order is only as good as the order the
+programs expose them in. Closing each segment at the call that ends it (way 1 of 5.5) is the change that makes the
+whole reached-state problem execution-ordered, with no stand-in anywhere; it is a compiler change to every master
+that makes calls and should be decided by the compiler stream before stage 3 starts. Without it, stage 3 and stage 4
+use a stand-in view learned at the writer's end (way 2), a fixed point confined to re-entered records and bounded by
+the re-entry depth, beside execution-order planning for results.
+
+Staging:
+
+1. Landed: arguments and loop bounds from an earlier result, in any frame (this section; the four ahead pins and
+   the published-facts pin flipped, `call/argument-from-earlier-result` added).
+2. Next, small: derive the truncated entry at each stop to report its own revert; conditions and targets as stops
+   (retiring `f2e34600d`'s full-settle re-plan once its suites pass on stops).
+3. Decide way 1 or way 2 for views (a compiler-stream decision), then stage 3 on it: the per-record ledger in
+   `buildHopPlan` and the shared mapping participant; pins that move: `fan-in` (`deals`, then `allowances`),
+   `packed-address-argument` arbitrate, the second and third cases of `reentry-payout` and `deep-arbitration`,
+   `origin-gated-payout`.
+4. Stage 4 on the same choice.

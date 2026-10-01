@@ -30,6 +30,10 @@
  * reaches than the deployment holds masters — is refused by name, as is a call that reaches the hop's own
  * implementation below itself.
  *
+ * A site whose argument or loop bound reads what an earlier call of the same frame returned is planned in execution
+ * order: the plan stops before it, the hop settles the earlier calls and learns their results, and the plan is made
+ * again with them, so the site is planned from the value its frame computes rather than from a stand-in.
+ *
  * What this module derives is what the plan states, never a coordinate: the layout, the caller references and the
  * callee indices stay the composer's. A shape the hop cannot declare — a target no route names, an argument only
  * the running execution holds, a loop width the caller's facts do not fix — is refused by name.
@@ -198,6 +202,55 @@ export interface HopCallee {
   readonly callBases: readonly number[];
   /** Index in `callees` of the master that calls this callee, or null for the implementation's own master. */
   readonly enteredBy: number | null;
+  /**
+   * The frame's path from the hop's own entry: each call site and visit that reaches it, `/site.visit` per level.
+   *
+   * A plan placed in execution order is placed again from the start once an earlier call's result is learned, and
+   * the frames before the site that waited are placed exactly as before. Master ids follow placement order, so the
+   * path is what names a frame across those plans; a proxied callee's two frames share the reach's path.
+   */
+  readonly path: string;
+  /** The call site whose record names this frame, or absent for the delegate frame a proxy's fallback forwards to. */
+  readonly origin?: HopCallOrigin;
+  /** True when the plan stopped inside this frame's own calls, so it states only the calls before that point. */
+  readonly truncated?: boolean;
+}
+
+/** The call site whose record names a callee frame: the calling frame, by its path, and the site's visit. */
+export interface HopCallOrigin {
+  /** The calling frame's path, `''` for the hop's own entry. */
+  readonly callerPath: string;
+  readonly callsiteId: number;
+  /** The visit of the site that placed the frame: `0` for a site that runs once. */
+  readonly occurrence: number;
+}
+
+/**
+ * The call site a plan stops before, because a value it needs is an earlier call's result no settle has learned.
+ *
+ * The site's own frame computes the value from what the earlier call returned, so the hop settles the frames of
+ * those earlier calls first and plans again from their results: the site is planned once the code before it has
+ * settled, in the order the execution reaches it.
+ */
+export interface HopPlanBlock {
+  /** The path of the frame whose site waits, `''` for the hop's own entry. */
+  readonly path: string;
+  /** The waiting call, as a refusal names it. */
+  readonly where: string;
+  /** What the site reads the results for. */
+  readonly reads: 'argument' | 'loop-bound';
+  /** The earlier call sites of the same frame whose results the site reads, by callsite id. */
+  readonly producers: readonly number[];
+}
+
+/** The path a site's visit gives the frame it reaches, below the path of the frame that makes the call. */
+export function calleePath(callerPath: string, site: number, occurrence: number): string {
+  return `${callerPath}/${site}.${occurrence}`;
+}
+
+/** The key a learned call result is held under: the calling frame's path and the site's callsite id. */
+export function reachedResultKey(callerPath: string, callsiteId: number): string {
+  return `${callerPath}|${callsiteId}`;
 }
 
 /** What the implementation frame's calls and the callee frames they reach are planned as. */
@@ -218,6 +271,14 @@ export interface HopExternalPlan {
   readonly callees: readonly HopCallee[];
   /** The live UTXO of every callee participant, keyed by the id the plan places it under. */
   readonly utxos: ReadonlyMap<string, Utxo>;
+  /**
+   * The site this plan stops before, or absent for a plan that states every call the execution reaches.
+   *
+   * A plan that stops states the calls the execution makes before that site, the frames they reach and the calls of
+   * the frames above it up to the site that leads there (`truncated`): enough to settle the earlier calls whose
+   * results the site reads, never enough to broadcast.
+   */
+  readonly blocked?: HopPlanBlock;
 }
 
 /** The entry's ABI routing, refusing an artifact that publishes none for it. */
@@ -308,8 +369,8 @@ function conditionReadsWrittenState(
   return false;
 }
 
-/** Every `producerResult`/`externalCall` node a condition reads, at any nesting depth. */
-function producerCallsitesOf(condition: ExternalCallExpression): readonly number[] {
+/** Every `producerResult`/`externalCall` node a condition or an argument source reads, at any nesting depth. */
+function producerCallsitesOf(condition: ExternalCallExpression | ArgSource): readonly number[] {
   const found: number[] = [];
   const visit = (value: unknown): void => {
     if (value === null || typeof value !== 'object') return;
@@ -364,10 +425,10 @@ function conditionExternalReturns(
  *
  * A `loop` site fills the records its visits do: the domain's recurrence is evaluated against the caller's own
  * arguments, so a loop bounded by a forwarded array's length fills that length and a loop bounded by a literal
- * fills that count. A domain whose condition the caller's facts do not fix — one that reads an earlier call's
- * result, for instance — is refused by name, because the plan would not know the run's width. A loop the artifact
- * publishes no domain for is read from the site's own sources instead, and refused by the same name when nothing
- * there fixes its width.
+ * fills that count. A domain that reads an earlier call's result is evaluated against the result a settle learned
+ * (the planner stops before the site until one has); a domain the caller's facts and those results do not fix is
+ * refused by name, because the plan would not know the run's width. A loop the artifact publishes no domain for is
+ * read from the site's own sources instead, and refused by the same name when nothing there fixes its width.
  *
  * A `conditional` site fills its record only when the condition the artifact publishes holds against the caller's
  * own facts: the arm a condition the caller's facts fix does not take reaches no call, so the site places nothing.
@@ -399,8 +460,12 @@ function occurrenceCountOf(
   }
   const domain = row.iterationDomain;
   if (domain === undefined) return derivedOccurrenceCountOf(row, args, where);
-  const initial = resolver.evaluate(domain.initialValue, 0);
-  const step = resolver.evaluate(domain.stepValue, 0);
+  // A domain read from an earlier call's result is evaluated against the result a settle learned for that call.
+  const returnsOf = (expression: ExternalCallExpression): ReadonlyMap<string, FunctionArgument> | undefined =>
+    conditionExternalReturns(expression, routing, producerResults);
+  const initial = resolver.evaluate(domain.initialValue, 0, undefined, returnsOf(domain.initialValue));
+  const step = resolver.evaluate(domain.stepValue, 0, undefined, returnsOf(domain.stepValue));
+  const continueReturns = returnsOf(domain.continueCondition);
   if (typeof initial !== 'bigint' || typeof step !== 'bigint') {
     throw new PerCallProxyDeployError(
       `${where} runs a loop whose counter the caller's own arguments do not fix`,
@@ -413,7 +478,7 @@ function occurrenceCountOf(
   let counter = initial;
   for (let turn = 0; turn < domain.maximumIterations; turn += 1) {
     const bindings = new Map<string, FunctionArgument>([[domain.counterName, counter]]);
-    const keep = resolver.evaluate(domain.continueCondition, 0, bindings);
+    const keep = resolver.evaluate(domain.continueCondition, 0, bindings, continueReturns);
     if (keep === undefined) {
       throw new PerCallProxyDeployError(
         `${where} runs a loop whose bound is not fixed by the caller's own arguments, so the hop cannot state how `
@@ -620,6 +685,10 @@ interface PlanContext {
    * condition undecided for this pass.
    */
   readonly producerResults?: { readonly artifact: Artifact; readonly values: ReadonlyMap<number, FunctionArgument> };
+  /** The results settled earlier calls returned, keyed by `reachedResultKey`: the calling frame's path and site. */
+  readonly reachedResults: ReadonlyMap<string, FunctionArgument>;
+  /** The site the plan stops before, once one is found: nothing after it in execution order is placed. */
+  readonly stop: { blocked?: HopPlanBlock };
 }
 
 /** The deployment a call reaches: the caller's named externals first, then the provider's registrations. */
@@ -641,17 +710,109 @@ function resolveExternal(ctx: PlanContext, row: ExternalCallAbi, target: Uint8Ar
 }
 
 /**
+ * The results one frame's sites may read, by callsite id: what the settles learned for the frame's earlier calls,
+ * and, for the hop's own entry, the results a conditional re-plan learned.
+ *
+ * The results of earlier calls are only meaningful within the frame that made them: the callsite ids a condition or
+ * an argument names are that artifact's own call sites, so a frame never sees another frame's results.
+ */
+function knownResultsOf(
+  ctx: PlanContext, artifact: Artifact, path: string,
+): ReadonlyMap<number, FunctionArgument> | undefined {
+  const known = new Map<number, FunctionArgument>(
+    path === '' && ctx.producerResults?.artifact === artifact ? ctx.producerResults.values : [],
+  );
+  const prefix = `${path}|`;
+  for (const [key, value] of ctx.reachedResults) {
+    if (!key.startsWith(prefix)) continue;
+    const callsiteId = Number(key.slice(prefix.length));
+    if (Number.isInteger(callsiteId)) known.set(callsiteId, value);
+  }
+  return known.size === 0 ? undefined : known;
+}
+
+/** The learned results one site's argument sources read, keyed the way the expression evaluator reads them. */
+function argumentReturnsOf(
+  row: ExternalCallAbi, routing: readonly ExternalCallAbi[], known: ReadonlyMap<number, FunctionArgument> | undefined,
+): ReadonlyMap<string, FunctionArgument> | undefined {
+  const sources = row.argSources ?? [];
+  if (known === undefined || sources.every((source) => producerCallsitesOf(source).length === 0)) return undefined;
+  try {
+    const bound = externalReturnsForCallsites(sources, known, routing);
+    return bound.size === 0 ? undefined : bound;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The earlier call sites of one frame whose results a site reads and no settle has learned yet.
+ *
+ * The site waits for each of them: each is an earlier site of the same frame that this plan places, so settling the
+ * calls before the site learns its result, and the site is planned from it. A result the hop cannot learn that way
+ * is not waited for (one a loop returns once per turn, one of a site the plan places no call for), so a site that
+ * reads one stays refused by name, as it is when nothing is learned.
+ */
+function waitingProducers(
+  nodes: readonly (ExternalCallExpression | ArgSource)[],
+  site: number,
+  routing: readonly ExternalCallAbi[],
+  placed: readonly unknown[],
+  known: ReadonlyMap<number, FunctionArgument> | undefined,
+): readonly number[] {
+  const waiting = new Set<number>();
+  for (const callsiteId of nodes.flatMap(producerCallsitesOf)) {
+    if (known?.has(callsiteId) === true) continue;
+    const at = routing.findIndex((row) => row.callsiteId === callsiteId);
+    if (at < 0 || at >= site || placed[at] === undefined) continue;
+    if ((routing[at]!.occurrence ?? 'once') === 'loop') continue;
+    waiting.add(callsiteId);
+  }
+  return [...waiting];
+}
+
+/** What one published site was resolved to in pass one, before any of its frames is placed. */
+interface ResolvedSite {
+  readonly entry: AbiEntryRow;
+  readonly external: PerCallProxyExternal;
+  readonly resolved: readonly ResolvedCall[];
+  readonly where: string;
+}
+
+/** Where a site's callee frames sit in the plan: the calling frame's path, the site and its callsite id. */
+interface CalleeReach {
+  readonly callerPath: string;
+  readonly site: number;
+  readonly callsiteId: number;
+}
+
+/** The calls one entry's body makes as a plan states them, and whether the plan stopped inside them. */
+interface PlannedEntryCalls {
+  readonly calls: DraftCall[];
+  readonly callBases: number[];
+  readonly callsiteIds: number[];
+  /** True when the plan stopped before one of this entry's own sites or inside a callee one of them reached. */
+  readonly truncated: boolean;
+}
+
+/**
  * Plans the calls one entry's body makes, and — transitively — the frames each of them reaches.
  *
  * The caller's own facts (its arguments, its state, its own address and its sender) are what each call site is
  * resolved from, and the live records of each callee are read so the callee's own call sites resolve from *its*
  * facts. `enteredBy` is the index in `ctx.callees` of the master that calls this entry, or null for the
- * implementation's own master; the frames this entry reaches are appended to `ctx.callees`.
+ * implementation's own master; the frames this entry reaches are appended to `ctx.callees`. `path` names this frame
+ * from the hop's own entry (`HopCallee.path`).
  *
- * The whole entry is validated before any live record is read: every call site's record count, target, frame kind
- * and argument pushes are resolved first, so a shape the hop cannot declare is refused without depending on a
- * deployment. Only then is each callee's live deployment read, and its own calls planned from it. A site the
- * caller's own facts give no visits fills no record, so it places no callee and the rest of it need not resolve.
+ * Every call site's record count, target, frame kind and argument pushes are resolved first, so a shape the hop
+ * cannot declare is refused without depending on a deployment. Only then is each callee's live deployment read, and
+ * its own calls planned from it. A site the caller's own facts give no visits fills no record, so it places no
+ * callee and the rest of it need not resolve.
+ *
+ * A site whose argument or loop bound reads an earlier call's result is planned in execution order: while no settle
+ * has learned that result, the plan stops before the site (`ctx.stop`), placing the calls before it and nothing the
+ * execution reaches after it, so the hop can settle the earlier call, learn what it returned and plan again from it.
+ * A stop inside a callee's own calls stops this frame after the site that reached that callee.
  *
  * Each record a site fills runs on a master of its own, so a site whose arguments differ turn to turn — a loop
  * over the caller's own array, say — reaches a contract once per master it takes. The positions the plan states
@@ -662,24 +823,25 @@ async function planEntryCalls(
   ctx: PlanContext,
   caller: HopCallInputs,
   enteredBy: number | null,
-): Promise<{ readonly calls: DraftCall[]; readonly callBases: number[]; readonly callsiteIds: number[] }> {
+  path: string,
+): Promise<PlannedEntryCalls> {
   const identity = `${caller.artifact.contractName}.${caller.functionName}()`;
   const published = readPublishedStopSites(caller.artifact).entries
     .find((entry) => entry.functionName === identity);
   if (published === undefined || published.calls.length === 0) {
-    return { calls: [], callBases: [], callsiteIds: [] };
+    return { calls: [], callBases: [], callsiteIds: [], truncated: false };
   }
   const routing = routingOf(caller.artifact, caller.functionName);
   const resolver = makeCallResolver(caller);
   const writtenState = entryWrittenState(caller.artifact, caller.functionName);
-  // The results of earlier calls are only meaningful within the contract that published them: the callsite ids in
-  // a condition name that artifact's own call sites, so a callee's condition never sees another contract's results.
-  const producerResults = ctx.producerResults?.artifact === caller.artifact
-    ? ctx.producerResults.values : undefined;
+  const known = knownResultsOf(ctx, caller.artifact, path);
 
-  // Pass one: resolve every site of this entry from the caller's own facts, so the plan is refused for its own
-  // shape before any live record is read.
-  const sites = published.calls.map((call, index) => {
+  // Pass one: resolve every site of this entry from the caller's own facts and the results learned for its earlier
+  // calls, so the plan is refused for its own shape before any live record is read. A site that reads a result no
+  // settle has learned ends the pass: the sites after it are planned once that result is learned.
+  const sites: (ResolvedSite | undefined)[] = [];
+  let ownStop: HopPlanBlock | undefined;
+  for (const [index, call] of published.calls.entries()) {
     const row = routing[index];
     if (row === undefined || row.interfaceName !== call.interfaceName
       || row.functionName !== call.functionName) {
@@ -689,23 +851,43 @@ async function planEntryCalls(
       );
     }
     const where = `the call to "${row.interfaceName}.${row.functionName}"`;
+    const domain = row.occurrence === 'loop' ? row.iterationDomain : undefined;
+    const boundWaits = domain === undefined ? [] : waitingProducers(
+      [domain.initialValue, domain.stepValue, domain.continueCondition], index, routing, sites, known);
+    if (boundWaits.length > 0) {
+      ownStop = { path, where, reads: 'loop-bound', producers: boundWaits };
+      break;
+    }
     const count = occurrenceCountOf(
-      row, caller.args, resolver, where, caller.artifact, writtenState, routing, producerResults,
+      row, caller.args, resolver, where, caller.artifact, writtenState, routing, known,
     );
     // A site the caller's own facts give no visits fills no record: it reaches no callee, so nothing is placed
     // for it and its target and arguments need not resolve.
-    if (count === 0) return undefined;
+    if (count === 0) {
+      sites.push(undefined);
+      continue;
+    }
+    const argumentWaits = waitingProducers(row.argSources ?? [], index, routing, sites, known);
+    if (argumentWaits.length > 0) {
+      ownStop = { path, where, reads: 'argument', producers: argumentWaits };
+      break;
+    }
+    const argumentReturns = argumentReturnsOf(row, routing, known);
+    const siteResolver = argumentReturns === undefined ? resolver : makeCallResolver({ ...caller, argumentReturns });
     // The stop site's baked target is the address the compiler pinned into the caller's own code; the ABI routing
     // carries it as `addressLiteral` for a literal and leaves it empty for one the caller computes.
     const effective: ExternalCallAbi = row.addressLiteral === undefined && call.target.length > 0
       ? { ...row, addressLiteral: call.target }
       : row;
-    const target = resolveCallTarget(effective, caller, resolver, 0);
+    const target = resolveCallTarget(effective, caller, siteResolver, 0);
     // A target the source names as the zero address has no deployment to place a callee on. The hop states no
     // record for the site and lets the entry's own body decide: a body that guards the call never reaches it and
     // is settled on its own refusal, while one that does reach it stalls on the record the hop never filled rather
     // than reaching a contract it did not name.
-    if (target === undefined) return undefined;
+    if (target === undefined) {
+      sites.push(undefined);
+      continue;
+    }
     const external = resolveExternal(ctx, row, target);
     const entry = entryRowOf(external.artifact, row.functionName);
     // A body the compiler refused publishes no call sites, so the hop could declare no record for it and would
@@ -719,7 +901,7 @@ async function planEntryCalls(
       );
     }
     const resolved = Array.from({ length: count }, (_unused, occurrence) => (
-      resolvePublishedCall(effective, external.artifact, caller, resolver, occurrence)
+      resolvePublishedCall(effective, external.artifact, caller, siteResolver, occurrence)
     ));
     // A callee behind its own proxy is two contracts, and the hop's own implementation is one the composition
     // fixes; both are checked by name here, before any live record is read.
@@ -734,31 +916,36 @@ async function planEntryCalls(
         );
       }
     }
-    return { entry, external, resolved, where };
-  });
+    sites.push({ entry, external, resolved, where });
+  }
 
   // Pass two: read each callee's live deployment, take a master per reach from its pool, plan the callee's own
-  // calls from the values that deployment holds, and place its frames.
+  // calls from the values that deployment holds, and place its frames. A stop inside a callee's own calls is
+  // earlier in execution order than anything after that callee, so nothing after it is placed.
   const calls: DraftCall[] = [];
   const callBases: number[] = [];
   const callsiteIds: number[] = [];
   for (const [index, site] of sites.entries()) {
-    callsiteIds.push(routing[index]!.callsiteId ?? -1);
+    if (ctx.stop.blocked !== undefined) break;
+    const callsiteId = routing[index]!.callsiteId ?? -1;
+    callsiteIds.push(callsiteId);
     if (site === undefined) {
       callBases.push(-1);
       continue;
     }
     callBases.push(calls.length);
     const { external, entry, resolved, where } = site;
+    const reach: CalleeReach = { callerPath: path, site: index, callsiteId };
     // A callee whose address names a per-call proxy is placed as the same chain the root hop places for its own
     // proxy: the proxy's fallback frame, then the implementation entry it delegates to on the proxy's records.
     if (external.proxyArtifact !== undefined && external.implementationCategoryId !== undefined) {
-      await placeProxiedCallee(ctx, caller, enteredBy, external, entry, resolved, calls, where);
+      await placeProxiedCallee(ctx, caller, enteredBy, external, entry, resolved, calls, where, reach);
       continue;
     }
-    await placeCalleeMasters(ctx, caller, enteredBy, external, entry, resolved, calls, where);
+    await placeCalleeMasters(ctx, caller, enteredBy, external, entry, resolved, calls, where, reach);
   }
-  return { calls, callBases, callsiteIds };
+  if (ctx.stop.blocked === undefined && ownStop !== undefined) ctx.stop.blocked = ownStop;
+  return { calls, callBases, callsiteIds, truncated: ctx.stop.blocked !== undefined };
 }
 
 /** The live deployment a category names, read once however many sites reach it. */
@@ -1014,6 +1201,7 @@ async function placeCalleeMasters(
   resolved: readonly ResolvedCall[],
   calls: DraftCall[],
   where: string,
+  reach: CalleeReach,
 ): Promise<void> {
   const contract = external.artifact.contractName;
   const categoryId = external.categoryId;
@@ -1033,8 +1221,11 @@ async function placeCalleeMasters(
   const category = hexToBin(categoryId);
   const live = liveDeploymentOf(categoryId, deployment, layout);
   for (const [occurrence, call] of resolved.entries()) {
+    // A stop inside an earlier visit's own calls ends the plan there, so no later visit is placed.
+    if (ctx.stop.blocked !== undefined) break;
     const calleeIndex = ctx.callees.length;
     const master = `callee-master-${calleeIndex + 1}`;
+    const path = calleePath(reach.callerPath, reach.site, occurrence);
     const masterUtxo = deployment.masters[base + occurrence]!;
     const deployed = deployMaster(external.artifact, category, ctx.validatorProgram);
     // The nodes the entry only reads, from the reach's own call data; they lead any batch's groups.
@@ -1070,6 +1261,8 @@ async function placeCalleeMasters(
       calls: [],
       callBases: [],
       enteredBy,
+      path,
+      origin: { callerPath: reach.callerPath, callsiteId: reach.callsiteId, occurrence },
     };
     // Reserve the slot before planning the callee's own calls, so a frame it reaches names this master as its
     // caller and sits after it.
@@ -1081,8 +1274,10 @@ async function placeCalleeMasters(
       stateValues,
       selfAddress: deployed.address,
       ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
-    }, calleeIndex);
-    ctx.callees[calleeIndex] = { ...frame, calls: nested.calls, callBases: nested.callBases };
+    }, calleeIndex, path);
+    ctx.callees[calleeIndex] = {
+      ...frame, calls: nested.calls, callBases: nested.callBases, ...(nested.truncated ? { truncated: true } : {}),
+    };
     ctx.utxos.set(master, masterUtxo);
     calls.push({
       kind: call.kind, callee: master, target: call.target, value: 0n,
@@ -1113,6 +1308,7 @@ async function placeProxiedCallee(
   resolved: readonly ResolvedCall[],
   calls: DraftCall[],
   where: string,
+  reach: CalleeReach,
 ): Promise<void> {
   const proxyArtifact = external.proxyArtifact!;
   const implementationCategoryId = external.implementationCategoryId!;
@@ -1164,8 +1360,11 @@ async function placeProxiedCallee(
   // Whether the entry the proxy forwards to returns a value, which the fallback frame records in its own `retval`.
   const returnsValue = (entry.outputs ?? []).length > 0;
   for (const [occurrence, call] of resolved.entries()) {
+    // A stop inside an earlier visit's own calls ends the plan there, so no later visit is placed.
+    if (ctx.stop.blocked !== undefined) break;
     const proxyIndex = ctx.callees.length;
     const implementationIndex = proxyIndex + 1;
+    const path = calleePath(reach.callerPath, reach.site, occurrence);
     const proxyMaster = `callee-master-${proxyIndex + 1}`;
     const implementationMaster = `callee-impl-master-${implementationIndex + 1}`;
     const proxyMasterUtxo = proxyDeployment.masters[proxyBase + occurrence]!;
@@ -1200,6 +1399,8 @@ async function placeProxiedCallee(
       }],
       callBases: [0],
       enteredBy,
+      path,
+      origin: { callerPath: reach.callerPath, callsiteId: reach.callsiteId, occurrence },
     };
     // The nodes the entry only reads are the proxy's own, planned against the proxy's deployment.
     const implementationReads = calleeReadNodesOrNone({
@@ -1234,6 +1435,8 @@ async function placeProxiedCallee(
       calls: [],
       callBases: [],
       enteredBy: proxyIndex,
+      // The delegate frame runs the reach's entry, so its own sites are planned under the reach's path.
+      path,
     };
     // Reserve the pair before planning the entry's own calls, so a frame it reaches names its own reach's
     // implementation master as its caller and sits after it.
@@ -1245,9 +1448,11 @@ async function placeProxiedCallee(
       stateValues,
       selfAddress: proxyDeployed.address,
       ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
-    }, implementationIndex);
-    ctx.callees[implementationIndex] =
-      { ...implementationBaseFrame, calls: nested.calls, callBases: nested.callBases };
+    }, implementationIndex, path);
+    ctx.callees[implementationIndex] = {
+      ...implementationBaseFrame, calls: nested.calls, callBases: nested.callBases,
+      ...(nested.truncated ? { truncated: true } : {}),
+    };
     ctx.utxos.set(proxyMaster, proxyMasterUtxo);
     ctx.utxos.set(implementationMaster, implementationMasterUtxo);
     calls.push({
@@ -1358,6 +1563,14 @@ export interface HopExternalPlanOptions {
    * condition undecided, which is the first pass.
    */
   readonly externalReturns?: ReadonlyMap<number, FunctionArgument>;
+  /**
+   * The results the calls before a stopped plan's site returned, as settles of those calls learned them, keyed by
+   * `reachedResultKey`: the path of the frame that made each call and the call's site.
+   *
+   * A site whose argument or loop bound reads an earlier call's result is planned from these; absent or missing
+   * one, the plan stops before that site (`HopExternalPlan.blocked`).
+   */
+  readonly reachedResults?: ReadonlyMap<string, FunctionArgument>;
 }
 
 /** The callsite ids an entry's own conditions read a result from, in published order. */
@@ -1377,7 +1590,8 @@ function conditionalProducerCallsites(artifact: Artifact, functionName: string):
  * argument sources; `externals` names the live deployment each callee runs on, and the provider's registrations are
  * the fallback. Each callee's live records are read so that a callee whose own entry makes calls is planned from
  * its own facts. A shape the hop cannot declare is refused by name, and a reach the callee's own master pool cannot
- * serve is refused by name too.
+ * serve is refused by name too. A site that reads an earlier call's result `reachedResults` does not hold stops the
+ * plan before it (`blocked`), with the calls the execution makes before that site placed.
  */
 export async function planHopExternalCalls(
   options: HopExternalPlanOptions,
@@ -1394,6 +1608,8 @@ export async function planHopExternalCalls(
     utxos: new Map(),
     ...(options.externalReturns === undefined || options.externalReturns.size === 0
       ? {} : { producerResults: { artifact: options.artifact, values: options.externalReturns } }),
+    reachedResults: options.reachedResults ?? new Map(),
+    stop: {},
   };
   const root = await planEntryCalls(ctx, {
     artifact: options.artifact,
@@ -1403,7 +1619,7 @@ export async function planHopExternalCalls(
     ...(options.selfAddress === undefined ? {} : { selfAddress: options.selfAddress }),
     ...(options.senderAddress === undefined ? {} : { senderAddress: options.senderAddress }),
     ...(options.constructorArgs === undefined ? {} : { constructorArgs: options.constructorArgs }),
-  }, null);
+  }, null, '');
   return {
     calls: root.calls,
     callBases: root.callBases,
@@ -1411,5 +1627,6 @@ export async function planHopExternalCalls(
     conditionalProducers: conditionalProducerCallsites(options.artifact, options.functionName),
     callees: ctx.callees,
     utxos: ctx.utxos,
+    ...(ctx.stop.blocked === undefined ? {} : { blocked: ctx.stop.blocked }),
   };
 }

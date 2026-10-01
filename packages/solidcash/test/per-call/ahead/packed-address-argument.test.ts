@@ -33,9 +33,10 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * replaying the three spellings on its job array settles and the proxied store `Journal` keeps the 20 bytes. An
  * `address` parameter, an explicit `address(...)` and `msg.sender` (published typed) are the controls.
  *
- * Two walls stand beside it on the same titles, pinned here: the arbitration's amounts come from an earlier call's
- * result, which the hop refuses by name, and the refund's whitelist note packs a local array element the compiler
- * publishes as the array's allocation. The file runs only under `PER_CALL_AHEAD=1`.
+ * Two walls stand beside it on the same titles, pinned here: the arbitration's amounts come from an earlier call,
+ * which the hop settles first and whose own frame refuses the record write it makes, and the refund's whitelist
+ * note packs a local array element the compiler publishes as the array's allocation. The file runs only under
+ * `PER_CALL_AHEAD=1`.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -522,16 +523,20 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: an address packed int
     expect(statedEvent(outcome, 'data_')).toBe(data);
   }, 300_000);
 
-  it('the arbitration with its amounts (59-62) is refused by name: an earlier call\'s result', async () => {
+  it('the arbitration with its amounts (59-62) settles the split first, which refuses its own record write', async () => {
     const outcome = await enter(world, 'arbitrate', [JOB, 8000n, 2000n, REASON], ARBITRATOR);
-    // Owner: the SDK hop. It learns an earlier call's result only for an arm it decides (`proxy/deploy.ts`,
-    // `planAndSettleHop`'s `conditionalProducers`), so an argument built from one does not resolve
-    // (`proxy/call-resolution.ts`, `resolveCallArguments`). Behind it, the evaluator packs an untyped `uint256`
-    // element little-endian (`asBytes`) where the body packs it big-endian.
+    // The event's data carries `split`'s amounts, so the hop plans in execution order: it stops before the store
+    // call, settles `split`'s frame alone to learn them, and that frame refuses: `split` writes its own record
+    // (`calls = calls + 1`), which the hop declares kept. The store call is never planned (`stated` holds `split`'s
+    // argument only). Owner: the SDK hop, a callee's own record write (`proxy/deploy.ts`, the callee frames
+    // `buildHopPlan` declares kept; DESIGN_REACHED_STATE_PLANNING.md, stage 3). Behind it, the evaluator packs an
+    // untyped `uint256` element little-endian (`asBytes`) where the body packs it big-endian.
     expect(outcome.error).toBeInstanceOf(PerCallProxyDeployError);
-    expect(outcome.error!.message).toBe('the call to "IJournal.publishJobEvent" passes argument 1 from a "expression" '
-      + 'expression of kind "call", which the hop cannot resolve from the caller\'s own arguments and state');
+    expect(outcome.error!.message).toBe('the call\'s callee "Splitter.split()" did not settle through the proxy: '
+      + `frame "callee-master-1" of Splitter.split() at line ${lineOf('function split(uint256 amount_) public')}: `
+      + 'no source message (Program failed an OP_VERIFY operation.)');
     expect(outcome.stalls).toStrictEqual([]);
+    expect(outcome.stated).toStrictEqual([[1000n]]);
     expect(outcome.coinLive).toBe(true);
   }, 300_000);
 

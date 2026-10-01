@@ -219,21 +219,30 @@ describePublished('the planner against the shipped published facts', () => {
     );
   });
 
-  it('refuses a loop whose width the caller arguments do not fix, naming the width', async () => {
+  it('stops before a loop whose width an earlier call returns, with that call placed', async () => {
     const network = new MockNetworkProvider();
     const readerArtifact = loadArtifact('MarketplaceDataV1.json');
     const facadeArtifact = loadArtifact('MarketplaceV1.json');
+    const facade = await seedDeployment(network, facadeArtifact, FACADE_CATEGORY);
 
-    // The reader's loop runs as many times as the callee reports, which no caller-held fact fixes.
-    await expect(planHopExternalCalls({
+    // The reader's loop runs as many times as the callee reports, which no caller-held fact fixes: the planner places
+    // the call that reports it and stops before the loop, so the hop can settle that call and plan the turns from
+    // what it returned.
+    const plan = await planHopExternalCalls({
       provider: network,
       artifact: readerArtifact,
       functionName: 'getJobs',
       args: [0n, 0n],
       externals: { [facadeArtifact.contractName]: { artifact: facadeArtifact, categoryId: FACADE_CATEGORY } },
-      stateValues: { marketplace: new Uint8Array(35).fill(0x44) },
+      stateValues: { marketplace: facade },
       validatorProgram: VALIDATOR_PROGRAM,
-    })).rejects.toThrow(/runs a loop whose bound is not fixed by the caller's own arguments/);
+    });
+
+    expect(plan.blocked?.path).toBe('');
+    expect(plan.blocked?.reads).toBe('loop-bound');
+    expect(plan.callees.map((callee) => callee.functionName)).toStrictEqual(['MarketplaceV1.jobsLength()']);
+    expect(plan.callees[0]!.origin?.callsiteId).toBe(plan.blocked?.producers[0]);
+    expect(plan.calls).toHaveLength(1);
   });
 });
 

@@ -9,8 +9,10 @@
  * The routing is resolved the way the SDK's other external-call paths resolve it: a forwarded parameter, a literal,
  * the frame's own `msg.sender` or `address(this)`, an array element at the reached occurrence, and any expression
  * the compiler serialized, evaluated against the caller's arguments and its own state by the shared expression
- * evaluator. What cannot be resolved from facts a plan holds — a value only the running execution computes, a
- * producer result from an earlier call, a target no route names — is refused by name rather than guessed at.
+ * evaluator. An argument may also read an earlier call's result, once the hop has settled that call and handed
+ * the result over (`argumentReturns`). What cannot be resolved from facts a plan holds (a value only the running
+ * execution computes, a result no settled call returned, a target no route names) is refused by name rather than
+ * guessed at.
  */
 
 import { hexToBin } from '@bitauth/libauth';
@@ -64,6 +66,14 @@ export interface HopCallInputs {
   readonly senderAddress?: Uint8Array;
   /** The caller's constructor arguments, when a routing forwards one. */
   readonly constructorArgs?: readonly FunctionArgument[];
+  /**
+   * The results the caller's earlier calls returned, keyed the way the expression evaluator reads them.
+   *
+   * An argument built from an earlier call's result is not fixed by the caller's own facts: the hop plans the site
+   * once the code before it has settled and the call that produced the result has returned it. Absent leaves such
+   * an argument unresolved, which is refused by name.
+   */
+  readonly argumentReturns?: ReadonlyMap<string, FunctionArgument>;
 }
 
 /** One published call site resolved to what a plan states. */
@@ -83,6 +93,11 @@ export interface ResolvedCall {
  */
 export interface CallResolver {
   resolve(source: ArgSource, occurrence: number): FunctionArgument | undefined;
+  /**
+   * One call argument, read as `resolve` reads it and also from the earlier calls' results the caller handed over
+   * (`argumentReturns`), which a target is never resolved from.
+   */
+  resolveArgument(source: ArgSource, occurrence: number): FunctionArgument | undefined;
   evaluate(
     expression: ExternalCallExpression,
     occurrence: number,
@@ -135,7 +150,10 @@ export function makeCallResolver(inputs: HopCallInputs): CallResolver {
   const callerInputs = entryRowOf(inputs.artifact, inputs.functionName)
     .inputs.map((input) => ({ type: input.type }));
 
-  const resolve = (source: ArgSource, occurrence: number): FunctionArgument | undefined => {
+  // `externalReturns` is the earlier results an argument may read; a target is resolved without them.
+  const resolve = (
+    source: ArgSource, occurrence: number, externalReturns?: ReadonlyMap<string, FunctionArgument>,
+  ): FunctionArgument | undefined => {
     switch (source.kind) {
       case 'forward':
         return source.paramIndex === undefined ? undefined : inputs.args[source.paramIndex];
@@ -168,7 +186,8 @@ export function makeCallResolver(inputs: HopCallInputs): CallResolver {
         return BigInt(source.initialValue) + step * BigInt(occurrence);
       }
       case 'expression':
-        return source.expression === undefined ? undefined : evaluate(source.expression, occurrence);
+        return source.expression === undefined
+          ? undefined : evaluate(source.expression, occurrence, undefined, externalReturns);
       default:
         return undefined;
     }
@@ -176,7 +195,7 @@ export function makeCallResolver(inputs: HopCallInputs): CallResolver {
 
   const host: EvaluateExternalExpressionHost = {
     resolveExternalArgs(
-      sources, _functionArgs, _artifact, _state, _callerInputs, _externalReturns,
+      sources, _functionArgs, _artifact, _state, _callerInputs, externalReturns,
       occurrenceIndex = 0, _stateIncludesPriorWrites, executionSelfAddress,
     ): FunctionArgument[] | undefined {
       if (sources === undefined) return undefined;
@@ -184,7 +203,7 @@ export function makeCallResolver(inputs: HopCallInputs): CallResolver {
       for (const source of sources) {
         const value = source.kind === 'selfAddress' && executionSelfAddress !== undefined
           ? executionSelfAddress
-          : resolve(source, occurrenceIndex);
+          : resolve(source, occurrenceIndex, externalReturns);
         if (value === undefined) return undefined;
         resolved.push(value);
       }
@@ -204,6 +223,7 @@ export function makeCallResolver(inputs: HopCallInputs): CallResolver {
 
   return {
     resolve: (source, occurrence) => resolve(source, occurrence),
+    resolveArgument: (source, occurrence) => resolve(source, occurrence, inputs.argumentReturns),
     evaluate,
   };
 }
@@ -257,7 +277,8 @@ export function resolveCallTarget(
  *
  * The pushes become the record's digest and the callee's call data alike, so each is encoded the way the callee's
  * own ABI decodes it: against the declared input type, with the artifact's structs. An argument no source resolves
- * from the caller's own facts is refused, because the plan would have no value to state.
+ * from the caller's own facts, or from the earlier results the caller handed over, is refused, because the plan
+ * would have no value to state.
  */
 export function resolveCallArguments(
   row: ExternalCallAbi,
@@ -282,7 +303,7 @@ export function resolveCallArguments(
     );
   }
   const values = sources.map((source, index): FunctionArgument => {
-    const value = resolver.resolve(source, occurrence);
+    const value = resolver.resolveArgument(source, occurrence);
     if (value === undefined) {
       throw new PerCallProxyDeployError(
         `${where} passes argument ${index} from a "${source.kind}"${source.expression === undefined ? '' : ` `

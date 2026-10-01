@@ -541,7 +541,12 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
     expect([await read('isMember', creatorLock), await read('feeOf', judgeLock)]).toStrictEqual([true, FEE]);
   });
 
-  it('take: stops at the note that carries the count an earlier call returned', async () => {
+  /** The refusal both flows meet once the escrow call is planned: `pay`'s own record write. */
+  const DEALS_WRITE = 'the callee "Vault.pay()" writes records this hop cannot declare: the implementation\'s "pay" '
+    + 'entry writes mapping "deals" a value whose source the artifact does not publish, so this hop cannot tell '
+    + 'whether the write needs value chunks';
+
+  it('take: learns the count and the fee in execution order, and stops at the escrow\'s own record write', async () => {
     const worker = splittableWorker();
     const deployed = await deployFanIn(worker);
     const coin = funding(id32('6a'));
@@ -549,16 +554,19 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
       lock: worker.lock, funder: new SignatureTemplate(worker.key).unlockP2PKH(), coin,
     });
 
-    // The membership and count reads resolve; the post's note is built from `noteCount`'s result, which the planner
-    // cannot state, so the hop is refused before its settle starts (no hop trace).
-    // Owner: the SDK hop planner, `resolveCallArguments` (proxy/call-resolution.ts), reached from `planEntryCalls`.
+    // The post's note carries `noteCount`'s result and `pay` carries `feeOf`'s, so the hop plans in execution
+    // order: it stops before each, settles the read's two frames alone and plans on from what it returned
+    // (`PER_CALL_HOP_TRACE=1`: `stop-plan` twice, `learned=[|1:1]`, then `learned=[|4:250]`). Planning `pay`
+    // is then refused before anything else is settled: it stores a `Deal` holding the amount it computes from its
+    // own two `balanceOf` reads, a value only its close states.
+    // Owner: the SDK hop planner, `calleeEntryWrites` (proxy/external-calls.ts): a callee's record write at the
+    // reached state (DESIGN_REACHED_STATE_PLANNING.md, stage 3).
     await expect(entered).rejects.toThrow(PerCallProxyDeployError);
-    await expect(entered).rejects.toThrow('the call to "IJournal.post" passes argument 1 from a "expression" '
-      + 'expression of kind "call", which the hop cannot resolve from the caller\'s own arguments and state');
+    await expect(entered).rejects.toThrow(DEALS_WRITE);
     expect(await coinLive(deployed.network, worker.lock, coin)).toBe(true);
   });
 
-  it('pay start: stops at the escrow call that carries the fee an earlier call returned', async () => {
+  it('pay start: learns the fee in execution order, and stops at the escrow\'s own record write', async () => {
     const worker = splittableWorker();
     const deployed = await deployFanIn(worker);
     const coin = funding(id32('6b'));
@@ -566,12 +574,11 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
       lock: deployed.creatorLock, funder: deployed.creatorFunder, coin,
     });
 
-    // The membership read, the approve and the fee read resolve; `pay` takes the fee `feeOf` returned, so the hop is
-    // refused before its settle starts (no hop trace).
-    // Owner: the SDK hop planner, `resolveCallArguments` (proxy/call-resolution.ts), reached from `planEntryCalls`.
+    // `pay` takes the fee `feeOf` returned, so the hop stops before it, settles the fee read's frames and plans on
+    // from the fee (`learned=[|2:250]`); planning `pay` is refused as in `take`.
+    // Owner: the SDK hop planner, `calleeEntryWrites` (proxy/external-calls.ts), stage 3.
     await expect(entered).rejects.toThrow(PerCallProxyDeployError);
-    await expect(entered).rejects.toThrow('the call to "IVault.pay" passes argument 3 from a "expression" '
-      + 'expression of kind "producerResult", which the hop cannot resolve from the caller\'s own arguments and state');
+    await expect(entered).rejects.toThrow(DEALS_WRITE);
     expect(await coinLive(deployed.network, deployed.creatorLock, coin)).toBe(true);
   });
 });

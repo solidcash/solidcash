@@ -20,7 +20,7 @@ const SOURCE = `contract AliasedFiniteKeys() {
   function check(int key, int expected) public { require(this.records[key] == expected); }
 }`;
 
-const compile = (kernel: boolean) => {
+const compile = (kernel: boolean): ReturnType<typeof compileString> => {
   const failures: unknown[] = [];
   const artifact = compileString(SOURCE, {
     forceStateful: true,

@@ -30,7 +30,7 @@ const LEGACY_SOURCE = SOURCE.replace(
   'int[] memory keys',
 ).replace('fill(keys, base, domain.length);', 'fill(keys, base, allocationLength);');
 
-const compile = (kernel: boolean) => {
+const compile = (kernel: boolean): ReturnType<typeof compileString> => {
   const failures: unknown[] = [];
   const artifact = compileString(kernel ? SOURCE : LEGACY_SOURCE, {
     forceStateful: true,

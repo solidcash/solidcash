@@ -286,9 +286,9 @@ import {
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { dropFirstPushScript, dropLastPushScript, dropPrefix } from '../per-call/master/witness-reader.js';
 import {
-  declaredRecordOrdinalFieldsScript, declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript,
-  declaredRecordViewScript, declaredRecordsKeptScript, declaredSegmentRecordCountScript, validatorSettledScript,
-  type DeclaredViewCounts, type RecordSide,
+  declaredRecordFirstViewByNameScript, declaredRecordOrdinalFieldsScript, declaredRecordOrdinalIndexScript,
+  declaredRecordOrdinalViewScript, declaredRecordViewScript, declaredRecordsKeptScript,
+  declaredSegmentRecordCountScript, validatorSettledScript, type DeclaredViewCounts, type RecordSide,
 } from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
@@ -1683,9 +1683,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // of `visitContract`; see that method for why the emission-time list cannot be trusted alone.
   // X170. `outlined` marks a loop emitted into an OP_DEFINE'd body, which the SDK addresses from the INVOKING
   // ENTRY's footprint rather than its own - checked against every reaching entry instead of against `fn`.
+  // `widened` names the prior runs a per-call read stepped past at their declared width, the ones the body writes.
   private dynamicReadBases: {
     fn: FunctionDefinitionNode; variable: string; priorNames: string[];
-    outlined: boolean; trailingBase: number; iterCount: number; threaded?: boolean;
+    outlined: boolean; trailingBase: number; iterCount: number; threaded?: boolean; widened?: string[];
   }[] = [];
 
   // X203. An outlined body's physical trailing run belongs to its invoking entry point, not to the helper's
@@ -4460,8 +4461,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private dynamicReadBasisUnstable(
     sub: GenerateTargetTraversalWithLocation, fn: FunctionDefinitionNode,
   ): boolean {
-    return sub.dynamicReadBases.some(({ variable, priorNames }) =>
-      this.dynamicReadPriorRuns(fn, variable).join(',') !== priorNames.join(','));
+    return sub.dynamicReadBases.some(({ variable, priorNames, widened }) =>
+      this.dynamicReadPriorRuns(fn, variable).join(',') !== priorNames.join(',')
+      || (widened !== undefined && this.dynamicReadWidenedPriors(fn, priorNames).join(',') !== widened.join(',')));
+  }
+
+  /**
+   * The prior runs a per-call read steps past at their declared width rather than their spent one: the ones the
+   * body writes. A prior is read before the body's own write of it marks it written, so the set is held to the
+   * body's final footprint like the prior list is.
+   */
+  private dynamicReadWidenedPriors(fn: FunctionDefinitionNode, priorNames: readonly string[]): string[] {
+    const writes = fn.dynamicWrites ?? [];
+    return priorNames.filter((name) => writes.includes(name));
   }
 
   /**
@@ -4614,14 +4626,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       `reads=[${(fn.dynamicReads ?? []).join(', ')}] writes=[${(fn.dynamicWrites ?? []).join(', ')}]`;
     for (const record of this.dynamicReadBases) {
       const {
-        fn, variable, priorNames, outlined, trailingBase, iterCount, threaded,
+        fn, variable, priorNames, outlined, trailingBase, iterCount, threaded, widened,
       } = record;
       if (!outlined) {
         const required = this.dynamicReadPriorRuns(fn, variable);
-        if (required.join(',') === priorNames.join(',')) continue;
+        const widenedRequired = this.dynamicReadWidenedPriors(fn, priorNames);
+        if (required.join(',') === priorNames.join(',')
+          && (widened === undefined || widened.join(',') === widenedRequired.join(','))) continue;
+        const widths = widened === undefined ? ''
+          : ` (stepping [${widened.join(', ')}] at their declared width where it steps [${widenedRequired.join(', ')}])`;
         throw new Error(`Chunk-backed read of '${variable}' in '${fn.name}' addresses the trailing run after `
           + `[${priorNames.join(', ')}], but the co-spent run for footprint ${describe(fn)} `
-          + `places it after [${required.join(', ')}]. The per-body basis fixpoint did not converge.`);
+          + `places it after [${required.join(', ')}]${widths}. The per-body basis fixpoint did not converge.`);
       }
       const entries = fn.functionId === undefined ? [] : reaching.get(fn.functionId) ?? [];
       if (entries.length === 0) {
@@ -22792,7 +22808,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_ENDIF, loc);
     }
-    if (this.readsRecordsFromFrame) {
+    if (this.readsRecordsFromFrame && this.batchTargetOrdinal(slotIndex) !== undefined) {
+      // The node a write targets may be one an earlier frame created, which the frame names at its output alone.
+      this.emitPerCallBatchProofView(loc, () => this.emitPerCallNodeLockCheck(loc, true), 1); // [Hk32, entryAddr, commit]
+      this.emit(Op.OP_NIP, loc);                      // [Hk32, commit]
+    } else if (this.readsRecordsFromFrame) {
       // A per-call frame reads the entry from the record its own segment declares; the transaction's input at the
       // coordinate may hold the value another frame left or none at all, so the declaration is the source and
       // settlement ties it to the transaction. Settlement ties commitments only, so the node the coordinate names
@@ -23420,11 +23440,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitMasterInputIndex(loc, 2);
       this.emit(Op.OP_FROMALTSTACK, loc); // parked proof offset; the created node's successor is now on top
       this.emit(Op.OP_ADD, loc);
-      // Every insert splices through a predecessor the transaction spends (a head is minted only at genesis), so the
-      // proof coordinate names an input.
+      // A head is minted only at genesis, so a predecessor is a node the transaction spends or, for a per-call frame,
+      // one an earlier frame created, which the frame names at its output alone.
       if (this.readsRecordsFromFrame) {
-        this.emitPerCallNodeLockCheck(loc, false);
-        this.emitRecordCommitmentRead('in', loc); // the spent coordinate names its declared record
+        this.emitPerCallBatchProofView(loc, () => this.emitPerCallNodeLockCheck(loc, false), 1);
       } else {
         this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
         this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
@@ -25405,9 +25424,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       void extra;
       commitmentField(copyProof, field);
     };
+    // A per-call frame's relink is the end view its write segment declares at the predecessor's output: a later frame
+    // may rewrite the node, and settlement chains the declared views to the transaction's output. It is read once per
+    // target and parked beneath the batch blob while the recreated predecessor is checked: [endView, blob, predOut,
+    // proof(top)].
+    const copyEndView = (): void => {
+      for (let item = 0; item < 4; item += 1) bin(Op.OP_FROMALTSTACK);
+      bin(Op.OP_DUP);
+      for (let item = 0; item < 4; item += 1) { bin(Op.OP_SWAP); bin(Op.OP_TOALTSTACK); }
+    };
     const outputField = (slot: number, field: 'slot' | 'next' | 'value', extra = 0): void => {
       commitmentField(() => {
         void extra;
+        if (this.readsRecordsFromFrame) {
+          copyEndView();
+          return;
+        }
         copyPredOut();
         this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
       }, field);
@@ -25435,15 +25467,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         bin(Op.OP_EQUAL);
         arg(`__internal__vmapBatchPredOut_${aliasWrite}`, 1); this.emit(encodeInt(-2n), loc);
         bin(Op.OP_NUMEQUAL); bin(Op.OP_EQUALVERIFY);
+      } else if (targets.length === 1 && this.readsRecordsFromFrame) {
+        this.emitPerCallSingleTargetTransition(targets[0], collectionHash, loc);
       } else if (targets.length === 1) {
         const slot = targets[0];
         const directProofField = (field: 'slot' | 'next' | 'value', extra = 0): void => {
           commitmentField(() => {
             proofIndex(slot, extra);
-            // A per-call frame reads the proof node from the record its own segment declares; the transaction has no
-            // input at a coordinate a created node's record carries, and another frame may hold the spent value.
-            if (this.readsRecordsFromFrame) this.emitRecordCommitmentRead('in', loc);
-            else this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+            this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
           }, field);
         };
         // Message-bus routes expose the union of all handlers in one ABI. A target unused by the selected handler
@@ -25601,7 +25632,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
           bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
           arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_TOALTSTACK);
-          proofIndex(slot); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); bin(Op.OP_TOALTSTACK);
+          proofIndex(slot);
+          // A per-call frame proves the gap against the proof node's first declaration in the write segment, the view
+          // the batch started from, whether the transaction spends the node or an earlier frame created it.
+          if (this.readsRecordsFromFrame) {
+            this.emitPerCallBatchProofView(loc);
+          } else {
+            this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+          }
+          bin(Op.OP_TOALTSTACK);
 
           // plannedNext is either oldNext or one of this batch's target slots.
           batchField(slot, 'next'); proofField(slot, 'next', 1); bin(Op.OP_EQUAL);
@@ -25657,9 +25696,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // Recreated predecessor: preserve the authenticated proof input's locking bytecode. The per-target write
           // path independently binds that proof input to this collection's covenant address, so re-synthesizing the
           // address here is redundant and stack-fragile; input/output equality is both tighter and substantially leaner.
-          copyPredOut(); bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
-          proofIndex(slot, 2); bin(Op.OP_UTXOBYTECODE);
-          bin(Op.OP_EQUALVERIFY); bin(Op.OP_DROP);
+          // A per-call frame's predecessor may be a node an earlier frame created, with no input to compare against,
+          // so its output is held to the collection's covenant itself, and its declared end view is parked for the
+          // relink checks below.
+          if (this.readsRecordsFromFrame) {
+            copyPredOut(); bin(Op.OP_OUTPUTBYTECODE);
+            this.emitPerCallCollectionAddress(collectionHash, loc);
+            bin(Op.OP_EQUALVERIFY);
+            copyPredOut(); this.emitRecordCommitmentRead('out', loc);
+            bin(Op.OP_FROMALTSTACK); bin(Op.OP_FROMALTSTACK); bin(Op.OP_FROMALTSTACK);
+            this.emit(encodeInt(3n), loc); bin(Op.OP_ROLL);
+            for (let item = 0; item < 4; item += 1) bin(Op.OP_TOALTSTACK);
+          } else {
+            copyPredOut(); bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
+            proofIndex(slot, 2); bin(Op.OP_UTXOBYTECODE);
+            bin(Op.OP_EQUALVERIFY); bin(Op.OP_DROP);
+          }
 
           copyPredOut(); bin(Op.OP_OUTPUTTOKENCATEGORY);
           bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
@@ -25692,6 +25744,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             batchField(other, 'slot'); bin(Op.OP_BIN2NUM);
             bin(Op.OP_LESSTHANOREQUAL); bin(Op.OP_BOOLOR); bin(Op.OP_VERIFY);
             bin(Op.OP_ENDIF);
+          }
+          if (this.readsRecordsFromFrame) {
+            // The parked end view leaves from beneath the batch blob.
+            for (let item = 0; item < 4; item += 1) bin(Op.OP_FROMALTSTACK);
+            bin(Op.OP_DROP);
+            for (let item = 0; item < 3; item += 1) bin(Op.OP_TOALTSTACK);
           }
           bin(Op.OP_ENDIF);
 
@@ -25850,6 +25908,107 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
+  }
+
+  /**
+   * Leaves the view a per-call batch target's proof record began the write segment with.
+   *
+   * Entry `[..., coordinate]`, exit `[..., view]`. The coordinate is the record's name: its input for a record the
+   * transaction spends, or `-(out + 1)` for a record the group names at its output alone, a node an earlier frame
+   * created (`buildBatchTargetsDerivationScript`). Either is read at its first declaration in the segment. A created
+   * record's view is held to anything only by a validator settling beside another master of the contract, where V7
+   * chains a created record from nothing; alone, the declaration would be its own word. Every created record starts
+   * where an all-zero view does, so a created view with the head's zero slot is refused: a head is minted only at
+   * genesis. `spentLock` holds a spent record to its collection; with `addressDepth`, the depth of the collection's
+   * address beneath the coordinate, a created record's output is held to that covenant here too.
+   */
+  private emitPerCallBatchProofView(
+    loc: SingleLocationData, spentLock?: () => void, addressDepth?: number,
+  ): void {
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc); // whether the record is a created one
+    this.emit(Op.OP_IF, loc);
+    this.emit(bytecodeToScript(validatorSettledScript()), loc);
+    this.emit(Op.OP_VERIFY, loc);
+    if (addressDepth !== undefined) {
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc); // -(out + 1) -> out
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.emit(encodeInt(BigInt(addressDepth + 1)), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+    }
+    if (spentLock !== undefined) {
+      this.emit(Op.OP_ELSE, loc);
+      spentLock();
+    }
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(bytecodeToScript(declaredRecordFirstViewByNameScript(this.declaredViewCounts(loc))), loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_0NOTEQUAL, loc); this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /** Leaves the address of the collection's entry covenant for the frame's records, as raw stack. */
+  private emitPerCallCollectionAddress(collectionHash: Uint8Array, loc: SingleLocationData): void {
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.emitSortedEntryAddress(collectionHash, loc);
+  }
+
+  /**
+   * The one-target sorted-batch transition of a per-call frame, answered from its write segment's declarations.
+   *
+   * Another frame may write the proof node before this one or rewrite it after, so the spent input and the written
+   * output are other frames' views; settlement chains the declared ones to them in execution order. The proof is the
+   * view the target's group begins with, read once. An update keeps the node's link. An insert's relink is the end
+   * view the segment declares at the predecessor's output, which sits at the collection's covenant, carries the
+   * contract's mutable token, and keeps the proof's slot and value with the target as its successor.
+   */
+  private emitPerCallSingleTargetTransition(
+    slot: number, collectionHash: Uint8Array, loc: SingleLocationData,
+  ): void {
+    const arg = (name: string): void => this.emitPickVMapWitness(name, loc);
+    // The proof stays parked on the alternate stack; each field read copies it.
+    const proofField = (field: 'slot' | 'next' | 'value'): void => {
+      this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+      if (field === 'slot') { this.emit(Op.OP_DROP, loc); return; }
+      this.emit(Op.OP_NIP, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+      this.emit(field === 'next' ? Op.OP_DROP : Op.OP_NIP, loc);
+    };
+    const predOut = `__internal__vmapBatchPredOut_${slot}`;
+    arg(`__internal__vmapBatchProof_${slot}`);
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emitPerCallBatchProofView(loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    proofField('next'); arg(`__internal__vmapBatchNext_${slot}`); this.emit(Op.OP_EQUALVERIFY, loc);
+    proofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    // UPDATE: no predecessor is relinked.
+    arg(predOut); this.emit(Op.OP_1NEGATE, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_ELSE, loc);
+    // INSERT: the predecessor's output, at the collection's covenant with the contract's mutable token.
+    arg(predOut); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emitPerCallCollectionAddress(collectionHash, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    arg(predOut); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(new Uint8Array([1]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emitVerifyCatBaseEqMaster(loc);
+    // The relink is the declared end view there: proof.slot || target || proof.value.
+    arg(predOut); this.emitRecordCommitmentRead('out', loc);
+    proofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`); this.emit(Op.OP_CAT, loc);
+    proofField('value'); this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
   }
 
   /**
@@ -30784,6 +30943,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ADD, loc);
         this.emit(encodeInt(BigInt(CHUNK)), loc);
         this.emit(Op.OP_DIV, loc); // ceil(size/CHUNK); top stays tracked as (dyn_wprior_k)
+        // A per-call frame declares each earlier run at the wider of its two versions, so a later run starts past
+        // the chunks that run consumes as well as the ones it creates.
+        if (this.readsRecordsFromFrame) {
+          const prior = writesInDeclOrder.find(([, write]) => write.valueStackName === writtenValueStackNames[k])!;
+          this.emitWidenToSpentRunWidth(prior[1].sv, loc);
+        }
         wPriorTempNames.push(`(dyn_wprior_${k})`);
       }
 
@@ -30944,12 +31109,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A per-call frame's sorted-batch settlement holds the segment's records past the batch's groups to the
       // value chunks this body pinned; those records include this variable's dynamic-state chunks, so add nNew to
       // the running chunk width before nNew is dropped. A direct frame's running width is a different quantity
-      // (the mapping-value chunks it places before a NEW node), so this stays a per-call adjustment.
+      // (the mapping-value chunks it places before a NEW node), so this stays a per-call adjustment. A run the
+      // census pinned declares one record per chunk of the wider of its two versions, so a shrink's consumed
+      // chunks count too.
       if (this.perCallMaster && this.valueChunkTrailingCountActive) {
         this.emitPickCompilerRouteFrameValue(
           GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, loc,
         );
-        this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_nnew)') + 1)), loc);
+        const declared = this.getStackIndex('(dyn_run_width)', true) >= 0 ? '(dyn_run_width)' : '(dyn_nnew)';
+        this.emit(encodeInt(BigInt(this.getStackIndex(declared) + 1)), loc);
         this.emit(Op.OP_PICK, loc);
         this.emit(Op.OP_ADD, loc);
         this.pushToStack('(value_chunk_trailing_count_next)');
@@ -30963,7 +31131,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // untracked leftover of (dyn_chunkaddr) becomes the needle for the delegate
       // "exactly 1 master output" pin (2 dynamic-state chunks vs expected 1). Top-relative
       // ROLL is correct here: verify-count extras sit above this frame.
-      const dropNow = ['(dyn_i)', '(dyn_nnew)', '(dyn_chunkaddr)', ...wPriorTempNames];
+      const dropNow = ['(dyn_i)', '(dyn_nnew)', '(dyn_run_width)', '(dyn_chunkaddr)', ...wPriorTempNames];
       if (this.currentFunctionIsDelegate && writesInDeclOrder.length === 1) {
         // One written dynamic variable: do not keep the value for a
         // later sibling offset. Leaving it leaks the 174-byte blob into the epilogue.
@@ -31142,7 +31310,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * under a validator, carried from the frame that created it), a position past them creates its record from
    * nothing, and a position past the written value's chunks writes no record. `oldLen` is the length header the
    * segment's own declaration of the data record starts from. With `closesSegment` the segment declares nothing
-   * past the run, so no chunk is minted that a later read could take for the value's own.
+   * past the run, so no chunk is minted that a later read could take for the value's own. The run's width, its
+   * record count, is left tracked as `(dyn_run_width)`.
    */
   private emitPerCallChunkRunCensus(options: {
     readonly sv: StateVariableNode;
@@ -31152,21 +31321,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }): void {
     const { sv, chunkHash, coordinate, closesSegment } = options;
     const { loc } = coordinate;
-    const CHUNK = 120;
     const pick = (name: string, untracked = 0): void => {
       this.emit(encodeInt(BigInt(this.getStackIndex(name) + untracked)), loc);
       this.emit(Op.OP_PICK, loc);
     };
 
     // The chunk count the value held when the segment began, from the header the segment declares it starts at.
-    const previousReadSegment = this.perCallReadSegment;
-    this.perCallReadSegment = this.perCallSegmentIndex;
-    this.emitReadDynamicLen(sv, '(dyn_run_old)', loc);
-    this.perCallReadSegment = previousReadSegment;
-    this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
-    this.emit(Op.OP_ADD, loc);
-    this.emit(encodeInt(BigInt(CHUNK)), loc);
-    this.emit(Op.OP_DIV, loc);
+    this.emitSpentChunkCount(sv, '(dyn_run_old)', loc);
     // The run's width covers both versions: the old chunks consumed and the new ones created.
     pick('(dyn_run_old)');
     pick('(dyn_nnew)', 1);
@@ -31259,9 +31420,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ADD, loc);
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
-    const temps = [
-      '(dyn_run_i)', '(dyn_run_base)', '(dyn_run_shared)', '(dyn_run_addr)', '(dyn_run_width)', '(dyn_run_old)',
-    ];
+    // The width stays for the caller: a sorted batch's walk counts the run's records among those past its groups.
+    const temps = ['(dyn_run_i)', '(dyn_run_base)', '(dyn_run_shared)', '(dyn_run_addr)', '(dyn_run_old)'];
     for (const temp of temps) {
       const index = this.getStackIndex(temp);
       this.emit(encodeInt(BigInt(index)), loc);
@@ -31269,6 +31429,61 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       this.removeFromStack(index);
     }
+  }
+
+  /**
+   * Leaves, tracked as `trackName`, how many chunks a dynamic value held when the running segment began: its length
+   * from the header the segment declares the value's data record starts at, rounded up to whole chunks.
+   */
+  private emitSpentChunkCount(sv: StateVariableNode, trackName: string, loc: SingleLocationData): void {
+    const CHUNK = 120;
+    const previousReadSegment = this.perCallReadSegment;
+    this.perCallReadSegment = this.perCallSegmentIndex;
+    this.emitReadDynamicLen(sv, trackName, loc);
+    this.perCallReadSegment = previousReadSegment;
+    this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(BigInt(CHUNK)), loc);
+    this.emit(Op.OP_DIV, loc);
+  }
+
+  /**
+   * Widens the chunk count a written dynamic value holds, on top, to the width of the value's declared run: one
+   * record per chunk of the wider of the value the segment began with and the value written.
+   */
+  private emitWidenToSpentRunWidth(sv: StateVariableNode, loc: SingleLocationData): void {
+    this.emitSpentChunkCount(sv, '(dyn_run_spent)', loc);
+    this.emit(Op.OP_MAX, loc);
+    this.popFromStack();
+  }
+
+  /**
+   * Widens the chunk count a written dynamic value held when the segment began, on top, to the width of its run as
+   * the declaration states it: the count the segment's declared output header gives the written value is the other
+   * version. A read can run before the body writes the value, so it takes that header rather than the value; the
+   * data record's close pins the header to the value the body writes, so a run stated at another width fails there.
+   */
+  private emitWidenToDeclaredRunWidth(sv: StateVariableNode, loc: SingleLocationData): void {
+    const CHUNK = 120;
+    const fieldsInNft = this.stateVariables
+      .filter((v) => v.nftIndex === sv.nftIndex)
+      .sort((a, b) => a.fieldIndex - b.fieldIndex);
+    this.emitRecordBlockBase('out', loc);
+    this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emitRecordCommitmentRead('out', loc);
+    this.emitStateFieldDecodeInline({
+      nftIndex: sv.nftIndex,
+      precedingTypes: fieldsInNft.slice(0, sv.fieldIndex).map((field) => this.physicalFieldType(field)),
+      targetType: new IntType(false, 32),
+      isLast: sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex,
+      tagged: this.isMultiDataNft(),
+    }, loc);
+    this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(BigInt(CHUNK)), loc);
+    this.emit(Op.OP_DIV, loc);
+    this.emit(Op.OP_MAX, loc);
   }
 
   /**
@@ -32464,6 +32679,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // `verifyDynamicReadBases`, which refuses on disagreement and on an unresolvable invoker set. See that
     // method for why a blanket refusal was wrong and why an empty invoker set must still refuse.
     const priorNames = this.dynamicReadPriorRuns(basisFunction, sv.name);
+    // A per-call frame declares a written run at the wider of its two versions, so a run read past one starts past
+    // the chunks that run creates as well as the ones it consumes.
+    const widenedPriors = this.readsRecordsFromFrame
+      ? this.dynamicReadWidenedPriors(basisFunction, priorNames) : undefined;
     this.dynamicReadBases.push({
       fn: this.currentFunction,
       variable: sv.name,
@@ -32473,6 +32692,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       iterCount: basisFunction.collectionIterations?.length ?? 0,
       threaded: this.getStackIndex('__internal__dynamicChunkInputBase', true) >= 0
         || this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true) >= 0,
+      ...(widenedPriors === undefined ? {} : { widened: widenedPriors }),
     });
     const priorNodes = priorNames.map((n) => this.stateVariables.find((v) => v.name === n)!);
     const fieldsInNft = this.stateVariables
@@ -32499,12 +32719,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // this loop reads at blockSize + sum(prior counts) + i. Empty list for the first/only read (no temps,
     // bytecode identical to single-read). ---
     const priorTempNames: string[] = [];
+    const writtenPriors = new Set(widenedPriors ?? []);
     for (let k = 0; k < priorNodes.length; k++) {
       this.emitReadDynamicLen(priorNodes[k], `(dyn_rprior_${k})`, loc); // len_v, tracked
       this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
       this.emit(Op.OP_ADD, loc);
       this.emit(encodeInt(BigInt(CHUNK)), loc);
       this.emit(Op.OP_DIV, loc); // ceil(len_v/CHUNK); top stays tracked as (dyn_rprior_k)
+      if (writtenPriors.has(priorNodes[k].name)) this.emitWidenToDeclaredRunWidth(priorNodes[k], loc);
       priorTempNames.push(`(dyn_rprior_${k})`);
     }
 

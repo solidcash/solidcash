@@ -704,6 +704,13 @@ risk. Take the slices in order, each with its own tests.
     and writes one target is admitted, and the machine accepts both its present and its absent case
     (`solidc/test/per-call/master/mapping-read-write.test.ts`). A read of an entry the execution does not write
     stays refused, since the frame fixes no value for it.
+  - **Nodes created and relinked across frames: the master half is served** (2026-10-01). An insert splices
+    through a node an earlier frame created, named by its output, which needs a validator settling the
+    contract beside another master; a created predecessor sits at its collection's covenant and has a non-zero
+    slot, so a created head stays refused; relinks are checked against the end view the segment declares, so
+    later frames chain through the node in V6 order (`chained-insert-across-frames`, 16 cases). The planner
+    half is the hop's (the ladder stream's lane): plan each reach against the list the earlier ones left, and
+    lift `requireSatisfiableReachWrites` and `requireChainableNodes` for collections whose values do not chunk.
 - [ ] R4 Long mapping values: the value arrives as a witness bound by the root, and each writing frame mints its
   version's chunks. Both halves are served: the read in `8e67cfaaf` and the write, its chunks declared and
   counted, in the row the Log gives it; a read-modify-write of one long value in one frame has no case yet.
@@ -775,8 +782,10 @@ risk. Take the slices in order, each with its own tests.
     created from nothing, nothing is written past the new value and nothing is declared past the run; read loops
     tie each chunk record to that address on both sides, and a write keeps the chunks of values it only reads.
     23 forgeries the machine accepted before are refused (`dynamic-bytes-record`, `dynamic-array-record`,
-    `frames/chunk-run-kinds`). Refused by name: two dynamic values written in one body when the first's chunk
-    count changes, and a run that shrinks beside a sorted batch. A read-only element access with no other access
+    `frames/chunk-run-kinds`). Two dynamic values written in one body, either count changing, and a run that
+    shrinks beside a sorted batch are served as well: each run is declared at the wider of its spent and written
+    widths (`dynamic-values-together`); the hop planner still refuses an entry that writes two dynamic values
+    by name (`entry-writes.ts`, the ladder stream's file). A read-only element access with no other access
     to the array fails closed (`touchesDynamicState` in `support.ts`, the ladder stream's file).
 - [x] R6 Mappings inside structs and nested mappings, through today's flattening and composite slots (spec 20).
   - The composite slot of a nested `m[a][b]` write is derived as of `7273d613e`: both derivation builders hash each
@@ -1045,14 +1054,29 @@ risk. Take the slices in order, each with its own tests.
   - [ ] Row 1: Reentrancy guard kept in storage and crossed by re-entry (`U._status`, `UC._status`).
   - [ ] Row 2: A static call reads state its caller's caller wrote moments ago.
   - [ ] Row 3: Which callee runs, and how many times, depends on that state.
-  - [ ] Row 4: Calls inside data-dependent loops, including a revert mid-loop.
+  - [ ] Row 4: Calls inside data-dependent loops, including a revert mid-loop. Guarded by
+    `conformance/loop-call-rows.test.ts`: through the shipped proxy hop a loop over the caller's own array makes one
+    call per element (three tags make three catalog frames and four segments, five tags five and six), the record
+    written after the loop is read back on chain, and each payout event is read back at its own output in turn
+    order; the revert mid-loop is refused with its own reason and nothing is broadcast (the entry's check after the
+    third call, the callee's check on the second turn, a zero share on the second turn). Open: a call a per-turn
+    condition guards (`sendEscrowShare`'s `if (amounts[i] > 0)`) is planned on every turn, so the skipped turn's call
+    reaches the payout and is refused (`callee-master-2`, `zero share`), pinned as a known wall in the same file. The
+    artifact publishes the condition on the loop site, and the same loop composed from a plan stating the two calls
+    the body makes settles on the shipped composer with every input accepted (a plan naming the skipped turn's index
+    stalls), so the owner is the SDK hop planner (`proxy/external-calls.ts`, `occurrenceCountOf`). The varying-key
+    write beside `publishJobEvent`'s loop is PW3's (`conformance/loop-upsert-settlement.test.ts`).
   - [ ] Row 5: Revert after state-changing calls (7 checks).
   - [x] Row 6: Custom errors raised in a callee and re-raised by SafeERC20 assembly. Guarded by
     `conformance/custom-error-rows.test.ts`: the self-target spelling runs the SafeERC20 `_revert` shape and the
     shipped refusal report names the error, its declared parameters and the arguments it was raised with
     (`InsufficientAllowance`, `[50n, 10n]`); the cross-contract spelling is pinned at the call entry point
     (`makes 1 external call(s), whose callee frames this call path does not plan yet`).
-  - [ ] Row 7: `tx.origin` authorizes a nested call.
+  - [x] Row 7: `tx.origin` authorizes a nested call. Guarded by `conformance/origin-nested-call-rows.test.ts`: through
+    the shipped proxy hop the vault's frame states the desk's proxy as its `msg.sender` and the owner's input as its
+    origin, admits the owner through `tx.origin` alone and writes the claim, read back on chain; a stranger is refused
+    with the vault's own reason and nothing is broadcast, and the same vault guarded on `msg.sender` alone refuses the
+    owner too. The plain call path refuses the entry by name (no callee frames).
   - [ ] Row 8: `msg.sender` guards on proxy and CREATE-predicted addresses.
   - [x] Row 9: `code.length` of a target. Guarded by `edges/low-level-token-call-lowering.test.ts`: the gate on a
     P2SH32 token target settles and its opposite does not, and a plain account or the zero address answers zero.
@@ -1080,7 +1104,16 @@ risk. Take the slices in order, each with its own tests.
     `conformance/paired-event-rows.test.ts`: one entry emits two events in one transaction and the shipped receipt
     decoder reads both, with their arguments, at their own outputs in emit order. One transaction, not the five the
     row counts.
-  - [ ] Row 15: Writes after an external call.
+  - [ ] Row 15: Writes after an external call. Guarded by `conformance/write-after-call-rows.test.ts`: the segment
+    rule (W2) is served through the shipped proxy hop. The entry's write before its call transitions in its first
+    segment and is kept in the second; the amount owed, the escrow id the call returned and a mapping entry written
+    after the call are kept in the first and written in the second; the escrow's own mapping write after its nested
+    call is declared in its second segment; all are read back on chain. A check after the writes and a revert in the
+    nested call are refused with their own reasons and nothing is broadcast. Open: a callee's own data-record write
+    (`Unicrow.pay`'s `escrowIdCounter.increment()` after its calls) is refused, because the hop declares every callee
+    record kept at its live commitment (`proxy/deploy.ts`, `buildHopPlan`, `settleHopCallees`; the "Walls ahead" MS5
+    row), pinned as a known wall in the same file with the hop trace's reading of that close. The shipped composer
+    settles a callee's own record write after its call when the plan states it (`shapes/origin-gated-payout.test.ts`).
   - [x] Row 16: 24-hour windows, the challenge period, strictly later block times, `Rated` timestamp equal to the
     review's. Guarded by `conformance/time-window-rows.test.ts`: the window is served through the shipped
     composition path (inside, at the boundary, and past it; the challenge strictly later and at the boundary), and
@@ -1100,7 +1133,12 @@ risk. Take the slices in order, each with its own tests.
     its length check, the refusal naming the error and the length it was raised with (E3), and 65 zero bytes, like an
     `r` no curve point has, answers the zero address, so the body reaches its own revert. The ladder title stands
     behind the hop wall and is not run here.
-  - [ ] Row 23: Records growing within one transaction and across 30 transactions.
+  - [x] Row 23: Records growing within one transaction and across 30 transactions. Guarded by
+    `conformance/record-growth-rows.test.ts`: one proxied initialize inserts eight tags in one frame (the head and
+    eight nodes linked in slot order, each holding its value); through the shipped proxy hop thirty appends grow one
+    log over thirty transactions, each with its event at the proxy's event covenant, the log's length and elements
+    read back through the shipped read path; thirty registrations add a linked node each, and a second registration
+    of a held key is refused with nothing broadcast. The thirty-transaction cases run by default (about 6 s and 5 s).
   - [x] Row 24: `string => string` mapping set and delete. Guarded by `conformance/string-mapping-rows.test.ts`:
     served through the shipped proxy path (set, read back, delete, read back, through the shipped decoders) and
     refused by name on the direct call path, which cannot declare the run of chunk records a chunkable mapping

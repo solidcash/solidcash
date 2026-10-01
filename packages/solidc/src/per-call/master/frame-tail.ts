@@ -915,13 +915,13 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
  *
  * The index is visited whatever side it names, and the side that has no item at that index is skipped rather than
  * read. A validator of the contract's own category is recreated in place at the contract address carrying the same
- * mutable token a record does, and that index is not a record: the census admits it beside the ones the pass saw.
+ * mutable token a record does with an empty commitment, and that index is not a record: the census admits exactly
+ * that token beside the ones the pass saw.
  */
 function indexCensusScript(side: 'input' | 'output', addressPayloadOffset: number): number[] {
   const countOpcode = side === 'input' ? Opcodes.OP_TXINPUTCOUNT : Opcodes.OP_TXOUTPUTCOUNT;
   const otherCountOpcode = side === 'input' ? Opcodes.OP_TXOUTPUTCOUNT : Opcodes.OP_TXINPUTCOUNT;
   const tokenOpcode = side === 'input' ? Opcodes.OP_UTXOTOKENCATEGORY : Opcodes.OP_OUTPUTTOKENCATEGORY;
-  const lockOpcode = side === 'input' ? Opcodes.OP_UTXOBYTECODE : Opcodes.OP_OUTPUTBYTECODE;
   const flagDepth = side === 'input' ? 0 : 1;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
@@ -946,7 +946,8 @@ function indexCensusScript(side: 'input' | 'output', addressPayloadOffset: numbe
     copyAlt(flagDepth);
     emit(Opcodes.OP_EQUAL);
     // Or a validator of the contract's own category, recreated in place at the contract address: both sides exist
-    // at the index, both locks are the address, and both tokens are the mutable one a record carries.
+    // at the index, both locks are the address, and both tokens are the mutable one a record carries, with the
+    // empty commitment a validator is deployed with.
     copyAlt(3);
     emit(countOpcode, Opcodes.OP_LESSTHAN);
     copyAlt(3);
@@ -954,17 +955,16 @@ function indexCensusScript(side: 'input' | 'output', addressPayloadOffset: numbe
     emit(Opcodes.OP_BOOLAND);
     emit(Opcodes.OP_IF);
     {
+      // One copy of the index serves every read: `[index, admitted]`, the index dropped at the end.
       copyAlt(3);
-      emit(Opcodes.OP_UTXOBYTECODE, ...pushContractAddress(addressPayloadOffset), Opcodes.OP_EQUAL);
-      copyAlt(3);
-      emit(Opcodes.OP_OUTPUTBYTECODE, ...pushContractAddress(addressPayloadOffset), Opcodes.OP_EQUAL);
+      emit(Opcodes.OP_DUP, Opcodes.OP_UTXOBYTECODE, ...pushContractAddress(addressPayloadOffset), Opcodes.OP_EQUAL);
+      emit(Opcodes.OP_OVER, Opcodes.OP_OUTPUTBYTECODE, ...pushContractAddress(addressPayloadOffset), Opcodes.OP_EQUAL);
       emit(Opcodes.OP_BOOLAND);
-      copyAlt(3);
-      emit(Opcodes.OP_UTXOTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL);
-      emit(Opcodes.OP_BOOLAND);
-      copyAlt(3);
-      emit(Opcodes.OP_OUTPUTTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL);
-      emit(Opcodes.OP_BOOLAND);
+      emit(Opcodes.OP_OVER, Opcodes.OP_UTXOTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
+      emit(Opcodes.OP_OVER, Opcodes.OP_OUTPUTTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
+      emit(Opcodes.OP_OVER, Opcodes.OP_UTXOTOKENCOMMITMENT, Opcodes.OP_0, Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
+      emit(Opcodes.OP_OVER, Opcodes.OP_OUTPUTTOKENCOMMITMENT, Opcodes.OP_0, Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
+      emit(Opcodes.OP_NIP);
     }
     emit(Opcodes.OP_ELSE);
     emit(Opcodes.OP_0);

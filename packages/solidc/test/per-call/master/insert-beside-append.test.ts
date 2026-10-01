@@ -348,9 +348,11 @@ function evaluateUpdate(): { accepted: boolean; objection?: string } {
  * relinked to the target, which is the commitment the output it is created at carries.
  */
 const HEAD_AFTER_PADDED = encodeEntryCommitment(ZERO_SLOT, SLOT, new Uint8Array(64));
-/** The machine's refusal of a splice whose proof input is the create sentinel's coordinate, below every input. */
-const CREATED_PREDECESSOR_OBJECTION = 'Program attempted to read from an invalid transaction UTXO index. '
-  + 'Transaction UTXO count: 5; requested index: -32767.';
+/**
+ * The machine's refusal of a splice whose predecessor carries the create sentinel: this frame settles alone, and a
+ * record named at its output alone is read only where a validator settles the contract beside another master.
+ */
+const CREATED_PREDECESSOR_OBJECTION = 'Program failed an OP_VERIFY operation.';
 const CREATED_HEAD_RECORDS: RecordEntry[] = [
   { in: STATE_INDEX, out: STATE_INDEX, viewIn: STATE_EMPTY, viewOut: STATE_HELD },
   { in: 0xffff, out: PRED_INDEX, viewIn: EMPTY, viewOut: HEAD_AFTER_PADDED },
@@ -395,9 +397,9 @@ describe('a per-call master whose entry inserts a mapping target beside a dynami
 
   it('refuses the insert when the transaction creates its predecessor rather than spending it', () => {
     // The same insert with the head minted by the transaction itself, as a hop laid it: the predecessor record
-    // carries the create sentinel and states the empty list's own head as its input view. The splice reads that
-    // view, then holds the recreated head to the locking bytecode of its proof input, and the proof coordinate is
-    // the sentinel's, below every input. A relink to another slot meets the same refusal first.
+    // carries the create sentinel and states the empty list's own head as its input view. A frame that settles alone
+    // refuses a created record that states a start view, and a relink to another slot meets the same refusal. Under a
+    // validator the head's zero slot is refused (chained-insert-across-frames.test.ts).
     const elsewhere = keyToSlot(new Uint8Array([1, 1, 1]));
     const wrongHead = encodeEntryCommitment(ZERO_SLOT, elsewhere, new Uint8Array(64));
     const asLaid: SpendOptions[] = [
@@ -410,10 +412,8 @@ describe('a per-call master whose entry inserts a mapping target beside a dynami
     for (const variant of asLaid) {
       expect(evaluateCreatedHead(variant)).toStrictEqual({ accepted: false, objection: CREATED_PREDECESSOR_OBJECTION });
     }
-    // With no input view at all, the splice's read of its predecessor finds nothing to bracket against.
-    expect(evaluateCreatedHead()).toStrictEqual({
-      accepted: false, objection: 'Program failed an OP_VERIFY operation.',
-    });
+    // With no input view at all, the splice refuses the record: no validator settles this frame.
+    expect(evaluateCreatedHead()).toStrictEqual({ accepted: false, objection: CREATED_PREDECESSOR_OBJECTION });
   });
 
   it('is refused when the created node carries a value the code did not compute', () => {

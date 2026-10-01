@@ -142,9 +142,10 @@ describe('a hop whose proxied callee appends to a chunked mapping', () => {
     const funded = await deployAll(network);
 
     // Each reach plans its insert against the deployment alone, so all four relink the one head the genesis minted
-    // to their own key. The cross-reach check leaves a dynamic value's reaches to chain through a node, so the
-    // shape is settled and the second reach's frame refuses. Owner: the SDK hop planner, where reaches that touch one
-    // node are to share one participant with their views chained in execution order.
+    // to their own key. The cross-reach check leaves a dynamic value's reaches to chain through a node, so the shape
+    // is settled; each frame checks its relink against the end view it declares and settles, and the settled hop
+    // refuses the chain by name. Owner: the SDK hop planner, where reaches that touch one node are to share one
+    // participant with their views chained in execution order.
     await expect(callPerCallProxyEntry({
       provider: network,
       implementationArtifact: outer,
@@ -167,8 +168,8 @@ describe('a hop whose proxied callee appends to a chunked mapping', () => {
       changeAddress: funded.changeAddress,
       vm: compositionMachine(),
     })).rejects.toThrow(
-      `the call's callee "${store.contractName}.append()" did not settle through the proxy: frame `
-      + `"callee-impl-master-2" of ${store.contractName}.append()`,
+      `the hop's reach "${store.contractName}.append()" touches a node of collection "pieces" that an earlier reach `
+      + `"${store.contractName}.append()" relinks to insert a key`,
     );
     expect((await network.getUtxosForLockingBytecode(funded.deployerLock))
       .some((utxo) => utxo.txid === funded.callCoin.txid && utxo.vout === funded.callCoin.vout)).toBe(true);

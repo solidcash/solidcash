@@ -40,11 +40,11 @@ with no conflict.
 
 ## Refused by name, and what each needs
 
-- **Two inserts of one key, or two inserts through one node, across reaches.** The master would check a relink
-  against its declared end view and address a predecessor an earlier reach created by its position in its declared
-  list (`GenerateTargetTraversal.ts`: the single-target insert near line 25444, the batches near 25519 and 25622),
-  and the planner would plan a later reach against the list the earlier ones left.
-- **A touch after an insert relinked the node, and one node touched by two frames where one enters the other.**
+- **Two inserts of one key, or two inserts through one node, across reaches, and a touch after an insert relinked
+  the node.** The master half is served (2026-10-01): a relink is checked against the declared end view and a
+  predecessor an earlier reach created is named by its output. The planner half remains: plan a later reach
+  against the list the earlier ones left.
+- **One node touched by two frames where one enters the other.**
 - **A dynamic (chunked) value touched by more than one reach.** Not chained; refused just before broadcast, so a
   frame that reverts earlier still reports its own reason.
 - **Re-entry records (stage 3 of the reached-state design).** The masters close every segment at their end, so a

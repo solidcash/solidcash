@@ -134,10 +134,9 @@ shapes, corrected after the fifth review:
 
 **Two known gaps in what is landed**, both fail-closed:
 
-- The self-settlement census refuses every mutable token of the contract other than the record it declares, so a
-  composition in which a self-settling master of X shares its transaction with a validator of X's own category —
-  which the spec's S2 allows — is refused. The validator's own recreated token must be admitted. Latent today only
-  because a self-settling master currently makes no external call, so the shape does not yet arise.
+- **Closed** (`9ad622305`, 2026-09-26): the self-settlement census admits the validator its category deploys,
+  recreated in place, beside a self-settling master, so S2's composition settles. Since 2026-10-01 the admission
+  requires the validator's empty commitment on both sides (`self-settlement-beside-validator`).
 - A segment declaring two or more records is refused rather than settled partly; the chains of mapping nodes and
   chunks are not emitted.
 

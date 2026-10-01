@@ -618,3 +618,78 @@ export function declaredRecordsKeptScript(options: DeclaredRecordsKeptOptions): 
   for (let pair = 0; pair < options.exempt; pair += 1) op(Opcodes.OP_2DROP);
   return new Uint8Array(bytes);
 }
+
+/**
+ * Builds the script that leaves the view the first declaration of a named record starts from.
+ *
+ * Entry `[..., name]` (with the segment index beneath it for run-time counts), exit `[..., view]`. A record is named
+ * by its input, or, when its `in` field holds the no-index sentinel, by `-(out + 1)`: a node an earlier frame created
+ * has no input, so a frame names it at its output alone, and the name keeps the two spaces apart. The first
+ * declaration with a view is read, as the input side reads a spent record, so inserts that share a node all prove
+ * their gap against the view the segment began with. A segment that declares no such record fails the read.
+ */
+export function declaredRecordFirstViewByNameScript(options: DeclaredViewCounts): Uint8Array {
+  const bytes: number[] = [];
+  const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
+  const raw = (script: Uint8Array): void => { bytes.push(...script); };
+  const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
+  const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
+
+  op(Opcodes.OP_TOALTSTACK);
+  if (options.runtimeCounts === true) op(Opcodes.OP_TOALTSTACK);
+  raw(readOwnWitnessBlockScript());
+  raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
+  skipField(takeLengthPrefixedField()); // sender
+  skipField(takeLengthPrefixedField()); // self
+  skipField(takeFixedWidthField(8)); // value
+  skipField(takeLengthPrefixedField32()); // retval
+  stepDeclaredCallRecords(bytes, options, op, raw, num);
+  skipField(takeFixedWidthField(2)); // declared segment count
+  stepDeclaredSegments(options, op, raw, num);
+
+  // `[result, count, cursor, rest]` with the rest on top; the result stays empty until the named record is met.
+  raw(takeFixedWidthField(2));
+  op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP);
+  op(Opcodes.OP_0);
+  num(2); op(Opcodes.OP_ROLL);
+  num(2); op(Opcodes.OP_ROLL);
+  op(Opcodes.OP_0);
+  op(Opcodes.OP_SWAP);
+  num(2); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL);
+  op(Opcodes.OP_IF);
+  op(Opcodes.OP_ELSE);
+  op(Opcodes.OP_BEGIN);
+  {
+    raw(takeFixedWidthField(2)); // in
+    op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP);
+    raw(takeFixedWidthField(2)); // out
+    op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_ROT); // [.., rest, out, in]
+    // The record's name: its input, or -(out + 1) when it has none.
+    op(Opcodes.OP_DUP); raw(encodeDataPush(INDEX_NONE_BYTES)); op(Opcodes.OP_NUMEQUAL);
+    op(Opcodes.OP_IF, Opcodes.OP_DROP, Opcodes.OP_1ADD, Opcodes.OP_NEGATE);
+    op(Opcodes.OP_ELSE, Opcodes.OP_NIP, Opcodes.OP_ENDIF);
+    raw(new Uint8Array([Opcodes.OP_FROMALTSTACK, Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK]));
+    op(Opcodes.OP_EQUAL, Opcodes.OP_TOALTSTACK); // park the match while the view is read
+    raw(takeLengthPrefixedField32()); // viewIn
+    skipField(takeLengthPrefixedField32()); // viewOut
+    op(Opcodes.OP_SWAP); // [result, count, cursor, rest, view]
+    // The first match replaces the empty result; a later one leaves it.
+    num(4); op(Opcodes.OP_ROLL);
+    op(Opcodes.OP_FROMALTSTACK);
+    op(Opcodes.OP_OVER, Opcodes.OP_SIZE, Opcodes.OP_NIP, Opcodes.OP_NOT, Opcodes.OP_BOOLAND);
+    op(Opcodes.OP_IF, Opcodes.OP_DROP, Opcodes.OP_ELSE, Opcodes.OP_NIP, Opcodes.OP_ENDIF);
+    num(3); op(Opcodes.OP_ROLL);
+    num(3); op(Opcodes.OP_ROLL);
+    num(3); op(Opcodes.OP_ROLL); // [result, count, cursor, rest]
+    op(Opcodes.OP_SWAP, Opcodes.OP_1ADD, Opcodes.OP_SWAP);
+    num(1); op(Opcodes.OP_PICK);
+    num(3); op(Opcodes.OP_PICK);
+    op(Opcodes.OP_GREATERTHANOREQUAL);
+  }
+  op(Opcodes.OP_UNTIL);
+  op(Opcodes.OP_ENDIF);
+  op(Opcodes.OP_NIP, Opcodes.OP_NIP, Opcodes.OP_DROP); // cursor, count, the consumed block
+  op(Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP); // the name
+  op(Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, Opcodes.OP_0, Opcodes.OP_GREATERTHAN, Opcodes.OP_VERIFY);
+  return new Uint8Array(bytes);
+}

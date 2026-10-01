@@ -11,7 +11,8 @@
  * The operands, and where each comes from:
  *
  *   Slot      the masked `sha256` of the target key, computed in script from the key value on the stack
- *   Proof     the proof record's input index, relative to the input the frame's records are addressed from
+ *   Proof     the proof record's input index, relative to the input the frame's records are addressed from; for a
+ *             record named at its output alone, `-(out + 1)` relative to the same input
  *   Next      the successor the written node carries
  *   PredOut   the output the predecessor is recreated at, or the direct convention's `-1` for an update
  *   Trailing  the distinct predecessors the execution rewrites
@@ -45,6 +46,9 @@ export function batchDerivationSlotName(kind: BatchDerivationSlot, slotIndex: nu
 
 /** The tracked name of the records the segment declares past the groups: the value chunks the body must pin. */
 export const BATCH_EXTRA_RECORDS_SLOT = '__internal__vmapBatchExtraRecords';
+
+/** The u16 index the codec reserves for a record with no input or no output, as a script number. */
+const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]);
 
 /** A script number in its minimal push form. */
 function minimalNumber(value: number): Uint8Array {
@@ -252,10 +256,29 @@ class BatchTargetsDerivationBuilder {
     this.branch(() => this.deriveUpdate(target), () => this.deriveInsert(target));
   }
 
-  /** One in-place record: the target's own input proves it and opens no predecessor output. */
-  private deriveUpdate(target: number): void {
+  /**
+   * Leaves the coordinate the target's proof record is named at.
+   *
+   * A spent record is named by its input. A record named at its output alone, a node an earlier frame created,
+   * carries the no-index sentinel there and is named by that output instead, as `-(out + 1)`: a coordinate below
+   * every input, from which the master recovers the output without walking the segment again.
+   */
+  private pushProofCoordinate(target: number): void {
     this.pick(`in0_${target}`);
     this.unary(Opcodes.OP_BIN2NUM, 'proof_index');
+    this.op(Opcodes.OP_DUP);
+    this.raw(encodeDataPush(INDEX_NONE_BYTES));
+    this.op(Opcodes.OP_NUMEQUAL, Opcodes.OP_IF, Opcodes.OP_DROP);
+    // With the sentinel dropped, the output field sits one shallower than the model, which still counts it.
+    this.num(this.main.indexOf(`out0_${target}`) - 1);
+    this.op(Opcodes.OP_PICK, Opcodes.OP_BIN2NUM);
+    this.op(Opcodes.OP_DUP, Opcodes.OP_0, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
+    this.op(Opcodes.OP_1ADD, Opcodes.OP_NEGATE, Opcodes.OP_ENDIF);
+  }
+
+  /** One in-place record: the target's own input proves it and opens no predecessor output. */
+  private deriveUpdate(target: number): void {
+    this.pushProofCoordinate(target);
     this.pushRecordsOwner('records_owner');
     this.binary(Opcodes.OP_SUB, 'proof');
     this.toAlt(`proof_${target}`);
@@ -275,8 +298,7 @@ class BatchTargetsDerivationBuilder {
     this.takeFixedField(2, `out1_${target}`);
     this.takeLengthField32(`view_in1_${target}`);
     this.takeLengthField32(`view_out1_${target}`);
-    this.pick(`in0_${target}`);
-    this.unary(Opcodes.OP_BIN2NUM, 'proof_index');
+    this.pushProofCoordinate(target);
     this.pushRecordsOwner('records_owner');
     this.binary(Opcodes.OP_SUB, 'proof');
     this.toAlt(`proof_${target}`);
@@ -285,6 +307,9 @@ class BatchTargetsDerivationBuilder {
     this.toAlt(`next_${target}`);
     this.pick(`out0_${target}`);
     this.unary(Opcodes.OP_BIN2NUM, 'pred_out');
+    // The relinked predecessor lands at an output the transaction writes. A negative index would read as the direct
+    // convention's inactive-row sentinel, which skips a target's checks.
+    this.op(Opcodes.OP_DUP, Opcodes.OP_0, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
     this.toAlt(`pred_out_${target}`);
     for (let field = 0; field < 8; field += 1) this.nip(); // the four fields of each record
   }

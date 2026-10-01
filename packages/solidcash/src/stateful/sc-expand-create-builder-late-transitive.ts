@@ -27,7 +27,9 @@ import {
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   assertAcyclicExternalCallPath,
+  snapshotExternalCallFrontier,
   visitExpandingExternalCallGroups,
+  wouldCreateExternalCallParentCycle,
 } from './external-call-graph-frontier.js';
 import { externalCallIterationIndices } from './external-call-iteration-domain.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
@@ -114,7 +116,11 @@ export async function expandCreateBuilderLateTransitive(
   const markSharedFunder = host.markSharedFunder;
   const selectProxyForwardInput = host.selectProxyForwardInput;
   const preparedChildProducerPath = host.preparedChildProducerPath;
-  const expansionGroups = externalCallUtxoGroups.map((group) => ({ ...group }));
+  // Graph discovery follows logical invocations, while the physical carrier arrays below may be
+  // retargeted to a later writer. Keep ancestry and callsites aligned with the immutable frames.
+  const {
+    groups: expansionGroups, parents: expansionParents, callsites: expansionCallsites,
+  } = snapshotExternalCallFrontier(externalCallUtxoGroups, allGroupParentIndices, allGroupEcSlots);
   const expansionDepths = expansionGroups.map((_, groupIndex) => {
     const atomicIndex = preparedAtomicNodeByExternalGroup.get(groupIndex);
     const seen = new Set<number>();
@@ -126,7 +132,7 @@ export async function expandCreateBuilderLateTransitive(
       );
       seen.add(index);
       index = atomicIndex === undefined
-        ? allGroupParentIndices[index] : preparedAtomicNodes?.[index]?.parent;
+        ? expansionParents[index] : preparedAtomicNodes?.[index]?.parent;
       if (index !== undefined && index !== null && index >= 0) depth += 1;
     }
     return depth;
@@ -198,9 +204,9 @@ export async function expandCreateBuilderLateTransitive(
     const frames: Array<{ nested: ExternalCallAbi; iterationIndex: number; occurrenceIndex: number }> = [];
     for (const nested of parentFn.externalCalls) {
       let alreadyPublished = false;
-      for (let index = 0; index < allGroupParentIndices.length; index++) {
-        if (allGroupParentIndices[index] === parentGroupIndex
-          && (allGroupEcSlots[index] as ExternalCallAbi | undefined)?.callsiteId === nested.callsiteId) {
+      for (let index = 0; index < expansionParents.length; index++) {
+        if (expansionParents[index] === parentGroupIndex
+          && (expansionCallsites[index] as ExternalCallAbi | undefined)?.callsiteId === nested.callsiteId) {
           alreadyPublished = true;
           break;
         }
@@ -357,8 +363,11 @@ export async function expandCreateBuilderLateTransitive(
       const selectedFn = (selectedContract.inner.artifact.abi as readonly AbiFunction[])
         .find((candidate) => candidate.name === (rawFunctionName ?? nested.functionName));
       if (!selectedFn) continue;
+      // Recursion is a property of the discovered logical call path. A shared physical NFT carrier can be
+      // retargeted from release to setClaimed and then to sendEscrowShare while a claim loop is expanded;
+      // reading that mutable owner here would mistake the second sibling share call for recursion.
       assertAcyclicExternalCallPath(
-        externalCallUtxoGroups, allGroupParentIndices, parentGroupIndex,
+        expansionGroups, expansionParents, parentGroupIndex,
         callee.categoryId, selectedFn.name,
       );
       const childDepth = expansionDepths[parentGroupIndex] + 1;
@@ -774,7 +783,14 @@ export async function expandCreateBuilderLateTransitive(
         // Hidden sender identity is derived from the physical edge's parent. Once a later writer owns the
         // carrier, retaining the provisional edge would make C observe A as msg.sender in A -> B -> C.
         allGroupEcSlots[physicalOwnerIndex] = nested;
-        allGroupParentIndices[physicalOwnerIndex] = parentGroupIndex;
+        // A -> B -> A' is a legitimate callback when A' shares A's physical NFT. The newly appended
+        // A' logical group records B as its parent; moving A's earlier carrier under B would instead
+        // turn the ancestry into A -> B -> A and make later graph discovery falsely recursive.
+        if (!wouldCreateExternalCallParentCycle(
+          allGroupParentIndices, physicalOwnerIndex, parentGroupIndex,
+        )) {
+          allGroupParentIndices[physicalOwnerIndex] = parentGroupIndex;
+        }
       }
       let precomputedReturnCommitment: Uint8Array | undefined;
       if (nested.hasReturnValues && selectedFn.writesState !== true && selectedFn.outputs?.length === 1) {
@@ -869,6 +885,8 @@ export async function expandCreateBuilderLateTransitive(
         ...(precomputedReturnCommitment && { precomputedReturnCommitment }),
       });
       expansionGroups.push({ ...externalCallUtxoGroups[childGroupIndex] });
+      expansionParents.push(parentGroupIndex);
+      expansionCallsites.push(nested);
       expansionDepths.push(childDepth);
       if (preparedAtomicNodes) {
         if (parentAtomicNode !== undefined) {

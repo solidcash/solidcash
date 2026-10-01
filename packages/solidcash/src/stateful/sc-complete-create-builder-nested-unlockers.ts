@@ -173,9 +173,16 @@ export async function completeCreateBuilderNestedUnlockers(
     const rootLogicalCaller = needsMsgSenderAnchor
       && (childParentGroupIndex === undefined || childParentGroupIndex < 0)
       && childCallerSubjectLockingBytecode.toLowerCase() === binToHex(authenticatedSelfAddress).toLowerCase();
-    if (needsMsgSenderAnchor && !rootLogicalCaller && childParentGroupIndex !== undefined
-      && childParentGroupIndex >= 0) {
-      const caller = externalCallUtxoGroups[childParentGroupIndex]?.externalContract;
+    if (needsMsgSenderAnchor && !rootLogicalCaller) {
+      // A callback can retarget an earlier physical carrier without moving that carrier beneath
+      // its own descendant in the logical graph. In that case the physical parent is not the
+      // caller subject: locate the co-spent caller by its authenticated category and exact lock.
+      const caller = externalCallUtxoGroups.find((group) => (
+        group.categoryId.toLowerCase() === childCallerCategoryId.toLowerCase()
+        && (addressArgumentLockingBytecodeHex(group.externalContract.target)
+          ?? group.externalContract.inner.lockingBytecode).toLowerCase()
+          === childCallerSubjectLockingBytecode.toLowerCase()
+      ))?.externalContract;
       if (caller) await host.ensureNestedIdentityAnchorBand(caller.target);
     }
     const childMsgSenderAnchorBand = needsMsgSenderAnchor && !rootLogicalCaller

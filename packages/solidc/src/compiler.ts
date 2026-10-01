@@ -3892,13 +3892,25 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
   const byName = new Map<string, FunctionDefinitionNode[]>();
   for (const fn of functions) (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
-  const reachableNames = new Set<string>();
+  const reachableFunctions = new Set<FunctionDefinitionNode>();
+  const candidatesFor = (call: FunctionCallNode): FunctionDefinitionNode[] =>
+    (byName.get(call.identifier.name) ?? []).filter((candidate) =>
+      candidate.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length
+        === call.parameters.length);
   const addClosure = (fn: FunctionDefinitionNode): void => {
-    for (const name of collectNamedFunctionClosure(fn, byName)) reachableNames.add(name);
+    const pending = [fn];
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      if (reachableFunctions.has(current)) continue;
+      reachableFunctions.add(current);
+      walkInvocationAst(current.body, (node) => {
+        if (node instanceof FunctionCallNode) pending.push(...candidatesFor(node));
+      });
+    }
   };
   // Public/external entries, constructor, fallback, and receive can execute. An internal helper only justifies an
-  // automatic route when one of those roots can call it. Name-based closure is deliberately conservative for
-  // overloads: an ambiguous call keeps every same-named helper, never silently drops a real graph edge.
+  // automatic route when one of those roots can call it. Before semantic resolution, arity distinguishes
+  // overloads with different signatures; ambiguous same-arity calls retain every candidate.
   for (const fn of functions) {
     if (fn.isEntryPoint || fn === contract.constructorDef
       || fn === contract.fallbackDef || fn === contract.receiveDef) addClosure(fn);
@@ -3917,7 +3929,7 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   const addMemberCalls = (member: Node): void => {
     walkInvocationAst(member, (node) => {
       if (!(node instanceof FunctionCallNode)) return;
-      for (const fn of byName.get(node.identifier.name) ?? []) addClosure(fn);
+      for (const fn of candidatesFor(node)) addClosure(fn);
     });
   };
   for (const member of otherMembers) addMemberCalls(member);
@@ -3931,11 +3943,11 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   const activeModifierArgs = new Set<Node>();
   let changed = true;
   while (changed) {
-    const priorReachableCount = reachableNames.size;
+    const priorReachableCount = reachableFunctions.size;
     const priorModifierCount = activeModifiers.size;
     const priorArgCount = activeModifierArgs.size;
     for (const fn of functions) {
-      if (!reachableNames.has(fn.name)) continue;
+      if (!reachableFunctions.has(fn)) continue;
       for (const invocation of fn.customModifiers) {
         for (const arg of invocation.args) {
           if (activeModifierArgs.has(arg)) continue;
@@ -3948,11 +3960,11 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
         addMemberCalls(modifier);
       }
     }
-    changed = priorReachableCount !== reachableNames.size
+    changed = priorReachableCount !== reachableFunctions.size
       || priorModifierCount !== activeModifiers.size || priorArgCount !== activeModifierArgs.size;
   }
   otherMembers.push(...activeModifiers, ...activeModifierArgs);
-  const reachableFunctions = functions.filter((fn) => reachableNames.has(fn.name));
+  const reachableFunctionList = functions.filter((fn) => reachableFunctions.has(fn));
   // Before semantic resolution a function value or indexed indirect call may target any same-contract helper.
   // Keep the old conservative survey in that case; narrowing only a statically named closure must never drop a
   // real graph edge carried by an indirect dispatch.
@@ -3963,12 +3975,12 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       opaqueLocalDispatch = true;
     }
   };
-  for (const fn of reachableFunctions) {
+  for (const fn of reachableFunctionList) {
     if (fn.parameters.some((parameter) => parameter.type instanceof FunctionType)) opaqueLocalDispatch = true;
     walkInvocationAst(fn.body, checkOpaqueLocalDispatch);
   }
   for (const member of otherMembers) walkInvocationAst(member, checkOpaqueLocalDispatch);
-  const surveyedFunctions = opaqueLocalDispatch ? functions : reachableFunctions;
+  const surveyedFunctions = opaqueLocalDispatch ? functions : reachableFunctionList;
   const interfaceNames = new Set(ast.interfaceDefinitions.map((iface) => iface.name));
   // A call through an interface-typed variable parses as a namespaced FunctionCallNode (`sink.note`), not a
   // MethodCallNode. Detect it from declared receiver types before semantic lowering, while allowing a parameter
@@ -5421,6 +5433,7 @@ function synthesizeMessageBusRoute(
   // zero guard can rule out that arm, including when the guard is in the caller of the writing helper.
   const hasSuccessfulConditionalScalarWrite = (root: FunctionDefinitionNode): boolean => {
     const scalarStateNames = new Set(contract.stateVariables.map((state) => state.name));
+    let nextLocalMarker = 0;
     interface ScalarPath {
       owner: FunctionDefinitionNode;
       aliases: Map<string, string>;
@@ -5538,7 +5551,12 @@ function synthesizeMessageBusRoute(
         path.aliases.delete(statement.identifier.name);
         if (marker !== undefined) path.nonZero.delete(marker);
       }
-      if (statement instanceof VariableDefinitionNode) path.aliases.delete(statement.name);
+      if (statement instanceof VariableDefinitionNode) {
+        // A local scalar is a stable value between its definition and an assignment. Keep its identity
+        // through helper arguments so `if (from == address(0)) revert;` can prove an `_update(from, ...)`
+        // scalar supply arm unreachable even when `from` came from a local `_msgSender()` value.
+        path.aliases.set(statement.name, `local:${nextLocalMarker++}`);
+      }
       return statement instanceof RevertNode || statement instanceof ReturnNode ? [] : [path];
     };
     active.add(root);

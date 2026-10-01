@@ -58,6 +58,23 @@ describe('message-bus compilation selection', () => {
     expect(optedIn.bytecode).not.toBe(direct.bytecode);
   });
 
+  it('keeps an unreachable overloaded foreign-call helper off the default route', () => {
+    const source = `interface ISink { function ping(int amount) external; }
+      contract Simple(address target) {
+        int balance;
+        function next(int value) internal pure returns (int) { return value + 1; }
+        function next(int value, int extra) internal { ISink(target).ping(value + extra); }
+        function set(int value) public { balance = next(value); require(balance > 0); }
+      }`;
+    const options = { suppressWarnings: true, optimizeForCompilationSpeed: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.bytecode).toBe(direct.bytecode);
+  });
+
   it('admits only reachable modifier call graphs by default', () => {
     const prelude = 'interface ISink { function ping(int value) external; }';
     const unused = `${prelude} contract Simple(address target) {

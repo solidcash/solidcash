@@ -16,6 +16,7 @@ import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import { AuthenticatedProducerResults } from '../message-bus/authenticated-producer-results.js';
+import type { PreparedAtomicMessageBusCall } from '../message-bus/compose-prepared-invocation.js';
 
 export type MaterializeCreateBuilderReturnEmitHost = {
   readonly categoryId: string;
@@ -40,6 +41,23 @@ export function selectPreparedAtomicReturnSeed(
   return physicalMatches || routedMatches
     ? eventCommitment ?? group.precomputedReturnCommitment
     : group.precomputedReturnCommitment;
+}
+
+/** An isolated discovery read cannot certify a result after an earlier write to its participant. */
+export function discoveredReturnFollowsParticipantWrite(
+  nodes: readonly Pick<PreparedAtomicMessageBusCall,
+  'contract' | 'functionName' | 'selector' | 'executionArtifact'>[],
+  nodeIndex: number,
+): boolean {
+  const current = nodes[nodeIndex];
+  if (!current?.contract.categoryId) return false;
+  return nodes.slice(0, nodeIndex).some((prior) => {
+    if (prior.contract.categoryId?.toLowerCase() !== current.contract.categoryId?.toLowerCase()) return false;
+    const artifact = prior.executionArtifact ?? prior.contract.inner.artifact;
+    const entry = artifact.abi.find((candidate) => candidate.name === prior.functionName
+      && (prior.selector === undefined || candidate.selector?.toLowerCase() === prior.selector.toLowerCase()));
+    return entry?.writesState === true;
+  });
 }
 
 /**
@@ -177,6 +195,13 @@ export async function materializeCreateBuilderReturnEmit(
       const group = externalCallUtxoGroups[groupIndex];
       const node = preparedAtomicNodes[nodeIndex];
       if (!group || !node) continue;
+      // The isolated callee probe sees the pre-transaction state. A later read from that same participant
+      // may observe a preceding graph write instead; its apparent result is a VM convergence placeholder,
+      // not a prepared commitment. Explicit caller-supplied prepared results never pass through this path.
+      if (discoveredReturnFollowsParticipantWrite(preparedAtomicNodes, nodeIndex)) {
+        preparedAtomicNodes[nodeIndex] = { ...node, provisionalResultCommitment: undefined };
+        continue;
+      }
       const identities = new Set([
         groupIndex,
         logicalReturnGroupIndex(externalCallUtxoGroups, groupIndex),

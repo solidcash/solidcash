@@ -30,8 +30,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
 - 2026-10-01 selected-entry checkpoint: the duplicate `whitelistWorkers` proof was an inactive union lane whose
   key witness was shared with the selected `takeJob` read. The route now uses selector-exact operation activity
   to fund unselected entry slots, preserving the duplicate-input guard. The focused unit title and its adjacent
-  title pass. The unchanged `take job > take job` title advances past the duplicate and remains **red** at an
-  invocation-11 prepared/observed return mismatch; no adjacent Marketplace title was run.
+  title pass. The subsequent invocation-11 return mismatch was a stale isolated `balanceOf` seed after a same-
+  participant `transferFrom`. Discovery no longer publishes such post-write seeds; the composed VM derives the
+  actual value. The unchanged `take job > take job` title now **passes** (1 selected, 65 skipped). Its immediately
+  preceding `take job > sanity checks` title is **red** at the Chai adapter's unsupported custom-error argument
+  check for `ECDSAInvalidSignatureLength(0)`. No broader Marketplace run was made.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

@@ -135,6 +135,26 @@ export function deriveReturnResults(
       }
       const prepared = ctx.preparedResults[invocationIndex];
       if (prepared !== undefined && prepared !== derivedResults[invocationIndex]) {
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RETURN_VECTOR === '1') {
+          console.error('atomic-return-mismatch', JSON.stringify({
+            invocation: invocationIndex,
+            function: invocation.function,
+            participant: participant.participant,
+            contract: participant.artifact.contractName,
+            resultTypes: invocation.resultTypes,
+            prepared,
+            observed: derivedResults[invocationIndex],
+            owned: owned.slice(0, 24).map((index) => ({
+              index,
+              function: ctx.plan.invocations[index].function,
+              sourceCallsiteId: ctx.plan.invocations[index].sourceCallsiteId,
+              occurrenceIndex: ctx.plan.invocations[index].occurrenceIndex,
+              prepared: ctx.preparedResults[index],
+              observed: derivedResults[index],
+            })),
+          }));
+        }
         throw new Error(
           `messageBus: prepared return commitment for invocation ${invocationIndex} `
             + 'differs from the observed producer result',

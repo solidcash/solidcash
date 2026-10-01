@@ -17,7 +17,10 @@ import {
 import {
   decodeEvmInvocationResult, decodeEvmInvocationResultPrefix, encodeEvmInvocationResult,
 } from '../../src/stateful/evm-abi-result.js';
-import { selectPreparedAtomicReturnSeed } from '../../src/stateful/sc-materialize-create-builder-return-emit.js';
+import {
+  discoveredReturnFollowsParticipantWrite,
+  selectPreparedAtomicReturnSeed,
+} from '../../src/stateful/sc-materialize-create-builder-return-emit.js';
 
 const structs: StructDefinitionInfo[] = [{
   name: 'Pair',
@@ -341,6 +344,25 @@ describe('selectMaterializedTailReturnEvents', () => {
       'read', writerResult)).toEqual(writerResult);
     expect(selectPreparedAtomicReturnSeed({ ...carrier, precomputedReturnCommitment: undefined },
       'read', writerResult)).toBeUndefined();
+  });
+
+  it('does not prepare an isolated read after an earlier mutation of its participant', () => {
+    const artifact = { abi: [
+      { name: 'balanceOf', writesState: false },
+      { name: 'transferFrom', writesState: true },
+    ] };
+    const contract = (categoryId: string): { categoryId: string; inner: { artifact: typeof artifact } } => (
+      { categoryId, inner: { artifact } }
+    );
+    const nodes = [
+      { contract: contract('token'), functionName: 'balanceOf' },
+      { contract: contract('other'), functionName: 'transferFrom' },
+      { contract: contract('token'), functionName: 'transferFrom' },
+      { contract: contract('token'), functionName: 'balanceOf' },
+    ] as never;
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 0)).toBe(false);
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 2)).toBe(false);
+    expect(discoveredReturnFollowsParticipantWrite(nodes, 3)).toBe(true);
   });
 
   it('promotes an exact writer probe over its provisional seed', () => {

@@ -1151,6 +1151,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private perCallBatchWriteRuntime = false;
   /**
+   * True while a declared-view read resolves against the batch's write segment, which the source fixes, in a body
+   * whose calls vary on its paths: the walk then names that segment instead of the one the execution has reached,
+   * where the write's spent records are declared kept at the views it wrote.
+   */
+  private perCallReadsWriteSegment = false;
+  /**
    * The state fields whose pending stack value belongs to a closed segment, keyed as `pendingStateWrites` is.
    *
    * A value the body wrote before an external call is the closing segment's, not the record's: another frame may
@@ -7144,6 +7150,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallReadSegment = undefined;
     this.perCallBatchWriteSegment = 0;
     this.perCallBatchWriteRuntime = false;
+    this.perCallReadsWriteSegment = false;
     this.perCallDeclaredLoopOut = false;
     this.perCallDeclaredLoopSlot = -1;
     this.perCallStaleWrites = new Set();
@@ -24879,12 +24886,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_IF, loc);
     }
     // The verification reads the proof node's declared view, which is the segment the write landed in rather than
-    // the one the frame ends in: a call after the write leaves the proof record declared only in the write's own
-    // segment.
+    // the one the frame ends in: a later segment keeps a spent record at the view the write left. A body whose calls
+    // vary walks the segment its run has reached, so a write segment the source fixes is named outright there.
     const previousReadSegment = this.perCallReadSegment;
-    if (this.perCallMaster) this.perCallReadSegment = this.perCallBatchWriteSegment;
+    const previousReadsWriteSegment = this.perCallReadsWriteSegment;
+    if (this.perCallMaster) {
+      this.perCallReadSegment = this.perCallBatchWriteSegment;
+      this.perCallReadsWriteSegment = !this.perCallBatchWriteRuntime;
+    }
     this.emitSortedBatchTransitionVerification(node);
     this.perCallReadSegment = previousReadSegment;
+    this.perCallReadsWriteSegment = previousReadsWriteSegment;
     if (guard?.slotIndex !== undefined) this.emit(Op.OP_ENDIF, loc);
     if (this.perCallMaster && this.getStackIndex(BATCH_EXTRA_RECORDS_SLOT, true) >= 0) {
       // Settlement admits a created record wherever the frame declares one, so every record the segment declares
@@ -31256,8 +31268,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         callCount: this.perCallExecutionCallCount(),
       };
     }
-    // By the frame's stable bottom ordinal: a site may hold working operands above the frame the model does not track.
-    this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE, loc);
+    if (this.perCallReadsWriteSegment && this.perCallReadSegment !== undefined) {
+      // The batch's write segment, which the source fixes, rather than the one the execution has reached.
+      this.emit(encodeInt(BigInt(this.perCallReadSegment)), loc);
+    } else {
+      // By the frame's stable bottom ordinal: a site may hold working operands above the frame the model does not
+      // track.
+      this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE, loc);
+    }
     this.emit(Op.OP_SWAP, loc); // the count beneath the record the read is about
     return { runtimeCounts: true };
   }

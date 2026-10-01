@@ -60,10 +60,19 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function awardOf(int id) view returns (int) { return this.awarded[id]; }'
   + ' }';
 
+/** The key the held variant's initialize writes, so `record(ID)` splices in beside a node the collection holds. */
+const HELD_ID = 1n;
+
+// The same contracts, with an initialize that already holds a key: `record` then inserts after a live node.
+const HELD_SOURCE = SOURCE.replace(
+  'this.initialized = 1; }', `this.initialized = 1; this.awarded[${HELD_ID}] = 1; }`,
+);
+
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
 const impl = artifacts.Impl!;
 const oracle = artifacts.Oracle!;
 const escrow = artifacts.Escrow!;
+const heldImpl = compileStringMulti(HELD_SOURCE, { composition: 'per-call' }).Impl!;
 
 /** The segment the artifact publishes for the entry's own record write. */
 function publishedWriteSegment(artifact: Artifact, functionName: string): number | 'last' | undefined {
@@ -104,7 +113,7 @@ async function deployCallee(
  * The callees are deployed at the categories the implementation's address literals were compiled from, so each
  * call's target names the address the deployed callee actually presents.
  */
-async function deployedWithCallees(network: MockNetworkProvider): Promise<{
+async function deployedWithCallees(network: MockNetworkProvider, implementation: Artifact = impl): Promise<{
   readonly proxyCategoryId: string;
   readonly implementationCategoryId: string;
   readonly deployerLock: Uint8Array;
@@ -140,8 +149,8 @@ async function deployedWithCallees(network: MockNetworkProvider): Promise<{
 
   const deployment = await deployPerCallProxy({
     provider: network,
-    implementationArtifact: impl,
-    proxyArtifact: buildProxyArtifact(impl),
+    implementationArtifact: implementation,
+    proxyArtifact: buildProxyArtifact(implementation),
     implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress: source.address },
     proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress: source.address },
     initialize: { functionName: 'initialize', args: [deployerLock] },
@@ -204,6 +213,44 @@ describe('a proxied entry that writes a sorted-mapping record beside external ca
     expect(result.accepted).toBe(true);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
     // The node the entry's own body computed carries the award it wrote, at the slot the call data's key names.
+    expect(bytesToHex(writtenAward(result.transaction)!)).toBe(bytesToHex(encodeIntegerValue(AWARD)));
+  });
+
+  it('settles an insert spliced through a node the collection holds, the predecessor spent beside the calls', async () => {
+    // The guarded call makes the number of calls a fact of the run, so the body walks the segment its run reached.
+    // The insert's predecessor is a live node the transaction spends: the write's segment relinks it and the later
+    // segments keep it at the relinked view, so the batch's verification has to read the write's own segment
+    // rather than the one the run ends in, or it compares the relinked successor with the one it spliced against.
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funded = await deployedWithCallees(network, heldImpl);
+
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: heldImpl,
+      proxyArtifact: buildProxyArtifact(heldImpl),
+      proxyCategoryId: funded.proxyCategoryId,
+      implementationCategoryId: funded.implementationCategoryId,
+      functionName: 'record',
+      args: [ID],
+      externals: externals(),
+      callerUtxo: funded.callCoin,
+      callerLockingBytecode: funded.deployerLock,
+      funder: funded.funder,
+      changeAddress: funded.changeAddress,
+      vm: compositionMachine(),
+    });
+
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    // The predecessor is a node the transaction spends, recreated where it was spent and relinked to the new key.
+    const slot = keyToSlotMulti([encodeIntegerValue(ID)]);
+    const spentNodes = result.draft.layout.participants
+      .filter((placed) => placed.id.startsWith('mapping-head-') || placed.id.startsWith('mapping-node-'));
+    expect(spentNodes).toHaveLength(1);
+    const relinked = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[spentNodes[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(relinked.nextKey)).toBe(bytesToHex(slot));
     expect(bytesToHex(writtenAward(result.transaction)!)).toBe(bytesToHex(encodeIntegerValue(AWARD)));
   });
 });

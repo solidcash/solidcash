@@ -111,29 +111,29 @@ export interface DeriveReturnValueHost {
  * ethers-style array (tuple). Typechain `.toObject()`/`.toArray()` accessors are attached at this boundary.
  */
 export async function deriveReturnValue(
-host: DeriveReturnValueHost,
-functionName: string,
-args: FunctionArgument[],
-calls?: CallInfo[],
-exactAbiFunction?: AbiFunction,
-calleeCalls?: ExternalCallInfo[],
-/**
+  host: DeriveReturnValueHost,
+  functionName: string,
+  args: FunctionArgument[],
+  calls?: CallInfo[],
+  exactAbiFunction?: AbiFunction,
+  calleeCalls?: ExternalCallInfo[],
+  /**
  * Locking bytecode of the contract that calls this callee. The probe materializes the callee frame the final
  * composition reuses - including which entry UTXO each `msg.sender`-keyed mapping slot co-spends - so the
  * caller identity has to reach it here; the signer is only the caller of a top-level EOA call.
  */
-callerLockingBytecode?: Uint8Array,
-/**
+  callerLockingBytecode?: Uint8Array,
+  /**
  * Category of the contract that calls this callee. The compiler resolves the frame's `msg.sender` address by
  * matching this category against the co-spent inputs, so a probe that leaves it unset makes every
  * `msg.sender`-derived comparison read a sentinel instead of the caller.
  */
-callerCategoryId?: string,
-/**
+  callerCategoryId?: string,
+  /**
  * The contract that calls this callee. Its master UTXO is co-spent into the probe so the compiled frame can
  * resolve `msg.sender` exactly as it will in the composed transaction.
  */
-callerContract?: StatefulContract<Artifact>,
+  callerContract?: StatefulContract<Artifact>,
 ): Promise<StateValue> {
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
@@ -165,7 +165,7 @@ callerContract?: StatefulContract<Artifact>,
   const directMappingRead = directMappingReadPlan(host.inner.artifact, functionName);
   if (directMappingRead) {
     const keyCandidates = directMappingRead.keyArgumentIndices.reduce<
-      Array<Array<string | bigint | boolean | Uint8Array>>
+    Array<Array<string | bigint | boolean | Uint8Array>>
     >(
       (rows, argumentIndex, keyIndex) => rows.flatMap((row) => {
         const argument = args[argumentIndex];
@@ -203,12 +203,6 @@ callerContract?: StatefulContract<Artifact>,
     );
   }
   const abiFunction = exactAbiFunction ?? host.resolveCallAbi(functionName, args);
-  type StatefulCall = Extract<CallInfo, { type: 'stateful' }>;
-  type LogicalReturnContext = {
-    artifact: Artifact;
-    call: StatefulCall;
-    args: readonly FunctionArgument[];
-  };
   // A compiler route is the physical carrier, not the logical result schema: its aggregate `bytes` output and
   // hidden route name cannot decode a selected handler's uint/struct result. Preserve every selected row's
   // stable handler identity and fail closed if one static read would expose multiple logical return values.
@@ -262,7 +256,11 @@ callerContract?: StatefulContract<Artifact>,
     console.error('static-return-passthrough', {
       functionName, resultFunction: resultFunction?.name, delegated: delegatedCall?.functionName,
       passthrough: passthrough?.functionName, passthroughOnly,
-      delegateRegistry: delegatedCall && [...(delegatedCall.contract as unknown as { _externalRegistry: Map<string, StatefulContract> })._externalRegistry.keys()],
+      delegateRegistry: delegatedCall && [
+        ...(delegatedCall.contract as unknown as {
+          _externalRegistry: Map<string, StatefulContract>;
+        })._externalRegistry.keys(),
+      ],
       rootRegistry: [...host.externalRegistry.keys()],
     });
   }
@@ -297,7 +295,10 @@ callerContract?: StatefulContract<Artifact>,
     // Prefer the address-linked deployment over a same-named registry entry: upgrade
     // registers the proxy handle under the impl name, and a stale/empty-state twin can
     // win findDeploymentByName while the facade's stored marketplace address is authoritative.
-    const registered = ((delegatedCall.contract as unknown as { _externalRegistry: Map<string, StatefulContract> })._externalRegistry.get(passthrough.interfaceName)
+    const delegatedRegistry = (delegatedCall.contract as unknown as {
+      _externalRegistry: Map<string, StatefulContract>;
+    })._externalRegistry;
+    const registered = (delegatedRegistry.get(passthrough.interfaceName)
       ?? host.externalRegistry.get(passthrough.interfaceName)
       ?? byAddress
       ?? byName) as unknown;
@@ -340,7 +341,7 @@ callerContract?: StatefulContract<Artifact>,
       if ('proxy' in callee) {
         const publicMethod = (callee as unknown as Record<string, unknown>)[passthrough.functionName];
         if (typeof publicMethod === 'function') {
-          return await (publicMethod as (...values: FunctionArgument[]) => Promise<StateValue>)(...resolvedArgs);
+          return (publicMethod as (...values: FunctionArgument[]) => Promise<StateValue>)(...resolvedArgs);
         }
       }
       // A registered proxy handle must execute reads through the same forwarding boundary as writes. Calling

@@ -135,7 +135,6 @@ export type MessageBusRuntimeAbiFunction = AbiFunction & {
   messageBusGraphExecution?: true;
 };
 
-const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
 const VMAP_COUNTER_VALUE_PREFIX = '__internal__vmapCounterValue_';
 const VMAP_COUNTER_PREFIX_COUNT_PREFIX = '__internal__vmapCounterPrefixCount_';
@@ -355,20 +354,20 @@ export interface BatchExecutionContextBinding {
 }
 
 export function batchRaw(
-host: BatchRawHost,
-blob: Uint8Array,
-routeWitnesses: readonly FunctionArgument[] = [],
-internalRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
-blockBase = 0,
-emitReturn = false,
-returnBlob?: Uint8Array,
-omitLocalFeeTail = false,
-delegateExecution?: { artifact: Artifact; executor: unknown },
-rowArguments?: readonly RouteExpressionKeyRow[],
-logicalIdentity?: ResolvedLogicalIdentity,
-valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>,
-callerLockingBytecode?: Uint8Array,
-executionContextBinding?: BatchExecutionContextBinding,
+  host: BatchRawHost,
+  blob: Uint8Array,
+  routeWitnesses: readonly FunctionArgument[] = [],
+  internalRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
+  blockBase = 0,
+  emitReturn = false,
+  returnBlob?: Uint8Array,
+  omitLocalFeeTail = false,
+  delegateExecution?: { artifact: Artifact; executor: unknown },
+  rowArguments?: readonly RouteExpressionKeyRow[],
+  logicalIdentity?: ResolvedLogicalIdentity,
+  valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>,
+  callerLockingBytecode?: Uint8Array,
+  executionContextBinding?: BatchExecutionContextBinding,
 ): BatchRawCall {
   const executionArtifact = delegateExecution?.artifact ?? host.inner.artifact;
   const capability = executionArtifact.messageBus;

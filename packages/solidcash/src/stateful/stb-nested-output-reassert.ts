@@ -91,8 +91,8 @@ export function reassertNestedMintingMasters(
   host: NestedOutputReassertHost,
   builder: TransactionBuilder,
 ): void {
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
-  const suffixStart = builder.outputs.length - jobsCount - (jobsCount > 0 ? 1 : 0);
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixStart = builder.outputs.length - suffixChunkCount - (suffixChunkCount > 0 ? 1 : 0);
   const tailStart = host.pendingReturnEventOutputs.length > 0
     ? Math.min(
       ...[...packTailReturnPlacements(
@@ -257,8 +257,8 @@ export function reassertNestedSameIndexMutables(
       ...host.lowLevelCallUtxoGroups.map((group) => group.categoryId),
     ].filter((id): id is string => !!id),
   );
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
-  const suffixStart = builder.outputs.length - jobsCount - (jobsCount > 0 ? 1 : 0);
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixStart = builder.outputs.length - suffixChunkCount - (suffixChunkCount > 0 ? 1 : 0);
   const tailStart = host.pendingReturnEventOutputs.length > 0
     ? Math.min(
       ...[...packTailReturnPlacements(

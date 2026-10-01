@@ -296,10 +296,10 @@ export function materializeJobEventsBand(
     && output.to.length === 1
     && output.to[0] === 0x6a
   ));
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
   const suffixStart = opReturnAt >= 0
-    ? Math.min(opReturnAt, builder.outputs.length - jobsCount - (jobsCount > 0 ? 1 : 0))
-    : builder.outputs.length - jobsCount - (jobsCount > 0 ? 1 : 0);
+    ? Math.min(opReturnAt, builder.outputs.length - suffixChunkCount - (suffixChunkCount > 0 ? 1 : 0))
+    : builder.outputs.length - suffixChunkCount - (suffixChunkCount > 0 ? 1 : 0);
   placeValueChunksOnBand(builder.outputs, liveBand, placed, reserved, occupancyEnd, suffixStart);
   fillJobEventsBandHoles(builder.outputs, liveBand, {
     lockingBytecode: placed[0].lockingBytecode,
@@ -427,8 +427,8 @@ export function ensureLiveJobEventsBand(
     host.externalCallUtxoGroups,
     (groupCategoryId) => host.findMintingInputIndex(groupCategoryId),
   );
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
-  const suffixStart = builder.outputs.length - jobsCount - (jobsCount > 0 ? 1 : 0);
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixStart = builder.outputs.length - suffixChunkCount - (suffixChunkCount > 0 ? 1 : 0);
   placeValueChunksOnBand(builder.outputs, liveBand, applyRedeemLockToChunks(
     source.map((chunk) => ({
       ...chunk,

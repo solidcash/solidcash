@@ -83,9 +83,9 @@ export function repackViewTailsAfterMaterialization(
     });
   }
   if (writerEnd < 0) return false;
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
-  const suffixStart = jobsCount > 0
-    ? builder.outputs.length - jobsCount - 1
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  const suffixStart = suffixChunkCount > 0
+    ? builder.outputs.length - suffixChunkCount - 1
     : builder.outputs.length;
   const reserved = new Set<number>();
   for (const [index, input] of host.allInputs.entries()) {

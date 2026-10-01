@@ -248,9 +248,9 @@ export function scidReservedIndices(
     const master = host.findMintingInputIndex(group.categoryId);
     if (master >= 0) reserved.add(tokenWriterReturnIndex(master, group.blockLayout, band));
   }
-  const jobsCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
-  if (jobsCount > 0) {
-    const suffixStart = Math.max(0, outputCount - jobsCount - 1);
+  const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
+  if (suffixChunkCount > 0) {
+    const suffixStart = Math.max(0, outputCount - suffixChunkCount - 1);
     for (let index = suffixStart; index < outputCount; index++) reserved.add(index);
   }
   return reserved;

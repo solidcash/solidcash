@@ -239,7 +239,7 @@ import {
   childDeploymentGenesisEntries, childDeploymentGenesisState, childDeploymentStructDefinitions,
   childDeploymentValueRecipe, hasExactRecipeHelperIdentity,
 } from './deploymentRecipes.js';
-import { cloneNode } from './ast/clone.js';
+import { cloneNode, cloneNodeGraph } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
 import { recoverCompileByMonotoneRefusal } from './admissionRetry.js';
 
@@ -1019,7 +1019,10 @@ function profileLog(label: string, startedAt: number, extra?: Record<string, unk
 
 function cloneAst(ast: Ast, reason: string): Ast {
   const started = Date.now();
-  const cloned = cloneNode(ast);
+  // A whole-program AST is a graph: a diamond import can share one parsed subtree through several paths.
+  // Expanding each alias independently is exponential on dependency-heavy libraries and can exhaust the heap
+  // before admission starts. Preserve aliases inside this isolated snapshot; local inlining still uses cloneNode.
+  const cloned = cloneNodeGraph(ast);
   profileLog('clone', started, { reason, contract: ast.contract?.name });
   return cloned;
 }

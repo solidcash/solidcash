@@ -27,9 +27,11 @@ import {
 } from './stb-scaled-preserve-emit.js';
 import { cloneToken } from './stb-output-utils.js';
 import {
+  hasChunkableValueWriteMetadata,
   isInitialChunkableValueWrite,
   isPersistedChunkableValueWriteReady,
   chunkableValueWriteCategory,
+  permitsLegacyNamedValueChunkFallbackForGroups,
   persistedValueChunkCategory,
   shouldRematerializePersistUpdateForHost,
   shouldStampPersistUpdateDigestLockForHost,
@@ -208,8 +210,10 @@ export function reassertPersistedJobEventsOneToOnes(
     const predecessor = host.pendingJobEventsPredecessors.find((candidate) =>
       candidate.txid === input.txid && candidate.vout === input.vout);
     const digestCategory = input.token?.category ?? categoryId;
+    const persistedWrite = host.persistedValueChunkWrite(digestCategory);
     const digestLock = persistUpdateRedeemLock(
-      digestCategory, host.jobEventsRedeemLock, host.persistedValueChunkWrite(digestCategory),
+      digestCategory, host.jobEventsRedeemLock, persistedWrite,
+      !hasChunkableValueWriteMetadata(host) && permitsLegacyNamedValueChunkFallbackForGroups(host),
     );
     const chunkIndex = valueChunkIndexFromCommitment(commit);
     // Only long persisted event chunks (created head / continuations).

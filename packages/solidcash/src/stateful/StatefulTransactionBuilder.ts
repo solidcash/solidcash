@@ -177,7 +177,6 @@ import {
   persistValueChunkLock,
   legacyJobEventsPersistValueChunkLock,
   persistedJobEventsValue,
-  persistedCompatibilityValueChunkLock,
   type ValueChunkWriteDescriptor,
   type DerivedChunkOutputObservation,
   type LateValueSuffixInsertion,
@@ -4468,11 +4467,11 @@ export class StatefulTransactionBuilder {
     if (!band) return 0;
     const categoryId = this._chunkableValueWriteCategory();
     const value = this._persistedValueChunkValue(categoryId);
+    const persistedWrite = this._persistedValueChunkWrite(categoryId);
     const lock = persistUpdateRedeemLock(
-      categoryId, this.jobEventsRedeemLock, this._persistedValueChunkWrite(categoryId),
-    )
-      ?? this.jobEventsRedeemLock
-      ?? (categoryId ? persistedCompatibilityValueChunkLock(categoryId) : undefined);
+      categoryId, this.jobEventsRedeemLock, persistedWrite,
+      !this._hasChunkableValueWriteMetadata() && this._permitsLegacyNamedValueChunkFallback(),
+    );
     if (!value || !lock) return 0;
     if (this.bumpChunkableValueWriteWidth(valueChunkCountFor(value))) this._refreshInputs();
     const live = this.getChunkableValueWriteBand() ?? band;

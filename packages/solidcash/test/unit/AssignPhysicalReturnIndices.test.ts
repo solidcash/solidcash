@@ -3464,15 +3464,56 @@ describe('assignPhysicalReturnIndices', () => {
     sessionLock[0] = 0xaa; sessionLock[1] = 0x20; sessionLock[34] = 0x87;
     sessionLock[2] = 0xeb;
     legacyRememberValueChunkLock('ee643a16', persistLock);
-    expect(binToHex(persistUpdateRedeemLock('ee643a16', sessionLock)!)).toBe(binToHex(sessionLock));
-    expect(binToHex(persistUpdateRedeemLock('ee643a16')!)).toBe(binToHex(persistLock));
+    expect(binToHex(persistUpdateRedeemLock('ee643a16', sessionLock, undefined, true)!))
+      .toBe(binToHex(sessionLock));
+    expect(binToHex(persistUpdateRedeemLock('ee643a16', undefined, undefined, true)!))
+      .toBe(binToHex(persistLock));
     const stamped = applyRedeemLockToChunks(
       [{ lockingBytecode: p2sh32LockFromValueRoot(sha256Sync(new Uint8Array(80).fill(0x43))) }],
-      persistUpdateRedeemLock('ee643a16', sessionLock)!,
+      persistUpdateRedeemLock('ee643a16', sessionLock, undefined, true)!,
     );
     expect(binToHex(stamped[0].lockingBytecode)).toBe(binToHex(sessionLock));
     expect(binToHex(legacyPersistedValueChunkLock('ee643a16')!)).toBe(binToHex(persistLock));
     StatefulTransactionBuilder.clearPersistedJobEvents();
+  });
+
+  it('does not reuse a legacy persisted UPDATE lock without explicit legacy authority', () => {
+    const categoryId = 'e7'.repeat(32);
+    const legacyLock = new Uint8Array(35);
+    legacyLock[0] = 0xaa; legacyLock[1] = 0x20; legacyLock[34] = 0x87;
+    legacyLock[2] = 0x57;
+    legacyRememberValueChunkLock(categoryId, legacyLock);
+
+    expect(persistUpdateRedeemLock(categoryId, legacyLock)).toBeUndefined();
+    expect(persistUpdateRedeemLock(categoryId)).toBeUndefined();
+    expect(persistUpdateRedeemLock(categoryId, legacyLock, undefined, true)).toEqual(legacyLock);
+    StatefulTransactionBuilder.clearPersistedJobEvents(categoryId);
+  });
+
+  it('does not seed a kernel persist band from an unowned legacy lock', () => {
+    const categoryId = 'e8'.repeat(32);
+    const legacyLock = new Uint8Array(35);
+    legacyLock[0] = 0xaa; legacyLock[1] = 0x20; legacyLock[34] = 0x87;
+    legacyRememberValueChunkLock(categoryId, legacyLock);
+
+    for (const sessionLock of [legacyLock, undefined]) {
+      let placed = 0;
+      const builder = Object.assign(Object.create(StatefulTransactionBuilder.prototype) as object, {
+        jobEventsRedeemLock: sessionLock,
+        _shouldRematerializePersistUpdate: () => true,
+        getChunkableValueWriteBand: () => ({ start: 4, end: 4, nNew: 1 }),
+        _chunkableValueWriteCategory: () => categoryId,
+        _persistedValueChunkValue: () => new Uint8Array(80).fill(0x43),
+        _persistedValueChunkWrite: () => undefined,
+        _hasChunkableValueWriteMetadata: () => false,
+        _permitsLegacyNamedValueChunkFallback: () => false,
+        bumpChunkableValueWriteWidth: () => false,
+        setDerivedChunkOutput: () => { placed += 1; return true; },
+      }) as unknown as StatefulTransactionBuilder;
+      expect(builder.seedPersistedJobEventsBand()).toBe(0);
+      expect(placed).toBe(0);
+    }
+    StatefulTransactionBuilder.clearPersistedJobEvents(categoryId);
   });
 
   it('rematerializes persist UPDATE only for empty-address dest, not Created or Whitelisted', () => {

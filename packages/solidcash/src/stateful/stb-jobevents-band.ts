@@ -342,6 +342,9 @@ export function ensureLiveJobEventsBand(
   const persistTokenCategory = derivedOwnerCategory
     ?? persistedValueChunkCategory(host)
     ?? categoryId;
+  const persistedWrite = host.persistedValueChunkWrite(persistTokenCategory);
+  const allowLegacyPersistFallback = !hasChunkableValueWriteMetadata(host)
+    && permitsLegacyNamedValueChunkFallbackForGroups(host);
   const persistDigestLock = shouldUseLegacyPersistDigestLockForValueChunks({
     hasWriteMetadata: hasChunkableValueWriteMetadata(host),
     permitsLegacyFallback: permitsLegacyNamedValueChunkFallbackForGroups(host),
@@ -351,7 +354,7 @@ export function ensureLiveJobEventsBand(
     : (shouldRematerializePersistUpdateForHost(host)
       ? persistUpdateRedeemLock(
         persistTokenCategory, host.jobEventsRedeemLock,
-        host.persistedValueChunkWrite(persistTokenCategory),
+        persistedWrite, allowLegacyPersistFallback,
       )
       : undefined);
   const stagedValue = host.stagedValueChunkWrite(categoryId)

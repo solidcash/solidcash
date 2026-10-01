@@ -1003,6 +1003,7 @@ export function persistUpdateRedeemLock(
   categoryId: string | undefined,
   sessionLock?: Uint8Array,
   write?: ValueChunkWriteDescriptor | null,
+  allowLegacyFallback = false,
 ): Uint8Array | undefined {
   if (write === null) return undefined;
   if (write) {
@@ -1012,12 +1013,14 @@ export function persistUpdateRedeemLock(
       && binToHex(sessionLock) === binToHex(exact)) return sessionLock;
     return exact;
   }
+  // Missing compiler metadata is not authority to borrow a category-wide historical recipe. Only a caller
+  // which has already established the descriptor-free legacy convention may opt into that transport.
+  if (!allowLegacyFallback) return undefined;
   if (sessionLock && sessionLock.length === 35 && sessionLock[0] === 0xaa && sessionLock[34] === 0x87) {
     return sessionLock;
   }
   if (!categoryId) return undefined;
-  // Compatibility only: callers which have not attached an exact value-chunk descriptor retain the legacy
-  // category/name recipe. New transaction geometry must pass `write` and cannot enter this fallback.
+  // Compatibility only: descriptor-free legacy plans retain the historical category/name recipe.
   const recipe = persistedJobEventsUnlockRecipe(categoryId);
   if (recipe) {
     try {

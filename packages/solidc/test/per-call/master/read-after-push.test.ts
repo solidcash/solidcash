@@ -50,6 +50,12 @@ const JOURNAL = deployPerCallMaster(`${PRAGMA} contract Journal {${STATE}`
   + '   this.logs[id].push(k); uint n = this.logs[id].length; this.lastKind = this.logs[id][n - 1]; }'
   + ' }', 'read after push journal');
 
+/** The same element read with the length read nested in its index rather than held in a local. */
+const NESTED = deployPerCallMaster(`${PRAGMA} contract Nested {${STATE}`
+  + ' function addAndTakeNested(uint id, bytes4 k) {'
+  + '   this.logs[id].push(k); this.lastKind = this.logs[id][this.logs[id].length - 1]; }'
+  + ' }', 'read after push nested');
+
 /** The bodies that pop, delete, or rewrite one element, each reading the entry after it. */
 const LEDGER = deployPerCallMaster(`${PRAGMA} contract Ledger {${STATE}`
   + ' function drop(uint id) { this.logs[id].pop(); this.count = this.logs[id].length; }'
@@ -116,9 +122,10 @@ describe('a per-call body that reads a mapping entry after writing it', () => {
   const journal = spender(JOURNAL);
   const ledger = spender(LEDGER);
   const rewrite = spender(REWRITE);
+  const nested = spender(NESTED);
 
   it('publishes every body as a per-call master within the input-script limit and with no refused entry', () => {
-    for (const master of [JOURNAL, LEDGER, REWRITE]) {
+    for (const master of [JOURNAL, LEDGER, REWRITE, NESTED]) {
       expect(master.artifact.composition?.convention).toBe('per-call');
       expect((master.artifact.composition as { refusedEntries?: unknown }).refusedEntries).toBeUndefined();
       expect(master.script.length).toBeLessThanOrEqual(10_000);
@@ -196,14 +203,13 @@ describe('a per-call body that reads a mapping entry after writing it', () => {
     expect(rewrite.accepts('replace', args, replaced(HELD))).toBe(false);
   });
 
-  it('refuses at compile a length read nested in an element index of the same entry', () => {
-    // Pinned wall, failing closed: the slot pass does not descend into a mapping read's own index, so the inner
-    // read takes no entry slot (`SymbolTableTraversal.collectEntryAccesses`, `assignEntrySlotIndices`). The
-    // direct convention refuses the same spelling; reading the length into a local first is served above.
-    expect(() => compileString(`${PRAGMA} contract Nested { mapping(uint => bytes4[]) logs;`
-      + ' function add(uint id, bytes4 k) { this.logs[id].push(k);'
-      + ' require(this.logs[id][this.logs[id].length - 1] == k); } }', { composition: 'per-call' }))
-      .toThrow(/has no allocated entry slot/);
+  it('reads the element a push appended through a length read nested in the element index', () => {
+    // The master has one entry, so no selector leads its argument pushes.
+    const taken = (kind: Uint8Array): boolean => evaluateMasterSpend(NESTED, {
+      args: [ADDED, ID_PUSH], records: nested.update([record(0n), record(0n, kind)], [HELD], [HELD, ADDED]),
+    }).accepted;
+    expect(taken(ADDED)).toBe(true);
+    expect(taken(HELD)).toBe(false);
   });
 });
 

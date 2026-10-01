@@ -104,7 +104,9 @@ interface InsertOptions {
  * The head sentinel is spent as slot 0 with no successor and relinked to the written key; the created node carries
  * the key's slot, the sentinel's old `+inf` successor and the argument's value tail.
  */
-function evaluateInsert(env: Env, args: Uint8Array[], keyBytes: Uint8Array, options: InsertOptions = {}) {
+function evaluateInsert(
+  env: Env, args: Uint8Array[], keyBytes: Uint8Array, options: InsertOptions = {},
+): { accepted: boolean; objection?: string } {
   const slot = keyToSlot(keyBytes);
   const zeroSlot = new Uint8Array(32);
   const headBefore = encodeEntryCommitment(zeroSlot, zeroSlot);
@@ -438,6 +440,23 @@ describe('a per-call master keyed by a ternary over a field read through a colle
   });
 });
 
+describe('a per-call master keyed by a ternary over another mapping\'s entry', () => {
+  it('serves the write: the entry read in the key takes a slot, whose record the frame declares', () => {
+    // The machine's verdict on a key read from another mapping's entry, bare and in a ternary, is in
+    // `nested-entry-read.test.ts`.
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Foreign {'
+      + '   mapping(uint => address) owners;'
+      + '   mapping(address => uint) balances;'
+      + '   function set(uint id, uint amount) { balances[(1 == 1) ? owners[id] : address(0)] = amount; }'
+      + ' }';
+    expect(publishedRefusals(source)).toStrictEqual([]);
+    const row = compileString(source, { composition: 'per-call' }).abi.find((entry) => entry.name === 'set');
+    expect(row?.entryAccesses?.map((access) => [access.collection, access.operations]))
+      .toStrictEqual([['balances', ['write']], ['owners', ['read']]]);
+  });
+});
+
 describe('a per-call master keyed by a value the body does not hold where it derives the slot', () => {
   it('refuses a key the body computes with a call', () => {
     const source = 'pragma solidcash ^0.13.0;'
@@ -446,16 +465,6 @@ describe('a per-call master keyed by a value the body does not hold where it der
       + '   function set(pubkey pk, uint amount) { balances[hash160(pk)] = amount; }'
       + ' }';
     expect(refusalMessageOf(source)).toContain("reads the value computed by 'hash160'");
-  });
-
-  it('refuses a ternary over an entry whose read has no allocated slot', () => {
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Foreign {'
-      + '   mapping(uint => address) owners;'
-      + '   mapping(address => uint) balances;'
-      + '   function set(uint id, uint amount) { balances[(1 == 1) ? owners[id] : address(0)] = amount; }'
-      + ' }';
-    expect(refusalMessageOf(source)).toContain("reads the mapping entry 'owners'");
   });
 
   it('refuses a bare environment value inside a ternary', () => {

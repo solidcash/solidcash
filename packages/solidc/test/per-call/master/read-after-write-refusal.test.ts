@@ -94,6 +94,12 @@ const REFUSED: readonly { readonly shape: string; readonly body: string; readonl
     message: 'a push on `grid[a][b]` after its write when the body writes it again is not supported on the per-call '
       + 'convention: update a local and write the entry once',
   },
+  {
+    shape: 'a read nested in an element index after the branch arm that pushed',
+    body: ' function f(uint id, bytes4 k, bool b) { if (b) { this.logs[id].push(k); }'
+      + ' require(this.logs[id][this.logs[id].length - 1] == k); }',
+    message: readOf('logs[id]', 'in a branch arm'),
+  },
 ];
 
 const ARB = ' struct Arb { uint fee; uint buyer; uint seller; } uint public count; mapping(uint => Arb) arbs;';

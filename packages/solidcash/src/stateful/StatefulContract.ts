@@ -23,7 +23,6 @@ import {
   VALUE_INLINE_LIMIT,
   encodeChunkableValueTail,
   joinValueChunks,
-  parsePushdataCommitment,
   parseEntryCommitment,
   StateValue,
   attachDecodedAccessors,
@@ -75,7 +74,6 @@ import {
   binToUtf8,
 } from '@bitauth/libauth';
 import {
-  createFaithfulTraceVmForProvider,
   createVirtualMachineBch2026ForProvider,
 } from '../network/createVirtualMachine.js';
 import { Contract } from '../Contract.js';
@@ -1269,124 +1267,6 @@ export function rebaseRoutedBatchProofOffsets(
   ]));
 }
 
-/** Decode only the rows selected by an message-bus batch envelope and project the compiler-published blockhash descriptors.
- * Artifact metadata is not trusted to describe the blob: selector, row and argument bounds are checked here. */
-function selectGraphBlockhashReads(
-  artifact: Artifact, blob: Uint8Array,
-): GraphBlockhashSelection[] {
-  const route = artifact.messageBus?.route;
-  const plan = route?.graphBlockhashOracle;
-  if (!plan) return [];
-  if (blob.length < 7 || binToHex(blob.slice(0, 4)) !== '53434231'
-    || (blob[4] !== 1 && blob[4] !== 2)) {
-    throw new Error('message-bus batch graph blockhash route requires a canonical version-1 or version-2 envelope');
-  }
-  const rowCount = blob[6];
-  if (rowCount > plan.rowCount) throw new Error('message-bus batch graph blockhash row count exceeds the oracle plan');
-  const valueMode = blob[5] === 1;
-  let cursor = 7;
-  const selected: GraphBlockhashSelection[] = [];
-  const structs = artifact.structs ?? artifact.stateLayout?.structs;
-  for (let row = 0; row < rowCount; row++) {
-    const header = 12 + (blob[4] === 2 ? 1 : 0) + (valueMode ? 9 : 0);
-    if (cursor + header > blob.length) throw new Error(`message-bus batch row ${row} is truncated`);
-    const selector = binToHex(blob.slice(cursor, cursor + 4));
-    const logicalRow = blob[cursor + 4] | (blob[cursor + 5] << 8) | (blob[cursor + 6] << 16)
-      | (blob[cursor + 7] << 24);
-    if (logicalRow !== row) throw new Error('message-bus batch graph rows must use canonical contiguous indices');
-    const argsLength = blob[cursor + 10] | (blob[cursor + 11] << 8);
-    const argsStart = cursor + header;
-    const argsEnd = argsStart + argsLength;
-    if (argsEnd > blob.length) throw new Error(`message-bus batch row ${row} arguments are truncated`);
-    const handlerInfo = artifact.messageBus!.handlers.find((h) => h.selector === selector && h.eligible);
-    const handler = artifact.abi.find((f) => f.name === handlerInfo?.name);
-    if (!handlerInfo || !handler) throw new Error(`message-bus batch row ${row} selects an ineligible handler`);
-    const rowArgs: FunctionArgument[] = [];
-    let argCursor = argsStart;
-    for (const input of handlerInfo.inputs) {
-      const decoded = decodePushdataValue(blob, argCursor, input.type, structs);
-      rowArgs.push(decoded.value as FunctionArgument);
-      argCursor += decoded.bytesConsumed;
-    }
-    if (argCursor !== argsEnd) throw new Error(`message-bus batch row ${row} argument vector is non-canonical`);
-    for (const descriptor of plan.reads) {
-      if (descriptor.row === row && descriptor.selector === selector) {
-        selected.push({ readKey: descriptor.readKey, slotOrdinal: descriptor.slotOffset, rowArgs, handler });
-      }
-    }
-    cursor = argsEnd;
-  }
-  if (cursor !== blob.length) throw new Error('message-bus batch graph blockhash envelope has trailing bytes');
-  return selected.sort((a, b) => a.slotOrdinal - b.slotOrdinal);
-}
-
-/** Decode the authenticated ecrecover arguments selected by an message-bus batch envelope. Hidden-route ABI arguments
- * describe the envelope itself, so compute sidecars must be derived from each selected handler row. */
-function selectGraphEcrecoverCalls(artifact: Artifact, blob: Uint8Array): GraphEcrecoverCall[] {
-  const route = artifact.messageBus?.route;
-  // A handler whose recovery call lives in an OUTLINED shared body publishes no `ecrecoverArgParams` - the call is
-  // generated for that body, whose parameters carry the outlined values, not the handler's own names - but the
-  // closure analysis still publishes one `ecrecoverEvmFlags` entry per call in the handler's footprint. The flag
-  // VECTOR is therefore the authoritative call count for such a handler, and every one of its arguments is
-  // computed from arguments the batch row does not name. Reading it here is what keeps the selected call set equal
-  // to the calls this envelope actually makes: the route's block layout reserves the UNION of every eligible
-  // handler's recovery slots, and treating that union as the call list invents deferred resources for call sites
-  // no selected handler executes - which no probe can ever learn and which then fails the whole graph.
-  const handlerCalls = (handler: { ecrecoverArgParams?: readonly (readonly (string | null)[])[] | null;
-    ecrecoverEvmFlags?: readonly boolean[] | null }): ReadonlyArray<readonly (string | null)[]> =>
-    handler.ecrecoverArgParams?.length
-      ? handler.ecrecoverArgParams
-      : (handler.ecrecoverEvmFlags ?? []).map(() => [null, null, null, null] as const);
-  if (!route?.ecrecoverCompute
-    || !artifact.messageBus?.handlers.some((handler) => handlerCalls(handler).length > 0)) return [];
-  if (blob.length < 7 || binToHex(blob.slice(0, 4)) !== '53434231'
-    || (blob[4] !== 1 && blob[4] !== 2)) {
-    throw new Error('message-bus batch graph ecrecover route requires a canonical version-1 or version-2 envelope');
-  }
-  const rowCount = blob[6];
-  if (rowCount > artifact.messageBus!.maximumRows) {
-    throw new Error('message-bus batch graph ecrecover row count exceeds the route limit');
-  }
-  const valueMode = blob[5] === 1;
-  const structs = artifact.structs ?? artifact.stateLayout?.structs;
-  const selected: GraphEcrecoverCall[] = [];
-  let cursor = 7;
-  for (let row = 0; row < rowCount; row += 1) {
-    const header = 12 + (blob[4] === 2 ? 1 : 0) + (valueMode ? 9 : 0);
-    if (cursor + header > blob.length) throw new Error(`message-bus batch row ${row} is truncated`);
-    const selector = binToHex(blob.slice(cursor, cursor + 4));
-    const logicalRow = blob[cursor + 4] | (blob[cursor + 5] << 8) | (blob[cursor + 6] << 16)
-      | (blob[cursor + 7] << 24);
-    if (logicalRow !== row) throw new Error('message-bus batch graph rows must use canonical contiguous indices');
-    const argsLength = blob[cursor + 10] | (blob[cursor + 11] << 8);
-    const argsStart = cursor + header;
-    const argsEnd = argsStart + argsLength;
-    if (argsEnd > blob.length) throw new Error(`message-bus batch row ${row} arguments are truncated`);
-    const handlerInfo = artifact.messageBus!.handlers.find((h) => h.selector === selector && h.eligible);
-    if (!handlerInfo) throw new Error(`message-bus batch row ${row} selects an ineligible handler`);
-    const decoded = new Map<string, FunctionArgument>();
-    let argCursor = argsStart;
-    for (const input of handlerInfo.inputs) {
-      const value = decodePushdataValue(blob, argCursor, input.type, structs);
-      decoded.set(input.name, value.value as FunctionArgument);
-      argCursor += value.bytesConsumed;
-    }
-    if (argCursor !== argsEnd) throw new Error(`message-bus batch row ${row} argument vector is non-canonical`);
-    for (const names of handlerCalls(handlerInfo)) {
-      const values = names.map((name) => (name === null ? undefined : decoded.get(name)));
-      if (names.some((name, index) => name !== null && values[index] === undefined)) {
-        throw new Error(`message-bus batch row ${row} cannot resolve its ecrecover argument vector`);
-      }
-      selected.push([
-        values[0]!, values[1]!, values[2]!, values[3]!,
-      ]);
-    }
-    cursor = argsEnd;
-  }
-  if (cursor !== blob.length) throw new Error('message-bus batch graph ecrecover envelope has trailing bytes');
-  return selected;
-}
-
 /**
  * Compute the minimum relay fee for a built TransactionBuilder at 1 sat/byte.
  * Uses the serialized transaction size as the fee floor.
@@ -2208,14 +2088,6 @@ export function permitsRouteValueChunkDerivation(
   return convention !== 'kernel-row-loop' || writes.length > 0;
 }
 
-function logicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
-  const artifact = group.logicalArtifact
-    ?? group.logicalContract?.inner?.artifact
-    ?? group.externalContract?.inner?.artifact;
-  const name = group.logicalFunctionName ?? group.functionName;
-  return (artifact?.abi as readonly AbiFunction[] | undefined)?.find((candidate) => candidate.name === name);
-}
-
 /** The exact ABI body carried by a physical participant. Compiler routes outrank source-level names because
  * overloads and shared participants can execute a different body than the logical call which introduced them. */
 function physicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
@@ -2274,49 +2146,6 @@ export function chunkableWriterGroupIndex(
   // Compatibility only for artifacts predating compiler-published entry effects.
   // legacy JobEvent name adapter: last-resort name match stays behind permitsLegacyNamedValueChunkFallback above.
   return groups.findIndex((group) => legacyIsPublishJobEventName(group.functionName));
-}
-
-/**
- * A shared physical participant can execute one state transition while surrounding logical views publish their
- * returns in separate tail outputs. A view after a write must read the projected output state, but only the final
- * read in a dependency chain can be recovered from the participant's final outputs. Earlier reads remain honest
- * pre-state probes; a read between two writes needs a compiler-owned route which preserves that intermediate state.
- */
-function projectedExternalReturnCandidates(
-  groups: readonly ExternalCallUtxoGroup[],
-): Array<{ groupIndex: number; abiFunction: AbiFunction }> {
-  const functions = groups.map(logicalExternalCallFunction);
-  const writtenCollections = functions.map((abiFunction) => new Set(
-    (abiFunction?.entryAccesses ?? [])
-      .filter((access) => access.operations.some((operation) => operation !== 'read'))
-      .map((access) => access.collection),
-  ));
-  const candidates: Array<{ groupIndex: number; abiFunction: AbiFunction }> = [];
-  for (const [groupIndex, group] of groups.entries()) {
-    const abiFunction = functions[groupIndex];
-    if (!abiFunction || abiFunction.writesState !== false || abiFunction.outputs?.length !== 1
-      || group.precomputedReturnCommitment === undefined
-      || (abiFunction.externalCalls?.length ?? 0) > 0
-      || (abiFunction.lowLevelCalls?.length ?? 0) > 0
-      || (abiFunction.libraryDelegateCalls?.length ?? 0) > 0
-      || (abiFunction.dynamicReads?.length ?? 0) > 0) continue;
-    const readCollections = new Set(
-      (abiFunction.entryAccesses ?? [])
-        .filter((access) => access.operations.length > 0
-          && access.operations.every((operation) => operation === 'read'))
-        .map((access) => access.collection),
-    );
-    if (readCollections.size === 0) continue;
-    if ([...readCollections].some((name) => group.stateLayout.collections?.some((collection) => (
-      (collection.name === name || collection.signature === name) && collection.chunkableValue === true
-    )))) continue;
-    const overlaps = (index: number): boolean => groups[index].categoryId === group.categoryId
-      && [...readCollections].some((collection) => writtenCollections[index].has(collection));
-    const hasPriorWrite = groups.some((_candidate, index) => index < groupIndex && overlaps(index));
-    const hasLaterWrite = groups.some((_candidate, index) => index > groupIndex && overlaps(index));
-    if (hasPriorWrite && !hasLaterWrite) candidates.push({ groupIndex, abiFunction });
-  }
-  return candidates;
 }
 
 function writesChunkableValue(
@@ -2638,26 +2467,6 @@ export {
   selectEvmReturnCommitment,
 } from './external-return-encoding.js';
 
-/** Recover a Solidity ABI value which is live immediately before a return-output comparison. */
-function extractEvmScalarReturnCommitment(
-  fullTrace: AuthenticationProgramStateCommon[], expectedTypes: readonly string[], allowRaw = true,
-): string | undefined {
-  if (expectedTypes.length === 0 || !expectedTypes.every((type) => (
-    type === 'bool' || type === 'int' || type === 'uint' || type === 'bigint'
-    || /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)$/.test(type)
-    || /^u?fixed(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)x\d+$/.test(type)
-    || type === 'address' || /^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type)
-  ))) return undefined;
-  const candidates: Uint8Array[] = [];
-  for (let traceIndex = fullTrace.length - 1; traceIndex >= Math.max(0, fullTrace.length - 96); traceIndex--) {
-    const stack = fullTrace[traceIndex].stack;
-    for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex--) {
-      candidates.push(stack[stackIndex]);
-    }
-  }
-  return selectEvmScalarReturnCommitment(candidates, expectedTypes, allowRaw);
-}
-
 /** Encode a complete external invocation result using the callee's declared ABI mode and named schemas. */
 export function encodeExternalReturnValues(
   values: readonly StateValue[],
@@ -2803,29 +2612,6 @@ function isCompleteCollectionValue(
   }
 }
 
-/** Long chunkable entry tail is len4 LE || sha256(value) || value[0..28]. */
-function storedChunkableValueRoots(
-  inputs: Array<{ token?: { nft?: { commitment?: string | Uint8Array } } }> | undefined,
-): Set<string> {
-  const roots = new Set<string>();
-  for (const input of inputs ?? []) {
-    const commitment = input.token?.nft?.commitment;
-    if (!commitment) continue;
-    try {
-      const parsed = decodeEntryCommitment(
-        typeof commitment === 'string' ? hexToBin(commitment) : commitment,
-      );
-      const raw = parsed.value;
-      if (raw.length !== 4 + 32 + VALUE_HEAD_SIZE) continue;
-      const length = raw[0] | (raw[1] << 8) | (raw[2] << 16) | (raw[3] << 24);
-      if (length > 60) roots.add(binToHex(raw.slice(4, 36)));
-    } catch {
-      // Not a vmap entry NFT.
-    }
-  }
-  return roots;
-}
-
 function authenticatedCollectionValueSelector(
   valueType: string | undefined, structs: StateLayout['structs'],
 ): (
@@ -2891,64 +2677,6 @@ export function selectAuthenticatedPreValueWitness(
 ): Uint8Array | undefined {
   if (storedRoots.size === 0) return undefined;
   return authenticatedCollectionValueSelector(valueType, structs)(items, storedRoots, storedRoots);
-}
-
-/** Every distinct long value whose complete bytes and authenticating root both occur in a probe trace. */
-function authenticatedCollectionValues(
-  items: readonly Uint8Array[], roots: ReadonlySet<string>,
-  valueType: string | undefined, structs: StateLayout['structs'],
-): Uint8Array[] {
-  const values = new Map<string, Uint8Array>();
-  for (const item of items) {
-    if (item.length <= VALUE_INLINE_LIMIT || item.length > 10_000) continue;
-    const root = binToHex(sha256Sync(item));
-    if (!roots.has(root)) continue;
-    // Mapping bytes/string tails contain their payload verbatim. Unlike arrays and structs, there is no recursive
-    // pushdata frame for decodePushdataValue to consume; the authenticated SHA-256 root is the complete framing.
-    if (valueType !== 'bytes' && valueType !== 'string'
-      && !isCompleteCollectionValue(item, valueType, structs)) continue;
-    values.set(root, item);
-  }
-  return [...values.values()];
-}
-
-/** Recover a dynamic array whose element blob and authenticated whole-value root occur in different trace states. */
-function recoverAuthenticatedArrayValue(
-  traceItems: readonly Uint8Array[], roots: ReadonlySet<string>, valueType: string | undefined,
-  structs: StateLayout['structs'], preferredRoots: ReadonlySet<string> = new Set(),
-): Uint8Array | undefined {
-  const array = valueType ? parseArrayTypeString(valueType) : undefined;
-  if (!array || array.bound !== undefined) return undefined;
-  let fallback: Uint8Array | undefined;
-  // The trace often contains the same immutable stack item in hundreds of observed states. More importantly, the
-  // old recovery tried all 10,000 possible lengths for every occurrence, allocating and hashing each candidate.
-  // Array elements are self-delimiting pushdata values, so decode them once to recover the only possible length.
-  const uniqueItems = new Set(traceItems);
-  for (const elements of uniqueItems) {
-    if (elements.length <= VALUE_HEAD_SIZE || elements.length > 10_000) continue;
-    let offset = 0;
-    let length = 0;
-    try {
-      while (offset < elements.length) {
-        const decoded = decodePushdataValue(elements, offset, array.elementType, structs);
-        if (decoded.bytesConsumed <= 0) throw new Error('Array element decoder made no progress.');
-        offset += decoded.bytesConsumed;
-        length += 1;
-      }
-    } catch {
-      // This stack item is not a complete sequence of this array's element encoding.
-      continue;
-    }
-    if (offset !== elements.length || length === 0) continue;
-    const prefix = encodePushdataValue(BigInt(length), 'bigint');
-    const candidate = new Uint8Array(prefix.length + elements.length);
-    candidate.set(prefix); candidate.set(elements, prefix.length);
-    if (!isCompleteCollectionValue(candidate, valueType, structs)) continue;
-    const digest = binToHex(sha256Sync(candidate));
-    if (preferredRoots.has(digest)) return candidate;
-    if (!fallback && roots.has(digest)) fallback = candidate;
-  }
-  return fallback;
 }
 
 export function evalComputedKey(
@@ -3210,12 +2938,6 @@ function parseNftCapability(catBytes: Uint8Array): 'none' | 'mutable' | 'minting
   throw new Error(`Unknown NFT capability byte: 0x${catBytes[32].toString(16).padStart(2, '0')}`);
 }
 
-const PROBE_TRACE_OPCODES = new Set<number>([
-  Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTVALUE,
-  Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OUTPUTTOKENCATEGORY,
-  Op.OP_INPUTBYTECODE, Op.OP_EQUALVERIFY,
-]);
-
 /** Compiler value-chunk identity scan's terminal `DROP, EQUALVERIFY, 2DROP` count check. */
 export function isValueChunkIdentityCountPin(
   instructions: ReadonlyArray<{ opcode: number }>,
@@ -3228,195 +2950,6 @@ export function isValueChunkIdentityCountPin(
     || (opcode === Op.OP_2DROP
       && instructions[ip - 1]?.opcode === Op.OP_EQUALVERIFY
       && instructions[ip - 2]?.opcode === Op.OP_DROP);
-}
-
-interface CachedProbeVm {
-  collector: BoundedProbeTraceCollector;
-  vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
-}
-
-interface CachedFaithfulTraceVm {
-  trace: AuthenticationProgramStateCommon[];
-  /** Phase exits reported by the cached P2SH evaluator during the current evaluation. */
-  phaseExits: number;
-  vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
-}
-
-// Probe evaluation is synchronous, and a provider's consensus limits are immutable for its lifetime. Rebuilding
-// libauth's complete BCH-2026 instruction set (then wrapping the observed opcode handlers) for every convergence
-// step is therefore pure overhead. Keep the VM and its observer closure, resetting only the small trace buffer.
-const probeVmCache = new WeakMap<NetworkProvider, CachedProbeVm>();
-const debugVmCache = new WeakMap<NetworkProvider, ReturnType<typeof createVirtualMachineBch2026ForProvider>>();
-const faithfulTraceVmCache = new WeakMap<NetworkProvider, CachedFaithfulTraceVm>();
-
-function cachedDebugVm(provider: NetworkProvider): ReturnType<typeof createVirtualMachineBch2026ForProvider> {
-  const existing = debugVmCache.get(provider);
-  if (existing) return existing;
-  const vm = createVirtualMachineBch2026ForProvider(provider);
-  debugVmCache.set(provider, vm);
-  return vm;
-}
-
-/** Keys libauth's `partiallyCloneProgramState` shallow-clones; every other key is deep-cloned there. */
-const TRACE_SHALLOW_ARRAY_KEYS = new Set(['alternateStack', 'controlStack', 'signedMessages', 'stack']);
-
-/**
- * Snapshot one program state for a faithful trace, mirroring libauth's `partiallyCloneProgramState`.
- *
- * The one deliberate difference is `functionTable`. libauth deep-clones it - the complete OP_DEFINE'd body table,
- * tens of kilobytes for an outlined contract - on every operation, which is what made a 6,132-state probe spend
- * 2.4 s almost entirely inside `structuredClone`. Sharing it is observationally equivalent: a repeated function
- * identifier is a VM error, so the table only ever grows, and no consumer reads it from a historical trace.
- * Everything else (including `metrics`) is copied exactly as libauth copies it, so an inactive-branch or
- * mutated-item difference cannot hide behind this change.
- */
-function snapshotProgramState(state: AuthenticationProgramStateCommon): AuthenticationProgramStateCommon {
-  return Object.fromEntries(Object.entries(state).map(([key, value]) => {
-    if (key === 'instructions' || key === 'program' || key === 'functionTable') return [key, value];
-    if (TRACE_SHALLOW_ARRAY_KEYS.has(key)) return [key, (value as unknown[]).slice()];
-    return [key, structuredClone(value)];
-  })) as AuthenticationProgramStateCommon;
-}
-
-function cachedFaithfulTraceVm(provider: NetworkProvider): CachedFaithfulTraceVm {
-  const existing = faithfulTraceVmCache.get(provider);
-  if (existing) return existing;
-  const cached = {
-    trace: [] as AuthenticationProgramStateCommon[],
-    phaseExits: 0,
-  } as CachedFaithfulTraceVm;
-  cached.vm = createFaithfulTraceVmForProvider(provider, (unknownState) => {
-    cached.trace.push(snapshotProgramState(unknownState as AuthenticationProgramStateCommon));
-    // The faithful recorder runs on its own VM instance, so the observer in `cachedVm` never sees the operations
-    // that actually fail here. Mirror the out-lined-subprogram dump for the trace that matters.
-    const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
-    const spanInstructions = Number(debugEnv?.SOLIDC_DEBUG_SPAN_INSTRUCTIONS ?? Number.NaN);
-    const state = unknownState as AuthenticationProgramStateCommon;
-    // Match `emitPreferLockingBytecode`'s exact body (`DUP SIZE NIP…` ending in `EQUALVERIFY`): other out-lined
-    // subprograms share the same instruction count.
-    const opcodes = state.instructions.map((instruction) => instruction.opcode);
-    const guardShape = opcodes.length === 15 && opcodes[0] === 118 && opcodes[1] === 130 && opcodes[2] === 119
-      && opcodes[14] === 136;
-    if (Number.isFinite(spanInstructions) && state.instructions.length === spanInstructions && guardShape) {
-      console.error('derive-span-faithful', JSON.stringify({
-        ordinal: cached.trace.length - 1,
-        inputIndex: state.program.inputIndex,
-        ip: state.ip,
-        opcode: state.instructions[state.ip]?.opcode,
-        error: state.error === undefined ? undefined : String((state.error as { error?: unknown }).error
-          ?? state.error),
-        top: state.stack.slice(-4).map((item) => `${item.length}:${binToHex(item).slice(0, 80)}`),
-      }));
-    }
-  }, (unknownState) => {
-    cached.phaseExits += 1;
-    cached.trace.push(snapshotProgramState(unknownState as AuthenticationProgramStateCommon));
-  });
-  faithfulTraceVmCache.set(provider, cached);
-  return cached;
-}
-
-/**
- * Evaluate `program` while recording a faithful trace, in the exact shape `vm.debug()` returns: each evaluation
- * phase's entry state, the state after every operation of that phase, the state the phase ends with, and finally
- * the evaluation result itself. The observer records the state *before* each operation (the entry state for the
- * first one), the phase hook records each exit, and the result is appended last, so the sequence matches the
- * reference state for state - including the duplicate of the final state that `debug()` appends as `finalResult`.
- */
-function evaluateFaithfulProbeTrace(
-  provider: NetworkProvider,
-  program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
-): AuthenticationProgramStateCommon[] {
-  const cached = cachedFaithfulTraceVm(provider);
-  cached.trace.length = 0;
-  cached.phaseExits = 0;
-  const finalState = cached.vm.evaluate(program) as AuthenticationProgramStateCommon;
-  cached.trace.push(snapshotProgramState(finalState));
-  const completed = cached.trace;
-  cached.trace = [];
-  return completed;
-}
-
-/**
- * Evaluate a probe program faithfully: the shallow recorder on a private/mock provider, libauth's `debug()`
- * everywhere else.
- *
- * The recorder is equivalent to `debug()` only while the cached P2SH evaluator supplies the phase exits, and
- * that evaluator is installed exactly when `maximumInputBytes > 10_000`. Below that the reference is kept, so a
- * live network sees no change at all. Callers that need a full faithful trace (rather than the sparse observer's
- * reduced one) use this instead of calling `debug()` directly.
- */
-function evaluateFaithfulOrDebugTrace(
-  provider: NetworkProvider,
-  program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
-): AuthenticationProgramStateCommon[] {
-  const maxIn = provider.consensusLimits?.maximumInputBytes ?? 10_000;
-  if (maxIn <= 10_000) return cachedDebugVm(provider).debug(program) as AuthenticationProgramStateCommon[];
-  const faithful = evaluateFaithfulProbeTrace(provider, program);
-  if ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
-    ?.SOLIDC_DEBUG_TRACE_PARITY === '1') {
-    logProbeTraceParity(cachedDebugVm(provider).debug(program) as AuthenticationProgramStateCommon[], faithful);
-  }
-  return faithful;
-}
-
-/**
- * Compare the faithful recorder's trace with libauth's `debug()` reference and report the first divergence.
- *
- * Diagnostic only, enabled by `SOLIDC_DEBUG_TRACE_PARITY=1`: it is how the shallow recorder is held to the
- * reference on a real probe, where a mutation-in-place or inactive-branch difference would otherwise be silent.
- */
-function logProbeTraceParity(
-  reference: AuthenticationProgramStateCommon[],
-  candidate: AuthenticationProgramStateCommon[],
-): void {
-  const stackOf = (state: AuthenticationProgramStateCommon): string[] =>
-    state.stack.map((item) => binToHex(item));
-  const describe = (state: AuthenticationProgramStateCommon): Record<string, unknown> => ({
-    ip: state.ip,
-    instructions: state.instructions.length,
-    error: state.error,
-    stack: stackOf(state),
-    alternateStack: state.alternateStack.map((item) => binToHex(item)),
-    controlDepth: state.controlStack.length,
-  });
-  if (reference.length !== candidate.length) {
-    const boundaries = (trace: AuthenticationProgramStateCommon[]): number[] => {
-      const found: number[] = [];
-      let previous: unknown;
-      trace.forEach((state, index) => {
-        if (state.instructions !== previous) {
-          previous = state.instructions;
-          found.push(index);
-        }
-      });
-      return found;
-    };
-    console.error('probe-trace-parity', {
-      equal: false,
-      reason: 'length',
-      referenceStates: reference.length,
-      candidateStates: candidate.length,
-      referenceBoundaries: boundaries(reference),
-      candidateBoundaries: boundaries(candidate),
-    });
-    return;
-  }
-  for (let index = 0; index < reference.length; index += 1) {
-    const left = JSON.stringify(describe(reference[index]));
-    const right = JSON.stringify(describe(candidate[index]));
-    if (left !== right) {
-      console.error('probe-trace-parity', {
-        equal: false,
-        reason: 'state',
-        index,
-        reference: left.slice(0, 2000),
-        candidate: right.slice(0, 2000),
-      });
-      return;
-    }
-  }
-  console.error('probe-trace-parity', { equal: true, states: reference.length });
 }
 
 function fingerprintBytecode(bytes: Uint8Array, cache: WeakMap<Uint8Array, string>): string {
@@ -3646,259 +3179,6 @@ export class BoundedProbeTraceCollector {
   }
 }
 
-function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
-  const existing = probeVmCache.get(provider);
-  if (existing) return existing;
-  const cached = {
-    collector: new BoundedProbeTraceCollector(),
-  } as CachedProbeVm;
-  const debugTraceOperationMode = (globalThis as {
-    process?: { env?: Record<string, string | undefined> };
-  }).process?.env?.SOLIDC_DEBUG_DERIVE_TRACE_OPS;
-  const debugTraceOperations = debugTraceOperationMode === '1'
-    || debugTraceOperationMode === 'project' || debugTraceOperationMode === 'range';
-  cached.vm = createVirtualMachineBch2026ForProvider(provider, {
-    opcodes: debugTraceOperationMode === 'range'
-      ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode as Op))
-      : debugTraceOperationMode === '1'
-      // OP_INVOKE and OP_UTXOBYTECODE are the two operations that decide a subprogram call: the first shows the
-      // operands a caller hands down (the callee consumes them immediately), the second shows which input a
-      // participant check resolved to. Both are absent from the production observer set.
-        ? new Set([...PROBE_TRACE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160,
-          Op.OP_INVOKE, Op.OP_UTXOBYTECODE,
-          // `emitPickTrackedFromBottom` is `OP_DEPTH; n; OP_SUB; OP_PICK`, so observing these three names which frame
-          // slot (i.e. which hidden ABI witness) a participant check resolved its coordinate from.
-          Op.OP_PICK, Op.OP_DEPTH, Op.OP_INPUTINDEX])
-        : debugTraceOperationMode === 'project'
-          ? new Set([...PROBE_TRACE_OPCODES, Op.OP_HASH160])
-          : PROBE_TRACE_OPCODES,
-    beforeOperation: (unknownState) => {
-      const state = unknownState as AuthenticationProgramStateCommon;
-      const opcode = state.instructions[state.ip]?.opcode;
-      const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-        .process?.env;
-      const debugFrom = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_FROM_IP ?? Number.NaN);
-      const debugTo = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_TO_IP ?? Number.NaN);
-      const debugInstructionCount = Number(
-        debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_INSTRUCTION_COUNT ?? Number.NaN,
-      );
-      const debugInputIndex = Number(
-        debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_INPUT_INDEX ?? Number.NaN,
-      );
-      // Trace one out-lined subprogram (identified by its instruction count) operation by operation, inside nested
-      // OP_INVOKE frames: an invoked program's recorded state carries the caller's frame, so the trace tail cannot
-      // show the operands a guard actually sees.
-      const debugSpanInstructions = Number(debugEnv?.SOLIDC_DEBUG_SPAN_INSTRUCTIONS ?? Number.NaN);
-      // An outlined span executes its OWN instruction array, while the frame OP_INVOKE recorded for the caller keeps
-      // the enclosing body. Selecting by instruction count therefore cannot reach the caller's own emissions; select
-      // by the CALLER chain instead so a span's invocation site and operand tuple become visible.
-      const debugSpanCallerInstructions = Number(
-        debugEnv?.SOLIDC_DEBUG_SPAN_CALLER_INSTRUCTIONS ?? Number.NaN,
-      );
-      const spanCallerMatches = !Number.isFinite(debugSpanCallerInstructions) ? false
-        : state.controlStack.some((frame) => typeof frame === 'object' && frame !== null
-          && (frame as { instructions?: unknown[] }).instructions?.length === debugSpanCallerInstructions);
-      if ((Number.isFinite(debugSpanInstructions)
-        && state.instructions.length === debugSpanInstructions) || spanCallerMatches) {
-        console.error('derive-span', JSON.stringify({
-          inputIndex: state.program.inputIndex,
-          ip: state.ip,
-          opcode,
-          own: state.instructions.length,
-          // The frames that invoked this subprogram: their instruction counts identify the enclosing scripts, and
-          // their ip/opcode name the OP_INVOKE site that handed the operand frame down.
-          callers: state.controlStack.flatMap((frame) => (typeof frame === 'object' && frame !== null
-            ? [{
-              len: (frame as { instructions?: unknown[] }).instructions?.length,
-              ip: (frame as { ip?: number }).ip,
-              op: (frame as { instructions?: Array<{ opcode?: number }>; ip?: number }).instructions
-                ?.[(frame as { ip?: number }).ip ?? -1]?.opcode,
-            }] : [])).slice(-3),
-          // libauth keeps the top of the stack at the END of the array (`useOneStackItem` pops), so the operands an
-          // operation will consume are the last items.
-          top: state.stack.slice(-4).map((item) => `${item.length}:${binToHex(item).slice(0, 80)}`),
-        }));
-      }
-      if (debugTraceOperations
-        && (debugTraceOperationMode !== 'project'
-          || opcode === Op.OP_OUTPUTTOKENCOMMITMENT || opcode === Op.OP_HASH160)
-        && Number.isFinite(debugFrom) && Number.isFinite(debugTo)
-        && (!Number.isFinite(debugInstructionCount)
-          || state.instructions.length === debugInstructionCount)
-        && (!Number.isFinite(debugInputIndex) || state.program.inputIndex === debugInputIndex)
-        && state.ip >= debugFrom && state.ip <= debugTo) {
-        const focusDepth = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_STACK_DEPTH ?? Number.NaN);
-        console.error('derive-op', JSON.stringify({
-          inputIndex: state.program.inputIndex,
-          ip: state.ip,
-          opcode,
-          callerFrames: debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_CALLERS === '1'
-            ? state.controlStack.flatMap((frame) => typeof frame === 'object' && frame !== null
-              ? [{
-                instructionCount: frame.instructions.length,
-                ip: frame.ip,
-                opcode: frame.instructions[frame.ip]?.opcode,
-                window: debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_CALLER_WINDOW === '1'
-                  ? frame.instructions.slice(Math.max(0, frame.ip - 24), frame.ip + 5)
-                    .map((instruction, offset) => ({
-                      ip: Math.max(0, frame.ip - 24) + offset,
-                      opcode: instruction.opcode,
-                      data: !('data' in instruction) || instruction.data === undefined
-                        ? undefined : binToHex(instruction.data).slice(0, 96),
-                    }))
-                  : undefined,
-              }] : []).slice(-4)
-            : undefined,
-          stack: state.stack.slice(-16).map((item) => `${item.length}:${binToHex(item.slice(0, 96))}`),
-          ...(Number.isFinite(focusDepth) && {
-            depthWindow: Array.from({ length: 9 }, (_, offset) => {
-              const depth = focusDepth - 4 + offset;
-              const item = state.stack[state.stack.length - 1 - depth];
-              return { depth, value: item === undefined
-                ? undefined : `${item.length}:${binToHex(item.slice(0, 96))}` };
-            }),
-            matchingTopDepths: state.stack.flatMap((item, index) => (
-              state.stack.length > 0 && binToHex(item) === binToHex(state.stack[state.stack.length - 1])
-                ? [state.stack.length - 1 - index] : []
-            )),
-          }),
-        }));
-      }
-      // Diagnostic-only observations must not change the reduced trace consumed by the derivation extractors.
-      // In particular, retaining OP_EQUAL/OP_VERIFY here breaks otherwise-adjacent introspection/EQUALVERIFY
-      // pairs and can make enabling diagnostics change transaction construction.
-      if (debugTraceOperations && !PROBE_TRACE_OPCODES.has(opcode as Op)) return;
-      cached.collector.observe(state);
-    },
-  });
-  probeVmCache.set(provider, cached);
-  return cached;
-}
-
-/**
- * Reduce a faithful VM trace to the pairing shape consumed by the output-pin extractors. The compiler may
- * outline the inspected operation and its EQUALVERIFY into different invocation frames; ordinary dispatch and
- * stack-management instructions between them are deliberately invisible to the sparse observer and must be
- * invisible on the faithful path too.
- */
-function reduceProbeTrace(
-  full: AuthenticationProgramStateCommon[],
-): AuthenticationProgramStateCommon[] {
-  const filtered: AuthenticationProgramStateCommon[] = [];
-  let awaitingVerification = false;
-  for (const state of full) {
-    const opcode = state.instructions[state.ip]?.opcode;
-    const identityCountPin = isValueChunkIdentityCountPin(state.instructions, state.ip);
-    if (opcode === undefined || (!PROBE_TRACE_OPCODES.has(opcode) && !identityCountPin)) continue;
-    if (opcode === Op.OP_EQUALVERIFY && !awaitingVerification && !identityCountPin) continue;
-    filtered.push(state);
-    // The INPUTBYTECODE observation is self-contained; its following equality is not consumed by output-pin
-    // extraction and can retain the complete unlocking bytecode in an otherwise reduced production trace.
-    awaitingVerification = opcode !== Op.OP_EQUALVERIFY && opcode !== Op.OP_INPUTBYTECODE;
-  }
-  if (full.length > 0) filtered.push(full[full.length - 1]);
-  return filtered;
-}
-
-/** The compiler's value-chunk loop computes `i * 72 + 28` in the frame which owns the pin. */
-function isValueChunkProbeFrame(
-  instructions: AuthenticationProgramStateCommon['instructions'],
-): boolean {
-  const ops = instructions as Array<{ opcode: number; data?: Uint8Array }>;
-  return ops.some((instruction, at) => instruction.data?.length === 1
-    && instruction.data[0] === VALUE_CHUNK_SIZE && ops[at + 1]?.opcode === Op.OP_MUL
-    && ops[at + 2]?.data?.length === 1 && ops[at + 2]?.data?.[0] === VALUE_HEAD_SIZE
-    && ops[at + 3]?.opcode === Op.OP_ADD);
-}
-
-let probeOperandDumps = 0;
-
-/**
- * Diagnostic: report the operands of the instruction a probe failed on.
- *
- * A trace records the state BEFORE each operation and appends the evaluation result last, so the terminal entry has
- * already consumed the operands that explain the abort - which is exactly the pair a mis-addressed check hides.
- * The entry one position earlier still holds them: for an identity check emitted as `... <expected> <index> DUP
- * UTXOBYTECODE EQUALVERIFY`, the observed locking bytecode, the expected one and the input index that was
- * addressed are the top three items. Gated separately from the terminal dump because the observer path needs a
- * second evaluation of the probe to recover that state.
- */
-function dumpProbeOperands(
-  debugEnv: Record<string, string | undefined> | undefined,
-  before: AuthenticationProgramStateCommon | undefined,
-): void {
-  if (debugEnv?.SOLIDC_DEBUG_PROBE_OPERANDS !== '1' || before === undefined) return;
-  if (probeOperandDumps >= 24) return;
-  const instructions = before.instructions as readonly { opcode: number; data?: Uint8Array }[];
-  const failing = instructions[before.ip];
-  if (failing === undefined) return;
-  probeOperandDumps += 1;
-  console.error('probe-operands', JSON.stringify({
-    inputIndex: before.program.inputIndex,
-    inputs: before.program.transaction.inputs.length,
-    ip: before.ip,
-    ownInstructions: instructions.length,
-    opcode: failing.opcode,
-    data: failing.data === undefined ? undefined : binToHex(failing.data).slice(0, 96),
-    // Top of stack first, so an identity check reports (observed, expected, addressed index) in that order.
-    stack: before.stack.slice(-5).reverse().map((item, offset) => `${offset}:${item.length}:${item.length <= 300
-      ? binToHex(item) : `${binToHex(item.subarray(0, 24))}..${binToHex(item.subarray(-8))}`}`),
-  }));
-}
-
-/** Diagnostic: dump the failing probe's program identity, instruction window and stack top. */
-function dumpProbeTerminal(
-  debugEnv: Record<string, string | undefined> | undefined,
-  state: AuthenticationProgramStateCommon | undefined,
-): void {
-  if (debugEnv?.SOLIDC_DEBUG_PROBE_FRAMES !== '1' || state === undefined) return;
-  const instructions = state.instructions as readonly { opcode: number; data?: Uint8Array }[];
-  const ip = state.ip;
-  console.error('probe-terminal', JSON.stringify({
-    error: state.error === undefined ? undefined : String(
-      typeof state.error === 'object' && state.error !== null && 'error' in state.error
-        ? (state.error as { error: unknown }).error : state.error,
-    ),
-    ip,
-    ownInstructions: instructions.length,
-    callers: state.controlStack.flatMap((frame) => (typeof frame === 'object' && frame !== null
-      ? [{
-        len: (frame as { instructions?: unknown[] }).instructions?.length,
-        ip: (frame as { ip?: number }).ip,
-      }] : [])).slice(-6),
-    window: instructions.slice(Math.max(0, ip - 8), ip + 2).map((instruction) => {
-      const data = instruction.data;
-      return data === undefined || data.length === 0
-        ? instruction.opcode
-        : `${instruction.opcode}:${binToHex(data).slice(0, 16)}`;
-    }),
-    // The full frame, not the last ten items: a base that lands on a neighbouring operand is only visible when
-    // the compiler's tracked model (DBG-COMPUTE-BASE `stackTop`) can be aligned with the runtime stack - and the
-    // operands that matter sit further down. Kept bounded by the same gate.
-    stack: state.stack.slice(-40).map((item, offset, items) => (item.length <= 300
-      ? `${items.length - 1 - offset}:${item.length}:${binToHex(item)}`
-      : `${items.length - 1 - offset}:${item.length}:${binToHex(item.subarray(0, 8))}`
-        + `..${binToHex(item.subarray(-8))}`)),
-  }));
-}
-
-/** Evaluate a probe without retaining millions of irrelevant VM states under relaxed private-network limits. */
-function commitmentsToState(
-  commitments: string[],
-  stateLayout: StateLayout,
-  nftIndices?: number[],
-): Record<string, StateValueType> {
-  const derivedState: Record<string, StateValueType> = {};
-  for (let i = 0; i < commitments.length; i++) {
-    const nftIdx = nftIndices ? nftIndices[i] : i;
-    const parsed = parsePushdataCommitment(commitments[i], stateLayout, nftIdx);
-    for (const [key, value] of Object.entries(parsed)) {
-      derivedState[key] = value;
-    }
-  }
-  return derivedState;
-}
-
 export type ConnectedStatefulContract<T extends Artifact = Artifact> =
   StatefulContract<T>
   & AbiToFunctionMap<T['abi'], StatefulFunctionCall, DeployFunctionCall>
@@ -4008,9 +3288,6 @@ function legacyStatefulSimulationEnabled(provider: NetworkProvider | undefined):
   return (provider as { statefulSimulation?: string } | undefined)?.statefulSimulation === 'legacy-mistswap-v1';
 }
 
-const softBentoKey = (token: unknown, user: unknown): string =>
-  `${String(token ?? '')}|${String(user ?? '')}`;
-
 /** Clear mock bento soft totals (test reset / new provider). */
 export function clearSoftBentoTotals(): void {
   softBentoTotalsByToken.clear();
@@ -4068,18 +3345,6 @@ export function takeSoftStateSnapshot(): SoftStateSnapshot {
       }
     },
   };
-}
-
-function softCreditUserShares(token: unknown, user: unknown, amount: bigint, opts?: { setUserIndex?: boolean }): void {
-  const k = softBentoKey(token, user);
-  softBentoUserShares.set(k, (softBentoUserShares.get(k) ?? 0n) + amount);
-  if (opts?.setUserIndex === false) return;
-  // Accumulate user-only index so multi-deposit cook chains sum (MistSwap cook external sum test).
-  const u = String(user ?? '');
-  softBentoSharesByUser.set(u, (softBentoSharesByUser.get(u) ?? 0n) + amount);
-  if (u.length > 12) {
-    softBentoSharesByUser.set(u.slice(-20), (softBentoSharesByUser.get(u.slice(-20)) ?? 0n) + amount);
-  }
 }
 
 /** Every compiler encoding of a `msg.sender` / `_msgSender()` mapping key. */
@@ -4167,13 +3432,6 @@ export function isSdkResolvedExternalCallTopologyWitness(paramName: string): boo
     || paramName === '__internal__dynamicChunkInputBase'
     || /^__internal__extcallMasterIdx\d*$/.test(paramName)
     || /^__internal__extcallAnchorIdx\d*$/.test(paramName);
-}
-
-/** Participant storage proofs depend on the materialized state UTXOs, so an atomic graph's provisional/default
- * argument vector cannot own them. They are resolved while assembling the participant block. */
-function isSdkResolvedParticipantStorageWitness(paramName: string): boolean {
-  return paramName.startsWith('__internal__vmapBatch')
-    || paramName.startsWith('__internal__valueWitness_');
 }
 
 /** Sentinels for a vmap-batch ABI slot when this handler has no planned sorted batch. */
@@ -4524,28 +3782,6 @@ export function assertPreparedExternalCallRowReconciliation(
     throw new Error(`External callsite ${callsiteId} occurrence ${occurrenceIndex} has a different stable identity or physical owner`);
   }
   assertExternalCallRowPayload(callsiteId, occurrenceIndex, existing, reached);
-}
-
-function routeRowCollectionKey(
-  row: RouteExpressionKeyRow,
-  access: NonNullable<RouteExpressionKeyRow['handler']['entryAccesses']>[number],
-  structs: Artifact['structs'],
-): string | undefined {
-  const inputs = visibleHandlerInputs(row.handler.inputs);
-  const keys = access.keyParams ?? [];
-  if (keys.length === 0) return undefined;
-  const encoded: string[] = [];
-  for (let index = 0; index < keys.length; index++) {
-    const source = access.keySources?.[index];
-    if (source && source.kind !== undefined && source.kind !== 'param') return undefined;
-    const name = (source as { paramName?: string } | undefined)?.paramName ?? keys[index];
-    const inputIndex = inputs.findIndex((input) => input.name === name);
-    if (inputIndex < 0 || row.args[inputIndex] === undefined) return undefined;
-    const value = encodeFunctionArgument(row.args[inputIndex], inputs[inputIndex].type, structs);
-    if (!(value instanceof Uint8Array)) return undefined;
-    encoded.push(binToHex(value));
-  }
-  return encoded.join(':');
 }
 
 /**

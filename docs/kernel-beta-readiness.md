@@ -9,7 +9,9 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
 - 2026-10-01 focused checkpoint: `yarn build` and the top-level `yarn lint` pass. ESLint reports zero
   errors or warnings across `packages/solidcash/src` (405 files) and `packages/solidcash/test` (1,004 files).
   The exact `KernelRepeatedMixedRouteWrite` titles for `Ledger` and `ILedger` each pass, including the alternate
-  direct callee with the same ABI. No comprehensive test suite or beta gate was rerun for this checkpoint.
+  direct callee with the same ABI. The four historically red `KernelAdmission` titles (raw-call signature fence
+  and three child-genesis 10,000-byte checks) pass individually, with their immediately preceding titles checked.
+  No comprehensive test suite or beta gate was rerun for this checkpoint.
 - The formal `yarn test:kernel-beta` gate stops at its application-name fence before running tests: the production
   diff since the manifest census still contains application-specific planning names and literals. This requires a
   semantic generalization of the legacy adapter boundary, not a waiver or a test-only rename.

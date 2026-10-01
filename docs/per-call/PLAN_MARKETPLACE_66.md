@@ -1078,9 +1078,8 @@ risk. Take the slices in order, each with its own tests.
     reports the callee's revert, which the EVM never reaches, because the settle loop settles every callee before it
     derives the entry (`proxy/deploy.ts`); and a callee's custom error reaches the thrown refusal without its
     `errorArgs`, which the shipped reporter reads from the refused draft. Both are pinned as known walls in the same
-    file, beside a compiler one: a ledger frame with no mapping access carries the C3 own-category mutable NFT
-    conservation (`emitOwnCategoryMutableNftConservation`), so it refuses beside a sibling frame of its contract that
-    inserts a node (a first mark beside the release).
+    file. A first mark beside the release, which inserts a node, settles: a per-call master whose calls are all
+    `CALL` or `STATIC` no longer carries the C3 own-category count, which its census or the validator's covers.
   - [x] Row 6: Custom errors raised in a callee and re-raised by SafeERC20 assembly. Guarded by
     `conformance/custom-error-rows.test.ts`: the self-target spelling runs the SafeERC20 `_revert` shape and the
     shipped refusal report names the error, its declared parameters and the arguments it was raised with

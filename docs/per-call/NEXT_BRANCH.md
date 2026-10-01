@@ -3,7 +3,8 @@
 Work that changes the hop, the masters or the deployment beyond what the ladder stream holds is built here, off
 `feat/per-call`, so it does not interfere with the ladder's ongoing work. It started at `eb3c2f561` (2026-10-01,
 user direction); each stream was developed in its own scratch copy and committed onto this branch without a
-checkout. The branch merges into `feat/per-call` only by decision, once the ladder stream can take it.
+checkout. It merged into `feat/per-call` at `561a5720b` (2026-10-01), so it carries
+nothing `feat/per-call` lacks.
 
 ## What landed
 

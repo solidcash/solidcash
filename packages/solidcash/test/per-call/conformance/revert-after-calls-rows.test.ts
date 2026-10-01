@@ -34,12 +34,11 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * control settles the same entry and shows the changes those calls make. A custom error raised inside the pull after
  * the approve is reported by the pull's own frame.
  *
- * Known walls. Two are in the hop's settle loop (`proxy/deploy.ts`), which settles every callee before it derives the
+ * Known walls. Both are in the hop's settle loop (`proxy/deploy.ts`), which settles every callee before it derives the
  * entry: a check whose entry would next call a callee that refuses in the same state is reported as that callee's
  * revert, which the EVM never reaches (the desk not open: the release of escrow 0), so six of the seven checks report
  * their own reason; and the thrown refusal does not carry a callee's custom error arguments (`errorArgs`), which the
- * shipped reporter reads from the refused draft. The third is the compiler's: a ledger frame with no mapping access
- * carries a population check that counts the node a sibling frame creates (a first mark beside the release). The
+ * shipped reporter reads from the refused draft. A first mark, which inserts a node beside the release, settles. The
  * plain call path, which plans no callee frames, refuses the entry by name.
  */
 
@@ -201,7 +200,7 @@ async function deployed(): Promise<Deployed> {
     });
     expect(deployment.initialize.broadcast).toBeDefined();
     // The member's mark is made once here, on the plain path, so the store write a settle makes rewrites a node the
-    // ledger holds, as the row's store write does (a first mark is the sibling-insert wall below).
+    // ledger holds, as the row's store write does; an outsider's first mark inserts one.
     const markCoin = funding(idOf('seed mark coin'));
     await network.addUtxo(binToHex(MEMBER_LOCK), markCoin);
     const seeded = await callPerCallEntry({
@@ -533,25 +532,20 @@ describe('spec section 23 row 5: a revert after state-changing calls', () => {
       expect(pull?.reason.arguments).toStrictEqual([`0x${binToHex(MEMBER_LOCK)}`, MEMBER_BALANCE, 1500n]);
     });
 
-  it('known wall: a first mark beside the release refuses the release, a frame of the ledger with no mapping access',
+  it('settles a first mark beside the release: the inserted node, the release and their events are on chain',
     async () => {
       const run = await deployed();
       await settled(run, MEMBER, 'open', [], 'first mark open');
       await settled(run, MEMBER, 'flag', [], 'first mark flag');
-      // The EVM settles this; it differs from the settle control only in the caller, whose first mark inserts a node.
-      // Owner: the compiler. An entry with no mapping access carries the C3 own-category mutable NFT conservation
-      // (`emitOwnCategoryMutableNftConservation`, GenerateTargetTraversal), so the release's frame counts the node
-      // its sibling frame creates and refuses at the end of its body; a per-call master settles records through the
-      // census instead, which the C1 site already notes. The marking frame is accepted.
-      const refused = await expectRefused(run, OUTSIDER, 'settle', [], 'first mark');
-      expect(refused.error.message).toBe(refusalOf('the call\'s callee "Ledger.release()"', 'callee-master-2',
-        'Ledger.release()', 'function release(int escrowId) {', 'no source message'));
-      expect(refused.stalls).toStrictEqual([]);
-      const report = composer.reportCompositionRefusal({
-        draft: refused.draft, artifacts: [deskProxy, desk, ledger], vm: compositionMachine(),
-      });
-      expect(report.refusals.map((refusal) => refusal.master)).toContain('callee-master-2');
-      expect(report.refusals.map((refusal) => refusal.master)).not.toContain('callee-master-1');
+      const before = await chainState(run);
+      expect(valueAt(before, 'marks', OUTSIDER_LOCK)).toBeUndefined();
+      // It differs from the settle control only in the caller, whose first mark inserts a node beside the release, a
+      // frame of the ledger with no mapping access; the validator's census settles the node the marking frame declares.
+      await settled(run, OUTSIDER, 'settle', [], 'first mark');
+      const after = await chainState(run);
+      expect(after.desk).toMatchObject({ stage: 2n, flagged: 0n });
+      expect(valueAt(after, 'marks', OUTSIDER_LOCK)).toBe(intValue(1n));
+      expect(after.events).toStrictEqual({ ...before.events, Marked: before.events.Marked! + 1, Released: 1 });
     });
 
   it('refuses the entry by name on the plain call path, which plans no callee frames', async () => {

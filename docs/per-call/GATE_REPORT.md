@@ -137,8 +137,9 @@ shapes, corrected after the fifth review:
 - **Closed** (`9ad622305`, 2026-09-26): the self-settlement census admits the validator its category deploys,
   recreated in place, beside a self-settling master, so S2's composition settles. Since 2026-10-01 the admission
   requires the validator's empty commitment on both sides (`self-settlement-beside-validator`).
-- A segment declaring two or more records is refused rather than settled partly; the chains of mapping nodes and
-  chunks are not emitted.
+- **Closed**: a segment declares several records and settles (a data record beside mapping nodes, chunk runs,
+  several collections: `shapes/record-with-mapping-write`, `several-collections-write`,
+  `dynamic-values-together`), and V7's record-chain rule is emitted (`ccde697cc`, `0f008912b`).
 
 **On the kill criterion**: the plan kills if the gate is not reached by `2026-10-23`. Nothing here measures how close
 that is. The hard part of view mode — a second master reading state from another frame's segment view — has not been

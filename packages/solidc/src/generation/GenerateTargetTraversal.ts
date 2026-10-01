@@ -8550,9 +8550,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // a variable count of own-category 0x01 NFTs (entries, token containers, dynamic-storage chunks) or that
       // use a special NFT topology (deploy/selfdestruct/upgrade/split/merge/delegate); those keep per-slot
       // verification and are a documented residual. See SECURITY-AUDIT C3.
+      //
+      // A per-call master whose records a census always settles is exempt, as at C1: the count would refuse a node a
+      // sibling frame of its contract inserts, or a chunk one consumes, which that census admits as declared.
       if (!this.functionHasDelegatecall && !this.currentFunctionIsDelegate && isStatefulContract
         && !isSelfdestruct && !isUpgrade && !hasEntryAccess && !hasTokenContainerAccess
-        && !hasTokenContainerTransfers && this.pendingDynamicWrites.size === 0 && !hasDeploys) {
+        && !hasTokenContainerTransfers && this.pendingDynamicWrites.size === 0 && !hasDeploys
+        && !this.perCallCensusSettlesOwnRecords()) {
         const skipRetirement = this.beginAtomicSelfdestructExclusion(
           { location: node.body.location, positionHint: PositionHint.END },
         );
@@ -38108,6 +38112,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, locationData);
     this.popFromStack(); // remove (this_cat_cap)
     if (lifecycleModeIndex >= 0) this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /**
+   * True when a census settles the records of every frame this per-call master runs, so C3's count adds nothing.
+   *
+   * A frame that is its category's only master runs the head's own walk, which admits an own-category mutable token
+   * only at a record its segments declare (S2, S3). Beside another master of the contract, or as a delegate frame of a
+   * caller that runs on its own records, the validator's census settles them (V7, V8). Below a delegate frame the
+   * count is that frame's category, whose forwarding master took this frame's code from records its own caller
+   * supplies, so the count binds nothing that caller cannot route around. A head that can forward a delegate call
+   * skips the walk for every frame, and the validator settles its contract only when the call is made, so a frame of
+   * it that runs alone under a validator is settled by neither and keeps the count.
+   */
+  private perCallCensusSettlesOwnRecords(): boolean {
+    return this.perCallMaster && [...this.perCallEntryCallSites.values()].flat()
+      .every((site) => site.kind === FrameKind.CALL || site.kind === FrameKind.STATIC);
   }
 
   // C3: conserve the count of co-spent own-category MUTABLE (0x01) NFTs (data + entry NFTs) input->output. In

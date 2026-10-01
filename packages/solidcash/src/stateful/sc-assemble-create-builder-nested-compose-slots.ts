@@ -11,12 +11,10 @@ import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   computeCollectionHash,
   encodePushdataValue,
-  hash160 as hash160Sync,
   joinValueChunks,
   parseChunkCommitment,
   parseValueChunkCommitment,
   sha256 as sha256Sync,
-  splitValueIntoValueChunks,
   VALUE_CHUNK_SIZE,
   VALUE_HEAD_SIZE,
   VALUE_INLINE_LIMIT,
@@ -25,7 +23,6 @@ import {
   type ExternalCallAbi,
   type FunctionBlockLayout,
   type StateLayout,
-  type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
@@ -59,7 +56,6 @@ import {
   parseRowArgsDecodeLabel,
   resolvePreparedProducerEntry,
   resolveRouteRowExpressionKey,
-  type RouteExpressionKeyRow,
 } from './route-expression-key.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import {
@@ -165,16 +161,16 @@ export async function assembleCreateBuilderNestedComposeSlots(
     [key: string]: any;
   },
 ): Promise<{
-  bags: AssembleCreateBuilderNestedComposeSlotsBags;
-  childRelativeOutputInternalArgs: string[];
-}> {
+    bags: AssembleCreateBuilderNestedComposeSlotsBags;
+    childRelativeOutputInternalArgs: string[];
+  }> {
   const {
     nested, selectedLayout, sharedGroupIndex, childWritesState,
     preserveFirstConditionalWriter, proxyCallee, callee, childState, childData,
-    childRequired, childLayout, childCompilerRoute, childFunctionName, childFunctionArgs,
-    nestedArgs, routePlanningArgs, proxyImplementationState, delegateCallGroupIndex,
+    childRequired, childLayout, childCompilerRoute,
+    routePlanningArgs, proxyImplementationState, delegateCallGroupIndex,
     childExternalGroupIndex, externalCallUtxoGroups, lowLevelCallUtxoGroups, timingEnabled,
-    bags, publishRouteValueChunkProducerBinding, valueChunkProductionsForPath,
+    bags, publishRouteValueChunkProducerBinding,
     nestedSortedListCache, nestedAddressUtxos,
   } = params;
   // Outer nested-compose locals (passed through the index signature).
@@ -215,6 +211,11 @@ export async function assembleCreateBuilderNestedComposeSlots(
 
   // Host aliases used by the body after host. → host. rewrite
   const markSharedFunder = host.markSharedFunder;
+  const routeDebugEnabled = (): boolean => {
+    const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+    return env?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
+      || env?.SOLIDC_DEBUG_COLLECTION_FETCH === '1';
+  };
 
   if ((sharedGroupIndex < 0 || childWritesState)
     && selectedLayout && selectedLayout.blockSize > 1) {
@@ -247,15 +248,15 @@ export async function assembleCreateBuilderNestedComposeSlots(
         // resolved Promise. Do not await it here: funder allocation is a hot synchronous loop, and
         // yielding once per positional slot causes repeated full-heap GC for large artifacts.
         void mockProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
-        const funder: UnlockableUtxo = {
+        const dummyFunder: UnlockableUtxo = {
           ...dummy,
           unlocker: {
             generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
             generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
           },
         };
-        markSharedFunder(funder);
-        return funder;
+        markSharedFunder(dummyFunder);
+        return dummyFunder;
       }
       throw new Error(
         `Insufficient funding UTXOs for nested call ${nested.interfaceName}.${nested.functionName}.`,
@@ -325,11 +326,11 @@ export async function assembleCreateBuilderNestedComposeSlots(
                   isMsgSenderKeySource(candidateSource)));
               if (childCompilerRoute?.rowArguments && !selectedUsesSender
                 && !childCompilerRoute.rowArguments.some(
-                (row: any) => (row.handler.entryAccesses ?? []).some((candidate: any) =>
-                  candidate.collection === access.collection
+                  (row: any) => (row.handler.entryAccesses ?? []).some((candidate: any) =>
+                    candidate.collection === access.collection
                   && (candidate.keySources ?? []).some((candidateSource: any) =>
                     isMsgSenderKeySource(candidateSource))),
-              )) {
+                )) {
                 // Sorted-batch planning still needs a deterministic target for every reserved
                 // route slot. Use the same canonical inactive address carried by the route ABI;
                 // it avoids colliding with an active argument-keyed read of the caller itself.
@@ -432,8 +433,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
             if (timingEnabled && nested.callsiteId === 6) console.error('nested-entry-utxos-complete', {
               collection: access.collection, count: addressUtxos.length,
             });
-            if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_COLLECTION_FETCH'].some((name) =>
-              (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
+            if (routeDebugEnabled()) {
               console.error('nested-entry-resolution', JSON.stringify({
                 collection: access.collection,
                 address,
@@ -517,8 +517,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                   childValueWitnesses.set(slot.slotIndex ?? 0, joined);
                   if (present) childStoredValues.set(slot.slotIndex ?? 0, joined);
                 }
-                if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_COLLECTION_FETCH'].some((name) =>
-                  (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
+                if (routeDebugEnabled()) {
                   console.error('nested-value-witness', JSON.stringify({
                     collection: access.collection,
                     routeSlot: slot.slotIndex,
@@ -583,8 +582,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                   newCommitment: binToHex(insertPlan.newNodeCommitment),
                 });
               }
-              if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_COLLECTION_FETCH'].some((name) =>
-                (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
+              if (routeDebugEnabled()) {
                 console.error('nested-entry-pick', JSON.stringify({
                   collection: access.collection,
                   blockSlot: childBlockInputs.length,
@@ -749,15 +747,15 @@ export async function assembleCreateBuilderNestedComposeSlots(
               .find((candidate) => candidate.name === priorFunctionName);
           if (!priorHandler || !selectedFn) return undefined;
           return [{
-              args: priorFunctionArgs,
-              handler: priorHandler,
-              selector: sharedPriorAtomicNode?.selector ?? priorHandler.selector,
-              sourceCallsiteId: sharedPriorAtomicNode?.sourceCallsiteId,
-              sourceLogicalIndex: sharedPriorAtomicNode?.sourceLogicalIndex,
-              occurrenceIndex: sharedPriorAtomicNode?.occurrenceIndex,
-              sourceEffectOrdinal: sharedPriorAtomicNode?.sourceEffectOrdinal,
-              producerPath: sharedPriorAtomicNode?.producerPath,
-            }, ...directInvocationRows];
+            args: priorFunctionArgs,
+            handler: priorHandler,
+            selector: sharedPriorAtomicNode?.selector ?? priorHandler.selector,
+            sourceCallsiteId: sharedPriorAtomicNode?.sourceCallsiteId,
+            sourceLogicalIndex: sharedPriorAtomicNode?.sourceLogicalIndex,
+            occurrenceIndex: sharedPriorAtomicNode?.occurrenceIndex,
+            sourceEffectOrdinal: sharedPriorAtomicNode?.sourceEffectOrdinal,
+            producerPath: sharedPriorAtomicNode?.producerPath,
+          }, ...directInvocationRows];
         })() : undefined;
       // A direct nested handler is still one authenticated graph row even when no repeated-owner
       // compiler batch was needed. Keep that exact callsite row available to terminal producer
@@ -778,7 +776,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         const internalArgs: Record<string, FunctionArgument> = {};
         const producerClaims: ValueChunkProducerResourceClaim[] = [];
         const productions: Array<NonNullable<
-          PreparedAtomicMessageBusCall['valueChunkProductions']
+        PreparedAtomicMessageBusCall['valueChunkProductions']
         >[number]> = [];
         let producerStateOwner: { categoryId: string; lockingBytecode: string } | undefined;
         const effectiveRowArguments = rowArguments ?? discoveredProducerRows?.map((row, index, rows) => (
@@ -988,16 +986,16 @@ export async function assembleCreateBuilderNestedComposeSlots(
             const inserting = targetKey && childBatchLists.get(access.collection)
               ? !childBatchLists.get(access.collection)!.has(targetKey) : insert !== undefined;
             const exactWrite: ValueChunkWriteDescriptor | undefined = targetKey ? {
-                categoryId: callee.categoryId,
-                collection: collection.name,
-                collectionSignature: collection.signature,
-                collectionHash: binToHex(computeCollectionHash(collection.signature)),
-                keySlot: binToHex(targetKey),
-                entryAccessSlot: routeSlot,
-                routeSlot: physicalRouteSlot,
-                operation: inserting ? 'insert' : 'update',
-                outputBase: -1,
-                outputCount: 0,
+              categoryId: callee.categoryId,
+              collection: collection.name,
+              collectionSignature: collection.signature,
+              collectionHash: binToHex(computeCollectionHash(collection.signature)),
+              keySlot: binToHex(targetKey),
+              entryAccessSlot: routeSlot,
+              routeSlot: physicalRouteSlot,
+              operation: inserting ? 'insert' : 'update',
+              outputBase: -1,
+              outputCount: 0,
             } : undefined;
             if (exactWrite) {
               const stateOwner = {

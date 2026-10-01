@@ -1,8 +1,8 @@
 /**
- * Legacy JobEvent helper facade: Marketplace-shaped JobEvent **helper API** adapter facade.
+ * Legacy JobEvent helper facade for the historical wire-format API.
  *
  * legacy JobEvent naming retirement: neutral `legacy*` / value-chunk names are the only public exports.
- * JobEvent-branded aliases have been deleted on the fixtures tip; marketplace
+ * JobEvent-branded aliases have been deleted on the fixtures tip; legacy
  * beta titles must import the neutrals (or keep their own local aliases).
  */
 

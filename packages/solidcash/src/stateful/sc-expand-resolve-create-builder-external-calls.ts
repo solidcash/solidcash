@@ -195,7 +195,7 @@ export async function expandResolveCreateBuilderExternalCalls(
         }
         functionName = matches[0].name;
       }
-      // Expression arg sources are evaluated against the caller's OWN state (`jobs.length - 1` and friends).
+      // Expression arg sources are evaluated against the caller's own state (for example, array length minus one).
       // `_evaluateExternalExpression` already covers every shape these reach - state/array length/arithmetic,
       // struct constructors, the Encoding helpers - but silently yields undefined without a state snapshot,
       // which then surfaces as "cannot be auto-resolved". Read it once and thread it through.

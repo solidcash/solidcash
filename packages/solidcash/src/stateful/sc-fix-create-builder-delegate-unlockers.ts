@@ -339,7 +339,7 @@ export async function fixCreateBuilderDelegateUnlockers(
               externalCallUtxoGroups[nestedGroup].loopReturnCommitments?.length ?? 1,
             ));
             // Always the logical group. assignedReturns is keyed per callsite; storing the
-            // fused writer made Marketplace's idx0 refresh onto FakeToken's 00…01.
+            // a fused writer refreshed one participant's first index onto another's commitment.
             group.returnWitnessGroups = {
               ...group.returnWitnessGroups,
               [inp.name]: nestedGroup,
@@ -606,7 +606,7 @@ export async function fixCreateBuilderDelegateUnlockers(
               && typeof compilerRouteValue === 'bigint' && compilerRouteValue >= 0n) {
               // PredOut is an OP_OUTPUT* index. Proofs stay proxy-relative because the
               // covenant adds INPUTINDEX; predecessor outputs do not. Use the implementation
-              // master (input 3 on MarketplaceData.initialize), not the proxy minting UTXO.
+              // implementation master, not the proxy minting UTXO.
               const outputBase = masterInputIndex;
               const trailingBase = groupLayoutTrailingBase(group);
               return resolveAbsolutePredOut(

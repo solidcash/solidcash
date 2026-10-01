@@ -294,7 +294,7 @@ export async function deriveReturnValue(
     }
     // Prefer the address-linked deployment over a same-named registry entry: upgrade
     // registers the proxy handle under the impl name, and a stale/empty-state twin can
-    // win findDeploymentByName while the facade's stored marketplace address is authoritative.
+    // win findDeploymentByName while the facade's stored target address is authoritative.
     const delegatedRegistry = (delegatedCall.contract as unknown as {
       _externalRegistry: Map<string, StatefulContract>;
     })._externalRegistry;

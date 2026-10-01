@@ -221,7 +221,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   }
   const publishedNestedExternalCalls = [...(delegateFn?.externalCalls ?? [])];
   // Nested argSources.paramIndex is the logical Solidity function's visible parameter
-  // list (publishJobPost.tags_ is 3). A compiler-owned route stores [blob, ...witnesses]
+  // list (a dynamic-array argument can be third). A compiler-owned route stores [blob, ...witnesses]
   // on the LLC, so reading callInfo.args[3] is not the tags array.
   const delegateVisibleCount = (delegateFn?.inputs ?? []).filter(
     (input: any) => !input.name.startsWith('__internal__'),

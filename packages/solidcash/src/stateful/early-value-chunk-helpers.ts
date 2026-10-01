@@ -151,7 +151,7 @@ export function tokenWriterOccupiedDests(parts: {
   }
   // Identity SCIDs land on the in-block return dest (master+7) before the
   // return NFT is placed. Reserve that dest and the next three so extraTransfer
-  // EQUALVERIFYs dest 35, not dest 31's SCID. First publishJobPost still
+  // EQUALVERIFYs the later destination, not the earlier SCID. The first write still
   // EQUALVERIFYs dest 31 even if initialize persist left persistDests nonempty.
   if (parts.reserveIdentityDests && parts.tokenMaster !== undefined && parts.tokenMaster >= 0) {
     const identityStart = parts.tokenMaster + 7;

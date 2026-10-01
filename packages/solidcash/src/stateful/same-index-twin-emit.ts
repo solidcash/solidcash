@@ -86,7 +86,7 @@ export type SameIndexTwinOptions = {
   skipLocks?: readonly Uint8Array[];
 };
 
-/** First alignment pad after reserved collection indexes, before view tails / jobs. */
+/** First alignment pad after reserved collection indexes, before view tails / value chunks. */
 export function nextAlignmentPadIndex<T extends {
   to?: Uint8Array | string;
   token?: unknown;

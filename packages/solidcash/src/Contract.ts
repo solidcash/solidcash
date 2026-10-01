@@ -711,7 +711,7 @@ export class Contract<
       const cacheUnlockingBytecode = !hasSignatures && !needsBlockhashIndex;
       let cachedUnlockingBytecode: Uint8Array | undefined;
       // Redeem push is stable across probe-local ReturnOutputIdx edits; keep it so arg-only
-      // rebuilds do not reserialize multi-megabyte Marketplace redeem scripts every probe.
+      // rebuilds do not reserialize multi-megabyte redeem scripts every probe.
       let cachedRedeemPush: Uint8Array | undefined;
 
       // Probe-local layout fixes may mutate `params` (same array as `args`) after construction.

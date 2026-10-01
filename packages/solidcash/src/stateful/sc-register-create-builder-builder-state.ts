@@ -190,7 +190,7 @@ export function registerCreateBuilderBuilderState(
       // executes that write, and would leave semantic convergence stuck at an unresolved `00` commitment.
       if (!activeDynamicWrites.has(dv.name)) continue;
       if (builder.getChunkRawCommitments(dv.name).length === 0) {
-        // closeJob / in-place jobs writes keep the on-chain chunk count. A single
+        // In-place dynamic-collection writes keep the on-chain chunk count. A single
         // '00' placeholder makes TXOUTPUTCOUNT-1-nNew miss the covenant's nNew=2 pin
         // (fat JobPost push is ~200 bytes → 2 chunks). Reverse-suffix delegates must
         // seed that floor up front — speculative growth cannot fix it.

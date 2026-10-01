@@ -67,8 +67,8 @@ export function rebindCreateBuilderAssembledWitnesses(
   const finalArgs = bag.finalArgs;
 
   // Masters are rebound from findMintingInputIndex after assembly, but return
-  // witnesses are still the pre-rotation tail ranks (publishJobPost encodes
-  // MarketplaceData at 30 while FakeToken occupies 26-33). Rewrite every
+  // witnesses are still the pre-rotation tail ranks (a repeated writer encodes
+  // a nested participant after another participant's block). Rewrite every
   // returning group from the physical minting coordinates and refresh both
   // nested callees and the delegate that reads them.
   {

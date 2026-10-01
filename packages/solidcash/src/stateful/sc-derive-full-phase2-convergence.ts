@@ -110,7 +110,7 @@ export function deriveFullPhase2Convergence(
       maximumRegionWidth: MAX_SPECULATIVE_CHUNK_OUTPUTS,
       allCommitmentsArePlaceholders: regions.every((region) =>
         region.every((commitment) => commitment === '00')),
-      // Proxy publishJobPost: jobs use TXOUTPUTCOUNT-1-nNew. Growing nNew here
+      // A proxy's reverse-indexed value chunks use TXOUTPUTCOUNT-1-nNew. Growing nNew here
       // parks chunk 0 on empty pads and never reveals A$len.
       reverseIndexedChunkSuffix: chunkVars.some((variable) => variable.delegateSuffix === true),
     })) {

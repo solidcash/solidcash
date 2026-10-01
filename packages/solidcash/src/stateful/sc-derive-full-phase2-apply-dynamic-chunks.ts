@@ -72,7 +72,7 @@ export function deriveFullPhase2ApplyDynamicChunks(
   const chunkVars = stb.getDynamicChunkVars();
   // StatefulTransactionBuilder already incorporates the composed delegate block base. Dynamic chunks
   // are inserted before later composed output families, so they are not generally at the transaction
-  // tail (Marketplace has message-bus/event outputs after this region).
+  // tail (message-bus and event outputs may follow this region).
   const getPhysicalChunkOutputBase = (): number => {
     if (chunkVars.length === 0) return stb.getChunkOutputBase();
     const suffixVar = chunkVars.find((variable) => variable.delegateSuffix === true);

@@ -69,7 +69,7 @@ export function deriveFullPhase2IterationProbe(
   });
   // Delegate dynamic chunks are authenticated from TXOUTPUTCOUNT-1-nNew. send() inserts fee
   // change *before* that [chunks][one suffix] region. A probe remainder appended after the
-  // suffix makes the covenant read OP_RETURN / the dummy as a chunk (Marketplace jobs).
+  // suffix makes the covenant read OP_RETURN / the dummy as a value chunk.
   const phase2ParamSnap = delegatecallInputIndex !== undefined
     && probeBuilder2.outputs.length > 30
     ? stb.snapshotBuilderReturnOutputParams(probeBuilder2) : undefined;

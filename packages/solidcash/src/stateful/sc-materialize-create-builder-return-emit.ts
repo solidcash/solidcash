@@ -216,7 +216,7 @@ export async function materializeCreateBuilderReturnEmit(
           canonicalSeed,
         });
       }
-      // A participant's observed event is not always its return: measured on the marketplace route, the entries
+      // A participant's observed event is not always its return: measured on a multi-participant route, the entries
       // for IERC20.balanceOf and transferFrom carry the callee's 14-byte STATE commitment, which fails the
       // canonical-result check. Skipping the seed then publishes the placeholder zero, and a caller that compares
       // the result inside `require` (the OZ `balanceOf(...) > 0` idiom) fails its own covenant. Derive the value

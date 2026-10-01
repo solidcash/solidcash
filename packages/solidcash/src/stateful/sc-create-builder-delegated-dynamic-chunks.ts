@@ -97,8 +97,8 @@ export async function createBuilderLoadDelegatedDynamicChunks(
   phaseCheckpoint?.('delegated-dynamic-reads-complete');
 
   // RMW write chunks occupy the same impl+trailing band as read-only chunks
-  // (closeJob jobs at input 10-11). Count them before publishing nested
-  // master indices so MarketplaceData stays at 12, not on a jobs chunk.
+  // (a dynamic collection at fixed input slots). Count them before publishing nested
+  // master indices so the nested participant stays after the chunks.
   const delegatedDynamicWriteNames = [...new Set(lowLevelCallUtxoGroups.flatMap((group) => {
     if (group.callMode !== 'delegatecall') return [];
     const delegateFunction = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])

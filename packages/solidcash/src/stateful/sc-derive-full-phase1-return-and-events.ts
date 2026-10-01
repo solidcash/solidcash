@@ -279,7 +279,7 @@ export function deriveFullPhase1ReturnAndEvents(
         : bAbiFunc?.emits ?? [];
 
     if (bEmits.some((emit) => emit !== undefined)) {
-    // Delegate callees (MarketplaceData.publishJobEvent) emit at impl+offset.
+    // Delegate callees emit at their implementation-relative offset.
     // The proxy __forward layout is only master+data and has no event slot.
       const eventSlots: Array<{ kind: string; offset: number }> = (
         bAbiFunc?.blockLayout?.slots ?? group.blockLayout.slots

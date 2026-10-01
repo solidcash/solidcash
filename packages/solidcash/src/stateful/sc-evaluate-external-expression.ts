@@ -346,9 +346,9 @@ export function evaluateExternalExpression(
     if (value === undefined) return undefined;
     if (expression.operator === '.length') {
       if (typeof value === 'string' || Array.isArray(value) || value instanceof Uint8Array) {
-        // Same-function dynamic writes (jobs.push then w[jobs.length-1]) must see the post-write
+        // Same-function dynamic writes (values.push then w[values.length-1]) must see the post-write
         // length. fixedKeySources already apply stateLengthDeltas via evalComputedKey; varyingKeyExpressions
-        // must match or publishJobPost whitelist keys resolve to -1 against empty pre-state.
+        // must match or a later constructed key resolves to -1 against empty pre-state.
         const stateName = expression.expression.kind === 'state' ? expression.expression.name : undefined;
         const writeDelta = stateName ? stateLengthDeltas?.[stateName] ?? 0n : 0n;
         const legacyDelta = !stateIncludesPriorWrites && typeof expression.value === 'string'

@@ -2163,7 +2163,7 @@ export async function assembleAtomicComposition(
           // The deferred-argument probe can only learn from an input whose SCRIPT executes the read site, and a
           // kernel participant publishes more than one such input: its block's master/logical identity and its
           // identity anchor run the participant's own row/verifier bodies, while `base + executorOffset` runs the
-          // executor. Probing only the executor left the compute reads unreached (measured on the marketplace
+          // executor. Probing only the executor left the compute reads unreached (measured on a large
           // corpus: participant 0's executor executes 955 steps and never enters the 2408-instruction row body
           // that carries both keccak preimage reads, while its own block input executes a 155-instruction body for
           // 957 steps). Try every block input that can execute participant code; a trace that teaches nothing is

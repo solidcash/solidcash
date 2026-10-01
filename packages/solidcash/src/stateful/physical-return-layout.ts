@@ -25,7 +25,7 @@ import {
 export function chooseMintingSwapShift(availableFunders: number, minShift: number): number {
   if (minShift <= 0 || availableFunders < minShift) return 0;
   // Prefer the historical 4-wide rotate when the band is narrower so
-  // transferFrom publishJobPost stays off jobEvents. Never go below minShift.
+  // the nested token transfer stays off the value-chunk band. Never go below minShift.
   const preferred = Math.max(minShift, 4);
   return availableFunders >= preferred ? preferred : minShift;
 }
@@ -93,7 +93,7 @@ export function gatherContiguousPlainFunders<T extends {
 /**
  * Last mutable p2sh32 writer that sits on a planned view-tail index, extended
  * through the contiguous collection band (jobEvents). Token-free pads and the
- * trailing jobs suffix (separated by a pad or OP_RETURN) are not included.
+ * trailing value-chunk suffix (separated by a pad or OP_RETURN) are not included.
  */
 export function lastCollidingMutableWriterIndex(
   outputs: ReadonlyArray<{
@@ -122,7 +122,7 @@ export function lastCollidingMutableWriterIndex(
 
 /**
  * Slots that can host OP_TRUE none-cap view tails without stealing jobEvents,
- * jobs suffix chunks, or SCID identity. Prefers existing view tails and
+ * reverse-indexed suffix chunks, or SCID identity. Prefers existing view tails and
  * token-free OP_TRUE / P2PKH alignment pads.
  */
 export function findViewTailDestinations(

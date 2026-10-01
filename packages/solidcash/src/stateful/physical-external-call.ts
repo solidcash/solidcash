@@ -59,7 +59,7 @@ export function groupIndexForExternalCallSlot(params: {
 }): number | undefined {
   const call = params.externalCalls?.[params.slot];
   // A published callsite is slot-stable. Compact child arrays skip omitted conditionals, so
-  // `compactGroups[slot]` would bind a later call (MarketplaceData) onto an earlier unused slot
+  // `compactGroups[slot]` would bind a later call onto an earlier unused slot
   // (`__raw__` transfer). Only treat a *missing* map entry as omitted when the ABI says the
   // callsite is conditional; a required (`once`) call still falls back positionally.
   if (call?.callsiteId !== undefined) {

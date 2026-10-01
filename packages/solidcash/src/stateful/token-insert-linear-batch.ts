@@ -38,8 +38,8 @@ export const collectionEntryOneToOneIndices = jobEventsEntryOneToOneIndices;
 
 /**
  * Recreate a nested minting master at its input index. Inserting would shift
- * assigned view tails and the jobs suffix; drop one later alignment pad so
- * those absolute indices stay put (MD minting at 15, tails 38-40, jobs 45-46).
+ * assigned view tails and the value-chunk suffix; drop one later alignment pad so
+ * those absolute indices stay put.
  */
 /**
  * Minting uniqueness: one minting output per minting input. Extra same-category

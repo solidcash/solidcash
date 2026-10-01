@@ -212,8 +212,8 @@ export function materializeExternalCallOutputs(
       const nftIdx = group.requiredDataNftIndices[i];
       const nftUtxo = group.dataNftUtxos[i];
       // Rebuilding an untouched NFT from parsed defaults is not an identity
-      // (MarketplaceData nft 1 is only immutable `__blockOracleOwner` and
-      // collapsed from 70 bytes to a 35-byte empty pubkey). The callee then
+      // (an immutable-only data NFT can collapse to an empty pubkey commitment).
+      // The callee then
       // EQUALVERIFYs UTXO vs OUTPUT commitment.
       const nftVars = group.stateLayout.variables.filter((variable) => variable.nftIndex === nftIdx);
       const nftIsImmutable = nftVars.length > 0 && nftVars.every((variable) => variable.immutable);

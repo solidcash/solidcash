@@ -213,8 +213,8 @@ export function reassertDelegateLoopEntries(
       const lockHex = binToHex(lv.lockingBytecode);
       const outputCommitment = commitment.toLowerCase();
       // P' keeps the predecessor's slot prefix and must occupy that input's balanced index.
-      // Parking both P' and NEW on the trailing band left publishJobPost verifying INPUTINDEX+N
-      // against funder pads (Marketplace whitelistWorkers via proxy __forward).
+      // Parking both predecessor and new entry on the trailing band can make
+      // INPUTINDEX+N introspection read funder pads through a proxy forwarder.
       const predInputIndex = outputCommitment.length >= 64
         ? host.allInputs.findIndex((input) => {
           const inputCommitment = commitmentHexOf(input.token?.nft?.commitment).toLowerCase();

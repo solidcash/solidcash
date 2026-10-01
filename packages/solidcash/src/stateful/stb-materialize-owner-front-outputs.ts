@@ -230,9 +230,9 @@ export function materializeOwnerFrontOutputs(
   // preservation outputs must precede the callee outputs here too. Emit them now; the trailing
   // iteration-entry block below skips itself when this fired.
   // Delegate trailing storage lives at implementationInput+trailingBase. Emitting read-only chunks
-  // before the implementation band would occupy the impl master output (marketplace jobs at output 5).
+  // before the implementation band would occupy its master output.
   // Read-only chunks must not precede a co-spent implementation: that implementation
-  // self-preserves at OP_INPUTINDEX, so jobs-at-output-5 overwrites the impl master.
+  // self-preserves at OP_INPUTINDEX, so an early chunk output overwrites the master.
   const loopChunkBeforeCallees = host.iterationEntryInputs.length > 0
   && host.externalCallUtxoGroups.length > 0
   && !host.delegateDynamicChunksAtSuffix

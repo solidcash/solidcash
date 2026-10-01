@@ -212,8 +212,8 @@ export function reassertPersistedJobEventsOneToOnes(
       digestCategory, host.jobEventsRedeemLock, host.persistedValueChunkWrite(digestCategory),
     );
     const chunkIndex = valueChunkIndexFromCommitment(commit);
-    // Only long persist jobEvents chunks (Created `00004cb4…` / continuations).
-    // Short `0000…` data-NFT heads (jobs, users) must keep their own lock.
+    // Only long persisted event chunks (created head / continuations).
+    // Short data-NFT heads for other resources must keep their own lock.
     const isPersistValueChunk = chunkIndex !== undefined
       && commit.length >= 24
       && (sameCategory || persistShaped);

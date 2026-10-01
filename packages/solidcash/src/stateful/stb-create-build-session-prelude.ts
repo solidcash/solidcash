@@ -83,7 +83,7 @@ export function createBuildSessionPrelude(
     // authenticates the exact transition, so the generic identity-preservation heuristic must not pre-empt
     // the derivation probe before those checks execute.
     || host.pendingTokenContainerTransferNfts.length > 0
-    // Nested MarketplaceData event/SCID immutables can sit in the probe before their outputs are
+    // Nested callee event/SCID immutables can sit in the probe before their outputs are
     // derived. Allow the probe to proceed; the callee covenant still authenticates recreation.
     || host.externalCallUtxoGroups.length > 0 || host.lowLevelCallUtxoGroups.length > 0)
     ? { ...baseOpts, allowImplicitNftBurn: true }

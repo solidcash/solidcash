@@ -44,7 +44,7 @@ export function reassertSendAfterViewRepack(
   if (reboundViews) host.applyDerivedValueChunks(finalBuilder);
   host.materializeJobEventsBand(finalBuilder);
   host.ensureLiveJobEventsBand(finalBuilder);
-  // Re-assert view tails after materialize so jobs/chunk bands cannot clobber
+  // Re-assert view tails after materialization so value-chunk bands cannot clobber
   // authenticated none-cap returns (same ordering as build()).
   host.placeTailReturnAfterSwappedTokenBlock(finalBuilder);
   host.ensureAuthenticatedViewReturns(finalBuilder);

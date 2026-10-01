@@ -28,7 +28,7 @@ export interface ReassertBuildConservationRepairsHost {
 
 /**
  * After primary output materialization, reassert SCID/none-cap/minting/events/fixed-state and
- * optionally pack the persisted jobs suffix.
+ * optionally pack the persisted value-chunk suffix.
  */
 export function reassertBuildConservationRepairs(
   host: ReassertBuildConservationRepairsHost,

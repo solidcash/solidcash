@@ -40,7 +40,7 @@ export function reassertSendFinalBuilder(
   );
   host.reassertNestedEmitEvents(finalBuilder);
   host.reassertDelegateImplEvents(finalBuilder);
-  // Materialize first; view tails must win over jobs/chunk band writes.
+  // Materialize first; view tails must win over value-chunk band writes.
   host.materializeJobEventsBand(finalBuilder);
   host.placeTailReturnAfterSwappedTokenBlock(finalBuilder);
   host.ensureAuthenticatedViewReturns(finalBuilder);

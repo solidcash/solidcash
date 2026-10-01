@@ -82,7 +82,7 @@ export function finalizeBuildDerivedSuffix(
   host.applyDerivedEntryOutputs(builder);
   host.constrainParticipantImmutableOutputs(builder);
   host.restoreSwappedTokenFunderSlots(builder);
-  // Reverse-suffix jobs (TXOUTPUTCOUNT-1-nNew) must be the last covenant outputs before
+  // Reverse-indexed value chunks (TXOUTPUTCOUNT-1-nNew) must be the last covenant outputs before
   // the trailer. Late value-chunks / derived pins can displace or reorder them — pin the
   // authenticated commitments back onto that window in declaration order.
   host.reassertReverseSuffixDynamicChunks(builder);

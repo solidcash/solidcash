@@ -144,7 +144,7 @@ export function selectMaterializedTailReturnEvents(
     if (groupOwnsInBlockReturnEvent(groups, groupIndex)) continue;
     const candidates = parsed.filter((entry) => entry.groupIndex === groupIndex);
     // Authoritative precomputed / rolled-loop commitments must materialize even when pending was
-    // cleared between seedPrecomputedReturnEvents and build (common on Marketplace publishJobPost).
+    // cleared between seedPrecomputedReturnEvents and build.
     // Requiring pending candidates here dropped meceTags(tags_[i]) returns so meceCount stayed 0.
     const authoritativeParts = (group.loopReturnCommitments?.length ?? 0) > 0
       ? group.loopReturnCommitments
@@ -330,7 +330,7 @@ export function tokenWriterReturnIndex(
   const returnSlot = blockLayout?.slots?.find((slot) => slot.kind === 'returnEvent');
   const inBlock = master + (returnSlot?.offset ?? (blockLayout?.blockSize ?? 8) - 1);
   // Persist nNew=3 at 25–27 collides with FakeToken extraTransfer at master+7.
-  // Marketplace EQUALVERIFYs dest master+7 live; only slide when that dest is
+  // The callee EQUALVERIFYs dest master+7 live; only slide when that dest is
   // inside the jobEvents band. Identity SCIDs on dest 31 are overwritten.
   let dest = (band && inBlock >= band.start && inBlock <= band.end) ? band.end + 1 : inBlock;
   if (occupied && dest !== inBlock) {
@@ -572,7 +572,7 @@ export function viewTailOccupancyCap(
 
 export type ViewTailPackOptions = {
   band?: { start: number; end: number };
-  /** First reserved suffix index (OP_RETURN / jobs). Tails must not land here. */
+  /** First reserved suffix index (OP_RETURN / value chunks). Tails must not land here. */
   suffixStart?: number;
   tokenWriterPresent?: boolean;
 };

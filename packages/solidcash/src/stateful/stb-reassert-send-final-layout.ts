@@ -77,8 +77,8 @@ export function reassertSendFinalLayout(
   // Last write: byIndex absolute pins (P' at co-spend, NEW at trailing) win.
   host.applyDerivedEntryOutputs(finalBuilder);
   debugBal12('after-applyDerived');
-  // After entry/event materializers: late chunks / distinct NFTs can sit after jobs or
-  // grow TXOUTPUTCOUNT. Pin reverse-suffix jobs as the last layout write in this pass.
+  // After entry/event materializers: late chunks or distinct NFTs can follow the suffix or
+  // grow TXOUTPUTCOUNT. Pin reverse-indexed chunks as the last layout write in this pass.
   host.finalizeReverseSuffixValueChunkLayout(finalBuilder);
   host.enforceDeclaredCollectionOutputCardinality(finalBuilder);
   // Delegate event values can only be observed after collection cardinality and all absolute coordinates have

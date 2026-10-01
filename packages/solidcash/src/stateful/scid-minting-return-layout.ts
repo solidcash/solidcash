@@ -58,7 +58,7 @@ export function stripSurplusValueChunkLocks(
  * token-free disposable output (not a view tail). Never skip: dropping the NFT
  * makes the next non-zero msg.sender call unsatisfiable. Do not overwrite
  * minting/mutable occupants, reserved occupancy (impl trailing / jobEvents /
- * writer returns), or append past an OP_RETURN jobs suffix. */
+ * writer returns), or append past an OP_RETURN value-chunk suffix. */
 export function reassertScidIdentityOutputs(
   outputs: Array<{
     to?: Uint8Array | string;

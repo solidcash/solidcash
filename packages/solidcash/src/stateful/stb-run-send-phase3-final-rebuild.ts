@@ -101,7 +101,7 @@ export function runSendPhase3FinalRebuild(
     dustMinimum,
   );
   reassertFinalLayout();
-  // Final layout / jobs / OP_RETURN repairs can still displace none-cap view
+  // Final layout / value-chunk / OP_RETURN repairs can still displace none-cap view
   // tails after the earlier place. Re-assert and rebind witnesses so preflight
   // observes the authenticated commitment at the unlocked return index.
   reassertSendPostLayoutMaterialization(

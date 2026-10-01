@@ -93,7 +93,7 @@ export function repairNestedCalleeOutputs(
       token: anchor.token,
     });
   }
-  // Nested callee mapping INSERTs (MarketplaceData publishJobEvent) are not the
+  // Nested callee mapping INSERTs are not the
   // implementation's own delegated loop and must not sit in the impl trailing
   // band. Emit them after callee identity so the callee proxy's mutable-NFT
   // conservation sees P'/NEW (input EntryNft otherwise has no matching output).
@@ -141,8 +141,8 @@ export function repairNestedCalleeOutputs(
   }
   debugAtomicOutputStage('identity-anchors');
 
-  // Nested callee entry NFTs can sit outside that callee's published block (MarketplaceData
-  // publishJobEvent predecessor at input 20 while the MD group occupies 14-17). Recreate any
+  // Nested callee entry NFTs can sit outside that callee's published input block.
+  // Recreate any
   // still-unmatched nested-category mutable input at its input index so the callee proxy's
   // mutable-NFT conservation and the entry covenant both see a same-index twin.
   const nestedCategories = new Set(

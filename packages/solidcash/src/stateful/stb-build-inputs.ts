@@ -550,8 +550,8 @@ export function buildInputs(
       // Trailing pad is surplus for NEW after HEAD (sorted upsert insert).
       const nodePad = takePadFunder();
       if (nodePad) newNodePad = asTokenPad(nodePad);
-      // Expand nested LLC masters (publishJobEvent blockSize 5) so INPUTINDEX+offset
-      // introspection stays in-range after insert-band shifted them past the jobs band.
+      // Expand nested LLC masters so INPUTINDEX+offset introspection stays in-range
+      // after the insert band shifts them past the value-chunk band.
       // Prefer each group's real blockInputs; only pad with funders when the band is short.
       if (!host.compilerRouteDelegateBlock && nestedLlcAfterInsertBand.length > 0) {
         const expanded: UnlockableUtxo[] = [];
@@ -568,7 +568,7 @@ export function buildInputs(
             }
             pastConsumed = true;
           }
-          // Immediate delegate already sits before the jobs band; only expand nested callees.
+          // Immediate delegate already precedes the value-chunk band; only expand nested callees.
           if (group.callMode === 'delegatecall' && expanded.length === 0
             && immediateDelegateLlc.length > 0
             && items.every((item, index) => item === immediateDelegateLlc[index])) {
@@ -819,7 +819,7 @@ export function buildInputs(
       ...prefix,
       ...host.funderUtxos.slice(0, alignmentPaddingCount),
       // X151: read-only dynamic chunks first, then RMW old write chunks at the same
-      // impl+trailingBase band (closeJob reads jobs[i] from input 10), then predecessors.
+      // implementation trailing-base band, then predecessors.
       ...host.iterationEntryInputs, ...host.dynamicChunkInputs, ...host.trailingDisposalInputs,
       ...host.insertLoopPredecessorInputs,
       ...host.funderUtxos.slice(alignmentPaddingCount, fixedPaddingCount),

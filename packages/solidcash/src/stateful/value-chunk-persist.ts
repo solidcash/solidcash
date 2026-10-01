@@ -729,7 +729,7 @@ export function rememberJobEventsLock(
 ): void {
   const apply = (): void => {
     if (lock.length !== 35 || lock[0] !== 0xaa || lock[1] !== 0x20 || lock[34] !== 0x87) return;
-    // Created digest (first publishJobPost persist) is the UPDATE dest-18 pin.
+    // The created digest of the first persist is the UPDATE destination pin.
     // Later persist-v rematerialize must not replace it.
     if (settlement().createdDigestLocks.has(categoryId)) return;
     settlement().persistedJobEventsLocks.set(categoryId, lock);

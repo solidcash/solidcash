@@ -309,7 +309,7 @@ export function swapMintingOffValueChunkBand(host: MintingSwapPredecessorHost): 
   const bandEnd = Math.max(band.end + 1, persistEndExclusive);
   // Count the full consecutive token run (master + data + existing entries).
   // A band-limited width of 1 tries to swap the minting NFT with the data NFT
-  // and aborts, leaving minting on chunk slot 22 so jobs derive 0 of 2.
+  // and aborts, leaving minting on a chunk slot so derived chunks are missing.
   // A same-size swap of all 5 tokens lands the master at 27 and breaks the
   // known-good return at 33. Rotate K funders from *after* the token run
   // in front of it so the run stays consecutive and the master clears the

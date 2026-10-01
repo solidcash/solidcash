@@ -45,7 +45,6 @@ import {
   hash160 as hash160Sync,
   hash256 as hash256Sync,
   parseArrayTypeString,
-  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   FixedBchTransferAbi,
   KernelJournalDispositionsAbi,
   peekPushdataEncodedLength,
@@ -88,11 +87,6 @@ import { artifactUsesSolidityAbi } from './solidityAbi.js';
 import { isScidIdentityCommitment, resolveLogicalIdentity, type ResolvedLogicalIdentity } from './logical-identity.js';
 
 import { addressToLockScript, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode } from '../utils.js';
-
-// Redeem script: OP_TRUE (0x51). Locking: OP_HASH256 <hash256(0x51)> OP_EQUAL.
-// Unlocking: <push 0x51> (the redeem script).
-const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
-const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]); // push 1-byte redeem script
 
 import { SortedList, keyToSlotMulti, bytesToSlotValue, encodeEntryCommitment, decodeEntryCommitment } from './SortedList.js';
 import {
@@ -184,59 +178,13 @@ interface VmapCounterPermutationSpec {
 
 const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
 const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
-const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
-const VMAP_COUNTER_VALUE_PREFIX = '__internal__vmapCounterValue_';
-const VMAP_COUNTER_PREFIX_COUNT_PREFIX = '__internal__vmapCounterPrefixCount_';
-const VMAP_COUNTER_SOURCE_INDEX_PREFIX = '__internal__vmapCounterSourceIndex_';
-const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCount_';
-const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 const KERNEL_JOURNAL_ACCESS_STREAMS = '__internal__kernelJournalAccessStreams';
 const KERNEL_JOURNAL_RECORDS = '__internal__kernelJournalRecords';
 const vmapRuntimeInputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
 const vmapRuntimeOutputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_OUTPUT_COUNT_PREFIX}${collection}`;
-
-function vmapCounterPermutationSpec(name: string): VmapCounterPermutationSpec | undefined {
-  const decodeSigned = (component: string): bigint => (
-    component === 'runtime_p' ? 1n
-      : component === 'runtime_n' ? -1n
-        : component.startsWith('n') ? -BigInt(component.slice(1)) : BigInt(component.slice(1))
-  );
-  const range = name.match(
-    /^__internal__vmapCounterPerm_(.+)_\d+_from_([pn]\d+)_step_([pn]\d+|runtime_[pn])(_post)?$/,
-  );
-  const affine = name.match(
-    /^__internal__vmapCounterPerm_(.+)_\d+_bound_([pn]\d+)(?:_from_([pn]\d+)_step_([pn]\d+|runtime_[pn]))?(_post)?$/,
-  );
-  if (affine) {
-    return {
-      countName: affine[1],
-      boundOffset: decodeSigned(affine[2]),
-      start: affine[3] === undefined ? 0n : decodeSigned(affine[3]),
-      step: affine[4] === undefined ? 1n : decodeSigned(affine[4]),
-      postTest: affine[5] !== undefined,
-    };
-  }
-  if (range) {
-    return {
-      countName: range[1],
-      boundOffset: 0n,
-      start: decodeSigned(range[2]),
-      step: decodeSigned(range[3]),
-      postTest: range[4] !== undefined,
-    };
-  }
-  const postTest = name.match(/^__internal__vmapCounterPerm_(.+)_\d+_post$/);
-  if (postTest) return {
-    countName: postTest[1], boundOffset: 0n, postTest: true, start: 0n, step: 1n,
-  };
-  const preTest = name.match(/^__internal__vmapCounterPerm_(.+)_\d+$/);
-  return preTest ? {
-    countName: preTest[1], boundOffset: 0n, postTest: false, start: 0n, step: 1n,
-  } : undefined;
-}
 
 function vmapCounterPermutationValues(
   bound: bigint,

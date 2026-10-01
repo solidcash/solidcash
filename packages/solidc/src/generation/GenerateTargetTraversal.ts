@@ -23390,32 +23390,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitMasterInputIndex(loc, 2);
       this.emit(Op.OP_FROMALTSTACK, loc); // parked proof offset; the created node's successor is now on top
       this.emit(Op.OP_ADD, loc);
-      if (this.perCallMaster) {
-        // A created predecessor is the INSERT leg: its output is real (predOut >= 0) while the proof coordinate
-        // is the create sentinel, which names no input, so the empty list's head is the collection's zero slot
-        // relinked to the target. An UPDATE keeps the declared record even when an earlier frame created it, so the
-        // sentinel alone cannot tell the two apart and the sentinel plus the predecessor's own output does.
-        this.emitCopyUpsertVMapWitness(`__internal__vmapBatchPredOut_${slotIndex}`, loc);
-        this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
-        this.emit(Op.OP_OVER, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
-        this.emit(Op.OP_BOOLAND, loc);
-        this.emit(Op.OP_IF, loc);
-        {
-          this.emit(Op.OP_DROP, loc); // the created coordinate names no input
-          this.emitFixedWidthConstant(new Uint8Array(32), loc);
-          this.emitFixedWidthConstant(new Uint8Array(32), loc);
-          this.emit(Op.OP_CAT, loc);                                   // [slot, link, value]
-        }
-        this.emit(Op.OP_ELSE, loc);
-        {
-          if (this.readsRecordsFromFrame) {
-            this.emitRecordCommitmentRead('in', loc); // the spent coordinate names its declared record
-          } else {
-            this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
-            this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-          }
-        }
-        this.emit(Op.OP_ENDIF, loc);
+      // Every insert splices through a predecessor the transaction spends (a head is minted only at genesis), so the
+      // proof coordinate names an input.
+      if (this.readsRecordsFromFrame) {
+        this.emitRecordCommitmentRead('in', loc); // the spent coordinate names its declared record
       } else {
         this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
         this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
@@ -25440,68 +25418,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // has no proof input or output and is authenticated by the same -2 sentinel as a general batch target.
         arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
         bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
-        /** The predecessor is one the transaction spends: the proof coordinate names its input. */
-        const spentPredecessorArm = (): void => {
-          // One logical target has no intra-batch topology: its final next must equal the authenticated old next.
-          directProofField('next'); arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
-          directProofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`, 1); bin(Op.OP_EQUAL);
-          bin(Op.OP_IF);
-          // UPDATE: no separate predecessor output is permitted.
-          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
-          bin(Op.OP_ELSE);
-          // INSERT: recreate the exact proof predecessor as proof.slot || target || proof.value.
-          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_0);
-          bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_VERIFY); bin(Op.OP_DROP);
-          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
-          proofIndex(slot, 2); bin(Op.OP_UTXOBYTECODE); bin(Op.OP_EQUALVERIFY); bin(Op.OP_DROP);
-          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCATEGORY);
-          bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
-          this.emit(new Uint8Array([1]), loc); bin(Op.OP_EQUALVERIFY);
-          this.emitVerifyCatBaseEqMaster(loc);
-          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
-          directProofField('slot', 1); arg(`__internal__vmapBatchSlot_${slot}`, 2); bin(Op.OP_CAT);
-          directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
-          bin(Op.OP_ENDIF);
-        };
-        /**
-         * A predecessor the transaction creates rather than spends has no input at the coordinate the derivation
-         * states for it: the record's `in` field carries the create sentinel, so the coordinate lands below every
-         * input the way a created node's does. Such a predecessor is the empty list's head — the collection's zero
-         * slot — relinked to the written node, so the body proves the splice from the output it is created at: that
-         * output's first two fields are the zero slot and the target. The proof-input bytecode comparison is
-         * dropped, because there is no input to compare the recreated output with.
-         */
-        const createdPredecessorArm = (): void => {
-          // PredOut >= 0, and the output is at the collection's own entry covenant.
-          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_0);
-          bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_VERIFY); bin(Op.OP_DROP);
-          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCATEGORY);
-          bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
-          this.emit(new Uint8Array([1]), loc); bin(Op.OP_EQUALVERIFY);
-          this.emitVerifyCatBaseEqMaster(loc);
-          // The recreated predecessor's commitment is the empty head relinked to the written node: the collection's
-          // zero slot, then the target. The record's own value is the sentinel's, which no lookup reads.
-          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
-          this.emit(encodeInt(64n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
-          zero32(); arg(`__internal__vmapBatchSlot_${slot}`); bin(Op.OP_CAT);
-          bin(Op.OP_EQUALVERIFY);
-          // No proof-input bytecode comparison: a created predecessor has no input to compare the output with.
-        };
-        if (this.perCallMaster) {
-          // A created predecessor is the INSERT leg: its output is real (predOut >= 0) while the proof coordinate
-          // is the create sentinel, which names no input. An UPDATE keeps the spent arm, whose own leg requires
-          // the -1 sentinel, so a created target is never read as a created predecessor.
-          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_0); bin(Op.OP_GREATERTHANOREQUAL);
-          proofIndex(slot); bin(Op.OP_0); bin(Op.OP_LESSTHAN);
-          bin(Op.OP_BOOLAND);
-          bin(Op.OP_IF);
-          createdPredecessorArm();
-          bin(Op.OP_ELSE);
-          spentPredecessorArm();
-          bin(Op.OP_ENDIF);
-        } else {
-          spentPredecessorArm();
-        }
+        // One logical target has no intra-batch topology: its final next must equal the authenticated old next.
+        directProofField('next'); arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
+        directProofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`, 1); bin(Op.OP_EQUAL);
+        bin(Op.OP_IF);
+        // UPDATE: no separate predecessor output is permitted.
+        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
+        bin(Op.OP_ELSE);
+        // INSERT: recreate the exact proof predecessor as proof.slot || target || proof.value. The predecessor is one
+        // the transaction spends (a head is minted only at genesis), so the recreated output keeps the locking
+        // bytecode of the input the proof names; a coordinate that names no input is refused here.
+        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_0);
+        bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_VERIFY); bin(Op.OP_DROP);
+        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
+        proofIndex(slot, 2); bin(Op.OP_UTXOBYTECODE); bin(Op.OP_EQUALVERIFY); bin(Op.OP_DROP);
+        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCATEGORY);
+        bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
+        this.emit(new Uint8Array([1]), loc); bin(Op.OP_EQUALVERIFY);
+        this.emitVerifyCatBaseEqMaster(loc);
+        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
+        directProofField('slot', 1); arg(`__internal__vmapBatchSlot_${slot}`, 2); bin(Op.OP_CAT);
+        directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
+        bin(Op.OP_ENDIF);
         bin(Op.OP_ENDIF);
       } else if (batch.linear) {
         const rowsName = `__internal__vmapBatchRows_${batch.collection}`;

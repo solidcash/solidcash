@@ -70,76 +70,76 @@ describe('result-dependent state write parity', () => {
 });
 
 const runCase = async (seedProvisionalResult: boolean, chunked = false): Promise<void> => {
-    const observations: Array<{ convention: string; stored: string }> = [];
-    for (const messageBusKernel of [true, false]) {
-      const provider = createMessageBusCapstoneTestProvider();
-      const compileOptions = { ...OPTIONS, messageBusKernel };
-      const producerArtifact = compileString(PRODUCER, compileOptions);
-      const producerBase = new Contract(producerArtifact, [], { provider });
-      const producerSetup = await setupStatefulUtxos(
-        provider, producerBase, producerArtifact.stateLayout!, {}, { saltContract: true },
-      );
-      const producer = StatefulContract.withCategory(
-        producerBase.withCategory(hexToBin(producerSetup.categoryId)), producerSetup.categoryId,
-      );
-      const coordinatorArtifact = compileString(chunked ? CHUNKED_COORDINATOR : COORDINATOR, compileOptions);
-      expect(coordinatorArtifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
-        .toMatchObject({ eligible: true });
-      const coordinatorBase = new Contract(
-        coordinatorArtifact, [producer.inner.lockingBytecode], { provider },
-      );
-      const coordinatorSetup = await setupStatefulUtxos(
-        provider, coordinatorBase, coordinatorArtifact.stateLayout!,
-        chunked ? {} : { stored: 0n }, { saltContract: true },
-      );
-      const coordinator = StatefulContract.withCategory(
-        coordinatorBase.withCategory(hexToBin(coordinatorSetup.categoryId)), coordinatorSetup.categoryId,
-        { externals: { IScalarSource: producer } },
-      );
-      const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
-      const result = hexToBin(ethers.AbiCoder.defaultAbiCoder().encode(['uint256'], [16n]).slice(2));
-      const call = messageBus.compose({
-        preparedCalls: [
-          { contract: coordinator, functionName: 'apply', args: [5n] },
-          {
-            contract: producer, functionName: 'read', args: [5n], callsiteId: 0,
-            ...(seedProvisionalResult && { provisionalResultCommitment: result }),
-          },
-        ],
-        funder,
-        changeAddress: funder.unlocker.generateLockingBytecode(),
-      });
-      const builder = await call.build();
-      const transaction = builder.buildLibauthTransaction();
-      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-      const vm = createVirtualMachineBch2026ForProvider(provider);
-      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
-          `${coordinatorArtifact.messageBus?.convention} input ${inputIndex}`).toBe(true);
-      }
-      await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-      const state = await coordinator.getState();
-      const raw = state.stored;
-      const storedHex = typeof raw === 'string'
-        ? raw.replace(/^0x/, '')
-        : typeof raw === 'bigint' ? raw.toString(16) : binToHex(raw as Uint8Array);
-      if (chunked) {
-        // 8 packed 32-byte words carrying the produced value, i.e. a chunkable (> 60 B) caller state write.
-        expect(storedHex.length).toBe(512);
-        expect(storedHex).toContain(`${'00'.repeat(31)}10`);
-      }
-      observations.push({
-        convention: coordinatorArtifact.messageBus?.convention ?? 'unknown',
-        stored: storedHex,
-      });
+  const observations: Array<{ convention: string; stored: string }> = [];
+  for (const messageBusKernel of [true, false]) {
+    const provider = createMessageBusCapstoneTestProvider();
+    const compileOptions = { ...OPTIONS, messageBusKernel };
+    const producerArtifact = compileString(PRODUCER, compileOptions);
+    const producerBase = new Contract(producerArtifact, [], { provider });
+    const producerSetup = await setupStatefulUtxos(
+      provider, producerBase, producerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const producer = StatefulContract.withCategory(
+      producerBase.withCategory(hexToBin(producerSetup.categoryId)), producerSetup.categoryId,
+    );
+    const coordinatorArtifact = compileString(chunked ? CHUNKED_COORDINATOR : COORDINATOR, compileOptions);
+    expect(coordinatorArtifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const coordinatorBase = new Contract(
+      coordinatorArtifact, [producer.inner.lockingBytecode], { provider },
+    );
+    const coordinatorSetup = await setupStatefulUtxos(
+      provider, coordinatorBase, coordinatorArtifact.stateLayout!,
+      chunked ? {} : { stored: 0n }, { saltContract: true },
+    );
+    const coordinator = StatefulContract.withCategory(
+      coordinatorBase.withCategory(hexToBin(coordinatorSetup.categoryId)), coordinatorSetup.categoryId,
+      { externals: { IScalarSource: producer } },
+    );
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const result = hexToBin(ethers.AbiCoder.defaultAbiCoder().encode(['uint256'], [16n]).slice(2));
+    const call = messageBus.compose({
+      preparedCalls: [
+        { contract: coordinator, functionName: 'apply', args: [5n] },
+        {
+          contract: producer, functionName: 'read', args: [5n], callsiteId: 0,
+          ...(seedProvisionalResult && { provisionalResultCommitment: result }),
+        },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    });
+    const builder = await call.build();
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+        `${coordinatorArtifact.messageBus?.convention} input ${inputIndex}`).toBe(true);
     }
-    expect(observations).toEqual(chunked
-      ? [
-        { convention: 'kernel-row-loop', stored: `${'00'.repeat(31)}10`.repeat(8) },
-        { convention: 'legacy-unroll', stored: `${'00'.repeat(31)}10`.repeat(8) },
-      ]
-      : [
-        { convention: 'kernel-row-loop', stored: '10' },
-        { convention: 'legacy-unroll', stored: '10' },
-      ]);
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const state = await coordinator.getState();
+    const raw = state.stored;
+    const storedHex = typeof raw === 'string'
+      ? raw.replace(/^0x/, '')
+      : typeof raw === 'bigint' ? raw.toString(16) : binToHex(raw as Uint8Array);
+    if (chunked) {
+      // 8 packed 32-byte words carrying the produced value, i.e. a chunkable (> 60 B) caller state write.
+      expect(storedHex.length).toBe(512);
+      expect(storedHex).toContain(`${'00'.repeat(31)}10`);
+    }
+    observations.push({
+      convention: coordinatorArtifact.messageBus?.convention ?? 'unknown',
+      stored: storedHex,
+    });
+  }
+  expect(observations).toEqual(chunked
+    ? [
+      { convention: 'kernel-row-loop', stored: `${'00'.repeat(31)}10`.repeat(8) },
+      { convention: 'legacy-unroll', stored: `${'00'.repeat(31)}10`.repeat(8) },
+    ]
+    : [
+      { convention: 'kernel-row-loop', stored: '10' },
+      { convention: 'legacy-unroll', stored: '10' },
+    ]);
 };

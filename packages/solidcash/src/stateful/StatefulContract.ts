@@ -1723,16 +1723,6 @@ export interface StatefulConnectOptions {
   externalContracts?: Record<string, ExternalContractSpec>;
 }
 
-/** Metadata for each group in the external call UTXO list (direct + transitive). */
-interface ExternalGroupMeta {
-  /** The ABI slot governing this call (from the caller's ABI). */
-  ecSlot: ExternalCallAbi;
-  /** Category ID of the contract making this call (A's cat for direct, B's cat for B->C). */
-  callerCategoryId: string;
-  /** Index of the parent group for transitive calls (-1 for direct). */
-  parentGroupIndex: number;
-}
-
 export type CallInfo = {
   type: 'stateful';
   contract: StatefulContract;
@@ -1752,8 +1742,6 @@ export type CallInfo = {
   type: 'raw';
   utxo: UnlockableUtxo;
 };
-
-const LOOP_ENTRY_MAX_ITERATIONS = 256;
 
 // X10. Cap on the speculative growth of a dynamic-storage chunk region whose length the probe has not revealed
 // yet (a trailing vmap entry mint aborts the probe before the data NFT is verified). One extra probe per output,
@@ -2219,8 +2207,6 @@ export function permitsRouteValueChunkDerivation(
 ): boolean {
   return convention !== 'kernel-row-loop' || writes.length > 0;
 }
-
-type RouteValueChunkProgress = { changed: boolean; discovered: boolean };
 
 function logicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
   const artifact = group.logicalArtifact
@@ -4024,8 +4010,6 @@ function legacyStatefulSimulationEnabled(provider: NetworkProvider | undefined):
 
 const softBentoKey = (token: unknown, user: unknown): string =>
   `${String(token ?? '')}|${String(user ?? '')}`;
-const softApprovalKey = (user: unknown, master: unknown): string =>
-  `${String(user ?? '')}|${String(master ?? '')}`;
 
 /** Clear mock bento soft totals (test reset / new provider). */
 export function clearSoftBentoTotals(): void {
@@ -4945,38 +4929,6 @@ function unresolvableLabelLocals(
   }
   return names;
 }
-
-/**
- * Deterministic stand-in for a compute side-car that a mock provider has not been provisioned with.
- *
- * The identity of a side-car must be a pure function of the resource it belongs to (the branded locking bytecode,
- * which already bakes the contract category and the side-car role, plus its slot index). A random one changes the
- * physical side-car on every derivation pass, so the authenticated call manifest can never match the slot the
- * atomic verifier digests: the verifier rejects the assembly before the compute call, the deferred argument is
- * never exposed, and composition reports an unresolvable compute resource even though nothing is unresolvable.
- * Real networks never take this path - they require explicitly deployed side-cars.
- */
-const computeSideCarStandIn = (domain: string, lock: Uint8Array, index: number): Utxo => {
-  const identity = sha256Sync(Uint8Array.from([...utf8ToBin(domain), ...lock, ...bigIntToVmNumber(BigInt(index))]));
-  return {
-    txid: binToHex(sha256Sync(Uint8Array.from([...utf8ToBin(`${domain}:utxo`), ...identity]))),
-    vout: index,
-    satoshis: 100_000n,
-    token: {
-      // A compute side-car's covenant splits a 32-byte chunk out of its commitment, so a fabricated stand-in must
-      // carry a well-formed one: an empty commitment makes the split run on a zero-length item and abort the
-      // script before the compute call is ever reached, which is exactly where a deferred argument is supposed to
-      // be exposed. Zeros are a placeholder the resolver replaces with the real chunk once the argument is learned.
-      category: binToHex(identity), amount: 0n,
-      nft: { capability: 'mutable', commitment: binToHex(new Uint8Array(32)) },
-    },
-  };
-};
-
-/** True when a fetched side-car list already contains this stand-in's outpoint (idempotent provisioning). */
-const hasOutpoint = (utxos: readonly Utxo[], candidate: Utxo): boolean => utxos.some(
-  (utxo) => utxo.txid.toLowerCase() === candidate.txid.toLowerCase() && utxo.vout === candidate.vout,
-);
 
 /** Current builder-pass id; the composer reports it beside a stall so the stall's own plans can be isolated. */
 export const peekBuilderBuildId = peekBuildId;

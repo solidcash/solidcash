@@ -294,7 +294,11 @@ export function persistedValueChunkCategory(host: ChunkableWritePlanningHost): s
     return selectedCategories.size === 1 ? [...selectedCategories][0] : undefined;
   }
   if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return undefined;
-  // Compatibility only for artifacts/plans predating compiler-authored valueChunkWrites.
+  // The selected external publisher is the proxy/state owner of this legacy write. An unrelated category's
+  // cached predecessor cannot override it merely because that cache was populated earlier in the session.
+  if (selected.external?.categoryId) return selected.external.categoryId;
+  // Compatibility only for artifacts/plans predating compiler-authored valueChunkWrites that expose only the
+  // implementation group; in that case the legacy cache may still identify a separate proxy category.
   const impl = host.lowLevelCallUtxoGroups.find((group) =>
     legacyGroupLooksLikePublishJobEvent(group))?.categoryId;
   for (const categoryId of settlement().persistedJobEventsLocks.keys()) {
@@ -304,6 +308,23 @@ export function persistedValueChunkCategory(host: ChunkableWritePlanningHost): s
     if (categoryId && categoryId !== impl) return categoryId;
   }
   return chunkableValueWriteCategory(host);
+}
+
+/** Select a derive-pass append owner from the active writer, never from an unrelated cached predecessor. */
+export function selectedPersistedValueChunkCategory(host: ChunkableWritePlanningHost): string | undefined {
+  const selection = valueChunkWriteCategorySelection(host);
+  if (selection.status === 'exact') return selection.categoryId;
+  if (selection.status !== 'absent') return undefined;
+  const selected = chunkableValueWriteGroups(host);
+  const owners = new Set([selected.external?.valueChunkStateOwner?.categoryId,
+    selected.lowLevel?.valueChunkStateOwner?.categoryId]
+    .filter((category): category is string => category !== undefined));
+  if (owners.size > 1) return undefined;
+  if (owners.size === 1) return [...owners][0];
+  if (selected.external?.categoryId) return selected.external.categoryId;
+  // An unpaired delegate executor is code, not the state owner. Without a published owner, do not infer the
+  // proxy from settlement-cache insertion order. A direct low-level call carries its own category.
+  return selected.lowLevel?.callMode === 'call' ? selected.lowLevel.categoryId : undefined;
 }
 
 export function shouldStampPersistUpdateDigestLockForHost(host: ChunkableWritePlanningHost): boolean {

@@ -22,9 +22,8 @@ import {
   adaptLegacyNestedJobEventArguments,
   usesLegacyJobEventCompatibility,
 } from './legacy-job-event-wire.js';
-import { legacyPersistedValueChunkWidth } from './early-value-chunk-helpers.js';
 import { providerUnixLocktime } from './soft-state-overlays.js';
-import { isPersistedJobEventsReady } from './value-chunk-persist.js';
+import { readyPersistedCompatibilityValueChunkWidth } from './value-chunk-persist.js';
 
 export type ResolveCreateBuilderNestedComposeCalleeHost = {
   resolveExternalArgs: (...args: any[]) => FunctionArgument[] | undefined;
@@ -255,9 +254,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
     const tip = Number(
       (host.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
     );
-    const appending = isPersistedJobEventsReady()
-      && (legacyPersistedValueChunkWidth(callee.categoryId) > 0
-        || legacyPersistedValueChunkWidth() > 0);
+    const appending = readyPersistedCompatibilityValueChunkWidth(callee.categoryId) > 0;
     const locktime = appending
       ? providerUnixLocktime(host.provider as { getBlockTime?: () => number })
       : undefined;

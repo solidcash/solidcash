@@ -9,14 +9,18 @@ import {
 } from '../../src/stateful/legacy-planning-heuristics.js';
 import {
   createCompositionSettlementSession,
+  legacyRememberValueChunkLock,
   legacyRememberValueChunkValue,
   markPersistedCompatibilityValueChunkReady,
   permitsLegacyNamedValueChunkFallback,
+  readyPersistedCompatibilityValueChunkWidth,
   runWithCompositionSettlementSession,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import {
   isInitialChunkableValueWrite,
   isPersistedChunkableValueWriteReady,
+  persistedValueChunkCategory,
+  selectedPersistedValueChunkCategory,
   shouldRematerializePersistUpdateForHost,
   shouldStampPersistUpdateDigestLockForHost,
 } from '../../src/stateful/stb-chunkable-write-planning.js';
@@ -116,6 +120,62 @@ describe('legacy planning heuristics isolation (item 1)', () => {
       expect(shouldRematerializePersistUpdateForHost(host as never)).toBe(true);
       expect(shouldStampPersistUpdateDigestLockForHost(host as never)).toBe(true);
     });
+  });
+
+  it('selects the proxy publisher before an unrelated cached legacy category', () => {
+    const session = createCompositionSettlementSession();
+    const proxy = 'aa'.repeat(32);
+    const implementation = 'bb'.repeat(32);
+    const unrelated = 'cc'.repeat(32);
+    const host = {
+      externalCallUtxoGroups: [{ categoryId: proxy, functionName: 'publishJobEvent' }],
+      lowLevelCallUtxoGroups: [{ categoryId: implementation, functionName: 'publishJobEvent' }],
+      messageBusConvention: 'legacy-unroll',
+      composedParticipant: false,
+      getLowLevelCallMasterInputIndex: () => -1,
+      getExternalCallMasterInputIndex: () => -1,
+    };
+    runWithCompositionSettlementSession(session, () => {
+      const lock = new Uint8Array(35);
+      lock[0] = 0xaa;
+      lock[1] = 0x20;
+      lock[34] = 0x87;
+      legacyRememberValueChunkLock(unrelated, lock);
+      legacyRememberValueChunkValue(unrelated, new Uint8Array(80));
+      markPersistedCompatibilityValueChunkReady(unrelated);
+      const selected = persistedValueChunkCategory(host as never);
+      expect(selected).toBe(proxy);
+      expect(readyPersistedCompatibilityValueChunkWidth(selected)).toBe(0);
+      legacyRememberValueChunkValue(proxy, new Uint8Array(80));
+      markPersistedCompatibilityValueChunkReady(proxy);
+      expect(readyPersistedCompatibilityValueChunkWidth(persistedValueChunkCategory(host as never)))
+        .toBe(1);
+    });
+  });
+
+  it('does not infer a delegate append owner from an unrelated compatibility cache', () => {
+    const implementation = 'bb'.repeat(32);
+    const proxy = 'aa'.repeat(32);
+    const host = {
+      externalCallUtxoGroups: [],
+      lowLevelCallUtxoGroups: [{
+        categoryId: implementation,
+        functionName: 'publishJobEvent',
+        callMode: 'delegatecall',
+      }],
+      messageBusConvention: 'legacy-unroll',
+      composedParticipant: false,
+      getLowLevelCallMasterInputIndex: () => -1,
+      getExternalCallMasterInputIndex: () => -1,
+    };
+    expect(selectedPersistedValueChunkCategory(host as never)).toBeUndefined();
+    expect(selectedPersistedValueChunkCategory({
+      ...host,
+      lowLevelCallUtxoGroups: [{
+        ...host.lowLevelCallUtxoGroups[0],
+        valueChunkStateOwner: { categoryId: proxy, lockingBytecode: 'aa20' },
+      }],
+    } as never)).toBe(proxy);
   });
 
   it('does not read the historical collection for a renamed descriptor-free band writer', () => {

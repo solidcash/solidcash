@@ -16,7 +16,6 @@ import { addressToLockScript } from '../utils.js';
 import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import {
   extractIdentityScanValueChunkPin,
-  legacyPersistedValueChunkWidth,
 } from './early-value-chunk-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
@@ -43,7 +42,7 @@ import {
 import { providerUnixLocktime } from './soft-state-overlays.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
-  isPersistedJobEventsReady,
+  readyPersistedCompatibilityValueChunkWidth,
   rememberJobEventsLock,
   rememberJobEventsValue,
   persistedCompatibilityValueChunkLock,
@@ -301,9 +300,7 @@ export function applyDeriveFullNestedValueChunkPin(
         );
         // First insert stamps with tip; appends use nLocktime (= tip-1) so the
         // candidate matches the covenant (28B stamped, not 24B unstamped).
-        const appending = isPersistedJobEventsReady()
-        && (legacyPersistedValueChunkWidth(host.categoryId) > 0
-          || legacyPersistedValueChunkWidth() > 0);
+        const appending = readyPersistedCompatibilityValueChunkWidth(chunkCategory) > 0;
         const locktime = appending
           ? providerUnixLocktime(host.inner.provider as { getBlockTime?: () => number })
           : undefined;

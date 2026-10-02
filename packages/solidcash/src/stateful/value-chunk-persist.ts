@@ -1053,5 +1053,11 @@ export function isPersistedCompatibilityValueChunkReady(categoryId?: string): bo
   return settlement().persistedJobEventsSendReady;
 }
 
+/** A descriptor-free append may reuse only the selected category's committed continuation. */
+export function readyPersistedCompatibilityValueChunkWidth(categoryId?: string): number {
+  return categoryId !== undefined && isPersistedCompatibilityValueChunkReady(categoryId)
+    ? persistedJobEventsWidth(categoryId) : 0;
+}
+
 /** @deprecated Historical name retained for the legacy adapter. */
 export const isPersistedJobEventsReady = isPersistedCompatibilityValueChunkReady;

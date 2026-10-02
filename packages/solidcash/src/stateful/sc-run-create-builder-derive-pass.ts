@@ -8,16 +8,15 @@ import { binToHex } from '@bitauth/libauth';
 import type { AbiFunction } from '@solidcash/utils';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
-import { legacyPersistedValueChunkWidth } from './early-value-chunk-helpers.js';
 import { resolveKernelValueChunkResourceLanes } from './kernel-value-chunk-lanes.js';
 import { valueChunkOutputWitnessCarrier } from './route-value-chunk-helpers.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import type { AssembledWitnessBag } from './sc-rebind-create-builder-assembled-witnesses.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
-  isPersistedJobEventsReady,
   isValueChunkWriteReady,
   persistedValueChunkWriteState,
+  readyPersistedCompatibilityValueChunkWidth,
   selectPersistedValueChunkWrite,
   valueChunkWriteResourceIdentity,
 } from './value-chunk-persist.js';
@@ -345,7 +344,7 @@ export async function runCreateBuilderDerivePass(
       : (describedPersistedWrites.length === 0 && permitsLegacyNamedValueChunkFallback(
         [...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups()],
         (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
-      ) && isPersistedJobEventsReady() ? legacyPersistedValueChunkWidth() : 0);
+      ) ? readyPersistedCompatibilityValueChunkWidth(builder.getSelectedPersistedValueChunkCategory()) : 0);
     const layoutRevisionBeforeDerive = builder.getDynamicLayoutRevision();
     const firstDeriveStarted = Date.now();
     deriveResult = await host.deriveFullTransactionState(

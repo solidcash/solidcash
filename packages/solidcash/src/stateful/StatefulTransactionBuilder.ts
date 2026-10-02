@@ -163,6 +163,7 @@ export {
   isPersistedJobEventsReady,
   isPersistedCompatibilityValueChunkReady,
   markPersistedCompatibilityValueChunkReady,
+  readyPersistedCompatibilityValueChunkWidth,
   valueChunkIndexFromCommitment,
   isEmptyValueChunkCommitment,
   latestPersisted,
@@ -352,6 +353,7 @@ import {
   isInitialChunkableValueWriteForDigest,
   isPersistedChunkableValueWriteReady,
   chunkableValueWriteCategory,
+  selectedPersistedValueChunkCategory,
   permitsLegacyNamedValueChunkFallbackForGroups,
   persistDigestCategories,
   persistedValueChunkCategory,
@@ -3003,6 +3005,11 @@ export class StatefulTransactionBuilder {
   /** Persist chunks are proxy-category; the LLC master is the impl minting category. */
   private _persistedValueChunkCategory(): string | undefined {
     return persistedValueChunkCategory(this._chunkableWritePlanningHost());
+  }
+
+  /** @internal Selected writer's append owner; never inferred from unrelated cached predecessors. */
+  getSelectedPersistedValueChunkCategory(): string | undefined {
+    return selectedPersistedValueChunkCategory(this._chunkableWritePlanningHost());
   }
 
   /** ExtraTransfer swap parks p2pkh funders on the jobEvents band. Put predecessor chunks back. */

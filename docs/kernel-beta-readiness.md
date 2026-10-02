@@ -435,8 +435,17 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   decisions now use the selected publisher category, and an unresolved category has zero persisted width instead
   of borrowing another category's cached width. A focused title with an unrelated ready category went red-to-green;
   after recording the selected category it proves the update path can still proceed. Its immediately preceding
-  legacy collection-fallback title passes. Three older nested-create/derive consumers still use an aggregate
-  compatibility fallback and need source-specific category evidence before they can be narrowed safely.
+  legacy collection-fallback title passes. Three older nested-create/derive consumers still used an aggregate
+  compatibility fallback at this checkpoint; the follow-up below narrows them.
+- 2026-10-02 nested compatibility append follow-up: append width is now the ready continuation width for the
+  category already used to stage the derived value, the resolved proxy callee, or the derive pass's selected
+  writer. It cannot be borrowed from another ready category. The persisted-category resolver also prefers the
+  selected proxy publisher over an unrelated cached predecessor; an unpaired delegate executor without a
+  published state owner is not enough to infer a proxy from cache insertion order. The focused width, proxy
+  priority, and unpaired-delegate titles each went red-to-green, with each immediately preceding title checked.
+  A fresh unchanged proxy `job posting > post job 1` run (one selected, 65 skipped) reaches the same 20-byte
+  identity versus 35-byte BCH lock assertion, without an earlier planning failure. That title remains red pending
+  the application wire-format choice; this is not a broad SDK or Marketplace result.
 
 ## Gate before the next leap
 

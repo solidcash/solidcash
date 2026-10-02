@@ -122,6 +122,7 @@ import {
   FunctionDefinitionNode,
   AssignNode,
   AssignmentExpressionNode,
+  SequenceExpressionNode,
   IdentifierNode,
   BranchNode,
   CastNode,
@@ -9098,6 +9099,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex(node.assign.identifier.name))), locationData);
     this.emit(Op.OP_PICK, locationData);
     this.pushToStack('(value)');
+    return node;
+  }
+
+  // `discarded, value` (a selector read through a receiver or helper call that still runs): the discarded part runs
+  // for its effects and its value is dropped, so the sequence leaves one value, as any expression does. A leftover
+  // item stayed under the value before, and unbalanced the two arms of a ternary or short circuit holding one.
+  visitSequenceExpression(node: SequenceExpressionNode): Node {
+    node.discarded = this.visit(node.discarded) as ExpressionNode;
+    this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
+    this.popFromStack();
+    node.value = this.visit(node.value) as ExpressionNode;
     return node;
   }
 

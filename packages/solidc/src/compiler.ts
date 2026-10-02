@@ -84,7 +84,8 @@ import { normalizeKernelAdmissionReason } from './kernel-admission-catalog.js';
 /** Survives binder rebuild: span-based analysis from the admission ladder. */
 let pendingSpanAdmissionAnalysis: AdmissionDecisionSet | undefined;
 import {
-  Ast, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
+  Ast, AssignNode, AssignmentExpressionNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode,
+  EmitStatementNode,
   ExpressionNode, FieldAccessNode, LiteralNode,
   FunctionCallNode, FunctionDefinitionNode, InterfaceFunctionNode, InterfaceNode,
   ExternalCallMode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode,
@@ -679,6 +680,8 @@ function assertNoInternalAttemptRecovery(options: InternalCompilerOptions): void
 
 interface OptionalLoweringFeatures {
   hasFunctionPointers: boolean;
+  // A function type outside a declaration's written type: the narrower question the per-call shape check asks.
+  functionTypeOutsideDeclarations: boolean;
   needsBlockOracle: boolean;
   needsMsgDataContext: boolean;
   needsMsgSigContext: boolean;
@@ -748,6 +751,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let deploysWithValue = false;
   let emitsEvent = false;
   let hasFunctionPointers = false;
+  let functionTypeOutsideDeclarations = false;
   let needsTailRecursion = false;
   let needsReturnInLoop = false;
   let needsNamedReturns = false;
@@ -810,12 +814,14 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
       needsNestedBranchReturn = true;
     }
     if (node instanceof MappingFieldAssignNode) needsMappingFieldCoalesce = true;
-    if (node instanceof UnaryOpNode && (
+    // The same pass hoists an assignment used as an expression (`f(x = v)`, `(s = v) ? a : b`) and spells one in a
+    // short-circuit operand as nested branches; without it a state target reaches type checking as a value form.
+    if ((node instanceof UnaryOpNode && (
       node.operator === UnaryOperator.POSTFIX_INCREMENT
       || node.operator === UnaryOperator.POSTFIX_DECREMENT
       || node.operator === UnaryOperator.PREFIX_INCREMENT
       || node.operator === UnaryOperator.PREFIX_DECREMENT
-    )) {
+    )) || node instanceof AssignmentExpressionNode) {
       needsPostfixIncDec = true;
     }
     if (node instanceof FunctionCallNode) calledFunctionNames.add(node.identifier.name);
@@ -833,6 +839,12 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
         needsDynamicStateJournal = true;
       }
     }
+    // A declaration keeps its written type under `type`, which the key walk below skips (it is an expression's
+    // inferred type elsewhere), so a function-pointer local, parameter, state variable or return shows only here.
+    const declaredTypes = node instanceof VariableDefinitionNode || node instanceof ParameterNode
+      || node instanceof StateVariableNode ? [node.type]
+      : node instanceof FunctionDefinitionNode ? node.returnTypes : [];
+    if (declaredTypes.some((type) => type !== undefined && typeContainsFunction(type))) hasFunctionPointers = true;
     for (const key in node) {
       if (key === 'location' || key === 'type' || key === 'name' || key === 'functionId' || key === 'resolvedFunction' || key === 'functionReference' || key === 'definition' || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable' || key === 'collection') continue;
       const value = node[key as keyof Node] as unknown;
@@ -843,6 +855,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
         // Keep walking so assembly / msg.data / journal / oracle flags reflect the rest of the tree
         // instead of forcing every optional lowering the moment a FunctionType appears (OZ imports).
         hasFunctionPointers = true;
+        functionTypeOutsideDeclarations = true;
       }
       if ((value instanceof ArrayType || value instanceof MappingType
         || value instanceof StructType || value instanceof TupleType)
@@ -859,6 +872,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   needsTailRecursion = [...calledFunctionNames].some((name) => definedFunctionNames.has(name));
   return {
     hasFunctionPointers,
+    functionTypeOutsideDeclarations,
     needsBlockOracle,
     needsMsgDataContext,
     needsMsgSigContext,
@@ -13095,7 +13109,7 @@ function compileResolvedAst(
   // their initialized declaration into a declaration plus branch assignments. The later invocation remains
   // for aliases introduced by the intervening contract-member/function-pointer passes.
   const {
-    hasFunctionPointers, needsBlockOracle, needsMsgDataContext, needsMsgSigContext,
+    hasFunctionPointers, functionTypeOutsideDeclarations, needsBlockOracle, needsMsgDataContext, needsMsgSigContext,
     needsSpecialMethodPruning, needsDynamicStateJournal, needsCollectionJournal,
     needsExternalCallLowering, needsInlineAssembly,
     needsTailRecursion, needsReturnInLoop, needsNamedReturns, needsNestedBranchReturn,
@@ -14183,7 +14197,9 @@ function compileResolvedAst(
       contract: ast.contract,
       interfaces: ast.interfaceDefinitions,
       hasContractInstantiation,
-      hasFunctionPointers,
+      // A pointer that is only declared is lowered like any other; a body still holding one after that is refused
+      // on its own by the shape check, so the whole contract is refused only where it always was.
+      hasFunctionPointers: functionTypeOutsideDeclarations,
       assemblyBodies,
       emitsEvent: contractEmitsEvent,
     });

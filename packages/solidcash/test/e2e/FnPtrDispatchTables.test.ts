@@ -72,6 +72,42 @@ describe('fixed-method table', () => {
       expect((await c0Sc.getState()).counter).toBe(8n);   // 5 + 3
       expect((await c1Sc.getState()).counter).toBe(23n);  // 20 + 3
     });
+
+    it('refuses a broadcast that leaves an element callee out', async () => {
+      const ca = compileString(COUNTER); const ta = compileString(TABLE);
+      const deployCounter = async (counter: bigint): Promise<{ sc: any; addr: string }> => {
+        const c = new Contract(ca, [], { provider });
+        const { categoryId } = await setupStatefulUtxos(provider, c, ca.stateLayout!, { counter }, { saltContract: true });
+        return {
+          sc: StatefulContract.withCategory(c, categoryId),
+          addr: c.withCategory(hexToBin(categoryId)).lockingBytecode,
+        };
+      };
+      const c0 = await deployCounter(7n);
+      const c1 = await deployCounter(11n);
+      const table = new Contract(ta, [], { provider });
+      const { categoryId: tc } = await setupStatefulUtxos(
+        provider, table, ta.stateLayout!, { fns: [], bumps: 0n }, { saltContract: true },
+      );
+      const tableSc = StatefulContract.withCategory(table, tc);
+      await tableSc.register(hexToBin(c0.addr), alicePub, sig()).send();
+      await tableSc.register(hexToBin(c1.addr), alicePub, sig()).send();
+
+      // Only the first element's callee is provided. Every element's call is part of the broadcast, so the table
+      // refuses rather than advance its own state without the second call.
+      tableSc.registerExternalArray('ICounter', [c0.sc]);
+      await expect(tableSc.fireAll(3n, alicePub, sig()).send()).rejects.toThrow(WRONG_DISPATCH_PREFLIGHT);
+      expect((await tableSc.getState()).bumps).toBe(2n);
+      expect((await c0.sc.getState()).counter).toBe(7n);
+      expect((await c1.sc.getState()).counter).toBe(11n);
+
+      // The same table settles once the second callee is provided as well (registration appends).
+      tableSc.registerExternalArray('ICounter', [c1.sc]);
+      await tableSc.fireAll(3n, alicePub, sig()).send();
+      expect((await tableSc.getState()).bumps).toBe(3n);
+      expect((await c0.sc.getState()).counter).toBe(10n);
+      expect((await c1.sc.getState()).counter).toBe(14n);
+    });
   });
 });
 

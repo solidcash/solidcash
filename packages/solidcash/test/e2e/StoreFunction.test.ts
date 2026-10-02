@@ -7,7 +7,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
-import { decodePushdataValue } from '@solidcash/utils';
+import { decodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js';
 
 describe('split (two tx)', () => {
   // Split store_function: install() deploys Other and stores its method as a fn-ptr; run() co-spends the
@@ -114,7 +114,6 @@ describe('one tx via local', () => {
         deployFunctionArgs: [],
         childArtifact: arts.Other,
         childConstructorArgs: [],
-        childInitialState: { c: 0n },
         fundingUtxo: runFunding,
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
@@ -169,7 +168,6 @@ describe('one tx via state ptr', () => {
         deployFunctionArgs: [],
         childArtifact: arts.Other,
         childConstructorArgs: [],
-        childInitialState: { c: 0n },
         fundingUtxo: runFunding,
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
@@ -448,13 +446,14 @@ describe('returning corpus form', () => {
       });
       expect(out.tx.txid).toBeDefined();
 
-      // Decode the return-event NFT commitment: t() must have returned addTwo(7) == 9.
+      // Decode the return-event NFT commitment: t() must have returned addTwo(7) == 9. A Solidity import
+      // publishes its result as the ABI-encoded tuple.
       const retOut = out.tx.outputs.find(
         (o) => o.token && Buffer.from(o.lockingBytecode).toString('hex') === '51' && o.token.nft,
       );
       expect(retOut).toBeDefined();
-      const decoded = decodePushdataValue(retOut!.token!.nft!.commitment, 0, 'int256', arts.C.structs).value;
-      expect(decoded).toBe(9n);
+      expect(arts.C.abi.find((fn) => fn.name === 't')!.resultEncoding).toBe('evm-abi-v1');
+      expect(decodeEvmInvocationResult(retOut!.token!.nft!.commitment, ['int256'], arts.C.structs)).toEqual([9n]);
 
       // x holds the freshly-deployed Other's genesis address (store kept it received for later txs).
       expect(Buffer.from((await c.getState()).x as Uint8Array).toString('hex'))
@@ -522,8 +521,9 @@ describe('return-event x deploy', () => {
       expect([catHex, catRevHex]).toContain(c.categoryId);
       // Anyone-can-spend (OP_TRUE) return event, no capability, zero FT.
       expect(Buffer.from(retOut.lockingBytecode).toString('hex')).toBe('51');
-      const decoded = decodePushdataValue(retOut.token!.nft!.commitment, 0, 'int256', arts.C.structs).value;
-      expect(decoded).toBe(9n);
+      // A Solidity import publishes its result as the ABI-encoded tuple.
+      expect(arts.C.abi.find((fn) => fn.name === 't')!.resultEncoding).toBe('evm-abi-v1');
+      expect(decodeEvmInvocationResult(retOut.token!.nft!.commitment, ['int256'], arts.C.structs)).toEqual([9n]);
     });
   });
 });

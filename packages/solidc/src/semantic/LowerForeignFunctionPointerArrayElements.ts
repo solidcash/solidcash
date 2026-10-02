@@ -24,7 +24,6 @@ import {
   FunctionCallNode,
   FieldAccessNode,
   IdentifierNode,
-  IntLiteralNode,
   VariableDefinitionNode,
   ExpressionNode,
   BlockNode,
@@ -55,8 +54,8 @@ type TableInfo = { kind: 'fixed' | 'varying'; iface: string; method: string; ret
  *   `bytes4 __fnelemsel = bytes4(__fnsel_fns[idx]);` runtime selector for a varying table) and emits the
  *   single computed-receiver call `IFace(__fnelem).m(args)`. Value-returning calls work here.
  * - `fns[i](args)` INSIDE a loop is the notify-all idiom and maps to the BROADCAST covenant: the epilogue
- *   co-spends + verifies + calls EVERY element (the source loop is harmless iteration; the receiver is
- *   rewritten to the index-independent `fns[0]` since the covenant reads the whole array). A broadcast cannot
+ *   co-spends + verifies + calls EVERY element (the source loop is harmless iteration; the receiver keeps the
+ *   live element, the shape of the array-element call `IFace(arr[i]).m()` in a loop). A broadcast cannot
  *   return a value (rejected).
  *
  * Mutations stay in LOCKSTEP with the selector array: a varying table's element assign / pop / delete rewrites
@@ -70,10 +69,9 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
   private hoists: StatementNode[] = [];
 
   /**
-   * `graphMode` only affects a broadcast (in-loop) receiver. Message-bus graph handlers reconstruct one
-   * authoritative row per reached iteration, so they need the live element and its live selector. The ordinary
-   * broadcast covenant instead reads and verifies the WHOLE table in its epilogue, and its receiver must stay
-   * index-independent: the loop variable is not in scope where the receiver is hoisted.
+   * `graphMode` only affects a varying broadcast (in-loop) call. Message-bus graph handlers reconstruct one
+   * authoritative row per reached iteration, so they also need the element's live selector. The ordinary
+   * broadcast covenant instead verifies every element against the whole selector array in its epilogue.
    */
   constructor(private readonly graphMode = false) {
     super();
@@ -318,7 +316,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
   }
 
   // `fns[idx](args)`: SINGLE element call outside a loop (hoisted element local, runtime selector for varying);
-  // BROADCAST inside a loop (index-independent receiver -> the shipped array-element co-spend loop).
+  // BROADCAST inside a loop (the live element receiver -> the shipped array-element co-spend loop).
   visitIndirectCall(node: IndirectCallNode): Node {
     const callee = node.callee;
     const target = callee instanceof ArrayAccessNode && callee.array instanceof IdentifierNode
@@ -336,14 +334,12 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
             throw new FnPtrArrayLoweringError(node, name,
               'a broadcast call (inside a loop) cannot return a value; call a single element outside a loop');
           }
-          // Broadcast: the covenant reads the WHOLE array; the receiver only names it, so use the
-          // index-independent fns[0] (the loop variable is not in scope where the receiver is hoisted).
-          // A graph handler instead reconstructs one authoritative row per reached iteration and therefore
-          // keeps the live index and its live selector.
+          // Broadcast: the receiver keeps the live element, so the call is the array-element co-spend whose
+          // epilogue binds every element; a loop-invariant receiver such as fns[0] would be hoisted out of the
+          // loop as one fixed callee. A graph handler, which reconstructs one authoritative row per reached
+          // iteration, also takes the live selector.
           const arrId = new IdentifierNode(name); arrId.location = node.location;
-          const liveIndex = this.graphMode
-            ? this.visit(target.index) as ExpressionNode
-            : Object.assign(new IntLiteralNode(0n), { location: node.location });
+          const liveIndex = this.visit(target.index) as ExpressionNode;
           const elem = new ArrayAccessNode(
             arrId, cloneNode(liveIndex) as ExpressionNode,
           );

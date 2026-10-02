@@ -130,7 +130,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   `abi.encodePacked(uint160(token_))` publishes a 20-byte identity, as the existing compiler cast test requires;
   its decoder reads 20 bytes while the test compares the result with the full 35-byte BCH P2SH32 locking
   bytecode from `fakeToken.getAddress()`. This is an application-port wire-format mismatch, not evidence for
-  changing the compiler's narrowing cast or weakening the test. The proxy application was not modified.
+  changing the compiler's narrowing cast or weakening the test. The observed 20 bytes are exactly `HASH160` of
+  that P2SH32 locking bytecode. Solidity-compatible `abi.encodePacked(address)` also projects to 20 bytes, so
+  removing the explicit `uint160` cast alone would not preserve the full BCH address; the testing shim
+  intentionally does not equate an untyped hash with a native address. The proxy application was not modified.
   Individually retested titles from an older red compiler/SDK log passed, confirming that log is stale; they do
   not establish any broader suite status.
 - 2026-10-02 focused whitelist follow-up: the unchanged Marketplace `job posting > post job with whitelist`

@@ -986,6 +986,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   get isEntryPoint(): boolean {
     if (this.isFreeFunction) return false;
     if (this.isFallback || this.isReceive) return true;
+    // The deploy runs the constructor as its entry point whatever its visibility: `constructor () internal` only
+    // marks a Solidity 0.6 contract abstract, and still needs the transaction block layout a public one gets.
+    if (this.name === '__construct') return true;
     const v = this.visibility;
     return v === 'external' || v === 'public';
   }

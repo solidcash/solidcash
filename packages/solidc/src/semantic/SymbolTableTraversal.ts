@@ -3149,8 +3149,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Entry points authenticate a transaction-level category witness. Internal/public subroutine bodies
         // instead receive the already-resolved logical sender as hidden OP_INVOKE context; giving those helpers
         // a second declared category parameter makes graph handlers call `_checkOwner(bytes32)` as `_checkOwner()`.
-        if (node.visibility !== 'internal' && node.visibility !== 'private'
-          && !node.graphEmissionHandler && !node.messageBusRoute) {
+        // A constructor is never such a subroutine: `constructor () internal` only marks a Solidity 0.6 contract
+        // abstract, and its body runs as the deploy entry point like a public constructor's.
+        const subroutineBody = node.name !== '__construct'
+          && (node.visibility === 'internal' || node.visibility === 'private');
+        if (!subroutineBody && !node.graphEmissionHandler && !node.messageBusRoute) {
           const categoryParam = new ParameterNode(new BytesType(32), '__internal__msgSenderCategory');
           categoryParam.location = node.location;
           node.parameters.push(categoryParam);

@@ -1,6 +1,7 @@
 import {
   ContractNode,
   FunctionDefinitionNode,
+  FunctionModifier,
   SourceFileNode,
   Node,
   StatementNode,
@@ -311,9 +312,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // no standalone stack representation any more than a struct pointer does; leaving a void `L.set(mapping
     // storage, ...)` body behind makes its `table[k]` look like an ordinary local ArrayAssign and loses the
     // declared mapping key type. The substitution below already routes mapping writes to the caller collection.
+    // Physical effects inline an internal helper (`Address.sendValue`), never a DELEGATE library entry: that
+    // one runs from the library's own co-spent input, and inlining it copies a split facet into its master.
     for (const fn of this.freeFns) {
       if (fn.body && fn.returnTypes.length === 0
-        && (this.hasStoragePointerParam(fn) || this.hasPhysicalEffects(fn))) {
+        && (this.hasStoragePointerParam(fn)
+          || (this.hasPhysicalEffects(fn) && !fn.modifiers.includes(FunctionModifier.DELEGATE)))) {
         this.inlinedFns.add(fn.name);
       }
     }

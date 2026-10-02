@@ -107,6 +107,14 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   route-size screen, which cannot establish full-contract deployability. Manifest-only static validation passes
   without checking source fingerprints or running tests or cold compiles. The complete cold matrix and beta gate
   remain unrun.
+- 2026-10-02 verifier-size checkpoint: the unchanged graph verifier/compute-sidecar size title now passes. For a
+  fixed-state participant without collections, containers, upgrades, or lifecycle, the detached verifier rejects
+  nonzero resource modes instead of carrying the unreachable INSERT/DELETE/container/replacement parsers. The
+  mode-zero checks are retained, and the sidecar verifier's pure conjunctions are emitted as equivalent individual
+  requirements. The measured graph verifier fell from 7,902 to 7,137 bytes; its same-source SHA256 control is
+  6,806 bytes. The immediately preceding pure-returning-sink title passes. The separate scalar-master size title
+  remains **red** at 1,403 bytes against its 1,400-byte ceiling (framework tax 1,263 against 1,250). No broad
+  suite or beta gate was run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

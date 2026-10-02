@@ -10538,6 +10538,14 @@ function synthesizeMessageBusRoute(
     return footprint.reads.length > 0 || footprint.writes.length > 0;
   }) || valueEffectMode || tokenContainerMode
     || contract.stateVariables.length > 0 || contract.collections.length > 0;
+  // A fixed-state participant with no collection, container, upgrade, or lifecycle surface owns only mutable
+  // data-NFT preservation/update rows (mode 0). Its detached verifier must reject other resource modes, not
+  // carry the general INSERT/DELETE/container/replacement parsers that those contracts cannot authorize.
+  const fixedStateOnlyResourceMode = contract.stateVariables.length > 0
+    && contract.collections.length === 0
+    && contract.stateVariables.every((state) => staticAbiByteSize(state.type) !== undefined)
+    && !valueEffectMode && !tokenContainerMode && !kernelUpgradeMode
+    && kernelLifecycleHandlers.size === 0 && !isDelegateRoute;
   // Early route synthesis runs before the later recovery-closure survey sets `ecrecoverCompute`.
   // Inspect the named closure here too: a recovery/keccak call inside a free or library helper still
   // produces kind-6 sidecar rows, which the detached verifier must authenticate and exclude from
@@ -11521,7 +11529,19 @@ function synthesizeMessageBusRoute(
           ${resourceVerificationMode ? `if (kind == 1 && __message_bus_row_owner == activeParticipant) {
             bigint resourceMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
             require(rowSubject.length > 0);
-            if (resourceMode == 3) {
+            ${fixedStateOnlyResourceMode ? `require(resourceMode == 0);
+            require(rowArguments.length == 33);
+            require(rowArguments.slice(32, 33) == hex"01");
+            require(tx.inputs[sourceSlot].lockingBytecode == rowSubject);
+            require(tx.inputs[sourceSlot].tokenCategory == rowArguments);
+            require(tx.inputs[sourceSlot].nftCommitment == rowResult);
+            require(tx.inputs[sourceSlot].tokenAmount == 0);
+            require(tx.outputs[targetSlot].lockingBytecode == rowSubject);
+            require(tx.outputs[targetSlot].tokenCategory == rowArguments);
+            require(tx.outputs[targetSlot].nftCommitment == rowEffect);
+            require(tx.outputs[targetSlot].tokenAmount == 0);
+            require(tx.inputs[sourceSlot].value == tx.outputs[targetSlot].value);
+            activeResourceEndpoints = activeResourceEndpoints + 2;` : `if (resourceMode == 3) {
               require(rowArguments.length == 8 && rowResult.length == 0 && rowEffect.length == 8);
               require(tx.inputs[sourceSlot].lockingBytecode == rowSubject
                 && tx.outputs[targetSlot].lockingBytecode == rowSubject
@@ -11593,7 +11613,7 @@ function synthesizeMessageBusRoute(
               } else {
                 activeResourceEndpoints = activeResourceEndpoints + 1;
               }
-            }
+            }`}
           }` : ''}
           ${eventMode ? `if (kind == 2 && __message_bus_row_owner == activeParticipant) {
             require(rowArguments.length == 0 && rowResult.length == 0 && rowEffect.length > 0);
@@ -11773,21 +11793,23 @@ function synthesizeMessageBusRoute(
             }
           }`}
           ${sidecarVerificationMode ? `if (kind == 6 && __message_bus_row_owner == activeParticipant) {
-            require(rowSubject.length > 0 && rowArguments.length >= 32 && rowResult.length == 0
-              && rowEffect.length >= 8);
+            require(rowSubject.length > 0);
+            require(rowArguments.length >= 32);
+            require(rowResult.length == 0);
+            require(rowEffect.length >= 8);
             bigint categoryLength = tx.inputs[sourceSlot].tokenCategory.length;
-            require((categoryLength == 32 || categoryLength == 33)
-              && rowArguments.slice(0, categoryLength) == tx.inputs[sourceSlot].tokenCategory
-              && rowArguments.slice(categoryLength, rowArguments.length)
-                == tx.inputs[sourceSlot].nftCommitment);
-            require(tx.inputs[sourceSlot].lockingBytecode == rowSubject
-              && tx.outputs[targetSlot].lockingBytecode == rowSubject
-              && tx.outputs[targetSlot].tokenCategory == tx.inputs[sourceSlot].tokenCategory
-              && tx.outputs[targetSlot].tokenAmount == tx.inputs[sourceSlot].tokenAmount
-              && tx.outputs[targetSlot].value == tx.inputs[sourceSlot].value
-              && tx.outputs[targetSlot].value
-                == int(bytes.concat(rowEffect.slice(0, 8), hex"00"))
-              && tx.outputs[targetSlot].nftCommitment == rowEffect.slice(8, rowEffect.length));
+            require(categoryLength == 32 || categoryLength == 33);
+            require(rowArguments.slice(0, categoryLength) == tx.inputs[sourceSlot].tokenCategory);
+            require(rowArguments.slice(categoryLength, rowArguments.length)
+              == tx.inputs[sourceSlot].nftCommitment);
+            require(tx.inputs[sourceSlot].lockingBytecode == rowSubject);
+            require(tx.outputs[targetSlot].lockingBytecode == rowSubject);
+            require(tx.outputs[targetSlot].tokenCategory == tx.inputs[sourceSlot].tokenCategory);
+            require(tx.outputs[targetSlot].tokenAmount == tx.inputs[sourceSlot].tokenAmount);
+            require(tx.outputs[targetSlot].value == tx.inputs[sourceSlot].value);
+            require(tx.outputs[targetSlot].value
+              == int(bytes.concat(rowEffect.slice(0, 8), hex"00")));
+            require(tx.outputs[targetSlot].nftCommitment == rowEffect.slice(8, rowEffect.length));
             activeSidecarRows = activeSidecarRows + 1;
             activeSidecarTargets = bytes.concat(activeSidecarTargets, toPaddedBytes(targetSlot, 2));
           }` : ''}

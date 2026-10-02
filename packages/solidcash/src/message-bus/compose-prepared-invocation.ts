@@ -93,6 +93,8 @@ export interface PreparedAtomicMessageBusCall {
   topologyOuterIteration?: number;
   /** @internal Reached inner induction iteration for a compiler-published two-level call domain. */
   topologyInnerIteration?: number;
+  /** @internal This parent's complete child order was reconstructed from compiler source-effect and loop IDs. */
+  topologySourceScheduleComplete?: boolean;
   /** @internal Independently derived root-to-invocation compiler source path. */
   producerPath?: ValueChunkProducerPathDisposition;
   /** @internal Exact terminal post-values authenticated while discovering this compiler call edge. */

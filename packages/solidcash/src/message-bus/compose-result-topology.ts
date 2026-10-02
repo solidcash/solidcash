@@ -490,37 +490,72 @@ async function rebuildCallTopology(
           next.push(...(unresolved ? existing : selected));
         }
       }
-      // Source execution order is lexicographic in outer reach, lexical inner-block position, inner reach,
-      // then effect position. A compiler-authored loop identity distinguishes equal recurrences in separate
-      // loops. Unsupported or unproven coordinates retain source-grouped order and fail the final VM check.
-      const sharedDomain = next[0]?.call.topologyOuterDomainKey;
+      // Each lexical loop is one source block between scalar effects. Within it, execution order is outer
+      // reach, inner-block position, inner reach, then effect position. Only complete compiler-published loop
+      // coordinates may schedule all children; unsupported shapes retain the VM's fail-closed check.
       const sourceByCallsite = new Map(sources.map((source) => [source.callsiteId, source]));
+      const outerStarts = new Map<number, number>();
       const innerStarts = new Map<number, number>();
       for (const source of sources) {
+        const outerId = (source.iterationDomain ?? source.nestedIterationDomains?.[0])?.sourceLoopId;
+        if (outerId !== undefined && source.sourceEffectOrdinal !== undefined) {
+          outerStarts.set(outerId, Math.min(outerStarts.get(outerId) ?? Infinity,
+            source.sourceEffectOrdinal));
+        }
         const innerId = source.nestedIterationDomains?.[1]?.sourceLoopId;
         if (innerId === undefined || source.sourceEffectOrdinal === undefined) continue;
         innerStarts.set(innerId, Math.min(innerStarts.get(innerId) ?? Infinity,
           source.sourceEffectOrdinal));
       }
-      if (sharedDomain !== undefined && next.every((child) =>
-        child.call.topologyOuterDomainKey === sharedDomain
-        && child.call.topologyOuterIteration !== undefined
-        && child.call.sourceEffectOrdinal !== undefined
-        && (sourceByCallsite.get(child.call.callsiteId)?.iterationDomain?.sourceLoopId !== undefined
-          || (sourceByCallsite.get(child.call.callsiteId)?.nestedIterationDomains?.length === 2
-            && sourceByCallsite.get(child.call.callsiteId)?.nestedIterationDomains?.[1]?.sourceLoopId !== undefined
-            && child.call.topologyInnerIteration !== undefined)))) {
-        const blockOrdinal = (child: Child): number => {
-          const innerId = sourceByCallsite.get(child.call.callsiteId)?.nestedIterationDomains?.[1]?.sourceLoopId;
-          return innerId === undefined ? child.call.sourceEffectOrdinal!
-            : innerStarts.get(innerId)!;
-        };
-        next.sort((left, right) => left.call.topologyOuterIteration! - right.call.topologyOuterIteration!
-          || blockOrdinal(left) - blockOrdinal(right)
-          || (left.call.topologyInnerIteration ?? 0) - (right.call.topologyInnerIteration ?? 0)
-          || left.call.sourceEffectOrdinal! - right.call.sourceEffectOrdinal!
-          || (left.call.occurrenceIndex ?? 0) - (right.call.occurrenceIndex ?? 0));
+      const loopCounts = new Map<number, number>();
+      for (const { call: child } of next) {
+        if (child.topologyOuterDomainKey !== undefined && child.callsiteId !== undefined) {
+          loopCounts.set(child.callsiteId, (loopCounts.get(child.callsiteId) ?? 0) + 1);
+        }
       }
+      const complete = next.length > 1 && loopCounts.size >= 2
+        && [...loopCounts.values()].some((count) => count > 1)
+        && next.every(({ call: child }) => {
+          const source = sourceByCallsite.get(child.callsiteId);
+          if (!source || !Number.isSafeInteger(child.sourceEffectOrdinal)
+            || child.sourceEffectOrdinal !== source.sourceEffectOrdinal
+            || child.callsiteId === undefined || !Number.isSafeInteger(child.occurrenceIndex)
+            || child.occurrenceIndex! < 0
+            || source.batchInvocations || source.opaqueReturn || source.interfaceName === '__raw__'
+            || source.selectorArrayVar || source.fnPtrCall) return false;
+          const outer = source.iterationDomain ?? source.nestedIterationDomains?.[0];
+          if (!outer) return source.occurrence !== 'loop'
+            && child.topologyOuterDomainKey === undefined;
+          if (outer.sourceLoopId === undefined
+            || child.topologyOuterDomainKey !== semanticJson(outer)
+            || !Number.isSafeInteger(child.topologyOuterIteration)
+            || child.topologyOuterIteration! < 0) return false;
+          if (!source.nestedIterationDomains) return true;
+          return source.nestedIterationDomains.length === 2
+            && source.nestedIterationDomains[1]?.sourceLoopId !== undefined
+            && Number.isSafeInteger(child.topologyInnerIteration)
+            && child.topologyInnerIteration! >= 0;
+        });
+      if (complete) {
+        const orderOf = (child: Child): [number, number, number, number, number] => {
+          const source = sourceByCallsite.get(child.call.callsiteId)!;
+          const outerId = (source.iterationDomain ?? source.nestedIterationDomains?.[0])?.sourceLoopId;
+          const innerId = source.nestedIterationDomains?.[1]?.sourceLoopId;
+          return [outerId === undefined ? child.call.sourceEffectOrdinal! : outerStarts.get(outerId)!,
+            child.call.topologyOuterIteration ?? 0,
+            innerId === undefined ? child.call.sourceEffectOrdinal! : innerStarts.get(innerId)!,
+            child.call.topologyInnerIteration ?? 0, child.call.sourceEffectOrdinal!];
+        };
+        next.sort((left, right) => {
+          const leftOrder = orderOf(left);
+          const rightOrder = orderOf(right);
+          for (let index = 0; index < leftOrder.length; index += 1) {
+            if (leftOrder[index] !== rightOrder[index]) return leftOrder[index]! - rightOrder[index]!;
+          }
+          return (left.call.occurrenceIndex ?? 0) - (right.call.occurrenceIndex ?? 0);
+        });
+      }
+      next.forEach(({ call: child }) => { child.topologySourceScheduleComplete = complete; });
       if (next.length !== children.length || next.some((child, index) =>
         child.previous === undefined || child.previous !== children[index].previous
         || semanticJson(child.call.args) !== semanticJson(children[index].call.args))) {

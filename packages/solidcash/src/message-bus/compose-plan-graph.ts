@@ -226,13 +226,9 @@ export function deriveComposeInvocationPlan(
       if (!requirePreparedIdentity) return undefined;
       const children = preparedChildIndices(invocation).map((index) => descriptors[index]);
       if (children.length < 2) return undefined;
-      const domain = children[0]?.topologyOuterDomainKey;
-      if (domain === undefined || children.some((child) => child.topologyOuterDomainKey !== domain
-        || child.topologyOuterIteration === undefined || child.sourceEffectOrdinal === undefined
+      if (children.some((child) => child.topologySourceScheduleComplete !== true
+        || child.sourceEffectOrdinal === undefined
         || child.callsiteId === undefined || child.occurrenceIndex === undefined)) return undefined;
-      if (new Set(children.map((child) => child.callsiteId)).size < 2
-        || (new Set(children.map((child) => child.topologyOuterIteration)).size < 2
-          && new Set(children.map((child) => child.topologyInnerIteration)).size < 2)) return undefined;
       return children.map((child) => ({
         callsiteId: child.callsiteId!, occurrence: child.occurrenceIndex!,
       }));

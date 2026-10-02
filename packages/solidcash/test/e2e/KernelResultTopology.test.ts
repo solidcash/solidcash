@@ -338,6 +338,58 @@ describe('kernel result-dependent call topology', () => {
     expect((await right.getState()).count).toBe(count);
   }, 180_000);
 
+  it('preserves scalar calls around a repeated multi-call loop', async () => {
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
+      interface IBefore { function record(uint value) external; }
+      interface IReader { function read(uint key) external view returns (uint); }
+      interface ISink { function record(uint value) external; }
+      interface IAfter { function record(uint value) external; }
+      contract Reader {
+        function read(uint key) public pure returns (uint) { return key; }
+      }
+      contract Sink {
+        uint public total;
+        uint public count;
+        function record(uint value) public { this.total += value; this.count += 1; }
+      }
+      contract Router(address before, address reader, address sink, address after) {
+        function route(uint[] memory values) public {
+          IBefore(before).record(1);
+          for (uint i = 0; i < values.length; i++) {
+            uint observed = IReader(reader).read(values[i]);
+            ISink(sink).record(observed + 1);
+          }
+          IAfter(after).record(2);
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x7b), provider);
+    for (let index = 0; index < 24; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const before = await getContractFactory(artifacts.Sink, signer).deploy();
+    const reader = await getContractFactory(artifacts.Reader, signer).deploy();
+    const sink = await getContractFactory(artifacts.Sink, signer).deploy();
+    const after = await getContractFactory(artifacts.Sink, signer).deploy();
+    const router = await getContractFactory(artifacts.Router, signer).deploy(
+      before.inner.lockingBytecode, reader.inner.lockingBytecode,
+      sink.inner.lockingBytecode, after.inner.lockingBytecode,
+    );
+    router._registerResolvedExternal('IBefore', before);
+    router._registerResolvedExternal('IReader', reader);
+    router._registerResolvedExternal('ISink', sink);
+    router._registerResolvedExternal('IAfter', after);
+    await router.call.route([7n, 11n]).send();
+    expect((await before.getState()).total).toBe(1n);
+    expect((await before.getState()).count).toBe(1n);
+    expect((await sink.getState()).total).toBe(20n);
+    expect((await sink.getState()).count).toBe(2n);
+    expect((await after.getState()).total).toBe(2n);
+    expect((await after.getState()).count).toBe(1n);
+  }, 180_000);
+
   it('refuses an unproven later loop before broadcasting any earlier row', async () => {
     const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       interface ISink { function record(uint value) external; }

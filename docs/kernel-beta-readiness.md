@@ -657,6 +657,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   symbolic worklist accepts that exact schedule for one or multiple outer reaches. The formerly red two-outer
   VM title passes with four calls to each Sink owner, its immediately preceding sibling-effect title passes,
   and a separate one-outer probe passes. No comprehensive suite or size gate ran.
+- 2026-10-02 mixed scalar/loop order follow-up: scalar calls before and after a repeated two-call loop
+  exposed another BCH-2026 `OP_VERIFY` failure because the planner required every child to share one loop
+  domain. Topology discovery now treats each compiler-identified loop as one lexical source block among scalar
+  effects, orders its reached rows by the published outer/inner coordinates, and offers the worklist a complete
+  schedule only when every repeated child has authenticated source metadata. The exact formerly red neutral VM
+  title and its immediately preceding two-outer sibling title pass; build/lint scope is recorded with the commit.
 
 ## Gate before the next leap
 

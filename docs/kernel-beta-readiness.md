@@ -145,7 +145,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   not authorization to cut a helper without an authenticated transport design. A later source-namespace repair
   corrected another cut-profile omission: inherited `_nonReentrantBefore` reads and writes `_status`, and
   `_nonReentrantAfter` writes it. The focused inherited-state title went red-to-green, its preceding generic cut
-  title passed, and the real Unicrow split still refuses the same 16,839-byte closure.
+  title passed, and the real Unicrow split still refuses the same 16,839-byte closure. A subsequent scoped-footprint
+  regression showed that a later nested local shadow also hid an earlier bare state access. Footprint analysis now
+  follows declaration order and block scope; that exact title and its immediately preceding inherited-state title
+  pass. Build, focused lint, and the sources-only static fence pass. A fresh single-root UnicrowClaim split still
+  refuses its 16,839-byte singleton `claim` closure; this does not change deployability.
 - 2026-10-02 arbitration-source size follow-up: a fresh single-root UnicrowArbitrator kernel compile emits
   18,761 redeem-script bytes, and `compileFileSplit` refuses its 16,267-byte singleton `arbitrate` closure at
   `SPLIT_CLOSURE_CAPACITY`. Both ends of the Unicrow arbitration callback path therefore need a deployability

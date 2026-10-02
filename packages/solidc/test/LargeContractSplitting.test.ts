@@ -267,6 +267,47 @@ describe('large-contract state-local splitting', () => {
     }
   });
 
+  it('keeps state effects before a later nested local shadow in split cut profiles', () => {
+    const source = `pragma solidity ^0.8.0;
+      contract ShadowedCuts {
+        int status;
+        function setBeforeShadow() internal {
+          status = 1;
+          { int status = 2; require(status > 0); }
+        }
+        function readBeforeShadow() internal view {
+          require(status >= 0);
+          { int status = 2; require(status > 0); }
+        }
+        function run() public {
+          setBeforeShadow();
+          readBeforeShadow();
+          require(true);
+        }
+      }`;
+    try {
+      compileStringSplit(source, {
+        forceSplit: true, maxShardBytes: 100, solidityImportCompat: true, suppressWarnings: true,
+      });
+      throw new Error('expected split capacity diagnostic');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'SPLIT_CLOSURE_CAPACITY',
+        context: expect.objectContaining({
+          handlers: ['run'],
+          helperCuts: expect.arrayContaining([
+            expect.objectContaining({
+              name: 'setBeforeShadow()', readsLocalState: false, writesState: true,
+            }),
+            expect.objectContaining({
+              name: 'readBeforeShadow()', readsLocalState: true, writesState: false,
+            }),
+          ]),
+        }),
+      });
+    }
+  });
+
   it('reports typed external calls inside internal helper cut profiles', () => {
     const source = `pragma solidity ^0.8.0;
       interface IRemote { function value() external returns (int); }

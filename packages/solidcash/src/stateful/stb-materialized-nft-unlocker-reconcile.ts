@@ -71,36 +71,54 @@ export function reconcileMaterializedDataNftUnlockers(
       input.txid.toLowerCase() === master.txid.toLowerCase() && input.vout === master.vout
     ));
     if (masterInputIndex < 0) continue;
-    group.dataNftUtxos = group.dataNftUtxos.map((dataNft) => {
-      if (!isContractUnlocker(dataNft.unlocker)) return dataNft;
-      const flagIndex = dataNft.unlocker.abiFunction.inputs.findIndex((input) => input.name === 'flag');
-      const masterIndex = dataNft.unlocker.abiFunction.inputs
+    // A write-path copy rebound to this master's input index, or undefined when it needs no change.
+    const rebind = (copy: UnlockableUtxo): UnlockableUtxo | undefined => {
+      if (!isContractUnlocker(copy.unlocker)) return undefined;
+      const flagIndex = copy.unlocker.abiFunction.inputs.findIndex((input) => input.name === 'flag');
+      const masterIndex = copy.unlocker.abiFunction.inputs
         .findIndex((input) => input.name === 'masterInputIndex');
-      const flag = flagIndex < 0 ? undefined : dataNft.unlocker.params[flagIndex];
-      const priorMaster = masterIndex < 0 ? undefined : dataNft.unlocker.params[masterIndex];
-      if ((flag !== 1n && flag !== 3n) || priorMaster === BigInt(masterInputIndex)) return dataNft;
-      const outputIndexParam = dataNft.unlocker.abiFunction.inputs
+      const flag = flagIndex < 0 ? undefined : copy.unlocker.params[flagIndex];
+      const priorMaster = masterIndex < 0 ? undefined : copy.unlocker.params[masterIndex];
+      if ((flag !== 1n && flag !== 3n) || priorMaster === BigInt(masterInputIndex)) return undefined;
+      const outputIndexParam = copy.unlocker.abiFunction.inputs
         .findIndex((input) => input.name === 'outputIndex');
-      const outputIndex = outputIndexParam < 0 ? undefined : dataNft.unlocker.params[outputIndexParam];
+      const outputIndex = outputIndexParam < 0 ? undefined : copy.unlocker.params[outputIndexParam];
       const unlocker = flag === 3n && typeof outputIndex === 'bigint'
         ? createRelocatedDataNftUnlocker(
           group.externalContract.inner, masterInputIndex, Number(outputIndex), group.categoryId,
         )
         : createDataNftUnlocker(group.externalContract.inner, masterInputIndex, group.categoryId);
-      const rebound = { ...dataNft, unlocker } as UnlockableUtxo;
+      return { ...copy, unlocker } as UnlockableUtxo;
+    };
+    let groupChanged = false;
+    group.dataNftUtxos = group.dataNftUtxos.map((dataNft) => {
       const matches = (candidate: Utxo | undefined): boolean => candidate !== undefined
         && candidate.txid.toLowerCase() === dataNft.txid.toLowerCase() && candidate.vout === dataNft.vout;
-      const flatIndex = host.allInputs.findIndex(matches);
-      if (flatIndex >= 0) host.allInputs[flatIndex] = rebound;
-      const builtIndex = builder.inputs.findIndex(matches);
-      if (builtIndex >= 0) builder.inputs[builtIndex] = rebound;
-      if (group.blockInputs) {
-        const blockIndex = group.blockInputs.findIndex(matches);
-        if (blockIndex >= 0) group.blockInputs[blockIndex] = rebound;
+      const rebound = rebind(dataNft);
+      if (rebound) {
+        const flatIndex = host.allInputs.findIndex(matches);
+        if (flatIndex >= 0) host.allInputs[flatIndex] = rebound;
+        const builtIndex = builder.inputs.findIndex(matches);
+        if (builtIndex >= 0) builder.inputs[builtIndex] = rebound;
+        if (group.blockInputs) {
+          const blockIndex = group.blockInputs.findIndex(matches);
+          if (blockIndex >= 0) group.blockInputs[blockIndex] = rebound;
+        }
+        groupChanged = true;
+        return rebound;
       }
-      changed = true;
-      return rebound;
+      // The group's copy is current, but a copy serialized from an earlier snapshot can still name the old master.
+      for (const copies of [host.allInputs, builder.inputs, group.blockInputs ?? []]) {
+        const index = copies.findIndex(matches);
+        const repaired = index >= 0 ? rebind(copies[index]) : undefined;
+        if (repaired) {
+          copies[index] = repaired;
+          groupChanged = true;
+        }
+      }
+      return dataNft;
     });
+    if (groupChanged) changed = true;
   }
   return changed;
 }

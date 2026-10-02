@@ -8594,7 +8594,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && hasExternalReads) {
         this.emitExternalReadVerification(node);
       }
-      if (!this.functionHasDelegatecall && hasExternalCalls && !node.graphEmissionHandler && !this.perCallMaster) {
+      // A function that delegatecalls verifies its own calls too: nothing the delegate runs binds them.
+      if (hasExternalCalls && !node.graphEmissionHandler && !this.perCallMaster) {
         this.emitExternalCallVerification(node);
       }
       if (!this.functionHasDelegatecall && hasExternalOutStateReads) {
@@ -8637,7 +8638,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // A-side: verify return event UTXO from external function calls with return values. A per-call master takes
       // the result from its own witness record, not from a return-event output, so it has no return event to pin.
-      if (!this.functionHasDelegatecall && !this.perCallMaster
+      // A function that delegatecalls reads its own calls' results too, so it pins them like any other.
+      if (!this.perCallMaster
         && node.externalCalls && node.externalCalls.some((ec) => ec.hasReturnValues)) {
         this.emitExternalReturnEventVerification(node);
       }
@@ -27408,7 +27410,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private externalCallReceiverStateWrites(node: FunctionDefinitionNode): Set<string> {
     const retained = new Set<string>();
     // Only the ordinary direct-call epilogue below consumes these values. Graph handlers authenticate their
-    // receivers at the callsite, while delegates defer the external-call covenant with their state transition.
+    // receivers at the callsite, and a function that delegatecalls writes no state of its own to retain.
     if (node.graphEmissionHandler || this.functionHasDelegatecall) return retained;
     for (const slot of this.externalCallSlots) {
       // Match the slots which reach emitExternalCallVerification's scalar identity path. Loop dispatch verifies

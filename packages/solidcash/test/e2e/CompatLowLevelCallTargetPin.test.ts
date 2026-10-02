@@ -9,7 +9,7 @@ import { createTestProvider, getSigners } from '../test-util.js';
 // sat at the caller-chosen `callInputIndex`, so the caller's own input satisfied it and the "call" never ran. The
 // covenant now pins that input to the call's target and, when the callee's unlocking leads with a selector push, the
 // dispatched selector to the payload's; the compiler publishes the target and payload so the SDK co-spends the callee
-// without a `.withCall()`. The payload's arguments are not bound yet (see emitCompatLowLevelCallPin).
+// without a `.withCall()`. The payload's arguments are bound too (CompatLowLevelCallArgumentBinding).
 const OPTIONS = { solidityImportCompat: true, forceStateful: true, messageBus: false } as any;
 const limits = { maximumInputBytes: 100_000, maximumTransactionBytes: 10_000_000, maximumNftCommitmentBytes: 128 };
 

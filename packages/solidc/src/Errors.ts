@@ -57,6 +57,8 @@ export type SolidcDiagnosticCode =
   | 'MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE'
   | 'MESSAGE_BUS_REQUIRED'
   | 'PER_CALL_CODEGEN_UNAVAILABLE'
+  // A Solidity-compat low-level call whose payload arguments the covenant cannot bind to the co-spent callee.
+  | 'COMPAT_CALL_UNBOUND_ARGUMENTS'
   | 'INTERFACE_CONTRACT_BASE'
   | 'SPLIT_CLOSURE_CAPACITY'
   | 'SPLIT_ROOT_CAPACITY'

@@ -343,6 +343,11 @@ const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 // uninitialized internal fn-ptr reverts, matching Solidity. See emitDefaultValue.
 const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 
+/** How one EVM word of a Solidity-compat call's payload maps to the callee's argument push. */
+type CompatWordKind = { kind: 'uint' | 'int' | 'address' } | { kind: 'bytes'; size: number };
+/** A Solidity-compat call payload's arguments: EVM words, or one SolidCash push per argument. */
+type CompatCallArguments = { format: 'evm'; words: CompatWordKind[] } | { format: 'pushdata'; count: number };
+
 /** The secp256k1 group order; the EVM's `ecrecover` refuses an `r` or `s` outside [1, n). */
 const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 const SECP256K1_PRIME = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
@@ -22599,10 +22604,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Solidity-compat `call`/`staticcall`: the input at `callInputIndex` must be locked by the call's target, and a
-   * callee whose unlocking leads with a 4-byte push must dispatch the payload's selector. Not bound: the payload's
-   * arguments, and the function of a callee whose unlocking leads with no push4 (single-method, delegate-index).
-   * Leaves one dummy item, as the other branches of emitLowLevelCallVerification do.
+   * Solidity-compat `call`/`staticcall`: the input at `callInputIndex` must be locked by the call's target, a push4-led
+   * callee unlocking must dispatch the payload's selector, and the callee's argument pushes must be the payload's
+   * arguments. Not bound: an opaque payload's arguments, and a no-push4 callee's function. Leaves one dummy item, as
+   * the other branches of emitLowLevelCallVerification do.
    */
   private emitCompatLowLevelCallPin(
     data: ExpressionNode,
@@ -22610,6 +22615,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     callInputParam: string,
     locationData: SingleLocationData,
   ): void {
+    const binding = this.compatCallArguments(data, locationData);
     // Evaluate both expressions while the tracked stack is exact, then leave them untracked on the real stack.
     this.visit(data);
     this.visit(target);
@@ -22653,8 +22659,248 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ELSE, locationData);
     this.emit(Op.OP_DROP, locationData);                     // [data, idx]
     this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_2DROP, locationData);
+    // 3. Arguments.
+    if (binding) {
+      this.emitCompatCallArgumentBinding(binding, locationData); // [data]
+      this.emit(Op.OP_DROP, locationData);
+    } else {
+      this.emit(Op.OP_2DROP, locationData);
+    }
     this.emit(Op.OP_0, locationData);                        // dummy remainder
+  }
+
+  /**
+   * The arguments of a compat call's abi.encodeWithSelector / encodeCall / encodeWithSignature payload, directly or
+   * through a once-written local; one that is not a single callee push is refused by name. `undefined` binds nothing:
+   * no arguments, or an opaque payload (a `bytes` value, msg.data, a rewritten local, a literal).
+   */
+  private compatCallArguments(
+    data: ExpressionNode,
+    locationData: SingleLocationData,
+  ): CompatCallArguments | undefined {
+    const start = locationData.location?.start;
+    const refuse = (reason: string): never => {
+      throw new SolidcDiagnosticError(
+        'COMPAT_CALL_UNBOUND_ARGUMENTS',
+        `the Solidity-compat low-level call in '${this.currentFunction?.name}'`
+        + `${start ? ` at Line ${start.line}, Column ${start.column}` : ''} cannot bind its arguments to the co-spent `
+        + `callee: ${reason}. Unbound, the callee would run with arguments the spender chooses`,
+        { function: this.currentFunction?.name, line: start?.line },
+      );
+    };
+    const payload = this.resolveCompatPayload(data);
+    if (!(payload instanceof AbiEncodeWithSelectorNode || payload instanceof AbiEncodeCallNode
+      || payload instanceof AbiEncodeWithSignatureNode)) return undefined;
+    if (payload.parameters.length === 0) return undefined;
+    // The encoders' formats (visitAbiEncodeWithSelector and its siblings): EVM words for encodeWithSelector under
+    // solidityImportCompat and for every form under evmCompat, else one SolidCash push per argument.
+    if (!(payload instanceof AbiEncodeWithSelectorNode) && !this.compilerOptions.evmCompat) {
+      payload.parameters.forEach((parameter, index) => {
+        const type = parameter.type;
+        if (!type || type instanceof StructType || type instanceof ArrayType || type instanceof TupleType) {
+          refuse(`argument ${index} ('${type}') is encoded without a push frame, so it is no single unlocking push`);
+        }
+      });
+      return { format: 'pushdata', count: payload.parameters.length };
+    }
+    return {
+      format: 'evm',
+      words: payload.parameters.map((parameter, index) => {
+        const shape = parameter.type && this.isDynamicAbiType(parameter.type) ? 'ABI-dynamic' : 'not a value type';
+        return this.compatWordKind(parameter.type)
+          ?? refuse(`argument ${index} ('${parameter.type}') is ${shape} in an EVM-encoded payload; only address, `
+            + 'bool, enum, int/uint and bytes1..bytes32 words can be bound to the callee\'s unlocking');
+      }),
+    };
+  }
+
+  /** How an EVM word of `type` maps to the callee's argument push; undefined for no single static word. */
+  private compatWordKind(type: Type | undefined): CompatWordKind | undefined {
+    const value = type instanceof ValueType ? type.underlyingType : type;
+    if (value instanceof AddressType) return { kind: 'address' };
+    if (value instanceof IntType || value instanceof FixedType) return { kind: value.signed ? 'int' : 'uint' };
+    if (value === PrimitiveType.BOOL || value === PrimitiveType.BIGINT || value === PrimitiveType.INT
+      || value instanceof EnumType) return { kind: 'uint' };
+    if (value instanceof BytesType && value.bound !== undefined && value.bound >= 1 && value.bound <= 32) {
+      return { kind: 'bytes', size: value.bound };
+    }
+    return undefined;
+  }
+
+  /** A payload expression, followed through locals the function declares once and writes nowhere else. */
+  private resolveCompatPayload(expression: ExpressionNode): ExpressionNode | undefined {
+    const followed = new Set<string>();
+    let current: ExpressionNode | undefined = expression;
+    while (current instanceof IdentifierNode) {
+      if (followed.has(current.name)) return undefined;
+      followed.add(current.name);
+      current = this.soleLocalInitializer(current.name);
+    }
+    return current;
+  }
+
+  /** The initializer of a local the current function declares exactly once and never assigns again. */
+  private soleLocalInitializer(name: string): ExpressionNode | undefined {
+    const declarations: VariableDefinitionNode[] = [];
+    let written = false;
+    const seen = new Set<Node>();
+    const walk = (node: Node): void => {
+      if (written || seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.name === name) declarations.push(node);
+      if ((node instanceof AssignNode && node.identifier.name === name)
+        || (node instanceof ArrayAssignNode && node.name === name)
+        || (node instanceof TupleAssignmentNode && node.elements.some((element) => element.name === name))) {
+        written = true;
+        return;
+      }
+      for (const [key, child] of Object.entries(node)) {
+        if (key === 'location' || key === 'type' || EXTERNAL_CALL_LOOP_WALK_EXCLUDED_KEYS.has(key)) continue;
+        if (child instanceof Node) walk(child);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) walk(item);
+      }
+    };
+    if (this.currentFunction?.body) walk(this.currentFunction.body);
+    return !written && declarations.length === 1 ? declarations[0].expression : undefined;
+  }
+
+  /**
+   * Binds a compat call's payload arguments to the co-spent callee from the redeem end, as the kernel's V5 does:
+   * argument i is the (i+1)-th push before the redeem, whatever hidden witnesses follow the selector. An EVM word
+   * decodes to exactly the callee's push; a pushdata argument matches it byte for byte. [data, idx] -> [data]
+   */
+  private emitCompatCallArgumentBinding(binding: CompatCallArguments, loc: SingleLocationData): void {
+    const count = binding.format === 'evm' ? binding.words.length : binding.count;
+    // Only a script-hash lock (23 or 35 bytes) makes the last push a redeem script; a P2S lock is the whole script.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(36n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_VERIFY, loc);                            // [data, idx]
+    this.emit(Op.OP_INPUTBYTECODE, loc);                     // [data, ubc]
+    for (let slot = 0; slot <= count; slot += 1) this.emit(Op.OP_0, loc);
+    this.emit(encodeInt(BigInt(count + 1)), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_0, loc);                                 // [data, w0..wn, rest, pushes]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emitGenericPushdataDecode(new BytesType(), loc);    // [.., w0..wn, pushes, push, rest]
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_NOT, loc);                               // [.., w0..wn, push, rest, pushes, done]
+    this.emit(encodeInt(BigInt(count + 4)), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_DROP, loc);                              // the window slides past its oldest push
+    this.emit(Op.OP_UNTIL, loc);                             // [data, w0..wn, '', pushes]
+    this.emit(encodeInt(BigInt(count + 1)), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_2DROP, loc);                             // [data, a(n-1) .. a0]: '' and the redeem dropped
+    this.emit(encodeInt(BigInt(count)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(4n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc);                               // [data, a(n-1) .. a0, payload arguments]
+    for (let index = 0; index < count; index += 1) {
+      if (binding.format === 'pushdata') {
+        this.emitGenericPushdataDecode(new BytesType(), loc); // [.., ai, push, rest]
+        this.emit(Op.OP_ROT, loc);
+        this.emit(Op.OP_ROT, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);                   // [.., rest]
+        continue;
+      }
+      const word = binding.words[index];
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_SWAP, loc);                            // [.., ai, rest, word]
+      if (word.kind === 'address') {
+        this.emit(encodeInt(12n), loc);
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_NIP, loc);                           // [.., ai, rest, identity]
+        this.emit(Op.OP_ROT, loc);
+        this.emitCompatAddressMatch(loc);                    // [.., rest]
+        continue;
+      }
+      if (word.kind === 'bytes') {
+        if (word.size < 32) {
+          this.emit(encodeInt(BigInt(word.size)), loc);
+          this.emit(Op.OP_SPLIT, loc);
+          this.emit(Op.OP_DROP, loc);
+        }
+      } else {
+        // The word's one value as a minimal VM number: unsigned below 2^256, two's complement for a signed type.
+        this.emit(Op.OP_REVERSEBYTES, loc);
+        this.emit(new Uint8Array([0x00]), loc);
+        this.emit(Op.OP_CAT, loc);
+        this.emit(Op.OP_BIN2NUM, loc);
+        if (word.kind === 'int') {
+          this.emit(Op.OP_DUP, loc);
+          this.emit(encodeInt(1n << 255n), loc);
+          this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+          this.emit(Op.OP_IF, loc);
+          this.emit(encodeInt(1n << 256n), loc);
+          this.emit(Op.OP_SUB, loc);
+          this.emit(Op.OP_ENDIF, loc);
+        }
+      }
+      this.emit(Op.OP_ROT, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);                     // [.., rest]
+    }
+    this.emit(Op.OP_DROP, loc);                              // [data]
+  }
+
+  /**
+   * [identity, lock] -> []: the lock is a P2SH32 lock whose HASH160 is the identity, its P2PKH or P2SH20 lock, the raw
+   * identity, or no bytes for the zero address.
+   */
+  private emitCompatAddressMatch(loc: SingleLocationData): void {
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(35n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_HASH160, loc);                           // [identity, hash160(lock)]
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(25n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(hexToBin('76a914'), loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(hexToBin('88ac'), loc);
+    this.emit(Op.OP_CAT, loc);                               // [lock, p2pkh(identity)]
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(23n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(hexToBin('a914'), loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(hexToBin('87'), loc);
+    this.emit(Op.OP_CAT, loc);                               // [lock, p2sh20(identity)]
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_NOTIF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(encodeInt(20n), loc);
+    this.emit(Op.OP_NUM2BIN, loc);                           // [identity, 20 zero bytes]
+    this.emit(Op.OP_ENDIF, loc);                             // else [identity, lock]: the raw identity
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
   }
 
   visitLowLevelCall(node: LowLevelCallNode): Node {

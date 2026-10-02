@@ -1074,4 +1074,30 @@ describe('soft-keyword method names', () => {
       { solidityImportCompat: true },
     ).contractName).toBe('C');
   });
+
+  // `x.y(` predicts the namespaced-call alternative only when `y` is an Identifier; a soft keyword there is a member
+  // call (SushiStrategy's `bar.leave(harvestShare)` on SushiBar).
+  const cc = (iface: string, body: string): string => compileString(
+    `interface IBar { ${iface} } contract C { IBar bar; uint n; constructor(IBar b) { bar = b; } ${body} }`,
+    { solidityImportCompat: true, forceStateful: true },
+  ).contractName;
+  it('accepts the call on a local receiver and in an expression', () => {
+    expect(cc('function leave(uint a) external;', 'function f() public { IBar b = bar; b.leave(1); n = n + 1; }'))
+      .toBe('C');
+    expect(cc('function leave(uint a) external returns (uint);',
+      'function f() public returns (uint) { return bar.leave(1); }')).toBe('C');
+  });
+  it('accepts other soft keywords as the called member', () => {
+    expect(cc('function delegate(uint a) external;', 'function f() public { bar.delegate(1); n = n + 1; }'))
+      .toBe('C');
+    expect(cc('function require(uint a) external;', 'function f() public { bar.require(1); n = n + 1; }'))
+      .toBe('C');
+  });
+  it('still parses a namespaced library call', () => {
+    expect(compileString(
+      'library L { function twice(uint a) internal pure returns (uint) { return a * 2; } }'
+      + ' contract C { uint public n; function f(uint a) public { n = L.twice(a); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
 });

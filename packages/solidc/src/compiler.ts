@@ -17666,7 +17666,10 @@ function predictExpressionPrefix(
     const lbrace = SolidCashParser.T__3;
     const dot = SolidCashParser.T__6;
     const second = input.LA(2);
-    if (second === lparen || second === lbrace || (second === dot && input.LA(4) === lparen)) {
+    // Mirrors the grammar's hasFunctionCallAhead: `x.y(` is the namespaced call only when `y` is an Identifier; a
+    // soft keyword there (`bar.leave(..)`) is a member call on the identifier.
+    if (second === lparen || second === lbrace
+      || (second === dot && input.LA(3) === SolidCashParser.Identifier && input.LA(4) === lparen)) {
       return EXPRESSION_ALT_CALL;
     }
     return EXPRESSION_ALT_IDENTIFIER;

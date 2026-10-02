@@ -159,8 +159,11 @@ hasFunctionCallAhead(): boolean {
     if (input.LA(3) === rparen) return input.LA(4) === lparen;
     return input.LA(3) === dot && input.LA(5) === rparen && input.LA(6) === lparen;
   }
+  // `x.y(` is the namespaced call only when `y` is an Identifier. A soft keyword there (`bar.leave(..)` on
+  // SushiBar, `token.delegate(..)`) is a member call, which the MethodCall alternative parses as anyIdentifier;
+  // predicting this rule for it failed on the keyword token.
   return second === lparen || second === lbrace
-    || (second === dot && input.LA(4) === lparen);
+    || (second === dot && input.LA(3) === SolidCashParser.Identifier && input.LA(4) === lparen);
 }
 }
 

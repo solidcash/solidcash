@@ -121,6 +121,26 @@ describe('composition settlement session CompositionSettlementSession', () => {
     expect(runWithCompositionSettlementSession(session, () => isPersistedJobEventsReady())).toBe(false);
   });
 
+  it('does not pair a compatibility lock with another category value', () => {
+    const session = createCompositionSettlementSession();
+    const first = 'aa'.repeat(32);
+    const second = 'bb'.repeat(32);
+    const createdValue = new Uint8Array(80);
+    createdValue.set(new TextEncoder().encode('Created'), 10);
+    const lock = new Uint8Array(35);
+    lock[0] = 0xaa;
+    lock[1] = 0x20;
+    lock[34] = 0x87;
+    legacyRememberValueChunkValue(first, createdValue, session);
+    legacyRememberValueChunkLock(second, lock, session);
+    expect(session.persistedJobEventsLocks.get(second)).toEqual(lock);
+    expect(session.observedValueChunkStatesByCategory.has(second)).toBe(false);
+    expect(session.createdDigestLocks.has(second)).toBe(false);
+    legacyRememberValueChunkValue(second, new Uint8Array(80).fill(7), session);
+    expect(session.observedValueChunkStatesByCategory.has(second)).toBe(true);
+    expect(session.createdDigestLocks.has(second)).toBe(false);
+  });
+
   it('STB production helpers and clearPersistedJobEvents go through settlement()', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const persistSrc = readFileSync(

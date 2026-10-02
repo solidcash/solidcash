@@ -739,8 +739,9 @@ export function rememberJobEventsLock(
     // Later persist-v rematerialize must not replace it.
     if (settlement().createdDigestLocks.has(categoryId)) return;
     settlement().persistedJobEventsLocks.set(categoryId, lock);
-    const value = settlement().persistedJobEventsValues.get(categoryId)
-      ?? latestPersisted(settlement().persistedJobEventsValues, categoryId);
+    // A lock for one category is not evidence that another category's most recently observed value belongs to
+    // it. Keep the lock until its own value arrives; only then may this pair seed observed state/Created metadata.
+    const value = settlement().persistedJobEventsValues.get(categoryId);
     rememberObservedValueChunkState(categoryId, value, lock);
     const hex = value ? binToHex(value) : '';
     if (hex.includes('4372656174') || hex.includes('00004cb4')) {

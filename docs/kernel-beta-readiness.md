@@ -446,6 +446,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   A fresh unchanged proxy `job posting > post job 1` run (one selected, 65 skipped) reaches the same 20-byte
   identity versus 35-byte BCH lock assertion, without an earlier planning failure. That title remains red pending
   the application wire-format choice; this is not a broad SDK or Marketplace result.
+- 2026-10-02 compatibility lock/value follow-up: a lock observed for one category no longer inherits the most
+  recent value of another category when seeding observed state or a Created digest. Its own later value still pairs
+  with the retained lock. The exact session title went red-to-green and its immediately preceding readiness title
+  passes. A fresh single-root UnicrowClaim split diagnostic still refuses the 16,839-byte singleton `claim`
+  closure; the unsplit script measured 16,854 bytes. This remains a deployability blocker, not a helper-cut proof.
 
 ## Gate before the next leap
 

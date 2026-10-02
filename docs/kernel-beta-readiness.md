@@ -704,6 +704,8 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   symbolic worklist derives loop-index arguments from the certified source coordinate. The exact BCH-2026
   title went red-to-green with three Sink rows; its immediately preceding branch-complete title passes.
   Unsupported or unresolved mappings remain fail-closed, and no comprehensive suite or size gate ran.
+  A separate focused BCH-2026 title also passes when both branch-local producer callsites use one physical
+  Reader owner; the consumer selects the correct authenticated result for each outer reach.
 
 ## Gate before the next leap
 

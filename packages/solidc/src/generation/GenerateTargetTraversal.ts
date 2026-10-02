@@ -2065,6 +2065,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // output (stable count) that is the type default on the taken branch or the preserved input otherwise. Tracked
   // so emitEntryCovenantVerification existence-gates them and the artifact tags them for the SDK (write, not delete).
   private condDeleteSlots: Set<number> = new Set();
+  // Fixed sorted-write slots under a branch/switch arm (or a helper reached from one). Each carries a runtime "write
+  // ran" flag, and the epilogue preserves the co-spent node where the write did not run. Direct convention only.
+  private conditionalSortedWriteFlagSlots: Set<number> = new Set();
   // Dynamic (chunk-backed) writes whose value+A$len slots were pushed before a conditional (branch/switch) with
   // the current value, so a conditionally-taken write replaces them in place (survives the branch) - by var name.
   private preAllocatedDynamicWrites: Set<string> = new Set();
@@ -7454,6 +7457,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.transferPreallocDepth = 0;
     this.transfersPreallocatedAtFunctionStart = false;
     this.condDeleteSlots = new Set();
+    this.conditionalSortedWriteFlagSlots = new Set();
     this.preAllocatedDynamicWrites = new Set();
     this.conditionalTransferIndices = new Set();
     this.conditionalEmitIndices = new Set();
@@ -8096,6 +8100,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(GRAPH_TOKEN_SITE);
     }
 
+    // A conditional sorted write settles its node inline, so the arm not taken leaves the node free: flag each slot.
+    this.allocateConditionalSortedWriteFlags(node);
+
     this.vmapWitnessSnapshotsRestored = false;
     this.vmapWitnessSnapshotNames = null;
     this.vmapUpsertWitnessSnapshotNames = null;
@@ -8607,6 +8614,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Selfdestruct functions skip - all entries are destroyed
       if (!this.functionHasDelegatecall && hasEntryAccess && !isSelfdestruct) {
         this.emitReadOnlyEntryVerification(node);
+      }
+      // After read-only preservation, in the order the SDK derives entry closes.
+      if (!this.functionHasDelegatecall && this.conditionalSortedWriteFlagSlots.size > 0 && !isSelfdestruct) {
+        this.emitConditionalSortedWritePreservation(node);
       }
       // Conditional soft-delete entries: verified AFTER read-only preservation (derivation-order requirement).
       if (!this.functionHasDelegatecall && this.condDeleteSlots.size > 0) {
@@ -24166,6 +24177,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loopWrites = (this.currentFunction.entryLoopWrites ??= []);
     if (!loopWrites.includes(collection.name)) loopWrites.push(collection.name);
     this.sortedWrittenCollections.add(collection.name);
+    // Before the working area grows.
+    this.markConditionalSortedWriteFlag(slotIndex, node);
 
     // MSG.SENDER MERGE: a preceding merge-capable upsert loop left a re-point register on the stack (the new
     // recipient's slot, 0 if none). This flush (the cached msg.sender DEBIT write) reads it into a tracked temp and,
@@ -41224,65 +41237,194 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Loop-write entries are NEW (no input to preserve) and have no fixed block slot.
       if (this.entrySlots[i].inLoop) continue;
       // A sorted mapping WRITE co-spends an entry and rewrites it (output != input: P' on insert, k' on update),
-      // so it must not be read-only-preserved; emitSortedValueUpsert handles it inline.
+      // so it must not be read-only-preserved; emitSortedValueUpsert handles it inline, and
+      // emitConditionalSortedWritePreservation the arm not taken.
       if (this.sortedWrittenCollections.has(this.entrySlots[i].collection) && !this.preservesSortedRead(i)) continue;
 
-      // Check if entry exists via introspection
-      this.emitReadOnlyEntryExistsCheck(i, locationData);
+      this.emitEntryPreservationBody(i, locationData);
+    }
+  }
 
-      // If entry exists, verify preservation
-      this.emit(Op.OP_IF, locationData);
+  /**
+   * Preserve one co-spent entry NFT: if the slot's input exists, require its output equals its input in commitment,
+   * token category (base + capability) and locking bytecode. Shared by the read-only preserver and by the
+   * conditional-sorted-write preserver (which wraps it in the write's not-taken branch).
+   */
+  private emitEntryPreservationBody(i: number, locationData: SingleLocationData): void {
+    // Check if entry exists via introspection
+    this.emitReadOnlyEntryExistsCheck(i, locationData);
 
-      // Verify commitment: the record keeps its value. A per-call frame reads the view its own segment declares
-      // for the record, exactly as a state-record close does: another frame of the same transaction may have
-      // rewritten the record's input or output, so the transaction's pair is not this frame's view. A frame that
-      // addresses its records directly reads the transaction's own pair.
-      this.emitEntryInputIndex(i, locationData, 0);
-      if (this.readsRecordsFromFrame) {
-        this.emitRecordCommitmentRead('in', locationData);
-      } else {
-        // emitEntryInputIndex pushes 1 untracked value (input index)
-        this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
-        // OP_UTXOTOKENCOMMITMENT pops index, pushes commitment -> 1 untracked value
+    // If entry exists, verify preservation
+    this.emit(Op.OP_IF, locationData);
+
+    // Verify commitment: the record keeps its value. A per-call frame reads the view its own segment declares
+    // for the record, exactly as a state-record close does: another frame of the same transaction may have
+    // rewritten the record's input or output, so the transaction's pair is not this frame's view. A frame that
+    // addresses its records directly reads the transaction's own pair.
+    this.emitEntryInputIndex(i, locationData, 0);
+    if (this.readsRecordsFromFrame) {
+      this.emitRecordCommitmentRead('in', locationData);
+    } else {
+      // emitEntryInputIndex pushes 1 untracked value (input index)
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
+      // OP_UTXOTOKENCOMMITMENT pops index, pushes commitment -> 1 untracked value
+    }
+
+    if (this.readsRecordsFromFrame) {
+      // The declared output coordinate, which the head parked; the frame's own input need not sit beside it.
+      this.emitPerCallEntryIndex('out', i, locationData);
+      this.emitRecordCommitmentRead('out', locationData);
+    } else {
+      this.emitEntryOutputIndex(i, locationData, 1); // +1 for the untracked commitment
+      // pushes 1 untracked value (output index) -> 2 untracked values
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+      // pops index, pushes commitment -> 2 untracked values
+    }
+
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    // pops 2 -> 0 untracked values
+
+    // Verify full token category preservation: input category+capability == output category+capability
+    // Prevents capability downgrade attacks (e.g. mutable -> none, permanently freezing entry)
+    this.emitEntryInputIndex(i, locationData, 0);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    // 1 untracked value (input full category)
+
+    this.emitEntryOutputIndex(i, locationData, 1); // +1 for untracked input category
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    // 2 untracked values
+
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    // 0 untracked values
+
+    // Verify bytecode self-preservation: input bytecode == output bytecode
+    this.emitEntryInputIndex(i, locationData, 0);
+    this.emit(Op.OP_UTXOBYTECODE, locationData);
+    // 1 untracked value (input bytecode)
+    this.emitEntryOutputIndex(i, locationData, 1); // +1 for untracked input bytecode
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    // 2 untracked values
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    // 0 untracked values
+
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /** The runtime "this sorted write ran" flag for a fixed entry slot (see conditionalSortedWriteFlagSlots). */
+  private static condSortedWriteFlagName(slotIndex: number): string {
+    return `__entry_cond_written_${slotIndex}`;
+  }
+
+  /**
+   * Push a false "write ran" flag, below the body's locals, for each fixed conditional sorted-write slot. Loop, alias,
+   * multi-slot batch and invoked-subroutine writes settle differently and get none.
+   */
+  private allocateConditionalSortedWriteFlags(node: FunctionDefinitionNode): void {
+    if (this.isDefineSubTraversal || this.perCallMaster || this.functionHasDelegatecall) return;
+    // A per-call frame closes its own records.
+    if (this.compilerOptions.composition === 'per-call') return;
+    // A message-bus route settles its entry slots through its own handler machinery.
+    if ((this.compilerOptions as { __messageBusExplicitlyDisabled?: boolean }).__messageBusExplicitlyDisabled !== true) {
+      return;
+    }
+    const slots = new Set<number>();
+    const invokedWrites = new Set<number>();
+    this.collectConditionalSortedWriteSlots(node.body, false, slots, new Map(), invokedWrites);
+    for (const slotIndex of [...slots].sort((a, b) => a - b)) {
+      const info = this.entrySlots[slotIndex];
+      if (info === undefined || info.inLoop) continue;
+      // An invoked subroutine cannot set this frame's flag.
+      if (invokedWrites.has(slotIndex)) continue;
+      if (!this.ownsFixedEntrySlot(slotIndex)) continue;
+      // Alias writes carry their own key-inequality gate.
+      if (info.aliasCondDeleteSlot !== undefined || (info.runtimeAliasPriorSlots?.length ?? 0) > 0) continue;
+      // In a multi-slot batch a relinked predecessor changes without an upsert of its own, which a flag would refuse.
+      if (node.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIndex) && batch.slotIndices.length > 1)) {
+        continue;
       }
+      if (this.collectionDefinitions.find((c) => c.name === info.collection)?.sorted !== true) continue;
+      this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slotIndex));
+      this.conditionalSortedWriteFlagSlots.add(slotIndex);
+    }
+  }
 
-      if (this.readsRecordsFromFrame) {
-        // The declared output coordinate, which the head parked; the frame's own input need not sit beside it.
-        this.emitPerCallEntryIndex('out', i, locationData);
-        this.emitRecordCommitmentRead('out', locationData);
-      } else {
-        this.emitEntryOutputIndex(i, locationData, 1); // +1 for the untracked commitment
-        // pushes 1 untracked value (output index) -> 2 untracked values
-        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
-        // pops index, pushes commitment -> 2 untracked values
+  /**
+   * Collect fixed sorted-write slots reached under a branch/switch arm, directly or through an inlined helper. Slots an
+   * OP_INVOKE subroutine writes go to `invokedWrites`.
+   */
+  private collectConditionalSortedWriteSlots(
+    block: BlockNode, underConditional: boolean, out: Set<number>,
+    seenCallees: Map<FunctionDefinitionNode, Set<string>>, invokedWrites: Set<number>, insideInvoked = false,
+  ): void {
+    if (!block.statements) return;
+    const walk = (inner: BlockNode, conditional: boolean): void => this.collectConditionalSortedWriteSlots(
+      inner, conditional, out, seenCallees, invokedWrites, insideInvoked,
+    );
+    for (const stmt of block.statements) {
+      const writesSlot = (stmt instanceof MappingAssignNode && !stmt.arrayIndex)
+        || stmt instanceof MappingFieldAssignNode;
+      if (writesSlot && stmt.entrySlotIndex >= 0) {
+        if (insideInvoked) invokedWrites.add(stmt.entrySlotIndex);
+        else if (underConditional) out.add(stmt.entrySlotIndex);
       }
+      const callee = stmt instanceof FunctionCallStatementNode
+        ? stmt.call.resolvedFunction
+        : stmt instanceof TupleAssignmentNode && stmt.tuple instanceof FunctionCallNode
+          ? stmt.tuple.resolvedFunction
+          : undefined;
+      if (callee?.body) {
+        // One visit per callee and context, so recursion is bounded and an arm's context is still walked.
+        const invoked = insideInvoked || callee.functionId !== undefined;
+        const context = `${invoked}:${underConditional}`;
+        const seen = seenCallees.get(callee) ?? new Set<string>();
+        if (!seen.has(context)) {
+          seen.add(context);
+          seenCallees.set(callee, seen);
+          this.collectConditionalSortedWriteSlots(callee.body, underConditional, out, seenCallees, invokedWrites,
+            invoked);
+        }
+      }
+      if (stmt instanceof BranchNode) {
+        walk(stmt.ifBlock, true);
+        if (stmt.elseBlock) walk(stmt.elseBlock, true);
+      } else if (stmt instanceof SwitchNode) {
+        for (const c of stmt.cases) walk(c.body, true);
+        if (stmt.defaultCase) walk(stmt.defaultCase, true);
+      } else if (stmt instanceof TryCatchNode) {
+        walk(stmt.tryBlock, underConditional);
+      } else if (stmt instanceof DoWhileNode || stmt instanceof WhileNode) {
+        walk(stmt.block, true);
+      } else if (stmt instanceof CollectionIterationNode) {
+        walk(stmt.body, true);
+      } else if (stmt instanceof UncheckedNode) {
+        walk(stmt.block, underConditional);
+      }
+    }
+  }
 
-      this.emit(Op.OP_EQUALVERIFY, locationData);
-      // pops 2 -> 0 untracked values
+  /** Set a conditional sorted write's "the write ran" flag true at its upsert site (no-op without the flag). */
+  private markConditionalSortedWriteFlag(slotIndex: number, node: Node): void {
+    if (!this.conditionalSortedWriteFlagSlots.has(slotIndex)) return;
+    const flagName = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slotIndex);
+    if (this.getStackIndex(flagName, true) < 0) return;
+    this.emit(Op.OP_1, { location: node.location, positionHint: PositionHint.END });
+    this.pushToStack('(cond_written_new)');
+    this.emitReplace(this.getStackIndex(flagName), node);
+    this.popFromStack();
+  }
 
-      // Verify full token category preservation: input category+capability == output category+capability
-      // Prevents capability downgrade attacks (e.g. mutable -> none, permanently freezing entry)
-      this.emitEntryInputIndex(i, locationData, 0);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      // 1 untracked value (input full category)
-
-      this.emitEntryOutputIndex(i, locationData, 1); // +1 for untracked input category
-      this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-      // 2 untracked values
-
-      this.emit(Op.OP_EQUALVERIFY, locationData);
-      // 0 untracked values
-
-      // Verify bytecode self-preservation: input bytecode == output bytecode
-      this.emitEntryInputIndex(i, locationData, 0);
-      this.emit(Op.OP_UTXOBYTECODE, locationData);
-      // 1 untracked value (input bytecode)
-      this.emitEntryOutputIndex(i, locationData, 1); // +1 for untracked input bytecode
-      this.emit(Op.OP_OUTPUTBYTECODE, locationData);
-      // 2 untracked values
-      this.emit(Op.OP_EQUALVERIFY, locationData);
-      // 0 untracked values
-
+  /** Under each slot flag's NOT branch, require the co-spent node to round-trip (commitment, category, bytecode). */
+  private emitConditionalSortedWritePreservation(node: FunctionDefinitionNode): void {
+    const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    for (const i of [...this.conditionalSortedWriteFlagSlots].sort((a, b) => a - b)) {
+      const flagName = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(i);
+      const flagIndex = this.getStackIndex(flagName, true);
+      if (flagIndex < 0) continue;
+      this.emit(encodeInt(BigInt(flagIndex)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_NOTIF, locationData);
+      this.emitEntryPreservationBody(i, locationData);
       this.emit(Op.OP_ENDIF, locationData);
     }
   }

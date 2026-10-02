@@ -1690,9 +1690,13 @@ export class StatefulTransactionBuilder {
    * Token-bearing insert-band pads (none-cap dust at INPUTINDEX+3/+5) must keep their
    * token: a bare OP_TRUE here makes OUTPUTTOKENCATEGORY empty and OP_SPLIT 32 fails. */
   private _padOutputsToIndex(builder: TransactionBuilder, index: number): void {
+    // A consumed storage input (a written value's old chunk, a reclaimed continuation chunk) is not copied: its
+    // replacement goes in the trailing band, and a copy here is a second chunk the covenant's count refuses.
+    const consumed = new Set([...this.dynamicChunkInputs, ...this.trailingDisposalInputs]
+      .map((utxo) => `${utxo.txid.toLowerCase()}:${utxo.vout}`));
     while (builder.outputs.length < index) {
       const occupant = this.allInputs[builder.outputs.length];
-      if (occupant?.unlocker) {
+      if (occupant?.unlocker && !consumed.has(`${occupant.txid.toLowerCase()}:${occupant.vout}`)) {
         builder.addOutput({
           to: occupant.unlocker.generateLockingBytecode(),
           amount: occupant.satoshis,

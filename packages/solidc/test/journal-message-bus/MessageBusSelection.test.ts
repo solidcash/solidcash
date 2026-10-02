@@ -129,6 +129,54 @@ describe('message-bus compilation selection', () => {
     expect(optedIn.bytecode).not.toBe(direct.bytecode);
   });
 
+  it('keeps compile-time-dead foreign calls off the default route', () => {
+    const source = `interface ISink { function ping(int value) external; }
+      contract DeadBranch(address target) {
+        int value;
+        function dormant(int next) internal { ISink(target).ping(next); }
+        function set(int next) public {
+          if (false) { ISink(target).ping(next); }
+          value = next;
+          require(next >= 0);
+        }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.bytecode).toBe(direct.bytecode);
+
+    const helperOnly = source.replace('if (false) { ISink(target).ping(next); }',
+      'if (false) { dormant(next); }');
+    const helperAutomatic = compileString(helperOnly, options);
+    const helperDirect = compileString(helperOnly, { ...options, messageBus: false });
+    expect(helperAutomatic.compiler.options?.messageBus).toBe(false);
+    expect(helperAutomatic.bytecode).toBe(helperDirect.bytecode);
+
+    const deadElse = source.replace('if (false) { ISink(target).ping(next); }',
+      'if (true) { require(next >= 0); } else { ISink(target).ping(next); }');
+    expect(compileString(deadElse, options).compiler.options?.messageBus).toBe(false);
+
+    const repeatedDead = source.replace('if (false) { ISink(target).ping(next); }',
+      'if (false) { ISink(target).ping(next); ISink(target).ping(next); }');
+    const repeatedAutomatic = compileString(repeatedDead, options);
+    const repeatedDirect = compileString(repeatedDead, { ...options, messageBus: false });
+    expect(repeatedAutomatic.compiler.options?.messageBus).toBe(false);
+    expect(repeatedAutomatic.bytecode).toBe(repeatedDirect.bytecode);
+    const repeatedOptedIn = compileString(repeatedDead, { ...options, messageBus: true });
+    expect(repeatedOptedIn.messageBus?.available).toBe(true);
+    expect(repeatedOptedIn.abi.find((entry) => entry.name === 'set')?.externalCalls).toHaveLength(2);
+
+    const deadThenLive = source.replace('value = next;', 'ISink(target).ping(next); value = next;');
+    const liveDirect = compileString(deadThenLive, { ...options, messageBus: false });
+    expect(liveDirect.abi.find((entry) => entry.name === 'set')?.externalCalls).toHaveLength(1);
+
+    const reached = compileString(source.replace('if (false)', 'if (true)'), options);
+    expect(reached.compiler.options?.messageBus).toBe(true);
+    expect(reached.messageBus?.available).toBe(true);
+  });
+
   it('broadens unreachable helpers only when a function pointer is invoked', () => {
     const source = `interface ISink { function ping(int amount) external; }
       contract PointerLeaf(address target) {

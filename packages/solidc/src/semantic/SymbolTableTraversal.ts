@@ -7634,6 +7634,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     slots: ExternalCallSlot[],
     enclosingConditions: readonly { expression: ExpressionNode; negated: boolean }[] = [],
   ): void {
+    if (this.compilerOptions.messageBus === false
+      && node instanceof BranchNode && node.condition instanceof BoolLiteralNode) {
+      // Direct-only codegen never executes the impossible arm, so it owns no runtime call slot and cannot
+      // create a repeated-owner spend requirement. An opted-in graph route still lowers both arms and needs
+      // their slots until graph codegen itself supports pruning them.
+      const active = node.condition.value ? node.ifBlock : node.elseBlock;
+      if (active) this.collectExternalCalls(active, slots, enclosingConditions);
+      return;
+    }
     if (node instanceof ExternalFunctionCallNode && node.callInfo && !node.foldedIntoDeploy) {
       // `call{value: amount}("")` has no selector-bearing callee operation. Its independently indexed transfer
       // output is the complete BCH effect, and a reached required output reconstructs `(true, bytes(""))`.
@@ -9357,6 +9366,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   private assignExternalCallSlotIndices(node: Node, slots: ExternalCallSlot[], counter: { idx: number }): void {
+    if (this.compilerOptions.messageBus === false
+      && node instanceof BranchNode && node.condition instanceof BoolLiteralNode) {
+      const active = node.condition.value ? node.ifBlock : node.elseBlock;
+      if (active) this.assignExternalCallSlotIndices(active, slots, counter);
+      return;
+    }
     if (node instanceof ExternalFunctionCallNode && node.callInfo) {
       if (node.addressExpression instanceof Node) {
         this.assignExternalCallSlotIndices(node.addressExpression, slots, counter);

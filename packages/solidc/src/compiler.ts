@@ -3913,13 +3913,16 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
     (byName.get(call.identifier.name) ?? []).filter((candidate) =>
       candidate.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length
         === call.parameters.length);
+  const walkReachable = (value: unknown, visit: (node: Node) => void): void => {
+    walkInvocationAst(value, visit, new Set<object>(), { pruneLiteralBranches: true });
+  };
   const addClosure = (fn: FunctionDefinitionNode): void => {
     const pending = [fn];
     while (pending.length > 0) {
       const current = pending.pop()!;
       if (reachableFunctions.has(current)) continue;
       reachableFunctions.add(current);
-      walkInvocationAst(current.body, (node) => {
+      walkReachable(current.body, (node) => {
         if (node instanceof FunctionCallNode) pending.push(...candidatesFor(node));
       });
     }
@@ -3943,7 +3946,7 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
     }
   }
   const addMemberCalls = (member: Node): void => {
-    walkInvocationAst(member, (node) => {
+    walkReachable(member, (node) => {
       if (!(node instanceof FunctionCallNode)) return;
       for (const fn of candidatesFor(node)) addClosure(fn);
     });
@@ -3999,6 +4002,11 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       if (node instanceof BlockNode) {
         const blockBindings = new Map(bindings);
         for (const statement of node.statements ?? []) visit(statement, blockBindings);
+        return;
+      }
+      if (node instanceof BranchNode && node.condition instanceof BoolLiteralNode) {
+        const active = node.condition.value ? node.ifBlock : node.elseBlock;
+        if (active) visit(active, bindings);
         return;
       }
       if (node instanceof VariableDefinitionNode) {
@@ -4134,6 +4142,10 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
         const blockReceivers = new Map(receivers);
         return (node.statements ?? []).some((statement) => visit(statement, blockReceivers));
       }
+      if (node instanceof BranchNode && node.condition instanceof BoolLiteralNode) {
+        const active = node.condition.value ? node.ifBlock : node.elseBlock;
+        return active ? visit(active, receivers) : false;
+      }
       if (node instanceof VariableDefinitionNode) {
         // Solidity resolves an initializer before publishing the local binding.
         if (node.expression && visit(node.expression, receivers)) return true;
@@ -4203,8 +4215,8 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       found = true;
     }
   };
-  for (const fn of surveyedFunctions) walkInvocationAst(fn.body, checkGraphEdge);
-  for (const member of otherMembers) walkInvocationAst(member, checkGraphEdge);
+  for (const fn of surveyedFunctions) walkReachable(fn.body, checkGraphEdge);
+  for (const member of otherMembers) walkReachable(member, checkGraphEdge);
   return found;
 }
 

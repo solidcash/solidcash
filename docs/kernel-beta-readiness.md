@@ -508,6 +508,16 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   same-interface ternary source it describes, preserving the intended fail-closed check. The formerly red title,
   its immediately preceding state-receiver title, and the moved-assertion ternary title pass individually;
   `yarn build` and focused lint pass. This is a test repair, not a compiler behavior change.
+- 2026-10-02 literal-dead graph-edge follow-up: automatic message-bus selection previously routed a simple
+  stateful contract solely because `if (false)` contained a typed foreign call (2,932-byte script versus 905
+  bytes with explicit direct compilation in the initial probe). Its source-selection walkers now ignore only the
+  unchosen arm of a literal boolean branch; normal type checking still inspects the source. In direct-only mode,
+  call-slot collection and slot-index assignment use the same executable arm, so two dead calls do not spuriously
+  demand a bus and a later live call retains exactly one slot. Explicit `messageBus: true` still retains the
+  graph codegen's two slots for those source calls. The focused red-to-green title covers direct, helper, `else`,
+  repeated-dead, dead-then-live, and explicit-opt-in cases, retains a live `if (true)` route, and requires auto
+  bytecode to equal explicit direct bytecode. Its immediately preceding unreachable-helper title passes.
+  `yarn build` and focused lint pass; no broad suite ran.
 
 ## Gate before the next leap
 

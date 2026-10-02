@@ -1,7 +1,8 @@
 import { binToHex } from '@bitauth/libauth';
 import { SplitStateFootprint } from '@solidcash/utils';
 import {
-  AssignNode, BlockNode, CollectionIterationNode, ContractNode, DeleteLocalNode, FunctionCallNode,
+  AssignNode, BlockNode, BoolLiteralNode, BranchNode, CollectionIterationNode, ContractNode,
+  DeleteLocalNode, FunctionCallNode,
   FunctionCallStatementNode,
   FunctionDefinitionNode, IdentifierNode, IndirectCallNode, Node, TupleAssignmentNode,
   TryCatchNode, VariableDefinitionNode,
@@ -61,6 +62,7 @@ export function walkInvocationAst(
   value: unknown,
   visit: (node: Node) => void,
   seen = new Set<object>(),
+  options: { pruneLiteralBranches?: boolean } = {},
 ): void {
   if (!(value instanceof Node) || seen.has(value)) return;
   seen.add(value);
@@ -68,8 +70,16 @@ export function walkInvocationAst(
   if (value instanceof TryCatchNode) {
     // BCH script failure aborts evaluation, so catches are not executable paths. Keep every footprint and
     // admission survey aligned with code generation by walking only the operation and successful try body.
-    walkInvocationAst(value.expression, visit, seen);
-    walkInvocationAst(value.tryBlock, visit, seen);
+    walkInvocationAst(value.expression, visit, seen, options);
+    walkInvocationAst(value.tryBlock, visit, seen, options);
+    return;
+  }
+  if (options.pruneLiteralBranches && value instanceof BranchNode
+    && value.condition instanceof BoolLiteralNode) {
+    // Auto-selection asks whether a graph edge can execute. Keep normal analysis conservative; only this
+    // explicit opt-in ignores the arm that a literal condition makes unreachable.
+    const active = value.condition.value ? value.ifBlock : value.elseBlock;
+    if (active) walkInvocationAst(active, visit, seen, options);
     return;
   }
   // Node data fields are enumerable; class prototype methods are not. Iterate them directly to avoid allocating
@@ -79,9 +89,9 @@ export function walkInvocationAst(
       || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
       || key === 'collection' || key === 'type' || key === 'location' || key === 'name' || key === 'functionId' || key === 'error' || key === 'opRolls' || key === 'selectorHex' || key === 'abiType') continue;
     const child = value[key as keyof Node];
-    if (child instanceof Node) walkInvocationAst(child, visit, seen);
+    if (child instanceof Node) walkInvocationAst(child, visit, seen, options);
     else if (Array.isArray(child)) {
-      for (const item of child) walkInvocationAst(item, visit, seen);
+      for (const item of child) walkInvocationAst(item, visit, seen, options);
     }
   }
 }

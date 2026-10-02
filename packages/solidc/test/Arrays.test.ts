@@ -89,6 +89,20 @@ describe('local array-element assignment', () => {
       + ' return p[4]; } }', { solidityImportCompat: true, messageBus: false });
     expect(artifact.debug.bytecode.length / 2).toBeLessThan(1200);
   });
+
+  it('coalesces ordered writes into a fresh fixed array before a dependent write', () => {
+    const artifact = compileString('uint8 constant WHO_BUYER=0; uint8 constant WHO_SELLER=1;'
+      + ' uint8 constant WHO_MARKETPLACE=2; uint8 constant WHO_PROTOCOL=3;'
+      + ' uint8 constant WHO_ARBITRATOR=4;'
+      + ' contract C { function f(uint256 amount, uint256[5] memory split)'
+      + ' public returns(uint256[5] memory) { uint256[5] memory p;'
+      + ' p[WHO_BUYER]=split[WHO_BUYER]*amount; p[WHO_SELLER]=split[WHO_SELLER]*amount;'
+      + ' p[WHO_MARKETPLACE]=split[WHO_MARKETPLACE]*amount;'
+      + ' p[WHO_ARBITRATOR]=split[WHO_ARBITRATOR]*amount;'
+      + ' p[WHO_PROTOCOL]=amount-p[WHO_BUYER]-p[WHO_SELLER]-p[WHO_MARKETPLACE]-p[WHO_ARBITRATOR];'
+      + ' return p; } }', { solidityImportCompat: true });
+    expect(artifact.debug.bytecode.length / 2).toBeLessThan(700);
+  });
 });
 
 describe('Tuple forwarding and whole fixed-array assignment', () => {

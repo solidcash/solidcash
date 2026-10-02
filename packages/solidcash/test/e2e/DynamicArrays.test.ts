@@ -563,6 +563,22 @@ describe('Dynamic Arrays', () => {
       expect(tx.txid).toBeDefined();
     });
 
+    it('coalesces fresh fixed-array writes and preserves the dependent remainder on-chain', async () => {
+      const artifact = compileString('uint8 constant B=0; uint8 constant S=1; uint8 constant M=2;'
+        + ' uint8 constant P=3; uint8 constant A=4; contract C { function test(uint256 amount) {'
+        + ' uint256[5] memory p; p[B]=amount/10; p[S]=amount/5; p[M]=amount/5; p[A]=amount/10;'
+        + ' p[P]=amount-p[B]-p[S]-p[M]-p[A];'
+        + ' require(p[B]==10 && p[S]==20 && p[M]==20 && p[P]==40 && p[A]==10); } }');
+      expect(artifact.debug.bytecode.length / 2).toBeLessThan(1250);
+
+      const provider = createTestProvider();
+      const contract = new Contract(artifact, [], { provider });
+      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+      const tx = await sendTx(provider, contract, contract.unlock.test(100n));
+      expect(tx.txid).toBeDefined();
+    });
+
     it('should report correct length for bounded arrays', async () => {
       const source = `
         contract BoundedLength() {

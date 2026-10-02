@@ -205,6 +205,7 @@ import PruneUnreachableMsgDataMethods from './semantic/PruneUnreachableMsgDataMe
 import RedesugarImportedUsingForCalls from './semantic/RedesugarImportedUsingForCalls.js';
 import RedesugarImportedStructFieldWrites from './semantic/RedesugarImportedStructFieldWrites.js';
 import CoalesceStructFieldArrayWrites from './semantic/CoalesceStructFieldArrayWrites.js';
+import CoalesceFreshFixedArrayWrites from './semantic/CoalesceFreshFixedArrayWrites.js';
 import CoalesceStateArrayStructFieldWrites from './semantic/CoalesceStateArrayStructFieldWrites.js';
 import CoalesceMappingEntryFieldWrites from './semantic/CoalesceMappingEntryFieldWrites.js';
 import RedesugarImportedUdvtWrap from './semantic/RedesugarImportedUdvtWrap.js';
@@ -13560,6 +13561,7 @@ function compileResolvedAst(
   // Validate source-level location and modifier rules before storage/memory pointer lowerings erase the
   // declarations that carry them. This mirrors solc's declaration type checking and keeps lowerings simpler.
   ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
+  ast = ast.accept(new CoalesceFreshFixedArrayWrites()) as Ast;
 
   // Every mapping uses the authenticated vmap backend. There is no omission-prone legacy mapping fallback.
   for (const col of ast.contract.collections) {
@@ -18033,6 +18035,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;
     // Keep the referenced-contract bytecode byte-identical to its standalone compilation (see comment above).
     singleAst = singleAst.accept(new CoalesceMappingEntryFieldWrites()) as Ast;
+    singleAst = singleAst.accept(new CoalesceFreshFixedArrayWrites()) as Ast;
     singleAst = singleAst.accept(new CoalesceStructFieldArrayWrites()) as Ast;
     singleAst = singleAst.accept(new LowerMemoryModel()) as Ast;
     singleAst = singleAst.accept(new DesugarNestedArrayWrite()) as Ast;

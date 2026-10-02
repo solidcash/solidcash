@@ -4066,6 +4066,12 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       const type = stateReceiverTypes.get(expression.name);
       return type ? [type] : [];
     }
+    if (expression instanceof NullaryOpNode) {
+      // These context globals have address type before the semantic pass assigns expression types.
+      if (expression.operator === NullaryOperator.MSG_SENDER
+        || expression.operator === NullaryOperator.TX_ORIGIN
+        || expression.operator === NullaryOperator.BLOCK_COINBASE) return [new AddressType()];
+    }
     if (expression instanceof MappingAccessNode) {
       let type = stateReceiverTypes.get(expression.name);
       for (let index = 0; index < expression.keys.length; index += 1) type = indexedElementType(type);

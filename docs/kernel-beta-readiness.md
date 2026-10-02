@@ -237,6 +237,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   helper's single return type and the parser's literal-index node for an interface array. Each exact red title
   passed after its fix, followed only by its immediately preceding title. Build and focused lint pass; no broad
   test suite or beta gate was run.
+- 2026-10-02 context-address receiver follow-up: `msg.sender.call(payload)` previously bypassed automatic
+  graph selection even though its ABI published a raw external call. The pre-semantic survey now recognizes
+  address-valued context globals as low-level call receivers. Its focused selection title and immediately
+  preceding literal-index title pass. The kernel still refuses this handler with `KERNEL_LAYOUT`; this is a
+  fail-closed selection checkpoint, not a VM proof or runtime capability claim.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

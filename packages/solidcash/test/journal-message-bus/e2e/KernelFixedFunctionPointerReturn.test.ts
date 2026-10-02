@@ -244,4 +244,82 @@ describe('kernel function-pointer BCH VM', () => {
     expect((await sink.getState()).value).toBe(9n);
     expect((await store.getState()).calls).toBe(1n);
   }, 120_000);
+
+  it('omits an untaken pointer edge while settling an always-reached sibling', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
+      interface IAlways { function ping() external; }
+      contract Always {
+        uint hits;
+        function ping() public { hits = hits + 1; require(true); }
+      }
+      contract Sink {
+        uint value;
+        function dec() public { value = value - 1; require(true); }
+      }
+      contract Store(address always) {
+        function() external stored;
+        uint calls;
+        function save(function() external next) public { stored = next; require(true); }
+        function run(bool enabled) public {
+          IAlways(always).ping();
+          if (enabled) { stored(); }
+          calls = calls + 1;
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      solidityImportCompat: true,
+      suppressWarnings: true,
+    });
+    const connect = async (
+      selected: Artifact, args: readonly unknown[], state: Record<string, unknown>,
+    ): Promise<StatefulContract> => {
+      const base = new Contract(selected, args as never[], { provider });
+      const setup = await setupStatefulUtxos(
+        provider, base, selected.stateLayout!, state, { saltContract: true },
+      );
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const always = await connect(artifacts.Always, [], { hits: 0n });
+    const sink = await connect(artifacts.Sink, [], { value: 10n });
+    const selector = hexToBin(artifacts.Sink.abi.find((entry) => entry.name === 'dec')!.selector!);
+    const store = await connect(artifacts.Store, [always.inner.lockingBytecode], {
+      stored: hexToBin(sink.inner.lockingBytecode), __fnsel_stored: selector, calls: 0n,
+    });
+    const calls = artifacts.Store.abi.find((entry) => entry.name === 'run')!.externalCalls!;
+    const alwaysCall = calls.find((call) => call.functionName === 'ping')!;
+    const pointerCall = calls.find((call) => call.fnPtrCall)!;
+    expect(pointerCall).toMatchObject({ occurrence: 'conditional' });
+    const compose = async (enabled: boolean): Promise<ReturnType<typeof messageBus.compose>> => {
+      const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+      return messageBus.compose({
+        preparedCalls: [
+          { contract: store, functionName: 'run', args: [enabled] },
+          { contract: always, functionName: 'ping', args: [], callsiteId: alwaysCall.callsiteId },
+          ...(enabled ? [{ contract: sink, functionName: 'dec', args: [], callsiteId: pointerCall.callsiteId }] : []),
+        ],
+        funder,
+        changeAddress: funder.unlocker.generateLockingBytecode(),
+      });
+    };
+
+    const untaken = await compose(false);
+    expect(vmAccepts(await untaken.build())).toBe(true);
+    await untaken.send();
+    expect((await always.getState()).hits).toBe(1n);
+    expect((await sink.getState()).value).toBe(10n);
+    expect((await store.getState()).calls).toBe(1n);
+
+    const taken = await compose(true);
+    expect(vmAccepts(await taken.build())).toBe(true);
+    await taken.send();
+    expect((await always.getState()).hits).toBe(2n);
+    expect((await sink.getState()).value).toBe(9n);
+    expect((await store.getState()).calls).toBe(2n);
+  }, 120_000);
 });

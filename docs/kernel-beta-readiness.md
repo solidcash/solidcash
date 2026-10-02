@@ -292,8 +292,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   names the selected method. Conditional occurrence matching now uses the compiler-published callsite ID for
   function-pointer edges; the later graph covenant still checks the concrete address and selector. The focused
   BCH-2026 conditional title and its immediately preceding runtime-pointer title pass individually. The fixture
-  seeds the native locking bytecode as bytes, not as its ASCII hex spelling. Untaken and wider pointer-table
-  cases remain outside this focused proof.
+  seeds the native locking bytecode as bytes, not as its ASCII hex spelling. A separate BCH-2026 title proves an
+  untaken pointer edge is omitted while an always-reached sibling settles, then takes the same pointer edge in
+  the next transaction and checks all three owners' state. That title and its immediately preceding conditional
+  title pass individually. Wider pointer-table cases remain outside this focused proof.
 
 ## Gate before the next leap
 

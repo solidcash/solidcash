@@ -91,6 +91,8 @@ export interface PreparedAtomicMessageBusCall {
   topologyOuterDomainKey?: string;
   /** @internal Reached outer induction iteration, before conditional calls are filtered. */
   topologyOuterIteration?: number;
+  /** @internal Reached inner induction iteration for a compiler-published two-level call domain. */
+  topologyInnerIteration?: number;
   /** @internal Independently derived root-to-invocation compiler source path. */
   producerPath?: ValueChunkProducerPathDisposition;
   /** @internal Exact terminal post-values authenticated while discovering this compiler call edge. */

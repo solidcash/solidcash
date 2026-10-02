@@ -651,6 +651,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   identities and cannot be conflated. Nested sibling interleaving still requires its narrower producer-result
   proof. The exact neutral three-call title went red-to-green in BCH-2026 VM; its immediately preceding
   separate-loop title passes. The build passes; no comprehensive suite or 10 KB gate ran.
+- 2026-10-02 nested sibling-order follow-up: two callsites in the same inner loop were grouped by callsite
+  across each outer producer occurrence, causing a BCH-2026 `OP_VERIFY` failure. Topology discovery now carries
+  the reached inner coordinate and orders each compiler-identified inner block by iteration then effect; the
+  symbolic worklist accepts that exact schedule for one or multiple outer reaches. The formerly red two-outer
+  VM title passes with four calls to each Sink owner, its immediately preceding sibling-effect title passes,
+  and a separate one-outer probe passes. No comprehensive suite or size gate ran.
 
 ## Gate before the next leap
 

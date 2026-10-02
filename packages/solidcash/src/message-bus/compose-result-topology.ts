@@ -245,7 +245,6 @@ async function rebuildCallTopology(
         }, expressions, [...args], artifact, state, fn.inputs, self, iterations);
       };
       const next: Child[] = [];
-      const qualifiedInterleaveRanges: Array<{ domainKey: string; firstEffect: number; lastEffect: number }> = [];
       for (const source of sources) {
         // A prepared call may omit its callsiteId when the compiled graph can infer the exact edge from source
         // order. Once planned, that graph identity is authoritative: filtering by the optional descriptor field
@@ -324,15 +323,6 @@ async function rebuildCallTopology(
                     || semanticJson(producer.iterationDomain) !== semanticJson(nested![0]);
                 })) {
                   throw new Error('messageBus: nested call repeats an outer producer occurrence');
-                }
-                if (outer.length > 1 && producerCallsites.length > 0 && outerDomainKey !== undefined) {
-                  qualifiedInterleaveRanges.push({
-                    domainKey: outerDomainKey,
-                    firstEffect: Math.min(...producerCallsites.map((callsiteId) => sources.find(
-                      (candidate) => candidate.callsiteId === callsiteId,
-                    )!.sourceEffectOrdinal!)),
-                    lastEffect: sourceTemplate.sourceEffectOrdinal!,
-                  });
                 }
                 if (outer.length === 0) occurrences = [];
                 else {
@@ -451,6 +441,7 @@ async function rebuildCallTopology(
               if (outerDomainKey !== undefined && outerIndex !== undefined) {
                 rebuilt.topologyOuterDomainKey = outerDomainKey;
                 rebuilt.topologyOuterIteration = outerIndex;
+                rebuilt.topologyInnerIteration = template.nestedIterationDomains ? iteration : undefined;
               }
               selected.push({ call: rebuilt, previous: prior.previous });
               occurrence += 1;
@@ -463,6 +454,7 @@ async function rebuildCallTopology(
               sourceEffectOrdinal: template.sourceEffectOrdinal,
               ...(outerDomainKey !== undefined && outerIndex !== undefined && {
                 topologyOuterDomainKey: outerDomainKey, topologyOuterIteration: outerIndex,
+                ...(template.nestedIterationDomains && { topologyInnerIteration: iteration }),
               }),
               ...(template.sourceLogicalIndex !== undefined && {
                 batchLogicalIndex: template.sourceLogicalIndex, batchOccurrenceIndex: occurrence,
@@ -498,22 +490,34 @@ async function rebuildCallTopology(
           next.push(...(unresolved ? existing : selected));
         }
       }
-      // Direct siblings in one compiler-identified lexical loop execute in effect order per iteration.
-      // Nested calls retain the narrower producer-to-consumer proof: their inner iteration order needs a
-      // separately authenticated coordinate before unrelated sibling effects can be interleaved safely.
+      // Source execution order is lexicographic in outer reach, lexical inner-block position, inner reach,
+      // then effect position. A compiler-authored loop identity distinguishes equal recurrences in separate
+      // loops. Unsupported or unproven coordinates retain source-grouped order and fail the final VM check.
       const sharedDomain = next[0]?.call.topologyOuterDomainKey;
-      const directSiblings = next.every(({ call: child }) => {
-        const source = sources.find((candidate) => candidate.callsiteId === child.callsiteId);
-        return source?.iterationDomain?.sourceLoopId !== undefined && !source.nestedIterationDomains;
-      });
+      const sourceByCallsite = new Map(sources.map((source) => [source.callsiteId, source]));
+      const innerStarts = new Map<number, number>();
+      for (const source of sources) {
+        const innerId = source.nestedIterationDomains?.[1]?.sourceLoopId;
+        if (innerId === undefined || source.sourceEffectOrdinal === undefined) continue;
+        innerStarts.set(innerId, Math.min(innerStarts.get(innerId) ?? Infinity,
+          source.sourceEffectOrdinal));
+      }
       if (sharedDomain !== undefined && next.every((child) =>
         child.call.topologyOuterDomainKey === sharedDomain
         && child.call.topologyOuterIteration !== undefined
-        && child.call.sourceEffectOrdinal !== undefined)
-        && (directSiblings || qualifiedInterleaveRanges.some((range) => range.domainKey === sharedDomain
-          && next.every((child) => child.call.sourceEffectOrdinal! >= range.firstEffect
-            && child.call.sourceEffectOrdinal! <= range.lastEffect)))) {
+        && child.call.sourceEffectOrdinal !== undefined
+        && (sourceByCallsite.get(child.call.callsiteId)?.iterationDomain?.sourceLoopId !== undefined
+          || (sourceByCallsite.get(child.call.callsiteId)?.nestedIterationDomains?.length === 2
+            && sourceByCallsite.get(child.call.callsiteId)?.nestedIterationDomains?.[1]?.sourceLoopId !== undefined
+            && child.call.topologyInnerIteration !== undefined)))) {
+        const blockOrdinal = (child: Child): number => {
+          const innerId = sourceByCallsite.get(child.call.callsiteId)?.nestedIterationDomains?.[1]?.sourceLoopId;
+          return innerId === undefined ? child.call.sourceEffectOrdinal!
+            : innerStarts.get(innerId)!;
+        };
         next.sort((left, right) => left.call.topologyOuterIteration! - right.call.topologyOuterIteration!
+          || blockOrdinal(left) - blockOrdinal(right)
+          || (left.call.topologyInnerIteration ?? 0) - (right.call.topologyInnerIteration ?? 0)
           || left.call.sourceEffectOrdinal! - right.call.sourceEffectOrdinal!
           || (left.call.occurrenceIndex ?? 0) - (right.call.occurrenceIndex ?? 0));
       }

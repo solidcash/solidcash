@@ -316,8 +316,7 @@
           "operations": [
             "read",
             "write"
-          ],
-          "valueSource": "call:SafeMathUniswap.add(map:balanceOf(ExternalFunctionCallNode{addressExpression=cast:address(state:factory),functionName=feeTo,interfaceName=IUniswapV2Factory,parameters=[],sourceEffectOrdinal=1,valueTransferIndex=-1}),binop:/(call:SafeMathUniswap.mul(state:totalSupply,call:SafeMathUniswap.sub(call:Math.sqrt(call:SafeMathUniswap.mul(cast:uint256(id:_reserve0),id:_reserve1)),call:Math.sqrt(state:kLast))),call:SafeMathUniswap.add(call:SafeMathUniswap.mul(call:Math.sqrt(call:SafeMathUniswap.mul(cast:uint256(id:_reserve0),id:_reserve1)),lit:5),call:Math.sqrt(state:kLast))))"
+          ]
         },
         {
           "slotIndex": 2,
@@ -951,8 +950,7 @@
           "operations": [
             "read",
             "write"
-          ],
-          "valueSource": "call:SafeMathUniswap.add(map:balanceOf(ExternalFunctionCallNode{addressExpression=cast:address(state:factory),functionName=feeTo,interfaceName=IUniswapV2Factory,parameters=[],sourceEffectOrdinal=1,valueTransferIndex=-1}),binop:/(call:SafeMathUniswap.mul(state:totalSupply,call:SafeMathUniswap.sub(call:Math.sqrt(call:SafeMathUniswap.mul(cast:uint256(id:_reserve0),id:_reserve1)),call:Math.sqrt(state:kLast))),call:SafeMathUniswap.add(call:SafeMathUniswap.mul(call:Math.sqrt(call:SafeMathUniswap.mul(cast:uint256(id:_reserve0),id:_reserve1)),lit:5),call:Math.sqrt(state:kLast))))"
+          ]
         }
       ],
       "sourceEffectOrder": "unsupported-flow",
@@ -11210,8 +11208,7 @@
             "operations": [
               "read",
               "write"
-            ],
-            "valueSource": "call:SafeMathUniswap.add(map:balanceOf(ExternalFunctionCallNode{addressExpression=cast:address(state:factory),functionName=feeTo,interfaceName=IUniswapV2Factory,parameters=[],sourceEffectOrdinal=1,valueTransferIndex=-1}),binop:/(call:SafeMathUniswap.mul(state:totalSupply,call:SafeMathUniswap.sub(call:Math.sqrt(call:SafeMathUniswap.mul(cast:uint256(id:_reserve0),id:_reserve1)),call:Math.sqrt(state:kLast))),call:SafeMathUniswap.add(call:SafeMathUniswap.mul(call:Math.sqrt(call:SafeMathUniswap.mul(cast:uint256(id:_reserve0),id:_reserve1)),lit:5),call:Math.sqrt(state:kLast))))"
+            ]
           },
           {
             "slotIndex": 2,
@@ -11850,8 +11847,7 @@
             "operations": [
               "read",
               "write"
-            ],
-            "valueSource": "call:SafeMathUniswap.add(map:balanceOf(ExternalFunctionCallNode{addressExpression=cast:address(state:factory),functionName=feeTo,interfaceName=IUniswapV2Factory,parameters=[],sourceEffectOrdinal=1,valueTransferIndex=-1}),binop:/(call:SafeMathUniswap.mul(state:totalSupply,call:SafeMathUniswap.sub(call:Math.sqrt(call:SafeMathUniswap.mul(cast:uint256(id:_reserve0),id:_reserve1)),call:Math.sqrt(state:kLast))),call:SafeMathUniswap.add(call:SafeMathUniswap.mul(call:Math.sqrt(call:SafeMathUniswap.mul(cast:uint256(id:_reserve0),id:_reserve1)),lit:5),call:Math.sqrt(state:kLast))))"
+            ]
           }
         ],
         "sourceEffectOrder": "unsupported-flow",
@@ -18566,7 +18562,7 @@
         "solidityImportCompat": true
       }
     },
-    "updatedAt": "2026-10-02T13:52:14.680Z",
+    "updatedAt": "2026-10-02T15:11:47.935Z",
     "delegateProxyStateOutputCountPinned": true,
     "invocationAnalysis": {
       "version": 1,

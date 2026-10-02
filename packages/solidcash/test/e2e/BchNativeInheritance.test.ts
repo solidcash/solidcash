@@ -174,6 +174,10 @@ describe('BchNative inheritance', () => {
 
   it.skipIf(Boolean(process.env.TESTS_USE_REGTEST))(
     'inherits OZ allowance spending, including the uint256 infinite sentinel', async () => {
+      // The conditional subtraction is not a straight-line entry delta: the infinite sentinel must remain
+      // untouched. A synthetic `entry - value` recipe would prefill a forged output before VM derivation.
+      expect(artifact.abi.find((fn) => fn.name === 'transferFrom')?.entryAccesses
+        ?.find((access) => access.collection === '_allowances')?.valueSource).toBeUndefined();
       const d = await deploy();
       const owner = d.token.connect(d.owner);
       await d.fund(d.owner);

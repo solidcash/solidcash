@@ -512,6 +512,11 @@ const RESOLVED_BACKREF_KEYS = new Set([
   'referencedContract', 'symbolTable', 'type', 'name', 'functionId', 'functionReference', 'selectorHex', 'opRolls', 'abiType', 'error',
 ]);
 
+/** A statement whose body runs only on some paths (or a number of times the source does not fix). */
+const selectsPath = (node: Node): boolean => node instanceof BranchNode || node instanceof WhileNode
+  || node instanceof DoWhileNode || node instanceof SwitchNode || node instanceof TryCatchNode
+  || node instanceof CollectionIterationNode;
+
 interface FunctionBodySurvey {
   usesMsgSender: boolean;
   keccakInLoop: boolean;
@@ -10068,19 +10073,27 @@ export default class SymbolTableTraversal extends AstTraversal {
   private mappingLocalNetSource(name: string): string | undefined {
     if (!this.currentFunction) return undefined;
     const steps: ExpressionNode[] = [];
-    const walk = (n: Node | undefined): void => {
+    let conditionalWrite = false;
+    const walk = (n: Node | undefined, conditional = false): void => {
       if (!n) return;
-      if (n instanceof VariableDefinitionNode && n.name === name && n.expression) steps.push(n.expression);
-      if (n instanceof AssignNode && n.identifier.name === name) steps.push(n.expression);
+      const step = n instanceof VariableDefinitionNode && n.name === name ? n.expression
+        : n instanceof AssignNode && n.identifier.name === name ? n.expression : undefined;
+      if (step !== undefined) {
+        if (conditional) conditionalWrite = true;
+        else steps.push(step);
+      }
+      // A local updated only on a selected path has no single straight-line net value: an infinite ERC-20
+      // allowance keeps its old value while a finite one subtracts the transfer amount.
+      const childConditional = conditional || selectsPath(n);
       for (const key of Object.keys(n)) {
         if (RESOLVED_BACKREF_KEYS.has(key) || key === 'type' || key === 'symbolTable' || key === 'location') continue;
         const value = (n as unknown as Record<string, unknown>)[key];
-        if (value instanceof Node) walk(value);
-        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+        if (value instanceof Node) walk(value, childConditional);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item, childConditional);
       }
     };
     walk(this.currentFunction);
-    if (steps.length === 0) return undefined;
+    if (conditionalWrite || steps.length === 0) return undefined;
     let source: string | undefined;
     const isParam = (expression: ExpressionNode): boolean => (
       expression instanceof IdentifierNode
@@ -10281,8 +10294,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       return undefined;
     };
-    const consider = (targetName: string, expr: ExpressionNode): void => {
+    const consider = (targetName: string, expr: ExpressionNode, conditional: boolean): void => {
       if (targetName !== local || sawForeign) return;
+      // A delta in one control-flow arm is not the final value of every invocation, so its tail stays VM-derived.
+      if (conditional) {
+        sawForeign = true;
+        return;
+      }
       const delta = identifierDelta(expr);
       if (delta) {
         deltas.push(delta);
@@ -10291,15 +10309,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (sameKey(expr)) return;
       sawForeign = true;
     };
-    const walk = (n: Node | undefined): void => {
+    const walk = (n: Node | undefined, conditional = false): void => {
       if (!n || sawForeign) return;
-      if (n instanceof VariableDefinitionNode && n.expression) consider(n.name, n.expression);
-      if (n instanceof AssignNode) consider(n.identifier.name, n.expression);
+      if (n instanceof VariableDefinitionNode && n.expression) consider(n.name, n.expression, conditional);
+      if (n instanceof AssignNode) consider(n.identifier.name, n.expression, conditional);
+      const childConditional = conditional || selectsPath(n);
       for (const key of Object.keys(n)) {
         if (RESOLVED_BACKREF_KEYS.has(key) || key === 'type' || key === 'symbolTable' || key === 'location') continue;
         const value = (n as unknown as Record<string, unknown>)[key];
-        if (value instanceof Node) walk(value);
-        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+        if (value instanceof Node) walk(value, childConditional);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item, childConditional);
       }
     };
     walk(this.currentFunction);

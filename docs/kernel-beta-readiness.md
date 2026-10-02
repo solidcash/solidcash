@@ -133,6 +133,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   changing the compiler's narrowing cast or weakening the test. The proxy application was not modified.
   Individually retested titles from an older red compiler/SDK log passed, confirming that log is stale; they do
   not establish any broader suite status.
+- 2026-10-02 focused whitelist follow-up: the unchanged Marketplace `job posting > post job with whitelist`
+  title passes on the proxy branch (1 selected, 65 skipped). This does not resolve the separate `post job 1`
+  event-format assertion or establish a 66-title result. After the active band-helper rename,
+  `node scripts/kernel-beta-gate.mjs --sources-only --allow-dirty` still reports matched source fingerprints;
+  that diagnostic skips all tests and cold compiles.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

@@ -125,6 +125,14 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   check before its broad test commands. A single current UnicrowClaim kernel spot compile measured 16,875 redeem-
   script bytes (still over the 10,000-byte limit), 2,640 route bytes, and zero caught compiler attempts. This is
   not a deterministic cold-matrix result and does not repin the stale manifest baseline.
+- 2026-10-02 focused proxy-application checkpoint: the unchanged Marketplace `job posting > post job 1` title
+  now reaches its event-data assertion but remains red (1 selected, 65 skipped). The proxy application's
+  `abi.encodePacked(uint160(token_))` publishes a 20-byte identity, as the existing compiler cast test requires;
+  its decoder reads 20 bytes while the test compares the result with the full 35-byte BCH P2SH32 locking
+  bytecode from `fakeToken.getAddress()`. This is an application-port wire-format mismatch, not evidence for
+  changing the compiler's narrowing cast or weakening the test. The proxy application was not modified.
+  Individually retested titles from an older red compiler/SDK log passed, confirming that log is stale; they do
+  not establish any broader suite status.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

@@ -5,6 +5,11 @@
 import { binToHex, bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
 import {
   parseEntryCommitment,
+  joinValueChunks,
+  parseValueChunkCommitment,
+  sha256 as sha256Sync,
+  VALUE_CHUNK_SIZE,
+  VALUE_HEAD_SIZE,
   type AbiFunction,
   type StateLayout,
 } from '@solidcash/utils';
@@ -16,6 +21,7 @@ import {
   createSatoshiContainerUnlocker,
   createTokenContainerUnlocker,
   getEntryNftAddress,
+  getValueChunkAddress,
   getSatoshiContainerAddress,
   getTokenContainerAddress,
 } from './covenant-helpers.js';
@@ -429,6 +435,47 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                 console.error('external-entry-match', JSON.stringify(entryDiagnostic));
               }
               if (matchUtxo) {
+                const witnessName = `__internal__valueWitness_${slot.slotIndex ?? 0}`;
+                if (bCollection?.chunkableValue && bAbiFunc?.inputs.some((input) => input.name === witnessName)) {
+                  // The proof entry may be the target or its predecessor. The covenant authenticates its
+                  // stored value before checking membership, so both cases need that exact old value.
+                  const commitment = matchUtxo.token?.nft?.commitment;
+                  if (!commitment) throw new Error(`Missing ${bEntryAccess.collection} value proof`);
+                  const proof = decodeEntryCommitment(hexToBin(commitment));
+                  const tail = proof.value;
+                  let witness: Uint8Array = new Uint8Array();
+                  if (tail.length > 0) {
+                    if (tail.length < 4) throw new Error(`Invalid ${bEntryAccess.collection} value proof`);
+                    const length = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
+                    if (length <= 60) {
+                      if (tail.length < 4 + length) throw new Error(`Invalid ${bEntryAccess.collection} inline value`);
+                      witness = tail.slice(4);
+                    } else {
+                      if (tail.length < 4 + 32 + VALUE_HEAD_SIZE) {
+                        throw new Error(`Invalid ${bEntryAccess.collection} chunked value head`);
+                      }
+                      const root = tail.slice(4, 36);
+                      const chunkAddress = getValueChunkAddress(
+                        bSc.inner, externalCategoryId, bEntryAccess.collection, proof.slot, root,
+                      );
+                      const expected = Math.ceil((length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
+                      const chunks = (await host.getUtxos(chunkAddress))
+                        .filter((utxo) => utxo.token?.category === externalCategoryId
+                          && utxo.token.nft?.capability === 'mutable' && !!utxo.token.nft.commitment)
+                        .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment))
+                        .sort((left, right) => left.chunkIndex - right.chunkIndex);
+                      if (chunks.length !== expected
+                        || chunks.some((chunk, index) => chunk.chunkIndex !== index)) {
+                        throw new Error(`Incomplete ${bEntryAccess.collection} value chunks`);
+                      }
+                      witness = joinValueChunks(tail.slice(36), chunks, length);
+                      if (binToHex(sha256Sync(witness)) !== binToHex(root)) {
+                        throw new Error(`${bEntryAccess.collection} value chunks do not match the authenticated root`);
+                      }
+                    }
+                  }
+                  ctx.bCompilerInternalArgs[witnessName] = witness;
+                }
                 const unlocker = createEntryNftUnlocker(
                   bSc.inner, ctx.bBlockInputs.length, externalCategoryId, bEntryAccess.collection,
                 );

@@ -7179,7 +7179,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ? publicSelfAddress : addressToLockScript(this._logicalAddress);
     const publicSelfIdentity = Object.freeze({
       categoryId: this.categoryId,
-      lockingBytecode: binToHex(publicSelfAddress),
+      lockingBytecode: binToHex(authenticatedSelfAddress),
     });
     const requiredNftIndices = abiFunction?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
@@ -11596,6 +11596,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         earlySignerUtxos,
         publicSelfAddress,
         publicSelfIdentity,
+        physicalSelfAddress: executionSelfAddress,
+        rootLogicalAddress: this._logicalAddress,
         timing,
         valueChunkWriteStagingSession,
         iterationEntryInputs,

@@ -11,6 +11,7 @@ import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-he
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
 import { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
+import { resolveLogicalIdentity } from './logical-identity.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import { groupLayoutTrailingBase } from './writer-event-delegate-layout.js';
 
@@ -37,6 +38,21 @@ export function selectorParamSlot(
 
 export interface FinalizeCreateBuilderNestedBasesUnlockersHost {
   readonly provider: NetworkProvider;
+  readonly physicalRootLockingBytecode: Uint8Array;
+  readonly rootLogicalAddress?: string;
+  readonly pendingAnchorFills: Array<{
+    group: {
+      masterUtxo?: unknown;
+      refreshInternalArgs?: (updates: Record<string, any>) => void;
+      externalContract: { inner: { unlock: Record<string, ((...args: never[]) => unknown) | undefined> } };
+    };
+    functionName: string;
+    encodedArgs: any[];
+    positions: Array<{
+      argIndex: number; name: string; band?: number; categoryId?: string;
+      proxyRoute: boolean; required?: boolean;
+    }>;
+  }>;
   selectorParamSlot: typeof selectorParamSlot;
   isComputedBlockhashKey(readKey: string): boolean;
   noteBhLocktime(locktime: number): void;
@@ -119,6 +135,19 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       compilerRoute: group.compilerRoute,
     });
     const userArgCount = routeArgs.length;
+    const callerLock = group.callerIdentity?.lockingBytecode.toLowerCase();
+    const rootPhysicalLock = binToHex(host.physicalRootLockingBytecode).toLowerCase();
+    const needsRootCallerAnchor = meta.parentGroupIndex < 0
+      && callerLock !== undefined && callerLock !== rootPhysicalLock
+      && bAbiInputs.some((input) => input.name === '__internal__msgSenderAnchorIdx');
+    if (needsRootCallerAnchor) {
+      if (!host.rootLogicalAddress) throw new Error('A logical nested caller requires its CREATE address.');
+      const identity = await resolveLogicalIdentity(host.provider, host.rootLogicalAddress);
+      if (identity.categoryId.toLowerCase() !== group.callerIdentity?.categoryId.toLowerCase()
+        || binToHex(identity.unlocker.generateLockingBytecode()).toLowerCase() !== callerLock) {
+        throw new Error('Nested caller CREATE identity does not match its authenticated call subject.');
+      }
+    }
 
     // Compiler routes may interleave hidden inputs with published witnesses (for example
     // __internal__msgSenderCategory immediately after batchBlob). Treating all visible args as an ABI prefix
@@ -174,10 +203,24 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       } else if (paramName === '__internal__msgSenderCategory') {
         bFinalArgs.push(hexToBin(meta.callerCategoryId).reverse());
       } else if (paramName === '__internal__msgSenderAnchorIdx') {
-        // Direct groups use the root contract's physical locking bytecode as callerIdentity.
-        // The negative sentinel authenticates that input directly; zero would point at the
-        // root master NFT and compare its capability-tagged category with the bare SCID.
+        // A logical root caller is authenticated by its co-spent CREATE identity. Its absolute
+        // coordinate is filled after the builder assembles the input bands. Physical callers
+        // continue to use the directly authenticated master input.
         bFinalArgs.push(-1n);
+        if (needsRootCallerAnchor) {
+          host.pendingAnchorFills.push({
+            group,
+            functionName: group.functionName,
+            encodedArgs: bFinalArgs,
+            positions: [{
+              argIndex: bFinalArgs.length - 1,
+              name: paramName,
+              categoryId: group.callerIdentity!.categoryId,
+              proxyRoute: false,
+              required: true,
+            }],
+          });
+        }
       } else if (paramName === '__internal__blockhashInputIndex') {
         const firstOracleOffset = group.blockLayout?.slots.find(
           (slot) => slot.kind === 'blockhashOracle',

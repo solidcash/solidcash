@@ -35,7 +35,7 @@ export interface SendWithoutLogicalNonceHost {
   retireSignerUtxos(signer: Signer, utxos: readonly Utxo[]): void;
 }
 
-/** Close compiler-described typed edges before the legacy builder duplicates a callback owner's master. */
+/** Close compiler-described typed edges before the legacy builder aliases a repeated state owner. */
 async function prepareTypedCallbackGraph(
   host: SendWithoutLogicalNonceHost,
 ): Promise<PreparedAtomicMessageBusCall[] | undefined> {

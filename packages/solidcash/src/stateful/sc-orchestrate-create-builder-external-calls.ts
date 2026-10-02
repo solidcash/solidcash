@@ -120,6 +120,8 @@ export async function orchestrateCreateBuilderExternalCalls(
     earlySignerUtxos: Utxo[] | undefined;
     publicSelfAddress: any;
     publicSelfIdentity: any;
+    physicalSelfAddress: Uint8Array;
+    rootLogicalAddress?: string;
     timing: (label: string) => void;
     valueChunkWriteStagingSession: any;
     iterationEntryInputs: readonly any[];
@@ -637,6 +639,9 @@ export async function orchestrateCreateBuilderExternalCalls(
     const nestedBasesUnlockers = await finalizeCreateBuilderNestedBasesUnlockersImpl(
       {
         provider: host.inner.provider,
+        physicalRootLockingBytecode: params.physicalSelfAddress,
+        rootLogicalAddress: params.rootLogicalAddress,
+        pendingAnchorFills,
         selectorParamSlot,
         isComputedBlockhashKey,
         noteBhLocktime: (locktime) => { maxBhLocktime = Math.max(maxBhLocktime, locktime); },

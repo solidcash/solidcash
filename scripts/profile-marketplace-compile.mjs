@@ -75,6 +75,8 @@ if (!deployability || deployability.measuredBytecodeBytes !== redeemScriptBytes
 }
 
 const bodyBytes = (body) => typeof body === 'string' ? body.length / 2 : 0;
+const routeSelector = artifact.messageBus?.selector;
+const selectorBodies = Object.entries(artifact.functionBodies ?? {});
 const sha256 = (value) => createHash('sha256').update(value ?? '').digest('hex');
 const metadataProjection = {
   messageBus: artifact.messageBus,
@@ -105,10 +107,12 @@ const result = {
   deployability,
   sizes: {
     redeemScriptBytes,
-    routeBytes: bodyBytes(artifact.functionBodies?.[artifact.messageBus?.selector ?? '']),
+    routeBytes: bodyBytes(routeSelector ? artifact.functionBodies?.[routeSelector] : undefined),
+    directSelectorBodiesBytes: selectorBodies
+      .filter(([selector]) => selector !== routeSelector)
+      .reduce((total, [, body]) => total + bodyBytes(body), 0),
     fullBytes: bodyBytes(artifact.debug?.bytecode),
-    functionBodiesBytes: Object.values(artifact.functionBodies ?? {})
-      .reduce((total, body) => total + bodyBytes(body), 0),
+    functionBodiesBytes: selectorBodies.reduce((total, [, body]) => total + bodyBytes(body), 0),
     artifactJsonBytes: Buffer.byteLength(JSON.stringify(artifact)),
   },
   hashes: {

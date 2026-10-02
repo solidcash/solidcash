@@ -127,10 +127,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   not a deterministic cold-matrix result and does not repin the stale manifest baseline.
 - 2026-10-02 size-breakdown follow-up: one fresh, single-root UnicrowClaim diagnostic compile still emits a
   16,875-byte redeem script. Its 2,640-byte route is not the dominant cost: five routed handler bodies total
-  5,731 bytes (the two claim handlers are 2,651 and 2,606), direct selector bodies total 5,599 bytes, and
-  163 outlined source spans total 2,426 bytes. Among 207 invoke bodies, exact duplicate bytecode accounts for
-  at most 388 raw body bytes before dispatch overhead. Merely deduplicating identical bodies cannot close the
-  6,875-byte deployability gap; this is a spot diagnostic, not a cold-matrix result or manifest repin.
+  5,731 bytes (the two claim handlers are 2,651 and 2,606), while the route plus direct selector bodies total
+  5,599 bytes (2,640 route plus 2,959 direct), and 163 outlined source spans total 2,426 bytes. Among 207 invoke
+  bodies, exact duplicate bytecode accounts for at most 388 raw body bytes before dispatch overhead. Even
+  hypothetically removing all direct selector bodies would leave 13,916 bytes, so neither selector deduplication
+  nor identical-body sharing can close the 6,875-byte deployability gap. This is a spot diagnostic, not a cold-
+  matrix result or manifest repin. A fresh single-root compile with compilation-speed optimization disabled
+  emitted the same 16,875-byte script, so toggling that option does not recover the missing capacity.
 - 2026-10-02 split-capacity follow-up: an isolated `compileFileSplit` of the same UnicrowClaim source with the
   current kernel options fails closed at `SPLIT_CLOSURE_CAPACITY`: its singleton `claim` closure measures 16,839
   bytes against the 10,000-byte shard limit. Entry-point facet packing therefore cannot deploy this contract;

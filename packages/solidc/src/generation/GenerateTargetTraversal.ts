@@ -23883,50 +23883,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const declaredOrdinal = this.readsRecordsFromFrame && inBatch
         ? this.batchTargetOrdinal(slotIndex)
         : undefined;
-      this.emit(Op.OP_IF, loc);
-      this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
-      if (declaredOrdinal !== undefined) {
-        // A per-call frame recreates a spent record where it spent it, so the output the write proves sits at the
-        // record's own coordinate — the input the proof names — not at a block offset from the frame's first
-        // declared record. A record the transaction creates has no input for the frame's own base to reach: its
-        // declared input is the sentinel, so the coordinate the write proves the record at is negative. Such a
-        // record is named by its position in the segment's declared list instead, as a negative index so the shared
-        // close can tell it from the non-negative coordinates the other arms push.
-        this.emitCopyUpsertVMapWitness(`__internal__vmapBatchProof_${slotIndex}`, loc);
-        this.emitMasterInputIndex(loc); this.emit(Op.OP_ADD, loc); // the record's own coordinate
-        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
-        this.emit(Op.OP_IF, loc);
-        this.emit(Op.OP_DROP, loc); // a created record has no coordinate to resolve a view at
-        this.emitDeclaredGroupRecordOrdinal(declaredOrdinal, 0, loc);
+      if (declaredOrdinal === undefined && !this.readsRecordsFromFrame) {
+        // A direct write's node sits at the entry slot's own output either way, so the bracket guards one tail.
+        this.emit(Op.OP_NOTIF, loc);
+        this.emitSortedPredecessorBracket(loc);
         this.emit(Op.OP_ENDIF, loc);
-      } else if (this.readsRecordsFromFrame) {
-        this.emitPerCallEntryIndex('out', slotIndex, loc);
-      } else {
+        this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
         // A delegate's target follows the co-spent implementation block, which emitEntryOutputIndex resolves.
         this.emitEntryOutputIndex(slotIndex, loc, 0);
-      }
-      this.emit(Op.OP_ELSE, loc);
-      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-      this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-      this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
-      this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
-      this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
-      this.emit(Op.OP_ELSE, loc);
-      this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
-      this.emit(Op.OP_ENDIF, loc);
-      this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
-      if (declaredOrdinal !== undefined) {
-        // The created node is the record after the target's own in the segment's declared list, so it is named by
-        // the next position, in the negative form the shared close reads as a position rather than a coordinate.
-        this.emitDeclaredGroupRecordOrdinal(declaredOrdinal, 1, loc);
-      } else if (this.readsRecordsFromFrame) {
-        this.emitBlockSlotIndex('entry', slotIndex, loc, 0);
       } else {
-        this.emitEntryOutputIndex(slotIndex, loc, 0);
+        this.emit(Op.OP_IF, loc);
+        this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
+        if (declaredOrdinal !== undefined) {
+          // A per-call frame recreates a spent record where it spent it, so the output the write proves sits at the
+          // record's own coordinate - the input the proof names - not at a block offset from the frame's first
+          // declared record. A record the transaction creates has no input for the frame's own base to reach: its
+          // declared input is the sentinel, so the coordinate the write proves the record at is negative. Such a
+          // record is named by its position in the segment's declared list instead, as a negative index so the
+          // shared close can tell it from the non-negative coordinates the other arms push.
+          this.emitCopyUpsertVMapWitness(`__internal__vmapBatchProof_${slotIndex}`, loc);
+          this.emitMasterInputIndex(loc); this.emit(Op.OP_ADD, loc); // the record's own coordinate
+          this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+          this.emit(Op.OP_IF, loc);
+          this.emit(Op.OP_DROP, loc); // a created record has no coordinate to resolve a view at
+          this.emitDeclaredGroupRecordOrdinal(declaredOrdinal, 0, loc);
+          this.emit(Op.OP_ENDIF, loc);
+        } else {
+          this.emitPerCallEntryIndex('out', slotIndex, loc);
+        }
+        this.emit(Op.OP_ELSE, loc);
+        this.emitSortedPredecessorBracket(loc);
+        this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
+        if (declaredOrdinal !== undefined) {
+          // The created node is the record after the target's own in the segment's declared list, so it is named
+          // by the next position, in the negative form the shared close reads as a position rather than a coordinate.
+          this.emitDeclaredGroupRecordOrdinal(declaredOrdinal, 1, loc);
+        } else {
+          this.emitBlockSlotIndex('entry', slotIndex, loc, 0);
+        }
+        this.emit(Op.OP_ENDIF, loc);
       }
-      this.emit(Op.OP_ENDIF, loc);
 
       // Proof fields are used again by the function-level transition verifier; this write only pins its target node
       // at the logical fixed output: H(k) || plannedNext || computedValue.
@@ -27431,7 +27427,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * category. The head leaves the owner's input index in a slot for a per-call body, whose value a frame that owns
    * its records already is; every other convention reads the executing input.
    */
-  private emitRecordsCategoryBase(locationData: SingleLocationData, extraStackOffset = 0): void {
+  private emitRecordsCategoryBase(locationData: SingleLocationData, extraStackOffset = 0, directInlineTake = false): void {
     if (this.stack.includes(categoryOwnerSlotName())) {
       this.emit(encodeInt(BigInt(this.getStackIndex(categoryOwnerSlotName()) + extraStackOffset)), locationData);
       this.emit(Op.OP_PICK, locationData);
@@ -27439,7 +27435,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitMasterInputIndex(locationData, extraStackOffset);
     }
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    this.emitTakeFirst32(locationData);
+    // Sites that took the base inline before the owner slot reached them keep that form outside per-call: a shared
+    // take's OP_INVOKE splits the region the outliner would have extracted whole.
+    if (directInlineTake && !this.perCallMaster) this.emitTakeFirst32Inline(locationData);
+    else this.emitTakeFirst32(locationData);
   }
 
   /** Verify the category on the stack shares the master's 32-byte category base. [cat] -> []. */
@@ -32121,7 +32120,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // runtime temporaries which are intentionally absent from the compile-time tracker, so those routes
       // recompute the address beside each use below (d673e3e39).
       if (!this.currentFunctionIsDelegate) {
-        this.emitRecordsCategoryBase(loc);
+        this.emitRecordsCategoryBase(loc, 0, true);
         this.pushToStack('(dyn_chunkaddr)');
         this.emitSortedEntryAddress(chunkHash, loc);
         this.stack[0] = '(dyn_chunkaddr)';
@@ -33246,6 +33245,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Stack-neutral on [.., H, addr, coSlot, coNext, coValue]: the co-spent node is H's predecessor, so coSlot < H and
+   * it is either the tail (coNext 0) or H < coNext.
+   */
+  private emitSortedPredecessorBracket(loc: SingleLocationData): void {
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
+    this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
    * Leaves the coordinate the frame's declaration puts an entry at, on top of whatever working area a site has
    * built. The frame parks the declared input and output of the record its block opens with, so the entry sits
    * its per-call offset past that base. The pick addresses the frame by its stable bottom ordinal rather than a
@@ -33976,7 +33992,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(dyn_rlen)');
 
     // --- chunk address '(dyn_rchunkaddr)' ---
-    this.emitRecordsCategoryBase(loc);
+    this.emitRecordsCategoryBase(loc, 0, true);
     this.pushToStack('(dyn_rchunkaddr)');
     this.emitSortedEntryAddress(chunkHash, loc);
     this.stack[0] = '(dyn_rchunkaddr)';
@@ -36257,7 +36273,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // The 32-byte categoryId the listed event covenant is pinned to. A frame that runs on another contract's
       // records emits into that contract's event covenant, so the category is the records' owner's.
-      this.emitRecordsCategoryBase(locationData);
+      this.emitRecordsCategoryBase(locationData, 0, true);
       this.pushToStack('(value)'); // categoryId on stack
 
       // Build the event covenant script bytes:

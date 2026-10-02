@@ -1,6 +1,10 @@
-import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { createHash, randomBytes } from 'crypto';
+import {
+  existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync,
+  type Dirent,
+} from 'fs';
+import { createRequire } from 'module';
+import { dirname, join, relative } from 'path';
 import { fileURLToPath } from 'url';
 import {
   BailErrorStrategy, CharStream, CommonTokenStream, DefaultErrorStrategy, LexerATNSimulator,
@@ -405,37 +409,96 @@ function importClosureFingerprint(
   return digest.digest('hex');
 }
 
+/** Per-process memo of source content hashes, shared by every compiler instance (a src build beside dist). */
+const SOURCE_HASH_MEMO = Symbol.for('solidc.compileCacheSourceHashes');
+
+/** Code a compiler process can load: TypeScript sources or their emitted JavaScript, not declarations or maps. */
+const isCompilerCodeFile = (name: string): boolean => /\.(?:ts|js|mjs|cjs|json)$/.test(name)
+  && !name.endsWith('.d.ts');
+
 /**
- * Identity of the compiler implementation that produced a cached artifact.
- *
- * Keying this on the entry module alone (its size and mtime) misses every edit to the passes it imports: the
- * artifact cache then keeps serving artifacts from the previous build, and a debugging loop measures code that no
- * longer exists. Measured: three consecutive edits to the journal lowering passes changed no artifact, while the
- * one edit to this file invalidated all of them. Fold every emitted module of the package into the id instead.
+ * Content identity of the code files under each root, as root-relative paths and content hashes; a missing root
+ * counts as empty. A file's hash is memoized per process by path, size, mtime, ctime and inode, so any rewrite (ctime
+ * moves even when a tool restores mtime) is read again. Throws when a file vanishes while it is read.
  */
-const compilerBuildFingerprint = (): string => {
-  const entry = fileURLToPath(import.meta.url);
-  let files = 0;
-  let bytes = 0;
-  let latest = 0;
+export function sourceTreeFingerprint(roots: readonly string[]): string {
+  const holder = globalThis as unknown as Record<symbol, Map<string, string> | undefined>;
+  const memo = (holder[SOURCE_HASH_MEMO] ??= new Map<string, string>());
+  const digest = createHash('sha256');
+  for (const root of roots) {
+    let entries: Dirent[] = [];
+    try {
+      entries = readdirSync(root, { recursive: true, withFileTypes: true });
+    } catch {
+      // An install without one of the trees (utils sources) has nothing there to load.
+    }
+    const files = entries
+      .filter((entry) => entry.isFile() && isCompilerCodeFile(entry.name))
+      .map((entry) => join(entry.parentPath ?? (entry as { path?: string }).path ?? root, entry.name))
+      .sort();
+    digest.update(`\x01${files.length}\x00`);
+    for (const file of files) {
+      const stat = statSync(file);
+      const memoKey = `${file}\x00${stat.size}\x00${stat.mtimeMs}\x00${stat.ctimeMs}\x00${stat.ino}`;
+      let hash = memo.get(memoKey);
+      if (hash === undefined) {
+        hash = createHash('sha256').update(readFileSync(file)).digest('hex');
+        memo.set(memoKey, hash);
+      }
+      digest.update(`${relative(root, file)}\x00${hash}\x00`);
+    }
+  }
+  return digest.digest('hex');
+}
+
+/** The root directory and installed version of a package as resolved from `require`, if it resolves. */
+function resolvedPackage(require: NodeRequire, name: string): { root: string; version: string } | undefined {
   try {
-    const directory = dirname(entry);
-    for (const entryName of readdirSync(directory, { recursive: true, withFileTypes: true })) {
-      if (!entryName.isFile() || !entryName.name.endsWith('.js')) continue;
-      const stat = statSync(join(entryName.parentPath ?? directory, entryName.name));
-      files += 1;
-      bytes += stat.size;
-      latest = Math.max(latest, stat.mtimeMs);
+    let dir = dirname(require.resolve(name));
+    while (dir !== dirname(dir)) {
+      const manifest = join(dir, 'package.json');
+      if (existsSync(manifest)) {
+        const parsed = JSON.parse(readFileSync(manifest, 'utf8')) as { name?: string; version?: string };
+        if (parsed.name === name) return { root: dir, version: parsed.version ?? '' };
+      }
+      dir = dirname(dir);
     }
   } catch {
-    // A single-module deployment (bundled dist, restricted filesystem) keeps the entry-module identity.
+    // A bundled deployment resolves nothing; its own module tree, hashed below, carries every dependency.
   }
-  if (files === 0) {
-    const stat = statSync(entry);
-    return `${stat.size}:${stat.mtimeMs}`;
+  return undefined;
+}
+
+/** Dependencies whose installed versions shape emitted artifacts. */
+const FINGERPRINT_DEPENDENCIES = ['@solidcash/utils', '@bitauth/libauth', '@noble/hashes', 'antlr4', 'semver'];
+
+/**
+ * Identity of the compiler implementation that produced a cached artifact: the content of every solidc module this
+ * instance loads (its own tree, src .ts from source or dist .js when built), both @solidcash/utils trees (a test alias
+ * may load either), and the dependency and Node versions that shape emitted bytecode.
+ *
+ * Sizes and mtimes miss a same-size edit, and keying a from-source run on this entry module alone served the
+ * previous build's artifacts after an edit to any other pass. Hashing content costs tens of milliseconds per process.
+ */
+function compilerBuildFingerprint(): string {
+  try {
+    const entry = fileURLToPath(import.meta.url);
+    const require = createRequire(entry);
+    const utils = resolvedPackage(require, '@solidcash/utils');
+    const roots = [dirname(entry), ...(utils ? [join(utils.root, 'src'), join(utils.root, 'dist')] : [])];
+    const versions = FINGERPRINT_DEPENDENCIES
+      .map((name) => `${name}@${resolvedPackage(require, name)?.version ?? 'unresolved'}`);
+    return createHash('sha256')
+      .update(`${sourceTreeFingerprint(roots)}\x00${versions.join('\x00')}\x00node@${process.versions.node}`)
+      .digest('hex');
+  } catch {
+    // A tree edited while it is read has no stable identity, so this process shares no entries.
+    return `unstable-${randomBytes(16).toString('hex')}`;
   }
-  return `${files}:${bytes}:${latest}`;
-};
+}
+
+// Taken while this module loads, beside the code it identifies: an edit landing before a later first compile would
+// otherwise file this process's artifacts under the edited sources' identity.
 const COMPILER_CACHE_BUILD_ID = solidcEnvValue('SOLIDC_COMPILE_CACHE_BUILD_ID')
   ?? compilerBuildFingerprint();
 if (solidcEnvFlagEnabled('SOLIDC_DEBUG_CACHE_ID')) {
@@ -1297,11 +1360,87 @@ function diskMultiCachePath(cacheKey: string): string | undefined {
   return join(dir, `${hash}.json`);
 }
 
+/** A disk entry is the sha256 of its key plus `.json`; a writer's temp file appends `.<pid>.<random>.tmp`. */
+const DISK_ENTRY_NAME = /^[0-9a-f]{64}\.json$/;
+const DISK_TEMP_NAME = /^[0-9a-f]{64}\.json\.\d+\.[0-9a-f]{12}\.tmp$/;
+/** Every compiler edit files a full entry set under a new build identity, so the directory needs a bound. */
+const DISK_CACHE_MAX_BYTES = 2 ** 30;
+let diskCachePrunedDir: string | undefined;
+
+/**
+ * Write a cache entry so a concurrent reader never sees a partial file: a unique temp file in the same directory,
+ * then an atomic rename. Workers racing on one key rename identical content, so the last rename wins harmlessly.
+ */
+function writeCacheEntryAtomically(file: string, data: string): void {
+  const temp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    writeFileSync(temp, data);
+    renameSync(temp, file);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
+}
+
+/**
+ * Bound a cache directory to `maxBytes`: the least recently used entries go (a hit refreshes an entry's mtime) until
+ * it holds three quarters of that, and so do temp files a crashed writer left over an hour ago. Files with names
+ * the cache does not write are never touched.
+ */
+export function pruneCompileCacheDir(dir: string, maxBytes = DISK_CACHE_MAX_BYTES): void {
+  const entries: { file: string; size: number; used: number }[] = [];
+  let total = 0;
+  for (const name of readdirSync(dir)) {
+    const temp = DISK_TEMP_NAME.test(name);
+    if (!temp && !DISK_ENTRY_NAME.test(name)) continue;
+    const file = join(dir, name);
+    const stat = statSync(file, { throwIfNoEntry: false });
+    if (!stat) continue;
+    if (!temp) {
+      entries.push({ file, size: stat.size, used: stat.mtimeMs });
+      total += stat.size;
+    } else if (Date.now() - stat.mtimeMs > 3_600_000) {
+      rmSync(file, { force: true });
+    }
+  }
+  if (total <= maxBytes) return;
+  entries.sort((a, b) => a.used - b.used);
+  for (const entry of entries) {
+    if (total <= maxBytes * 0.75) break;
+    rmSync(entry.file, { force: true });
+    total -= entry.size;
+  }
+}
+
+/** Create the cache directory and, once per process, bound it before the first write. */
+function prepareDiskCacheDir(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  if (diskCachePrunedDir === dir) return;
+  diskCachePrunedDir = dir;
+  try {
+    pruneCompileCacheDir(dir);
+  } catch {
+    // Pruning is best-effort, like the cache.
+  }
+}
+
+/** Mark an entry used, so pruning drops first the ones no current build reads. */
+function touchDiskEntry(file: string): void {
+  try {
+    const now = new Date();
+    utimesSync(file, now, now);
+  } catch {
+    // A concurrent prune removed it; the copy already read stays valid.
+  }
+}
+
 function diskCacheGet(cacheKey: string): Artifact | undefined {
   const file = diskCachePath(cacheKey);
   if (!file || !existsSync(file)) return undefined;
   try {
-    return JSON.parse(readFileSync(file, 'utf8')) as Artifact;
+    const artifact = JSON.parse(readFileSync(file, 'utf8')) as Artifact;
+    touchDiskEntry(file);
+    return artifact;
   } catch {
     return undefined;
   }
@@ -1328,7 +1467,9 @@ function diskMultiCacheGet(cacheKey: string): ArtifactMap | undefined {
     for (const [name, artifact] of Object.entries(artifacts as Record<string, Artifact>)) {
       if (artifact && typeof artifact === 'object') map[name] = artifact;
     }
-    return Object.keys(map).length > 0 ? map : undefined;
+    if (Object.keys(map).length === 0) return undefined;
+    touchDiskEntry(file);
+    return map;
   } catch {
     return undefined;
   }
@@ -1338,15 +1479,14 @@ function diskMultiCacheSet(cacheKey: string, map: ArtifactMap): void {
   const file = diskMultiCachePath(cacheKey);
   if (!file) return;
   try {
-    const dir = solidcEnvValue('SOLIDC_COMPILE_CACHE_DIR')!;
-    mkdirSync(dir, { recursive: true });
+    prepareDiskCacheDir(solidcEnvValue('SOLIDC_COMPILE_CACHE_DIR')!);
     // Lazy delegate variants are stripped for the same reason as the single-artifact entries: serializing them
     // would force a second codegen pass per declaration. Re-attached on the read path instead.
     const artifacts: Record<string, Artifact> = {};
     for (const [name, artifact] of Object.entries(map)) {
       artifacts[name] = artifactWithoutDelegate(artifact);
     }
-    writeFileSync(file, JSON.stringify({
+    writeCacheEntryAtomically(file, JSON.stringify({
       marker: MULTI_DISK_ENTRY_MARKER, version: MULTI_DISK_ENTRY_VERSION, artifacts,
     }));
   } catch {
@@ -1358,10 +1498,9 @@ function diskCacheSet(cacheKey: string, artifact: Artifact): void {
   const file = diskCachePath(cacheKey);
   if (!file) return;
   try {
-    const dir = solidcEnvValue('SOLIDC_COMPILE_CACHE_DIR')!;
-    mkdirSync(dir, { recursive: true });
-    // Primary artifact only — re-attaching the lazy delegate on every disk hit would re-run codegen.
-    writeFileSync(file, JSON.stringify(artifactWithoutDelegate(artifact)));
+    prepareDiskCacheDir(solidcEnvValue('SOLIDC_COMPILE_CACHE_DIR')!);
+    // Primary artifact only - re-attaching the lazy delegate on every disk hit would re-run codegen.
+    writeCacheEntryAtomically(file, JSON.stringify(artifactWithoutDelegate(artifact)));
   } catch {
     // Cache is best-effort; a full disk or race must not fail the compile.
   }

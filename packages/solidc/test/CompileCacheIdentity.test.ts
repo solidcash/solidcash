@@ -1,9 +1,13 @@
+import { mkdirSync, mkdtempSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildArtifactCacheKey,
   clearCompileCache,
   compileString,
   getCompileCacheEntryCount,
+  sourceTreeFingerprint,
 } from '../src/compiler.js';
 
 /**
@@ -65,5 +69,42 @@ describe('SOLIDC env registry compile-cache artifact identity', () => {
     // Same options hit the same entry.
     compileString(src, { suppressWarnings: true, messageBus: false });
     expect(getCompileCacheEntryCount()).toBe(2);
+  });
+
+  it('identifies compiler sources by content, nested files included', () => {
+    const root = mkdtempSync(join(tmpdir(), 'solidc-fingerprint-'));
+    // An editor saves through a rename, so every write below is a new file at the old path.
+    const save = (file: string, text: string): void => {
+      writeFileSync(`${file}.new`, text);
+      renameSync(`${file}.new`, file);
+    };
+    try {
+      const srcTree = join(root, 'src');
+      const emitter = join(srcTree, 'generation', 'emitter.ts');
+      mkdirSync(join(srcTree, 'generation'), { recursive: true });
+      save(join(srcTree, 'compiler.ts'), 'export const entry = 1;\n');
+      save(emitter, 'export const op = 0x69;\n');
+      const original = sourceTreeFingerprint([srcTree]);
+      // A same-size edit with its mtime put back, which a size-and-mtime identity reads as the previous build.
+      const { atime, mtime } = statSync(emitter);
+      save(emitter, 'export const op = 0x6a;\n');
+      utimesSync(emitter, atime, mtime);
+      expect(sourceTreeFingerprint([srcTree])).not.toBe(original);
+      // Reverting the edit restores the identity, and with it the entries cached for it.
+      save(emitter, 'export const op = 0x69;\n');
+      expect(sourceTreeFingerprint([srcTree])).toBe(original);
+      // Declarations and source maps are not code a compiler loads.
+      save(join(srcTree, 'generation', 'emitter.d.ts'), 'export declare const op: number;\n');
+      save(join(srcTree, 'generation', 'emitter.js.map'), '{}\n');
+      expect(sourceTreeFingerprint([srcTree])).toBe(original);
+      // A file moved from one tree to the next changes the identity, although its path and hash stay in order.
+      const distTree = join(root, 'dist');
+      mkdirSync(join(distTree, 'generation'), { recursive: true });
+      const before = sourceTreeFingerprint([srcTree, distTree]);
+      renameSync(emitter, join(distTree, 'generation', 'emitter.ts'));
+      expect(sourceTreeFingerprint([srcTree, distTree])).not.toBe(before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

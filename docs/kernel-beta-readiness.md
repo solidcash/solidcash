@@ -177,8 +177,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   a valid 20-byte `uint160(token_)` identity plus later amount bytes for a 35-byte P2SH32 lock. Created-event
   replay now reads the token field at its declared 20-byte width; the exact collision title and its immediately
   preceding packed-identity title pass. The event-format decision for `post job 1` remains open. The root build
-  passes, while the app's independent TypeScript check still reports a missing generated wagmi module, a cipher
-  import, and two implicit-any callbacks outside these edited decoder files. No broader tests were run.
+  passes. The app's independent TypeScript check originally reported a missing generated wagmi module, an obsolete
+  cipher import, and two implicit-any callbacks outside these edited decoder files. The cipher import has since
+  been replaced with WebCrypto nonce generation; its focused encrypted/unencrypted titles pass, leaving the
+  missing wagmi module and two callback diagnostics. No broader tests were run.
 - 2026-10-02 typegen checkpoint (`91600bd8f`): a complete compile reproduced unrelated imported enum aliases
   in interface binding modules. Type generation now includes only enum names mentioned by the declaration's
   source (or the artifact's recorded source when that declaration file is unavailable), and its cache key tracks

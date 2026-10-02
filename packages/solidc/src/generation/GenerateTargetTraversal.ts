@@ -8615,8 +8615,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && hasEntryAccess && !isSelfdestruct) {
         this.emitReadOnlyEntryVerification(node);
       }
-      // After read-only preservation, in the order the SDK derives entry closes.
-      if (!this.functionHasDelegatecall && this.conditionalSortedWriteFlagSlots.size > 0 && !isSelfdestruct) {
+      // After read-only preservation, in the order the SDK derives entry closes. A per-call master binds its flagged
+      // slots in its single-target transition instead.
+      if (!this.functionHasDelegatecall && !this.perCallMaster && this.conditionalSortedWriteFlagSlots.size > 0
+        && !isSelfdestruct) {
         this.emitConditionalSortedWritePreservation(node);
       }
       // Conditional soft-delete entries: verified AFTER read-only preservation (derivation-order requirement).
@@ -27626,6 +27628,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     // UPDATE: no predecessor is relinked.
     arg(predOut); this.emit(Op.OP_1NEGATE, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    // A conditional write that did not run (its flag clear) leaves the node it spends unchanged.
+    if (this.conditionalSortedWriteFlagSlots.has(slot)) {
+      const flagIndex = this.getStackIndex(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot), true);
+      if (flagIndex >= 0) {
+        this.emit(encodeInt(BigInt(flagIndex)), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_NOTIF, loc);
+        this.emitPerCallEntryIndex('in', slot, loc);
+        this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+        this.emitPerCallEntryIndex('out', slot, loc);
+        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);
+        this.emit(Op.OP_ENDIF, loc);
+      }
+    }
     this.emit(Op.OP_ELSE, loc);
     // INSERT: the predecessor's output, at the collection's covenant with the contract's mutable token.
     arg(predOut); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
@@ -41341,17 +41358,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Push a false "write ran" flag, below the body's locals, for each fixed conditional sorted-write slot. Loop, alias,
-   * multi-slot batch and invoked-subroutine writes settle differently and get none.
+   * Push a false "write ran" flag, below the body's locals, for each fixed conditional sorted-write slot: the direct
+   * epilogue or the per-call single-target transition binds the node where it stays false. Loop, alias, invoked and
+   * multi-slot batch writes get none, and a per-call master flags only a one-slot batch target.
    */
   private allocateConditionalSortedWriteFlags(node: FunctionDefinitionNode): void {
-    if (this.isDefineSubTraversal || this.perCallMaster || this.functionHasDelegatecall) return;
-    // A per-call frame closes its own records.
-    if (this.compilerOptions.composition === 'per-call') return;
+    if (this.isDefineSubTraversal || this.functionHasDelegatecall) return;
     // A message-bus route settles its entry slots through its own handler machinery.
-    if ((this.compilerOptions as { __messageBusExplicitlyDisabled?: boolean }).__messageBusExplicitlyDisabled !== true) {
-      return;
-    }
+    const messageBusDisabled = (this.compilerOptions as { __messageBusExplicitlyDisabled?: boolean })
+      .__messageBusExplicitlyDisabled === true;
+    const direct = messageBusDisabled && this.compilerOptions.composition !== 'per-call' && !this.perCallMaster;
+    if (!direct && !this.perCallMaster) return;
     const slots = new Set<number>();
     const invokedWrites = new Set<number>();
     this.collectConditionalSortedWriteSlots(node.body, false, slots, new Map(), invokedWrites);
@@ -41363,11 +41380,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       // Alias writes carry their own key-inequality gate.
       if (info.aliasCondDeleteSlot !== undefined || (info.runtimeAliasPriorSlots?.length ?? 0) > 0) continue;
-      // In a multi-slot batch a relinked predecessor changes without an upsert of its own, which a flag would refuse.
-      if (node.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIndex) && batch.slotIndices.length > 1)) {
+      if (this.collectionDefinitions.find((c) => c.name === info.collection)?.sorted !== true) continue;
+      const inSingleSlotBatch = node.sortedBatchInfo?.some(
+        (batch) => batch.slotIndices.length === 1 && batch.slotIndices[0] === slotIndex,
+      ) ?? false;
+      const inMultiSlotBatch = node.sortedBatchInfo?.some(
+        (batch) => batch.slotIndices.length > 1 && batch.slotIndices.includes(slotIndex),
+      ) ?? false;
+      // A per-call master binds only a one-slot batch target; in a direct multi-slot batch a relinked predecessor
+      // changes without an upsert of its own, which a flag would refuse.
+      if (this.perCallMaster ? !inSingleSlotBatch : inMultiSlotBatch) {
         continue;
       }
-      if (this.collectionDefinitions.find((c) => c.name === info.collection)?.sorted !== true) continue;
       this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slotIndex));
       this.conditionalSortedWriteFlagSlots.add(slotIndex);

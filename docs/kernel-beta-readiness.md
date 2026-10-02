@@ -431,6 +431,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   whether to stamp an append timestamp. The neutral readiness name is available while the historical export stays
   as a compatibility alias. The exact new session title went red-to-green and its immediately preceding isolation
   title passes. This does not retire the remaining legacy schema adapter or establish a broad SDK gate.
+- 2026-10-02 legacy writer-planning follow-up: the descriptor-free rematerialization and persisted-readiness
+  decisions now use the selected publisher category, and an unresolved category has zero persisted width instead
+  of borrowing another category's cached width. A focused title with an unrelated ready category went red-to-green;
+  after recording the selected category it proves the update path can still proceed. Its immediately preceding
+  legacy collection-fallback title passes. Three older nested-create/derive consumers still use an aggregate
+  compatibility fallback and need source-specific category evidence before they can be narrowed safely.
 
 ## Gate before the next leap
 

@@ -22,7 +22,7 @@ import {
 } from './delegate-event-jobevent-helpers.js';
 import {
   isInitialValueChunkWrite,
-  isPersistedJobEventsReady,
+  isPersistedCompatibilityValueChunkReady,
   isValueChunkWriteReady,
   persistedJobEventsWidth,
   persistedValueChunkReadiness,
@@ -219,7 +219,8 @@ export function shouldRematerializePersistUpdateForHost(host: ChunkableWritePlan
     if (!names.some((n) => legacyIsPublishJobEventName(n))) continue;
     const event = (group.logicalFunctionArgs ?? group.functionArgs)?.[1];
     if (shouldRematerializePersistUpdate({
-      persistReady: isPersistedJobEventsReady(),
+      persistReady: group.categoryId !== undefined
+        && isPersistedCompatibilityValueChunkReady(group.categoryId),
       initialWrite: isInitialChunkableValueWrite(host),
       event,
       plannedInserts,
@@ -270,13 +271,15 @@ export function persistedChunkableValueWriteState(
 
 export function isPersistedChunkableValueWriteReady(host: ChunkableWritePlanningHost): boolean {
   const selection = valueChunkWriteCategorySelection(host);
+  const legacyCategory = selection.status === 'absent' ? chunkableValueWriteCategory(host) : undefined;
   return persistedValueChunkReadiness({
     selection,
     hasWriteMetadata: hasChunkableValueWriteMetadata(host),
     permitsLegacyFallback: permitsLegacyNamedValueChunkFallbackForGroups(host),
     descriptorReady: selection.status === 'exact'
       && persistedChunkableValueWriteState(host) !== undefined,
-    legacyReady: isPersistedJobEventsReady(),
+    legacyReady: legacyCategory !== undefined
+      && isPersistedCompatibilityValueChunkReady(legacyCategory),
   });
 }
 
@@ -309,7 +312,7 @@ export function shouldStampPersistUpdateDigestLockForHost(host: ChunkableWritePl
   return shouldStampPersistUpdateDigestLock({
     persistReady: exactPersisted !== undefined || isPersistedChunkableValueWriteReady(host),
     persistWidth: exactPersisted?.width
-      ?? (categoryId ? persistedJobEventsWidth(categoryId) : persistedJobEventsWidth()),
+      ?? (categoryId ? persistedJobEventsWidth(categoryId) : 0),
     firstPublishInsert: isInitialChunkableValueWriteForDigest(host),
   });
 }

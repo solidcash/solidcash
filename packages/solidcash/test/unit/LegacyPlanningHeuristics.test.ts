@@ -7,8 +7,19 @@ import {
   legacyScalarNameHints,
   permitsLegacyScalarNameHeuristics,
 } from '../../src/stateful/legacy-planning-heuristics.js';
-import { permitsLegacyNamedValueChunkFallback } from '../../src/stateful/StatefulTransactionBuilder.js';
-import { isInitialChunkableValueWrite } from '../../src/stateful/stb-chunkable-write-planning.js';
+import {
+  createCompositionSettlementSession,
+  legacyRememberValueChunkValue,
+  markPersistedCompatibilityValueChunkReady,
+  permitsLegacyNamedValueChunkFallback,
+  runWithCompositionSettlementSession,
+} from '../../src/stateful/StatefulTransactionBuilder.js';
+import {
+  isInitialChunkableValueWrite,
+  isPersistedChunkableValueWriteReady,
+  shouldRematerializePersistUpdateForHost,
+  shouldStampPersistUpdateDigestLockForHost,
+} from '../../src/stateful/stb-chunkable-write-planning.js';
 import { getChunkableValueWriteBand } from '../../src/stateful/stb-get-chunkable-value-write-band.js';
 
 describe('legacy planning heuristics isolation (item 1)', () => {
@@ -75,6 +86,36 @@ describe('legacy planning heuristics isolation (item 1)', () => {
       .toBe('jobEvents');
     expect(legacyNamedJobEventCollectionFallback([{ functionName: 'publishJobEvent' }], false))
       .toBeUndefined();
+  });
+
+  it('does not treat another category as a ready legacy value-chunk publisher', () => {
+    const session = createCompositionSettlementSession();
+    const publisher = 'aa'.repeat(32);
+    const unrelated = 'bb'.repeat(32);
+    const host = {
+      externalCallUtxoGroups: [{
+        categoryId: publisher,
+        functionName: 'publishJobEvent',
+        logicalFunctionArgs: [0n, [16, '', '', 0]],
+      }],
+      lowLevelCallUtxoGroups: [],
+      messageBusConvention: 'legacy-unroll',
+      composedParticipant: false,
+      getLowLevelCallMasterInputIndex: () => -1,
+      getExternalCallMasterInputIndex: () => -1,
+    };
+    runWithCompositionSettlementSession(session, () => {
+      markPersistedCompatibilityValueChunkReady(unrelated);
+      legacyRememberValueChunkValue(unrelated, new Uint8Array(80));
+      expect(isPersistedChunkableValueWriteReady(host as never)).toBe(false);
+      expect(shouldRematerializePersistUpdateForHost(host as never)).toBe(false);
+      expect(shouldStampPersistUpdateDigestLockForHost(host as never)).toBe(false);
+      markPersistedCompatibilityValueChunkReady(publisher);
+      legacyRememberValueChunkValue(publisher, new Uint8Array(80));
+      expect(isPersistedChunkableValueWriteReady(host as never)).toBe(true);
+      expect(shouldRematerializePersistUpdateForHost(host as never)).toBe(true);
+      expect(shouldStampPersistUpdateDigestLockForHost(host as never)).toBe(true);
+    });
   });
 
   it('does not read the historical collection for a renamed descriptor-free band writer', () => {

@@ -163,6 +163,23 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   event-format assertion or establish a 66-title result. After the active band-helper rename,
   `node scripts/kernel-beta-gate.mjs --sources-only --allow-dirty` still reports matched source fingerprints;
   that diagnostic skips all tests and cold compiles.
+- 2026-10-02 fresh proxy update-job checkpoint: after a normal 22-source Marketplace compile, the unchanged
+  `job updates > update job` title passes the earlier graph-emission VM comparison and reaches application event
+  replay. With a 600-second timeout it remains red after 214.49 seconds: the authenticated planned Created-event
+  payload is 155 bytes and its token field is the correct 20-byte `HASH160` identity of the P2SH32 token lock.
+  The application `decodeAddress` fallback advances 21 bytes for that field, shifting the following amount and
+  time fields; it then reads the first `d` of `digital` as a 100-byte string length and fails UTF-8 decoding.
+  Advancing 20 would fix that parse offset but cannot recover the full 35-byte lock that `post job 1` and
+  state-diff replay expect.
+  The event's BCH wire format therefore needs an explicit application decision; no Marketplace source or suite
+  assertion was changed. No broader Marketplace run was made.
+- 2026-10-02 typegen checkpoint (`91600bd8f`): a complete compile reproduced unrelated imported enum aliases
+  in interface binding modules. Type generation now includes only enum names mentioned by the declaration's
+  source (or the artifact's recorded source when that declaration file is unavailable), and its cache key tracks
+  that selection.
+  The exact new regression and its immediately preceding imported-error-interface title pass; `yarn build`,
+  focused lint, the normal Marketplace compile, and the sources-only beta gate pass. Regenerated bindings remove
+  unused aliases from six modules. This is not a comprehensive test or beta-gate result.
 - 2026-10-02 automatic-selection checkpoint: a new regression exposed that a nested local declaration after a
   typed external call could make auto selection overlook that reachable graph edge. The source-level receiver
   survey now follows declaration order and block scope; the regression and its immediately preceding typed-state-

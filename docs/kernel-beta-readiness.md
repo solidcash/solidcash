@@ -117,6 +117,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   1,372 bytes and framework tax from 1,263 to 1,232. Its exact-size drift pin was lowered accordingly; the
   1,400/1,250 ceilings were unchanged. That first title has no predecessor, so its immediate successor was the
   one regression check. No broad suite or beta gate was run.
+- 2026-10-02 release-input checkpoint: `node scripts/kernel-beta-gate.mjs --sources-only --allow-dirty`
+  validates the static manifest fences and both maintained source-plus-import-closure fingerprints without
+  launching tests, builds, or cold compiles; it passes. The full gate now performs this inexpensive fingerprint
+  check before its broad test commands. A single current UnicrowClaim kernel spot compile measured 16,875 redeem-
+  script bytes (still over the 10,000-byte limit), 2,640 route bytes, and zero caught compiler attempts. This is
+  not a deterministic cold-matrix result and does not repin the stale manifest baseline.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

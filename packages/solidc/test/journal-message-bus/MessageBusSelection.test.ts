@@ -274,6 +274,21 @@ describe('message-bus compilation selection', () => {
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
   });
 
+  it('selects the graph route for an interface field in a stored struct entry', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      struct Holder { ISink target; }
+      contract StructReceiver {
+        mapping(uint => Holder) holders;
+        function forward(uint id) public {
+          holders[id].target.note(1);
+          require(true);
+        }
+      }`, { solidityImportCompat: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.available).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+  });
+
   it('keeps a typed external call before an unrelated nested local shadow on the graph route', () => {
     const artifact = compileString(`interface ISink { function note(int value) external; }
       contract TypedShadow {

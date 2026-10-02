@@ -4049,28 +4049,41 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   const addressStateReceivers = new Set([
     ...contract.parameters, ...contract.stateVariables,
   ].filter((declaration) => declaration.type instanceof AddressType).map((declaration) => declaration.name));
-  const terminalCollectionType = (type: Type): Type => {
-    let current = type;
-    while (current instanceof MappingType || current instanceof ArrayType) {
-      current = current instanceof MappingType ? current.valueType : current.elementType;
+  const stateReceiverTypes = new Map<string, Type>([
+    ...contract.parameters, ...contract.stateVariables, ...contract.collections,
+  ].map((declaration): [string, Type] => [declaration.name, declaration.type]));
+  const indexedElementType = (type: Type | undefined): Type | undefined => {
+    if (type instanceof MappingType) return type.valueType;
+    if (type instanceof ArrayType) return type.elementType;
+    return undefined;
+  };
+  const sourceReceiverType = (expression: ExpressionNode, bindings: Map<string, Type | undefined>): Type | undefined => {
+    if (expression instanceof IdentifierNode) return bindings.get(expression.name);
+    if (expression instanceof StateAccessNode) return stateReceiverTypes.get(expression.name);
+    if (expression instanceof MappingAccessNode) {
+      let type = stateReceiverTypes.get(expression.name);
+      for (let index = 0; index < expression.keys.length; index += 1) type = indexedElementType(type);
+      return type;
     }
-    return current;
+    if (expression instanceof ArrayAccessNode) {
+      return indexedElementType(sourceReceiverType(expression.array, bindings));
+    }
+    if (expression instanceof FieldAccessNode) {
+      const parent = sourceReceiverType(expression.expression, bindings);
+      return parent instanceof StructType ? parent.fields.find((field) => field.name === expression.name)?.type
+        : undefined;
+    }
+    return undefined;
   };
-  const isInterfaceReceiverType = (type: Type): boolean => {
-    const terminal = terminalCollectionType(type);
-    return terminal instanceof AddressType && terminal.interfaceName !== undefined;
-  };
-  const typedCollectionReceivers = new Set(contract.collections
-    .filter((collection) => isInterfaceReceiverType(collection.type)).map((collection) => collection.name));
   const namespacedCallSurfaces: Array<{ parameters: readonly ParameterNode[]; body: Node | undefined }> = [
     ...surveyedFunctions.map((fn) => ({ parameters: fn.parameters, body: fn.body })),
     ...[...activeModifiers].map((modifier) => ({ parameters: modifier.parameters, body: modifier })),
     ...[...activeModifierArgs].map((arg) => ({ parameters: [], body: arg })),
     ...otherMembers.map((member) => ({ parameters: [], body: member })),
   ];
-  const hasNamespacedGraphCall = (body: Node, initialReceivers: Map<string, boolean>): boolean => {
+  const hasNamespacedGraphCall = (body: Node, initialReceivers: Map<string, Type | undefined>): boolean => {
     const seen = new Set<Node>();
-    const visit = (node: Node, receivers: Map<string, boolean>): boolean => {
+    const visit = (node: Node, receivers: Map<string, Type | undefined>): boolean => {
       if (seen.has(node)) return false;
       seen.add(node);
       if (node instanceof BlockNode) {
@@ -4081,7 +4094,7 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       if (node instanceof VariableDefinitionNode) {
         // Solidity resolves an initializer before publishing the local binding.
         if (node.expression && visit(node.expression, receivers)) return true;
-        receivers.set(node.name, isInterfaceReceiverType(node.type));
+        receivers.set(node.name, node.type);
         return false;
       }
       if (node instanceof TryCatchNode) {
@@ -4090,7 +4103,8 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       }
       if (node instanceof FunctionCallNode) {
         const parts = node.identifier.name.split('.');
-        if (parts.length === 2 && receivers.get(parts[0]) === true
+        const receiverType = receivers.get(parts[0]);
+        if (parts.length === 2 && receiverType instanceof AddressType && receiverType.interfaceName !== undefined
           && !['call', 'staticcall', 'delegatecall'].includes(parts[1])) return true;
         // Library.call(...) is a local helper unless a value with the same name is visible HERE.
         // A binding in another function or a later/nested block must not turn it into address.call(data).
@@ -4100,12 +4114,10 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
         }
       }
       if (node instanceof MethodCallNode && node.methodName !== 'delegatecall') {
-        let receiver: ExpressionNode = node.object;
-        while (receiver instanceof ArrayAccessNode) receiver = receiver.array;
-        if (receiver instanceof MappingAccessNode && typedCollectionReceivers.has(receiver.name)) return true;
-        if (node.object instanceof ArrayAccessNode
-          && ((receiver instanceof IdentifierNode && receivers.get(receiver.name) === true)
-            || (receiver instanceof StateAccessNode && typedCollectionReceivers.has(receiver.name)))) return true;
+        const receiverType = sourceReceiverType(node.object, receivers);
+        if (receiverType instanceof AddressType
+          && (receiverType.interfaceName !== undefined
+            || node.methodName === 'call' || node.methodName === 'staticcall')) return true;
       }
       // Match walkInvocationAst's executable-child traversal without flattening lexical block scopes.
       for (const key in node) {
@@ -4126,10 +4138,8 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   };
   for (const surface of namespacedCallSurfaces) {
     if (!surface.body) continue;
-    const typedReceivers = new Map(typedStateReceivers);
-    for (const name of typedCollectionReceivers) typedReceivers.set(name, true);
-    for (const parameter of surface.parameters) typedReceivers.set(parameter.name,
-      isInterfaceReceiverType(parameter.type));
+    const typedReceivers = new Map<string, Type | undefined>(stateReceiverTypes);
+    for (const parameter of surface.parameters) typedReceivers.set(parameter.name, parameter.type);
     if (hasNamespacedGraphCall(surface.body, typedReceivers)) return true;
   }
   // The scoped survey above handles namespaced low-level calls. The generic walk below handles explicit

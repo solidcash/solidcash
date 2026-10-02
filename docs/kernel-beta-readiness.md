@@ -227,6 +227,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   type in its lexical-scope survey, so local declarations can still shadow the collection. The focused
   red-to-green title publishes an available graph route and one external call; its immediately preceding
   low-level state-address title passes. No broad compiler suite or beta gate was run.
+- 2026-10-02 stored-struct receiver follow-up: `holders[id].target.note(...)`, with an interface field in a
+  stored struct entry, likewise compiled direct-only by default. The scoped source survey now resolves declared
+  types across indexes and struct fields before deciding whether a method call crosses a contract boundary.
+  The focused red-to-green title confirms one external call on an available graph route; its immediately
+  preceding mapping-value title passes. No broad compiler suite or beta gate was run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

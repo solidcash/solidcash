@@ -272,6 +272,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   unrelated or nested block turn `Library.call(...)` into a speculative low-level graph edge. It still selects a
   real scoped `address.call(data)` edge. The exact new title and its immediately preceding library-call title
   pass individually; no broad compiler suite was run.
+- 2026-10-02 pointer-selection follow-up: an unused internal function-pointer declaration no longer expands
+  source selection to unrelated dormant foreign-call helpers. The measured fixture previously auto-emitted
+  2,141 bytes versus 687 direct bytes; it now matches the direct artifact, while an actual internal pointer
+  invocation still keeps the conservative reachable-helper survey. The exact title and its predecessor pass.
+  External function-pointer calls remain a separate admission gap: a focused default compile still publishes a
+  direct artifact after discovering one external call, so this change is not a graph-route capability claim.
 
 ## Gate before the next leap
 

@@ -108,6 +108,29 @@ describe('message-bus compilation selection', () => {
     expect(optedIn.bytecode).not.toBe(direct.bytecode);
   });
 
+  it('broadens unreachable helpers only when a function pointer is invoked', () => {
+    const source = `interface ISink { function ping(int amount) external; }
+      contract PointerLeaf(address target) {
+        int value;
+        function() internal unused;
+        function set(int next) public { value = next; require(next >= 0); }
+        function dormant(int next) internal { ISink(target).ping(next); }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.bytecode).toBe(direct.bytecode);
+
+    const invoked = source.replace('function() internal unused;', 'function(int) internal unused;')
+      .replace('value = next; require(next >= 0);',
+        'value = next; unused(next); require(next >= 0);');
+    const routed = compileString(invoked, options);
+    expect(routed.compiler.options?.messageBus).toBe(true);
+    expect(routed.messageBus?.available).toBe(true);
+  });
+
   it('keeps an unreachable overloaded foreign-call helper off the default route', () => {
     const source = `interface ISink { function ping(int amount) external; }
       contract Simple(address target) {

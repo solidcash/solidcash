@@ -3975,21 +3975,66 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   }
   otherMembers.push(...activeModifiers, ...activeModifierArgs);
   const reachableFunctionList = functions.filter((fn) => reachableFunctions.has(fn));
-  // Before semantic resolution a function value or indexed indirect call may target any same-contract helper.
-  // Keep the old conservative survey in that case; narrowing only a statically named closure must never drop a
-  // real graph edge carried by an indirect dispatch.
-  let opaqueLocalDispatch = contract.stateVariables.some((state) => state.type instanceof FunctionType);
-  const checkOpaqueLocalDispatch = (node: Node): void => {
-    if (node instanceof IndirectCallNode
-      || (node instanceof VariableDefinitionNode && node.type instanceof FunctionType)) {
-      opaqueLocalDispatch = true;
-    }
+  // A function-pointer DECLARATION is not a call. Broaden the closure only for an invocation whose local target
+  // may be any same-contract helper; otherwise an unused pointer makes unrelated dormant foreign-call helpers
+  // turn an ordinary leaf into a speculative graph route. Track named bindings by lexical scope/source order.
+  const statePointerBindings = new Map<string, FunctionType | undefined>([
+    ...contract.parameters, ...contract.stateVariables,
+  ].map((declaration) => [
+    declaration.name, declaration.type instanceof FunctionType ? declaration.type : undefined,
+  ]));
+  let opaqueLocalDispatch = false;
+  let externalPointerCall = false;
+  const surveyPointerCalls = (body: Node, initialBindings: Map<string, FunctionType | undefined>): void => {
+    const seen = new Set<Node>();
+    const visit = (node: Node, bindings: Map<string, FunctionType | undefined>): void => {
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof BlockNode) {
+        const blockBindings = new Map(bindings);
+        for (const statement of node.statements ?? []) visit(statement, blockBindings);
+        return;
+      }
+      if (node instanceof VariableDefinitionNode) {
+        if (node.expression) visit(node.expression, bindings);
+        bindings.set(node.name, node.type instanceof FunctionType ? node.type : undefined);
+        return;
+      }
+      if (node instanceof TryCatchNode) {
+        visit(node.expression, bindings);
+        visit(node.tryBlock, bindings);
+        return;
+      }
+      if (node instanceof IndirectCallNode) opaqueLocalDispatch = true;
+      if (node instanceof FunctionCallNode) {
+        const pointer = bindings.get(node.identifier.name);
+        if (pointer?.isExternal) externalPointerCall = true;
+        else if (pointer) opaqueLocalDispatch = true;
+      }
+      for (const key in node) {
+        if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+          || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
+          || key === 'collection' || key === 'type' || key === 'location' || key === 'name'
+          || key === 'functionId' || key === 'error' || key === 'opRolls' || key === 'selectorHex'
+          || key === 'abiType') continue;
+        const child = node[key as keyof Node];
+        if (child instanceof Node) visit(child, bindings);
+        else if (Array.isArray(child)) {
+          for (const item of child) if (item instanceof Node) visit(item, bindings);
+        }
+      }
+    };
+    visit(body, new Map(initialBindings));
   };
   for (const fn of reachableFunctionList) {
-    if (fn.parameters.some((parameter) => parameter.type instanceof FunctionType)) opaqueLocalDispatch = true;
-    walkInvocationAst(fn.body, checkOpaqueLocalDispatch);
+    const bindings = new Map(statePointerBindings);
+    for (const parameter of fn.parameters) {
+      bindings.set(parameter.name, parameter.type instanceof FunctionType ? parameter.type : undefined);
+    }
+    surveyPointerCalls(fn.body, bindings);
   }
-  for (const member of otherMembers) walkInvocationAst(member, checkOpaqueLocalDispatch);
+  for (const member of otherMembers) surveyPointerCalls(member, statePointerBindings);
+  if (externalPointerCall) return true;
   const surveyedFunctions = opaqueLocalDispatch ? functions : reachableFunctionList;
   const interfaceNames = new Set(ast.interfaceDefinitions.map((iface) => iface.name));
   // A call through an interface-typed variable parses as a namespaced FunctionCallNode (`sink.note`), not a

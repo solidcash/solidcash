@@ -12214,13 +12214,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const tokenContainerLockingBytecodes = tokenContainerLoad.tokenContainerLockingBytecodes;
     const tokenContainerAccesses = tokenContainerAbiFunction?.tokenContainerAccesses;
 
+    // A proxy forwarder has no native-value effects in its own ABI. Its authenticated delegate route owns the
+    // satoshi-container slot, so select that ABI just as we do for delegated token-container resources above.
+    const satoshiContainerAbiFunction = entryAbiFunction?.blockLayout?.slots.some(
+      (slot) => slot.kind === 'satoshiContainer',
+    ) ? entryAbiFunction : abiFunction;
     const satoshiContainerLoad = await loadCreateBuilderSatoshiContainerImpl(
       {
         categoryId: this.categoryId,
         inner: this.inner,
       },
       {
-        abiFunction,
+        abiFunction: satoshiContainerAbiFunction,
         overrides,
       },
     );

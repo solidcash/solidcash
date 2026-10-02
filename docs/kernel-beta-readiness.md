@@ -454,11 +454,14 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   occurrence-qualified producer-result lanes. The compiler withholds a nested domain if an inner bound mutates
   inside its outer loop. A neutral reached-call VM title executes both inner `Sink.record`
   rows and its immediately preceding branch title passes. The unchanged proxy `claimMultiple([1])` title also
-  passes with the seeded zero-amount escrow, including its immediately preceding arbitration title. This proves
-  nested guard/row selection and one real proxy claim, not a positive-value payout. A separate positive-payout
-  attempt reaches `Unicrow.__message_bus1` but VM preflight rejects its low-level native-value call: an input-
-  bytecode pin compares the seller's 32-byte address value with an `OP_TRUE` placeholder input. The payout title
-  was not retained as a green regression or waived. This is a call-representation gap, not a capacity refusal.
+  passes with the seeded zero-amount escrow, including its immediately preceding arbitration title. A later
+  funded claim also passes BCH-2026 preflight and sends 1,000 sats to the seller's P2PKH locking bytecode, with
+  the zero-value claim checked as its preceding regression. That payout exposed three real gaps: the SDK compared
+  the forwarded zero-currency address to numeric `address(0)` as unequal and left the transfer inactive; the proxy
+  builder selected its forwarder ABI instead of the authenticated delegate route when loading the satoshi
+  container; and compiler/SDK disagreed on the native payment script for a Solidity address identity. The fixes
+  keep the bytecode/output covenant active and preserve complete native locking bytecode. This is a relaxed-
+  conditions showcase proof, not a broad Marketplace gate or standard-capacity deployment claim.
 - The unchanged proxy Marketplace `arbitrate > arbitrate 80-20` title passes individually on mock BCH-2026
   (1 selected, 65 skipped; 411.56 seconds in the test body). It is not a reproduction of the same-owner
   callback gap above and does not establish the other arbitration titles or the 66-title gate. No predecessor

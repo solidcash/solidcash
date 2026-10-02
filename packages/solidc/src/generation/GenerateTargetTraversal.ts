@@ -15570,6 +15570,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const addrIdx = this.getStackIndex(addressParamName);
     this.emit(encodeInt(BigInt(addrIdx)), locationData);
     this.emit(Op.OP_PICK, locationData);
+    this.emitSolidityValueRecipientLockingBytecode(locationData);
     this.pushToStack('(__valTransferAddr)');
 
     if (this.preAllocatedTransfers.has(valueTransferIndex)) {
@@ -15614,6 +15615,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: Node,
   ): ExpressionNode {
     this.visit(addressExpr);
+    this.emitSolidityValueRecipientLockingBytecode(locationData);
 
     if (this.preAllocatedTransfers.has(valueTransferIndex)) {
       const lbName = `__internal__transfer_lb_${valueTransferIndex}`;
@@ -15637,6 +15639,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       amountStackName: amtName,
     });
     return visitedValue;
+  }
+
+  /** Turn a Solidity address identity into its BCH P2PKH payment script; retain complete native bytecode. */
+  private emitSolidityValueRecipientLockingBytecode(locationData: SingleLocationData): void {
+    if (!this.compilerOptions.evmCompat && !this.compilerOptions.solidityImportCompat) return;
+    // An ABI address word is right-aligned. Reject nonzero framing instead of silently paying a truncated hash.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(encodeInt(12n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(new Uint8Array(12), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(20n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(P2PKH_LBC_PREFIX, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(P2PKH_LBC_SUFFIX, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
   }
 
   visitTokenContainerMethodStatement(node: TokenContainerMethodStatementNode): Node {

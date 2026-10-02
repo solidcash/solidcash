@@ -10,6 +10,7 @@ import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.
 import { deriveLogicalCreateAddress } from '../../src/stateful/logical-identity.js';
 import type { ProxyContract } from '../../src/stateful/upgrades.js';
 import { addressToLockScript } from '../../src/utils.js';
+import { getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
 import { alicePub } from '../fixture/vars.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 
@@ -29,8 +30,9 @@ const artifacts = Object.fromEntries(names.map((name) => [
 ])) as Record<(typeof names)[number], ReturnType<typeof compileFile>>;
 
 describe('real Unicrow proxy kernel arbitration callback', () => {
-  const setup = async (): Promise<{
+  const setup = async (amount = 0n): Promise<{
     arbitrator: ProxyContract; claim: ProxyContract; unicrow: ProxyContract;
+    sellerLock: Uint8Array;
   }> => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x4d), provider);
@@ -103,12 +105,16 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
     });
     const zeroAddress = new Uint8Array();
     await seedEntry('Unicrow', unicrow.proxy, {
-      buyer: zeroAddress, challengeExtension: 0n, seller: zeroAddress,
+      buyer: zeroAddress, challengeExtension: 0n,
+      seller: amount > 0n ? signer.getAddress() : zeroAddress,
       challengePeriodStart: 0n, marketplace: zeroAddress, marketplaceFee: 0n,
       challengePeriodEnd: 0n, currency: zeroAddress, claimed: 0n,
       consensus: [0n, 1n], split: [0n, 10_000n, 0n, 0n],
-      amount: 0n, paymentReference: '',
+      amount, paymentReference: '',
     });
+    if (amount > 0n) await provider.addUtxo(getSatoshiContainerAddress(
+      unicrow.proxy.inner, unicrow.proxy.categoryId,
+    ), { txid: 'fb'.repeat(32), vout: 0, satoshis: 30_000n });
 
     arbitrator.implementation._registerResolvedExternal('Unicrow', unicrow);
     arbitrator.implementation._registerResolvedExternal('IUnicrowClaim', claim);
@@ -117,7 +123,7 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
     unicrow.implementation._registerResolvedExternal('IUnicrowArbitrator', arbitrator);
     unicrow.implementation._registerResolvedExternal('IUnicrowClaim', claim);
 
-    return { arbitrator, claim, unicrow };
+    return { arbitrator, claim, unicrow, sellerLock: addressToLockScript(signer.getAddress()) };
   };
 
   it('forwards arbitration through three proxy state owners and reads the earlier arbitrated write', async () => {
@@ -139,5 +145,12 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
       `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
     expect(new Set(outpoints).size).toBe(outpoints.length);
     expect((await unicrow.proxy.getEntries('escrows'))[0]?.value).toMatchObject({ claimed: 1n });
+  }, 300_000);
+
+  it('pays a funded real escrow through the nested proxy kernel route', async () => {
+    const { claim, sellerLock } = await setup(1_000n);
+    const receipt = await claim.forward('claimMultiple', [[1n]]).send();
+    expect(receipt.outputs.some((output) => output.valueSatoshis === 1_000n
+      && binToHex(output.lockingBytecode) === binToHex(sellerLock))).toBe(true);
   }, 300_000);
 });

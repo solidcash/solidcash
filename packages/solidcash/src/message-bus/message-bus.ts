@@ -261,11 +261,24 @@ export function evaluateFixedEffectPredicate(
     if (expression.operator === '||' && typeof left === 'boolean' && left) return true;
     const right = evaluateFixedEffectPredicate(expression.right, args, state);
     if (right === undefined) return undefined;
-    const equal = left instanceof Uint8Array && right instanceof Uint8Array
-      ? left.length === right.length && left.every((byte, index) => byte === right[index])
-      : (typeof left === 'bigint' || typeof left === 'number')
-        && (typeof right === 'bigint' || typeof right === 'number')
-        ? BigInt(left) === BigInt(right) : left === right;
+    // An address(0) cast evaluates to the numeric literal zero here, while an authenticated address argument
+    // can arrive as empty bytes or an all-zero 20/32-byte ABI word. Match the compiler's address comparison
+    // domain before deciding whether a conditional fixed effect (such as a BCH transfer) is active.
+    const addressComparison = expression.left.type?.startsWith('address')
+      || expression.right.type?.startsWith('address');
+    const zeroAddress = (value: unknown): boolean => (
+      (typeof value === 'bigint' || typeof value === 'number') && BigInt(value) === 0n
+      || value instanceof Uint8Array && [0, 20, 32].includes(value.length)
+        && value.every((byte) => byte === 0)
+      || typeof value === 'string' && /^(?:0x)?(?:0{40}|0{64})$/iu.test(value)
+    );
+    let equal: boolean;
+    if (addressComparison && zeroAddress(left) && zeroAddress(right)) equal = true;
+    else if (left instanceof Uint8Array && right instanceof Uint8Array) {
+      equal = left.length === right.length && left.every((byte, index) => byte === right[index]);
+    } else if ((typeof left === 'bigint' || typeof left === 'number')
+      && (typeof right === 'bigint' || typeof right === 'number')) equal = BigInt(left) === BigInt(right);
+    else equal = left === right;
     switch (expression.operator) {
       case '&&': return typeof left === 'boolean' && typeof right === 'boolean' ? left && right : undefined;
       case '||': return typeof left === 'boolean' && typeof right === 'boolean' ? left || right : undefined;

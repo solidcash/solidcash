@@ -1,13 +1,14 @@
 import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
-import type { AbiFunction, Artifact, ChildDeploymentValueRecipe } from '@solidcash/utils';
+import type { AbiFunction, Artifact, ChildDeploymentValueRecipe, FixedBchTransferAbi } from '@solidcash/utils';
 import { describe, expect, it, vi } from 'vitest';
-import { evaluateChildDeploymentRecipe } from '../../src/message-bus/compose-recipes.js';
+import { evaluateChildDeploymentRecipe, materializeFixedBchTransfer } from '../../src/message-bus/compose-recipes.js';
 import { loadFixedEffectEntries } from '../../src/message-bus/fixed-effect-entries.js';
 import { evaluateFixedEffectPredicate } from '../../src/message-bus/message-bus.js';
 import {
   bindSatoshiContainerSelection, resolveSatoshiContainerRouteAbi, resolveSelectedSatoshiContainerRequired,
 } from '../../src/message-bus/selected-satoshi-container.js';
 import { keyToSlotMulti } from '../../src/stateful/SortedList.js';
+import { createTestProvider } from '../test-util.js';
 
 const collection = { name: 'payments', signature: 'payments:mapping(int256 => Payment)',
   kind: 'mapping', keyType: 'int256', valueType: 'Payment', sorted: true } as const;
@@ -59,6 +60,40 @@ describe('authenticated fixed-effect entry recipes', () => {
     } }] };
     expect(await resolveSelectedSatoshiContainerRequired({ ...selection, args: [[8n]],
       artifact: { ...selectedArtifact, abi: [logical] } }, host)).toBe(true);
+  });
+
+  it('activates address-zero fixed effects across empty and ABI-word forms', () => {
+    const zeroAddress: Parameters<typeof evaluateFixedEffectPredicate>[0] = {
+      kind: 'binary', operator: '==',
+      left: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      right: { kind: 'cast', type: 'address',
+        expression: { kind: 'literal', type: 'bigint', value: '0' } },
+    };
+    for (const value of [new Uint8Array(), new Uint8Array(20), new Uint8Array(32)]) {
+      expect(evaluateFixedEffectPredicate(zeroAddress, [value])).toBe(true);
+    }
+    expect(evaluateFixedEffectPredicate(zeroAddress, [recipient])).toBe(false);
+  });
+
+  it('materializes Solidity BCH recipients as P2PKH without rewriting native locking bytecode', () => {
+    const transfer: FixedBchTransferAbi = {
+      transferIndex: 0,
+      recipient: { kind: 'forward', paramIndex: 0 },
+      amount: { kind: 'forward', paramIndex: 1 },
+    };
+    const solidityArtifact = { ...artifact, compiler: { options: { solidityImportCompat: true } } } as Artifact;
+    const provider = createTestProvider();
+    const identity = recipient.slice(3, 23);
+    const abiWord = new Uint8Array(32);
+    abiWord.set(identity, 12);
+    const materialize = (address: Uint8Array): Uint8Array => materializeFixedBchTransfer(
+      transfer, [address, 1_000n], ['address', 'uint256'], solidityArtifact, provider,
+    ).lockingBytecode;
+    expect(materialize(identity)).toEqual(recipient);
+    expect(materialize(abiWord)).toEqual(recipient);
+    expect(materialize(recipient)).toEqual(recipient);
+    abiWord[0] = 1;
+    expect(() => materialize(abiWord)).toThrow(/malformed Solidity address word/);
   });
 
   it('resolves captured slot keys and typed leaves with one authenticated collection read', async () => {

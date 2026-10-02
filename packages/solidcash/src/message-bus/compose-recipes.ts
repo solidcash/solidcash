@@ -487,6 +487,17 @@ export const materializeFixedBchTransfer = (
     lockingBytecode = lockingBytecode.includes(':') ? addressToLockScript(lockingBytecode)
       : hexToBin(lockingBytecode.startsWith('0x') ? lockingBytecode.slice(2) : lockingBytecode);
   }
+  if (solidityAbi && lockingBytecode instanceof Uint8Array) {
+    if (lockingBytecode.length === 32) {
+      if (lockingBytecode.slice(0, 12).some((byte) => byte !== 0)) {
+        throw new Error('messageBus: BCH transfer has a malformed Solidity address word');
+      }
+      lockingBytecode = lockingBytecode.slice(12);
+    }
+    if (lockingBytecode.length === 20) {
+      lockingBytecode = hexToBin(`76a914${binToHex(lockingBytecode)}88ac`);
+    }
+  }
   const amountValue = transfer.amountRecipe
     ? evaluateChildDeploymentRecipe(
       transfer.amountRecipe, args, inputTypes, solidityAbi, state, logicalCaller, entryResolver,

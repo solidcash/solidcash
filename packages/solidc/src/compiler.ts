@@ -4057,23 +4057,39 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
     if (type instanceof ArrayType) return type.elementType;
     return undefined;
   };
-  const sourceReceiverType = (expression: ExpressionNode, bindings: Map<string, Type | undefined>): Type | undefined => {
-    if (expression instanceof IdentifierNode) return bindings.get(expression.name);
-    if (expression instanceof StateAccessNode) return stateReceiverTypes.get(expression.name);
+  const sourceReceiverTypes = (expression: ExpressionNode, bindings: Map<string, Type | undefined>): Type[] => {
+    if (expression instanceof IdentifierNode) {
+      const type = bindings.get(expression.name);
+      return type ? [type] : [];
+    }
+    if (expression instanceof StateAccessNode) {
+      const type = stateReceiverTypes.get(expression.name);
+      return type ? [type] : [];
+    }
     if (expression instanceof MappingAccessNode) {
       let type = stateReceiverTypes.get(expression.name);
       for (let index = 0; index < expression.keys.length; index += 1) type = indexedElementType(type);
-      return type;
+      return type ? [type] : [];
     }
     if (expression instanceof ArrayAccessNode) {
-      return indexedElementType(sourceReceiverType(expression.array, bindings));
+      return sourceReceiverTypes(expression.array, bindings)
+        .flatMap((type) => indexedElementType(type) ?? []);
     }
     if (expression instanceof FieldAccessNode) {
-      const parent = sourceReceiverType(expression.expression, bindings);
-      return parent instanceof StructType ? parent.fields.find((field) => field.name === expression.name)?.type
-        : undefined;
+      return sourceReceiverTypes(expression.expression, bindings).flatMap((parent) =>
+        parent instanceof StructType
+          ? parent.fields.filter((field) => field.name === expression.name).map((field) => field.type)
+          : []);
     }
-    return undefined;
+    if (expression instanceof FunctionCallNode) {
+      const candidates = candidatesFor(expression);
+      // A contract member shadows a same-named free function. Same-arity overloads remain a union until
+      // semantic resolution; any reachable interface return must keep the graph route available.
+      const localCandidates = candidates.filter((candidate) => contractFunctions.includes(candidate));
+      return (localCandidates.length > 0 ? localCandidates : candidates)
+        .flatMap((candidate) => candidate.returnTypes.length === 1 ? [candidate.returnTypes[0]] : []);
+    }
+    return [];
   };
   const namespacedCallSurfaces: Array<{ parameters: readonly ParameterNode[]; body: Node | undefined }> = [
     ...surveyedFunctions.map((fn) => ({ parameters: fn.parameters, body: fn.body })),
@@ -4114,10 +4130,9 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
         }
       }
       if (node instanceof MethodCallNode && node.methodName !== 'delegatecall') {
-        const receiverType = sourceReceiverType(node.object, receivers);
-        if (receiverType instanceof AddressType
+        if (sourceReceiverTypes(node.object, receivers).some((receiverType) => receiverType instanceof AddressType
           && (receiverType.interfaceName !== undefined
-            || node.methodName === 'call' || node.methodName === 'staticcall')) return true;
+            || node.methodName === 'call' || node.methodName === 'staticcall'))) return true;
       }
       // Match walkInvocationAst's executable-child traversal without flattening lexical block scopes.
       for (const key in node) {

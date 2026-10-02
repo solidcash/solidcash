@@ -47,8 +47,6 @@ export type TrancheWithDurationStruct = { amount: bigint; duration: bigint; };
 export type TrancheWithDurationStructOutput = [amount: bigint, duration: bigint] & { amount: bigint; duration: bigint; };
 export type CreateWithDurationsLLCallStruct = { sender: Uint8Array | string; recipient: Uint8Array | string; totalAmount: bigint; token: Uint8Array | string; cancelable: boolean; transferable: boolean; shape: string; cliffDuration: bigint; totalDuration: bigint; };
 export type CreateWithDurationsLLCallStructOutput = [sender: Uint8Array | string, recipient: Uint8Array | string, totalAmount: bigint, token: Uint8Array | string, cancelable: boolean, transferable: boolean, shape: string, cliffDuration: bigint, totalDuration: bigint] & { sender: Uint8Array | string; recipient: Uint8Array | string; totalAmount: bigint; token: Uint8Array | string; cancelable: boolean; transferable: boolean; shape: string; cliffDuration: bigint; totalDuration: bigint; };
-export type Model = 0n | 1n | 2n;
-export type Status = 0n | 1n | 2n | 3n | 4n;
 
 export type MockSablierLockup = StatefulContract<typeof MockSablierLockupArtifact>;
 export type MockSablierLockupConstructorArgs = [];

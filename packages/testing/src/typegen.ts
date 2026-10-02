@@ -28,8 +28,13 @@ export interface TypegenResult {
 
 export interface TypegenWatcher { close(): void }
 
-interface ArtifactFile { artifact: Artifact; file: string; sourceModule: string }
-const GENERATOR_VERSION = 8;
+interface ArtifactFile {
+  artifact: Artifact;
+  file: string;
+  sourceModule: string;
+  visibleEnumNames?: readonly string[];
+}
+const GENERATOR_VERSION = 9;
 
 function walk(dir: string, accept: (file: string) => boolean, out: string[] = []): string[] {
   if (!fs.existsSync(dir)) return out;
@@ -41,14 +46,15 @@ function walk(dir: string, accept: (file: string) => boolean, out: string[] = []
   return out;
 }
 
-function sourceModules(contractsDir: string): Map<string, string> {
-  const found = new Map<string, string>();
+function sourceModules(contractsDir: string): Map<string, { module: string; identifiers: ReadonlySet<string> }> {
+  const found = new Map<string, { module: string; identifiers: ReadonlySet<string> }>();
   for (const file of walk(contractsDir, (candidate) => /\.(?:sol|scash)$/.test(candidate))) {
     const source = fs.readFileSync(file, 'utf8');
     const relative = path.relative(contractsDir, file).replace(/\\/g, '/').replace(/\.(?:sol|scash)$/, '');
+    const identifiers = new Set(source.match(/[A-Za-z_$][\w$]*/g) ?? []);
     const declaration = /\b(?:abstract\s+)?(?:contract|interface|library)\s+([A-Za-z_$][\w$]*)/g;
     for (let match = declaration.exec(source); match; match = declaration.exec(source)) {
-      if (!found.has(match[1])) found.set(match[1], relative);
+      if (!found.has(match[1])) found.set(match[1], { module: relative, identifiers });
     }
   }
   return found;
@@ -67,12 +73,21 @@ function readArtifacts(artifactsDir: string, contractsDir: string): ArtifactFile
     let artifact: Artifact;
     try { artifact = JSON.parse(fs.readFileSync(file, 'utf8')) as Artifact; } catch { continue; }
     if (!artifact.contractName || !Array.isArray(artifact.abi)) continue;
-    const sourceModule = modules.get(artifact.contractName) ?? artifact.contractName;
+    const source = modules.get(artifact.contractName);
+    const sourceModule = source?.module ?? artifact.contractName;
+    // A multi-root Solidity compile can attach every imported enum to an unrelated interface artifact.
+    // Prefer the declaration's own file; imported artifacts without a local source file can still use the
+    // root source embedded in the artifact. Only a source-less artifact retains every published alias.
+    const identifiers = source?.identifiers ?? (artifact.source === undefined ? undefined
+      : new Set(artifact.source.match(/[A-Za-z_$][\w$]*/g) ?? []));
+    const visibleEnumNames = identifiers === undefined ? undefined : (artifact.enums ?? [])
+      .filter((enumeration) => identifiers.has(enumeration.name))
+      .map((enumeration) => enumeration.name);
     const existing = byName.get(artifact.contractName);
     if (existing && stableArtifactJson(existing.artifact) !== stableArtifactJson(artifact)) {
       throw new Error(`Type generation found multiple distinct artifacts named "${artifact.contractName}".`);
     }
-    const candidate = { artifact, file, sourceModule };
+    const candidate = { artifact, file, sourceModule, visibleEnumNames };
     if (!existing || file.split(path.sep).length > existing.file.split(path.sep).length) {
       byName.set(artifact.contractName, candidate);
     }
@@ -131,7 +146,8 @@ function contractSource(record: ArtifactFile, moduleFile: string): string {
     declarations.push(`export type ${name}Struct = { ${fields} };`);
     declarations.push(`export type ${name}StructOutput = ${tuple} & { ${fields} };`);
   }
-  for (const enumeration of artifact.enums ?? []) {
+  for (const enumeration of (artifact.enums ?? []).filter((candidate) =>
+    record.visibleEnumNames === undefined || record.visibleEnumNames.includes(candidate.name))) {
     const values = enumeration.members.map((member) => `${BigInt(member.value)}n`).join(' | ') || 'never';
     declarations.push(`export type ${identifier(enumeration.name)} = ${values};`);
   }
@@ -171,7 +187,8 @@ function hashInputs(records: ArtifactFile[], target: TypegenTargetConfig): strin
   const hash = createHash('sha256');
   hash.update(JSON.stringify({ version: GENERATOR_VERSION, target }));
   for (const record of records) {
-    hash.update(record.file).update(record.sourceModule).update(stableArtifactJson(record.artifact));
+    hash.update(record.file).update(record.sourceModule).update(stableArtifactJson(record.artifact))
+      .update(JSON.stringify(record.visibleEnumNames ?? null));
   }
   return hash.digest('hex');
 }

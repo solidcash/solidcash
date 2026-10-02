@@ -37,7 +37,6 @@ export type InitializableStorageStruct = { _initialized: bigint; _initializing: 
 export type InitializableStorageStructOutput = [_initialized: bigint, _initializing: boolean] & { _initialized: bigint; _initializing: boolean; };
 export type OwnableStorageStruct = { _owner: Uint8Array | string; };
 export type OwnableStorageStructOutput = [_owner: Uint8Array | string] & { _owner: Uint8Array | string; };
-export type RecoverError = 0n | 1n | 2n | 3n;
 export type JobEventType = 0n | 1n | 2n | 3n | 4n | 5n | 6n | 7n | 8n | 9n | 10n | 11n | 12n | 13n | 14n | 15n | 16n | 17n | 18n;
 export type JobState = 0n | 1n | 2n;
 

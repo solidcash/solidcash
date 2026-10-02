@@ -37,7 +37,8 @@ function writeFixture(root: string, value: Artifact): void {
   const artifacts = path.join(root, 'artifacts', 'solidcash', 'contracts', 'nested', 'Counter.scash');
   fs.mkdirSync(contracts, { recursive: true });
   fs.mkdirSync(artifacts, { recursive: true });
-  fs.writeFileSync(path.join(contracts, 'Counter.scash'), 'contract Counter(pubkey owner) {}');
+  fs.writeFileSync(path.join(contracts, 'Counter.scash'),
+    'enum Status { Pending, Done } contract Counter(pubkey owner) {}');
   fs.writeFileSync(path.join(artifacts, 'Counter.json'), JSON.stringify(value));
   fs.writeFileSync(path.join(artifacts, 'Counter.artifact.ts'), `export default ${JSON.stringify(value)} as const;\n`);
 }
@@ -75,6 +76,43 @@ describe('TypeChain-compatible generation', () => {
     expect(generated).toContain('export class IReasons__factory');
     expect(generated).toContain('static createInterface()');
     expect(generated).toContain('errors: metadata.errors ?? []');
+  });
+
+  it('omits unrelated imported enums from interface bindings', () => {
+    const root = project();
+    const contractsDir = path.join(root, 'contracts');
+    const artifactsDir = path.join(root, 'artifacts', 'solidcash');
+    fs.mkdirSync(contractsDir, { recursive: true });
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    fs.writeFileSync(path.join(contractsDir, 'IVendor.sol'), `pragma solidity ^0.8.20;
+      import { Referenced } from "./Enums.sol";
+      interface IVendor { function choose(Referenced value) external; }
+    `);
+    fs.writeFileSync(path.join(contractsDir, 'Enums.sol'), `pragma solidity ^0.8.20;
+      enum Referenced { First, Second }
+      enum ImportedOnly { Unused }
+    `);
+    const value: Artifact = {
+      ...artifact(), contractName: 'IVendor', constructorInputs: [], abi: [],
+      source: 'import "./IVendor.sol"; contract Root {}',
+      enums: [
+        { name: 'Referenced', members: [{ name: 'First', value: 0 }, { name: 'Second', value: 1 }] },
+        { name: 'ImportedOnly', members: [{ name: 'Unused', value: 0 }] },
+      ],
+    };
+    fs.writeFileSync(path.join(artifactsDir, 'IVendor.json'), JSON.stringify(value));
+    fs.writeFileSync(path.join(artifactsDir, 'IImportedOnly.json'), JSON.stringify({
+      ...value, contractName: 'IImportedOnly', source: 'contract Root {}',
+      enums: [{ name: 'ImportedOnly', members: [{ name: 'Unused', value: 0 }] }],
+    }));
+    const outDir = path.join(root, 'typechain-types');
+    generateTypechainTargets({ artifactsDir, contractsDir, cacheDir: path.join(root, 'cache'),
+      targets: [{ target: 'ethers6', outDir }] });
+    const generated = fs.readFileSync(path.join(outDir, 'contracts', 'IVendor.ts'), 'utf8');
+    expect(generated).toContain('export type Referenced = 0n | 1n;');
+    expect(generated).not.toContain('export type ImportedOnly');
+    const imported = fs.readFileSync(path.join(outDir, 'contracts', 'IImportedOnly.ts'), 'utf8');
+    expect(imported).not.toContain('export type ImportedOnly');
   });
 
   it('resolves optional target defaults relative to the config directory', () => {

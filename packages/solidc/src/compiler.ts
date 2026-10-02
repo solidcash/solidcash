@@ -28,7 +28,7 @@ import {
   KERNEL_PLAN_VERSION,
   needsOptimiserCrossCheck,
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
-  scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
+  scriptToBytecode, bytecodeToScript, asmToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
   AbiFunction, ChildDeploymentSiteAbi, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType, isFixedWidthType,
@@ -486,6 +486,11 @@ type CaughtCompilerAttempt = {
 };
 type InternalAttemptFailureState = { firstError?: unknown };
 type InternalCompilerOptions = CompilerOptions & {
+  /**
+   * The public options the outermost compile was given. A contract this compile creates or embeds is compiled with
+   * exactly these, as its own standalone compile, so the embedded bytes are the artifact a caller deploys.
+   */
+  __referencedChildOptions?: CompilerOptions;
   __messageBusExplicitlyDisabled?: boolean;
   __messageBusMode?: MessageBusMode;
   __cheapAdmissionCodegen?: boolean;
@@ -999,6 +1004,10 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
     __messageBusExplicitlyDisabled: false,
     // Compiler-owned route locals are generated source and never user-actionable warning locations.
     __suppressGeneratedRouteWarnings: true,
+    // Recorded once, from the options as the caller gave them. Normalizing an already-normalized copy keeps the
+    // original: the folded `messageBus` above no longer says which of its three states was asked for.
+    __referencedChildOptions: (options as InternalCompilerOptions).__referencedChildOptions
+      ?? publicCompilerOptions(options),
   } as InternalCompilerOptions;
   // Solidity's builtin returns the canonical 20-byte EVM address. Preserve an explicit projection override.
   if (normalized.solidityImportCompat && options.ecrecover === undefined) normalized.ecrecover = 'evm';
@@ -1182,6 +1191,7 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   const keyOptions = { ...options } as Record<string, unknown>;
   delete keyOptions.importResolver;
   delete keyOptions.__artifactCache;
+  delete keyOptions.__referencedChildOptions;
   delete keyOptions.__cheapAdmissionCodegen;
   delete keyOptions.__messageBusRouteParseOracle;
   delete keyOptions.__parsedAst;
@@ -2198,6 +2208,10 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   delete artifactCompilerOptions.compileDeclarations;
   const parsedAst = (compilerOptions as InternalCompilerOptions).__parsedAst;
   delete (artifactCompilerOptions as InternalCompilerOptions).__parsedAst;
+  // The options as the caller gave them, kept for the contracts this compile embeds. Recorded here, before any
+  // internal pass derives its own option set from these (a verifier-binding recompile adds this contract's own
+  // `messageBusHandlers`), so every derived set carries the caller's options rather than its own.
+  internalOptions.__referencedChildOptions ??= publicCompilerOptions(artifactCompilerOptions);
   const cacheable = artifactCacheEnabled(artifactCompilerOptions, errorListener, suppressWarnings);
   let cacheKey = '';
   if (cacheable) {
@@ -14004,7 +14018,7 @@ function compileResolvedAst(
   const referencedStarted = Date.now();
   const compiledBytecodes = ast.importedContracts.length === 0
     ? new Map<string, Uint8Array>()
-    : compileReferencedContracts(ast, mergedCompilerOptions);
+    : compileReferencedContracts(ast, code, mergedCompilerOptions);
   // Code generation lowers selected handlers in place. Snapshot deployment provenance at the last semantic
   // boundary so publication does not depend on which representation the backend chose for a handler body.
   const deploymentTopologyKey = (fn: FunctionDefinitionNode): string => fn.messageBusSignatureIdentity
@@ -16928,11 +16942,20 @@ function generateInterfaceArtifact(
 }
 
 /**
- * Compile imported contracts that are referenced via cross-contract references.
+ * Compile the contracts the primary creates or embeds (`new C(...)`, `type(C).creationCode`).
  * Returns a map of contract name -> compiled bytecode.
+ *
+ * Each one is the bytes of its own standalone compile: the source compiled with that contract selected as the
+ * primary and the public options the outermost compile was given. A factory's covenant pins the child output to
+ * these bytes, and the SDK predicts a create2/deployFrom address from the child artifact a standalone compile
+ * produces, so the two have to be one program. The shorter pass list below still analyses the child declaration
+ * this tree holds, for the layout the deploy covenant verifies; embedding its own code generation instead drifted
+ * from the primary pipeline and gave a helper a different function id (`OP_1 OP_DEFINE` where the standalone child
+ * has `OP_2 OP_DEFINE`): the same length, one byte apart, and every predicted address wrong.
  */
 function compileReferencedContracts(
   ast: Ast,
+  code: string,
   compilerOptions: CompilerOptions,
 ): Map<string, Uint8Array> {
   const compiledBytecodes = new Map<string, Uint8Array>();
@@ -16949,6 +16972,7 @@ function compileReferencedContracts(
 
   // Topologically sort and compile
   const sorted = topologicalSort(referencedContracts, contractMap, ast);
+  const childOptions = referencedChildCompilerOptions(compilerOptions);
   for (const contractName of sorted) {
     const contract = contractMap.get(contractName);
     if (!contract) continue;
@@ -17063,7 +17087,16 @@ function compileReferencedContracts(
       }
     }
 
-    compiledBytecodes.set(contractName, scriptToBytecode(optimisationResult.script));
+    // The pass list above analyses the child declaration this tree holds: the deploy covenant reads its packed
+    // state layout and folded bodies to verify the child's genesis outputs. The bytes it embeds are the child's
+    // standalone compile, which is the artifact a caller deploys and predicts the address from. A child the source
+    // cannot compile on its own (an unrelated file-level helper embedding its own runtimeCode, say) has no such
+    // artifact to differ from, so it keeps the bytes generated here.
+    compiledBytecodes.set(
+      contractName,
+      compileReferencedContractStandalone(code, contractName, childOptions)
+        ?? scriptToBytecode(optimisationResult.script),
+    );
   }
 
   return compiledBytecodes;
@@ -17119,6 +17152,64 @@ function reachableFreeFunctions(
     }
   }
   return freeFunctions.filter((fn) => retained.has(fn));
+}
+
+/** The options a contract embedded by this compile is compiled with: the outermost compile's public options. */
+function referencedChildCompilerOptions(compilerOptions: CompilerOptions): CompilerOptions {
+  const recorded = (compilerOptions as InternalCompilerOptions).__referencedChildOptions;
+  if (recorded !== undefined) return recorded;
+  // Every entry point records them while normalizing. Normalization folds `messageBus` into a boolean plus a
+  // mode, so recover the caller's three-way choice from the mode rather than reading the folded boolean.
+  const rest = publicCompilerOptions(compilerOptions);
+  delete rest.messageBus;
+  const mode = (compilerOptions as InternalCompilerOptions).__messageBusMode;
+  return {
+    ...rest,
+    ...(mode === 'disabled' ? { messageBus: false } : {}),
+    ...(mode === 'enabled' || mode === 'required' ? { messageBus: true } : {}),
+  };
+}
+
+/** The caller-facing part of an options object: everything but the compiler's own `__` fields. */
+function publicCompilerOptions(options: CompilerOptions): CompilerOptions {
+  return Object.fromEntries(Object.entries(options).filter(([key]) => !key.startsWith('__'))) as CompilerOptions;
+}
+
+/** Contracts whose standalone compile an enclosing compile is waiting on, outermost first. */
+const referencedContractCompileStack: string[] = [];
+
+/**
+ * The bytes of `contractName`'s standalone compile, nested inside the compile that embeds it, or undefined when the
+ * source does not compile with that contract selected. It goes through the same entry a primary does, so the
+ * embedded bytes cannot drift from the artifact. The artifact cache is keyed exactly as that standalone compile, so
+ * a child the caller compiled already is reused and the admission passes of one enclosing compile build it once.
+ *
+ * The bytes are the artifact's published `bytecode`, the program the SDK deploys and derives the address from. A
+ * kernel artifact publishes its plan digest there (`<SCKP digest> OP_DROP` after the program), which the debug copy
+ * of the same program leaves out.
+ */
+function compileReferencedContractStandalone(
+  code: string, contractName: string, options: CompilerOptions,
+): Uint8Array | undefined {
+  // A contract that creates itself, directly or through another, has no standalone compile to embed.
+  if (referencedContractCompileStack.includes(contractName)) return undefined;
+  // The enclosing compile may have recorded its own admission analysis; the nested one starts by clearing it.
+  const enclosingAdmissionAnalysis = pendingSpanAdmissionAnalysis;
+  referencedContractCompileStack.push(contractName);
+  try {
+    const artifact = withCompilerWarnings(true, () => compileStringUnchecked(code, {
+      ...options,
+      primaryContractName: contractName,
+      suppressWarnings: true,
+      __artifactCache: true,
+    } as CompileOptions));
+    return scriptToBytecode(asmToScript(artifact.bytecode));
+  } catch {
+    return undefined;
+  } finally {
+    referencedContractCompileStack.pop();
+    pendingSpanAdmissionAnalysis = enclosingAdmissionAnalysis;
+  }
 }
 
 /**

@@ -10,6 +10,11 @@ import { cloneToken } from './stb-output-utils.js';
 
 export interface MintingOneToOneHost {
   readonly allInputs: UnlockableUtxo[];
+  /**
+   * `txid:vout` of each token container the function moves tokens into or out of. Its output keeps only what those
+   * transfers and deposits leave, so it is not restored one-to-one.
+   */
+  readonly reshapedTokenContainerOutpoints?: ReadonlySet<string>;
 }
 
 /**
@@ -25,6 +30,10 @@ export function reassertMintingOneToOne(
     const input = host.allInputs[index];
     if (!input?.token || input.token.nft?.capability !== 'minting') continue;
     if (!('unlocker' in input) || !input.unlocker) continue;
+    // A token container holding a minting NFT is not a master: its output is what the function's transfers leave,
+    // computed by the container materializer and verified by the owning master's covenant. Restoring the input
+    // here put the transferred fungible tokens back (more out than in) and stripped the transferred NFT as surplus.
+    if (host.reshapedTokenContainerOutpoints?.has(`${input.txid}:${input.vout}`)) continue;
     builder.outputs[index] = {
       to: input.unlocker.generateLockingBytecode(),
       amount: input.satoshis,

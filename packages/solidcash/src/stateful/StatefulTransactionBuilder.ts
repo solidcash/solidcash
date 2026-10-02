@@ -2182,8 +2182,20 @@ export class StatefulTransactionBuilder {
 
 
   private _mintingOneToOneHost(): MintingOneToOneHost {
+    const reshaped = new Set<string>([
+      ...this.pendingTokenContainerTransfers.map((transfer) => transfer.tokenContainerCategoryId),
+      ...this.pendingTokenContainerTransferNfts.map((transfer) => transfer.tokenContainerCategoryId),
+      ...this.pendingTokenContainerDeposits.keys(),
+      ...this.runtimeLoopTransferOutputs.flatMap((transfer) => (
+        (transfer.kind === 'token' || transfer.kind === 'nft') && transfer.tokenContainerCategoryId !== undefined
+          ? [transfer.tokenContainerCategoryId] : [])),
+    ]);
     return {
       allInputs: this.allInputs,
+      reshapedTokenContainerOutpoints: new Set(this.tokenContainers
+        .filter((container) => container.exists && container.utxo
+          && reshaped.has(container.tokenContainerCategoryId))
+        .map((container) => `${container.utxo!.txid}:${container.utxo!.vout}`)),
     };
   }
 

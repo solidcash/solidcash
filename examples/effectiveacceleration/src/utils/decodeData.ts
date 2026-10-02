@@ -56,6 +56,13 @@ export const decodeBool = (ptr: {bytes: Uint8Array, index: number}): boolean => 
   return result;
 }
 
+export const decodePackedUint160Address = (ptr: { bytes: Uint8Array, index: number }): string => {
+  if (ptr.bytes.length - ptr.index < 20) throw new RangeError('Incomplete packed uint160 address');
+  const result = getAddress(hexlify(ptr.bytes.slice(ptr.index, ptr.index + 20)));
+  ptr.index += 20;
+  return result;
+};
+
 export const decodeAddress = (ptr: {bytes: Uint8Array, index: number}): string => {
   const bytes = ptr.bytes;
   // Packed uint160 may prefix a VM sign byte 0x00 in front of a real locking
@@ -104,12 +111,9 @@ export const decodeAddress = (ptr: {bytes: Uint8Array, index: number}): string =
     // following packed field remains.
     return ZeroAddress;
   }
-  const result = getAddress(hexlify(ptr.bytes.slice(ptr.index, ptr.index + 20)));
   // Solidity-compatible `abi.encodePacked(uint160(address))` contributes exactly 20 bytes, even when
   // another field follows. The native-lock cases above retain their own lengths.
-  ptr.index += 20;
-
-  return result;
+  return decodePackedUint160Address(ptr);
 }
 
 export const decodeUint256 = (ptr: {bytes: Uint8Array, index: number}): bigint => {

@@ -173,6 +173,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   separate `post job 1` assertion still expects a full 35-byte lock from a 20-byte event identity, so the event's
   BCH wire format needs an explicit application decision. No Marketplace source or suite assertion was changed,
   and no broader Marketplace run was made.
+- 2026-10-02 Created-event decoder follow-up: a focused regression showed that byte-prefix sniffing can mistake
+  a valid 20-byte `uint160(token_)` identity plus later amount bytes for a 35-byte P2SH32 lock. Created-event
+  replay now reads the token field at its declared 20-byte width; the exact collision title and its immediately
+  preceding packed-identity title pass. The event-format decision for `post job 1` remains open. The root build
+  passes, while the app's independent TypeScript check still reports a missing generated wagmi module, a cipher
+  import, and two implicit-any callbacks outside these edited decoder files. No broader tests were run.
 - 2026-10-02 typegen checkpoint (`91600bd8f`): a complete compile reproduced unrelated imported enum aliases
   in interface binding modules. Type generation now includes only enum names mentioned by the declaration's
   source (or the artifact's recorded source when that declaration file is unavailable), and its cache key tracks

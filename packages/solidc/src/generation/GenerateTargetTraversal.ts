@@ -2068,6 +2068,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Fixed sorted-write slots under a branch/switch arm (or a helper reached from one). Each carries a runtime "write
   // ran" flag, and the epilogue preserves the co-spent node where the write did not run. Direct convention only.
   private conditionalSortedWriteFlagSlots: Set<number> = new Set();
+  // Multi-slot sorted batches (`m[a] -= v; m[b] += v`) under a branch arm, keyed by lowest slot -> target slots. The
+  // topology verifier pins slot/next, not value, and the per-slot flag above cannot follow a relinked predecessor, so
+  // one "batch ran" flag gates whole-batch node preservation on the arm not taken. Direct convention only.
+  private conditionalSortedBatchFlags: Map<number, readonly number[]> = new Map();
   // Dynamic (chunk-backed) writes whose value+A$len slots were pushed before a conditional (branch/switch) with
   // the current value, so a conditionally-taken write replaces them in place (survives the branch) - by var name.
   private preAllocatedDynamicWrites: Set<string> = new Set();
@@ -7458,6 +7462,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.transfersPreallocatedAtFunctionStart = false;
     this.condDeleteSlots = new Set();
     this.conditionalSortedWriteFlagSlots = new Set();
+    this.conditionalSortedBatchFlags = new Map();
     this.preAllocatedDynamicWrites = new Set();
     this.conditionalTransferIndices = new Set();
     this.conditionalEmitIndices = new Set();
@@ -8102,6 +8107,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // A conditional sorted write settles its node inline, so the arm not taken leaves the node free: flag each slot.
     this.allocateConditionalSortedWriteFlags(node);
+    // A multi-slot batch relinks nodes with no upsert of their own, so it takes one flag for the whole batch instead.
+    this.allocateConditionalSortedBatchFlags(node);
 
     this.vmapWitnessSnapshotsRestored = false;
     this.vmapWitnessSnapshotNames = null;
@@ -8620,6 +8627,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && !this.perCallMaster && this.conditionalSortedWriteFlagSlots.size > 0
         && !isSelfdestruct) {
         this.emitConditionalSortedWritePreservation(node);
+      }
+      // A conditional multi-slot batch's arm not taken: preserve every batch node under the batch's "ran" flag.
+      if (!this.functionHasDelegatecall && !this.perCallMaster && this.conditionalSortedBatchFlags.size > 0
+        && !isSelfdestruct) {
+        this.emitConditionalSortedBatchPreservation(node);
       }
       // Conditional soft-delete entries: verified AFTER read-only preservation (derivation-order requirement).
       if (!this.functionHasDelegatecall && this.condDeleteSlots.size > 0) {
@@ -41357,6 +41369,44 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return `__entry_cond_written_${slotIndex}`;
   }
 
+  /** The runtime "this conditional batch ran" flag, named by the batch's representative slot. */
+  private static condSortedBatchFlagName(repr: number): string {
+    return `__entry_cond_batch_${repr}`;
+  }
+
+  /**
+   * Push a false "batch ran" flag, below the body's locals, for each multi-slot sorted batch whose every write sits
+   * under a branch arm. Any of the batch's upserts sets it; emitConditionalSortedBatchPreservation preserves every
+   * node where it stays false. Same guards as the per-slot allocator; direct convention only, so per-call and
+   * message-bus builds allocate nothing and keep their bytes.
+   */
+  private allocateConditionalSortedBatchFlags(node: FunctionDefinitionNode): void {
+    if (this.isDefineSubTraversal || this.perCallMaster || this.functionHasDelegatecall) return;
+    if (this.compilerOptions.composition === 'per-call') return;
+    if ((this.compilerOptions as { __messageBusExplicitlyDisabled?: boolean }).__messageBusExplicitlyDisabled !== true) {
+      return;
+    }
+    const batches = (node.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.length > 1);
+    if (batches.length === 0) return;
+    const conditional = new Set<number>();
+    const invokedWrites = new Set<number>();
+    this.collectConditionalSortedWriteSlots(node.body, false, conditional, new Map(), invokedWrites);
+    for (const batch of batches) {
+      const eligible = batch.slotIndices.every((slot) => {
+        const info = this.entrySlots[slot];
+        return info !== undefined && !info.inLoop && conditional.has(slot) && !invokedWrites.has(slot)
+          && info.aliasCondDeleteSlot === undefined && (info.runtimeAliasPriorSlots?.length ?? 0) === 0
+          && this.ownsFixedEntrySlot(slot)
+          && this.collectionDefinitions.find((c) => c.name === info.collection)?.sorted === true;
+      });
+      if (!eligible) continue;
+      const repr = Math.min(...batch.slotIndices);
+      this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(GenerateTargetTraversalWithLocation.condSortedBatchFlagName(repr));
+      this.conditionalSortedBatchFlags.set(repr, [...batch.slotIndices]);
+    }
+  }
+
   /**
    * Push a false "write ran" flag, below the body's locals, for each fixed conditional sorted-write slot: the direct
    * epilogue or the per-call single-target transition binds the node where it stays false. Loop, alias, invoked and
@@ -41454,13 +41504,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Set a conditional sorted write's "the write ran" flag true at its upsert site (no-op without the flag). */
   private markConditionalSortedWriteFlag(slotIndex: number, node: Node): void {
-    if (!this.conditionalSortedWriteFlagSlots.has(slotIndex)) return;
-    const flagName = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slotIndex);
-    if (this.getStackIndex(flagName, true) < 0) return;
-    this.emit(Op.OP_1, { location: node.location, positionHint: PositionHint.END });
-    this.pushToStack('(cond_written_new)');
-    this.emitReplace(this.getStackIndex(flagName), node);
-    this.popFromStack();
+    if (this.conditionalSortedWriteFlagSlots.has(slotIndex)) {
+      const flagName = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slotIndex);
+      if (this.getStackIndex(flagName, true) >= 0) {
+        this.emit(Op.OP_1, { location: node.location, positionHint: PositionHint.END });
+        this.pushToStack('(cond_written_new)');
+        this.emitReplace(this.getStackIndex(flagName), node);
+        this.popFromStack();
+      }
+    }
+    // Any of a conditional batch's upserts sets the whole batch's "ran" flag.
+    for (const [repr, slots] of this.conditionalSortedBatchFlags) {
+      if (!slots.includes(slotIndex)) continue;
+      const flagName = GenerateTargetTraversalWithLocation.condSortedBatchFlagName(repr);
+      if (this.getStackIndex(flagName, true) < 0) continue;
+      this.emit(Op.OP_1, { location: node.location, positionHint: PositionHint.END });
+      this.pushToStack('(cond_batch_new)');
+      this.emitReplace(this.getStackIndex(flagName), node);
+      this.popFromStack();
+    }
   }
 
   /** Under each slot flag's NOT branch, require the co-spent node to round-trip (commitment, category, bytecode). */
@@ -41474,6 +41536,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_NOTIF, locationData);
       this.emitEntryPreservationBody(i, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+    }
+  }
+
+  /**
+   * Under each conditional batch's NOT "ran" flag, every co-spent node must round-trip (commitment / category /
+   * bytecode input == output). Nothing relinks on that path, so pinning `next` with the value is exact.
+   */
+  private emitConditionalSortedBatchPreservation(node: FunctionDefinitionNode): void {
+    const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    for (const repr of [...this.conditionalSortedBatchFlags.keys()].sort((a, b) => a - b)) {
+      const flagName = GenerateTargetTraversalWithLocation.condSortedBatchFlagName(repr);
+      const flagIndex = this.getStackIndex(flagName, true);
+      if (flagIndex < 0) continue;
+      this.emit(encodeInt(BigInt(flagIndex)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_NOTIF, locationData);
+      for (const slot of [...this.conditionalSortedBatchFlags.get(repr)!].sort((a, b) => a - b)) {
+        this.emitEntryPreservationBody(slot, locationData);
+      }
       this.emit(Op.OP_ENDIF, locationData);
     }
   }

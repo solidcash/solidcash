@@ -211,6 +211,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   The focused new title and its immediately preceding local-helper title pass; `yarn build`, targeted lint, and
   the static sources-only gate pass. Regenerated GoldenToken and transfer-with-timeout scripts shrink from
   786 to 752 and 40 to 35 bytes respectively. No broad suite or cold beta gate ran.
+- 2026-10-02 typed-state receiver checkpoint: the auto-selection survey missed a cross-contract call spelled
+  `this.sink.note(...)` because it is a method call on a state-access node, not the namespaced call used by
+  `sink.note(...)`. It now selects the graph route for an explicitly qualified interface-typed state receiver;
+  the focused red-to-green title confirms one published external call and an available route. Its immediately
+  preceding bare-state-receiver title passes. No broad compiler suite or beta gate was run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

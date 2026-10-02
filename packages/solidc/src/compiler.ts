@@ -4116,7 +4116,10 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       || (node instanceof LowLevelCallStatementNode && node.callMode !== 'delegatecall')
       || (node instanceof MethodCallNode && node.methodName !== 'delegatecall'
         && ((node.object instanceof InstantiationNode)
-          || (node.object instanceof FunctionCallNode && interfaceNames.has(node.object.identifier.name))))) {
+          || (node.object instanceof FunctionCallNode && interfaceNames.has(node.object.identifier.name))
+          // `this.sink.note(...)` is a MethodCallNode on a StateAccessNode, not a namespaced
+          // FunctionCallNode. Its explicit state qualification cannot be shadowed by a local.
+          || (node.object instanceof StateAccessNode && typedStateReceivers.get(node.object.name) === true)))) {
       found = true;
     }
   };

@@ -256,7 +256,7 @@ export {
   placeValueChunksOnBand,
   selectExpectedP2sh32OutputLock,
   selectValueChunkCommitmentObservations,
-  fillJobEventsBandHoles,
+  fillValueChunkBandHoles,
   isOverwritableValueChunkOccupant,
   mintingSwapShift,
   expectedFromOtcEqualVerify,
@@ -380,7 +380,7 @@ import {
   cachedEntryOutputOwnsLock,
   externalEntryLockingBytecode,
   fillSwappedTokenEntryHoles,
-  placeJobEventsPredecessorInputs,
+  placeValueChunkPredecessorInputs,
   swapMintingOffValueChunkBand,
   type MintingSwapPredecessorHost,
 } from './stb-minting-swap-predecessors.js';
@@ -420,9 +420,9 @@ import {
 } from './stb-view-tail-occupancy.js';
 import { reassertNestedEmitEvents, type NestedEmitEventsHost } from './stb-nested-emit-events.js';
 import {
-  reassertPersistedJobEventsOneToOnes,
-  type PersistedJobEventsOneToOneHost,
-} from './stb-persisted-jobevents-onetoone.js';
+  reassertPersistedValueChunkOneToOnes,
+  type PersistedValueChunkOneToOneHost,
+} from './stb-persisted-value-chunk-onetoone.js';
 import { placeTailReturnAfterSwappedTokenBlock, type PlaceTailReturnHost } from './stb-place-tail-return.js';
 import { ensureAuthenticatedViewReturns, type AuthenticatedViewReturnHost } from './stb-authenticated-view-returns.js';
 import {
@@ -974,7 +974,7 @@ export class StatefulTransactionBuilder {
    * base is the proxy master), so the placing group and the owning group are different. */
   private derivedChunkOutputs = new Map<number, DerivedChunkOutputObservation>();
   /** Survives probe rebuilds that drop `derivedChunkOutputs` before send(). */
-  private pendingJobEventsPredecessors: UnlockableUtxo[] = [];
+  private pendingValueChunkPredecessors: UnlockableUtxo[] = [];
   private persistedJobEventsChunks: Array<{
     commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
   }> = [];
@@ -1385,7 +1385,7 @@ export class StatefulTransactionBuilder {
       ...scaled,
       allInputs: this.allInputs,
       funderUtxos: this.funderUtxos,
-      pendingJobEventsPredecessors: this.pendingJobEventsPredecessors,
+      pendingValueChunkPredecessors: this.pendingValueChunkPredecessors,
       preserveBlockLayoutWidth: this.preserveBlockLayoutWidth,
       compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
       entryNfts: this.entryNfts,
@@ -1520,7 +1520,7 @@ export class StatefulTransactionBuilder {
   private _nestedEmitEventsHost(): NestedEmitEventsHost {
     return {
       ...this._scaledPreserveEmitHost(),
-      pendingJobEventsPredecessors: this.pendingJobEventsPredecessors,
+      pendingValueChunkPredecessors: this.pendingValueChunkPredecessors,
       forcedChunkableValueWriteBandStart: this.forcedChunkableValueWriteBandStart,
       detachedEventReceipts: this.detachedEventReceipts,
       builderOptions: this.builderOptions,
@@ -1530,22 +1530,22 @@ export class StatefulTransactionBuilder {
       materializeValueChunkBand: (builder) => {
         this._materializeValueChunkBand(builder);
       },
-      placeJobEventsPredecessorInputs: (extras) => {
-        this._placeJobEventsPredecessorInputs(extras);
+      placeValueChunkPredecessorInputs: (extras) => {
+        this._placeValueChunkPredecessorInputs(extras);
       },
-      reassertPersistedJobEventsOneToOnes: (builder, emitDest) => {
-        this._reassertPersistedJobEventsOneToOnes(builder, emitDest);
+      reassertPersistedValueChunkOneToOnes: (builder, emitDest) => {
+        this._reassertPersistedValueChunkOneToOnes(builder, emitDest);
       },
     };
   }
 
 
-  private _persistedJobEventsOneToOneHost(): PersistedJobEventsOneToOneHost {
+  private _persistedValueChunkOneToOneHost(): PersistedValueChunkOneToOneHost {
     return {
       ...this._scaledPreserveEmitHost(),
       compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
       preserveBlockLayoutWidth: this.preserveBlockLayoutWidth,
-      pendingJobEventsPredecessors: this.pendingJobEventsPredecessors,
+      pendingValueChunkPredecessors: this.pendingValueChunkPredecessors,
       valueChunkRedeemLock: this.valueChunkRedeemLock,
       hasMintingBandTokenWriter: () => this.hasMintingBandTokenWriter(),
       declaredExternalOutputSlotOwner: (outputIndex) => this._declaredExternalOutputSlotOwner(outputIndex),
@@ -2315,7 +2315,7 @@ export class StatefulTransactionBuilder {
       get satoshiContainerUtxo() { return self.satoshiContainerUtxo; },
       get externalIdentityAnchorUtxos() { return self.externalIdentityAnchorUtxos; },
       get logicalIdentityUtxo() { return self.logicalIdentityUtxo; },
-      get pendingJobEventsPredecessors() { return self.pendingJobEventsPredecessors; },
+      get pendingValueChunkPredecessors() { return self.pendingValueChunkPredecessors; },
       get blockLayout() { return self.blockLayout; },
       get preserveBlockLayoutWidth() { return self.preserveBlockLayoutWidth; },
       get compilerRouteDelegateBlock() { return self.compilerRouteDelegateBlock; },
@@ -2331,8 +2331,8 @@ export class StatefulTransactionBuilder {
         )
       ),
       swapMintingOffValueChunkBand: () => { self._swapMintingOffValueChunkBand(); },
-      placeJobEventsPredecessorInputs: (extras) => {
-        self._placeJobEventsPredecessorInputs([...extras]);
+      placeValueChunkPredecessorInputs: (extras) => {
+        self._placeValueChunkPredecessorInputs([...extras]);
       },
     };
   }
@@ -2464,7 +2464,7 @@ export class StatefulTransactionBuilder {
       reassertDelegateImplEvents: (b) => { this._reassertDelegateImplEvents(b); },
       isPersistedChunkableValueWriteReady: () => this._isPersistedChunkableValueWriteReady(),
       reassertPersistedValueChunkOneToOnes: (b, emitDest) => {
-        this._reassertPersistedJobEventsOneToOnes(b, emitDest);
+        this._reassertPersistedValueChunkOneToOnes(b, emitDest);
       },
       scaledEmitOutputIndex: (outputCount) => this._scaledEmitOutputIndex(outputCount),
       reassertMintingOneToOne: (b) => { this._reassertMintingOneToOne(b); },
@@ -2557,8 +2557,8 @@ export class StatefulTransactionBuilder {
         this._reassertScaledPreserveOneToOnes(builder);
       },
       isPersistedChunkableValueWriteReady: () => this._isPersistedChunkableValueWriteReady(),
-      reassertPersistedJobEventsOneToOnes: (builder, emitDest) => {
-        this._reassertPersistedJobEventsOneToOnes(builder, emitDest);
+      reassertPersistedValueChunkOneToOnes: (builder, emitDest) => {
+        this._reassertPersistedValueChunkOneToOnes(builder, emitDest);
       },
       scaledEmitOutputIndex: (outputCount) => this._scaledEmitOutputIndex(outputCount),
       reassertMintingOneToOne: (builder) => { this._reassertMintingOneToOne(builder); },
@@ -2584,8 +2584,8 @@ export class StatefulTransactionBuilder {
         this._ensureAuthenticatedViewReturns(builder);
       },
       isPersistedChunkableValueWriteReady: () => this._isPersistedChunkableValueWriteReady(),
-      reassertPersistedJobEventsOneToOnes: (builder, emitDest) => {
-        this._reassertPersistedJobEventsOneToOnes(builder, emitDest);
+      reassertPersistedValueChunkOneToOnes: (builder, emitDest) => {
+        this._reassertPersistedValueChunkOneToOnes(builder, emitDest);
       },
       scaledEmitOutputIndex: (outputCount) => this._scaledEmitOutputIndex(outputCount),
       reassertDelegateImplEvents: (builder) => { this._reassertDelegateImplEvents(builder); },
@@ -3011,9 +3011,9 @@ export class StatefulTransactionBuilder {
     return selectedPersistedValueChunkCategory(this._chunkableWritePlanningHost());
   }
 
-  /** ExtraTransfer swap parks p2pkh funders on the jobEvents band. Put predecessor chunks back. */
-  private _placeJobEventsPredecessorInputs(extras: UnlockableUtxo[] = []): void {
-    placeJobEventsPredecessorInputs(this._mintingSwapPredecessorHost(), extras);
+  /** An extra-transfer swap can park funders on the value-chunk band; put predecessor chunks back. */
+  private _placeValueChunkPredecessorInputs(extras: UnlockableUtxo[] = []): void {
+    placeValueChunkPredecessorInputs(this._mintingSwapPredecessorHost(), extras);
   }
 
   /**
@@ -3027,7 +3027,7 @@ export class StatefulTransactionBuilder {
       builderOptions: this.builderOptions,
       allInputs: this.allInputs,
       setPendingValueChunkPredecessors: (extras) => {
-        this.pendingJobEventsPredecessors = extras;
+        this.pendingValueChunkPredecessors = extras;
       },
       getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       persistedValueChunkCategory: () => this._persistedValueChunkCategory(),
@@ -3040,7 +3040,7 @@ export class StatefulTransactionBuilder {
       chunkableValueWriteGroups: () => this._chunkableValueWriteGroups(),
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
       placeValueChunkPredecessorInputs: (extras) => {
-        this._placeJobEventsPredecessorInputs(extras);
+        this._placeValueChunkPredecessorInputs(extras);
       },
     };
   }
@@ -3338,8 +3338,8 @@ export class StatefulTransactionBuilder {
   }
 
   /** Persist UPDATE predecessors are mutable value-chunks, not data-NFT twins. */
-  private _reassertPersistedJobEventsOneToOnes(builder: TransactionBuilder, emitDest: number): void {
-    reassertPersistedJobEventsOneToOnes(this._persistedJobEventsOneToOneHost(), builder, emitDest);
+  private _reassertPersistedValueChunkOneToOnes(builder: TransactionBuilder, emitDest: number): void {
+    reassertPersistedValueChunkOneToOnes(this._persistedValueChunkOneToOneHost(), builder, emitDest);
   }
 
   /** Read `__internal__returnOutputIdx` from one unlocker, or undefined when absent. */
@@ -3684,7 +3684,7 @@ export class StatefulTransactionBuilder {
       get compilerRouteDelegateBlock() { return self.compilerRouteDelegateBlock; },
       get externalIdentityAnchorUtxos() { return self.externalIdentityAnchorUtxos; },
       get logicalIdentityUtxo() { return self.logicalIdentityUtxo; },
-      get pendingJobEventsPredecessors() { return self.pendingJobEventsPredecessors; },
+      get pendingValueChunkPredecessors() { return self.pendingValueChunkPredecessors; },
       buildInputs: (
         entryInputs, tokenContainerInputs, satoshiContainerInputs,
         externalOutStateInputs, externalCallInputs, lowLevelCallInputs,
@@ -3695,8 +3695,8 @@ export class StatefulTransactionBuilder {
       swapMintingOffValueChunkBand: () => {
         self._swapMintingOffValueChunkBand();
       },
-      placeJobEventsPredecessorInputs: (extras) => {
-        self._placeJobEventsPredecessorInputs([...extras]);
+      placeValueChunkPredecessorInputs: (extras) => {
+        self._placeValueChunkPredecessorInputs([...extras]);
       },
     };
   }

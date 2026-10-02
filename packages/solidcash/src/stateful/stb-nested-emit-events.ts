@@ -47,14 +47,14 @@ import {
 import { placeChunkableWriterEventOutput } from './writer-event-delegate-layout.js';
 
 export interface NestedEmitEventsHost extends ScaledPreserveEmitHost {
-  readonly pendingJobEventsPredecessors: UnlockableUtxo[];
+  readonly pendingValueChunkPredecessors: UnlockableUtxo[];
   forcedChunkableValueWriteBandStart?: number;
   detachedEventReceipts: Array<{ eventSignature: string; commitment: string }>;
   readonly builderOptions: { provider: object };
   ensureDistinctJobEventNfts(builder: TransactionBuilder): void;
   materializeValueChunkBand(builder: TransactionBuilder): void;
-  placeJobEventsPredecessorInputs(extras?: UnlockableUtxo[]): void;
-  reassertPersistedJobEventsOneToOnes(builder: TransactionBuilder, emitDest: number): void;
+  placeValueChunkPredecessorInputs(extras?: UnlockableUtxo[]): void;
+  reassertPersistedValueChunkOneToOnes(builder: TransactionBuilder, emitDest: number): void;
 }
 
 /**
@@ -320,9 +320,9 @@ export function reassertNestedEmitEvents(
   host.ensureDistinctJobEventNfts(builder);
   if (persistEmit && dest >= 0) {
     host.forcedChunkableValueWriteBandStart = dest + 1;
-    host.placeJobEventsPredecessorInputs(host.pendingJobEventsPredecessors);
+    host.placeValueChunkPredecessorInputs(host.pendingValueChunkPredecessors);
     host.materializeValueChunkBand(builder);
-    host.reassertPersistedJobEventsOneToOnes(builder, dest);
+    host.reassertPersistedValueChunkOneToOnes(builder, dest);
   }
   const executingDest = legacyEventFallback && dest >= 0
     ? dest

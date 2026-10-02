@@ -1,5 +1,5 @@
 /**
- * phase-boundary extract: STB class-body extract — persist UPDATE JobEvents / value-chunk 1:1 reassert.
+ * phase-boundary extract: STB class-body extract — persisted value-chunk 1:1 reassert.
  */
 
 import { encodeChunkableValueTail } from '@solidcash/utils';
@@ -44,10 +44,10 @@ import {
 } from './value-chunk-persist.js';
 import type { FunctionBlockLayout } from '@solidcash/utils';
 
-export interface PersistedJobEventsOneToOneHost extends ScaledPreserveEmitHost {
+export interface PersistedValueChunkOneToOneHost extends ScaledPreserveEmitHost {
   readonly compilerRouteDelegateBlock: boolean;
   readonly preserveBlockLayoutWidth: boolean;
-  readonly pendingJobEventsPredecessors: readonly UnlockableUtxo[];
+  readonly pendingValueChunkPredecessors: readonly UnlockableUtxo[];
   readonly valueChunkRedeemLock?: Uint8Array;
   hasMintingBandTokenWriter(): boolean;
   declaredExternalOutputSlotOwner(outputIndex: number): {
@@ -64,8 +64,8 @@ export interface PersistedJobEventsOneToOneHost extends ScaledPreserveEmitHost {
 }
 
 /** Persist UPDATE predecessors are mutable value-chunks, not data-NFT twins. */
-export function reassertPersistedJobEventsOneToOnes(
-  host: PersistedJobEventsOneToOneHost,
+export function reassertPersistedValueChunkOneToOnes(
+  host: PersistedValueChunkOneToOneHost,
   builder: TransactionBuilder,
   emitDest: number,
 ): void {
@@ -207,7 +207,7 @@ export function reassertPersistedJobEventsOneToOnes(
     }
     const sameCategory = !!categoryId && input.token?.category === categoryId;
     if (!sameCategory && !persistShaped) continue;
-    const predecessor = host.pendingJobEventsPredecessors.find((candidate) =>
+    const predecessor = host.pendingValueChunkPredecessors.find((candidate) =>
       candidate.txid === input.txid && candidate.vout === input.vout);
     const digestCategory = input.token?.category ?? categoryId;
     const persistedWrite = host.persistedValueChunkWrite(digestCategory);

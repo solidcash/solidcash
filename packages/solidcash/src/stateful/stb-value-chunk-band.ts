@@ -25,7 +25,7 @@ import {
 } from './stb-chunkable-write-planning.js';
 import type { ScaledPreserveEmitHost } from './stb-scaled-preserve-emit.js';
 import {
-  fillJobEventsBandHoles,
+  fillValueChunkBandHoles,
   placeValueChunksOnBand,
   preferChunkCommitment,
 } from './value-chunk-band-helpers.js';
@@ -301,7 +301,7 @@ export function materializeValueChunkBand(
     ? Math.min(opReturnAt, builder.outputs.length - suffixChunkCount - (suffixChunkCount > 0 ? 1 : 0))
     : builder.outputs.length - suffixChunkCount - (suffixChunkCount > 0 ? 1 : 0);
   placeValueChunksOnBand(builder.outputs, liveBand, placed, reserved, occupancyEnd, suffixStart);
-  fillJobEventsBandHoles(builder.outputs, liveBand, {
+  fillValueChunkBandHoles(builder.outputs, liveBand, {
     lockingBytecode: placed[0].lockingBytecode,
     categoryId: placed[0].categoryId ?? stateOwnerCategory,
   }, reserved, suffixStart, occupancyEnd);
@@ -440,7 +440,7 @@ export function ensureLiveValueChunkBand(
     })),
     siblingLock,
   ), reserved, occupancyEnd, suffixStart);
-  fillJobEventsBandHoles(builder.outputs, liveBand, {
+  fillValueChunkBandHoles(builder.outputs, liveBand, {
     lockingBytecode: siblingLock,
     categoryId: persistTokenCategory ?? source[0]?.categoryId,
   }, reserved, suffixStart, occupancyEnd);

@@ -19,7 +19,7 @@ import {
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import {
   isDisposableAlignmentPad,
-  fillJobEventsBandHoles,
+  fillValueChunkBandHoles,
   isP2sh32LockScript,
 } from './value-chunk-band-helpers.js';
 import { persistUpdatePredecessorDests } from './persist-predecessor-layout.js';
@@ -56,9 +56,9 @@ export function legacyComputePublishValueChunkBand(
   return computeChunkableValueWriteBand(...args);
 }
 export function legacyFillValueChunkBandHoles(
-  ...args: Parameters<typeof fillJobEventsBandHoles>
-): ReturnType<typeof fillJobEventsBandHoles> {
-  return fillJobEventsBandHoles(...args);
+  ...args: Parameters<typeof fillValueChunkBandHoles>
+): ReturnType<typeof fillValueChunkBandHoles> {
+  return fillValueChunkBandHoles(...args);
 }
 export function legacyPersistedValueChunkWidth(
   ...args: Parameters<typeof persistedJobEventsWidth>

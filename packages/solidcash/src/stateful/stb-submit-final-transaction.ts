@@ -217,7 +217,7 @@ export async function submitFinalTransaction(
         console.error('submit-fail-layout', {
           reason,
           outputCount: finalBuilder.outputs.length,
-          jobEventsBand: host.getChunkableValueWriteBand(),
+          valueChunkBand: host.getChunkableValueWriteBand(),
           derivedEntries: [...host.externalCallEntryOutputsByIndex.entries()].map(([index, placed]) => ({
             index, cat: placed.categoryId.slice(0, 8), commit: placed.commitment.slice(0, 24),
             len: placed.commitment.length,

@@ -51,7 +51,7 @@ ScaledPreserveEmitHost,
 > {
   readonly allInputs: UnlockableUtxo[];
   funderUtxos: UnlockableUtxo[];
-  pendingJobEventsPredecessors: UnlockableUtxo[];
+  pendingValueChunkPredecessors: UnlockableUtxo[];
   readonly preserveBlockLayoutWidth: boolean;
   readonly compilerRouteDelegateBlock: boolean;
   readonly entryNfts: readonly EntryNftInfo[];
@@ -129,8 +129,8 @@ export function externalEntryLockingBytecode(
   ) : undefined;
 }
 
-/** ExtraTransfer swap parks p2pkh funders on the jobEvents band. Put predecessor chunks back. */
-export function placeJobEventsPredecessorInputs(
+/** An extra-transfer swap can park funders on the value-chunk band; put predecessor chunks back. */
+export function placeValueChunkPredecessorInputs(
   host: MintingSwapPredecessorHost,
   extras: UnlockableUtxo[] = [],
 ): void {
@@ -338,11 +338,11 @@ export function swapMintingOffValueChunkBand(host: MintingSwapPredecessorHost): 
     // places view tails. Exact `from+width` is too brittle: a later 2-wide shift (26→28) would drop
     // the flag, skip tail placement, and compact `meceTags` onto `arbitratorRegistered`.
     if (shouldRetainMintingOutputSwap(start, chunkBase, nNew, previousSwap, tokenGroup.categoryId)) {
-      placeJobEventsPredecessorInputs(host, host.pendingJobEventsPredecessors);
+      placeValueChunkPredecessorInputs(host, host.pendingValueChunkPredecessors);
       return;
     }
     host.setMintingOutputSwap(undefined);
-    placeJobEventsPredecessorInputs(host, host.pendingJobEventsPredecessors);
+    placeValueChunkPredecessorInputs(host, host.pendingValueChunkPredecessors);
     return;
   }
   host.setMintingOutputSwap(undefined);
@@ -389,7 +389,7 @@ export function swapMintingOffValueChunkBand(host: MintingSwapPredecessorHost): 
   const funderBlock = host.allInputs.slice(start + tokenWidth, start + tokenWidth + shift);
   host.allInputs.splice(start, tokenWidth + shift, ...funderBlock, ...tokenBlock);
   host.setMintingOutputSwap({ from: start, width: shift, categoryId: tokenGroup.categoryId });
-  placeJobEventsPredecessorInputs(host, host.pendingJobEventsPredecessors);
+  placeValueChunkPredecessorInputs(host, host.pendingValueChunkPredecessors);
   const newMaster = host.findMintingInputIndex(tokenGroup.categoryId);
   if (newMaster < 0) return;
   // Sparse blocks still own their output-only coordinates. Keep later

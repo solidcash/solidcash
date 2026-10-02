@@ -327,6 +327,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   renamed selected writer cannot inherit the name from another group, and multiple compiler-published collections
   fail closed. Both focused new
   regression titles and their immediately preceding titles pass; this does not establish a broad SDK gate.
+  The active SDK continuation path now names its band-hole fill, pending predecessor placement, and persisted
+  one-to-one reassertion for value chunks, including their host interfaces and diagnostic field. The historical
+  JobEvents-named import shim remains explicitly deprecated, and the legacy persistence backing still needs its
+  own metadata-driven retirement. This naming-only change passed `yarn build` and targeted lint; no tests were
+  launched for the rename under the current exact-red-title testing instruction.
 - The focused `post two jobs` scenario is green after a fresh compile. A neutral BCH-2026 regression proves zero,
   one, and two repeated getter results whose exact affine domain consumes an authenticated earlier scalar result.
   The compiler preserves the source callsite-to-returned-array link before memory lowering; the SDK retains one

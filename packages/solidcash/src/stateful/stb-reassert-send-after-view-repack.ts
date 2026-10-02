@@ -16,7 +16,7 @@ export interface ReassertSendAfterViewRepackHost {
   placeTailReturnAfterSwappedTokenBlock(builder: TransactionBuilder): void;
   ensureAuthenticatedViewReturns(builder: TransactionBuilder): void;
   isPersistedChunkableValueWriteReady(): boolean;
-  reassertPersistedJobEventsOneToOnes(builder: TransactionBuilder, emitDest: number): void;
+  reassertPersistedValueChunkOneToOnes(builder: TransactionBuilder, emitDest: number): void;
   scaledEmitOutputIndex(outputCount: number): number | undefined;
   reassertDelegateImplEvents(builder: TransactionBuilder): void;
   reassertNestedEmitEvents(builder: TransactionBuilder): void;
@@ -49,7 +49,7 @@ export function reassertSendAfterViewRepack(
   host.placeTailReturnAfterSwappedTokenBlock(finalBuilder);
   host.ensureAuthenticatedViewReturns(finalBuilder);
   if (host.isPersistedChunkableValueWriteReady()) {
-    host.reassertPersistedJobEventsOneToOnes(
+    host.reassertPersistedValueChunkOneToOnes(
       finalBuilder, host.scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
     );
   }
@@ -61,7 +61,7 @@ export function reassertSendAfterViewRepack(
   host.reassertDelegateImplEvents(finalBuilder);
   host.reassertFixedStateOutputs(finalBuilder);
   if (host.isPersistedChunkableValueWriteReady()) {
-    host.reassertPersistedJobEventsOneToOnes(
+    host.reassertPersistedValueChunkOneToOnes(
       finalBuilder, host.scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
     );
   }

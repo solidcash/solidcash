@@ -1,5 +1,5 @@
 /**
- * phase-boundary extract: Value-chunk band placement / JobEvents hole fill / OTC equal-verify helpers.
+ * phase-boundary extract: Value-chunk band placement / hole fill / OTC equal-verify helpers.
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
@@ -109,11 +109,11 @@ export function selectValueChunkCommitmentObservations(
 }
 
 /**
- * Occupancy: every slot in `[band.start, band.start+nNew)` must be a jobEvents
- * continuation NFT. A shorter Created/Updated extract must not leave a P2PKH
- * hole (history nNew=6 at slot 25) — derivation overwrites the placeholder.
+ * Occupancy: every slot in `[band.start, band.start+nNew)` must be a value-chunk
+ * continuation NFT. A shorter derived run must not leave a token-free hole;
+ * derivation overwrites the placeholder with the authenticated commitment.
  */
-export function fillJobEventsBandHoles(
+export function fillValueChunkBandHoles(
   outputs: Array<{
     to?: Uint8Array | string;
     amount?: bigint;
@@ -170,7 +170,7 @@ export function fillJobEventsBandHoles(
   return filled;
 }
 
-/** View tails / token-free pads that derived jobEvents chunks must replace. */
+/** View tails / token-free pads that derived value chunks must replace. */
 export function isOverwritableValueChunkOccupant(output: {
   to?: Uint8Array | string;
   token?: { nft?: { capability?: string; commitment?: Uint8Array | string } };
@@ -187,7 +187,7 @@ export function mintingSwapShift(start: number, chunkBase: number, nNew: number)
   return Math.max(4, Math.max(1, chunkBase + nNew - start));
 }
 
-/** Slot-index prefix plus an all-zero payload — surplus empty jobEvents / value-chunk. */
+/** Slot-index prefix plus an all-zero payload — surplus empty value-chunk. */
 export function expectedFromOtcEqualVerify(
   below: Uint8Array,
   top: Uint8Array,
@@ -213,7 +213,7 @@ export function preferChunkCommitment(existing: string | undefined, incoming: st
 /**
  * OP_TRUE + none-cap is a view/loop return witness. Nested events and identity
  * tags must displace it, not overwrite: same-category is not enough to treat it
- * as an empty event hole (`arbitratorRegistered` and `publishJobEvent` share MD).
+ * as an empty event hole.
  */
 export function isViewReturnTailOutput(output: {
   to?: Uint8Array | string;

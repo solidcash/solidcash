@@ -18,7 +18,7 @@ export interface ReassertSendFinalBuilderHost {
   ensureAuthenticatedViewReturns(builder: TransactionBuilder): void;
   reassertScaledPreserveOneToOnes(builder: TransactionBuilder): void;
   isPersistedChunkableValueWriteReady(): boolean;
-  reassertPersistedJobEventsOneToOnes(builder: TransactionBuilder, emitDest: number): void;
+  reassertPersistedValueChunkOneToOnes(builder: TransactionBuilder, emitDest: number): void;
   scaledEmitOutputIndex(outputCount: number): number | undefined;
   reassertMintingOneToOne(builder: TransactionBuilder): void;
   reassertFixedStateOutputs(builder: TransactionBuilder): void;
@@ -48,7 +48,7 @@ export function reassertSendFinalBuilder(
   host.reassertNestedEmitEvents(finalBuilder);
   host.reassertDelegateImplEvents(finalBuilder);
   if (host.isPersistedChunkableValueWriteReady()) {
-    host.reassertPersistedJobEventsOneToOnes(
+    host.reassertPersistedValueChunkOneToOnes(
       finalBuilder, host.scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
     );
   }
@@ -56,7 +56,7 @@ export function reassertSendFinalBuilder(
   host.reassertMintingOneToOne(finalBuilder);
   host.reassertFixedStateOutputs(finalBuilder);
   if (host.isPersistedChunkableValueWriteReady()) {
-    host.reassertPersistedJobEventsOneToOnes(
+    host.reassertPersistedValueChunkOneToOnes(
       finalBuilder, host.scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
     );
   }

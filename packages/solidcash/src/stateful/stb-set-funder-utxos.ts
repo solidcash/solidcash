@@ -27,7 +27,7 @@ export interface SetFunderUtxosHost {
   readonly compilerRouteDelegateBlock?: boolean;
   readonly externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
   readonly logicalIdentityUtxo?: UnlockableUtxo;
-  readonly pendingJobEventsPredecessors: readonly UnlockableUtxo[];
+  readonly pendingValueChunkPredecessors: readonly UnlockableUtxo[];
   buildInputs(
     entryInputs: UnlockableUtxo[],
     tokenContainerInputs: UnlockableUtxo[],
@@ -37,7 +37,7 @@ export interface SetFunderUtxosHost {
     lowLevelCallInputs: UnlockableUtxo[],
   ): UnlockableUtxo[];
   swapMintingOffValueChunkBand(): void;
-  placeJobEventsPredecessorInputs(extras: readonly UnlockableUtxo[]): void;
+  placeValueChunkPredecessorInputs(extras: readonly UnlockableUtxo[]): void;
 }
 
 /**
@@ -115,7 +115,7 @@ export function setFunderUtxos(
   debugInputAssembly('refreshed');
   host.swapMintingOffValueChunkBand();
   debugInputAssembly('refresh-minting-band-relocated');
-  host.placeJobEventsPredecessorInputs(host.pendingJobEventsPredecessors);
+  host.placeValueChunkPredecessorInputs(host.pendingValueChunkPredecessors);
   debugInputAssembly('refresh-predecessors-placed');
   host.allInputs.push(...identityAnchorPlacement(
     host.blockLayout, host.externalIdentityAnchorUtxos, host.logicalIdentityUtxo,

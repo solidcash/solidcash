@@ -23,7 +23,7 @@ export interface AssembleConstructorInputsHost {
   readonly satoshiContainerUtxo?: UnlockableUtxo;
   readonly externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
   readonly logicalIdentityUtxo?: UnlockableUtxo;
-  readonly pendingJobEventsPredecessors: readonly UnlockableUtxo[];
+  readonly pendingValueChunkPredecessors: readonly UnlockableUtxo[];
   readonly blockLayout?: FunctionBlockLayout;
   readonly preserveBlockLayoutWidth: boolean;
   readonly compilerRouteDelegateBlock: boolean;
@@ -38,7 +38,7 @@ export interface AssembleConstructorInputsHost {
     lowLevelCallInputs: UnlockableUtxo[],
   ): UnlockableUtxo[];
   swapMintingOffValueChunkBand(): void;
-  placeJobEventsPredecessorInputs(extras: readonly UnlockableUtxo[]): void;
+  placeValueChunkPredecessorInputs(extras: readonly UnlockableUtxo[]): void;
 }
 
 /**
@@ -140,7 +140,7 @@ export function assembleConstructorInputs(
   debugInputAssembly('constructed');
   host.swapMintingOffValueChunkBand();
   debugInputAssembly('minting-band-relocated');
-  host.placeJobEventsPredecessorInputs(host.pendingJobEventsPredecessors);
+  host.placeValueChunkPredecessorInputs(host.pendingValueChunkPredecessors);
   debugInputAssembly('predecessors-placed');
   // Published identity slots are already populated by buildInputs. Only legacy/unrepresented anchors remain
   // in the post-block tail, with the caller's logical identity last.

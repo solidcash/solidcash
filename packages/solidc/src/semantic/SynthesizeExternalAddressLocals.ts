@@ -75,6 +75,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   private plainAddrStateVars: Set<string> = new Set();    // plain-`address` state var names (no interfaceName)
   private stateRoots: Map<string, Type> = new Map();      // state var / collection name -> declared type (self-pinned)
   private currentParams: Set<string> = new Set();         // current function's param names (safe at body top)
+  private reassignedParams: Set<string> = new Set();      // params the body assigns, so not their body-top value
   private typeNames: Set<string> = new Set();             // interface + contract names usable as a cast target
   // localName -> synthesized decl parts (init reads the self-pinned state; iface = the local's interface type, or
   // undefined for a plain-`address` local hoisted as a low-level-call receiver)
@@ -251,6 +252,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     this.collectLocalInitsUpfront(node.body);
     this.singleAssignLocals = this.computeSingleAssignLocals(node.body);
     this.currentParams = new Set(node.parameters.map((p) => p.name));
+    this.reassignedParams = this.assignedParams(node.body);
     node.body = this.visit(node.body) as BlockNode;
     if (this.usedInFn.size > 0) {
       const decls = [...this.usedInFn.entries()]
@@ -452,7 +454,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       // reaches here too: AstBuilder already inlines the storage pointer, so `item.target` is
       // `records[id].target`.
       if (!this.usedInFn.has(castChain.localName)) {
-        this.usedInFn.set(castChain.localName, { iface: castChain.iface, init: cloneNode(node.object) as ExpressionNode });
+        this.usedInFn.set(castChain.localName, { iface: castChain.iface, init: castChain.init });
       }
       const loc = node.object.location;
       node.object = new IdentifierNode(castChain.localName);
@@ -618,7 +620,9 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const resolved = castChain ?? paramField;
     if (resolved) {
       if (!this.usedInFn.has(resolved.localName)) {
-        this.usedInFn.set(resolved.localName, { iface: resolved.iface, init: cloneNode(init) as ExpressionNode });
+        this.usedInFn.set(resolved.localName, {
+          iface: resolved.iface, init: castChain?.init ?? cloneNode(init) as ExpressionNode,
+        });
       }
       return resolved.localName;
     }
@@ -639,7 +643,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       || obj instanceof ArrayAccessNode || obj instanceof TupleIndexOpNode)) return undefined;
     // A single-assignment storage pointer is the same self-pinned chain (`S storage s = m[k]; s.target`).
     // Normalize its base before checking provenance and use the normalized chain as the body-top initializer.
-    const normalized = this.inlineStoragePtrBases(cloneNode(obj) as ExpressionNode);
+    const normalized = this.resolveIndexAliases(this.inlineStoragePtrBases(cloneNode(obj) as ExpressionNode));
     const targetType = this.resolveChainType(normalized);
     if (!(targetType instanceof AddressType) || !targetType.interfaceName) return undefined;
     const key = this.chainKey(normalized);
@@ -664,19 +668,77 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // The state-var `IFoo(a)` cast (externalTargetStateVar, isPlain) generalized to a state ACCESS CHAIN. Returns
   // the interface + a stable per-(chain, iface) local name; undefined unless the whole chain is state-rooted with
   // param/literal indices (so the hoisted `IFoo(chain)` decl is sound + valid at the body top).
-  private castChainTarget(obj: ExpressionNode): { iface: string; localName: string } | undefined {
+  private castChainTarget(obj: ExpressionNode): { iface: string; localName: string; init: ExpressionNode } | undefined {
     const iface = obj instanceof FunctionCallNode ? obj.identifier.name
       : obj instanceof ContractReferenceNode ? obj.contractName : undefined;
     const args = obj instanceof FunctionCallNode ? obj.parameters
       : obj instanceof ContractReferenceNode ? obj.constructorArgs : undefined;
     if (!iface || !args || args.length !== 1) return undefined;
     if (!this.typeNames.has(iface)) return undefined;
-    const arg = args[0];
-    if (arg instanceof IdentifierNode) return undefined; // bare state var / param - externalTargetStateVar's job
+    if (args[0] instanceof IdentifierNode) return undefined; // bare state var / param - externalTargetStateVar's job
+    const arg = this.resolveIndexAliases(cloneNode(args[0]) as ExpressionNode);
     if (!(this.resolveChainType(arg) instanceof AddressType)) return undefined;
     const key = this.chainKey(arg);
     if (!key) return undefined;
-    return { iface, localName: `${PREFIX}${key}_${iface}` };
+    // The body-top initializer reads the chain with every inliner-bound index replaced by what it is bound to.
+    const init = cloneNode(obj) as ExpressionNode;
+    if (init instanceof FunctionCallNode) init.parameters = [arg];
+    else (init as ContractReferenceNode).constructorArgs = [arg];
+    return { iface, localName: `${PREFIX}${key}_${iface}`, init };
+  }
+
+  /**
+   * Replaces each index of an access chain that is an inliner's single-assignment binding outside any loop
+   * (`__inl<N>__pid = _pid`) with what it holds, when that is a literal or a parameter the body never assigns, so
+   * the chain hoists as the parameter-indexed one does.
+   */
+  private resolveIndexAliases(expr: ExpressionNode): ExpressionNode {
+    if (expr instanceof FieldAccessNode) {
+      expr.expression = this.resolveIndexAliases(expr.expression);
+    } else if (expr instanceof ArrayAccessNode) {
+      expr.array = this.resolveIndexAliases(expr.array);
+      expr.index = this.boundIndex(expr.index) ?? expr.index;
+    } else if (expr instanceof MappingAccessNode) {
+      expr.keys = expr.keys.map((key) => this.boundIndex(key) ?? key);
+    }
+    return expr;
+  }
+
+  private boundIndex(index: ExpressionNode, depth = 0): ExpressionNode | undefined {
+    if (!(index instanceof IdentifierNode) || depth > 16 || !/^(__inl|__rh)/.test(index.name)
+      || !this.singleAssignLocals.has(index.name)) return undefined;
+    const bound = this.localInits.get(index.name);
+    if (bound instanceof IntLiteralNode) return cloneNode(bound) as ExpressionNode;
+    if (!(bound instanceof IdentifierNode)) return undefined;
+    if (this.currentParams.has(bound.name)) {
+      return this.reassignedParams.has(bound.name) ? undefined : cloneNode(bound) as ExpressionNode;
+    }
+    return this.boundIndex(bound, depth + 1);
+  }
+
+  /** The parameters a function body assigns to (directly or as an existing tuple element). */
+  private assignedParams(body: BlockNode): Set<string> {
+    const assigned = new Set<string>();
+    const seen = new WeakSet<object>();
+    const scan = (node: unknown): void => {
+      if (!node || typeof node !== 'object' || seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof AssignNode && this.currentParams.has(node.identifier.name)) {
+        assigned.add(node.identifier.name);
+      } else if (node instanceof TupleAssignmentNode) {
+        for (const element of node.elements) {
+          if (element.existing && element.name && this.currentParams.has(element.name)) assigned.add(element.name);
+        }
+      }
+      for (const key of Object.keys(node as Record<string, unknown>)) {
+        if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const value = (node as Record<string, unknown>)[key];
+        if (Array.isArray(value)) value.forEach(scan);
+        else if (value instanceof Node) scan(value);
+      }
+    };
+    scan(body);
+    return assigned;
   }
 
   // `IFoo(<param-rooted access>)` - a field/element of a FUNCTION PARAM cast to an interface. Caller-supplied,

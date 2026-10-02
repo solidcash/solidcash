@@ -634,6 +634,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Per-function set of local names declared INSIDE a loop (re-bound each iteration). The loop-array-alias ext-call
   // rewrite fires only for these, so a body-top hoisted target (`__eh = path[path.length-1]`) stays a fixed slot.
   private loopDeclaredLocals = new Set<string>();
+  // Per-function set of external-call nodes nested in a loop. Only these can take an array element as a call on
+  // every element of the array; anywhere else an indexed element is the one call it reads.
+  private loopNestedExternalCalls = new Set<Node>();
   private typeDefMap: Map<string, ValueType> = new Map();
   private enumMap: Map<string, EnumType> = new Map();
   private fileEnumNames: Set<string> = new Set();
@@ -3557,6 +3560,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         ? this.buildExtCallReceiverCounts(node.body) : new Map();
       this.loopDeclaredLocals = hasExternalCalls
         ? this.collectLoopDeclaredLocals(node.body) : new Set();
+      this.loopNestedExternalCalls = hasExternalCalls
+        ? this.collectLoopNestedExternalCalls(node.body) : new Set();
       if (hasExternalCalls) this.collectExternalCalls(node.body, externalCallSlots);
       // A graph message-bus batch route invokes compiler-owned clones whose foreign calls are authenticated against the
       // participant emission frame. They are logical edges, not physical co-spends owned by this route, so do
@@ -7341,6 +7346,28 @@ export default class SymbolTableTraversal extends AstTraversal {
     return out;
   }
 
+  // The external-call nodes reached inside a loop body (WhileNode/DoWhileNode/CollectionIterationNode).
+  private collectLoopNestedExternalCalls(node: Node | undefined): Set<Node> {
+    const out = new Set<Node>();
+    const seen = new Set<Node>();
+    const walk = (n: Node | undefined, depth: number): void => {
+      if (!n || seen.has(n)) return;
+      seen.add(n);
+      if (depth > 0 && n instanceof ExternalFunctionCallNode) out.add(n);
+      const childDepth = (n instanceof WhileNode || n instanceof DoWhileNode
+        || n instanceof CollectionIterationNode) ? depth + 1 : depth;
+      for (const [key, v] of Object.entries(n)) {
+        // Links to declarations elsewhere (another function's body) are not part of this body.
+        if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable', 'referencedContract',
+          'stateVariable', 'collection', 'sourceCallNode', 'location', 'type'].includes(key)) continue;
+        if (v instanceof Node) walk(v, childDepth);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) walk(e, childDepth);
+      }
+    };
+    walk(node, 0);
+    return out;
+  }
+
   private findLoopIndexInComputedTarget(expr: Node, body: Node | undefined): IdentifierNode | undefined {
     let found: IdentifierNode | undefined;
     const seen = new Set<string>();
@@ -7836,9 +7863,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         // A loop over a dynamic state array read multiple times is cached to a `__dlcache_V` local by
         // CacheDynamicArrayInLoop; strip the prefix so the co-spend epilogue reads the self-pinned STATE array V.
         const stripCache = (n: string): string => (n.startsWith('__dlcache_') ? n.slice('__dlcache_'.length) : n);
-        if (ae instanceof MappingAccessNode) loopArrayVar = stripCache(ae.name);
-        else if (ae instanceof ArrayAccessNode && ae.array instanceof IdentifierNode) {
-          loopArrayVar = this.resolveInlineAliasName(stripCache(ae.array.name), this.currentFunction?.body);
+        // Only a call inside a loop takes an element target as a call on every element. Elsewhere it is one call on
+        // one callee, and a target no earlier pass could pin is refused at code generation.
+        const elementCallInLoop = this.loopNestedExternalCalls.has(node);
+        if (ae instanceof MappingAccessNode) {
+          if (elementCallInLoop) loopArrayVar = stripCache(ae.name);
+        } else if (ae instanceof ArrayAccessNode && ae.array instanceof IdentifierNode) {
+          if (elementCallInLoop) {
+            loopArrayVar = this.resolveInlineAliasName(stripCache(ae.array.name), this.currentFunction?.body);
+          }
         } else if (ae instanceof FieldAccessNode) {
           // A FIELD of a struct-array element: an interface-typed field of a STATE struct-array element
           // `poolInfo[i].lpToken.m()` (MasterChef, typed epilogue), or a PARAM struct-array target of an opaque
@@ -7853,7 +7886,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               // Record it so the param-gated inline loop dispatch (GTT) picks it up; the covenant re-visits the
               // FieldAccess each iteration to extract the target, so no struct type/field is needed here.
               loopArrayVar = arr;
-            } else {
+            } else if (elementCallInLoop) {
               const arrType = this.collectionMap.get(arr)?.type ?? this.stateVariableMap.get(arr)?.type;
               const elemType = arrType instanceof ArrayType ? arrType.elementType
                 : arrType instanceof MappingType ? arrType.valueType : undefined;

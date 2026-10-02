@@ -21,7 +21,7 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
   ) === true);
 };
 
-describe('kernel finite self function-pointer return BCH VM', () => {
+describe('kernel function-pointer BCH VM', () => {
   it('decodes both finite self targets in a multi-return and rejects a forged pointer field', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
@@ -114,5 +114,77 @@ describe('kernel finite self function-pointer return BCH VM', () => {
     outer[0] = { ...outer[0], data: forgedVector };
     hostileReturn.token.nft.commitment = binToHex(encodeAuthenticationInstructions(outer));
     expect(vmAccepts(hostile)).toBe(false);
+  }, 120_000);
+
+  it('dispatches a received pointer to the runtime-selected callee and selector', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
+      contract Sink {
+        uint value;
+        function inc() public { value = value + 1; require(true); }
+        function dec() public { value = value - 1; require(true); }
+      }
+      contract SinkAlt {
+        uint value;
+        function inc() public { value = value + 2; require(true); }
+        function dec() public { value = value - 2; require(true); }
+      }
+      contract Store {
+        function() external stored;
+        uint calls;
+        function save(function() external next) public { stored = next; require(true); }
+        function run() public { stored(); calls = calls + 1; require(true); }
+      }
+    `, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      solidityImportCompat: true,
+      suppressWarnings: true,
+    });
+    expect(artifacts.Store.messageBus?.available).toBe(true);
+    expect(artifacts.SinkAlt.bytecode).not.toBe(artifacts.Sink.bytecode);
+    const inc = hexToBin(artifacts.Sink.abi.find((entry) => entry.name === 'inc')!.selector!);
+    const dec = hexToBin(artifacts.SinkAlt.abi.find((entry) => entry.name === 'dec')!.selector!);
+    const connect = async (selected: Artifact, state: Record<string, unknown>): Promise<StatefulContract> => {
+      const base = new Contract(selected, [], { provider });
+      const setup = await setupStatefulUtxos(
+        provider, base, selected.stateLayout!, state, { saltContract: true },
+      );
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const first = await connect(artifacts.Sink, { value: 5n });
+    const second = await connect(artifacts.SinkAlt, { value: 10n });
+    const store = await connect(artifacts.Store, {
+      stored: first.inner.lockingBytecode, __fnsel_stored: inc, calls: 0n,
+    });
+    const compose = async (
+      preparedCalls: Parameters<typeof messageBus.compose>[0]['preparedCalls'],
+    ): Promise<ReturnType<typeof messageBus.compose>> => {
+      const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+      return messageBus.compose({
+        preparedCalls, funder, changeAddress: funder.unlocker.generateLockingBytecode(),
+      });
+    };
+    await store.call.save(second.inner.lockingBytecode, dec).send();
+
+    const callsiteId = artifacts.Store.abi.find((entry) => entry.name === 'run')!
+      .externalCalls!.find((call) => call.fnPtrCall)!.callsiteId!;
+    const wrongTarget = await compose([
+      { contract: store, functionName: 'run', args: [] },
+      { contract: first, functionName: 'inc', args: [], callsiteId },
+    ]);
+    await expect(wrongTarget.build()).rejects.toThrow(/BCH-2026 preflight failed/);
+
+    const run = await compose([
+      { contract: store, functionName: 'run', args: [] },
+      { contract: second, functionName: 'dec', args: [], callsiteId },
+    ]);
+    expect(vmAccepts(await run.build())).toBe(true);
+    await run.send();
+    expect((await first.getState()).value).toBe(5n);
+    expect((await second.getState()).value).toBe(8n);
+    expect((await store.getState()).calls).toBe(1n);
   }, 120_000);
 });

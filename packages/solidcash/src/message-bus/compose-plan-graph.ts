@@ -286,14 +286,20 @@ export function deriveComposeInvocationPlan(
       return value;
     },
     dynamicCall: ({ callsiteId, kind }) => {
-      if (kind !== 'low-level') {
+      if (kind !== 'low-level' && kind !== 'function-pointer') {
         throw new Error(`messageBus: atomic composer does not yet resolve ${kind} calls`);
       }
       const descriptor = descriptors[next];
-      if (!descriptor) throw new Error('messageBus: prepared calls omit a low-level target');
-      if (descriptor.callsiteId !== undefined && descriptor.callsiteId !== callsiteId) {
+      if (!descriptor) throw new Error(`messageBus: prepared calls omit a ${kind} target`);
+      // A function-pointer method and owner are chosen by runtime state/arguments. There is no
+      // safe positional guess for which prepared child they name; require compiler callsite
+      // identity and let the participant's graph-emission covenant authenticate the concrete
+      // address and selector. Low-level legacy descriptors retain their positional fallback.
+      if ((kind === 'function-pointer' && descriptor.callsiteId !== callsiteId)
+        || (kind === 'low-level' && descriptor.callsiteId !== undefined
+          && descriptor.callsiteId !== callsiteId)) {
         throw new Error(
-          `messageBus: prepared low-level callsite ${descriptor.callsiteId} cannot satisfy callsite ${callsiteId}`,
+          `messageBus: prepared ${kind} callsite ${descriptor.callsiteId} cannot satisfy callsite ${callsiteId}`,
         );
       }
       next += 1;

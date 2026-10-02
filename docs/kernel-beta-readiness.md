@@ -276,8 +276,17 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   source selection to unrelated dormant foreign-call helpers. The measured fixture previously auto-emitted
   2,141 bytes versus 687 direct bytes; it now matches the direct artifact, while an actual internal pointer
   invocation still keeps the conservative reachable-helper survey. The exact title and its predecessor pass.
-  External function-pointer calls remain a separate admission gap: a focused default compile still publishes a
-  direct artifact after discovering one external call, so this change is not a graph-route capability claim.
+  External function-pointer calls were a separate admission gap at this checkpoint; the follow-up below covers
+  their compiler route and one runtime proof.
+- 2026-10-02 external-pointer route follow-up: generated message-bus source now renders function-pointer types
+  in parseable source syntax. Contracts with an external pointer input synthesize their route after pointer
+  lowering, so the route uses the same `(address, bytes4)` transport shape and selector as the public ABI.
+  A focused compiler title proves both lowered and unlowered parameter forms; its preceding title passes. The
+  composer now accepts a compiler-identified function-pointer child descriptor, leaving the on-chain graph
+  covenant to authenticate its runtime address and selector. A BCH-2026 proof stores a new pointer, co-spends
+  a separately compiled callee with the selected method, and checks the original callee stays unchanged; a
+  deliberately mismatched child is rejected by VM preflight. That exact title and its immediately preceding
+  title pass individually. This is not a complete function-pointer matrix or broad beta-gate result.
 
 ## Gate before the next leap
 

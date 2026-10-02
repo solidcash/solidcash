@@ -731,6 +731,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   coordinates, allowing the authenticated second return to select the Sink row. The exact title went red-to-green
   with Sink total three/count one; its immediately preceding two-sparse-return title, `yarn build`, and focused
   lint pass. No comprehensive suite or size gate ran.
+- 2026-10-02 sparse return-guard shrink check: the opposite guard direction begins with an extra candidate
+  Sink row from the typed-empty result, then removes it after the authenticated later return is observed.
+  The exact BCH-2026 title settles only the first Sink row (total one/count one), and its immediately preceding
+  growth-direction title passes. This adds proof coverage without changing planner behavior or running a suite.
 
 ## Gate before the next leap
 

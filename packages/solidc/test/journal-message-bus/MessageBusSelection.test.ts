@@ -318,19 +318,36 @@ describe('message-bus compilation selection', () => {
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
   });
 
-  it('selects graph planning for a low-level msg.sender call without bypassing admission', () => {
+  it('selects graph planning for a low-level msg.sender call while retaining opaque-effect refusal', () => {
     const artifact = compileString(`contract SenderCaller {
+      int nonce;
+      function forward(bytes payload) public {
+        (bool ok, bytes result) = msg.sender.call(payload);
+        nonce = nonce + 1;
+        require(ok);
+      }
+    }`, { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'forward'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_OPAQUE_EFFECT' });
+  });
+
+  it('names the missing master for a stateless caller that requests graph planning', () => {
+    const artifact = compileString(`contract StatelessCaller {
       function forward(bytes payload) public {
         (bool ok, bytes result) = msg.sender.call(payload);
         require(ok);
       }
     }`, { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
     expect(artifact.compiler.options?.messageBus).toBe(true);
-    expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
-    // This handler is not currently admitted. Selection must still publish its cross-contract edge and
-    // preserve the explicit refusal instead of compiling it as a leaf.
-    expect(artifact.messageBus?.available).toBe(false);
-    expect(artifact.messageBus?.handlers[0]?.rejectionReason).toBe('KERNEL_LAYOUT');
+    expect(artifact.messageBus?.routeInBytecode).toBe(false);
+    expect(artifact.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'message-bus-route-not-synthesized',
+        message: expect.stringContaining('no master NFT'),
+      }),
+    ]));
   });
 
   it('keeps a typed external call before an unrelated nested local shadow on the graph route', () => {

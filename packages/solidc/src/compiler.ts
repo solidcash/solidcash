@@ -3786,15 +3786,21 @@ function childDeploymentSites(
 /**
  * State, by name, why a requested message-bus route does not exist.
  *
- * Route synthesis records one stable reason per entry point, but the only channel that publishes those reasons
- * is `messageBus.handlers` - which is never built when no entry point survives. Rendering the same reasons
- * here makes that outcome a refusal the user can read instead of an absent field.
+ * Route synthesis records one stable reason per entry point when a participant has a master NFT, but the only
+ * channel that publishes those reasons is `messageBus.handlers` - which is never built when no entry point
+ * survives. A stateless contract never reaches route synthesis at all. Name either cause here rather than
+ * leaving an absent route or an unexplained `not-examined` entry.
  */
 function messageBusAbsenceMessage(
   contractName: string, functions: readonly FunctionDefinitionNode[],
+  statelessParticipant = false,
 ): string {
   const head = `No message-bus route was synthesized for '${contractName}': it has no message-bus batch entry point and `
     + 'cannot participate in a message bus. Only the direct per-function route exists. ';
+  if (statelessParticipant) {
+    return `${head}The contract is stateless and has no master NFT. Set forceStateful: true to provide `
+      + 'participant identity before attempting graph admission.';
+  }
   const entryPoints = functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract && !fn.messageBusRoute);
   if (entryPoints.length === 0) return `${head}The contract declares no entry point for a route to admit.`;
   const reasonOf = (fn: FunctionDefinitionNode): string => fn.messageBusRejectionReason
@@ -16571,7 +16577,8 @@ function compileResolvedAst(
     artifact.diagnostics = [...(artifact.diagnostics ?? []), {
       severity: 'error',
       code: 'message-bus-route-not-synthesized',
-      message: messageBusAbsenceMessage(artifact.contractName, ast.contract.functions),
+      message: messageBusAbsenceMessage(artifact.contractName, ast.contract.functions,
+        !supportsAtomicMessageBus(ast, mergedCompilerOptions)),
     }];
     if (mergedCompilerOptions.messageBusKernel === true) {
       artifact.messageBus = {

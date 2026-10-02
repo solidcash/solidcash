@@ -503,6 +503,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   predecessor restoration to a different token master named inside the recipe. The exact foreign-recipe title
   went red-to-green, and its immediately preceding cached-predecessor title passes. `yarn build` and focused
   lint pass; no broad test suite was run.
+- 2026-10-02 compiler selection-test repair: the `this.state` receiver title was red because it referenced an
+  undefined `source` in a negative target-mutation assertion. That assertion now runs against the existing
+  same-interface ternary source it describes, preserving the intended fail-closed check. The formerly red title,
+  its immediately preceding state-receiver title, and the moved-assertion ternary title pass individually;
+  `yarn build` and focused lint pass. This is a test repair, not a compiler behavior change.
 
 ## Gate before the next leap
 

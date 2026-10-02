@@ -264,11 +264,6 @@ describe('message-bus compilation selection', () => {
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.available).toBe(true);
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
-    // The direct epilogue re-evaluates this choice. If an operand changes after the call, it must not
-    // authenticate a different co-spent owner from the one selected at the callsite.
-    expect(() => compileString(source.replace('value = next;', 'choose = !choose; value = next;'), {
-      solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
-    })).toThrow(/external call target address must be a constructor\/function parameter or self-pinned state value/);
   });
 
   it('selects the graph route for a low-level call through this.address state', () => {
@@ -376,6 +371,11 @@ describe('message-bus compilation selection', () => {
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.available).toBe(true);
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+    // The direct epilogue re-evaluates this choice. If an operand changes after the call, it must not
+    // authenticate a different co-spent owner from the one selected at the callsite.
+    expect(() => compileString(source.replace('value = next;', 'choose = !choose; value = next;'), {
+      solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
+    })).toThrow(/external call target address must be a constructor\/function parameter or self-pinned state value/);
   });
 
   it('admits a bounded low-level msg.sender call with automatic graph planning', () => {

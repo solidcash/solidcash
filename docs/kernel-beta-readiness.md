@@ -449,11 +449,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   fixture, not the full Marketplace gate or standard-capacity deployment; no broad suite ran.
 - 2026-10-02 nested-loop claim follow-up: the compiler now publishes separate, exact outer/inner affine domains
   for the unchanged `UnicrowClaim.claimMultiple` → `claimPayments` → `sendEscrowShare` edge, retaining the
-  input-array-length domain added earlier. The SDK composes a single reached outer occurrence, binding its
-  induction coordinate before evaluating the inner loop; multiple outer occurrences remain fail-closed pending
-  occurrence-qualified producer-result lanes. The compiler withholds a nested domain if an inner bound mutates
-  inside its outer loop. A neutral reached-call VM title executes both inner `Sink.record`
-  rows and its immediately preceding branch title passes. The unchanged proxy `claimMultiple([1])` title also
+  input-array-length domain added earlier. The SDK binds each exact outer induction coordinate before evaluating
+  the inner loop, and a neutral VM title now executes four `Sink.record` rows across two outer occurrences; its
+  immediately preceding one-outer title passes. Repeated outer paths requiring producer results remain fail-closed
+  pending occurrence-qualified return lanes. The compiler withholds a nested domain if an inner bound mutates
+  inside its outer loop. The unchanged proxy `claimMultiple([1])` title also
   passes with the seeded zero-amount escrow, including its immediately preceding arbitration title. A later
   funded claim also passes BCH-2026 preflight and sends 1,000 sats to the seller's P2PKH locking bytecode, with
   the zero-value claim checked as its preceding regression. That payout exposed three real gaps: the SDK compared

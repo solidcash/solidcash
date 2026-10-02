@@ -86,7 +86,10 @@ describe('kernel result-dependent call topology', () => {
     expect((await sink.getState()).count).toBe(choice ? 3n : 2n);
   }, 180_000);
 
-  it('composes reached inner-loop rows for one outer occurrence', async () => {
+  it.each([
+    ['one outer occurrence', [7n], 15n, 2n],
+    ['two outer occurrences', [7n, 11n], 38n, 4n],
+  ] as const)('composes reached inner-loop rows for %s', async (_title, values, total, count) => {
     const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       interface ISink { function record(uint value) external; }
       interface IRouter { function route(uint[] memory values) external; }
@@ -125,12 +128,12 @@ describe('kernel result-dependent call topology', () => {
     router._registerResolvedExternal('ISink', sink);
     const coordinator = await getContractFactory(artifacts.Coordinator, signer).deploy(router.inner.lockingBytecode);
     coordinator._registerResolvedExternal('IRouter', router);
-    const receipt = await coordinator.call.run([7n]).send();
+    const receipt = await coordinator.call.run(values).send();
     const outpoints = receipt.inputs.map((input) =>
       `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
     expect(new Set(outpoints).size).toBe(outpoints.length);
-    expect((await sink.getState()).total).toBe(15n);
-    expect((await sink.getState()).count).toBe(2n);
+    expect((await sink.getState()).total).toBe(total);
+    expect((await sink.getState()).count).toBe(count);
     expect((await router.getState()).count).toBe(1n);
     expect((await coordinator.getState()).count).toBe(1n);
   }, 180_000);

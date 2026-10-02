@@ -1,6 +1,6 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
-  decodePushdataValue, getDefaultStateValue, scriptToBytecode,
+  ATOMIC_MESSAGE_BUS_MAX_ROWS, decodePushdataValue, getDefaultStateValue, scriptToBytecode,
   type ArgSource, type Artifact, type ExternalCallAbi, type ExternalCallExpression,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
@@ -110,6 +110,15 @@ function usesAnotherLoopCounter(value: unknown, innerCounter: string, seen = new
   if ((source.kind === 'loopIndex' || (source.kind === 'arrayElement' && source.indexStepValue !== 0))
     && source.counterName !== innerCounter) return true;
   return Object.values(value).some((child) => usesAnotherLoopCounter(child, innerCounter, seen));
+}
+
+/** Repeated outer rows cannot borrow an unqualified return value from another occurrence. */
+function usesProducerResult(value: unknown, seen = new Set<object>()): boolean {
+  if (!value || typeof value !== 'object' || seen.has(value)) return false;
+  seen.add(value);
+  const kind = (value as { kind?: string }).kind;
+  if (kind === 'producerResult' || kind === 'externalCall') return true;
+  return Object.values(value).some((child) => usesProducerResult(child, seen));
 }
 
 /** Select the sole reached outer coordinate before evaluating the inner loop. This rewrites metadata only;
@@ -245,16 +254,16 @@ async function rebuildCallTopology(
           selectedSelector: row.selector,
         })) ?? [{ ...source, sourceCallsiteId: source.callsiteId,
           sourceLogicalIndex: undefined, selectedSelector: source.rawSelector }];
-        for (let template of templates) {
+        for (const sourceTemplate of templates) {
           const existing = existingSite.filter((child) => (
             child.previous === undefined
               ? child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex
               : ctx?.plan.invocations[child.previous]?.sourceLogicalIndex
                 ?? child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex
-          ) === template.sourceLogicalIndex);
+          ) === sourceTemplate.sourceLogicalIndex);
           if (previous !== undefined && ctx !== undefined && !hasChangedDependency(
-            [template.condition, template.iterationDomain, template.nestedIterationDomains,
-              template.addressSource], childResults,
+            [sourceTemplate.condition, sourceTemplate.iterationDomain, sourceTemplate.nestedIterationDomains,
+              sourceTemplate.addressSource], childResults,
             ctx.descriptors[previous].args, call.args,
           )) {
             // Argument propagation already refreshed existing rows. A result unrelated to this edge's
@@ -262,10 +271,10 @@ async function rebuildCallTopology(
             next.push(...existing);
             continue;
           }
-          let iterations = [0];
-          if (template.occurrence === 'loop') {
-            const domain = template.iterationDomain;
-            const nested = template.nestedIterationDomains;
+          let occurrences = [{ iteration: 0, edge: sourceTemplate }];
+          if (sourceTemplate.occurrence === 'loop') {
+            const domain = sourceTemplate.iterationDomain;
+            const nested = sourceTemplate.nestedIterationDomains;
             if (!domain && nested?.length !== 2) {
               throw new Error('messageBus: result-dependent loop has no compiler iteration domain');
             }
@@ -286,28 +295,43 @@ async function rebuildCallTopology(
                   return value;
                 });
               };
-              if (domain) iterations = await domainIndices(domain);
+              if (domain) occurrences = (await domainIndices(domain)).map((iteration) => ({
+                iteration, edge: sourceTemplate,
+              }));
               else {
                 const outer = await domainIndices(nested![0]!);
-                // Repeated outer producer results require occurrence-qualified consumer lanes. Keep that case
-                // closed until the topology can pair each inner tuple with its exact outer authenticated row.
-                if (outer.length > 1) {
+                // A repeated outer producer result still needs occurrence-qualified consumer lanes. An exact
+                // argument-only domain can instead enumerate the Cartesian row order without such a lane.
+                if (outer.length > 1 && usesProducerResult(sourceTemplate)) {
                   throw new Error('messageBus: nested call repeats an outer producer occurrence');
                 }
-                if (outer.length === 0) iterations = [];
+                if (outer.length === 0) occurrences = [];
                 else {
                   const outerInitial = evaluate(nested![0]!.initialValue, 0, returnsFor([{
                     kind: 'expression', expression: nested![0]!.initialValue,
                   }]));
-                  if (typeof outerInitial !== 'bigint') {
-                    throw new Error('messageBus: nested outer loop has no exact initial coordinate');
+                  const outerStep = evaluate(nested![0]!.stepValue, 0, returnsFor([{
+                    kind: 'expression', expression: nested![0]!.stepValue,
+                  }]));
+                  if (typeof outerInitial !== 'bigint' || typeof outerStep !== 'bigint') {
+                    throw new Error('messageBus: nested outer loop has no exact affine coordinate');
                   }
-                  template = bindOuterLoopCounter(template, nested![0]!.counterName, outerInitial);
-                  if (usesAnotherLoopCounter(
-                    [template.condition, template.argSources, template.rawArgSources, template.addressSource],
-                    nested![1]!.counterName,
-                  )) throw new Error('messageBus: nested call has an unresolved loop coordinate');
-                  iterations = await domainIndices(nested![1]!);
+                  occurrences = [];
+                  for (const outerIndex of outer) {
+                    const coordinate = outerInitial + BigInt(outerIndex) * outerStep;
+                    const edge = bindOuterLoopCounter(sourceTemplate, nested![0]!.counterName, coordinate);
+                    if (usesAnotherLoopCounter(
+                      [edge.condition, edge.argSources, edge.rawArgSources, edge.addressSource],
+                      nested![1]!.counterName,
+                    )) throw new Error('messageBus: nested call has an unresolved loop coordinate');
+                    const inner = bindOuterLoopCounter(nested![1]!, nested![0]!.counterName, coordinate);
+                    for (const iteration of await domainIndices(inner)) {
+                      occurrences.push({ iteration, edge });
+                      if (occurrences.length > ATOMIC_MESSAGE_BUS_MAX_ROWS) {
+                        throw new Error('messageBus: nested call exceeds the graph row limit');
+                      }
+                    }
+                  }
                 }
               }
             } catch (error) {
@@ -319,7 +343,7 @@ async function rebuildCallTopology(
           const selected: Child[] = [];
           let unresolved = false;
           let occurrence = 0;
-          for (const iteration of iterations) {
+          for (const { iteration, edge: template } of occurrences) {
             if (template.condition) {
               const returns = returnsFor([{ kind: 'expression', expression: template.condition }], template);
               await hydrate([template.condition], [iteration], returns);
@@ -422,7 +446,7 @@ async function rebuildCallTopology(
             // result; never publish it as a
             // prepared return commitment. The composer must replace it with the observed producer result,
             // rebuild the graph, and pass the complete transaction VM before admission.
-            if (previous === undefined && (template.occurrence !== 'loop' || (iterations.length === 1
+            if (previous === undefined && (template.occurrence !== 'loop' || (occurrences.length === 1
               && template.sourceLogicalIndex === undefined))
               && template.hasReturnValues
               && template.returnTypes?.length === 1 && template.callsiteId !== undefined

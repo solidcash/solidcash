@@ -8630,14 +8630,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && hasTokenContainerAccess) {
         this.emitTokenContainerPreservation(node);
       }
-      if (!this.functionHasDelegatecall && hasExternalReads) {
+      // A direct function that delegatecalls verifies its own reads and calls too: nothing the delegate runs binds
+      // them. Per-call masters are left as they were.
+      const verifiesOwnReads = !this.functionHasDelegatecall || !this.perCallMaster;
+      if (verifiesOwnReads && hasExternalReads) {
         this.emitExternalReadVerification(node);
       }
-      // A function that delegatecalls verifies its own calls too: nothing the delegate runs binds them.
       if (hasExternalCalls && !node.graphEmissionHandler && !this.perCallMaster) {
         this.emitExternalCallVerification(node);
       }
-      if (!this.functionHasDelegatecall && hasExternalOutStateReads) {
+      if (verifiesOwnReads && hasExternalOutStateReads) {
         this.emitExternalOutStateVerification(node);
       }
       if (!this.functionHasDelegatecall && hasEventEmits) {

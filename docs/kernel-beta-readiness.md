@@ -447,6 +447,16 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   proxy's single delegate root, and composed compiler-routed delegates no longer append a second legacy executor
   output block beyond their published balanced span. This proves the real proxy callback semantics for this
   fixture, not the full Marketplace gate or standard-capacity deployment; no broad suite ran.
+- 2026-10-02 looped-claim gap: a focused attempt to send the unchanged proxy
+  `UnicrowClaim.claimMultiple([1])` fails before atomic composition. The root `for` condition reads
+  `escrows.length`; the compiler's external-call iteration-domain serializer omitted field access, so it
+  published no domain for its direct loop edges. That serializer now publishes an exact input-array-length
+  domain, with the focused metadata title and its immediately preceding title green. A second boundary remains:
+  `claimPayments` inlines a nested five-party loop, and `sendEscrowShare` still has no domain because the
+  metadata represents only one affine counter, not a nested outer/inner occurrence identity. The SDK must not
+  invent rows or return values for that edge. The `claimMultiple` VM title remained red and was not retained as
+  a regression test; no claim of looped proxy success is made. This is a kernel graph-identity gap independent
+  of the relaxed capacity setting.
 - The unchanged proxy Marketplace `arbitrate > arbitrate 80-20` title passes individually on mock BCH-2026
   (1 selected, 65 skipped; 411.56 seconds in the test body). It is not a reproduction of the same-owner
   callback gap above and does not establish the other arbitration titles or the 66-title gate. No predecessor

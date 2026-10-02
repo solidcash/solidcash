@@ -414,6 +414,12 @@ const externalCallIterationDomains = (
       const inner = serialize(expression.expression, state, counter, seen);
       return inner && { kind: 'unary', operator: expression.operator, expression: inner };
     }
+    if (expression instanceof FieldAccessNode) {
+      const inner = serialize(expression.expression, state, counter, seen);
+      return inner && (expression.name === 'length'
+        ? { kind: 'unary', operator: '.length', expression: inner }
+        : { kind: 'field', name: expression.name, expression: inner });
+    }
     if (expression instanceof BinaryOpNode) {
       const left = serialize(expression.left, state, counter, seen);
       const right = serialize(expression.right, state, counter, seen);

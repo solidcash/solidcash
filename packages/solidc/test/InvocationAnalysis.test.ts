@@ -719,6 +719,32 @@ describe('Release 0 shared invocation analysis', () => {
     expect(call.minimumOccurrences).toBeUndefined();
   });
 
+  it('publishes an affine call domain bounded by an input array length', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint value); }
+      contract ArrayLengthLoop() {
+        function run(address target, bigint[] values) public {
+          for (bigint i = 0; i < values.length; i = i + 1) {
+            ITarget(target).step(values[i]);
+          }
+          require(values.length >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0].iterationDomain)
+      .toMatchObject({
+        counterName: 'i',
+        continueCondition: {
+          kind: 'binary', operator: '<',
+          right: {
+            kind: 'unary', operator: '.length',
+            expression: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+          },
+        },
+      });
+  });
+
   it('uses an authenticated prior producer result in the loop domain and publishes its consumer lane', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface IProbe { function limit(bigint seed) returns (bigint, bool); }

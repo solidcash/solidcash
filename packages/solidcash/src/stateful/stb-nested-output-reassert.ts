@@ -7,6 +7,7 @@
 import {
   buildPushdataCommitment,
   parsePushdataCommitment,
+  type AbiFunction,
   type FunctionBlockLayout,
   type StateLayout,
   type StateValue,
@@ -192,6 +193,15 @@ export function stripSurplusEmptyCollectionEntriesForHost(
   }
 }
 
+/** True when the callee settles this planned insert through its sorted batch transition. */
+function settlesInsertAsBatch(group: ExternalCallUtxoGroup, slotIndex: number | undefined): boolean {
+  const abi = group.compilerRoute?.abiFunction
+    ?? (group.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
+      ?.find((candidate) => candidate.name === group.functionName);
+  return abi?.sortedBatchInfo?.some((batch) => slotIndex === undefined || batch.slotIndices.includes(slotIndex))
+    ?? false;
+}
+
 export function reassertNestedSameIndexMutables(
   host: NestedOutputReassertHost,
   builder: TransactionBuilder,
@@ -227,6 +237,10 @@ export function reassertNestedSameIndexMutables(
     if (group.sharedGroupIndex !== undefined) continue;
     const base = host.getExternalCallMasterInputIndex(groupIndex);
     for (const insert of group.plannedEntryInserts ?? []) {
+      // A callee that settles the write as a sorted batch keeps the new node at its entry slot and the relinked
+      // predecessor at the planned trailing coordinate, where materialization placed both. The twin below is
+      // the scalar layout, the predecessor recreated in place, and here would lose the relinked predecessor.
+      if (settlesInsertAsBatch(group, insert.slotIndex)) continue;
       plannedInsertByPredecessor.set(base + insert.blockSlot, {
         outputIndex: base + insert.outputBlockSlot,
         commitment: insert.commitment,

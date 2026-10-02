@@ -532,11 +532,14 @@ export async function fixCreateBuilderDelegateUnlockers(
             }
             if (/^__internal__vmapBatchPredOut_\d+$/.test(inp.name)
               && typeof value === 'bigint' && value >= 0n) {
+              // This contract's own batch plan counts its outputs from the block base it was given, so the value
+              // less that base is the trailing ordinal past this block, never an output already absolute.
               return resolveAbsolutePredOut(
-                value,
+                value - BigInt(overrides?.blockBase ?? 0),
                 masterInputIndex,
                 groupLayoutTrailingBase(group),
                 group.relocatedPredOutBase,
+                true,
               );
             }
             return value;

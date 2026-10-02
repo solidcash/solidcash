@@ -96,6 +96,9 @@ async function attempt(
   return { outcome, broadcasts, provider };
 }
 
+/** The head sentinel relinked to a new node: its zero slot, the node's slot, then its 64-byte empty pad. */
+const relinkedHead = (node: string): string => `${'00'.repeat(32)}${node.slice(0, 64)}${'00'.repeat(64)}`;
+
 function commitmentsOf(hex: string): string[] {
   return decodeTransactionUnsafe(hexToBin(hex)).outputs
     .map((o) => (o.token?.nft?.commitment ? binToHex(o.token.nft.commitment) : ''));
@@ -116,7 +119,7 @@ describe('X10 trailing chunk region beside a vmap entry mint', () => {
     expect(outcome).toBe('ACCEPTED');
     const commitments = commitmentsOf(broadcasts[broadcasts.length - 1]);
     expect(commitments[OUT.mintNew].length).toBe(130); // NEW node: slot32 || next32 || value
-    expect(commitments[OUT.mintBatch].length).toBe(128); // fixed-width batch node
+    expect(commitments[OUT.mintBatch]).toBe(relinkedHead(commitments[OUT.mintNew])); // its batch node
     expect(commitments[OUT.mintChunk0].startsWith('004c78')).toBe(true);
     expect(commitments[OUT.mintChunk0].length).toBe(246); // 3-byte header + 120 data bytes
   }, 180_000);

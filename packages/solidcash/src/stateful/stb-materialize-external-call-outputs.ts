@@ -355,7 +355,8 @@ for (let groupIndex = 0; groupIndex < host.externalCallUtxoGroups.length; groupI
         builder.addOutput(commitment && predecessor
           ? {
             to: insert?.to ?? predecessor.unlocker.generateLockingBytecode(),
-            amount: 1000n,
+            // The relinked predecessor keeps its own value: a fixed 1000 is dust beside a padded head's commitment.
+            amount: predecessor.satoshis,
             token: {
               amount: 0n,
               category: group.categoryId,

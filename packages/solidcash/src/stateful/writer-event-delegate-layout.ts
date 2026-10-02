@@ -391,11 +391,17 @@ export function predOutBaseAfterOccupancy(parts: {
   return base;
 }
 
+/**
+ * Resolve a predecessor output to its absolute transaction output. `blockRelative` marks a value counted from the
+ * block's own base, so it always names a trailing ordinal; without it, a value at or past the master's trailing
+ * coordinate is taken to be absolute already, which misreads a block-relative ordinal that reaches the master index.
+ */
 export function resolveAbsolutePredOut(
   relative: bigint,
   masterIndex: number,
   trailingBase: number,
   relocatedBase?: number,
+  blockRelative = false,
 ): bigint {
   if (relative < 0n) return relative;
   const natural = masterIndex + trailingBase;
@@ -404,7 +410,7 @@ export function resolveAbsolutePredOut(
   const base = relocatedBase !== undefined && relocatedBase >= natural
     ? relocatedBase
     : natural;
-  if (relative >= BigInt(base)) return relative;
+  if (!blockRelative && relative >= BigInt(base)) return relative;
   const ordinal = Number(relative) >= trailingBase ? Number(relative) - trailingBase : 0;
   return BigInt(base + ordinal);
 }

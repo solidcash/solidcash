@@ -25,6 +25,7 @@ import {
   VALUE_CHUNK_DOMAIN_TAG,
   VALUE_HEAD_SIZE,
   VALUE_CHUNK_SIZE,
+  DYNAMIC_CHUNK_SIZE,
   encodeNftIndexTag,
   generateSourceMap,
   normaliseSourceMapLocationData,
@@ -22267,10 +22268,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitSortedEntryAddress(chunkHash, loc);
     this.stack[0] = '(external_out_dynamic_address)';
 
-    // expected = 0 for inline values, otherwise ceil(length / VALUE_CHUNK_SIZE); then initialize the scan.
+    // expected = ceil(length / DYNAMIC_CHUNK_SIZE); then initialize the scan. A dynamic state value keeps every
+    // non-empty byte in its chunk records, unlike a sorted mapping value, which stays inline through 60 bytes.
+    // A per-call master keeps the mapping-value count, so its artifacts stay byte-identical.
     this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_dynamic_len)'))), loc);
     this.emit(Op.OP_PICK, loc);
-    this.emitValueChunkCountFromLength(loc);
+    if (this.perCallMaster) {
+      this.emitValueChunkCountFromLength(loc);
+    } else {
+      this.emit(encodeInt(BigInt(DYNAMIC_CHUNK_SIZE - 1)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(encodeInt(BigInt(DYNAMIC_CHUNK_SIZE)), loc);
+      this.emit(Op.OP_DIV, loc);
+    }
     this.pushToStack('(external_out_dynamic_expected)');
     this.emit(encodeInt(0n), loc);
     this.pushToStack('(external_out_dynamic_found)');
@@ -40131,6 +40141,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * True for a pure read of a collection the function also writes in sorted order. The writes rewrite their targets
+   * and predecessors, never this node, so the master keeps it as it keeps any read: the node's own read-only path
+   * cannot, since beside the minting master it may take the write path. A per-call frame, a slot another may alias
+   * at runtime, and a collection a loop writes keep the exemption.
+   */
+  private preservesSortedRead(slotIndex: number): boolean {
+    const info = this.entrySlots[slotIndex];
+    return !this.perCallMaster
+      && !info.operations.includes('write') && !info.operations.includes('delete')
+      && info.aliasCondDeleteSlot === undefined && (info.runtimeAliasPriorSlots?.length ?? 0) === 0
+      && this.entrySlots.every((other) => !(other.runtimeAliasPriorSlots?.includes(slotIndex) ?? false)
+        && (other.collection !== info.collection || !other.inLoop));
+  }
+
+  /**
    * Emit read-only entry NFT preservation: for each entry slot that is accessed
    * but not written or deleted, verify the entry NFT output preserves its commitment
    * and token category. Prevents permanent mapping entry loss during read-only access.
@@ -40152,7 +40177,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.entrySlots[i].inLoop) continue;
       // A sorted mapping WRITE co-spends an entry and rewrites it (output != input: P' on insert, k' on update),
       // so it must not be read-only-preserved; emitSortedValueUpsert handles it inline.
-      if (this.sortedWrittenCollections.has(this.entrySlots[i].collection)) continue;
+      if (this.sortedWrittenCollections.has(this.entrySlots[i].collection) && !this.preservesSortedRead(i)) continue;
 
       // Check if entry exists via introspection
       this.emitReadOnlyEntryExistsCheck(i, locationData);
@@ -40265,7 +40290,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.pendingEntryDeletes.has(i)) continue; // deleted entries have no output
       if (this.entrySlots[i].inLoop) continue; // loop-write entries are new, no input to preserve
       // sorted write: input -> P'/k', handled inline (not preserved)
-      if (this.sortedWrittenCollections.has(this.entrySlots[i].collection)) continue;
+      if (this.sortedWrittenCollections.has(this.entrySlots[i].collection) && !this.preservesSortedRead(i)) continue;
 
       // Check if entry exists via introspection
       this.emitReadOnlyEntryExistsCheck(i, locationData);

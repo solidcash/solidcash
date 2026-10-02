@@ -182,6 +182,11 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       } else if (paramName === '__internal__valueChunkOutputBase') {
         // Composed computed values are relocated after the complete participant layout is materialized.
         bFinalArgs.push(-1n);
+      } else if (paramName === '__internal__dynamicChunkInputBase') {
+        // The covenant takes any non-negative value as an absolute coordinate, so the generic zero default names
+        // the transaction's first output. The negative sentinel selects the coordinate right after the callee's
+        // own block.
+        bFinalArgs.push(-1n);
       } else if (paramName.startsWith('__internal__externalReturnOutputIdx')) {
         // Find child groups with return values, in order
         const children = getChildGroupIndices();

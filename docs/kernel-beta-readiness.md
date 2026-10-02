@@ -406,6 +406,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   checks the selected target. The focused VM title verifies both graph branches mutate only their selected owner,
   a wrong-owner child is refused at preflight, and a subsequent direct call settles. Its immediately preceding
   untaken-pointer title passes. This does not establish a general pointer-table or broad beta-gate result.
+- 2026-10-02 unreachable-library opt-out follow-up: a direct-only UnicrowClaim split was refused first by
+  imported, unused `SafeERC20.safePermit` because that helper repeats typed calls to one owner. The explicit
+  `messageBus: false` guard now uses the same conservative free-function reachability as dead-helper pruning:
+  unreachable helpers remain typechecked but do not impose a runtime graph requirement on the selected contract.
+  The focused library title went red-to-green, its immediately preceding multi-artifact/split opt-out title passes,
+  and a fresh direct-only UnicrowClaim probe advances to the legitimate `claimMultiple` repeated-owner refusal.
+  This does not make either UnicrowClaim entry deployable or relax the reached-call safety check.
 
 ## Gate before the next leap
 

@@ -465,6 +465,32 @@ describe('inferred message-bus batching for repeated external callees', () => {
       .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
   });
 
+  it('does not require message bus for an unreachable library call pair', () => {
+    const source = `pragma solidity ^0.8.0;
+      interface ICounter { function add(int amount) external; }
+      library Dormant {
+        function twice(ICounter target, int amount) internal {
+          target.add(amount);
+          target.add(amount);
+        }
+      }
+      contract Caller {
+        int value;
+        function set(int next) public { value = next; require(next >= 0); }
+      }`;
+    const direct = compileString(source, {
+      solidityImportCompat: true, suppressWarnings: true, messageBus: false,
+    });
+    expect(direct.compiler.options?.messageBus).toBe(false);
+    expect(direct.messageBus).toBeUndefined();
+
+    const reached = source.replace('function set(int next) public { value = next;',
+      'function set(int next, ICounter target) public { Dormant.twice(target, next); value = next;');
+    expect(() => compileString(reached, {
+      solidityImportCompat: true, suppressWarnings: true, messageBus: false,
+    })).toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
+  });
+
   // A batch is advertised in the caller's own bytecode, which then requires the callee's route to execute every
   // row. A route refuses a handler that writes a variable-width collection until its completed entry descriptor
   // is represented in the compact journal, so a repeated call to such a callee must keep its individual slots

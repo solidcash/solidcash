@@ -12,6 +12,11 @@ import {
 import { Modifier } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
+/** Use the same conservative source-name reachability for pruning and runtime-only diagnostics. */
+export function reachableFreeFunctionsInSource(node: SourceFileNode): Set<FunctionDefinitionNode> {
+  return new PruneUnreachableFreeFunctions().reachableFreeFunctions(node);
+}
+
 /**
  * Drops free (library) functions that are BOTH unreachable from the primary contract AND (transitively) perform a
  * low-level call OR contain inline assembly. Solidity/OZ libraries ship many unused helpers:
@@ -61,7 +66,18 @@ export default class PruneUnreachableFreeFunctions extends AstTraversal {
     }
     if (tainted.size === 0) return node;
 
-    // Reachable = named anywhere in the contract, in any using-for binding, or transitively from a reached fn.
+    const reachable = this.reachableFreeFunctions(node, byName);
+
+    node.freeFunctions = freeFns.filter((f) => reachable.has(f) || !tainted.has(f));
+    return node;
+  }
+
+  // Reachable = named anywhere in the contract, in any using-for binding, or transitively from a reached fn.
+  // Keep this one authority for the pruning pass and the explicit message-bus opt-out guard.
+  reachableFreeFunctions(
+    node: SourceFileNode,
+    byName = this.indexByName(node.freeFunctions ?? []),
+  ): Set<FunctionDefinitionNode> {
     const reachable = new Set<FunctionDefinitionNode>();
     const seenName = new Set<string>();
     const queue: string[] = [];
@@ -78,8 +94,7 @@ export default class PruneUnreachableFreeFunctions extends AstTraversal {
       }
     }
 
-    node.freeFunctions = freeFns.filter((f) => reachable.has(f) || !tainted.has(f));
-    return node;
+    return reachable;
   }
 
   private indexByName(freeFns: FunctionDefinitionNode[]): Map<string, FunctionDefinitionNode[]> {

@@ -225,6 +225,7 @@ import {
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
+import { reachableFreeFunctionsInSource } from './PruneUnreachableFreeFunctions.js';
 
 // Correctness-first bound for runtime-variable resources inside a relocatable balanced block.
 //
@@ -648,6 +649,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   // The source file under compilation, kept so a diagnostic can name the imported file a position belongs to.
   private sourceFile?: SourceFileNode;
+  private sourceFreeFunctions = new Set<FunctionDefinitionNode>();
+  private reachableSourceFreeFunctions = new Set<FunctionDefinitionNode>();
   // Location instance -> the import path of the file that declares it. A `Location` has no file identity, so a
   // diagnostic printing a bare `at line N` cites a line that is real in an IMPORTED file and impossible in the
   // file the user named (`ERC20Mock.sol` is 15 lines and reports `line 170`, which is SafeMath.sol's). Keyed on
@@ -751,6 +754,14 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitSourceFile(node: SourceFileNode): Node {
     this.sourceFile = node;
+    this.sourceFreeFunctions.clear();
+    this.reachableSourceFreeFunctions.clear();
+    if (node.freeFunctions.length > 0 && (this.compilerOptions as CompilerOptions & {
+      __messageBusExplicitlyDisabled?: boolean;
+    }).__messageBusExplicitlyDisabled === true) {
+      this.sourceFreeFunctions = new Set(node.freeFunctions);
+      this.reachableSourceFreeFunctions = reachableFreeFunctionsInSource(node);
+    }
     // Register imported contracts for cross-contract references
     for (const imported of node.importedContracts) {
       this.contractMap.set(imported.name, imported);
@@ -3723,7 +3734,10 @@ export default class SymbolTableTraversal extends AstTraversal {
             // graph planner until the route format grows an authenticated zero-row representation.
             && group.some((slot) => !slot.condition && !callOccursInLoop(slot.sourceCallNode)));
           const knownRepeated = [...allByTarget.values()].filter((group) => group.length > 1);
-          if (knownRepeated.length > 0 && messageBusExplicitlyDisabled) {
+          // A retained but unreachable source/library helper is still typechecked. Its hypothetical transaction
+          // does not make the selected contract require a graph route; enforce the opt-out on reachable helpers.
+          if (knownRepeated.length > 0 && messageBusExplicitlyDisabled
+            && (!this.sourceFreeFunctions.has(node) || this.reachableSourceFreeFunctions.has(node))) {
             const chains = knownRepeated.map((group) => group.map((slot) =>
               `${slot.interfaceName}.${slot.functionName}`).join(' -> '));
             throw new SolidcDiagnosticError(

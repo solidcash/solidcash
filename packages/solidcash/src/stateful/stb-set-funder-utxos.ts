@@ -58,9 +58,10 @@ export function setFunderUtxos(
     .sort((a, b) => a.tokenContainerSlotIndex - b.tokenContainerSlotIndex)
     .map((d) => d.utxo!);
   const satoshiContainerInputs = host.satoshiContainerUtxo ? [host.satoshiContainerUtxo] : [];
+  // The same order the constructor assembles: B's keccak side-cars follow its data NFTs (its block's slots).
   const externalOutStateInputs: UnlockableUtxo[] = [];
   for (const g of host.externalOutStateUtxoGroups) {
-    externalOutStateInputs.push(g.masterUtxo as UnlockableUtxo, ...g.dataNftUtxos);
+    externalOutStateInputs.push(g.masterUtxo as UnlockableUtxo, ...g.dataNftUtxos, ...(g.keccakInputs ?? []));
   }
   const externalCallInputs: UnlockableUtxo[] = [];
   for (const g of host.externalCallUtxoGroups) {

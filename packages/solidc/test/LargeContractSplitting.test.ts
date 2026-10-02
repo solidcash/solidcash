@@ -138,6 +138,33 @@ describe('large-contract state-local splitting', () => {
     expect(bundle.manifest.routes.find((route) => route.function === 'balances')?.target).toBe('root');
   });
 
+  it('keeps cyclic-import getter probes from adding unauthenticated mapping reads to facets', () => {
+    const source = `pragma solidity ^0.8.7;
+      import "./Peer.sol";
+      contract Main {
+        struct Escrow { uint256 amount; }
+        mapping(uint256 => Escrow) escrows;
+        uint256 total;
+        function update(uint256 id, uint256 amount) external {
+          total = escrows[id].amount + amount;
+          require(amount > 0);
+        }
+      }`;
+    const resolver = (path: string): { source: string; id: string } | undefined => {
+      if (path === './Peer.sol') return {
+        source: 'pragma solidity ^0.8.7; import "./Main.sol"; contract Peer { }', id: '/Peer.sol',
+      };
+      if (path === './Main.sol') return { source, id: '/Main.sol' };
+      return undefined;
+    };
+    const bundle = compileStringSplit(source, {
+      solidityImportCompat: true, forceSplit: true, rootFileId: '/Main.sol', importResolver: resolver,
+    });
+    const facet = bundle.facets[bundle.manifest.facets[0].name];
+    expect(facet.abi.map((fn) => fn.name)).not.toContain('escrows');
+    expect(bundle.manifest.routes.find((route) => route.function === 'update')?.target).not.toBe('root');
+  });
+
   it('binds a detached graph verifier into a split facet route', () => {
     const bundle = compileStringSplit(`interface IPeer { function ping(int value) external; }
       contract GraphFacet {

@@ -644,8 +644,9 @@ function recordCaughtCompilerAttempt(
       internalCodegen,
     });
   }
-  if (internalCodegen && options.__internalAttemptFailureState?.firstError === undefined) {
-    options.__internalAttemptFailureState!.firstError = error;
+  if (internalCodegen && options.__internalAttemptFailureState
+    && options.__internalAttemptFailureState.firstError === undefined) {
+    options.__internalAttemptFailureState.firstError = error;
   }
 }
 
@@ -17804,8 +17805,14 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
   const getterProbe = cloneNode(contract);
   const sourceFunctionCount = getterProbe.functions.length;
   const getterProbeAst = new SourceFileNode(getterProbe);
-  getterProbeAst.importedContracts = ast.importedContracts;
-  getterProbeAst.interfaceDefinitions = ast.interfaceDefinitions;
+  // The getter visitor mutates every imported contract it visits. A circular Solidity import can put the
+  // logical primary back into importedContracts by identity; passing the live list here would synthesize a
+  // mapping getter directly into this facet after planning, without a physical entry-slot layout. The probe
+  // needs only imported contract NAMES to recognize contract-typed address getters, so carry name-only interfaces.
+  getterProbeAst.interfaceDefinitions = [
+    ...ast.interfaceDefinitions,
+    ...ast.importedContracts.map((imported) => new InterfaceNode(imported.name, [], [], [])),
+  ];
   getterProbeAst.accept(new SynthesizePublicGetters(options.solidityImportCompat ?? false));
   const getterDeclarations = getterProbe.functions.slice(sourceFunctionCount);
   if (getterDeclarations.length > 0) {

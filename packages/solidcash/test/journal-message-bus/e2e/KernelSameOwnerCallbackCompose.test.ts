@@ -1,4 +1,5 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
+import { scriptToBytecode } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
@@ -117,6 +118,7 @@ const setupRawSenderCallback = async (signed = false): Promise<{
           require(true);
         }
         function observe() public view returns (uint256) { return stored; }
+        function observeOffset(uint256 offset) public view returns (uint256) { return stored + offset; }
       }`, OPTIONS);
   const bArtifact = compileString(`contract B {
       function relay(bytes payload) public {
@@ -223,6 +225,20 @@ describe('kernel same-owner callback composition', () => {
 
   it('automatically settles a msg.sender raw callback through natural send', async () => {
     const { a, payload } = await setupRawSenderCallback(true);
+    const receipt = await a.call.run(payload).send();
+    const outpoints = receipt.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    expect(new Set(outpoints).size).toBe(outpoints.length);
+    expect((await a.getState()).stored).toBe(7n);
+  }, 180_000);
+
+  it('discovers a msg.sender raw callback with a canonical forwarded argument', async () => {
+    const { a, aArtifact } = await setupRawSenderCallback(true);
+    const selector = aArtifact.abi.find((fn) => fn.name === 'observeOffset')?.selector;
+    if (!selector) throw new Error('A.observeOffset missing selector');
+    const payload = new Uint8Array([
+      ...hexToBin(selector), ...scriptToBytecode([bigIntToVmNumber(0n)]),
+    ]);
     const receipt = await a.call.run(payload).send();
     const outpoints = receipt.inputs.map((input) =>
       `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);

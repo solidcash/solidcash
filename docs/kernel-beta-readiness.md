@@ -258,6 +258,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   outpoints; it does not bypass the legacy duplicate-owner guard. The exact natural-send title and its
   immediately preceding manual BCH-2026 VM proof pass. `yarn build`, focused lint, and the static sources-only
   beta gate pass. No broad suite or cold beta gate was run.
+- 2026-10-02 forwarded-argument follow-up: a second focused natural-send proof selects a different callback
+  handler from the runtime payload and passes its canonical `uint256` argument. The full A→B→A transaction
+  settles with distinct outpoints; this checks that discovery is not limited to selector-only calldata. The
+  exact new title and its immediately preceding selector-only title pass, and `yarn build` passes. No broad
+  tests or cold beta gate were run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

@@ -7,6 +7,7 @@
 
 import { binToHex } from '@bitauth/libauth';
 import type { AbiFunction } from '@solidcash/utils';
+import { encodePushdataValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { assignPhysicalReturnIndices } from './physical-return-layout.js';
@@ -287,6 +288,44 @@ if (abiFunction) {
       bag.stateInputUnlocker = buildStateInputUnlocker();
       builder._setMasterUnlocker(bag.stateInputUnlocker);
     }
+  }
+}
+
+// A received-value pointer-array broadcast reads each element's callee master input from its framed
+// `__internal__extcallIdxList<slot>` witness and identity-binds that input to arr[i]. The list is planned from
+// band widths like the base above, and the assembled frame need not keep them: dense placement appends a
+// read-only chunk run after the callee blocks, not before them. A stale element names the wrong input and the
+// element's identity check aborts with a bare OP_VERIFY, so rebind every element from its materialized master.
+if (abiFunction) {
+  const broadcastLists = new Map<string, number[]>();
+  externalCallUtxoGroups.forEach((group, groupIdx) => {
+    if (group.broadcastIdxList === undefined) return;
+    const { witness, element } = group.broadcastIdxList;
+    const masters = broadcastLists.get(witness) ?? [];
+    masters[element] = builder.findMaterializedMasterInput(group.sharedGroupIndex ?? groupIdx);
+    broadcastLists.set(witness, masters);
+  });
+  let broadcastListsChanged = false;
+  for (const [witness, masters] of broadcastLists) {
+    const position = abiFunction.inputs.findIndex((input) => input.name === witness);
+    if (position < 0 || position >= finalArgs.length) continue;
+    const placed = Array.from(masters, (master) => master ?? -1);
+    if (placed.some((master) => master < 0)) continue;
+    const parts = placed.map((master) => encodePushdataValue(BigInt(master), 'bigint'));
+    const list = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+    let offset = 0;
+    for (const part of parts) {
+      list.set(part, offset);
+      offset += part.length;
+    }
+    const current = finalArgs[position];
+    if (current instanceof Uint8Array && binToHex(current) === binToHex(list)) continue;
+    finalArgs[position] = list;
+    broadcastListsChanged = true;
+  }
+  if (broadcastListsChanged) {
+    bag.stateInputUnlocker = buildStateInputUnlocker();
+    builder._setMasterUnlocker(bag.stateInputUnlocker);
   }
 }
 

@@ -2263,6 +2263,7 @@ export class StatefulTransactionBuilder {
       externalCallStateUpdates: this.externalCallStateUpdates,
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
       iterationEntryInputs: this.iterationEntryInputs,
+      iterationChunksPrecedeCallees: this.iterationChunksPrecedeCallees(),
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
@@ -6332,14 +6333,37 @@ export class StatefulTransactionBuilder {
     for (const g of this.externalOutStateUtxoGroups) {
       base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
     }
-    // Loop external-call case: the read array's chunk run is co-spent BEFORE the callees (see _buildInputs),
-    // so callee inputs are shifted by the chunk count. Zero when no dynamic-array read is co-spent.
-    base += this.iterationEntryInputs.length;
+    // A chunk run co-spent BEFORE the callees (see iterationChunksPrecedeCallees) shifts them by its count.
+    if (this.iterationChunksPrecedeCallees()) base += this.iterationEntryInputs.length;
     for (let i = 0; i < groupIdx; i++) {
       const g = this.externalCallUtxoGroups[i];
       base += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
     }
     return base;
+  }
+
+  /**
+   * Whether the assembled frame co-spends the read-only chunk run (`iterationEntryInputs`) BEFORE the
+   * external-call callee blocks. The legacy order does, and so does a block whose own trailing slots carry the
+   * run; dense placement otherwise keeps the caller's complete block first and appends the callee blocks ahead
+   * of the run (see buildInputs). Everything planned around the callees must follow the frame actually built:
+   * each read-only chunk's covenant pins output == input, and each callee re-creates its master at its own
+   * input index, so a chunk copy planned on the wrong side of the callees is overwritten by them.
+   */
+  iterationChunksPrecedeCallees(): boolean {
+    if (this.iterationEntryInputs.length === 0 || this.externalCallUtxoGroups.length === 0) return false;
+    const inputIndexOf = (utxo: { txid: string; vout: number } | undefined): number => (utxo === undefined
+      ? -1
+      : this.allInputs.findIndex((input) => input !== undefined
+        && input.txid.toLowerCase() === utxo.txid.toLowerCase() && input.vout === utxo.vout));
+    const chunkInputs = this.iterationEntryInputs.map(inputIndexOf).filter((index) => index >= 0);
+    const calleeInputs = this.externalCallUtxoGroups
+      .filter((group) => group.sharedGroupIndex === undefined)
+      .map((group) => inputIndexOf(group.masterUtxo))
+      .filter((index) => index >= 0);
+    // Nothing placed on one side yet: keep the legacy reading, the order every pre-dense frame used.
+    if (chunkInputs.length === 0 || calleeInputs.length === 0) return true;
+    return Math.min(...chunkInputs) < Math.min(...calleeInputs);
   }
 
   /**
@@ -6363,9 +6387,9 @@ export class StatefulTransactionBuilder {
     for (const g of this.externalOutStateUtxoGroups) {
       base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
     }
-    // Loop external-call case: the read array's chunk preservation outputs precede the callee outputs
-    // (see build()), shifting them by the chunk count. Zero when no dynamic-array read is co-spent.
-    base += this.iterationEntryInputs.length;
+    // The read array's chunk preservation outputs precede the callee outputs only when its inputs precede the
+    // callees (see build()), shifting them by the chunk count.
+    if (this.iterationChunksPrecedeCallees()) base += this.iterationEntryInputs.length;
     const associatedDelegates = new Set(this.externalCallUtxoGroups
       .map((group) => group.delegateCallGroupIndex)
       .filter((index): index is number => index !== undefined));
@@ -6744,12 +6768,12 @@ export class StatefulTransactionBuilder {
       ), 0) + (this.delegateReturnEventAfterEvents ? 0 : this.pendingReturnEventOutputs
         .filter((returnEvent) => returnEvent.categoryId === this.categoryId).length)
       : 0;
-    // When a dynamic-array read coexists with external calls, build() emits the read chunks' preservation
+    // When a dynamic-array read is co-spent before the callees, build() emits the read chunks' preservation
     // outputs BEFORE the callee outputs (loopChunkBeforeCallees), so everything downstream of the entries
     // (transfers, events, RETURN events - this is the chain root they all build on) shifts by the chunk
-    // count. Without external calls the iteration entries trail the block instead (no shift). Must match
+    // count. A run placed after the callees, or without external calls, trails instead (no shift). Must match
     // the witness-side formula in StatefulContract (returnEventOutputBase counts iterationEntryInputs).
-    const chunkBeforeCalleeCount = this.externalCallUtxoGroups.length > 0 ? this.iterationEntryInputs.length : 0;
+    const chunkBeforeCalleeCount = this.iterationChunksPrecedeCallees() ? this.iterationEntryInputs.length : 0;
     // Low-level call outputs are now AFTER entries/SC/TCs/transfers/events (matching block layout)
     return masterOutputCount + dataNftOutputCount + readOnlyOutputCount + blockhashOutputCount + keccakOutputCount
       + ecrecoverOutputCount + outStateOutputCount + externalCallOutputCount + chunkBeforeCalleeCount

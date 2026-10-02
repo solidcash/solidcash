@@ -470,14 +470,19 @@ if (externalCalls && externalCalls.length > 0 && resolvedExternalCalls) {
   );
 
   // _externalCallInputBase: runtime param (needed for mutual A<->B calls)
-  // When the function reads a dynamic-storage array (loop external calls over arr[i]), the
-  // chunk run sits right after the block (read at blockSize+i); the callees are appended
-  // AFTER that chunk run, so the base advances by the chunk count.
+  // When the function reads a dynamic-storage array, its chunk run precedes the callees only in the legacy
+  // (layout-less) input order or when the caller's block reserves trailing slots for it; the base then advances
+  // by the chunk count. Dense placement otherwise keeps the caller's complete block first and appends the
+  // callee blocks ahead of the run (see buildInputs), so the run does not shift them. The assembled
+  // transaction rebinds the base and every per-callee index afterwards; this plan only has to agree with it.
+  const chunkRunPrecedesCallees = abiFunction?.blockLayout === undefined
+    || abiFunction.blockLayout.slots.some((slot) => slot.kind === 'trailing');
+  const chunkRunBeforeCallees = chunkRunPrecedesCallees ? iterationEntryInputs.length : 0;
   let externalCallInputBase = 1 + requiredNftIndices.length + externalReadUtxos.length + outStateInputCount;
   // message-bus batch reserves the complete oracle row band before its callees. Active reads are sparse; count the
   // physical width, not the number of resolved oracle UTXOs, when assigning the first participant base.
   externalCallInputBase += abiFunction?.graphBlockhashOracle?.slotCount ?? 0;
-  if (iterationEntryInputs.length > 0) externalCallInputBase += iterationEntryInputs.length;
+  externalCallInputBase += chunkRunBeforeCallees;
   const externalCallInputBasePosition = abiFunction?.inputs.findIndex((input) =>
     input.name === '__internal__externalCallInputBase') ?? -1;
   if (externalCallInputBasePosition >= 0) {
@@ -585,7 +590,7 @@ if (externalCalls && externalCalls.length > 0 && resolvedExternalCalls) {
     returnEventOutputBase = baseOutputOffset + entryOutputCount + iterationEntryInputs.length
       + satoshiContainerOutputCount + transferCount + tokenContainerTransferCount + emitCount;
     externalCallOutputStart = 1 + requiredNftIndices.length + externalReadUtxos.length
-      + outStateOutputCount + iterationEntryInputs.length;
+      + outStateOutputCount + chunkRunBeforeCallees;
   }
 
   // Build return-event-index map: groupIndex -> return event output index.

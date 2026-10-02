@@ -269,6 +269,11 @@ export interface ExternalCallUtxoGroup {
   returnOutputIndex?: number;
   /** First assignPhysicalReturnIndices result; later reconcile must not move tail placement. */
   plannedReturnOutputIndex?: number;
+  /**
+   * The received-value pointer-array broadcast list (`__internal__extcallIdxList<slot>`) that names this group's
+   * master input, and this group's element in it. Planned from band widths; rebound from the assembled frame.
+   */
+  broadcastIdxList?: { witness: string; element: number };
   /** Compiler-owned hidden route used for a grouped logical invocation. */
   compilerRoute?: {
     abiFunction: AbiFunction;

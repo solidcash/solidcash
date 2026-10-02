@@ -38,6 +38,8 @@ export interface MaterializeOwnerFrontOutputsHost {
   readonly externalCallStateUpdates: ReadonlyMap<string, ReadonlyMap<string, StateValue>>;
   readonly externalCallStateRawCommitments: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly iterationEntryInputs: readonly UnlockableUtxo[];
+  /** Whether the assembled inputs co-spend the iteration chunk run before the callee blocks. */
+  readonly iterationChunksPrecedeCallees: boolean;
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
@@ -224,16 +226,20 @@ for (const group of host.externalOutStateUtxoGroups) {
   for (const rec of group.keccakRecreates ?? []) builder.addOutput(rec);
 }
 
-// Loop external-call case: the read array's chunk run is co-spent BEFORE the callees (input order
-// master..chunk..callees), and the covenant verifies callee output==input by index, so the chunk
+// Loop external-call case: when the read array's chunk run is co-spent BEFORE the callees (input order
+// master..chunk..callees), and the covenant verifies callee output==input by index, the chunk
 // preservation outputs must precede the callee outputs here too. Emit them now; the trailing
-// iteration-entry block below skips itself when this fired.
+// iteration-entry block below skips itself when this fired. Dense placement instead appends the callee
+// blocks right after the caller's block and the chunk run after them: emitting the copies here would put
+// them on the callees' coordinates, where the callees' own re-creations later overwrite them, so the
+// trailing block emits them at their own input indices.
 // Delegate trailing storage lives at implementationInput+trailingBase. Emitting read-only chunks
 // before the implementation band would occupy the impl master output (marketplace jobs at output 5).
 // Read-only chunks must not precede a co-spent implementation: that implementation
 // self-preserves at OP_INPUTINDEX, so jobs-at-output-5 overwrites the impl master.
 const loopChunkBeforeCallees = host.iterationEntryInputs.length > 0
   && host.externalCallUtxoGroups.length > 0
+  && host.iterationChunksPrecedeCallees
   && !host.delegateDynamicChunksAtSuffix
   && !host.lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall');
 if (loopChunkBeforeCallees) {

@@ -124,9 +124,16 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
   // expanded groups' master input indices (`__internal__extcallIdxList<slot>`), in group order - the
   // covenant decodes one per iteration and identity-binds it to arr[i].
   const appendIdxList = (r: { start: number; count: number }): void => {
+    // The list is planned from band widths; record which group each element names so the assembled frame,
+    // which alone knows where every callee block landed, can rebind it (rebindCreateBuilderAssembledWitnesses).
+    const witness = abiFunction?.inputs[finalArgs.length]?.name;
     const parts: Uint8Array[] = [];
     for (let j = r.start; j < r.start + r.count; j++) {
       parts.push(encodePushdataValue(BigInt(groupMasterIndices[j]), 'bigint'));
+      const group = externalCallUtxoGroups[j];
+      if (group && witness !== undefined && /^__internal__extcallIdxList\d+$/.test(witness)) {
+        group.broadcastIdxList = { witness, element: j - r.start };
+      }
     }
     const total = parts.reduce((s, p) => s + p.length, 0);
     const list = new Uint8Array(total);

@@ -175,10 +175,13 @@ export function constructCreateBuilderTransactionBuilder(
   if (resolvedMsgSenderCategory !== undefined && abiFunction !== undefined
     && abiFunction.inputs.some((input) => input.name === '__internal__msgSenderCategory')) {
     // Position it by ABI name: appends alone are only correct when every earlier hidden block ran, which a
-    // probe (returnProbeOnly) and other partial builds do not guarantee.
-    finalArgs = materializeInternalFunctionArgument(
+    // probe (returnProbeOnly) and other partial builds do not guarantee. Write it into the SAME array: the state
+    // input unlocker was built before this step and encodes this array, and the master-unlocker refresher below
+    // writes its witnesses into it. A fresh copy left the unlocker encoding the arguments as they stood here (a
+    // dynamic-chunk base of 0 where the refresher had resolved -1, so a `poolInfo.push` was checked at output 0).
+    finalArgs.splice(0, finalArgs.length, ...materializeInternalFunctionArgument(
       finalArgs, abiFunction.inputs, '__internal__msgSenderCategory', resolvedMsgSenderCategory,
-    );
+    ));
   }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1' && overrides?.returnProbeOnly === true) {

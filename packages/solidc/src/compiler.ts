@@ -13616,7 +13616,9 @@ function compileResolvedAst(
 
   // A boolean literal substituted for a bool param at an inline site (`_refund(jobId, false)`) leaves an arm of the
   // branch on it that never runs; drop it, so a write in that arm never reaches the entry's write analysis.
-  if (hasInternalHelpers) ast = ast.accept(new FoldConstantBoolBranches()) as Ast;
+  if (hasInternalHelpers) {
+    ast = ast.accept(new FoldConstantBoolBranches(mergedCompilerOptions.composition !== 'per-call')) as Ast;
+  }
 
   // Re-run the fixed-bound unroll AFTER inlining: a `new T[](N)` literal substituted for an array param at an
   // inline site (`_updateAllowlist(id, allowed, new address[](0))`) now makes the loop bound compile-time

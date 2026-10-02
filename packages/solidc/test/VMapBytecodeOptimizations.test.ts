@@ -126,7 +126,7 @@ describe('general vmap bytecode sharing', () => {
     expect(artifact.bytecode.length / 2).toBeLessThan(2800);
   });
 
-  it('nests only compiler-authored helpers while sharing composite array traversal', () => {
+  it('nests only compiler helpers and other outlined spans, acyclically, while sharing composite array traversal', () => {
     const artifact = compileString(
       'struct Row { int a; string label; int b; bytes payload; int c; } contract CompositeRows { Row[] rows;'
       + ' function updateA(int i) external { require(rows[i].a>=0); rows[i].b=1; rows[i].c=2; require(true); }'
@@ -137,25 +137,38 @@ describe('general vmap bytecode sharing', () => {
     const invokeDebug = (artifact.debug as typeof artifact.debug & {
       invokeDebug?: Record<string, { bytecode: string; name?: string; sourceMap: string }>;
     }).invokeDebug ?? {};
-    const compilerHelperIds = new Set(
-      Object.entries(invokeDebug)
-        .filter(([, debug]) => debug.name?.startsWith('compiler helper'))
-        .map(([id]) => Number(id)),
-    );
-    const nestedOutlinedBodies = Object.values(invokeDebug)
-      .filter((debug) => debug.name?.startsWith('outlined source span'))
-      .map((debug) => ({ debug, script: bytecodeToScript(hexToBin(debug.bytecode)) }))
+    const idsNamed = (prefix: string): Set<number> => new Set(Object.entries(invokeDebug)
+      .filter(([, debug]) => debug.name?.startsWith(prefix)).map(([id]) => Number(id)));
+    const compilerHelperIds = idsNamed('compiler helper');
+    const outlinedSpanIds = idsNamed('outlined source span');
+    // A single-byte-pool id pushes as OP_1..OP_16 or OP_1NEGATE, any other as data.
+    const invokedId = (operand: unknown): number => (operand instanceof Uint8Array ? Number(decodeInt(operand))
+      : operand === Op.OP_1NEGATE ? -1 : Number(operand) - Op.OP_1 + 1);
+    const nestedOutlinedBodies = Object.entries(invokeDebug)
+      .filter(([, debug]) => debug.name?.startsWith('outlined source span'))
+      .map(([id, debug]) => ({ id: Number(id), debug, script: bytecodeToScript(hexToBin(debug.bytecode)) }))
       .filter(({ script }) => script.includes(Op.OP_INVOKE));
 
     expect(nestedOutlinedBodies.length).toBeGreaterThanOrEqual(1);
-    for (const { debug, script } of nestedOutlinedBodies) {
+    const calls = new Map<number, number[]>();
+    for (const { id, debug, script } of nestedOutlinedBodies) {
       expect(sourceMapToLocationData(debug.sourceMap)).toHaveLength(script.length);
       for (let index = 1; index < script.length; index += 1) {
         if (script[index] !== Op.OP_INVOKE) continue;
-        const operand = script[index - 1];
-        expect(operand).toBeInstanceOf(Uint8Array);
-        expect(compilerHelperIds.has(Number(decodeInt(operand as Uint8Array)))).toBe(true);
+        const target = invokedId(script[index - 1]);
+        expect(compilerHelperIds.has(target) || outlinedSpanIds.has(target)).toBe(true);
+        calls.set(id, [...(calls.get(id) ?? []), target]);
       }
     }
+    // A later tail may call a span outlined before it, but nothing calls back into it: the nesting is acyclic.
+    const done = new Set<number>();
+    const acyclic = (id: number, path: Set<number>): boolean => {
+      if (done.has(id)) return true;
+      if (path.has(id)) return false;
+      const ok = (calls.get(id) ?? []).every((target) => acyclic(target, new Set([...path, id])));
+      done.add(id);
+      return ok;
+    };
+    for (const id of calls.keys()) expect(acyclic(id, new Set())).toBe(true);
   });
 });

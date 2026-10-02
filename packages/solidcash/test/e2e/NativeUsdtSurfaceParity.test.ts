@@ -9,21 +9,21 @@ import type { Artifact } from '@solidcash/utils';
 // composition and intentionally exposes that platform's adapters and getters.
 //
 //   native_usdt.scash      the one-file reference spec (over the input limit)
-//   nusdt.scash + nusdt_facet.scash   the hand-split master and its one facet
+//   nusdt.scash + three facets        the hand-split master and delegate libraries
 //   nusdt_inherited.scash  the inheritance rewrite the built-in splitter cuts up
 //
 // They HAD diverged. The monolith carried seven on-chain view functions the
-// shipping split deliberately dropped, and lacked `authorize` which the split
-// master has - so the "reference spec" described a contract nobody deploys, and
-// the divergence was invisible because only a size test ever loaded it.
+// shipping split deliberately dropped. The split also once had an unsafe
+// `authorize` entry point with no token role; it was removed rather than
+// excluding it from parity. A size test alone did not detect that divergence.
 //
 // This pins exact parity for the reference/hand split, then pins both the shared
 // token operations and the intentional adapter delta for the inherited variant.
-// `authorize` is split machinery, not part of the token.
+// `authorize` was removed because it bypassed the master covenant.
 // =============================================================================
 
 const fx = (n: string): URL => new URL(`../fixture/${n}`, import.meta.url);
-const MECHANISM_ONLY = new Set(['authorize', '__construct']);
+const MECHANISM_ONLY = new Set(['__construct']);
 
 const surfaceOf = (artifacts: Artifact[]): string[] => {
   const names = new Set<string>();
@@ -42,6 +42,8 @@ beforeAll(() => {
   facets = surfaceOf([
     compileFile(fx('nusdt.scash'), { messageBus: false }) as Artifact,
     compileFile(fx('nusdt_facet.scash'), { brandLibrary: true, messageBus: false }) as Artifact,
+    compileFile(fx('nusdt_transfer_facet.scash'), { brandLibrary: true, messageBus: false }) as Artifact,
+    compileFile(fx('nusdt_supply_facet.scash'), { brandLibrary: true, messageBus: false }) as Artifact,
   ]);
   inherited = surfaceOf([compileFile(fx('nusdt_inherited.scash'), { messageBus: false }) as Artifact]);
 }, 300000);

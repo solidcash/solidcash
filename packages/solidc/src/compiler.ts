@@ -3996,23 +3996,54 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
     ...[...activeModifiers].map((modifier) => ({ parameters: modifier.parameters, body: modifier })),
     ...[...activeModifierArgs].map((arg) => ({ parameters: [], body: arg })),
   ];
+  const hasTypedReceiverCall = (body: Node, initialReceivers: Map<string, boolean>): boolean => {
+    const seen = new Set<Node>();
+    const visit = (node: Node, receivers: Map<string, boolean>): boolean => {
+      if (seen.has(node)) return false;
+      seen.add(node);
+      if (node instanceof BlockNode) {
+        // Declarations become visible in source order, but a nested block cannot shadow calls outside it.
+        const blockReceivers = new Map(receivers);
+        return (node.statements ?? []).some((statement) => visit(statement, blockReceivers));
+      }
+      if (node instanceof VariableDefinitionNode) {
+        // Solidity resolves an initializer before publishing the local binding.
+        if (node.expression && visit(node.expression, receivers)) return true;
+        receivers.set(node.name, node.type instanceof AddressType && node.type.interfaceName !== undefined);
+        return false;
+      }
+      if (node instanceof TryCatchNode) {
+        // A failed operation aborts BCH execution, so the catch arms are not graph-call surfaces.
+        return visit(node.expression, receivers) || visit(node.tryBlock, receivers);
+      }
+      if (node instanceof FunctionCallNode) {
+        const parts = node.identifier.name.split('.');
+        if (parts.length === 2 && receivers.get(parts[0]) === true
+          && !['call', 'staticcall', 'delegatecall'].includes(parts[1])) return true;
+      }
+      // Match walkInvocationAst's executable-child traversal without flattening lexical block scopes.
+      for (const key in node) {
+        if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+          || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
+          || key === 'collection' || key === 'type' || key === 'location' || key === 'name'
+          || key === 'functionId' || key === 'error' || key === 'opRolls' || key === 'selectorHex'
+          || key === 'abiType') continue;
+        const child = node[key as keyof Node];
+        if (child instanceof Node && visit(child, receivers)) return true;
+        if (Array.isArray(child) && child.some((item) => item instanceof Node && visit(item, receivers))) {
+          return true;
+        }
+      }
+      return false;
+    };
+    return visit(body, new Map(initialReceivers));
+  };
   for (const surface of typedCallSurfaces) {
     if (!surface.body) continue;
     const typedReceivers = new Map(typedStateReceivers);
     for (const parameter of surface.parameters) typedReceivers.set(parameter.name,
       parameter.type instanceof AddressType && parameter.type.interfaceName !== undefined);
-    walkInvocationAst(surface.body, (node) => {
-      if (node instanceof VariableDefinitionNode) typedReceivers.set(node.name,
-        node.type instanceof AddressType && node.type.interfaceName !== undefined);
-    });
-    let hasTypedEdge = false;
-    walkInvocationAst(surface.body, (node) => {
-      if (!(node instanceof FunctionCallNode)) return;
-      const parts = node.identifier.name.split('.');
-      if (parts.length === 2 && typedReceivers.get(parts[0]) === true
-        && !['call', 'staticcall', 'delegatecall'].includes(parts[1])) hasTypedEdge = true;
-    });
-    if (hasTypedEdge) return true;
+    if (hasTypedReceiverCall(surface.body, typedReceivers)) return true;
   }
   let found = false;
   const checkGraphEdge = (node: Node): void => {

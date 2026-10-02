@@ -125,6 +125,22 @@ describe('message-bus compilation selection', () => {
     expect(artifact.messageBus).toBeDefined();
   });
 
+  it('keeps a typed external call before an unrelated nested local shadow on the graph route', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      contract TypedShadow {
+        ISink sink;
+        int value;
+        function forward(int next) public {
+          sink.note(next);
+          if (next > 0) { int sink = 0; require(sink == 0); }
+          value = next;
+          require(next >= 0);
+        }
+      }`, { optimizeForCompilationSpeed: true, solidityImportCompat: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus).toBeDefined();
+  });
+
   it('treats explicit true as an opt-in that skips narrowing and builds a graph-free leaf participant', () => {
     const artifact = compileString(STATEFUL_LEAF, { messageBus: true });
     expect(artifact.messageBus).toBeDefined();

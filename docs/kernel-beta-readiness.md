@@ -138,6 +138,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   event-format assertion or establish a 66-title result. After the active band-helper rename,
   `node scripts/kernel-beta-gate.mjs --sources-only --allow-dirty` still reports matched source fingerprints;
   that diagnostic skips all tests and cold compiles.
+- 2026-10-02 automatic-selection checkpoint: a new regression exposed that a nested local declaration after a
+  typed external call could make auto selection overlook that reachable graph edge. The source-level receiver
+  survey now follows declaration order and block scope; the regression and its immediately preceding typed-state-
+  receiver title pass individually. `yarn build`, lint for the changed compiler/test files, and the static
+  sources-only beta gate pass. No broad compiler suite or beta gate was run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

@@ -299,6 +299,82 @@ describe('composition settlement session CompositionSettlementSession', () => {
     });
   });
 
+  it('does not fetch legacy predecessors when compatibility fallback is disabled', async () => {
+    const session = createCompositionSettlementSession();
+    const categoryId = 'aa'.repeat(32);
+    const slot = keyToSlot(new Uint8Array());
+    const root = sha256(new Uint8Array(80));
+    session.persistedJobEventsRecipes.set(categoryId, {
+      slot, root, collection: 'jobEvents', categoryId,
+    });
+    let queries = 0;
+    let legacyUnlockerProviders = 0;
+    let queriedAddress: string | undefined;
+    let placed: unknown[] = [];
+    const fetched = {
+      txid: '01'.repeat(32), vout: 0, satoshis: 1000n,
+      token: { category: categoryId, nft: { capability: 'mutable', commitment: '00' } },
+    };
+    const provider = {
+      network: 'chipnet',
+      getUtxos: async (address: string) => {
+        queries += 1;
+        queriedAddress = address;
+        return [fetched];
+      },
+    };
+    const contract = {
+      get provider() { legacyUnlockerProviders += 1; return provider; },
+      addressType: 'p2sh32', artifact: {},
+    };
+    const host = {
+      externalCallUtxoGroups: [{
+        functionName: 'transferFrom',
+        compilerRoute: { abiFunction: {
+          writesState: true,
+          entryAccesses: [{ operations: ['write'] }, { operations: ['write'] }],
+        } },
+      }],
+      messageBusConvention: 'kernel-row-loop',
+      builderOptions: { provider },
+      allInputs: [],
+      setPendingJobEventsPredecessors: () => {},
+      getChunkableValueWriteBand: () => ({ start: 1, end: 1, nNew: 1 }),
+      persistedValueChunkCategory: () => categoryId,
+      chunkableValueWriteCategory: () => categoryId,
+      isInitialChunkableValueWrite: () => false,
+      isPersistedChunkableValueWriteReady: () => true,
+      persistedValueChunkWrite: () => undefined,
+      hasChunkableValueWriteMetadata: () => true,
+      permitsLegacyNamedValueChunkFallback: () => false,
+      chunkableValueWriteGroups: () => ({
+        external: { externalContract: { inner: contract } },
+        externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,
+      }),
+      findMintingInputIndex: () => 0,
+      placeJobEventsPredecessorInputs: (extras: unknown[]) => { placed = extras; },
+    };
+
+    await runWithCompositionSettlementSession(session, () => ensurePersistedJobEventsInputs(host as never));
+    expect(legacyUnlockerProviders).toBe(0);
+    expect(queries).toBe(0);
+    expect(placed).toEqual([]);
+    await runWithCompositionSettlementSession(session, () => ensurePersistedJobEventsInputs({
+      ...host,
+      messageBusConvention: 'legacy-unroll',
+      hasChunkableValueWriteMetadata: () => false,
+      permitsLegacyNamedValueChunkFallback: () => true,
+    } as never));
+    expect(legacyUnlockerProviders).toBeGreaterThan(0);
+    expect(queries).toBe(1);
+    expect(queriedAddress).toMatch(/^bchtest:/);
+    expect(placed).toHaveLength(1);
+    expect((placed[0] as { unlocker: { generateLockingBytecode(): Uint8Array } })
+      .unlocker.generateLockingBytecode()).toEqual(
+      getValueChunkLockingBytecode(categoryId, 'jobEvents', slot, root),
+    );
+  });
+
   it('STB production helpers and clearPersistedJobEvents go through settlement()', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const persistSrc = readFileSync(

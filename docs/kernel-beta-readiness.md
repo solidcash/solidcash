@@ -471,6 +471,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   category before it can derive that category's P2SH32 lock. The focused title went red-to-green, also proves a
   correctly owned recipe still derives its lock, and its immediately preceding unselected-value title passes.
   This is a category-identity check, not a solution for the oversized Unicrow singleton closures.
+- 2026-10-02 predecessor-fetch follow-up: continuation restoration now consults a legacy recipe only when its
+  descriptor-free compatibility fallback is permitted. The token-aware address conversion also consumes libauth's
+  successful `{ address }` result, so the allowed legacy route can actually query and place its mutable predecessor;
+  the compiler-described route does neither. The exact title went red-to-green and its immediately preceding
+  lock-derivation title passes. No broad suite or full beta gate was run.
 
 ## Gate before the next leap
 

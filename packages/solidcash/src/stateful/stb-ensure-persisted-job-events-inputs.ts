@@ -85,7 +85,8 @@ export async function ensurePersistedJobEventsInputs(
   }
   const recipe = write === null
     ? undefined
-    : (write ? persistedValueChunkWriteState(write)?.recipe : persistedJobEventsUnlockRecipe(categoryId));
+    : (write ? persistedValueChunkWriteState(write)?.recipe
+      : (legacyFallback ? persistedJobEventsUnlockRecipe(categoryId) : undefined));
   const unlockCategory = recipe?.categoryId ?? categoryId;
   const unlockMaster = host.findMintingInputIndex(unlockCategory);
   const unlocker = contract && unlockMaster >= 0 && recipe
@@ -117,7 +118,7 @@ export async function ensurePersistedJobEventsInputs(
         prefix: host.builderOptions.provider.network === 'mainnet' ? 'bitcoincash' : 'bchtest',
         tokenSupport: true,
       });
-      const address = typeof encoded === 'string' ? encoded : undefined;
+      const address = typeof encoded === 'string' ? undefined : encoded.address;
       if (address) {
         const fetched = await host.builderOptions.provider.getUtxos(address);
         for (const utxo of fetched.filter((item) => item.token?.category === unlockCategory

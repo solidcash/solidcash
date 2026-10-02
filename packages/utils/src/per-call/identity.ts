@@ -12,11 +12,11 @@
  * a change to it moves every address. The program is therefore frozen once a real-chain deployment exists.
  */
 
-import { Opcodes, encodeDataPush, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
+import { Opcodes, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import { hash256, sha256 } from '../hash.js';
 import { CATEGORY_LENGTH } from './transcript.js';
 import { CONTRACT_LOCK_LENGTH, P2PKH_LOCK_LENGTH } from './canonical.js';
-import { PerCallEncodingError, concatBytes } from './primitives.js';
+import { PerCallEncodingError, concatBytes, encodeMinimalDataPush } from './primitives.js';
 
 /** A token capability: none, mutable, or minting. */
 export const TokenCapability = { NONE: 0x00, MUTABLE: 0x01, MINTING: 0x02 } as const;
@@ -107,7 +107,7 @@ export const VALIDATOR_PIN_PUSH_LENGTH = 1 + CATEGORY_PIN_LENGTH;
  */
 export function validatorRedeemScript(category: Uint8Array, validatorTemplate: Uint8Array): Uint8Array {
   return concatBytes([
-    encodeDataPush(categoryPin(chainCategory(category), TokenCapability.MUTABLE)), validatorTemplate,
+    encodeMinimalDataPush(categoryPin(chainCategory(category), TokenCapability.MUTABLE)), validatorTemplate,
   ]);
 }
 

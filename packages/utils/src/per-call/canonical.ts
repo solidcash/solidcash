@@ -16,9 +16,9 @@
  * sits on top, so the first parameter's push has to come last.
  */
 
-import { bigIntToVmNumber, encodeDataPush, vmNumberToBigInt } from '@bitauth/libauth';
+import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
 import { sha256 } from '../hash.js';
-import { PerCallEncodingError, bytesEqual, concatBytes } from './primitives.js';
+import { PerCallEncodingError, bytesEqual, concatBytes, encodeMinimalDataPush } from './primitives.js';
 
 /** Length of a P2PKH locking bytecode, which is how a user's address appears. */
 export const P2PKH_LOCK_LENGTH = 25;
@@ -35,7 +35,7 @@ export const EVM_SELECTOR_LENGTH = 4;
 /** A minimal push of one value, in the one encoding the wire format allows. */
 export function encodeArgumentPayload(value: Uint8Array): Uint8Array {
   if (!(value instanceof Uint8Array)) throw new PerCallEncodingError('an argument must be a byte array');
-  return encodeDataPush(value);
+  return encodeMinimalDataPush(value);
 }
 
 /** An argument list: each value's minimal push, concatenated in the order given. */

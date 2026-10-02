@@ -15,15 +15,17 @@
  * name.
  */
 
-import { encodeDataPush, hexToBin, Opcodes } from '@bitauth/libauth';
+import { hexToBin, Opcodes } from '@bitauth/libauth';
 import {
   INDEX_NONE,
   buildChunkCommitment,
   buildEntryNftCovenantScript,
   buildPushdataCommitment,
   computeCollectionHash,
+  concatBytes,
   dynamicChunkSignature,
   encodeInt,
+  encodeMinimalDataPush,
   scriptToBytecode,
   splitValueIntoChunks,
   type RecordEntry,
@@ -184,8 +186,9 @@ export function layOutChunkRun(options: {
   const lock = scriptToLockingBytecode(covenant, 'p2sh32');
   // The covenant's own unlocking bytecode: the master the write belongs to, then the flag that takes the write path,
   // and then the program itself, because a P2SH spend reads its program from the last push of its own unlocking.
-  const unlockingBytecode = new Uint8Array([
-    ...encodeDataPush(encodeInt(BigInt(writer))), Opcodes.OP_1, ...encodeDataPush(scriptToBytecode(covenant)),
+  const unlockingBytecode = concatBytes([
+    encodeMinimalDataPush(encodeInt(BigInt(writer))), Uint8Array.of(Opcodes.OP_1),
+    encodeMinimalDataPush(scriptToBytecode(covenant)),
   ]);
   const chunkSource = (commitment: Uint8Array): DraftSourceOutput =>
     ({ lockingBytecode: lock, valueSatoshis, token: chunkToken(category, commitment) });

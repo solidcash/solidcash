@@ -181,6 +181,28 @@ export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
   return out;
 }
 
+/**
+ * The minimal push of `data`, byte-identical to libauth's `encodeDataPush`: an empty push is OP_0, a single byte 1..16
+ * is OP_N and 0x81 is OP_1NEGATE, up to 75 bytes is a direct push, then PUSHDATA1/2/4 with a little-endian length.
+ * Copies `data` once: libauth spreads every byte into an array, and the per-call derivation pushes whole redeem
+ * scripts for every program it evaluates.
+ */
+export function encodeMinimalDataPush(data: Uint8Array): Uint8Array {
+  const { length } = data;
+  if (length === 0) return Uint8Array.of(0x00);
+  if (length === 1 && data[0] !== 0 && data[0] <= 16) return Uint8Array.of(data[0] + 0x50);
+  if (length === 1 && data[0] === 0x81) return Uint8Array.of(0x4f);
+  let header: number[];
+  if (length <= 75) header = [length];
+  else if (length <= 0xff) header = [0x4c, length];
+  else if (length <= 0xffff) header = [0x4d, length & 0xff, length >>> 8];
+  else header = [0x4e, length & 0xff, (length >>> 8) & 0xff, (length >>> 16) & 0xff, length >>> 24];
+  const out = new Uint8Array(header.length + length);
+  out.set(header, 0);
+  out.set(data, header.length);
+  return out;
+}
+
 /** Structural equality over byte arrays. */
 export function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;

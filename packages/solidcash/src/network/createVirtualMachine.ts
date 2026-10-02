@@ -249,6 +249,16 @@ function installCachedP2shEvaluator(
   return runPhases;
 }
 
+/** Two lowercase hex digits per byte value, as libauth's `binToHex` writes them. */
+const BYTE_HEX = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, '0'));
+
+/** A function table key: `binToHex` of the identifier, without its per-call allocations for the usual 1-2 bytes. */
+function functionTableKeyOf(identifier: Uint8Array): string {
+  if (identifier.length === 1) return BYTE_HEX[identifier[0]!]!;
+  if (identifier.length === 2) return BYTE_HEX[identifier[0]!]! + BYTE_HEX[identifier[1]!]!;
+  return binToHex(identifier);
+}
+
 /** Cache immutable OP_DEFINE bodies instead of decoding and copying their pushes at every OP_INVOKE. */
 function installCachedInvokeEvaluator(
   instructionSet: ReturnType<typeof createInstructionSetBch2026>,
@@ -257,12 +267,18 @@ function installCachedInvokeEvaluator(
   const decodedFunctions = new WeakMap<Uint8Array, DecodedInstructions>();
   const decodedFunctionKeys = new WeakMap<DecodedInstructions, string>();
   const returnProbes = new WeakMap<object, { functionTableKey: string; frameDepth: number }>();
+  // The invoke probes are read once per VM: an environment read is a native lookup, and these sit on every invoke.
+  const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+  const debugInvokeId = debugEnv?.SOLIDC_DEBUG_INVOKE_ID;
+  const debugInvokeCallerId = debugEnv?.SOLIDC_DEBUG_INVOKE_CALLER_ID;
+  const debugInvokeReturnId = debugEnv?.SOLIDC_DEBUG_INVOKE_RETURN_ID;
+  const debugEqualVerifyInput = debugEnv?.SOLIDC_DEBUG_EQUALVERIFY_INPUT;
   instructionSet.operations[OpcodesBch2026.OP_INVOKE] = conditionallyEvaluate((state: State) => {
     const functionIdentifier = state.stack.pop();
     if (functionIdentifier === undefined) {
       return applyError(state, AuthenticationErrorCommon.emptyStack);
     }
-    const functionTableKey = binToHex(functionIdentifier);
+    const functionTableKey = functionTableKeyOf(functionIdentifier);
     const functionBody = state.functionTable[functionTableKey];
     if (functionBody === undefined) {
       return applyError(
@@ -271,21 +287,20 @@ function installCachedInvokeEvaluator(
         `Function identifier: 0x${functionTableKey}.`,
       );
     }
-    const invokeDebugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
-    const callerFunctionTableKey = decodedFunctionKeys.get(state.instructions);
-    if ((invokeDebugEnv?.SOLIDC_DEBUG_INVOKE_ID !== undefined
-      && invokeDebugEnv.SOLIDC_DEBUG_INVOKE_ID === functionTableKey)
-      || (invokeDebugEnv?.SOLIDC_DEBUG_INVOKE_CALLER_ID !== undefined
-        && invokeDebugEnv.SOLIDC_DEBUG_INVOKE_CALLER_ID === callerFunctionTableKey)) {
-      const inputIndex = (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex;
-      const hexOf = (bytes: Uint8Array): string => binToHex(bytes.slice(0, 160));
-      console.error('invoke-boundary', JSON.stringify({
-        inputIndex,
-        functionTableKey,
-        callerFunctionTableKey,
-        stackLength: state.stack.length,
-        tail: state.stack.slice(-24).map((item) => `${item.length}:${hexOf(item)}`),
-      }));
+    if (debugInvokeId !== undefined || debugInvokeCallerId !== undefined) {
+      const callerFunctionTableKey = decodedFunctionKeys.get(state.instructions);
+      if ((debugInvokeId !== undefined && debugInvokeId === functionTableKey)
+        || (debugInvokeCallerId !== undefined && debugInvokeCallerId === callerFunctionTableKey)) {
+        const inputIndex = (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex;
+        const hexOf = (bytes: Uint8Array): string => binToHex(bytes.slice(0, 160));
+        console.error('invoke-boundary', JSON.stringify({
+          inputIndex,
+          functionTableKey,
+          callerFunctionTableKey,
+          stackLength: state.stack.length,
+          tail: state.stack.slice(-24).map((item) => `${item.length}:${hexOf(item)}`),
+        }));
+      }
     }
     let instructions = decodedFunctions.get(functionBody);
     if (instructions === undefined) {
@@ -305,22 +320,22 @@ function installCachedInvokeEvaluator(
       );
     }
     state.controlStack.push({ instructions: state.instructions, ip: state.ip + 1 });
-    if (invokeDebugEnv?.SOLIDC_DEBUG_INVOKE_RETURN_ID === functionTableKey) {
+    if (debugInvokeReturnId === functionTableKey) {
       returnProbes.set(state as object, { functionTableKey, frameDepth: state.controlStack.length });
     }
     state.ip = -1;
     state.instructions = instructions;
     return state;
   });
+  // Only a configured return probe can register one, so without it no opcode needs the per-step lookup.
+  if (debugInvokeReturnId === undefined) return;
   for (let opcode = 0; opcode < 256; opcode += 1) {
     const operation = instructionSet.operations[opcode]!;
     instructionSet.operations[opcode] = ((state: State) => {
       const probe = returnProbes.get(state as object);
       if (probe !== undefined && state.controlStack.length < probe.frameDepth) {
-        const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
         const inputIndex = (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex;
-        if (env?.SOLIDC_DEBUG_EQUALVERIFY_INPUT === undefined
-          || inputIndex === Number(env.SOLIDC_DEBUG_EQUALVERIFY_INPUT)) {
+        if (debugEqualVerifyInput === undefined || inputIndex === Number(debugEqualVerifyInput)) {
           console.error('invoke-return', JSON.stringify({
             inputIndex,
             functionTableKey: probe.functionTableKey,

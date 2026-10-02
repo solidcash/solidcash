@@ -7,7 +7,6 @@
  * its own first push sees exactly the block its witnesses were built from.
  */
 
-import { encodeDataPush } from '@bitauth/libauth';
 import {
   type CallRecord,
   type FrameKindValue,
@@ -16,6 +15,7 @@ import {
   type WitnessBlock,
   buildMasterUnlockingBytecode,
   buildValidatorUnlockingBytecode,
+  encodeMinimalDataPush,
 } from '@solidcash/utils';
 
 /** The three values every frame carries, before the transaction-wide references are resolved. */
@@ -97,6 +97,6 @@ export interface ValidatorWitness {
 export function assembleValidatorWitness(input: ValidatorWitnessInput): ValidatorWitness {
   return {
     transcript: input.transcript,
-    unlockingBytecode: buildValidatorUnlockingBytecode(input.transcript, input.redeemScript, encodeDataPush),
+    unlockingBytecode: buildValidatorUnlockingBytecode(input.transcript, input.redeemScript, encodeMinimalDataPush),
   };
 }

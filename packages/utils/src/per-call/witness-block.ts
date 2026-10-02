@@ -22,7 +22,6 @@
  * each against the hash its record holds, so a value the frame does not read is empty.
  */
 
-import { encodeDataPush } from '@bitauth/libauth';
 import { assertFrameKind, assertRecordEntry, type RecordEntry } from './frames.js';
 import {
   ByteReader,
@@ -32,6 +31,7 @@ import {
   bytesEqual,
   bytesToHex,
   concatBytes,
+  encodeMinimalDataPush,
 } from './primitives.js';
 
 /** Magic and version of the witness block, frozen with the validator program. */
@@ -297,7 +297,7 @@ export function argumentPushesOf(unlockingBytecode: Uint8Array): Uint8Array {
 
 /** Encodes a witness block as the minimal push that introduces a master's unlocking bytecode. */
 export function encodeWitnessBlockPush(block: WitnessBlock): Uint8Array {
-  return encodeDataPush(encodeWitnessBlock(block));
+  return encodeMinimalDataPush(encodeWitnessBlock(block));
 }
 
 /**
@@ -329,7 +329,7 @@ export function buildMasterUnlockingBytecode(
 ): Uint8Array {
   return concatBytes([
     encodeWitnessBlockPush(block),
-    ...argumentPushes.map((argument) => encodeDataPush(argument)),
-    encodeDataPush(redeemScript),
+    ...argumentPushes.map((argument) => encodeMinimalDataPush(argument)),
+    encodeMinimalDataPush(redeemScript),
   ]);
 }

@@ -27,7 +27,7 @@
  * witness the body computes, such as a keccak256 preimage, is learned the same way from the body's own bind.
  */
 
-import { createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
+import { createVirtualMachineBch2026, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import {
   INDEX_NONE,
   argsHash,
@@ -35,6 +35,7 @@ import {
   bytesEqual,
   bytesToHex,
   encodeArgumentList,
+  encodeMinimalDataPush,
   hash256,
   sha256,
   type CallRecord,
@@ -617,7 +618,7 @@ export function composeDraft(
     const validator = validatorUnlocking.get(id);
     if (validator !== undefined) return validator;
     const facet = facetCode.get(id);
-    if (facet !== undefined) return encodeDataPush(facet);
+    if (facet !== undefined) return encodeMinimalDataPush(facet);
     const provided = settled.get(id)?.unlockingBytecode ?? plan.inputs[id]?.unlockingBytecode;
     if (provided === undefined) {
       throw new CompositionDraftError(`input "${id}" is not a master, a validator or a facet, so it needs unlocking bytecode`);

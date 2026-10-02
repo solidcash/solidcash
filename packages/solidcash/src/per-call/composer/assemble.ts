@@ -18,11 +18,11 @@ import {
   argsHash,
   bytesEqual,
   encodeArgumentList,
+  encodeMinimalDataPush,
   type FrameKindValue,
   type RecordEntry,
   type Transcript,
 } from '@solidcash/utils';
-import { encodeDataPush } from '@bitauth/libauth';
 import { perCallValidator } from 'solidc';
 import { assertValidatorCoverage, type EntryFacts } from './need-test.js';
 import {
@@ -515,7 +515,7 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
     // A facet's unlocking bytecode is its own code and nothing else: the transcript rides with the head.
     validatorFacetsOf(validator).forEach((code, at) => {
       const id = facetId(validator.id, at + 1);
-      assembled.push({ id, index: resolve(id, 'facet'), unlockingBytecode: encodeDataPush(code) });
+      assembled.push({ id, index: resolve(id, 'facet'), unlockingBytecode: encodeMinimalDataPush(code) });
     });
     transcripts.push({ validator: validator.id, transcript });
   }

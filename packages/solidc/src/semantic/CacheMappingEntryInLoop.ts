@@ -334,11 +334,19 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       dirtyInit.location = fn.body.location;
       const dirtyLocal = new VariableDefinitionNode(PrimitiveType.BOOL, [], dirty, dirtyInit);
       dirtyLocal.location = fn.body.location;
-      let stmts = this.insertFlushesBeforeReturns(fn.body.statements ?? [], e.mapping, e.keys, local, dirty);
+      const anchor = anchors.get(item);
+      // An anchored cache is declared at its anchor, so only a return reached from there on can find the entry
+      // read and dirty. Flushing at an earlier return named the cache before its declaration (KashiPair: an
+      // early `return;` ahead of the first `balanceOf[_feeTo]`). Returns before the anchor keep no flush.
+      const body = fn.body.statements ?? [];
+      const anchorAt = anchor === undefined ? 0 : Math.max(0, body.indexOf(anchor));
+      let stmts = [
+        ...body.slice(0, anchorAt),
+        ...this.insertFlushesBeforeReturns(body.slice(anchorAt), e.mapping, e.keys, local, dirty),
+      ];
       if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
         stmts = [...stmts, this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier)];
       }
-      const anchor = anchors.get(item);
       if (anchor !== undefined) {
         // The key is a body local, so the cache read cannot hoist above its declaration: reading the entry at the
         // first use of this entry gives the value every later read must observe once the writes are redirected.

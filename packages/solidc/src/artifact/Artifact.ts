@@ -2555,9 +2555,16 @@ function buildFunctionAbiMetadata(
         const rawCall = ec.interfaceName === '__raw__' && ec.functionName === '__raw__';
         // A grouped call owns one physical route even when its logical rows are conditional or repeated.
         // Publish row cardinality below; the outer callsite itself is the singular co-spend.
-        const occurrenceInfo = ec.batchInvocations
+        const structuralOccurrence = ec.batchInvocations
           ? { occurrence: 'once' as const }
           : occurrenceInfoOf(func, ec.sourceCallNode);
+        // The source call can be hoisted out of its branch during lowering while its compiler-published
+        // condition still records the branch that reaches it. In that case it is not a mandatory `once`
+        // edge: the graph may have zero rows until the guard's authenticated producer result is known.
+        const occurrenceInfo = ec.condition && structuralOccurrence.occurrence === 'once'
+          && !ec.batchInvocations
+          ? { occurrence: 'conditional' as const, maximumOccurrences: 1 }
+          : structuralOccurrence;
         const resultArrayOutput = !ec.condition && occurrenceInfo.occurrence === 'loop'
           ? ec.resultArrayOutput ?? ec.sourceCallNode?.resultArrayOutput
             ?? resultArrayOutputOf(func.body, ec.sourceCallNode) : undefined;

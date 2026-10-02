@@ -28,7 +28,10 @@ const setup = async (signed = false): Promise<{
 }> => {
   const provider = createMessageBusCapstoneTestProvider();
   const aArtifact = compileString(`pragma solidity ^0.8.0;
-      interface IB { function relay() external returns (uint256); }
+      interface IB {
+        function relay() external returns (uint256);
+        function relayConditional() external returns (uint256);
+      }
       contract A {
         address peer;
         uint256 public stored;
@@ -37,14 +40,27 @@ const setup = async (signed = false): Promise<{
           stored = 7;
           return IB(peer).relay();
         }
+        function runConditional() public returns (uint256) {
+          stored = 7;
+          return IB(peer).relayConditional();
+        }
         function observe() public view returns (uint256) { return stored; }
+        function calculate(uint256 amount) public view returns (uint256) { return stored + amount; }
       }`, OPTIONS);
   const bArtifact = compileString(`pragma solidity ^0.8.0;
-      interface IA { function observe() external view returns (uint256); }
+      interface IA {
+        function observe() external view returns (uint256);
+        function calculate(uint256 amount) external view returns (uint256);
+      }
       contract B {
         address peer;
         function setPeer(address target) public { peer = target; require(true); }
         function relay() public returns (uint256) { return IA(peer).observe(); }
+        function relayConditional() public returns (uint256) {
+          uint256 amount = IA(peer).observe();
+          if (amount > 0) return IA(peer).calculate(amount);
+          return 0;
+        }
       }`, OPTIONS);
   const aBase = new Contract(aArtifact, [], { provider });
   const bBase = new Contract(bArtifact, [], { provider });
@@ -155,5 +171,20 @@ describe('kernel same-owner callback composition', () => {
     expect(rootReturn?.token?.nft?.commitment).toBeDefined();
     expect(binToHex(rootReturn!.token!.nft!.commitment as Uint8Array))
       .toContain(ethers.AbiCoder.defaultAbiCoder().encode(['uint256'], [42n]).slice(2));
+  }, 180_000);
+
+  it('discovers a second same-owner callback selected by the first authenticated return', async () => {
+    const { a } = await setup(true);
+    const receipt = await a.call.runConditional().send();
+    const outpoints = receipt.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    expect(new Set(outpoints).size).toBe(outpoints.length);
+    expect((await a.getState()).stored).toBe(7n);
+    const rootReturn = receipt.outputs.find((output) =>
+      output.token?.category && binToHex(output.token.category) === a.categoryId
+      && output.token.nft?.capability === 'none');
+    expect(rootReturn?.token?.nft?.commitment).toBeDefined();
+    expect(binToHex(rootReturn!.token!.nft!.commitment as Uint8Array))
+      .toContain(ethers.AbiCoder.defaultAbiCoder().encode(['uint256'], [14n]).slice(2));
   }, 180_000);
 });

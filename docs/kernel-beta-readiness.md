@@ -232,6 +232,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   10KB deployability, or a broad Marketplace/beta-gate result. `build()` remains a preliminary builder for
   transparent atomic promotion;
   `send()` is the transaction-producing API for this path.
+- 2026-10-02 result-guarded callback follow-up: a second neutral A callback reached only when B observes the
+  authenticated result of the first was initially refused as an unresolved mandatory target. Source lowering
+  retained the call's guard but published its occurrence as `once`; the compiler now publishes that guarded edge
+  as conditional (zero or one row). The exact red title now passes through ordinary `send()`, with one A master,
+  post-write state 7, and authenticated root return 14. Its preceding dynamic-target title passes. A focused
+  compiler metadata title and its preceding predicate-call title pass as well. This does not prove the full
+  Unicrow source path or 10KB deployability.
 - The unchanged proxy Marketplace `arbitrate > arbitrate 80-20` title passes individually on mock BCH-2026
   (1 selected, 65 skipped; 411.56 seconds in the test body). It is not a reproduction of the same-owner
   callback gap above and does not establish the other arbitration titles or the 66-title gate. No predecessor

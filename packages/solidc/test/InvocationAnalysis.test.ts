@@ -150,6 +150,35 @@ describe('Release 0 shared invocation analysis', () => {
     expect(call).toMatchObject({ callsiteId: 0, occurrence: 'once', maximumOccurrences: 1 });
   });
 
+  it('publishes a producer-guarded return call as optional after source lowering', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface ITarget {
+        function observe() external view returns (uint256);
+        function calculate(uint256 value) external view returns (uint256);
+      }
+      contract GuardedReturn {
+        address target;
+        function run() public returns (uint256) {
+          uint256 observed = ITarget(target).observe();
+          if (observed > 0) return ITarget(target).calculate(observed);
+          return 0;
+        }
+      }`, {
+      forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+    });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls!;
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({ callsiteId: 0, occurrence: 'once', maximumOccurrences: 1 });
+    expect(calls[1]).toMatchObject({
+      callsiteId: 1, occurrence: 'conditional', maximumOccurrences: 1,
+      condition: {
+        kind: 'binary', operator: '>',
+        left: { kind: 'producerResult', callsiteId: 0, resultIndex: 0 },
+      },
+    });
+    expect(calls[1].minimumOccurrences).toBeUndefined();
+  });
+
   it('publishes an exact floor only where the reached count cannot vary', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface ITarget { function step(bigint n); }

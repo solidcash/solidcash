@@ -1958,6 +1958,7 @@ export class StatefulTransactionBuilder {
       valueChunkRawCommitments: this.valueChunkRawCommitments,
       loopEntryVars: this.loopEntryVars,
       compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
+      composedParticipant: this.composedParticipant,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       pendingOutputs: this.pendingOutputs,
       trailingLoopEntryVars: () => this._trailingLoopEntryVars(),

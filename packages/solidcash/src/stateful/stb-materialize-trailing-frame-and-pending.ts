@@ -57,6 +57,7 @@ export interface MaterializeTrailingFrameAndPendingHost {
   readonly valueChunkRawCommitments: ReadonlyMap<string, readonly string[]>;
   readonly loopEntryVars: readonly LoopEntryVarLike[];
   readonly compilerRouteDelegateBlock: boolean;
+  readonly composedParticipant: boolean;
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly pendingOutputs: readonly Output[];
   trailingLoopEntryVars(): readonly LoopEntryVarLike[];
@@ -175,7 +176,7 @@ export function materializeTrailingFrameAndPending(
   }
   debugAtomicOutputStage('balanced-trailing-frame');
 
-  if (host.compilerRouteDelegateBlock) {
+  if (host.compilerRouteDelegateBlock && !host.composedParticipant) {
     host.lowLevelCallUtxoGroups.forEach((group, groupIndex) => {
       if (group.callMode === 'delegatecall' && !associatedDelegateOutputs.has(groupIndex)) {
         appendDelegateGroupOutputs(groupIndex);

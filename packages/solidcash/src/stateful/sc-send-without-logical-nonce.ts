@@ -49,7 +49,7 @@ async function prepareTypedCallbackGraph(
     // Imperative call overrides cannot be replayed by the atomic composer. Keep the ordinary builder path.
     return undefined;
   }
-  const artifact = root.contract.inner.artifact;
+  const artifact = root.executionArtifact ?? root.contract.inner.artifact;
   const entry = artifact.abi.find((candidate) => root.selector !== undefined
     ? candidate.selector?.toLowerCase() === root.selector.toLowerCase()
     : candidate.name === root.functionName);
@@ -60,7 +60,8 @@ async function prepareTypedCallbackGraph(
   // A callback needs at least one reachable callee which can itself call onward (or directly alias the root).
   // Most ordinary cross-contract calls end at a leaf; do not hydrate and traverse their graph on every send.
   // An unregistered/dynamic target is unknown, not proof of a leaf, so it still enters exact discovery.
-  const registry = (contract as unknown as {
+  const logical = root.executor ?? contract;
+  const registry = (logical as unknown as {
     _externalRegistry: ReadonlyMap<string, unknown>;
   })._externalRegistry;
   const mayReachCallback = entry.externalCalls.some((edge) => {
@@ -112,7 +113,7 @@ async function prepareTypedCallbackGraph(
       return registeredPathReturnsToRoot(callee, edge.functionName, depth + 1, ancestors);
     });
   };
-  const registeredCallback = registeredPathReturnsToRoot(contract, entry.name, 0, new Set());
+  const registeredCallback = registeredPathReturnsToRoot(logical, entry.name, 0, new Set());
   const stateCache = new Map<StatefulContract, Promise<Record<string, unknown>>>();
   const stateOf = (participant: StatefulContract): Promise<Record<string, unknown>> => {
     let pending = stateCache.get(participant);

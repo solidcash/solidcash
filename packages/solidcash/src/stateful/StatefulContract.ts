@@ -13940,16 +13940,17 @@ export class StatefulFunctionCall {
    * participant only after the complete logical call graph is known. Calls carrying imperative SDK overrides
    * are refused because replaying only part of that mutable configuration would silently change semantics.
    */
-  _messageBusCompositionDescriptor(): {
-    contract: StatefulContract;
-    functionName: string;
-    selector?: string;
-    args: readonly FunctionArgument[];
-    upgradeTarget?: PreparedAtomicMessageBusCall['upgradeTarget'];
-  } {
+  _messageBusCompositionDescriptor(): PreparedAtomicMessageBusCall {
     if (!this.parentContract || this.functionName === undefined || !this.functionArgs) {
       throw new Error('messageBus: composition requires a prepared stateful contract call');
     }
+    const proxyDelegate = this.functionName === '__forward' && this.callInfos.length === 1
+      && this.callInfos[0].type === 'stateful'
+      && this.callInfos[0].proxyMasterIndex === undefined
+      && this.callInfos[0].compilerRoute === undefined
+      && this.callInfos[0].callerLockingBytecode === undefined
+      && this.parentContract.inner.artifact.messageBus?.routeInBytecode === false
+      ? this.callInfos[0] : undefined;
     const hasOverrides = this.stateOverrides.length > 0 || this.entryOverrides.length > 0
       || this.entryKeyOverrides.size > 0 || this.externalEntryKeyOverrides.size > 0
       || this.entryDeleteSlots.length > 0 || this.transfers.length > 0
@@ -13957,12 +13958,31 @@ export class StatefulFunctionCall {
       || this.extraOutputs.length > 0 || this.extraInputs.length > 0
       || this.tokenContainerDeposits.length > 0
       || this.manualEvents.length > 0 || this.detachedEvents.length > 0
-      || this.externalCallInfos.length > 0 || this.callInfos.length > 0
+      || this.externalCallInfos.length > 0 || (this.callInfos.length > 0 && !proxyDelegate)
       || this.registryExternalStateOverrides.size > 0 || this.emitReturnFlag
       || this.containerDepositAmount !== 0n || this.locktimeOverride !== undefined
-      || this.splitFundingConfig !== undefined || this.mergeConfig !== undefined;
+      || this.splitFundingConfig !== undefined || this.mergeConfig !== undefined
+      || (proxyDelegate !== undefined && (this.callerLockingBytecode !== undefined
+        || this.messageBusUpgradeTarget !== undefined));
     if (hasOverrides) {
       throw new Error('messageBus: prepared calls with imperative SDK overrides are not composable');
+    }
+    if (proxyDelegate) {
+      const executor = proxyDelegate.contract;
+      const overloads = executor.inner.artifact.abi.filter((entry) => entry.name === proxyDelegate.functionName
+        && entry.inputs.filter((input) => !input.name.startsWith('__internal__')).length
+          === proxyDelegate.args.length);
+      if (overloads.length !== 1 || !overloads[0].selector) {
+        throw new Error('messageBus: proxy delegate root requires one exact implementation selector');
+      }
+      return Object.freeze({
+        contract: this.parentContract,
+        executor,
+        executionArtifact: executor.inner.artifact,
+        functionName: proxyDelegate.functionName,
+        selector: overloads[0].selector,
+        args: Object.freeze([...proxyDelegate.args]),
+      });
     }
     return Object.freeze({
       contract: this.parentContract,

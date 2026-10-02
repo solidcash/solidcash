@@ -439,6 +439,14 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   unchanged direct compiled sources and reads the arbitrator's post-write value through Claim. Its immediately
   preceding explicit-composition title passes individually. This is still not a proxy-carrier or production-
   capacity proof; no broad suite ran.
+- 2026-10-02 real-source proxy follow-up: ordinary `arbitrator.forward('arbitrate', ...).send()` now composes
+  the unchanged Arbitrator, Claim, and Unicrow sources through three state-holding proxy carriers under the
+  relaxed BCH-2026 VM. The exact title checks the arbitrator's preceding mapping write and the final claimed
+  80/20 escrow; the direct ordinary-send title passes as its focused predecessor. Proxy deployment needed an
+  explicit implementation-constructor-arguments option. Early callback discovery now recognizes the built-in
+  proxy's single delegate root, and composed compiler-routed delegates no longer append a second legacy executor
+  output block beyond their published balanced span. This proves the real proxy callback semantics for this
+  fixture, not the full Marketplace gate or standard-capacity deployment; no broad suite ran.
 - The unchanged proxy Marketplace `arbitrate > arbitrate 80-20` title passes individually on mock BCH-2026
   (1 selected, 65 skipped; 411.56 seconds in the test body). It is not a reproduction of the same-owner
   callback gap above and does not establish the other arbitration titles or the 66-title gate. No predecessor

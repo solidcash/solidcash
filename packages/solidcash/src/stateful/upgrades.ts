@@ -12,7 +12,7 @@ import {
 } from './StatefulContract.js';
 import Signer from '../Signer.js';
 import SignatureTemplate from '../SignatureTemplate.js';
-import { FunctionArgument } from '../Argument.js';
+import { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { addressToLockScript, getNetworkPrefix, scriptToLockingBytecode } from '../utils.js';
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
@@ -76,6 +76,9 @@ export interface DeployProxyOptions {
   // OZ-style initializer. Default auto-detects an `initialize` delegate function and runs it with the init args
   // through the proxy; `false` seeds state at genesis instead; a string names a different initializer.
   initializer?: string | false;
+  // Constructor arguments for the separately deployed implementation. Its own state is not proxy state,
+  // but a source contract with a required constructor must still be deployed with valid arguments.
+  implementationConstructorArgs?: readonly ConstructorArgument[];
   // A custom proxy contract artifact. Omit to use the built-in layout-independent `SolidCashProxy` (recommended).
   proxy?: Artifact;
   // Runner (Signer or NetworkProvider) to deploy + sign with. Defaults to the implementation factory's runner.
@@ -785,7 +788,7 @@ export async function deployProxy<TImpl extends Artifact>(
     }
 
     // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
-    const implementation = await delegateFactory.deploy({
+    const implementation = await delegateFactory.deploy(...(options.implementationConstructorArgs ?? []), {
       ...(options.implementationOverrides ?? {}), logicalNonce: false,
     }) as DeployedContract<TImpl>;
 

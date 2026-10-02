@@ -13155,6 +13155,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         externalReadUtxos,
         outStateInputCount,
         iterationEntryInputs,
+        externalCallGroupCount: externalCallUtxoGroups.length,
       },
     );
     finalArgs = synthesized.finalArgs;

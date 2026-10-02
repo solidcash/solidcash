@@ -32339,12 +32339,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // callee widths: an interface may legally under-declare state, so only the runtime index reflects the
       // physical transaction footprint. A per-call frame locates the run from its own record block instead, so
       // it takes the branch below even when a call returns a value.
-      const lastReturnSlot = returningExternalSlots[returningExternalSlots.length - 1];
-      const returnParamName = returningExternalSlots.length === 1
-        ? '__internal__externalReturnOutputIdx'
-        : `__internal__externalReturnOutputIdx${lastReturnSlot.returnSlotIndex}`;
-      this.emitPickCompilerRouteFrameValue(returnParamName, loc);
-      this.emit(Op.OP_1ADD, loc);
+      this.emitPublishedReturnAnchor(returningExternalSlots, returningExternalSlots.length - 1, blockSize, loc);
     } else {
       const explicitDynamicBase = this.getStackIndex('__internal__dynamicChunkInputBase', true);
       const emitReconstructedBase = (): void => {
@@ -32417,6 +32412,50 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
     }
+  }
+
+  /**
+   * Leaves the output index just past the last return event a returning call published, untracked. A call that did
+   * not run binds its return index to -1 and is passed over; when none ran, the run starts after the caller's block
+   * and each non-returning callee block whose own master-index witness is non-negative. A call at a fixed offset
+   * from the shared base is co-spent with the returning calls or not at all, so it never precedes such a run.
+   */
+  private emitPublishedReturnAnchor(
+    returningSlots: readonly ExternalCallSlot[], last: number, blockSize: number, loc: SingleLocationData,
+  ): void {
+    if (last < 0) {
+      this.emitTrailingBlockBase(blockSize, loc);
+      for (const slot of this.externalCallSlots) {
+        if (slot.hasReturnValues || slot.inlineLoopDispatch || this.isExternalCallSlotLoopNested(slot)) continue;
+        const masterIndexName = `__internal__extcallMasterIdx${slot.slotIndex}`;
+        if (this.getStackIndex(masterIndexName, true) < 0) continue;
+        this.emitPickCompilerRouteFrameValue(masterIndexName, loc, 1);
+        this.emit(Op.OP_DUP, loc);
+        this.emit(encodeInt(0n), loc);
+        this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emit(encodeInt(BigInt(1 + slot.requiredDataNftIndices.length)), loc);
+        this.emit(Op.OP_ADD, loc);
+        this.emit(Op.OP_MAX, loc);
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.emit(Op.OP_ENDIF, loc);
+      }
+      return;
+    }
+    const returnParamName = returningSlots.length === 1
+      ? '__internal__externalReturnOutputIdx'
+      : `__internal__externalReturnOutputIdx${returningSlots[last].returnSlotIndex}`;
+    this.emitPickCompilerRouteFrameValue(returnParamName, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emitPublishedReturnAnchor(returningSlots, last - 1, blockSize, loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**

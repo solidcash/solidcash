@@ -4,7 +4,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth';
-import type { AbiFunction } from '@solidcash/utils';
+import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
@@ -50,6 +50,7 @@ export function materializeCreateBuilderSyntheticArgs(
   const externalReadUtxos = params.externalReadUtxos as readonly unknown[];
   const outStateInputCount = params.outStateInputCount as number;
   const iterationEntryInputs = params.iterationEntryInputs as readonly unknown[];
+  const externalCallGroupCount = params.externalCallGroupCount as number | undefined;
 
   // B8: a returning entry function takes a hidden __internal__returnOutputIdx. Default it to -1 (the
   // covenant computes the return value but does not emit it on-chain); opt-in emit sets a real index.
@@ -159,6 +160,33 @@ export function materializeCreateBuilderSyntheticArgs(
         + (abiFunction.graphBlockhashOracle?.slotCount ?? 0) + iterationEntryInputs.length,
       );
     }
+  }
+
+  // A build that co-spends no callee states each skipped conditional returning call (return index -1) as not made,
+  // by a negative master index; a path that makes the call reads its result at -1 and fails. A non-returning call
+  // keeps the sentinel that fails closed.
+  if (abiFunction && externalCallGroupCount === 0 && !overrides?.returnProbeOnly) {
+    const calls = (abiFunction.externalCalls ?? []) as readonly (ExternalCallAbi & { occurrence?: string })[];
+    const returning = calls.filter((call) => call.hasReturnValues);
+    const positionOf = (name: string): number => abiFunction!.inputs.findIndex((input) => input.name === name);
+    const skipped = calls.map((call) => {
+      if (call.occurrence !== 'conditional' || !call.hasReturnValues || call.loopArrayVar) return false;
+      const ordinal = returning.indexOf(call);
+      const position = positionOf(returning.length === 1
+        ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${ordinal}`);
+      return position >= 0 && finalArgs[position] === -1n;
+    });
+    let ownMasterIndices = false;
+    calls.forEach((_call, slot) => {
+      const position = positionOf(`__internal__extcallMasterIdx${slot}`);
+      if (position < 0) return;
+      ownMasterIndices = true;
+      if (skipped[slot]) finalArgs[position] = -1n;
+    });
+    // Calls without their own master-index witness sit at the shared base plus an offset, so only a function's
+    // one skipped call is stated as not made, by a base of -1.
+    const basePosition = positionOf('__internal__externalCallInputBase');
+    if (!ownMasterIndices && calls.length === 1 && skipped[0] && basePosition >= 0) finalArgs[basePosition] = -1n;
   }
 
   // Earlier synthetic insertions can leave a placeholder in an already-present

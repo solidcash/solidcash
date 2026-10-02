@@ -143,6 +143,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   while `calculatePayments` remains false. The focused red diagnostic title and its immediately preceding title
   pass; a fresh single-root split still refuses the 16,839-byte closure. This profile is diagnostic evidence,
   not authorization to cut a helper without an authenticated transport design.
+- 2026-10-02 arbitration-source size follow-up: a fresh single-root UnicrowArbitrator kernel compile emits
+  18,761 redeem-script bytes, and `compileFileSplit` refuses its 16,267-byte singleton `arbitrate` closure at
+  `SPLIT_CLOSURE_CAPACITY`. Both ends of the Unicrow arbitration callback path therefore need a deployability
+  design before that exact path can receive a BCH consensus VM proof; the neutral callback proofs do not cover it.
 - 2026-10-02 focused proxy-application checkpoint: the unchanged Marketplace `job posting > post job 1` title
   now reaches its event-data assertion but remains red (1 selected, 65 skipped). The proxy application's
   `abi.encodePacked(uint160(token_))` publishes a 20-byte identity, as the existing compiler cast test requires;
@@ -264,6 +268,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   Read-only argument-keyed entry handlers publish two authenticated fixed tuple lanes, independent of the route's
   maximum row count; a third distinct identity remains fail-closed. The focused invalid-tag Marketplace title and
   its adjacent unregistered-arbitrator title pass unchanged after a fresh four-job compile.
+- 2026-10-02 auto-selection scope follow-up: the pre-semantic survey no longer lets a local binding in an
+  unrelated or nested block turn `Library.call(...)` into a speculative low-level graph edge. It still selects a
+  real scoped `address.call(data)` edge. The exact new title and its immediately preceding library-call title
+  pass individually; no broad compiler suite was run.
 
 ## Gate before the next leap
 

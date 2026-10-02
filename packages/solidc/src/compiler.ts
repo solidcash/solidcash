@@ -4001,12 +4001,13 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
     declaration.name,
     declaration.type instanceof AddressType && declaration.type.interfaceName !== undefined,
   ]));
-  const typedCallSurfaces: Array<{ parameters: readonly ParameterNode[]; body: Node | undefined }> = [
+  const namespacedCallSurfaces: Array<{ parameters: readonly ParameterNode[]; body: Node | undefined }> = [
     ...surveyedFunctions.map((fn) => ({ parameters: fn.parameters, body: fn.body })),
     ...[...activeModifiers].map((modifier) => ({ parameters: modifier.parameters, body: modifier })),
     ...[...activeModifierArgs].map((arg) => ({ parameters: [], body: arg })),
+    ...otherMembers.map((member) => ({ parameters: [], body: member })),
   ];
-  const hasTypedReceiverCall = (body: Node, initialReceivers: Map<string, boolean>): boolean => {
+  const hasNamespacedGraphCall = (body: Node, initialReceivers: Map<string, boolean>): boolean => {
     const seen = new Set<Node>();
     const visit = (node: Node, receivers: Map<string, boolean>): boolean => {
       if (seen.has(node)) return false;
@@ -4030,6 +4031,12 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
         const parts = node.identifier.name.split('.');
         if (parts.length === 2 && receivers.get(parts[0]) === true
           && !['call', 'staticcall', 'delegatecall'].includes(parts[1])) return true;
+        // Library.call(...) is a local helper unless a value with the same name is visible HERE.
+        // A binding in another function or a later/nested block must not turn it into address.call(data).
+        if (/\.(call|staticcall)$/.test(node.identifier.name)) {
+          const namespace = node.identifier.name.slice(0, node.identifier.name.lastIndexOf('.'));
+          if (receivers.has(namespace) || !ast.libraryFunctionSignatures.has(node.identifier.name)) return true;
+        }
       }
       // Match walkInvocationAst's executable-child traversal without flattening lexical block scopes.
       for (const key in node) {
@@ -4048,33 +4055,15 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
     };
     return visit(body, new Map(initialReceivers));
   };
-  for (const surface of typedCallSurfaces) {
+  for (const surface of namespacedCallSurfaces) {
     if (!surface.body) continue;
     const typedReceivers = new Map(typedStateReceivers);
     for (const parameter of surface.parameters) typedReceivers.set(parameter.name,
       parameter.type instanceof AddressType && parameter.type.interfaceName !== undefined);
-    if (hasTypedReceiverCall(surface.body, typedReceivers)) return true;
+    if (hasNamespacedGraphCall(surface.body, typedReceivers)) return true;
   }
-  // A declared `Library.call(...)` is a local namespaced function call, not an address.call(data) edge.
-  // The closure above still visits the library helper, so a real external call inside it remains visible.
-  // If a value binding shares the library's name, keep the low-level-call interpretation conservative:
-  // source-only selection does not have enough type information to decide which namespace wins.
-  const valueNamespaces = new Set([
-    ...contract.parameters, ...contract.stateVariables,
-    ...surveyedFunctions.flatMap((fn) => fn.parameters),
-    ...[...activeModifiers].flatMap((modifier) => modifier.parameters),
-  ].map((binding) => binding.name));
-  for (const fn of surveyedFunctions) walkInvocationAst(fn.body, (node) => {
-    if (node instanceof VariableDefinitionNode) valueNamespaces.add(node.name);
-  });
-  for (const member of otherMembers) walkInvocationAst(member, (node) => {
-    if (node instanceof VariableDefinitionNode) valueNamespaces.add(node.name);
-  });
-  const namespacedLowLevelCall = (node: FunctionCallNode): boolean => {
-    if (!/\.(call|staticcall)$/.test(node.identifier.name)) return false;
-    const namespace = node.identifier.name.slice(0, node.identifier.name.lastIndexOf('.'));
-    return valueNamespaces.has(namespace) || !ast.libraryFunctionSignatures.has(node.identifier.name);
-  };
+  // The scoped survey above handles namespaced low-level calls. The generic walk below handles explicit
+  // external-call nodes and cast receivers without losing calls nested in other executable members.
   let found = false;
   const checkGraphEdge = (node: Node): void => {
     if (found) return;
@@ -4082,8 +4071,7 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       || (node instanceof LowLevelCallStatementNode && node.callMode !== 'delegatecall')
       || (node instanceof MethodCallNode && node.methodName !== 'delegatecall'
         && ((node.object instanceof InstantiationNode)
-          || (node.object instanceof FunctionCallNode && interfaceNames.has(node.object.identifier.name))))
-      || (node instanceof FunctionCallNode && namespacedLowLevelCall(node))) {
+          || (node.object instanceof FunctionCallNode && interfaceNames.has(node.object.identifier.name))))) {
       found = true;
     }
   };

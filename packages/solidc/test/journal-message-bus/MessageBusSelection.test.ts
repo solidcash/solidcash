@@ -60,6 +60,36 @@ describe('message-bus compilation selection', () => {
     expect(automatic.bytecode).toBe(direct.bytecode);
   });
 
+  it('distinguishes out-of-scope library names from real low-level receivers', () => {
+    const source = `library Helpers {
+        function call(int value) internal pure returns (int) { return value + 1; }
+      }
+      contract LibraryCaller {
+        int value;
+        function set(int next) public {
+          value = Helpers.call(next);
+          if (next > 0) { int Helpers = 0; require(Helpers == 0); }
+          require(value > 0);
+        }
+        function unrelated() public { int Helpers = 0; require(Helpers == 0); }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.bytecode).toBe(direct.bytecode);
+
+    const lowLevel = compileString(`contract LowLevel(address peer) {
+      int value;
+      function invoke(bytes payload) public {
+        (bool ok,) = peer.call(payload);
+        require(ok);
+      }
+    }`, { solidityImportCompat: true, suppressWarnings: true });
+    expect(lowLevel.compiler.options?.messageBus).toBe(true);
+  });
+
   it('keeps an unreachable foreign-call helper off the default route', () => {
     const source = `interface ISink { function ping(int amount) external; }
       contract Simple(address target) {

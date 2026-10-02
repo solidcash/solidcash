@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
 import { scriptToBytecode } from '@solidcash/utils';
 import { compileString } from 'solidc';
@@ -16,6 +17,12 @@ const KERNEL = {
   maximumInputBytes: 1_000_000,
   suppressWarnings: true,
 } as const;
+const AUTO_KERNEL = {
+  forceStateful: true,
+  messageBusKernel: true,
+  maximumInputBytes: 1_000_000,
+  suppressWarnings: true,
+} as const;
 
 const vmAccepts = (builder: TransactionBuilder): boolean => {
   const transaction = builder.buildLibauthTransaction();
@@ -27,7 +34,7 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 };
 
 describe('kernel low-level address.call under composition', () => {
-  it('settles Caller.invoke(payload) → Target.echo via raw calldata (not typed interface)', async () => {
+  const settlesRawCall = async (autoCaller: boolean): Promise<void> => {
     const provider = createMessageBusCapstoneTestProvider();
 
     const targetArtifact = compileString(`pragma solidcash >=0.8.0;
@@ -50,13 +57,20 @@ describe('kernel low-level address.call under composition', () => {
       ...hexToBin(selector), ...scriptToBytecode([bigIntToVmNumber(3n)]),
     ]);
 
-    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+    const callerSource = `pragma solidcash >=0.8.0;
       contract Caller(address target) {
         function invoke(bytes payload) public {
           target.call(payload);
           require(true);
         }
-      }`, KERNEL);
+      }`;
+    const callerArtifact = compileString(callerSource, autoCaller ? AUTO_KERNEL : KERNEL);
+    if (autoCaller) {
+      const explicit = compileString(callerSource, KERNEL);
+      expect(callerArtifact.compiler.options?.messageBus).toBe(true);
+      const digest = (bytecode: string): string => createHash('sha256').update(bytecode).digest('hex');
+      expect(digest(callerArtifact.bytecode)).toBe(digest(explicit.bytecode));
+    }
     expect(callerArtifact.messageBus?.handlers.find((handler) => handler.name === 'invoke'))
       .toMatchObject({ eligible: true });
     const callerBase = new Contract(
@@ -106,5 +120,11 @@ describe('kernel low-level address.call under composition', () => {
     await expect(composition.send()).resolves.toMatchObject({
       txid: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
-  }, 180_000);
+  };
+
+  it('settles Caller.invoke(payload) → Target.echo via raw calldata (not typed interface)',
+    () => settlesRawCall(false), 180_000);
+
+  it('settles the same raw call with automatic graph selection and byte-identical caller code',
+    () => settlesRawCall(true), 180_000);
 });

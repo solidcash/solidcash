@@ -318,7 +318,7 @@ describe('message-bus compilation selection', () => {
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
   });
 
-  it('selects graph planning for a low-level msg.sender call while retaining opaque-effect refusal', () => {
+  it('admits a bounded low-level msg.sender call with automatic graph planning', () => {
     const artifact = compileString(`contract SenderCaller {
       int nonce;
       function forward(bytes payload) public {
@@ -330,7 +330,7 @@ describe('message-bus compilation selection', () => {
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'forward'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_OPAQUE_EFFECT' });
+      .toMatchObject({ eligible: true });
   });
 
   it('names the missing master for a stateless caller that requests graph planning', () => {

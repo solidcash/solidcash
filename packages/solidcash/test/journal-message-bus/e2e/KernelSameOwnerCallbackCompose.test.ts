@@ -133,6 +133,74 @@ describe('kernel same-owner callback composition', () => {
     expect((await a.getState()).stored).toBe(7n);
   }, 180_000);
 
+  it('settles an automatic msg.sender raw callback against the authenticated graph caller', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const aArtifact = compileString(`interface IB { function relay(bytes payload) external; }
+      contract A {
+        address peer;
+        uint256 public stored;
+        function setPeer(address target) public { peer = target; require(true); }
+        function run(bytes payload) public {
+          stored = 7;
+          IB(peer).relay(payload);
+          require(true);
+        }
+        function observe() public view returns (uint256) { return stored; }
+      }`, OPTIONS);
+    const bArtifact = compileString(`contract B {
+      function relay(bytes payload) public {
+        (bool ok, bytes result) = msg.sender.call(payload);
+        require(ok && abi.decode(result, (uint256)) == 7);
+      }
+    }`, {
+      forceStateful: true, messageBusKernel: true, messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000, solidityImportCompat: true, suppressWarnings: true,
+    });
+    expect(bArtifact.compiler.options?.messageBus).toBe(true);
+    expect(bArtifact.messageBus?.handlers.find((handler) => handler.name === 'relay'))
+      .toMatchObject({ eligible: true });
+    expect(bArtifact.abi.find((fn) => fn.name === 'relay')?.externalCalls)
+      .toEqual([expect.objectContaining({ addressIsMsgSender: true, interfaceName: '__raw__' })]);
+    const aBase = new Contract(aArtifact, [], { provider });
+    const bBase = new Contract(bArtifact, [], { provider });
+    const aSetup = await setupStatefulUtxos(provider, aBase, aArtifact.stateLayout!, {}, { saltContract: true });
+    const bSetup = await setupStatefulUtxos(provider, bBase, bArtifact.stateLayout!, {}, { saltContract: true });
+    const aPlain = StatefulContract.withCategory(aBase, aSetup.categoryId);
+    const bPlain = StatefulContract.withCategory(bBase, bSetup.categoryId);
+    await aPlain.call.setPeer(hexToBin(bPlain.inner.lockingBytecode)).send();
+    const b = StatefulContract.withCategory(bBase, bSetup.categoryId, { externals: { __raw__: aPlain } });
+    const a = StatefulContract.withCategory(aBase, aSetup.categoryId, { externals: { IB: b } });
+    const selector = aArtifact.abi.find((fn) => fn.name === 'observe')?.selector;
+    if (!selector) throw new Error('A.observe missing selector');
+    const payload = hexToBin(selector);
+    const runCallsite = aArtifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0]?.callsiteId;
+    const relayCallsite = bArtifact.abi.find((fn) => fn.name === 'relay')?.externalCalls?.[0]?.callsiteId;
+    if (runCallsite === undefined || relayCallsite === undefined) throw new Error('raw callback callsite missing');
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [
+        { contract: a, functionName: 'run', args: [payload] },
+        { contract: b, functionName: 'relay', args: [payload], callsiteId: runCallsite, parent: 0 },
+        { contract: a, functionName: 'observe', args: [], callsiteId: relayCallsite, parent: 1 },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    });
+    const builder = await composition.build();
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    const outpoints = transaction.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    expect(new Set(outpoints).size).toBe(outpoints.length);
+    await expect(composition.send()).resolves.toBeDefined();
+    expect((await a.getState()).stored).toBe(7n);
+  }, 180_000);
+
   it('spends one A master for A.run → B.relay → A.observe and reads the preceding write', async () => {
     const { a } = await setup(true);
     const receipt = await a.call.run().send();

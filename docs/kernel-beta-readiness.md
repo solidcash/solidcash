@@ -241,9 +241,17 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   graph selection even though its ABI published a raw external call. The pre-semantic survey now recognizes
   address-valued context globals as low-level call receivers. The original stateless probe could not enter
   route synthesis because it has no master NFT; its diagnostic now names that prerequisite rather than calling
-  the handler unexamined. With a stateful owner, the same raw-call result consumer reaches admission and is
-  refused with `KERNEL_OPAQUE_EFFECT` in auto mode. The exact diagnostic title and its preceding stateful
-  selection title pass; this is a fail-closed checkpoint, not a VM proof or runtime capability claim.
+  the handler unexamined. A stateful raw-call result consumer was initially refused in auto mode; the bounded
+  admission follow-up below supersedes that refusal. The exact diagnostic title and its preceding stateful
+  selection title passed at this checkpoint.
+- 2026-10-02 bounded raw-call auto-admission follow-up: auto-selected kernel graphs now use the same authenticated
+  continuation as explicit graphs for a finite, bounded low-level call. A declared-target BCH-2026 compose/send
+  proof passes with byte-identical caller code in auto and explicit modes; its immediately preceding explicit
+  proof passes. A separately prepared A→B→A graph passes every VM input with one A master while B calls
+  `msg.sender` and requires A's authenticated post-write return; its immediately preceding typed callback proof
+  passes. The focused compiler admission title and its preceding literal-index title pass. Natural `.send()`
+  discovery for the raw A→B→A form remains red at the legacy circular-call refusal; manual graph composition
+  does not establish that automatic SDK path. No broad suite or beta gate was run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

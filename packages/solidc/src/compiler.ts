@@ -7538,14 +7538,13 @@ function synthesizeMessageBusRoute(
       // journals, and the matching inliner below joins the context-only clone back into that route frame.
       reason = 'dynamic-and-collection-route-not-enabled';
     }
-    // Explicit atomic-graph mode has an authenticated continuation channel for a low-level call's opaque
-    // result. A result-consuming assignment uses that continuation, while a straight-line statement call followed
-    // by `require(true)` deliberately discards it after authenticating the same row. Permit both when the complete
-    // named-call closure is finite and acyclic. Auto mode retains the conservative refusal, as do getters which
-    // merely share a contract with some unrelated low-level consumer, delegate execution, and calls beneath
-    // unresolved control flow. The later graph clone still proves every reached row against the callManifest.
-    const authenticatedBoundedLowLevelConsumer = explicitlyEnabledMessageBus
-      && (graphResultStatement || graphTailStatement || graphBoundedRuntimeEligible)
+    // An automatically selected graph has the same authenticated continuation channel as an explicit graph.
+    // A result-consuming assignment uses that continuation, while a straight-line statement call deliberately
+    // discards its result after authenticating the same row. Permit either only for a finite named-call closure;
+    // getters with an unrelated low-level consumer, delegate execution, and unresolved control flow remain
+    // refused. The later graph clone still proves every reached row against the callManifest.
+    const authenticatedBoundedLowLevelConsumer = (graphResultStatement || graphTailStatement
+      || graphBoundedRuntimeEligible)
       && statefulExternalCall
       && boundedNamedClosure
       && !graphHasDelegatecall;

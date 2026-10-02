@@ -615,7 +615,25 @@ export function rememberJobEventsUnlockRecipe(categoryId: string): boolean {
 export function persistedJobEventsUnlockRecipe(categoryId: string): {
   slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string;
 } | undefined {
-  return latestPersisted(settlement().persistedJobEventsRecipes, categoryId);
+  // The caller selected a concrete persist owner. A recipe learned for another category is not its authority.
+  return settlement().persistedJobEventsRecipes.get(categoryId);
+}
+
+/** Restore only the selected compatibility category's value, lock, and already authenticated outpoints. */
+export function persistedCompatibilityContinuation(categoryId: string): {
+  lockingBytecode?: Uint8Array;
+  value?: Uint8Array;
+  spends: ReadonlyArray<{
+    txid: string; vout: number; satoshis: bigint;
+    token: NonNullable<Utxo['token']>; lockingBytecode: Uint8Array;
+  }>;
+} {
+  const session = settlement();
+  return {
+    lockingBytecode: session.persistedJobEventsLocks.get(categoryId),
+    value: session.persistedJobEventsValues.get(categoryId),
+    spends: session.persistedJobEventsSpends.get(categoryId) ?? [],
+  };
 }
 
 /**

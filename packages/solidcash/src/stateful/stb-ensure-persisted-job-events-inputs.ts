@@ -14,7 +14,7 @@ import {
   shouldRestorePersistedContinuationInputs,
 } from './value-chunk-geometry.js';
 import {
-  latestPersisted,
+  persistedCompatibilityContinuation,
   persistedJobEventsUnlockRecipe,
   persistedValueChunkWriteState,
   rememberJobEventsUnlockRecipe,
@@ -67,18 +67,14 @@ export async function ensurePersistedJobEventsInputs(
   const exactState = write ? persistedValueChunkWriteState(write) : undefined;
   const legacyFallback = write === undefined && !host.hasChunkableValueWriteMetadata()
     && host.permitsLegacyNamedValueChunkFallback();
+  const compatibility = legacyFallback ? persistedCompatibilityContinuation(categoryId) : undefined;
   const persistLock = exactState?.lockingBytecode ?? (legacyFallback
-    ? (settlement().persistedJobEventsLocks.get(categoryId)
-      ?? latestPersisted(settlement().persistedJobEventsLocks, categoryId)) : undefined);
+    ? compatibility?.lockingBytecode : undefined);
   const persistValue = exactState?.value ?? (legacyFallback
-    ? (settlement().persistedJobEventsValues.get(categoryId)
-      ?? latestPersisted(settlement().persistedJobEventsValues, categoryId)) : undefined);
+    ? compatibility?.value : undefined);
   const spends = write
     ? (settlement().persistedValueChunkSpends.get(valueChunkWriteIdentity(write)) ?? [])
-    : (legacyFallback
-      ? (settlement().persistedJobEventsSpends.get(categoryId)
-        ?? latestPersisted(settlement().persistedJobEventsSpends, categoryId)
-        ?? []) : []);
+    : (compatibility?.spends ?? []);
   const extras: UnlockableUtxo[] = [];
   const selectedWriter = host.chunkableValueWriteGroups();
   const publish = selectedWriter.external ?? selectedWriter.lowLevel;

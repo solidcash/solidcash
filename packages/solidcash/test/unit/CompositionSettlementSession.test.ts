@@ -5,6 +5,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensurePersistedJobEventsInputs } from '../../src/stateful/stb-ensure-persisted-job-events-inputs.js';
+import {
+  persistedCompatibilityContinuation,
+  persistedJobEventsUnlockRecipe,
+} from '../../src/stateful/value-chunk-persist.js';
 import {
   CompositionSettlementSession,
   createCompositionSettlementSession,
@@ -139,6 +144,48 @@ describe('composition settlement session CompositionSettlementSession', () => {
     legacyRememberValueChunkValue(second, new Uint8Array(80).fill(7), session);
     expect(session.observedValueChunkStatesByCategory.has(second)).toBe(true);
     expect(session.createdDigestLocks.has(second)).toBe(false);
+  });
+
+  it('does not restore a predecessor through another category recipe', async () => {
+    const session = createCompositionSettlementSession();
+    const selected = 'aa'.repeat(32);
+    const unrelated = 'bb'.repeat(32);
+    session.persistedJobEventsRecipes.set(unrelated, {
+      slot: new Uint8Array(32), root: new Uint8Array(32),
+      collection: 'jobEvents', categoryId: unrelated,
+    });
+    const unrelatedLock = new Uint8Array(35);
+    session.persistedJobEventsLocks.set(unrelated, unrelatedLock);
+    session.persistedJobEventsValues.set(unrelated, new Uint8Array(80));
+    session.persistedJobEventsSpends.set(unrelated, [{ txid: '01' } as never]);
+    const requestedCategories: string[] = [];
+    const host = {
+      externalCallUtxoGroups: [{ functionName: 'transferFrom' }],
+      messageBusConvention: 'legacy-unroll',
+      builderOptions: { provider: { network: 'chipnet' } },
+      allInputs: [],
+      setPendingJobEventsPredecessors: () => {},
+      getChunkableValueWriteBand: () => ({ start: 1, end: 1, nNew: 1 }),
+      persistedValueChunkCategory: () => selected,
+      chunkableValueWriteCategory: () => selected,
+      isInitialChunkableValueWrite: () => false,
+      isPersistedChunkableValueWriteReady: () => true,
+      persistedValueChunkWrite: () => undefined,
+      hasChunkableValueWriteMetadata: () => false,
+      permitsLegacyNamedValueChunkFallback: () => true,
+      chunkableValueWriteGroups: () => ({ externalIndex: -1, externalIndices: [], lowLevelIndex: -1 }),
+      findMintingInputIndex: (categoryId: string) => {
+        requestedCategories.push(categoryId);
+        return -1;
+      },
+      placeJobEventsPredecessorInputs: () => {},
+    };
+    expect(runWithCompositionSettlementSession(session, () => persistedJobEventsUnlockRecipe(selected)))
+      .toBeUndefined();
+    expect(runWithCompositionSettlementSession(session, () => persistedCompatibilityContinuation(selected)))
+      .toEqual({ lockingBytecode: undefined, value: undefined, spends: [] });
+    await runWithCompositionSettlementSession(session, () => ensurePersistedJobEventsInputs(host as never));
+    expect(requestedCategories).toEqual([selected]);
   });
 
   it('STB production helpers and clearPersistedJobEvents go through settlement()', () => {

@@ -451,6 +451,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   with the retained lock. The exact session title went red-to-green and its immediately preceding readiness title
   passes. A fresh single-root UnicrowClaim split diagnostic still refuses the 16,839-byte singleton `claim`
   closure; the unsplit script measured 16,854 bytes. This remains a deployability blocker, not a helper-cut proof.
+- 2026-10-02 compatibility predecessor follow-up: restoration for a selected category now reads only that
+  category's cached lock, value, spend outpoints, and unlock recipe. A different category's latest recipe no longer
+  redirects the minting-master lookup. The focused restore title went red-to-green and its immediately preceding
+  lock/value title passes. This removes one cross-category compatibility fallback; it is not a broad SDK result.
 
 ## Gate before the next leap
 

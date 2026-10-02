@@ -16961,6 +16961,7 @@ function compileStringSplitUnchecked(
   const functions = probe.contract.functions;
   const byName = new Map<string, FunctionDefinitionNode[]>();
   for (const fn of functions) (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
+  const interfaceNames = new Set(probe.interfaceDefinitions.map((iface) => iface.name));
   const overloadedEntries = [...byName.entries()].filter(([, defs]) => defs.filter((fn) => fn.isEntryPoint).length > 1);
   if (forceSplit && overloadedEntries.length > 0) {
     throw new Error(
@@ -17033,7 +17034,9 @@ function compileStringSplitUnchecked(
     const callChain = group.flatMap((plan) => [
       plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name),
     ]);
-    const helperCuts = splitHelperCutProfiles(group[0], byName, splitFootprintCache);
+    const helperCuts = splitHelperCutProfiles(
+      group[0], byName, splitFootprintCache, probe.contract, interfaceNames,
+    );
     throw new SolidcDiagnosticError(
       'SPLIT_CLOSURE_CAPACITY',
       `Cannot split '${logicalName}': indivisible closure '${handlers.join(', ')}' is ${measured} bytes `
@@ -17113,7 +17116,9 @@ function compileStringSplitUnchecked(
     if (facetBytes > maxShardBytes) {
       const handlers = group.map((plan) => plan.name);
       const callChain = group.flatMap((plan) => [plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name)]);
-      const helperCuts = group.flatMap((plan) => splitHelperCutProfiles(plan, byName, splitFootprintCache));
+      const helperCuts = group.flatMap((plan) => splitHelperCutProfiles(
+        plan, byName, splitFootprintCache, probe.contract, interfaceNames,
+      ));
       throw new SolidcDiagnosticError(
         'SPLIT_CLOSURE_CAPACITY',
         `Cannot split '${logicalName}': facet '${name}' is ${facetBytes} bytes `
@@ -17233,7 +17238,56 @@ function splitHelperCutProfiles(
   plan: PlannedFunction,
   byName: Map<string, FunctionDefinitionNode[]>,
   footprintCache: ReturnType<typeof createFootprintAnalysisCache>,
+  contract: ContractNode,
+  interfaceNames: ReadonlySet<string>,
 ): SplitHelperCutProfile[] {
+  const hasTypedExternalCall = (helper: FunctionDefinitionNode): boolean => {
+    const receiverType = (type: Type): boolean => type instanceof AddressType
+      && type.interfaceName !== undefined;
+    const initialReceivers = new Map([
+      ...contract.parameters, ...contract.stateVariables, ...helper.parameters,
+    ].map((declaration) => [declaration.name, receiverType(declaration.type)]));
+    const seen = new Set<Node>();
+    const visit = (node: Node, receivers: Map<string, boolean>): boolean => {
+      if (seen.has(node)) return false;
+      seen.add(node);
+      if (node instanceof BlockNode) {
+        const blockReceivers = new Map(receivers);
+        return (node.statements ?? []).some((statement) => visit(statement, blockReceivers));
+      }
+      if (node instanceof VariableDefinitionNode) {
+        if (node.expression && visit(node.expression, receivers)) return true;
+        receivers.set(node.name, receiverType(node.type));
+        return false;
+      }
+      if (node instanceof TryCatchNode) {
+        return visit(node.expression, receivers) || visit(node.tryBlock, receivers);
+      }
+      if (node instanceof FunctionCallNode) {
+        const [receiver, method] = node.identifier.name.split('.', 2);
+        if (method && receivers.get(receiver) === true
+          && !['call', 'staticcall', 'delegatecall'].includes(method)) return true;
+      }
+      if (node instanceof MethodCallNode) {
+        const object = node.object;
+        if ((object instanceof IdentifierNode && receivers.get(object.name) === true
+          && !['call', 'staticcall', 'delegatecall'].includes(node.methodName))
+          || (object instanceof CastNode && receiverType(object.type))
+          || (object instanceof FunctionCallNode && interfaceNames.has(object.identifier.name))) return true;
+      }
+      for (const [key, child] of Object.entries(node)) {
+        if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable', 'referencedContract',
+          'stateVariable', 'collection', 'type', 'location', 'name', 'functionId', 'error',
+          'opRolls', 'selectorHex', 'abiType'].includes(key)) continue;
+        if (child instanceof Node && visit(child, receivers)) return true;
+        if (Array.isArray(child) && child.some((item) => item instanceof Node && visit(item, receivers))) {
+          return true;
+        }
+      }
+      return false;
+    };
+    return helper.body !== undefined && visit(helper.body, initialReceivers);
+  };
   const profiles = new Map<string, SplitHelperCutProfile>();
   for (const name of plan.closure) {
     if (name === plan.name) continue;
@@ -17247,7 +17301,7 @@ function splitHelperCutProfiles(
         readsLocalState: footprint.reads.some((resource) =>
           resource.startsWith('state:') || resource.startsWith('collection:')),
         writesState: footprint.writes.length > 0,
-        externalCalls: footprint.effects.includes('external-call'),
+        externalCalls: footprint.effects.includes('external-call') || hasTypedExternalCall(helper),
         unknown: footprint.unknown,
       });
     }

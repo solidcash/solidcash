@@ -131,6 +131,15 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   163 outlined source spans total 2,426 bytes. Among 207 invoke bodies, exact duplicate bytecode accounts for
   at most 388 raw body bytes before dispatch overhead. Merely deduplicating identical bodies cannot close the
   6,875-byte deployability gap; this is a spot diagnostic, not a cold-matrix result or manifest repin.
+- 2026-10-02 split-capacity follow-up: an isolated `compileFileSplit` of the same UnicrowClaim source with the
+  current kernel options fails closed at `SPLIT_CLOSURE_CAPACITY`: its singleton `claim` closure measures 16,839
+  bytes against the 10,000-byte shard limit. Entry-point facet packing therefore cannot deploy this contract;
+  cutting the listed internal helpers would require authenticated argument/result transport (and a continuation
+  for stateful cuts), not a different packing order. Its pre-semantic cut profile initially missed the typed
+  calls in `calculateSplits`; source-side receiver tracking now reports `externalCalls: true` for that helper
+  while `calculatePayments` remains false. The focused red diagnostic title and its immediately preceding title
+  pass; a fresh single-root split still refuses the 16,839-byte closure. This profile is diagnostic evidence,
+  not authorization to cut a helper without an authenticated transport design.
 - 2026-10-02 focused proxy-application checkpoint: the unchanged Marketplace `job posting > post job 1` title
   now reaches its event-data assertion but remains red (1 selected, 65 skipped). The proxy application's
   `abi.encodePacked(uint160(token_))` publishes a 20-byte identity, as the existing compiler cast test requires;

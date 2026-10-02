@@ -205,7 +205,7 @@ import PruneUnreachableMsgDataMethods from './semantic/PruneUnreachableMsgDataMe
 import RedesugarImportedUsingForCalls from './semantic/RedesugarImportedUsingForCalls.js';
 import RedesugarImportedStructFieldWrites from './semantic/RedesugarImportedStructFieldWrites.js';
 import CoalesceStructFieldArrayWrites from './semantic/CoalesceStructFieldArrayWrites.js';
-import CoalesceFreshFixedArrayWrites from './semantic/CoalesceFreshFixedArrayWrites.js';
+import OptimizeFixedArrayValues from './semantic/OptimizeFixedArrayValues.js';
 import CoalesceStateArrayStructFieldWrites from './semantic/CoalesceStateArrayStructFieldWrites.js';
 import CoalesceMappingEntryFieldWrites from './semantic/CoalesceMappingEntryFieldWrites.js';
 import RedesugarImportedUdvtWrap from './semantic/RedesugarImportedUdvtWrap.js';
@@ -13561,7 +13561,7 @@ function compileResolvedAst(
   // Validate source-level location and modifier rules before storage/memory pointer lowerings erase the
   // declarations that carry them. This mirrors solc's declaration type checking and keeps lowerings simpler.
   ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
-  ast = ast.accept(new CoalesceFreshFixedArrayWrites()) as Ast;
+  ast = ast.accept(new OptimizeFixedArrayValues()) as Ast;
 
   // Every mapping uses the authenticated vmap backend. There is no omission-prone legacy mapping fallback.
   for (const col of ast.contract.collections) {
@@ -17734,6 +17734,9 @@ function prepareSplitAst(
   if (ast.contract.parentInvocations.length > 0 || ast.contract.implements.length > 0) {
     ast = expandInheritance(ast);
   }
+  // Preserve source-level external return boundaries before facet planning demotes those entries to public
+  // delegate functions. The ordinary compile runs this pass too; it is idempotent on prepared shards.
+  ast = ast.accept(new OptimizeFixedArrayValues()) as Ast;
   // X169. The THIRD shard-dependent state-appending pass, and the one X162 recorded rather than built. Its
   // classification is usage-driven - a table whose writes name two methods is VARYING and gets a parallel
   // `bytes[] __fnsel_<name>` state variable, one whose surviving writes name one method is FIXED and gets none -
@@ -18035,7 +18038,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;
     // Keep the referenced-contract bytecode byte-identical to its standalone compilation (see comment above).
     singleAst = singleAst.accept(new CoalesceMappingEntryFieldWrites()) as Ast;
-    singleAst = singleAst.accept(new CoalesceFreshFixedArrayWrites()) as Ast;
+    singleAst = singleAst.accept(new OptimizeFixedArrayValues()) as Ast;
     singleAst = singleAst.accept(new CoalesceStructFieldArrayWrites()) as Ast;
     singleAst = singleAst.accept(new LowerMemoryModel()) as Ast;
     singleAst = singleAst.accept(new DesugarNestedArrayWrite()) as Ast;

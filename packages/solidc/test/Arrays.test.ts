@@ -103,6 +103,33 @@ describe('local array-element assignment', () => {
       + ' return p; } }', { solidityImportCompat: true });
     expect(artifact.debug.bytecode.length / 2).toBeLessThan(700);
   });
+
+  it('forwards a complete fixed-array projection at an external return boundary', () => {
+    const prefix = 'uint8 constant B=0; uint8 constant S=1; uint8 constant M=2;'
+      + ' uint8 constant P=3; uint8 constant A=4; contract C {'
+      + ' function calculate(uint256 amount) internal pure returns(uint256[5] memory) {'
+      + ' uint256[5] memory payments; payments[B]=amount/10; payments[S]=amount/5;'
+      + ' payments[M]=amount/5; payments[A]=amount/10;'
+      + ' payments[P]=amount-payments[B]-payments[S]-payments[M]-payments[A];'
+      + ' return payments; }'
+      + ' function claim(uint256 amount) external pure returns(uint256[5] memory) {'
+      + ' uint256[5] memory payments=calculate(amount);';
+    const projected = compileString(`${prefix}return [payments[B],payments[S],payments[M],`
+      + 'payments[P],payments[A]];}}', { solidityImportCompat: true });
+    const forwarded = compileString(`${prefix}return payments;}}`, { solidityImportCompat: true });
+    expect(projected.bytecode).toBe(forwarded.bytecode);
+
+    const reordered = compileString(`${prefix}return [payments[S],payments[B],payments[M],`
+      + 'payments[P],payments[A]];}}', { solidityImportCompat: true });
+    expect(reordered.bytecode).not.toBe(forwarded.bytecode);
+
+    const parameterPrefix = 'contract C { function claim(uint256[5] memory payments)'
+      + ' external pure returns(uint256[5] memory) {';
+    const parameterProjection = compileString(`${parameterPrefix}return [payments[0],payments[1],`
+      + 'payments[2],payments[3],payments[4]];}}', { solidityImportCompat: true });
+    const parameterForward = compileString(`${parameterPrefix}return payments;}}`, { solidityImportCompat: true });
+    expect(parameterProjection.bytecode).not.toBe(parameterForward.bytecode);
+  });
 });
 
 describe('Tuple forwarding and whole fixed-array assignment', () => {

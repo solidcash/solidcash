@@ -201,8 +201,19 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   The unchanged UnicrowClaim split now refuses `claim` at 10,133 whole-spend bytes, down 116 but still 133 over
   the real 10,000-byte cap. An analysis-only over-cap facet retains an eligible `claim` graph handler and verifier.
   An in-memory *source* variant combining this construction with direct return of the existing array measures
-  8,815 bytes with an eligible handler, but that second rewrite has not been implemented or VM-proven. No broad
-  suite or beta gate was run.
+  8,815 bytes with an eligible handler; at that checkpoint the second rewrite was not implemented or VM-proven.
+  No broad suite or beta gate was run.
+- 2026-10-02 fixed-array return/facet follow-up: a source-level external function that returns a complete,
+  in-order projection of its own freshly constructed bounded integer array now forwards the array directly at
+  the ABI boundary. Split preparation applies this before an external entry is demoted to a public delegate
+  facet, avoiding the old source/split mismatch. The focused compiler projection test is byte-identical to
+  explicit direct return; reordered and parameter-origin projections remain unoptimized. The focused split
+  compiler test and its immediately preceding title pass. A BCH VM test deploys a split facet, statically reads
+  all five returned amounts, and spends with the return channel; its immediately preceding graph-facet title
+  passes. The unchanged proxy-application UnicrowClaim source now passes the default split whole-spend gate:
+  root 2,565 redeem bytes; `claim`, `claimMultiple`, and update facets 8,815, 7,838, and 4,870 redeem bytes.
+  The `claim` facet retains an eligible graph handler and detached verifier. This proves compiler capacity and
+  a generic array-return VM path, not the real Unicrow cross-contract claim spend. No broad suite was run.
 - 2026-10-02 focused proxy-application checkpoint: the unchanged Marketplace `job posting > post job 1` title
   now reaches its event-data assertion but remains red (1 selected, 65 skipped). The proxy application's
   `abi.encodePacked(uint160(token_))` publishes a 20-byte identity, as the existing compiler cast test requires;

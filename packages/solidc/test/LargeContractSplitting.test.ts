@@ -68,6 +68,36 @@ describe('large-contract state-local splitting', () => {
     expect(bundle.manifest.routes.every((route) => route.target === 'root')).toBe(true);
   });
 
+  it('forwards complete external fixed-array projections before facet demotion', () => {
+    const source = (result: string): string => `pragma solidity ^0.8.7;
+      uint8 constant B=0; uint8 constant S=1; uint8 constant M=2;
+      uint8 constant P=3; uint8 constant A=4;
+      contract ReturnFacet {
+        uint256 total;
+        function calculate(uint256 amount) internal pure returns(uint256[5] memory) {
+          uint256[5] memory payments;
+          payments[B]=amount/10; payments[S]=amount/5; payments[M]=amount/5;
+          payments[A]=amount/10;
+          payments[P]=amount-payments[B]-payments[S]-payments[M]-payments[A];
+          return payments;
+        }
+        function claim(uint256 amount) external returns(uint256[5] memory) {
+          uint256[5] memory payments=calculate(amount);
+          this.total=amount; require(amount>0);
+          return ${result};
+        }
+      }`;
+    const options = { solidityImportCompat: true, messageBus: false, forceSplit: true };
+    const projected = compileStringSplit(source('[payments[B],payments[S],payments[M],payments[P],payments[A]]'), options);
+    const forwarded = compileStringSplit(source('payments'), options);
+    const projectedTarget = projected.manifest.routes.find((route) => route.function === 'claim')?.target;
+    const forwardedTarget = forwarded.manifest.routes.find((route) => route.function === 'claim')?.target;
+    expect(projectedTarget).toBeDefined();
+    expect(projectedTarget).not.toBe('root');
+    expect(forwardedTarget).toBe(projectedTarget);
+    expect(projected.facets[projectedTarget!].bytecode).toBe(forwarded.facets[forwardedTarget!].bytecode);
+  });
+
   it('prioritizes overlapping state access and packs disjoint groups when they fit', () => {
     const bundle = compileStringSplit(SOURCE, { forceSplit: true });
     const groups = bundle.manifest.facets.map((facet) => [...facet.functions].sort());

@@ -205,4 +205,32 @@ describe('split contract SDK', () => {
     expect(stateFromTx(tx, deployed.categoryId, bundle.root.stateLayout).value).toBe(7n);
     expect((await peer.getState()).stored).toBe(7n);
   });
+
+  it('returns a complete fixed array through a split facet on-chain', async () => {
+    const signer = await fundedSigner();
+    const bundle = compileStringSplit(`pragma solidity ^0.8.7;
+      uint8 constant B=0; uint8 constant S=1; uint8 constant M=2;
+      uint8 constant P=3; uint8 constant A=4;
+      contract ReturnFacet {
+        uint256 total;
+        function calculate(uint256 amount) internal pure returns(uint256[5] memory) {
+          uint256[5] memory payments;
+          payments[B]=amount/10; payments[S]=amount/5; payments[M]=amount/5;
+          payments[A]=amount/10;
+          payments[P]=amount-payments[B]-payments[S]-payments[M]-payments[A];
+          return payments;
+        }
+        function claim(uint256 amount) external returns(uint256[5] memory) {
+          uint256[5] memory payments=calculate(amount);
+          this.total=amount; require(amount>0);
+          return [payments[B],payments[S],payments[M],payments[P],payments[A]];
+        }
+      }`, { solidityImportCompat: true, messageBus: false, forceSplit: true });
+    const deployed = await SplitContractBundle.from(bundle, signer).deploy([], {
+      initialState: { total: 0n },
+    });
+    expect(await deployed.call.claim(100n).staticCall()).toEqual([10n, 20n, 20n, 40n, 10n]);
+    const tx = await deployed.call.claim(100n).emitReturn().send();
+    expect(stateFromTx(tx, deployed.categoryId, bundle.root.stateLayout).total).toBe(100n);
+  });
 });

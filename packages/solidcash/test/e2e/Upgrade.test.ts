@@ -3,13 +3,15 @@ import {
 } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, HashType, SignatureTemplate, StatefulContract,
+  Contract, type FunctionArgument, HashType, SignatureAlgorithm, SignatureTemplate, StatefulContract,
 } from '../../src/index.js';
 import { buildPushdataCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import {
   alicePub,
   alicePriv,
   alicePkh,
+  bobPriv,
+  bobPub,
 } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
@@ -171,6 +173,77 @@ contract OverflowWide(pubkey admin) {
 
     function migrate(sig s) upgrade {
         require(checkSig(s, admin));
+    }
+}
+`;
+
+// MULTISIG_UPGRADE: a two-of-two multisig authorizes the upgrade
+const MULTISIG_UPGRADE = `
+pragma solidcash >=0.8.0;
+
+contract MultisigUpgrade(pubkey first, pubkey second) {
+    int counter;
+
+    function increment() {
+        this.counter = this.counter + 1;
+    }
+
+    function migrate(sig s1, sig s2) upgrade {
+        require(checkMultiSig([s1, s2], [first, second]));
+    }
+}
+`;
+
+// HELPER_UPGRADE: the authorizing checkSig is in an internal helper that a non-upgrade entry shares
+const HELPER_UPGRADE = `
+pragma solidcash >=0.8.0;
+
+contract HelperUpgrade(pubkey admin) {
+    int counter;
+
+    function authorize(sig s) internal {
+        require(checkSig(s, admin));
+    }
+
+    function bump(sig s) {
+        authorize(s);
+        this.counter = this.counter + 1;
+        require(this.counter > 0);
+    }
+
+    function migrate(sig s) upgrade {
+        authorize(s);
+        require(this.counter >= 0);
+    }
+}
+`;
+
+// EITHER_UPGRADE: either of two keys authorizes; the other signature is empty and fails its check
+const EITHER_UPGRADE = `
+pragma solidcash >=0.8.0;
+
+contract EitherUpgrade(pubkey first, pubkey second) {
+    int counter;
+
+    function increment() {
+        this.counter = this.counter + 1;
+    }
+
+    function migrate(sig s1, sig s2) upgrade {
+        require(checkSig(s1, first) || checkSig(s2, second));
+    }
+}
+`;
+
+// NEXT_VERSION: the replacement for the three above, with the same layout
+const NEXT_VERSION = `
+pragma solidcash >=0.8.0;
+
+contract NextVersion(pubkey admin) {
+    int counter;
+
+    function increment() {
+        this.counter = this.counter + 1;
     }
 }
 `;
@@ -886,5 +959,111 @@ describe('StatefulContract.upgrade()', () => {
           addDataNft(tx, 4, field('appended'));
         })).rejects.toThrow(refused);
       });
+  });
+
+  // The fence covers every transaction signature an upgrade's authorization checks: each signature of a multisig, and
+  // a checkSig in an internal helper the upgrade invokes. The helper's OP_DEFINE body is shared by all its callers, so
+  // a non-upgrade entry calling it is held to the same rule. An empty signature is not fenced: it can only fail.
+  describe('upgrade authorizations beyond a direct checkSig', () => {
+    const artifacts = {
+      multisig: compileString(MULTISIG_UPGRADE),
+      helper: compileString(HELPER_UPGRADE),
+      either: compileString(EITHER_UPGRADE),
+      next: compileString(NEXT_VERSION),
+    };
+    const OP_TRUE = hexToBin('51');
+    const anyoneCanSpend = {
+      generateLockingBytecode: (): Uint8Array => OP_TRUE,
+      generateUnlockingBytecode: (): Uint8Array => new Uint8Array(),
+    };
+    const coin = (label: string): Utxo => ({
+      txid: binToHex(sha256.hash(utf8ToBin(label))), vout: 0, satoshis: 100_000n,
+    });
+    // The fence fails its base-type check (an OP_EQUALVERIFY) before the signature is ever checked.
+    const fenced = /Program failed an OP_VERIFY operation/;
+    // checkMultiSig's legacy mode takes ECDSA signatures.
+    const ecdsa = (key: Uint8Array, hashType = HashType.SIGHASH_ALL | HashType.SIGHASH_UTXOS): SignatureTemplate =>
+      new SignatureTemplate(key, hashType, SignatureAlgorithm.ECDSA);
+
+    const deploy = async (label: string, artifact: typeof artifacts.next, keys: Uint8Array[]): Promise<StatefulContract> => {
+      const funding = coin(`${label} deploy`);
+      await provider.addUtxo(p2pkh.address, funding);
+      const { contract } = await StatefulContract.deploy(artifact, keys, {
+        provider,
+        fundingUtxo: funding,
+        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        initialState: { counter: 0n },
+        changeAddress: p2pkh.address,
+      });
+      return contract;
+    };
+    // Signs the upgrade to NextVersion under `args`, which the provider keeps instead of broadcasting.
+    const capture = async (label: string, contract: StatefulContract, args: FunctionArgument[]): Promise<string> => {
+      const funding = coin(`${label} upgrade`);
+      await provider.addUtxo('51', funding);
+      let hex = '';
+      const send = provider.sendRawTransaction.bind(provider);
+      (provider as any).sendRawTransaction = async (raw: string): Promise<string> => {
+        hex = raw;
+        throw new Error('kept, not broadcast');
+      };
+      try {
+        await expect(StatefulContract.upgrade({
+          provider,
+          oldContract: contract,
+          upgradeFunctionName: 'migrate',
+          upgradeFunctionArgs: args,
+          newArtifact: artifacts.next,
+          newConstructorArgs: [alicePub],
+          fundingUtxo: funding,
+          funder: anyoneCanSpend,
+          changeAddress: p2pkh.address,
+          // ECDSA signatures outgrow the fee estimate's placeholders.
+          fee: 3_000n,
+        })).rejects.toThrow('kept, not broadcast');
+      } finally {
+        (provider as any).sendRawTransaction = send;
+      }
+      return hex;
+    };
+
+    it('refuses a multisig with a NONE or a SINGLE signature, and settles one whose signatures are all ALL',
+      async () => {
+        const contract = await deploy('multisig', artifacts.multisig, [alicePub, bobPub]);
+        const none = await capture('multisig none', contract,
+          [ecdsa(alicePriv), ecdsa(bobPriv, HashType.SIGHASH_NONE)]);
+        await expect(provider.sendRawTransaction(none)).rejects.toThrow(fenced);
+        const single = await capture('multisig single', contract,
+          [ecdsa(alicePriv, HashType.SIGHASH_SINGLE), ecdsa(bobPriv)]);
+        await expect(provider.sendRawTransaction(single)).rejects.toThrow(fenced);
+        const all = await capture('multisig all', contract, [ecdsa(alicePriv), ecdsa(bobPriv)]);
+        await expect(provider.sendRawTransaction(all)).resolves.toBeTypeOf('string');
+      });
+
+    // A checkSig in an invoked body covers that body (OP_INVOKE swaps the active bytecode), while the SDK signs over
+    // the redeem script, so no SDK signature verifies there yet: an ALL one passes the fence and is refused by
+    // NULLFAIL, a pre-existing limitation pinned here. A NONE one is refused by the fence first, on either entry.
+    it('fences a checkSig in the helper the upgrade invokes, and so in the non-upgrade entry sharing it', async () => {
+      const contract = await deploy('helper', artifacts.helper, [alicePub]);
+      const nullfail = /NULLFAIL/;
+      await expect(contract.call.bump(new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)).send())
+        .rejects.toThrow(fenced);
+      await expect(contract.call.bump(new SignatureTemplate(alicePriv)).send()).rejects.toThrow(nullfail);
+
+      const none = await capture('helper none', contract, [new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)]);
+      await expect(provider.sendRawTransaction(none)).rejects.toThrow(fenced);
+      const all = await capture('helper all', contract, [new SignatureTemplate(alicePriv)]);
+      await expect(provider.sendRawTransaction(all)).rejects.toThrow(nullfail);
+    });
+
+    // The second key authorizes, so the first, empty, signature is checked first and must pass the fence.
+    it('settles an either-key upgrade whose unused signature is empty, and refuses a NONE one', async () => {
+      const contract = await deploy('either', artifacts.either, [alicePub, bobPub]);
+      const none = await capture('either none', contract,
+        [new Uint8Array(), new SignatureTemplate(bobPriv, HashType.SIGHASH_NONE)]);
+      await expect(provider.sendRawTransaction(none)).rejects.toThrow(fenced);
+      const all = await capture('either all', contract, [new Uint8Array(), new SignatureTemplate(bobPriv)]);
+      await expect(provider.sendRawTransaction(all)).resolves.toBeTypeOf('string');
+    });
   });
 });

@@ -1915,6 +1915,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }[] = [];
 
   private preambleComputedFor?: ContractNode;
+  // Subroutines a direct upgrade reaches; their transaction-signature checks must sign all outputs.
+  private upgradeSignatureFenceIds = new Set<number>();
   private deployCounter: number = 0;
   private deploymentRecipeAnalysis = new WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>();
   /**
@@ -5248,6 +5250,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.preambleComputedFor !== node) {
       this.computeScalarJournalClosures(node);
       this.computeRuntimeLoopEntryOutputCountFunctions(node);
+      this.computeUpgradeSignatureFenceIds(node);
       this.preambleComputedFor = node;
     }
     this.outlinedDynamicReadBasisByFunctionId = new Map();
@@ -5695,9 +5698,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     try {
       this.computeScalarJournalClosures(node);
       this.computeRuntimeLoopEntryOutputCountFunctions(node);
+      this.computeUpgradeSignatureFenceIds(node);
       this.preambleComputedFor = node;
       const probe = new GenerateTargetTraversalWithLocation(this.compilerOptions);
       probe.isSubroutineUseProbe = true;
+      probe.upgradeSignatureFenceIds = this.upgradeSignatureFenceIds;
       probe.stack = [...this.stack];
       probe.stateVariables = this.stateVariables;
       probe.collectionCount = this.collectionCount;
@@ -5994,6 +5999,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.constructorParameterCount = 0; // sub-traversal has no constructor params
     subTraversal.userFunctionDefs = this.userFunctionDefs;
     subTraversal.isDefineSubTraversal = true;
+    subTraversal.upgradeSignatureFenceIds = this.upgradeSignatureFenceIds;
     subTraversal.forceFullStateLayout = true;
     subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
     subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
@@ -6398,6 +6404,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
       subTraversal.userFunctionDefs = this.userFunctionDefs;
       subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
+      subTraversal.upgradeSignatureFenceIds = this.upgradeSignatureFenceIds;
       subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
       subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
       subTraversal.runtimeLoopEntryInputCountFunctionIds = this.runtimeLoopEntryInputCountFunctionIds;
@@ -9877,6 +9884,55 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * The subroutines a direct upgrade reaches by call or function reference, transitively. An OP_DEFINE body is
+   * shared, so one such subroutine is fenced for every caller, upgrade or not. An indirect call can reach any
+   * defined function, so one anywhere in the closure fences them all. Per-call refuses upgrade entries outright.
+   */
+  private computeUpgradeSignatureFenceIds(node: ContractNode): void {
+    this.upgradeSignatureFenceIds = new Set();
+    if (this.perCallMaster) return;
+    const functions = [node.fallbackDef, node.receiveDef, ...node.functions]
+      .filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+    const byId = new Map(functions.filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn]));
+    const pending = node.functions.filter((fn) => fn.isEntryPoint && fn.modifiers.includes(FunctionModifier.UPGRADE)
+      && fn.messageBusUpgradeRoute !== true && fn.messageBusEligible !== true);
+    const scanned = new Set<FunctionDefinitionNode>();
+    let indirect = false;
+    while (pending.length > 0) {
+      const fn = pending.pop()!;
+      if (scanned.has(fn) || !fn.body) continue;
+      scanned.add(fn);
+      if (this.containsIndirectCall(fn.body)) indirect = true;
+      for (const id of this.collectInvokedFunctionIds(fn.body)) {
+        this.upgradeSignatureFenceIds.add(id);
+        const target = byId.get(id);
+        if (target) pending.push(target);
+      }
+    }
+    if (indirect) for (const id of byId.keys()) this.upgradeSignatureFenceIds.add(id);
+  }
+
+  /** Whether a body calls through a function-typed value, whose target is chosen at run time. */
+  private containsIndirectCall(body: Node): boolean {
+    const pending: Node[] = [body];
+    const seen = new Set<Node>();
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      if (seen.has(current)) continue;
+      seen.add(current);
+      if (current instanceof FunctionCallNode && current.resolvedFunction?.functionId === undefined
+        && current.identifier?.type instanceof FunctionType) return true;
+      for (const key in current) {
+        if (key === 'resolvedFunction' || key === 'functionReference') continue; // back-references
+        const value = current[key as keyof Node];
+        if (value instanceof Node) pending.push(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) pending.push(item);
+      }
+    }
+    return false;
+  }
+
+  /**
    * Compute the hidden copy-in/copy-out counter ABI used by outlined mapping loops.
    *
    * Scalar-journal closure analysis already tells us which functions participate in a dynamic state transition,
@@ -12830,11 +12886,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // A direct upgrade's authorizing signature must sign all outputs, binding its replacement bytecode and minted
     // data-NFT run; a message-bus upgrade fences its signatures in the route.
-    if (node.identifier.name === GlobalFunction.CHECKSIG
-      && this.currentFunction.modifiers.includes(FunctionModifier.UPGRADE)
-      && this.currentFunction.messageBusUpgradeRoute !== true
-      && this.currentFunction.messageBusEligible !== true
-      && !this.currentFunctionIsMessageBusRoute) {
+    if (node.identifier.name === GlobalFunction.CHECKSIG && this.fencesUpgradeSignatures()) {
       this.emitUpgradeSighashAllFence({ location: node.location, positionHint: PositionHint.END });
     }
 
@@ -12848,19 +12900,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
-  // [.., sig, pubkey] -> same: the signature's sighash byte must have base type ALL (low 5 bits == 1).
+  // Whether this body's transaction signatures must sign all outputs: a direct upgrade, or a subroutine one reaches.
+  // A message-bus upgrade fences its signatures in the route, and per-call refuses upgrade entries.
+  private fencesUpgradeSignatures(): boolean {
+    const fn = this.currentFunction;
+    if (!fn || this.perCallMaster || this.currentFunctionIsMessageBusRoute
+      || fn.messageBusUpgradeRoute === true || fn.messageBusEligible === true) return false;
+    return fn.modifiers.includes(FunctionModifier.UPGRADE)
+      || (this.isDefineSubTraversal && fn.functionId !== undefined && this.upgradeSignatureFenceIds.has(fn.functionId));
+  }
+
+  // [.., sig, pubkey] -> same: the signature must sign all outputs.
   private emitUpgradeSighashAllFence(loc: SingleLocationData): void {
     this.emit(Op.OP_OVER, loc); // copy the sig from below the pubkey
     this.pushToStack('(upgrade_sig_fence)');
+    this.emitSighashAllCheck(loc);
+    this.popFromStack(); // (upgrade_sig_fence)
+  }
+
+  // [.., sig] -> [..]. A non-empty signature's sighash byte (its last) must have base type ALL (low 5 bits == 1),
+  // rejecting NONE and SINGLE. An empty one passes: it can only fail its check, so it authorizes nothing.
+  private emitSighashAllCheck(loc: SingleLocationData): void {
     this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_1SUB, loc);
     this.emit(Op.OP_SPLIT, loc); // [.., sig_head, sighash_byte]
-    this.emit(Op.OP_NIP, loc);   // [.., sighash_byte]
+    this.emit(Op.OP_NIP, loc);
     this.emit(hexToBin('1f'), loc);
     this.emit(Op.OP_AND, loc);   // base sighash type
     this.emit(hexToBin('01'), loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
-    this.popFromStack(); // (upgrade_sig_fence)
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_2DROP, loc); // the empty sig and its zero size
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   visitMultiSig(node: FunctionCallNode): Node {
@@ -12868,9 +12941,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
     const sigs = node.parameters[0];
     const pks = node.parameters[1];
+    // Every signature a direct upgrade's multisig checks must sign all outputs, as for checkSig.
+    const fence = this.fencesUpgradeSignatures();
     if (!(sigs instanceof ArrayNode) || !(pks instanceof ArrayNode)) {
       const locationData = { location: node.location, positionHint: PositionHint.END };
-      const flattenTop = (elementType: Type): void => {
+      const flattenTop = (elementType: Type, fenceElements = false): void => {
         // [arrayBlob] -> [N, elements], retain N on altstack while
         // sequentially decoding each element onto the main stack.
         this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
@@ -12894,6 +12969,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         } else {
           this.emitPushdataDecode(elementType, locationData); // [.., value, remainder]
         }
+        if (fenceElements) {
+          this.emit(Op.OP_OVER, locationData); // the decoded signature, below the remainder
+          this.emitSighashAllCheck(locationData);
+        }
         this.emit(encodeBool(false), locationData);
         this.emit(Op.OP_ELSE, locationData);
         this.emit(Op.OP_DROP, locationData); // zero counter
@@ -12909,7 +12988,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.parameters[0] = this.visit(sigs) as ExpressionNode;
       node.parameters[1] = this.visit(pks) as ExpressionNode;
       this.emit(Op.OP_TOALTSTACK, locationData); // park key-array blob
-      flattenTop(PrimitiveType.SIG);
+      flattenTop(PrimitiveType.SIG, fence);
       this.emit(Op.OP_FROMALTSTACK, locationData);
       flattenTop(PrimitiveType.PUBKEY);
       this.emit(Op.OP_CHECKMULTISIG, locationData);
@@ -12920,6 +12999,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
     node.parameters = this.visitList(node.parameters);
+    if (fence) {
+      // [dummy, sig_1 .. sig_n, n, pk_1 .. pk_m, m]: sig_(i+1) sits m + n + 1 - i deep.
+      const loc = { location: node.location, positionHint: PositionHint.END };
+      const [n, m] = [sigs.elements.length, pks.elements.length];
+      for (let i = 0; i < n; i++) {
+        this.emit(encodeInt(BigInt(m + n + 1 - i)), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.pushToStack('(upgrade_sig_fence)');
+        this.emitSighashAllCheck(loc);
+        this.popFromStack(); // (upgrade_sig_fence)
+      }
+    }
     this.emit(Op.OP_CHECKMULTISIG, { location: node.location, positionHint: PositionHint.END });
     this.popFromStack(sigs.elements.length + pks.elements.length + 3);
     this.pushToStack('(value)');

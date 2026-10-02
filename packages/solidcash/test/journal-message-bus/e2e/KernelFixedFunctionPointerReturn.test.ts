@@ -157,7 +157,7 @@ describe('kernel function-pointer BCH VM', () => {
     const first = await connect(artifacts.Sink, { value: 5n });
     const second = await connect(artifacts.SinkAlt, { value: 10n });
     const store = await connect(artifacts.Store, {
-      stored: first.inner.lockingBytecode, __fnsel_stored: inc, calls: 0n,
+      stored: hexToBin(first.inner.lockingBytecode), __fnsel_stored: inc, calls: 0n,
     });
     const compose = async (
       preparedCalls: Parameters<typeof messageBus.compose>[0]['preparedCalls'],
@@ -185,6 +185,63 @@ describe('kernel function-pointer BCH VM', () => {
     await run.send();
     expect((await first.getState()).value).toBe(5n);
     expect((await second.getState()).value).toBe(8n);
+    expect((await store.getState()).calls).toBe(1n);
+  }, 120_000);
+
+  it('composes a reached conditional function-pointer call by its compiler callsite', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
+      contract Sink {
+        uint value;
+        function dec() public { value = value - 1; require(true); }
+      }
+      contract Store {
+        function() external stored;
+        uint calls;
+        function save(function() external next) public { stored = next; require(true); }
+        function run(bool enabled) public {
+          if (enabled) { stored(); }
+          calls = calls + 1;
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      solidityImportCompat: true,
+      suppressWarnings: true,
+    });
+    const sinkBase = new Contract(artifacts.Sink, [], { provider });
+    const sinkSetup = await setupStatefulUtxos(
+      provider, sinkBase, artifacts.Sink.stateLayout!, { value: 10n }, { saltContract: true },
+    );
+    const sink = StatefulContract.withCategory(
+      sinkBase.withCategory(hexToBin(sinkSetup.categoryId)), sinkSetup.categoryId,
+    );
+    const storeBase = new Contract(artifacts.Store, [], { provider });
+    const selector = hexToBin(artifacts.Sink.abi.find((entry) => entry.name === 'dec')!.selector!);
+    const storeSetup = await setupStatefulUtxos(provider, storeBase, artifacts.Store.stateLayout!, {
+      stored: hexToBin(sink.inner.lockingBytecode), __fnsel_stored: selector, calls: 0n,
+    }, { saltContract: true });
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+    const call = artifacts.Store.abi.find((entry) => entry.name === 'run')!.externalCalls![0];
+    expect(call).toMatchObject({ fnPtrCall: true, occurrence: 'conditional' });
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [
+        { contract: store, functionName: 'run', args: [true] },
+        { contract: sink, functionName: 'dec', args: [], callsiteId: call.callsiteId },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    });
+    expect(vmAccepts(await composition.build())).toBe(true);
+    await composition.send();
+    expect((await sink.getState()).value).toBe(9n);
     expect((await store.getState()).calls).toBe(1n);
   }, 120_000);
 });

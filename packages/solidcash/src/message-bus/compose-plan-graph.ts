@@ -263,13 +263,18 @@ export function deriveComposeInvocationPlan(
         // compiler's parent-local identity, so it is authoritative when present; manually composed calls retain
         // the legacy structural matching below.
         if (reached.callsiteId !== undefined && reached.callsiteId !== callsiteId) break;
-        const matches = callsite.rawFunctionName
-          ? reached.functionName === callsite.rawFunctionName
-          : callsite.rawSelector
-            ? resolveMessageBusAbiFunction(
-              reached.artifact, reached.functionName, reached.selector,
-            )?.selector?.toLowerCase() === callsite.rawSelector.toLowerCase()
-            : reached.functionName === callsite.functionName;
+        // A function pointer has no statically named callee method: the compiler calls it
+        // `__call`, while the prepared child names the concrete runtime method. Its source
+        // callsite ID is the only structural occurrence identity here; dynamicCall and the
+        // participant covenant validate the selected method/address after this count.
+        let matches: boolean;
+        if (callsite.fnPtrCall) matches = reached.callsiteId === callsiteId;
+        else if (callsite.rawFunctionName) matches = reached.functionName === callsite.rawFunctionName;
+        else if (callsite.rawSelector) {
+          matches = resolveMessageBusAbiFunction(
+            reached.artifact, reached.functionName, reached.selector,
+          )?.selector?.toLowerCase() === callsite.rawSelector.toLowerCase();
+        } else matches = reached.functionName === callsite.functionName;
         if (!matches) break;
         count += 1;
       }

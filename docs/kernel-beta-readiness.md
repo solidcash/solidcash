@@ -287,6 +287,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   a separately compiled callee with the selected method, and checks the original callee stays unchanged; a
   deliberately mismatched child is rejected by VM preflight. That exact title and its immediately preceding
   title pass individually. This is not a complete function-pointer matrix or broad beta-gate result.
+- 2026-10-02 conditional-pointer follow-up: a reached conditional stored-pointer call initially left its
+  prepared child unconsumed because the source ABI names the dynamic method `__call` while the prepared child
+  names the selected method. Conditional occurrence matching now uses the compiler-published callsite ID for
+  function-pointer edges; the later graph covenant still checks the concrete address and selector. The focused
+  BCH-2026 conditional title and its immediately preceding runtime-pointer title pass individually. The fixture
+  seeds the native locking bytecode as bytes, not as its ASCII hex spelling. Untaken and wider pointer-table
+  cases remain outside this focused proof.
 
 ## Gate before the next leap
 

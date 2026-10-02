@@ -3157,19 +3157,26 @@ function patchPlaceholderVerifierLock(ast: Ast, lock: Uint8Array): void {
  */
 const detachedVerifierLockCache = new Map<string, Uint8Array>();
 
-function detachedVerifierLockKey(source: string, options: CompilerOptions, lifecycle: boolean): string {
-  return [
-    lifecycle ? 'L' : '-',
-    options.chunkedArrays ?? true,
-    options.maximumInputBytes ?? '',
-    options.commitmentLimit ?? '',
-    options.ecrecover ?? '',
-    options.chainId ?? '',
-    options.messageBusKernel ?? '',
-    options.enforceFinalRequire ?? '',
-    options.allowUnsafeOperations ?? '',
-    source,
-  ].join('\u0000');
+/**
+ * The options identity of a detached verifier emit: what the artifact cache keys a compile on, with the env feature
+ * bits folded in. The emit reads the whole option set (codegen's casts read solidityImportCompat), so any narrower
+ * key lets a program emitted under one setting serve a later compile under another. Undefined when the options do
+ * not serialize; the caller then emits without the cache.
+ */
+function detachedVerifierOptionsKey(options: CompilerOptions, omit: readonly string[] = []): string | undefined {
+  try {
+    const keyed = cacheableCompilerOptions(options);
+    for (const field of omit) delete keyed[field];
+    return JSON.stringify(keyed, (_key, value: unknown) => (typeof value === 'bigint' ? `${value}n` : value));
+  } catch {
+    return undefined;
+  }
+}
+
+function detachedVerifierLockKey(source: string, options: CompilerOptions, lifecycle: boolean): string | undefined {
+  // The lock does not depend on the root file, which lets the same route shape share one lock across roots.
+  const optionsKey = detachedVerifierOptionsKey(options, ['rootFileId']);
+  return optionsKey === undefined ? undefined : `${lifecycle ? 'L' : '-'}\u0000${optionsKey}\u0000${source}`;
 }
 
 function extractMessageBusVerifierProgram(
@@ -3265,21 +3272,21 @@ function extractMessageBusVerifierProgram(
 
 /**
  * Memo for `compileDetachedMessageBusVerifier`. A multi-declaration compile hands the same generated verifier
- * source to every declaration, and the emit is a pure function of that source plus the few options it reads, so
- * the second and later emits were recomputing an identical program (~150ms per extra declaration here).
+ * source to every declaration, and the emit is a pure function of that source and its options, so the second and
+ * later emits were recomputing an identical program (~150ms per extra declaration here).
  *
- * Keyed on every input the emit reads: the source text, the lifecycle flag, and the two compiler options that
- * reach the parse/codegen (`chunkedArrays` defaults to true, `rootFileId` forwards to the type checker).
- * Entries are deep-cloned on the way out so a caller mutating a returned program cannot poison the memo.
- * Bounded, because each entry retains a large source string.
+ * Keyed on every input the emit reads: the source text, the lifecycle flag, and the whole option set (see
+ * `detachedVerifierOptionsKey`). Entries are deep-cloned on the way out so a caller mutating a returned program
+ * cannot poison the memo. Bounded, because each entry retains a large source string.
  */
 const detachedVerifierProgramCache = new Map<string, MessageBusVerifierProgram>();
 
 function compileDetachedMessageBusVerifier(
   source: string, compilerOptions: CompilerOptions, lifecycle = false,
 ): MessageBusVerifierProgram {
-  const memoKey = `${lifecycle ? 'L' : '-'}\x00${compilerOptions.chunkedArrays ?? true}\x00`
-    + `${compilerOptions.rootFileId ?? ''}\x00${source}`;
+  const optionsKey = detachedVerifierOptionsKey(compilerOptions);
+  if (optionsKey === undefined) return compileDetachedMessageBusVerifierUncached(source, compilerOptions, lifecycle);
+  const memoKey = `${lifecycle ? 'L' : '-'}\x00${optionsKey}\x00${source}`;
   const memoized = detachedVerifierProgramCache.get(memoKey);
   if (memoized !== undefined) {
     // Refresh recency for the small bound below.

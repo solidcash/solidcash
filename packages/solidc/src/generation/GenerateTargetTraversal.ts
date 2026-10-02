@@ -32877,9 +32877,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(msgSenderTemp);
     }
 
-    // Same-address varying-method pointer: evaluate each slot's RUNTIME selector (`cond ? a.sel : b.sel`) into
-    // a named temp here, on the clean stack (its `cond` param is on the tracked stack; no working values yet).
-    // The per-slot selector check picks it (like the witness param) to bind the co-spent method to cond.
+    // A finite pointer choice may select both a target and a method. Evaluate the selected target before the
+    // per-slot verification adds untracked input-index/bytecode values; its stable source operands are still on
+    // the tracked stack. Bind the chosen co-spent bytecode to this exact result, not to either branch alone.
+    const rtAddrTemps = new Map<number, string>();
+    for (const slot of this.externalCallSlots) {
+      const address = slot.sourceCallNode?.addressExpression;
+      if (!slot.fnPtrCall || !slot.runtimeSelector || slot.addressParam || slot.addressStateVar
+        || !(address instanceof TernaryOpNode)
+        || !(address.condition instanceof IdentifierNode)
+        || !(address.ifTrue instanceof IdentifierNode)
+        || !(address.ifFalse instanceof IdentifierNode)) continue;
+      this.visit(address);
+      const name = `__internal__extcall_rtaddr_${slot.slotIndex}`;
+      this.stack[0] = name;
+      rtAddrTemps.set(slot.slotIndex, name);
+    }
+
+    // A varying-method pointer evaluates its RUNTIME selector (`cond ? a.sel : b.sel`) into a named temp on
+    // the clean stack. The per-slot selector check binds the co-spent method to that same branch choice.
     const rtSelTemps = new Map<number, string>();
     for (const slot of this.externalCallSlots) {
       if (!slot.runtimeSelector) continue;
@@ -32962,7 +32978,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ? slot.addressParam.slice('__extaddr_ll_'.length) : undefined;
       const addrName = slot.addressIsMsgSender
         ? msgSenderTemp!
-        : inlinedLowLevelTarget ?? slot.addressParam;
+        : rtAddrTemps.get(slot.slotIndex) ?? inlinedLowLevelTarget ?? slot.addressParam;
       if (stateTarget) {
         // External-call targets are state, so delegates must resolve them from the authenticated proxy owner.
         // `address(this)` remains execution context (OP_INPUTINDEX OP_UTXOBYTECODE), but storage never moves to

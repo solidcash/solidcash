@@ -296,6 +296,14 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   untaken pointer edge is omitted while an always-reached sibling settles, then takes the same pointer edge in
   the next transaction and checks all three owners' state. That title and its immediately preceding conditional
   title pass individually. Wider pointer-table cases remain outside this focused proof.
+- 2026-10-02 local-pointer target follow-up: an executable local pointer selecting between two different owners
+  and methods was missing from an early route's graph survey. A correct child could settle, but a wrong-owner
+  child also passed the BCH-2026 VM. Route synthesis now waits until an invoked local or state external pointer
+  is lowered to a real foreign edge. A differing-receiver local pointer lowers to one dynamic target/selector
+  call only when its branch condition and address operands are stable identifiers; the direct-call epilogue also
+  checks the selected target. The focused VM title verifies both graph branches mutate only their selected owner,
+  a wrong-owner child is refused at preflight, and a subsequent direct call settles. Its immediately preceding
+  untaken-pointer title passes. This does not establish a general pointer-table or broad beta-gate result.
 
 ## Gate before the next leap
 

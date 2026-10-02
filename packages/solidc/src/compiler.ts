@@ -13903,6 +13903,21 @@ function compileResolvedAst(
   // Dynamic-state syntax is still present here. Preserve its physical input-base requirement by stable source
   // identity before collection/dynamic journal lowering value-threads those accesses through ordinary locals.
   const dynamicChunkInputBaseFunctionKeys = markDynamicChunkInputBaseFunctions(ast);
+  const stateExternalPointerNames = ast.contract.stateVariables
+    .filter((state) => state.type instanceof FunctionType && state.type.isExternal)
+    .map((state) => state.name);
+  const hasInvokedExternalPointer = ast.contract.functions.some((fn) => {
+    const pointerNames = new Set(stateExternalPointerNames);
+    const callNames = new Set<string>();
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof VariableDefinitionNode && node.type instanceof FunctionType && node.type.isExternal) {
+        pointerNames.add(node.name);
+      } else if (node instanceof FunctionCallNode) {
+        callNames.add(node.identifier.name);
+      }
+    });
+    return [...pointerNames].some((name) => callNames.has(name));
+  });
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
     && supportsAtomicMessageBus(ast, mergedCompilerOptions)
     // Received external function-pointer parameters may lower from one source value to an
@@ -13911,6 +13926,9 @@ function compileResolvedAst(
     && !ast.contract.functions.some((fn) => fn.isEntryPoint
       && fn.parameters.some((parameter) => parameter.type instanceof FunctionType
         && parameter.type.isExternal))
+    // A source pointer call (`selected()` or `stored()`) is still a FunctionCall here. An early route sees no
+    // foreign edge and would publish an unauthenticated child. Let pointer lowering expose its call first.
+    && !hasInvokedExternalPointer
     && ast.contract.functions.some((fn) => {
       const footprint = analyseFunctionFootprint(fn, messageBusFunctionsByName, prefixFootprintCache);
       return [...footprint.reads, ...footprint.writes]

@@ -322,4 +322,92 @@ describe('kernel function-pointer BCH VM', () => {
     expect((await sink.getState()).value).toBe(9n);
     expect((await store.getState()).calls).toBe(2n);
   }, 120_000);
+
+  it('settles both owners and methods of a locally selected external pointer', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
+      interface IHandler { function inc() external; function dec() external; }
+      contract Handler {
+        int value;
+        function inc() public { value = value + 1; require(true); }
+        function dec() public { value = value - 1; require(true); }
+      }
+      contract Caller(address first, address second) {
+        int calls;
+        function run(bool up) public {
+          function() external selected = up ? IHandler(first).inc : IHandler(second).dec;
+          selected();
+          calls = calls + 1;
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      solidityImportCompat: true,
+      suppressWarnings: true,
+    });
+    expect(artifacts.Caller.messageBus?.route?.inputs.some(
+      (input) => input.name === '__internal__graphEmissions',
+    )).toBe(true);
+    const connectHandler = async (value: bigint): Promise<StatefulContract> => {
+      const base = new Contract(artifacts.Handler, [], { provider });
+      const setup = await setupStatefulUtxos(
+        provider, base, artifacts.Handler.stateLayout!, { value }, { saltContract: true },
+      );
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const first = await connectHandler(10n);
+    const second = await connectHandler(20n);
+    expect(first.inner.lockingBytecode).not.toBe(second.inner.lockingBytecode);
+    const callerBase = new Contract(
+      artifacts.Caller, [first.inner.lockingBytecode, second.inner.lockingBytecode], { provider },
+    );
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, artifacts.Caller.stateLayout!, { calls: 0n }, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const callsiteId = artifacts.Caller.abi.find((entry) => entry.name === 'run')!.externalCalls![0].callsiteId!;
+    const compose = async (
+      up: boolean,
+      target = up ? first : second,
+      method = up ? 'inc' : 'dec',
+    ): Promise<ReturnType<typeof messageBus.compose>> => {
+      const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+      return messageBus.compose({
+        preparedCalls: [
+          { contract: caller, functionName: 'run', args: [up] },
+          { contract: target, functionName: method, args: [], callsiteId },
+        ],
+        funder,
+        changeAddress: funder.unlocker.generateLockingBytecode(),
+      });
+    };
+
+    const wrongOwner = await compose(true, second, 'inc');
+    await expect(wrongOwner.build()).rejects.toThrow(/BCH-2026 preflight failed/);
+
+    const increase = await compose(true);
+    expect(vmAccepts(await increase.build())).toBe(true);
+    await increase.send();
+    expect((await first.getState()).value).toBe(11n);
+    expect((await second.getState()).value).toBe(20n);
+    expect((await caller.getState()).calls).toBe(1n);
+
+    const decrease = await compose(false);
+    expect(vmAccepts(await decrease.build())).toBe(true);
+    await decrease.send();
+    expect((await first.getState()).value).toBe(11n);
+    expect((await second.getState()).value).toBe(19n);
+    expect((await caller.getState()).calls).toBe(2n);
+
+    await caller.run(true).withExternalCall(first, 'inc', []).send();
+    expect((await first.getState()).value).toBe(12n);
+    expect((await second.getState()).value).toBe(19n);
+    expect((await caller.getState()).calls).toBe(3n);
+  }, 120_000);
 });

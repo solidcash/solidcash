@@ -304,6 +304,20 @@ describe('message-bus compilation selection', () => {
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
   });
 
+  it('selects the graph route for a literal-index interface array receiver', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      contract IndexedReceiver {
+        ISink[2] sinks;
+        function forward(int value) public {
+          sinks[0].note(value);
+          require(value >= 0);
+        }
+      }`, { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.available).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+  });
+
   it('keeps a typed external call before an unrelated nested local shadow on the graph route', () => {
     const artifact = compileString(`interface ISink { function note(int value) external; }
       contract TypedShadow {

@@ -4075,6 +4075,11 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       return sourceReceiverTypes(expression.array, bindings)
         .flatMap((type) => indexedElementType(type) ?? []);
     }
+    if (expression instanceof TupleIndexOpNode) {
+      // A literal `array[0]` can retain the parser's tuple-index node until semantic lowering.
+      return sourceReceiverTypes(expression.tuple, bindings)
+        .flatMap((type) => type instanceof ArrayType ? [type.elementType] : []);
+    }
     if (expression instanceof FieldAccessNode) {
       return sourceReceiverTypes(expression.expression, bindings).flatMap((parent) =>
         parent instanceof StructType

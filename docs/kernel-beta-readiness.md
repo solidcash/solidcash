@@ -232,6 +232,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   types across indexes and struct fields before deciding whether a method call crosses a contract boundary.
   The focused red-to-green title confirms one external call on an available graph route; its immediately
   preceding mapping-value title passes. No broad compiler suite or beta gate was run.
+- 2026-10-02 helper and literal-index receiver follow-up: `getSink().note(...)` and `sinks[0].note(...)`
+  also compiled direct-only despite supported external-call lowering. The source survey now follows a reachable
+  helper's single return type and the parser's literal-index node for an interface array. Each exact red title
+  passed after its fix, followed only by its immediately preceding title. Build and focused lint pass; no broad
+  test suite or beta gate was run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

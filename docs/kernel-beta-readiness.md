@@ -149,7 +149,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   regression showed that a later nested local shadow also hid an earlier bare state access. Footprint analysis now
   follows declaration order and block scope; that exact title and its immediately preceding inherited-state title
   pass. Build, focused lint, and the sources-only static fence pass. A fresh single-root UnicrowClaim split still
-  refuses its 16,839-byte singleton `claim` closure; this does not change deployability.
+  refuses its 16,839-byte singleton `claim` closure; this does not change deployability. A forwarding internal
+  helper also inherits the external-call effect of a typed callee in its cut profile; the exact transitive-call
+  title and its immediately preceding direct-call title pass. This is still diagnostic only, not a helper-cut
+  implementation.
 - 2026-10-02 arbitration-source size follow-up: a fresh single-root UnicrowArbitrator kernel compile emits
   18,761 redeem-script bytes, and `compileFileSplit` refuses its 16,267-byte singleton `arbitrate` closure at
   `SPLIT_CLOSURE_CAPACITY`. Both ends of the Unicrow arbitration callback path therefore need a deployability

@@ -17441,6 +17441,17 @@ function splitHelperCutProfiles(
     };
     return helper.body !== undefined && visit(helper.body, initialReceivers);
   };
+  const hasTransitiveTypedExternalCall = (helper: FunctionDefinitionNode): boolean => {
+    // The pre-semantic footprint walker cannot recognize every typed receiver until lowering. A cut moves the
+    // helper's whole internal closure, so inspecting only its own body would label a forwarding helper pure even
+    // when the callee performs a foreign call.
+    for (const name of collectNamedFunctionClosure(helper, byName, footprintCache.directCalls)) {
+      for (const candidate of byName.get(name) ?? []) {
+        if (hasTypedExternalCall(candidate)) return true;
+      }
+    }
+    return false;
+  };
   const profiles = new Map<string, SplitHelperCutProfile>();
   for (const name of plan.closure) {
     if (name === plan.name) continue;
@@ -17454,7 +17465,7 @@ function splitHelperCutProfiles(
         readsLocalState: footprint.reads.some((resource) =>
           resource.startsWith('state:') || resource.startsWith('collection:')),
         writesState: footprint.writes.length > 0,
-        externalCalls: footprint.effects.includes('external-call') || hasTypedExternalCall(helper),
+        externalCalls: footprint.effects.includes('external-call') || hasTransitiveTypedExternalCall(helper),
         unknown: footprint.unknown,
       });
     }

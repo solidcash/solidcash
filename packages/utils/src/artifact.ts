@@ -948,6 +948,11 @@ export interface SortedUpsertLoopAbi {
   valueBool?: boolean;
   valueRuntimeLocal?: string;
   valueRuntimeExpression?: boolean;
+  /**
+   * A turn reads the entry the loop writes, besides a read-modify-write's own base: a repeated key's later turn reads
+   * what an earlier turn wrote, so its occurrences cannot be merged into one. Published for the direct convention.
+   */
+  readsWrittenEntry?: boolean;
   /** Authenticated source-order trace for a mapping value which carries state between loop iterations. */
   valueTraceWitnessParam?: string;
   valueTraceLocal?: string;

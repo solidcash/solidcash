@@ -11043,6 +11043,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         throw new Error(`vmap upsert loop ${info.collection}: recipients/amounts length mismatch`);
       }
       const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
+      // A repeated key whose turns are observable cannot be merged: when a turn reads the entry it writes, a later
+      // occurrence reads what an earlier one wrote, and a value computed at run time is the last occurrence's, not
+      // the first's. The covenant cannot serve that later turn (each entry is co-spent once), so refuse it by name
+      // rather than run a call with fewer keys than the caller passed.
+      if (!counterSpec && !info.mutation && (info.readsWrittenEntry || info.valueRuntimeExpression)
+        && Array.isArray(keysArr) && keysArr.length > 1) {
+        const slotHexes = (keysArr as unknown[]).map((key) => binToHex(slotForKey(key)));
+        const repeat = slotHexes.findIndex((hex, at) => slotHexes.indexOf(hex) !== at);
+        if (repeat >= 0) {
+          throw new Error(`vmap upsert loop ${info.collection}: key ${repeat} of '${info.varyingArrayParam}' repeats `
+            + `an earlier key, and ${info.readsWrittenEntry ? 'each turn reads the entry it writes' : 'the value is '
+              + 'computed per turn'}, so its turns cannot be merged; pass each key once`);
+        }
+      }
       // DUPLICATE RECIPIENT: the same key listed 2+ times. Solidity ACCUMULATES for += / -= ([a,a],[10,20] -> a += 30),
       // takes the LAST for = ([a,a],[10,20] -> a = 20), and delete is idempotent. Since the covenant co-spends one
       // entry per recipient, combine duplicates into ONE entry (co-spent once) with the merged amount, BEFORE the

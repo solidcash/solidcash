@@ -29338,6 +29338,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitKernelJournalCursorHelperInline(loc);
   }
 
+  /** Whether a loop body reads the entry its sorted write targets, besides that write's read-modify-write base. */
+  private loopReadsWrittenEntry(
+    block: Node, write: MappingAssignNode | MappingDeleteNode, slotIndex: number,
+  ): boolean {
+    const base = write instanceof MappingAssignNode && write.expression instanceof BinaryOpNode
+      && write.expression.left instanceof MappingAccessNode ? write.expression.left : undefined;
+    let reads = false;
+    walkInvocationAst(block, (candidate) => {
+      if (candidate instanceof MappingAccessNode && candidate !== base && candidate.entrySlotIndex === slotIndex
+        && candidate.collection?.name === write.collection?.name) reads = true;
+    });
+    return reads;
+  }
+
   private emitSortedUpsertLoopSetup(
     block: Node, loc: SingleLocationData, excludedStreams: ReadonlySet<string> = new Set(),
   ): boolean {
@@ -29668,6 +29682,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (existingInfo && (existingInfo.fixedKeySources?.length ?? 0) === 0 && fixedKeySources.length > 0) {
       existingInfo.fixedKeySources = fixedKeySources;
     }
+    // A per-call frame refuses a repeated key in its own planner; the direct SDK needs to be told not to merge one.
+    const readsWrittenEntry = this.compilerOptions.composition !== 'per-call'
+      && this.loopReadsWrittenEntry(block, writeNode, slotIndex);
+    if (existingInfo && readsWrittenEntry) existingInfo.readsWrittenEntry = true;
     if (!existingInfo) {
       const condition = this.currentFunction.runtimeCounterLoopConditions?.get(varyingArrayParam);
       const iteration = this.currentFunction.runtimeCounterLoopIterationConditions?.get(varyingArrayParam);
@@ -29746,6 +29764,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           prefixCountCondition: prefixCountTrace.condition,
         }),
         ...(valueRuntimeExpression && { valueRuntimeExpression: true }),
+        ...(readsWrittenEntry && { readsWrittenEntry: true }),
         ...(valueArrayOffset !== undefined && { valueArrayOffset }),
         ...(valueRuntimeLocal && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }),
         ...(writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeOldValueWitness

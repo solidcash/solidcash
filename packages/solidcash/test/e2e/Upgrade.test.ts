@@ -1,8 +1,11 @@
+import {
+  binToHex, decodeTransactionUnsafe, encodeLockingBytecodeP2pkh, encodeTransaction, hexToBin, sha256, utf8ToBin,
+} from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, SignatureTemplate, StatefulContract,
+  Contract, getDataNftAddress, HashType, SignatureTemplate, StatefulContract,
 } from '../../src/index.js';
-import { parsePushdataCommitment } from '@solidcash/utils';
+import { buildPushdataCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import {
   alicePub,
   alicePriv,
@@ -144,6 +147,30 @@ contract OverflowV2(pubkey admin) {
 
     function authorize(pubkey pk, sig s) unsafe {
         require(checkSig(s, pk));
+    }
+}
+`;
+
+// OVERFLOW_WIDE: 8 bytes32 fields in 3 data NFTs (a-c, d-f, g-h), so an upgrade from V1_OVERFLOW mints two
+const OVERFLOW_WIDE = `
+pragma solidcash >=0.8.0;
+
+contract OverflowWide(pubkey admin) {
+    bytes32 a;
+    bytes32 b;
+    bytes32 c;
+    bytes32 d;
+    bytes32 e;
+    bytes32 f;
+    bytes32 g;
+    bytes32 h;
+
+    function setH(bytes32 newH) {
+        this.h = newH;
+    }
+
+    function migrate(sig s) upgrade {
+        require(checkSig(s, admin));
     }
 }
 `;
@@ -724,6 +751,136 @@ describe('StatefulContract.upgrade()', () => {
         txOutputs[1].token!.nft!.commitment, overflowV2Artifact.stateLayout!, 1,
       );
       expect(nft1Parsed.d).toEqual(dVal);
+    });
+  });
+
+  // An overflow upgrade mints the new layout's data NFTs as a run at the canonical data-NFT covenant, right after the
+  // old data NFTs. The old covenant's census takes exactly the old data NFTs in, and out the same plus that run. These
+  // upgrades sign SIGHASH_NONE | SIGHASH_ANYONECANPAY and pay from an OP_TRUE coin: no signature binds an output or an
+  // input other than the master, so the census alone decides each spend.
+  describe('overflow data NFT run under an authorization that signs no outputs', () => {
+    const wideArtifact = compileString(OVERFLOW_WIDE);
+    const OP_TRUE = hexToBin('51');
+    const anyoneCanSpend = {
+      generateLockingBytecode: (): Uint8Array => OP_TRUE,
+      generateUnlockingBytecode: (): Uint8Array => new Uint8Array(),
+    };
+    const field = (label: string): Uint8Array => sha256.hash(utf8ToBin(label));
+    const coin = (label: string): Utxo => ({ txid: binToHex(field(label)), vout: 0, satoshis: 100_000n });
+    const keyLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const refused = /mandatory-script-verify-flag-failed/;
+    type Tx = ReturnType<typeof decodeTransactionUnsafe>;
+
+    // Deploys OverflowV1 and signs its upgrade to OverflowWide, which the provider keeps instead of broadcasting.
+    // Inputs: the master, the old data NFT, the funding coin. Outputs: the master at its new covenant, the old data
+    // NFT, the two new data NFTs, change.
+    const prepare = async (label: string): Promise<{ hex: string; wide: Contract; categoryId: string }> => {
+      const deployFunding = coin(`${label} deploy`);
+      await provider.addUtxo(p2pkh.address, deployFunding);
+      const { contract, categoryId } = await StatefulContract.deploy(overflowV1Artifact, [alicePub], {
+        provider,
+        fundingUtxo: deployFunding,
+        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        initialState: { a: field('a'), b: field('b'), c: field('c') },
+        changeAddress: p2pkh.address,
+      });
+      const funding = coin(`${label} upgrade`);
+      await provider.addUtxo('51', funding);
+      let hex = '';
+      const send = provider.sendRawTransaction.bind(provider);
+      (provider as any).sendRawTransaction = async (raw: string): Promise<string> => {
+        hex = raw;
+        throw new Error('kept, not broadcast');
+      };
+      try {
+        await expect(StatefulContract.upgrade({
+          provider,
+          oldContract: contract,
+          upgradeFunctionName: 'migrate',
+          upgradeFunctionArgs: [
+            new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE | HashType.SIGHASH_ANYONECANPAY),
+          ],
+          newArtifact: wideArtifact,
+          newConstructorArgs: [alicePub],
+          fundingUtxo: funding,
+          funder: anyoneCanSpend,
+          changeAddress: p2pkh.address,
+        })).rejects.toThrow('kept, not broadcast');
+      } finally {
+        (provider as any).sendRawTransaction = send;
+      }
+      const wide = new Contract(wideArtifact, [alicePub], { provider, category: hexToBin(categoryId) });
+      return { hex, wide, categoryId };
+    };
+    const submit = (hex: string, mutate: (tx: Tx) => void = () => {}): Promise<string> => {
+      const tx = decodeTransactionUnsafe(hexToBin(hex));
+      mutate(tx);
+      return provider.sendRawTransaction(binToHex(encodeTransaction(tx)));
+    };
+    // A further data NFT at output `at`, a copy of the first new one with its own commitment, paid for (with its
+    // bytes) out of the change output.
+    const addDataNft = (tx: Tx, at: number, commitment: Uint8Array): void => {
+      const template = tx.outputs[2];
+      tx.outputs[tx.outputs.length - 1].valueSatoshis -= template.valueSatoshis + 1_000n;
+      tx.outputs.splice(at, 0, {
+        ...template,
+        lockingBytecode: template.lockingBytecode.slice(),
+        token: { ...template.token!, nft: { ...template.token!.nft!, commitment } },
+      });
+    };
+
+    it('settles the honest run and refuses a new data NFT off the covenant, a gap, a detached extra, or an old one '
+      + 'left unspent', async () => {
+      const { hex, wide, categoryId } = await prepare('wide run');
+      const honest = decodeTransactionUnsafe(hexToBin(hex));
+      expect(honest.outputs.map((output) => output.token?.nft?.capability))
+        .toEqual(['minting', 'mutable', 'mutable', 'mutable', undefined]);
+      const dataLock = binToHex(honest.outputs[1].lockingBytecode);
+      expect(honest.outputs.slice(2, 4).map((output) => binToHex(output.lockingBytecode)))
+        .toEqual([dataLock, dataLock]);
+
+      // The second new data NFT at a key's locking bytecode.
+      await expect(submit(hex, (tx) => { tx.outputs[3].lockingBytecode = keyLock; })).rejects.toThrow(refused);
+      // A gap in the run: the second new data NFT after the change output.
+      await expect(submit(hex, (tx) => { [tx.outputs[3], tx.outputs[4]] = [tx.outputs[4], tx.outputs[3]]; }))
+        .rejects.toThrow(refused);
+      // An extra data NFT detached from the run, after the change output.
+      await expect(submit(hex, (tx) => { addDataNft(tx, tx.outputs.length, field('detached')); }))
+        .rejects.toThrow(refused);
+      // The old data NFT left unspent and a replacement minted into the run: the output count balances, and the
+      // exact old data-NFT input count is what refuses it.
+      await expect(submit(hex, (tx) => {
+        const old = tx.outputs[1];
+        tx.inputs.splice(1, 1);
+        tx.outputs[1] = { lockingBytecode: keyLock, valueSatoshis: 1_000n };
+        tx.outputs[tx.outputs.length - 1].valueSatoshis -= old.valueSatoshis + 1_000n;
+        addDataNft(tx, 4, field('replacement'));
+      })).rejects.toThrow(refused);
+
+      await expect(submit(hex)).resolves.toBeTypeOf('string');
+      const settled = StatefulContract.withCategory(wide, categoryId);
+      await settled.call.setH(field('h')).send();
+      const state = await settled.getState();
+      expect([state.a, state.c, state.g, state.h]).toEqual([field('a'), field('c'), new Uint8Array(32), field('h')]);
+    });
+
+    // RESIDUAL (kernel lane 4b89cce8e, ledger D10), pinned rather than claimed: the census bounds neither the run's
+    // length nor the new data NFTs' commitments, which the old covenant cannot derive from a layout it does not know.
+    // Only a signature over the outputs binds them, so under this authorization a run with one more data NFT, and a
+    // new data NFT whose commitment was rewritten, both settle. Closing this must turn the expectation here around.
+    it('residual: admits a run longer than the layout and a rewritten new commitment', async () => {
+      const { hex, wide, categoryId } = await prepare('wide run residual');
+      const rewritten = buildPushdataCommitment(wideArtifact.stateLayout!, {
+        d: field('rewritten d'), e: field('rewritten e'), f: field('rewritten f'),
+      }, 1);
+      await expect(submit(hex, (tx) => {
+        tx.outputs[2].token!.nft!.commitment = hexToBin(rewritten);
+        addDataNft(tx, 4, field('appended'));
+      })).resolves.toBeTypeOf('string');
+      const dataNfts = (await provider.getUtxos(getDataNftAddress(wide, categoryId)))
+        .filter((utxo) => utxo.token?.category === categoryId);
+      expect(dataNfts).toHaveLength(wideArtifact.stateLayout!.dataNftCount + 1);
+      expect(dataNfts.map((utxo) => utxo.token!.nft!.commitment)).toContain(rewritten);
     });
   });
 });

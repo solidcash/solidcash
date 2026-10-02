@@ -260,6 +260,22 @@ describe('message-bus compilation selection', () => {
     }
   });
 
+  it('selects the graph route for a low-level call through an address cast', () => {
+    const source = `contract CastCall(address peer) {
+      function invoke(bytes payload) public {
+        (bool ok,) = address(peer).call(payload);
+        require(ok);
+      }
+    }`;
+    const automatic = compileString(source, { solidityImportCompat: true, suppressWarnings: true });
+    const direct = compileString(source, {
+      solidityImportCompat: true, suppressWarnings: true, messageBus: false,
+    });
+    expect(automatic.compiler.options?.messageBus).toBe(true);
+    expect(automatic.abi.find((entry) => entry.name === 'invoke')?.externalCalls).toHaveLength(1);
+    expect(direct.compiler.options?.messageBus).toBe(false);
+  });
+
   it('selects the graph route for an interface-typed mapping value receiver', () => {
     const artifact = compileString(`interface ISink { function note(int value) external; }
       contract MappingReceiver {

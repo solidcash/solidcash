@@ -4068,6 +4068,9 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       const type = bindings.get(expression.name);
       return type ? [type] : [];
     }
+    // An explicit `address(value).call(data)` receiver is a CastNode before semantic lowering.
+    // Its declared result type is already authoritative at this source-selection stage.
+    if (expression instanceof CastNode) return [expression.type];
     if (expression instanceof StateAccessNode) {
       const type = stateReceiverTypes.get(expression.name);
       return type ? [type] : [];

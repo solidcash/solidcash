@@ -455,6 +455,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   category's cached lock, value, spend outpoints, and unlock recipe. A different category's latest recipe no longer
   redirects the minting-master lookup. The focused restore title went red-to-green and its immediately preceding
   lock/value title passes. This removes one cross-category compatibility fallback; it is not a broad SDK result.
+- 2026-10-02 compatibility recovery follow-up: legacy unlock-recipe recovery now requires the selected category's
+  own value and lock to match its derived script. A successful value-chunk send no longer borrows the latest staged
+  value from another category or broadcasts one committed value and recipe across all cached categories. Both new
+  focused titles went red-to-green, each with its immediately preceding title passing. No broad suite was run.
 
 ## Gate before the next leap
 

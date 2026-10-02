@@ -577,36 +577,21 @@ function jobEventsSlotCandidates(): Uint8Array[] {
 
 /** Recover slot+root so the next UPDATE can spend persist chunks with a real unlocker. */
 export function rememberJobEventsUnlockRecipe(categoryId: string): boolean {
-  const pairs: Array<{ value: Uint8Array; lock: Uint8Array }> = [];
-  const localValue = settlement().persistedJobEventsValues.get(categoryId);
-  const localLock = settlement().persistedJobEventsLocks.get(categoryId);
-  if (localValue && localLock) pairs.push({ value: localValue, lock: localLock });
-  for (const value of settlement().persistedJobEventsValues.values()) {
-    for (const lock of settlement().persistedJobEventsLocks.values()) {
-      if (localValue && localLock && value === localValue && lock === localLock) continue;
-      pairs.push({ value, lock });
-    }
-  }
-  for (const { value, lock } of pairs) {
-    const root = sha256Sync(value);
-    for (const slot of jobEventsSlotCandidates()) {
-      for (const cat of new Set([
-        categoryId,
-        ...settlement().persistedJobEventsLocks.keys(),
-        ...settlement().persistedJobEventsValues.keys(),
-      ])) {
-        for (const collection of LEGACY_JOB_EVENTS_COLLECTION_ALIASES) {
-          try {
-            const expected = getValueChunkLockingBytecode(cat, collection, slot, root);
-            if (binToHex(expected) === binToHex(lock)) {
-              const recipe = { slot, root, collection, categoryId: cat };
-              settlement().persistedJobEventsRecipes.set(categoryId, recipe);
-              settlement().persistedJobEventsRecipes.set(cat, recipe);
-              return true;
-            }
-          } catch { /* category, collection, or slot rejected */ }
+  const value = settlement().persistedJobEventsValues.get(categoryId);
+  const lock = settlement().persistedJobEventsLocks.get(categoryId);
+  if (!value || !lock) return false;
+  const root = sha256Sync(value);
+  for (const slot of jobEventsSlotCandidates()) {
+    for (const collection of LEGACY_JOB_EVENTS_COLLECTION_ALIASES) {
+      try {
+        const expected = getValueChunkLockingBytecode(categoryId, collection, slot, root);
+        if (binToHex(expected) === binToHex(lock)) {
+          settlement().persistedJobEventsRecipes.set(categoryId, {
+            slot, root, collection, categoryId,
+          });
+          return true;
         }
-      }
+      } catch { /* category, collection, or slot rejected */ }
     }
   }
   return false;

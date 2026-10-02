@@ -39,7 +39,6 @@ import {
   commitStagedValueChunkWrite,
   firstUsableValueChunkRun,
   isEmptyValueChunkCommitment,
-  latestPersisted,
   markPersistedCompatibilityValueChunkReady,
   persistUpdateRedeemLock,
   persistedCompatibilityValueChunkLock,
@@ -554,18 +553,13 @@ export function persistPlacedValueChunkBand(
     && permitsLegacyNamedValueChunkFallbackForGroups(host)) {
     // Compatibility only for descriptor-free artifacts.
     if (spends.length > 0) settlement().persistedJobEventsSpends.set(categoryId, spends);
-    const staged = settlement().stagedJobEventsValues.get(categoryId)
-      ?? latestPersisted(settlement().stagedJobEventsValues, categoryId);
+    const staged = settlement().stagedJobEventsValues.get(categoryId);
     if (redeemLock) rememberJobEventsLock(categoryId, redeemLock);
     else if (chunks[0]) rememberJobEventsLock(categoryId, chunks[0].lockingBytecode);
     if (staged) {
       rememberJobEventsValue(categoryId, staged);
-      for (const otherId of settlement().stagedJobEventsValues.keys()) rememberJobEventsValue(otherId, staged);
     }
     rememberJobEventsUnlockRecipe(categoryId);
-    if (settlement().persistedJobEventsValues.size > 0) {
-      for (const otherId of settlement().persistedJobEventsValues.keys()) rememberJobEventsUnlockRecipe(otherId);
-    }
     settlement().stagedJobEventsValues.delete(categoryId);
     markPersistedCompatibilityValueChunkReady(categoryId);
   }

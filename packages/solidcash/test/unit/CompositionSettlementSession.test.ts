@@ -5,10 +5,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { sha256 } from '@solidcash/utils';
+import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
+import { keyToSlot } from '../../src/stateful/SortedList.js';
 import { ensurePersistedJobEventsInputs } from '../../src/stateful/stb-ensure-persisted-job-events-inputs.js';
+import { persistPlacedValueChunkBand } from '../../src/stateful/stb-value-chunk-band.js';
 import {
   persistedCompatibilityContinuation,
   persistedJobEventsUnlockRecipe,
+  rememberJobEventsUnlockRecipe,
 } from '../../src/stateful/value-chunk-persist.js';
 import {
   CompositionSettlementSession,
@@ -186,6 +191,66 @@ describe('composition settlement session CompositionSettlementSession', () => {
       .toEqual({ lockingBytecode: undefined, value: undefined, spends: [] });
     await runWithCompositionSettlementSession(session, () => ensurePersistedJobEventsInputs(host as never));
     expect(requestedCategories).toEqual([selected]);
+  });
+
+  it('does not recover a compatibility recipe from another category value and lock', () => {
+    const session = createCompositionSettlementSession();
+    const selected = 'aa'.repeat(32);
+    const unrelated = 'bb'.repeat(32);
+    const value = new Uint8Array(80).fill(7);
+    const slot = keyToSlot(new Uint8Array());
+    const lock = getValueChunkLockingBytecode(unrelated, 'jobEvents', slot, sha256(value));
+    session.persistedJobEventsValues.set(unrelated, value);
+    session.persistedJobEventsLocks.set(unrelated, lock);
+
+    runWithCompositionSettlementSession(session, () => {
+      expect(rememberJobEventsUnlockRecipe(selected)).toBe(false);
+      expect(persistedJobEventsUnlockRecipe(selected)).toBeUndefined();
+      session.persistedJobEventsValues.set(selected, value);
+      expect(rememberJobEventsUnlockRecipe(selected)).toBe(false);
+      session.persistedJobEventsLocks.set(selected,
+        getValueChunkLockingBytecode(selected, 'jobEvents', slot, sha256(value)));
+      expect(rememberJobEventsUnlockRecipe(selected)).toBe(true);
+      expect(persistedJobEventsUnlockRecipe(selected)?.categoryId).toBe(selected);
+    });
+  });
+
+  it('does not persist another category staged value through a compatibility band', () => {
+    const session = createCompositionSettlementSession();
+    const selected = 'aa'.repeat(32);
+    const unrelated = 'bb'.repeat(32);
+    const selectedValue = new Uint8Array(80).fill(3);
+    const unrelatedValue = new Uint8Array(80).fill(7);
+    const lock = getValueChunkLockingBytecode(
+      selected, 'jobEvents', keyToSlot(new Uint8Array()), sha256(selectedValue),
+    );
+    const host = {
+      externalCallUtxoGroups: [{ functionName: 'publishJobEvent', categoryId: selected }],
+      lowLevelCallUtxoGroups: [],
+      messageBusConvention: 'legacy-unroll',
+      composedParticipant: false,
+      getExternalCallMasterInputIndex: () => 0,
+      getLowLevelCallMasterInputIndex: () => -1,
+      getChunkableValueWriteBand: () => ({ start: 0, end: 0, nNew: 1 }),
+      rememberJobEventsChunks: () => {},
+      valueChunkRedeemLock: lock,
+    };
+    const builder = {
+      outputs: [{
+        to: lock, amount: 1000n,
+        token: { category: selected, nft: { capability: 'mutable', commitment: '0101' } },
+      }],
+    };
+    session.stagedJobEventsValues.set(unrelated, unrelatedValue);
+
+    runWithCompositionSettlementSession(session, () => persistPlacedValueChunkBand(host as never, builder as never));
+    expect(session.persistedJobEventsValues.get(selected)).toBeUndefined();
+    expect(session.persistedJobEventsValues.get(unrelated)).toBeUndefined();
+    session.stagedJobEventsValues.set(selected, selectedValue);
+    runWithCompositionSettlementSession(session, () => persistPlacedValueChunkBand(host as never, builder as never));
+    expect(session.persistedJobEventsValues.get(selected)).toEqual(selectedValue);
+    expect(session.persistedJobEventsValues.get(unrelated)).toBeUndefined();
+    expect(session.stagedJobEventsValues.get(unrelated)).toEqual(unrelatedValue);
   });
 
   it('STB production helpers and clearPersistedJobEvents go through settlement()', () => {

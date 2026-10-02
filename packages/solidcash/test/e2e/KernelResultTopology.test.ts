@@ -1,3 +1,4 @@
+import { binToHex } from '@bitauth/libauth';
 import { compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { getContractFactory, Signer, upgrades } from '../../src/index.js';
@@ -83,5 +84,54 @@ describe('kernel result-dependent call topology', () => {
     expect((await coordinator.proxy.getState()).count).toBe(1n);
     expect((await sink.getState()).total).toBe(choice ? 11n : 20n);
     expect((await sink.getState()).count).toBe(choice ? 3n : 2n);
+  }, 180_000);
+
+  it('composes reached inner-loop rows for one outer occurrence', async () => {
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
+      interface ISink { function record(uint value) external; }
+      interface IRouter { function route(uint[] memory values) external; }
+      contract Sink {
+        uint public total;
+        uint public count;
+        function record(uint value) public { this.total += value; this.count += 1; }
+      }
+      contract Router(address sink) {
+        uint public count;
+        function route(uint[] memory values) public {
+          for (uint i = 0; i < values.length; i++) {
+            for (uint j = 0; j < 2; j++) {
+              ISink(sink).record(values[i] + j);
+            }
+          }
+          this.count += 1;
+        }
+      }
+      contract Coordinator(address router) {
+        uint public count;
+        function run(uint[] memory values) public {
+          IRouter(router).route(values);
+          this.count += 1;
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x75), provider);
+    for (let index = 0; index < 20; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const sink = await getContractFactory(artifacts.Sink, signer).deploy();
+    const router = await getContractFactory(artifacts.Router, signer).deploy(sink.inner.lockingBytecode);
+    router._registerResolvedExternal('ISink', sink);
+    const coordinator = await getContractFactory(artifacts.Coordinator, signer).deploy(router.inner.lockingBytecode);
+    coordinator._registerResolvedExternal('IRouter', router);
+    const receipt = await coordinator.call.run([7n]).send();
+    const outpoints = receipt.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    expect(new Set(outpoints).size).toBe(outpoints.length);
+    expect((await sink.getState()).total).toBe(15n);
+    expect((await sink.getState()).count).toBe(2n);
+    expect((await router.getState()).count).toBe(1n);
+    expect((await coordinator.getState()).count).toBe(1n);
   }, 180_000);
 });

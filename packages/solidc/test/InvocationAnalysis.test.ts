@@ -745,6 +745,54 @@ describe('Release 0 shared invocation analysis', () => {
       });
   });
 
+  it('publishes both affine domains for a nested external-call loop', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint value); }
+      contract NestedLoop() {
+        function run(address target, bigint[] values) public {
+          for (bigint i = 0; i < values.length; i = i + 1) {
+            for (bigint j = 0; j < 5; j = j + 1) {
+              ITarget(target).step(values[i] + j);
+            }
+          }
+          require(values.length >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    const edge = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0];
+    expect(edge?.iterationDomain).toBeUndefined();
+    expect(edge?.nestedIterationDomains).toMatchObject([
+      { counterName: 'i', continueCondition: { kind: 'binary', operator: '<', right: {
+        kind: 'unary', operator: '.length',
+      } } },
+      { counterName: 'j', continueCondition: { kind: 'binary', operator: '<', right: {
+        kind: 'literal', value: '5',
+      } } },
+    ]);
+  });
+
+  it('withholds a nested domain when its bound changes in the outer loop', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint value); }
+      contract MutatingNestedBound() {
+        function run(address target, bigint[] values, bigint bound) public {
+          for (bigint i = 0; i < values.length; i = i + 1) {
+            bound = bound - 1;
+            for (bigint j = 0; j < bound; j = j + 1) {
+              ITarget(target).step(j);
+            }
+          }
+          require(bound >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    const edge = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0];
+    expect(edge?.iterationDomain).toBeUndefined();
+    expect(edge?.nestedIterationDomains).toBeUndefined();
+  });
+
   it('uses an authenticated prior producer result in the loop domain and publishes its consumer lane', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface IProbe { function limit(bigint seed) returns (bigint, bool); }

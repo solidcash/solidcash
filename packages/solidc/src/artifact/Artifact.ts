@@ -309,13 +309,13 @@ export const occurrenceInfoOf = (
  */
 const externalCallIterationDomains = (
   fn: FunctionDefinitionNode, compilerOptions: CompilerOptions,
-): ReadonlyMap<number, {
+): ReadonlyMap<number, readonly {
   counterName: string;
   initialValue: ExternalCallExpression;
   stepValue: ExternalCallExpression;
   continueCondition: ExternalCallExpression;
   maximumIterations: number;
-}> => {
+}[]> => {
   if (!fn.body || !fn.externalCalls?.length) return new Map();
   type Binding = ExternalCallExpression | undefined;
   type ReplayState = { bindings: Map<object | string, Binding> };
@@ -555,73 +555,85 @@ const externalCallIterationDomains = (
     return result;
   };
 
-  const result = new Map<number, {
+  type Domain = {
     counterName: string;
     initialValue: ExternalCallExpression;
     stepValue: ExternalCallExpression;
     continueCondition: ExternalCallExpression;
     maximumIterations: number;
-  }>();
+  };
+  const result = new Map<number, Domain[]>();
   for (const call of fn.externalCalls) {
     const target = call.sourceCallNode;
     if (!target) continue;
     const enclosing = loopContexts.get(call.slotIndex) ?? [];
-    // One affine domain cannot describe a Cartesian product of nested source loops.
-    if (enclosing.length !== 1) continue;
-    const [{ block, index, loop }] = enclosing;
-    const counter = block.statements?.[index - 1];
-    if (!(counter instanceof VariableDefinitionNode) || !counter.isLoopVariable || !counter.expression
-      || loop.forLoopUpdateCount !== 1 || loopCanExitEarly(loop)) continue;
-    const update = loop.block.statements?.at(-1);
-    if (!(update instanceof AssignNode) || update.identifier.name !== counter.name
+    if (enclosing.length === 0) continue;
+    const domains: Domain[] = [];
+    for (const [depth, { block, index, loop }] of enclosing.entries()) {
+      const counter = block.statements?.[index - 1];
+      if (!(counter instanceof VariableDefinitionNode) || !counter.isLoopVariable || !counter.expression
+      || loop.forLoopUpdateCount !== 1 || loopCanExitEarly(loop)) break;
+      const update = loop.block.statements?.at(-1);
+      if (!(update instanceof AssignNode) || update.identifier.name !== counter.name
       || !(update.expression instanceof BinaryOpNode)
-      || ![BinaryOperator.PLUS, BinaryOperator.MINUS].includes(update.expression.operator)) continue;
-    const counterOnLeft = update.expression.left instanceof IdentifierNode
+      || ![BinaryOperator.PLUS, BinaryOperator.MINUS].includes(update.expression.operator)) break;
+      const counterOnLeft = update.expression.left instanceof IdentifierNode
       && update.expression.left.name === counter.name;
-    const counterOnRight = update.expression.operator === BinaryOperator.PLUS
+      const counterOnRight = update.expression.operator === BinaryOperator.PLUS
       && update.expression.right instanceof IdentifierNode
       && update.expression.right.name === counter.name;
-    if (!counterOnLeft && !counterOnRight) continue;
-    let counterAssignments = 0;
-    const countCounterAssignments = (value: unknown, seen = new Set<object>()): void => {
-      if (!(value instanceof Node) || seen.has(value)) return;
-      seen.add(value);
-      if (value instanceof AssignNode) {
-        const key = definitionKey(value.identifier);
-        if (key === counter || key === `name:${counter.name}`) counterAssignments += 1;
+      if (!counterOnLeft && !counterOnRight) break;
+      let counterAssignments = 0;
+      const countCounterAssignments = (value: unknown, seen = new Set<object>()): void => {
+        if (!(value instanceof Node) || seen.has(value)) return;
+        seen.add(value);
+        if (value instanceof AssignNode) {
+          const key = definitionKey(value.identifier);
+          if (key === counter || key === `name:${counter.name}`) counterAssignments += 1;
+        }
+        for (const [key, child] of Object.entries(value)) {
+          if (skip.has(key)) continue;
+          if (child instanceof Node) countCounterAssignments(child, seen);
+          else if (Array.isArray(child)) child.forEach((item) => countCounterAssignments(item, seen));
+        }
+      };
+      countCounterAssignments(loop.block);
+      if (counterAssignments !== 1) break;
+      const magnitude = counterOnLeft ? update.expression.right : update.expression.left;
+      const deps = new Set([
+        ...dependencies(counter.expression, counter),
+        ...dependencies(loop.condition, counter),
+        ...dependencies(magnitude, counter),
+      ]);
+      if ([...deps].some((dependency) => assignedIn(loop.block, dependency, counter)
+        || enclosing.slice(0, depth).some((ancestor) => assignedIn(ancestor.loop.block, dependency, counter)))) {
+        break;
       }
-      for (const [key, child] of Object.entries(value)) {
-        if (skip.has(key)) continue;
-        if (child instanceof Node) countCounterAssignments(child, seen);
-        else if (Array.isArray(child)) child.forEach((item) => countCounterAssignments(item, seen));
-      }
-    };
-    countCounterAssignments(loop.block);
-    if (counterAssignments !== 1) continue;
-    const magnitude = counterOnLeft ? update.expression.right : update.expression.left;
-    const deps = new Set([...dependencies(loop.condition, counter), ...dependencies(magnitude, counter)]);
-    if ([...deps].some((dependency) => assignedIn(loop.block, dependency, counter))) continue;
-    const state = clone(initial);
-    if (!replayBefore(fn.body, counter, state)) continue;
-    const initialValue = serialize(counter.expression, state);
-    // The declaration starts the live induction binding only after its initializer is evaluated.
-    state.bindings.set(counter, { kind: 'identifier', name: counter.name });
-    state.bindings.set(`name:${counter.name}`, { kind: 'identifier', name: counter.name });
-    const continueCondition = serialize(loop.condition, state, counter);
-    const serializedMagnitude = serialize(magnitude, state, counter);
-    const stepValue = serializedMagnitude && update.expression.operator === BinaryOperator.MINUS
-      ? {
-        kind: 'binary' as const, operator: BinaryOperator.MINUS,
-        left: { kind: 'literal' as const, type: 'bigint', value: '0' }, right: serializedMagnitude,
-      }
-      : serializedMagnitude;
-    const maximumIterations = fixedForMaximum(counter, loop)
+      const state = clone(initial);
+      // Only the outer loop may depend on writes before its header. Inner recurrences are published only
+      // when they serialize from parameters/constants without relying on loop-carried local state.
+      if (depth === 0 && !replayBefore(fn.body, counter, state)) break;
+      const initialValue = serialize(counter.expression, state);
+      // The declaration starts the live induction binding only after its initializer is evaluated.
+      state.bindings.set(counter, { kind: 'identifier', name: counter.name });
+      state.bindings.set(`name:${counter.name}`, { kind: 'identifier', name: counter.name });
+      const continueCondition = serialize(loop.condition, state, counter);
+      const serializedMagnitude = serialize(magnitude, state, counter);
+      const stepValue = serializedMagnitude && update.expression.operator === BinaryOperator.MINUS
+        ? {
+          kind: 'binary' as const, operator: BinaryOperator.MINUS,
+          left: { kind: 'literal' as const, type: 'bigint', value: '0' }, right: serializedMagnitude,
+        }
+        : serializedMagnitude;
+      const maximumIterations = fixedForMaximum(counter, loop)
       ?? loop.compilerAuthenticatedMaximumIterations
       ?? (compilerOptions.messageBusKernel === true ? ATOMIC_MESSAGE_BUS_MAX_ROWS : undefined);
-    if (!initialValue || !stepValue || !continueCondition || maximumIterations === undefined) continue;
-    result.set(call.slotIndex, {
-      counterName: counter.name, initialValue, stepValue, continueCondition, maximumIterations,
-    });
+      if (!initialValue || !stepValue || !continueCondition || maximumIterations === undefined) break;
+      domains.push({
+        counterName: counter.name, initialValue, stepValue, continueCondition, maximumIterations,
+      });
+    }
+    if (domains.length === enclosing.length) result.set(call.slotIndex, domains);
   }
   return result;
 };
@@ -1971,8 +1983,7 @@ function buildFunctionAbiMetadata(
       if (slot.condition) {
         slot.condition = canonicalize(slot.condition, slot.slotIndex, 'condition');
       }
-      const domain = iterationDomains.get(slot.slotIndex);
-      if (domain) {
+      for (const domain of iterationDomains.get(slot.slotIndex) ?? []) {
         domain.initialValue = canonicalize(domain.initialValue, slot.slotIndex, 'iterationDomain');
         domain.stepValue = canonicalize(domain.stepValue, slot.slotIndex, 'iterationDomain');
         domain.continueCondition = canonicalize(
@@ -2591,8 +2602,11 @@ function buildFunctionAbiMetadata(
           ...(!ec.batchInvocations && ec.preCallRequires?.length && {
             preCallRequires: ec.preCallRequires,
           }),
-          ...(iterationDomains.get(ec.slotIndex) && {
-            iterationDomain: iterationDomains.get(ec.slotIndex)!,
+          ...(iterationDomains.get(ec.slotIndex)?.length === 1 && {
+            iterationDomain: iterationDomains.get(ec.slotIndex)![0],
+          }),
+          ...((iterationDomains.get(ec.slotIndex)?.length ?? 0) > 1 && {
+            nestedIterationDomains: iterationDomains.get(ec.slotIndex)!,
           }),
           ...(resultArrayOutput !== undefined && { resultArrayOutput }),
           interfaceName: ec.interfaceName,

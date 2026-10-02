@@ -8024,6 +8024,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             && (defNode.loopStepValue !== undefined || defNode.loopStepExpression !== undefined)) {
             return {
               kind: 'loopIndex',
+              counterName: defNode.name,
               initialValue: defNode.loopInitialValue.toString(),
               ...(defNode.loopStepValue !== undefined
                 && { stepValue: defNode.loopStepValue.toString() }),
@@ -8080,6 +8081,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               return {
                 kind: 'arrayElement',
                 paramIndex: arraySource.paramIndex,
+                counterName: indexSource.counterName,
                 indexValue: Number(indexSource.initialValue),
                 indexStepValue: Number(indexSource.stepValue),
               };

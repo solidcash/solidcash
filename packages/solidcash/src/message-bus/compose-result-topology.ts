@@ -101,6 +101,38 @@ function hasChangedDependency(
   return Object.values(value).some((child) => hasChangedDependency(child, results, before, after));
 }
 
+/** A flat reached index is sound for a nested call only when every directly serialized loop source belongs
+ * to its innermost counter. Outer values must arrive through the enclosing single producer occurrence. */
+function usesAnotherLoopCounter(value: unknown, innerCounter: string, seen = new Set<object>()): boolean {
+  if (!value || typeof value !== 'object' || seen.has(value)) return false;
+  seen.add(value);
+  const source = value as { kind?: string; counterName?: string; indexStepValue?: number };
+  if ((source.kind === 'loopIndex' || (source.kind === 'arrayElement' && source.indexStepValue !== 0))
+    && source.counterName !== innerCounter) return true;
+  return Object.values(value).some((child) => usesAnotherLoopCounter(child, innerCounter, seen));
+}
+
+/** Select the sole reached outer coordinate before evaluating the inner loop. This rewrites metadata only;
+ * the executable call and its compiler-authored guards remain authoritative in final VM preflight. */
+function bindOuterLoopCounter<T>(value: T, counterName: string, coordinate: bigint): T {
+  if (Array.isArray(value)) return value.map((item) => bindOuterLoopCounter(item, counterName, coordinate)) as T;
+  if (!value || typeof value !== 'object' || value instanceof Uint8Array) return value;
+  const record = value as Record<string, unknown>;
+  if (record.counterName === counterName && record.kind === 'loopIndex') {
+    return { ...record, initialValue: coordinate.toString(), stepValue: '0', stepExpression: undefined } as T;
+  }
+  if (record.counterName === counterName && record.kind === 'arrayElement'
+    && record.indexStepValue !== 0) {
+    if (!Number.isSafeInteger(Number(coordinate))) {
+      throw new Error('messageBus: nested array coordinate is not a safe integer');
+    }
+    return { ...record, indexValue: Number(coordinate), indexStepValue: 0 } as T;
+  }
+  return Object.fromEntries(Object.entries(record).map(([key, child]) => [
+    key, bindOuterLoopCounter(child, counterName, coordinate),
+  ])) as T;
+}
+
 /**
  * Return discovery can change reachability as well as argument bytes. Rebuild compiler-described child
  * occurrences before planning the next transaction, retaining result seeds only on the same source edge.
@@ -213,7 +245,7 @@ async function rebuildCallTopology(
           selectedSelector: row.selector,
         })) ?? [{ ...source, sourceCallsiteId: source.callsiteId,
           sourceLogicalIndex: undefined, selectedSelector: source.rawSelector }];
-        for (const template of templates) {
+        for (let template of templates) {
           const existing = existingSite.filter((child) => (
             child.previous === undefined
               ? child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex
@@ -221,7 +253,8 @@ async function rebuildCallTopology(
                 ?? child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex
           ) === template.sourceLogicalIndex);
           if (previous !== undefined && ctx !== undefined && !hasChangedDependency(
-            [template.condition, template.iterationDomain, template.addressSource], childResults,
+            [template.condition, template.iterationDomain, template.nestedIterationDomains,
+              template.addressSource], childResults,
             ctx.descriptors[previous].args, call.args,
           )) {
             // Argument propagation already refreshed existing rows. A result unrelated to this edge's
@@ -232,19 +265,51 @@ async function rebuildCallTopology(
           let iterations = [0];
           if (template.occurrence === 'loop') {
             const domain = template.iterationDomain;
-            if (!domain) throw new Error('messageBus: result-dependent loop has no compiler iteration domain');
-            const expressions = [domain.initialValue, domain.stepValue, domain.continueCondition];
-            const returns = returnsFor(expressions.map((expression) => ({ kind: 'expression', expression })));
-            await hydrate(expressions, [0], returns);
+            const nested = template.nestedIterationDomains;
+            if (!domain && nested?.length !== 2) {
+              throw new Error('messageBus: result-dependent loop has no compiler iteration domain');
+            }
+            if (nested && (nested.length !== 2 || nested[0]?.counterName === nested[1]?.counterName)) {
+              throw new Error('messageBus: nested call has unsupported or ambiguous loop counters');
+            }
             // Missing producer results are not zero/false. Defer this callsite, then let VM return discovery
             // supply the value on the next graph epoch. Invalid resolved domains still fail closed.
             let unresolved = false;
             try {
-              iterations = externalCallIterationIndices(domain, (expression, bindings) => {
-                const value = evaluate(expression, 0, returns, bindings);
-                if (value === undefined) unresolved = true;
-                return value;
-              });
+              const domainIndices = async (selected: NonNullable<typeof domain>): Promise<number[]> => {
+                const expressions = [selected.initialValue, selected.stepValue, selected.continueCondition];
+                const returns = returnsFor(expressions.map((expression) => ({ kind: 'expression', expression })));
+                await hydrate(expressions, [0], returns);
+                return externalCallIterationIndices(selected, (expression, bindings) => {
+                  const value = evaluate(expression, 0, returns, bindings);
+                  if (value === undefined) unresolved = true;
+                  return value;
+                });
+              };
+              if (domain) iterations = await domainIndices(domain);
+              else {
+                const outer = await domainIndices(nested![0]!);
+                // Repeated outer producer results require occurrence-qualified consumer lanes. Keep that case
+                // closed until the topology can pair each inner tuple with its exact outer authenticated row.
+                if (outer.length > 1) {
+                  throw new Error('messageBus: nested call repeats an outer producer occurrence');
+                }
+                if (outer.length === 0) iterations = [];
+                else {
+                  const outerInitial = evaluate(nested![0]!.initialValue, 0, returnsFor([{
+                    kind: 'expression', expression: nested![0]!.initialValue,
+                  }]));
+                  if (typeof outerInitial !== 'bigint') {
+                    throw new Error('messageBus: nested outer loop has no exact initial coordinate');
+                  }
+                  template = bindOuterLoopCounter(template, nested![0]!.counterName, outerInitial);
+                  if (usesAnotherLoopCounter(
+                    [template.condition, template.argSources, template.rawArgSources, template.addressSource],
+                    nested![1]!.counterName,
+                  )) throw new Error('messageBus: nested call has an unresolved loop coordinate');
+                  iterations = await domainIndices(nested![1]!);
+                }
+              }
             } catch (error) {
               if (!unresolved) throw error;
               next.push(...existing);
@@ -353,12 +418,15 @@ async function rebuildCallTopology(
             };
             selected.push({ call: child });
             // A newly discovered producer may feed a mandatory later edge before any aggregate VM pass exists.
-            // Seed only this in-memory candidate topology with a typed empty result; never publish it as a
+            // Seed only one reached loop occurrence in this in-memory candidate topology with a typed empty
+            // result; never publish it as a
             // prepared return commitment. The composer must replace it with the observed producer result,
             // rebuild the graph, and pass the complete transaction VM before admission.
-            if (previous === undefined && template.occurrence !== 'loop' && template.hasReturnValues
+            if (previous === undefined && (template.occurrence !== 'loop' || (iterations.length === 1
+              && template.sourceLogicalIndex === undefined))
+              && template.hasReturnValues
               && template.returnTypes?.length === 1 && template.callsiteId !== undefined
-              && (template.maximumOccurrences ?? 1) === 1) {
+              && (template.occurrence === 'loop' || (template.maximumOccurrences ?? 1) === 1)) {
               candidateResults.set(template.callsiteId, getDefaultStateValue(
                 template.returnTypes[0], artifact.structs ?? artifact.stateLayout?.structs,
               ) as FunctionArgument);

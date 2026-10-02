@@ -57,8 +57,8 @@ async function prepareTypedCallbackGraph(
     handler.selector.toLowerCase() === entry.selector?.toLowerCase() && handler.eligible) !== true) {
     return undefined;
   }
-  // A callback needs at least one reachable callee which can itself call onward (or directly alias the root).
-  // Most ordinary cross-contract calls end at a leaf; do not hydrate and traverse their graph on every send.
+  // A callback needs an onward edge, while a source loop or two edges to one owner can repeat that owner's
+  // master without ever returning to the root. Most ordinary single calls still use the legacy builder.
   // An unregistered/dynamic target is unknown, not proof of a leaf, so it still enters exact discovery.
   const logical = root.executor ?? contract;
   const registry = (logical as unknown as {
@@ -81,7 +81,21 @@ async function prepareTypedCallbackGraph(
       || (edge.rawSelector !== undefined && candidate.selector === edge.rawSelector));
     return callee === undefined || (callee.externalCalls?.length ?? 0) > 0;
   });
-  if (!mayReachCallback) return undefined;
+  const registeredOwners = new Set<string>();
+  const mayRepeatOwner = entry.externalCalls.some((edge) => {
+    if (edge.occurrence === 'loop') return true;
+    const registered = registry.get(edge.interfaceName) as {
+      categoryId?: string; inner?: { lockingBytecode?: string };
+      proxy?: StatefulContract;
+    } | undefined;
+    const owner = registered?.proxy ?? registered;
+    if (!owner?.categoryId || !owner.inner?.lockingBytecode) return false;
+    const key = `${owner.categoryId.toLowerCase()}:${owner.inner.lockingBytecode.toLowerCase()}`;
+    if (registeredOwners.has(key)) return true;
+    registeredOwners.add(key);
+    return false;
+  });
+  if (!mayReachCallback && !mayRepeatOwner) return undefined;
   const rootOwner = `${contract.categoryId.toLowerCase()}:${contract.inner.lockingBytecode.toLowerCase()}`;
   const registeredPathReturnsToRoot = (
     participant: StatefulContract,

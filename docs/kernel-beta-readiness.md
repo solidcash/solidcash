@@ -447,16 +447,18 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   proxy's single delegate root, and composed compiler-routed delegates no longer append a second legacy executor
   output block beyond their published balanced span. This proves the real proxy callback semantics for this
   fixture, not the full Marketplace gate or standard-capacity deployment; no broad suite ran.
-- 2026-10-02 looped-claim gap: a focused attempt to send the unchanged proxy
-  `UnicrowClaim.claimMultiple([1])` fails before atomic composition. The root `for` condition reads
-  `escrows.length`; the compiler's external-call iteration-domain serializer omitted field access, so it
-  published no domain for its direct loop edges. That serializer now publishes an exact input-array-length
-  domain, with the focused metadata title and its immediately preceding title green. A second boundary remains:
-  `claimPayments` inlines a nested five-party loop, and `sendEscrowShare` still has no domain because the
-  metadata represents only one affine counter, not a nested outer/inner occurrence identity. The SDK must not
-  invent rows or return values for that edge. The `claimMultiple` VM title remained red and was not retained as
-  a regression test; no claim of looped proxy success is made. This is a kernel graph-identity gap independent
-  of the relaxed capacity setting.
+- 2026-10-02 nested-loop claim follow-up: the compiler now publishes separate, exact outer/inner affine domains
+  for the unchanged `UnicrowClaim.claimMultiple` → `claimPayments` → `sendEscrowShare` edge, retaining the
+  input-array-length domain added earlier. The SDK composes a single reached outer occurrence, binding its
+  induction coordinate before evaluating the inner loop; multiple outer occurrences remain fail-closed pending
+  occurrence-qualified producer-result lanes. The compiler withholds a nested domain if an inner bound mutates
+  inside its outer loop. A neutral reached-call VM title executes both inner `Sink.record`
+  rows and its immediately preceding branch title passes. The unchanged proxy `claimMultiple([1])` title also
+  passes with the seeded zero-amount escrow, including its immediately preceding arbitration title. This proves
+  nested guard/row selection and one real proxy claim, not a positive-value payout. A separate positive-payout
+  attempt reaches `Unicrow.__message_bus1` but VM preflight rejects its low-level native-value call: an input-
+  bytecode pin compares the seller's 32-byte address value with an `OP_TRUE` placeholder input. The payout title
+  was not retained as a green regression or waived. This is a call-representation gap, not a capacity refusal.
 - The unchanged proxy Marketplace `arbitrate > arbitrate 80-20` title passes individually on mock BCH-2026
   (1 selected, 65 skipped; 411.56 seconds in the test body). It is not a reproduction of the same-owner
   callback gap above and does not establish the other arbitration titles or the 66-title gate. No predecessor

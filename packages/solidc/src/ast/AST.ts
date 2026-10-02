@@ -2767,6 +2767,7 @@ export interface ExternalCallArgSource {
   initialValue?: string;
   stepValue?: string;
   stepExpression?: ExternalCallExpression;
+  counterName?: string;
   paramName?: string;
   value?: string;
   type?: string;

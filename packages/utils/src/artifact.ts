@@ -1080,6 +1080,7 @@ export interface ArgSource {
   initialValue?: string;   // for 'loopIndex': value at occurrence zero
   stepValue?: string;      // for 'loopIndex': delta per reached occurrence
   stepExpression?: ExternalCallExpression; // for 'loopIndex': runtime delta from public arguments
+  counterName?: string;  // compiler-bound induction variable for nested-domain coordinate selection
   paramName?: string;      // for 'constructorArg': name of the constructor parameter
   value?: string;          // for 'literal': serialized value
   type?: string;           // for 'literal': SolidCash type string
@@ -1279,6 +1280,9 @@ export interface ExternalCallAbi {
   /** Exact affine pre-test loop recurrence which reaches this callsite. Unlike `maximumOccurrences`, this
    * describes the runtime iteration domain rather than only publishing a protocol ceiling. */
   iterationDomain?: ExternalCallIterationDomainAbi;
+  /** Outer-to-inner affine domains for a call inside nested pre-test loops. Consumers which cannot
+   * identify every source coordinate must refuse the call rather than flattening one counter. */
+  nestedIterationDomains?: readonly ExternalCallIterationDomainAbi[];
   /** ABI output array directly populated by this loop call (`result[i] = call(); return result`). */
   resultArrayOutput?: number;
   /** Compiler-proven ceiling on reached rows. Absent means no ceiling was proven for this callsite. */

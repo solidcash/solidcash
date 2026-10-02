@@ -122,9 +122,11 @@ export async function ensurePersistedValueChunkInputs(
       const address = typeof encoded === 'string' ? undefined : encoded.address;
       if (address) {
         const fetched = await host.builderOptions.provider.getUtxos(address);
-        for (const utxo of fetched.filter((item) => item.token?.category === unlockCategory
-          && item.token?.nft?.capability === 'mutable')) {
-          extras.push({ ...utxo, unlocker });
+        const canonicalCategory = unlockCategory.toLowerCase();
+        for (const utxo of fetched) {
+          if (utxo.token?.category.toLowerCase() !== canonicalCategory
+            || utxo.token.nft?.capability !== 'mutable') continue;
+          extras.push({ ...utxo, token: { ...utxo.token, category: canonicalCategory }, unlocker });
         }
       }
     } catch { /* persist fetch is best-effort */ }

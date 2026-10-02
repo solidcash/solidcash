@@ -313,7 +313,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
     let placed: unknown[] = [];
     const fetched = {
       txid: '01'.repeat(32), vout: 0, satoshis: 1000n,
-      token: { category: categoryId, nft: { capability: 'mutable', commitment: '00' } },
+      token: { category: categoryId.toUpperCase(), nft: { capability: 'mutable', commitment: '00' } },
     };
     const provider = {
       network: 'chipnet',
@@ -370,6 +370,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
     expect(queries).toBe(1);
     expect(queriedAddress).toMatch(/^bchtest:/);
     expect(placed).toHaveLength(1);
+    expect((placed[0] as { token: { category: string } }).token.category).toBe(categoryId);
     expect((placed[0] as { unlocker: { generateLockingBytecode(): Uint8Array } })
       .unlocker.generateLockingBytecode()).toEqual(
       getValueChunkLockingBytecode(categoryId, 'jobEvents', slot, root),

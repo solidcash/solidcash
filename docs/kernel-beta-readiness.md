@@ -484,6 +484,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   `ensurePersistedValueChunkInputs` and generic host hooks. The historical `JobEvents` builder method and module
   remain deprecated adapters for existing callers; legacy collection inference stays fenced inside the helper.
   The focused predecessor-fetch title and its immediately preceding lock-derivation title pass after the rename.
+- 2026-10-02 provider category normalization follow-up: a fetched mutable predecessor with an uppercase hex
+  category now matches the selected category and enters the builder with canonical lowercase text. The focused
+  predecessor-fetch title went red-to-green and its immediately preceding lock-derivation title passes. No broad
+  suite was run.
 
 ## Gate before the next leap
 

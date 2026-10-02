@@ -62,7 +62,7 @@ export interface JobEventsBandHost extends ScaledPreserveEmitHost {
   readonly mintingOutputSwap?: { from: number; width: number; categoryId: string };
   /** Mutable recovered-output cache — band materialization rewrites provisional chunk pins. */
   derivedChunkOutputs: Map<number, DerivedChunkOutputObservation>;
-  readonly jobEventsRedeemLock?: Uint8Array;
+  readonly valueChunkRedeemLock?: Uint8Array;
   readonly delegateDynamicChunksAtSuffix: boolean;
   persistedJobEventsChunks: Array<{ commitment: string; lockingBytecode: Uint8Array; categoryId?: string }>;
   valueChunkWriteStagingSession?: ValueChunkWriteStagingSession;
@@ -96,7 +96,7 @@ export function packReverseIndexedValueChunkSuffix(
 ): void {
   const band = host.getChunkableValueWriteBand();
   const tailStart = band ? band.end + 1 : 0;
-  const chunkHex = host.jobEventsRedeemLock ? binToHex(host.jobEventsRedeemLock) : '';
+  const chunkHex = host.valueChunkRedeemLock ? binToHex(host.valueChunkRedeemLock) : '';
   let suffixLock: Uint8Array | undefined;
   for (let index = builder.outputs.length - 1; index >= tailStart; index--) {
     const lock = builder.outputs[index]?.to instanceof Uint8Array
@@ -274,7 +274,7 @@ export function materializeJobEventsBand(
     : undefined;
   const redeemLock = chunks[0]?.lockingBytecode
     ?? recipeLock
-    ?? host.jobEventsRedeemLock
+    ?? host.valueChunkRedeemLock
     ?? (stateOwnerCategory ? persistedCompatibilityValueChunkLock(stateOwnerCategory) : undefined);
   const placed = applyRedeemLockToChunks(
     [...host.derivedChunkOutputs.entries()]
@@ -353,7 +353,7 @@ export function ensureLiveJobEventsBand(
     ? host.persistUpdateDigestLock(persistTokenCategory)
     : (shouldRematerializePersistUpdateForHost(host)
       ? persistUpdateRedeemLock(
-        persistTokenCategory, host.jobEventsRedeemLock,
+        persistTokenCategory, host.valueChunkRedeemLock,
         persistedWrite, allowLegacyPersistFallback,
       )
       : undefined);
@@ -367,7 +367,7 @@ export function ensureLiveJobEventsBand(
 
   const redeemLock = persistVLock
     ?? persistDigestLock
-    ?? host.jobEventsRedeemLock
+    ?? host.valueChunkRedeemLock
     ?? (categoryId ? persistedCompatibilityValueChunkLock(categoryId) : undefined);
   const persistedValue = shouldRematerializePersistUpdateForHost(host)
     ? (host.persistedValueChunkValue(persistTokenCategory)
@@ -496,7 +496,7 @@ export function persistPlacedJobEventsBand(
       liveCount = value.n;
     }
   }
-  const redeemLock = liveLock ?? host.jobEventsRedeemLock ?? persistedCompatibilityValueChunkLock(categoryId);
+  const redeemLock = liveLock ?? host.valueChunkRedeemLock ?? persistedCompatibilityValueChunkLock(categoryId);
   const chunks: AuthenticatedValueChunk[] = [];
   const spends: Array<{
     txid: string;

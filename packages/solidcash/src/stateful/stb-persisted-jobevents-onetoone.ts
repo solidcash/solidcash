@@ -48,7 +48,7 @@ export interface PersistedJobEventsOneToOneHost extends ScaledPreserveEmitHost {
   readonly compilerRouteDelegateBlock: boolean;
   readonly preserveBlockLayoutWidth: boolean;
   readonly pendingJobEventsPredecessors: readonly UnlockableUtxo[];
-  readonly jobEventsRedeemLock?: Uint8Array;
+  readonly valueChunkRedeemLock?: Uint8Array;
   hasMintingBandTokenWriter(): boolean;
   declaredExternalOutputSlotOwner(outputIndex: number): {
     categoryId: string;
@@ -82,7 +82,7 @@ export function reassertPersistedJobEventsOneToOnes(
   const categoryId = destCategory ?? chunkableValueWriteCategory(host);
   const persistLockCategory = persistedValueChunkCategory(host) ?? categoryId;
   const persistLock = (persistLockCategory ? persistedCompatibilityValueChunkLock(persistLockCategory) : undefined)
-    ?? host.jobEventsRedeemLock;
+    ?? host.valueChunkRedeemLock;
   const replayCategories = new Set([categoryId, persistLockCategory].filter(
     (candidate): candidate is string => candidate !== undefined,
   ));
@@ -212,7 +212,7 @@ export function reassertPersistedJobEventsOneToOnes(
     const digestCategory = input.token?.category ?? categoryId;
     const persistedWrite = host.persistedValueChunkWrite(digestCategory);
     const digestLock = persistUpdateRedeemLock(
-      digestCategory, host.jobEventsRedeemLock, persistedWrite,
+      digestCategory, host.valueChunkRedeemLock, persistedWrite,
       !hasChunkableValueWriteMetadata(host) && permitsLegacyNamedValueChunkFallbackForGroups(host),
     );
     const chunkIndex = valueChunkIndexFromCommitment(commit);

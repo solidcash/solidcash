@@ -976,8 +976,8 @@ export class StatefulTransactionBuilder {
     commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
   }> = [];
 
-  /** Last VM pin redeem lock for the jobEvents band (emitValueChunkP2sh32). */
-  private jobEventsRedeemLock?: Uint8Array;
+  /** Last VM-pinned locking bytecode for the selected chunkable-value continuation band. */
+  private valueChunkRedeemLock?: Uint8Array;
   /** A selected writer's persisted continuation band starts after its emitted event output. */
   private forcedChunkableValueWriteBandStart?: number;
   /** True while building one balanced participant of an atomic composition (its blocks are concatenated). */
@@ -986,15 +986,25 @@ export class StatefulTransactionBuilder {
   /** Monotonic signal for structural growth discovered while probing dynamic output regions. */
   private dynamicLayoutRevision = 0;
 
-  setJobEventsRedeemLock(lock: Uint8Array): this {
+  setValueChunkRedeemLock(lock: Uint8Array): this {
     if (lock.length === 35 && lock[0] === 0xaa && lock[1] === 0x20 && lock[34] === 0x87) {
-      this.jobEventsRedeemLock = lock;
+      this.valueChunkRedeemLock = lock;
     }
     return this;
   }
 
+  getValueChunkRedeemLock(): Uint8Array | undefined {
+    return this.valueChunkRedeemLock;
+  }
+
+  /** @deprecated Historical name; use setValueChunkRedeemLock. */
+  setJobEventsRedeemLock(lock: Uint8Array): this {
+    return this.setValueChunkRedeemLock(lock);
+  }
+
+  /** @deprecated Historical name; use getValueChunkRedeemLock. */
   getJobEventsRedeemLock(): Uint8Array | undefined {
-    return this.jobEventsRedeemLock;
+    return this.getValueChunkRedeemLock();
   }
 
   private lateValueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
@@ -1251,7 +1261,7 @@ export class StatefulTransactionBuilder {
   /** Collection entry lock next to the jobEvents band (not the value-chunk redeem). */
   entryLockNearJobEventsBand(): Uint8Array | undefined {
     const band = this.getChunkableValueWriteBand();
-    const chunkLock = this.jobEventsRedeemLock;
+    const chunkLock = this.valueChunkRedeemLock;
     const chunkHex = chunkLock ? binToHex(chunkLock) : '';
     const prefer = band ? [band.start - 1, band.start - 2, band.start] : [];
     for (const index of prefer) {
@@ -1533,7 +1543,7 @@ export class StatefulTransactionBuilder {
       compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
       preserveBlockLayoutWidth: this.preserveBlockLayoutWidth,
       pendingJobEventsPredecessors: this.pendingJobEventsPredecessors,
-      jobEventsRedeemLock: this.jobEventsRedeemLock,
+      valueChunkRedeemLock: this.valueChunkRedeemLock,
       hasMintingBandTokenWriter: () => this.hasMintingBandTokenWriter(),
       declaredExternalOutputSlotOwner: (outputIndex) => this._declaredExternalOutputSlotOwner(outputIndex),
       persistUpdateDigestLock: (categoryId) => this._persistUpdateDigestLock(categoryId),
@@ -2426,7 +2436,7 @@ export class StatefulTransactionBuilder {
     return {
       allInputs: this.allInputs,
       valueChunkOutputs: this.valueChunkOutputs,
-      valueChunkRedeemLock: this.jobEventsRedeemLock,
+      valueChunkRedeemLock: this.valueChunkRedeemLock,
       preserveBlockLayoutWidth: this.preserveBlockLayoutWidth,
       pinnedEntrySlots: this.pinnedEntrySlots,
       requiredEntryOutputSlots: this.requiredEntryOutputSlots,
@@ -2479,7 +2489,7 @@ export class StatefulTransactionBuilder {
       allInputs: this.allInputs,
       mintingOutputSwap: this.mintingOutputSwap,
       derivedChunkOutputs: this.derivedChunkOutputs,
-      jobEventsRedeemLock: this.jobEventsRedeemLock,
+      valueChunkRedeemLock: this.valueChunkRedeemLock,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
       get persistedJobEventsChunks() { return self.persistedJobEventsChunks; },
       set persistedJobEventsChunks(next) { self.persistedJobEventsChunks = next; },
@@ -4472,7 +4482,7 @@ export class StatefulTransactionBuilder {
     const value = this._persistedValueChunkValue(categoryId);
     const persistedWrite = this._persistedValueChunkWrite(categoryId);
     const lock = persistUpdateRedeemLock(
-      categoryId, this.jobEventsRedeemLock, persistedWrite,
+      categoryId, this.valueChunkRedeemLock, persistedWrite,
       !this._hasChunkableValueWriteMetadata() && this._permitsLegacyNamedValueChunkFallback(),
     );
     if (!value || !lock) return 0;

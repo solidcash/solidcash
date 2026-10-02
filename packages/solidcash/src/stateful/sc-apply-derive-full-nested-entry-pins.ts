@@ -73,9 +73,9 @@ export function applyDeriveFullNestedEntryPins(
   // After value chunks are staged, derivation probes often die before the entry-NFT
   // OUTPUTBYTECODE pin. Seed the implementation-relative NEW slot (INPUTINDEX+blockSize)
   // with the EntryNft lock so the next probe can reveal the real commitment.
-  if ((stb.hasStagedValueChunkOutputs() || stb.getJobEventsRedeemLock()) && chunkCategory) {
+  if ((stb.hasStagedValueChunkOutputs() || stb.getValueChunkRedeemLock()) && chunkCategory) {
     const entryPin = extractFailingP2sh32OutputPin(nestedTrace);
-    const stagedValueLock = stb.getJobEventsRedeemLock();
+    const stagedValueLock = stb.getValueChunkRedeemLock();
     const nestedEntryAbi = llc.compilerRoute?.abiFunction
     ?? llc.externalContract?.inner.artifact.abi.find(
       (candidate: AbiFunction) => candidate.name === llc.functionName,

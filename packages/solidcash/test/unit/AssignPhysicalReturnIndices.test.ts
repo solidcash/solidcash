@@ -3515,7 +3515,7 @@ describe('assignPhysicalReturnIndices', () => {
     for (const sessionLock of [legacyLock, undefined]) {
       let placed = 0;
       const builder = Object.assign(Object.create(StatefulTransactionBuilder.prototype) as object, {
-        jobEventsRedeemLock: sessionLock,
+        valueChunkRedeemLock: sessionLock,
         _shouldRematerializePersistUpdate: () => true,
         getChunkableValueWriteBand: () => ({ start: 4, end: 4, nNew: 1 }),
         _chunkableValueWriteCategory: () => categoryId,

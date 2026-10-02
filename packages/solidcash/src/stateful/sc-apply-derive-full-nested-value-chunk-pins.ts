@@ -233,7 +233,7 @@ export function applyDeriveFullNestedValueChunkPin(
       lockingBytecode: identityPin.lockingBytecode,
       commitment: '00',
     }
-    : (stb.hasStagedValueChunkOutputs() || stb.getJobEventsRedeemLock())
+    : (stb.hasStagedValueChunkOutputs() || stb.getValueChunkRedeemLock())
       ? extractFailingP2sh32OutputPin(nestedTrace)
       ?? extractRouteChunkPin(nestedTrace)
       : extractRouteChunkPin(nestedTrace)
@@ -467,7 +467,7 @@ export function applyDeriveFullNestedValueChunkPin(
     // Compatibility only for descriptor-free artifacts.
       rememberJobEventsLock(chunkCategory, redeemLock);
     }
-    stb.setJobEventsRedeemLock(redeemLock);
+    stb.setValueChunkRedeemLock(redeemLock);
   }
   if (identityPin && allChunks.length > 0 && identityPin.nNew === allChunks.length) {
   // A compiler-identified resource has one authoritative materializer: its exact absolute derived
@@ -511,7 +511,7 @@ export function applyDeriveFullNestedValueChunkPin(
   } else if (!identityPin) {
   // Keep staged identity-scan value chunks, but still apply unrelated positional pins
   // (entry NFT locks, etc.) that become reachable after the count check passes.
-    const stagedValueLock = stb.getJobEventsRedeemLock();
+    const stagedValueLock = stb.getValueChunkRedeemLock();
     for (const chunk of allChunks) {
       if (stagedValueLock && binsAreEqual(chunk.lockingBytecode, stagedValueLock)) continue;
       if (stb.setDerivedChunkOutput(chunk.outputIndex, {

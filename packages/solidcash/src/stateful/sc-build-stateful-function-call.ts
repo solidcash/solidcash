@@ -187,7 +187,7 @@ export async function buildStatefulFunctionCall(
       for (const [offset, chunk] of stb.getDerivedChunkOutputs()) {
         noteLock(chunk.lockingBytecode, `chunk:${chunk.resourcePart ?? offset}`);
       }
-      noteLock(stb.getJobEventsRedeemLock(), 'jobEventsRedeem');
+      noteLock(stb.getValueChunkRedeemLock(), 'valueChunkRedeem');
       if (resourceLocks.size > 0) {
         Object.defineProperty(built, '__messageBusResourceLocks', {
           configurable: false,
@@ -359,7 +359,7 @@ export async function buildStatefulFunctionCall(
               }
             } catch { /* no derived chunks */ }
             try {
-              classify(stb.getJobEventsRedeemLock(), 'jobEventsRedeem');
+              classify(stb.getValueChunkRedeemLock(), 'valueChunkRedeem');
             } catch { /* no session lock */ }
             try {
               console.error('trailing-band-coordinates', JSON.stringify({

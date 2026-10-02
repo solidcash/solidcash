@@ -444,7 +444,7 @@ export function deriveRouteValueChunks(
   const pin = scanPin ?? positionalPin;
   if (!pin) return { changed: false, discovered: false };
   if (usesSharedBand && isP2sh32LockingBytecode(pin.lockingBytecode)) {
-    stb.setJobEventsRedeemLock(pin.lockingBytecode);
+    stb.setValueChunkRedeemLock(pin.lockingBytecode);
   }
   const blockSlot = pin.outputIndex - bOutputBase;
   const kind = group.blockLayout.slots[blockSlot]?.kind;

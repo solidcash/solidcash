@@ -202,7 +202,7 @@ async function rebuildCallTopology(
     const expressionHost = { resolveExternalArgs: logical._resolveExternalArgs.bind(logical) };
     const fn = resolveMessageBusAbiFunction(artifact, call.functionName, call.selector);
     let children = previous === undefined ? [] : childrenByParent.get(previous) ?? [];
-    const candidateResults = new Map<number, FunctionArgument>();
+    const candidateResults = new AuthenticatedProducerResults(previous ?? 0);
     const childResults = previous === undefined ? candidateResults
       : resultsByParent.get(previous) ?? new Map<number, FunctionArgument>();
     const self = artifact.messageBus?.route.inputs.some(
@@ -248,6 +248,9 @@ async function rebuildCallTopology(
         }, expressions, [...args], artifact, state, fn.inputs, self, iterations);
       };
       const next: Child[] = [];
+      const reachedProducerOccurrences = new Map<number, {
+        domainKey: string; bySourceIteration: Map<number, number>;
+      }>();
       for (const source of sources) {
         // A prepared call may omit its callsiteId when the compiled graph can infer the exact edge from source
         // order. Once planned, that graph identity is authoritative: filtering by the optional descriptor field
@@ -264,12 +267,15 @@ async function rebuildCallTopology(
           sourceLogicalIndex: undefined, selectedSelector: source.rawSelector }];
         for (const sourceTemplate of templates) {
           const conditionalProducerOccurrences = new Map<number, Map<number, number>>();
+          const outerDomain = sourceTemplate.iterationDomain ?? sourceTemplate.nestedIterationDomains?.[0];
+          const outerDomainKey = outerDomain?.sourceLoopId === undefined
+            ? undefined : semanticJson(outerDomain);
           const returnsForOuter = (
             argSources: readonly ArgSource[], condition: ExternalCallAbi | undefined,
             outerIndex: number | undefined,
             available: ReadonlyMap<number, FunctionArgument> = childResults,
           ): Map<string, FunctionArgument> => {
-            if (outerIndex === undefined || conditionalProducerOccurrences.size === 0) {
+            if (outerIndex === undefined) {
               return externalReturnsForCallsites(argSources, available, sources,
                 condition?.callsiteId === undefined ? undefined : {
                   callsiteId: condition.callsiteId, resultConsumers: fn.resultConsumers, lane: 'condition',
@@ -278,7 +284,10 @@ async function rebuildCallTopology(
             const selected = new Map<number, FunctionArgument>();
             for (const producer of sources) {
               if (producer.callsiteId === undefined) continue;
-              const mapped = conditionalProducerOccurrences.get(producer.callsiteId);
+              const reached = reachedProducerOccurrences.get(producer.callsiteId);
+              const mapped = conditionalProducerOccurrences.get(producer.callsiteId)
+                ?? (reached !== undefined && reached.domainKey === outerDomainKey
+                  ? reached.bySourceIteration : undefined);
               const occurrenceIndex = mapped ? mapped.get(outerIndex) : outerIndex;
               if (occurrenceIndex === undefined) continue;
               const result = available instanceof AuthenticatedProducerResults
@@ -310,9 +319,6 @@ async function rebuildCallTopology(
           let occurrences: Array<{ iteration: number; edge: typeof sourceTemplate; outerIndex?: number }> = [
             { iteration: 0, edge: sourceTemplate },
           ];
-          const outerDomain = sourceTemplate.iterationDomain ?? sourceTemplate.nestedIterationDomains?.[0];
-          const outerDomainKey = outerDomain?.sourceLoopId === undefined
-            ? undefined : semanticJson(outerDomain);
           if (sourceTemplate.occurrence === 'loop') {
             const domain = sourceTemplate.iterationDomain;
             const nested = sourceTemplate.nestedIterationDomains;
@@ -424,6 +430,8 @@ async function rebuildCallTopology(
             }
           }
           const selected: Child[] = [];
+          const reachedCurrent = new Map<number, number>();
+          const candidateSeeds: Array<{ occurrenceIndex: number; value: FunctionArgument }> = [];
           let unresolved = false;
           let occurrence = 0;
           for (const { iteration, edge: template, outerIndex } of occurrences) {
@@ -497,6 +505,14 @@ async function rebuildCallTopology(
               return rawPayload && resolved
                 ? decodeCanonicalRawInvocation(childArtifact, resolved[0]).args : resolved;
             };
+            if (template.hasReturnValues && template.callsiteId !== undefined
+              && template.sourceLogicalIndex === undefined
+              && outerDomainKey !== undefined && outerIndex !== undefined) {
+              if (reachedCurrent.has(outerIndex)) {
+                throw new Error('messageBus: producer source iteration has ambiguous reached occurrence');
+              }
+              reachedCurrent.set(outerIndex, occurrence);
+            }
             if (prior && prior.call.contract === contract && prior.call.selector === childFn.selector
               && prior.call.executor === executor) {
               const rebuilt = rebuildPreparedInvocation(prior.call, childArgs, undefined);
@@ -535,20 +551,40 @@ async function rebuildCallTopology(
             };
             selected.push({ call: child });
             // A newly discovered producer may feed a mandatory later edge before any aggregate VM pass exists.
-            // Seed only one reached loop occurrence in this in-memory candidate topology with a typed empty
-            // result; never publish it as a
-            // prepared return commitment. The composer must replace it with the observed producer result,
-            // rebuild the graph, and pass the complete transaction VM before admission.
-            if (previous === undefined && (template.occurrence !== 'loop' || (occurrences.length === 1
-              && template.sourceLogicalIndex === undefined))
-              && template.hasReturnValues
+            // Seed each compiler-qualified reached occurrence in this candidate topology with a typed empty
+            // result; never publish it as a prepared return commitment. The composer must replace it with the
+            // observed producer result, rebuild the graph, and pass the complete VM before admission.
+            if (previous === undefined && template.hasReturnValues
               && template.returnTypes?.length === 1 && template.callsiteId !== undefined
-              && (template.occurrence === 'loop' || (template.maximumOccurrences ?? 1) === 1)) {
-              candidateResults.set(template.callsiteId, getDefaultStateValue(
+              && (template.occurrence === 'loop'
+                ? outerDomainKey !== undefined && outerIndex !== undefined
+                  && template.sourceLogicalIndex === undefined
+                : (template.maximumOccurrences ?? 1) === 1)) {
+              candidateSeeds.push({ occurrenceIndex: occurrence, value: getDefaultStateValue(
                 template.returnTypes[0], artifact.structs ?? artifact.stateLayout?.structs,
-              ) as FunctionArgument);
+              ) as FunctionArgument });
             }
             occurrence += 1;
+          }
+          if (!unresolved && reachedCurrent.size > 0 && outerDomainKey !== undefined
+            && sourceTemplate.callsiteId !== undefined) {
+            const reached = reachedProducerOccurrences.get(sourceTemplate.callsiteId)
+              ?? { domainKey: outerDomainKey, bySourceIteration: new Map<number, number>() };
+            if (reached.domainKey !== outerDomainKey || [...reachedCurrent.keys()].some((index) =>
+              reached.bySourceIteration.has(index))) {
+              throw new Error('messageBus: producer source iteration has ambiguous reached occurrence');
+            }
+            for (const [index, reachedOccurrence] of reachedCurrent) {
+              reached.bySourceIteration.set(index, reachedOccurrence);
+            }
+            reachedProducerOccurrences.set(sourceTemplate.callsiteId, reached);
+          }
+          if (!unresolved && sourceTemplate.callsiteId !== undefined) {
+            for (const seed of candidateSeeds) candidateResults.add({
+              callsiteId: sourceTemplate.callsiteId, sourceCallsiteId: sourceTemplate.sourceCallsiteId,
+              sourceLogicalIndex: sourceTemplate.sourceLogicalIndex,
+              occurrenceIndex: seed.occurrenceIndex,
+            }, seed.value);
           }
           next.push(...(unresolved ? existing : selected));
         }

@@ -467,8 +467,9 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   (1 selected, 65 skipped; 411.56 seconds in the test body). It is not a reproduction of the same-owner
   callback gap above and does not establish the other arbitration titles or the 66-title gate. No predecessor
   regression title was run because this title was not red.
-- Internally consumed repeated returns now use compact carriers only for a dense zero-based reached prefix; sparse
-  source iterations and downstream graph consumers remain fail-closed without occurrence-qualified identities.
+- Internally consumed repeated returns used compact carriers only for a dense zero-based reached prefix at this
+  checkpoint; sparse source iterations with downstream graph consumers were still fail-closed then, before the
+  occurrence-qualified follow-up below.
   Read-only argument-keyed entry handlers publish two authenticated fixed tuple lanes, independent of the route's
   maximum row count; a third distinct identity remains fail-closed. The focused invalid-tag Marketplace title and
   its adjacent unregistered-arbitrator title pass unchanged after a fresh four-job compile.
@@ -715,6 +716,14 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   BCH-2026 route title settles ReaderB's result and all three Sink rows. Its immediately preceding branch-local
   title and the SDK unit title's preceding empty-array title pass. `yarn build` passes. No comprehensive suite
   or 10 KB gate ran.
+- 2026-10-02 sparse repeated-return follow-up: two Reader returns at source iterations zero and two initially
+  produced a provisional graph with only Reader rows; the Router rejected it at BCH-2026 `OP_VERIFY` before
+  either dependent Sink row was included. Initial discovery now keeps typed-empty candidate results in distinct
+  reached-occurrence lanes and maps source iteration two to compact occurrence one. These candidates only
+  enumerate the complete graph; observed VM returns replace them before final admission. Incomplete or
+  unresolved source-callsite selection publishes no candidate lanes. The exact red-to-green BCH-2026 title
+  settles both Sink rows (total four, count two), its immediately preceding sparse-target title passes, and
+  `yarn build` plus focused lint pass. No comprehensive suite or 10 KB gate ran.
 
 ## Gate before the next leap
 

@@ -6,7 +6,7 @@ import { solidcashHardhatPreset } from '@solidcash/testing/vitest-preset';
 // This project only adds its own app-dep shim (@noble/ciphers v0.5 subpaths -> the installed v2 build).
 export default defineConfig(solidcashHardhatPreset({
   test: {
-    include: ['test/marketplace.test.ts'],
+    include: ['test/marketplace.test.ts', 'test/decodeData.test.ts'],
     testTimeout: 120000,
   },
   resolve: {

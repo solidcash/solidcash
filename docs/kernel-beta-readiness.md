@@ -219,6 +219,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   transitive expansion searches only external-call groups for an existing owner and therefore cannot identify
   the transaction root as the physical carrier of an A→B→A callback. Removing the legacy circular-call refusal
   alone would leave a second spend of A's master UTXO; no callback acceptance change was made on this evidence.
+  The source path to prove is `UnicrowArbitrator.arbitrate → UnicrowClaim.claim →
+  UnicrowArbitrator.getArbitratorData`, with the getter observing the earlier `arbitrated = true` write.
+- The unchanged proxy Marketplace `arbitrate > arbitrate 80-20` title passes individually on mock BCH-2026
+  (1 selected, 65 skipped; 411.56 seconds in the test body). It is not a reproduction of the same-owner
+  callback gap above and does not establish the other arbitration titles or the 66-title gate. No predecessor
+  regression title was run because this title was not red.
 - Internally consumed repeated returns now use compact carriers only for a dense zero-based reached prefix; sparse
   source iterations and downstream graph consumers remain fail-closed without occurrence-qualified identities.
   Read-only argument-keyed entry handlers publish two authenticated fixed tuple lanes, independent of the route's

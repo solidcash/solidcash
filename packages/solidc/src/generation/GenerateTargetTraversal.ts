@@ -8753,8 +8753,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // this body instead admits only the offset this body's own layout names, which is not the offset the delegated
       // output sits at, so an honest emit would be refused.
       const splitDelegateOwnsImmutableEvents = node.splitDelegateEventOffsets !== undefined;
+      // A forwarder whose one effect is an `L.f()` delegatecall to a library facet defers the event family too: the
+      // facet entry pinned at this block slot censuses its own events at the offsets its layout declares.
+      const libraryFacetOwnsImmutableEvents = !this.perCallMaster && this.functionHasDelegatecall
+        && node.pinsDelegateCoSpend === true && node.delegateIndexFromBlockSlot === true
+        && (node.libraryDelegateCalls?.length ?? 0) === 1 && (node.lowLevelCalls?.length ?? 0) === 1
+        && !hasEventEmits && !hasRuntimeLoopEvents && !hasReturnEventB && !hasExternalCalls && !hasDeploys;
       if (node.name !== '__construct' && isStatefulContract
-        && !splitDelegateOwnsImmutableEvents
+        && !splitDelegateOwnsImmutableEvents && !libraryFacetOwnsImmutableEvents
         && (declaresEvents || this.currentFunctionIsDelegate || proxyCanAdmitDelegateEvent)) {
         this.emitOwnCategoryImmutableNftOutputPin(node);
       }

@@ -264,6 +264,11 @@ describe('message-bus compilation selection', () => {
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.available).toBe(true);
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+    // The direct epilogue re-evaluates this choice. If an operand changes after the call, it must not
+    // authenticate a different co-spent owner from the one selected at the callsite.
+    expect(() => compileString(source.replace('value = next;', 'choose = !choose; value = next;'), {
+      solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
+    })).toThrow(/external call target address must be a constructor\/function parameter or self-pinned state value/);
   });
 
   it('selects the graph route for a low-level call through this.address state', () => {
@@ -350,6 +355,24 @@ describe('message-bus compilation selection', () => {
           require(value >= 0);
         }
       }`, { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.available).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);
+  });
+
+  it('selects a dynamic same-interface ternary receiver without pinning either target', () => {
+    const source = `interface ISink { function note(int value) external; }
+      contract ConditionalSink(ISink left, ISink right) {
+        int value;
+        function forward(bool choose, int next) public {
+          (choose ? left : right).note(next);
+          value = next;
+          require(next >= 0);
+        }
+      }`;
+    const artifact = compileString(source, {
+      solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
+    });
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.available).toBe(true);
     expect(artifact.abi.find((entry) => entry.name === 'forward')?.externalCalls).toHaveLength(1);

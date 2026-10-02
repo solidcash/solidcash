@@ -4095,6 +4095,13 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       return sourceReceiverTypes(expression.tuple, bindings)
         .flatMap((type) => type instanceof ArrayType ? [type.elementType] : []);
     }
+    if (expression instanceof TernaryOpNode) {
+      const whenTrue = sourceReceiverTypes(expression.ifTrue, bindings);
+      const whenFalse = sourceReceiverTypes(expression.ifFalse, bindings);
+      // A dynamic choice of two receivers with the same declared interface is still a real graph edge.
+      // Do not select a route from only one branch or assume a concrete address at compile time.
+      return whenTrue.filter((type) => whenFalse.some((other) => other.toString() === type.toString()));
+    }
     if (expression instanceof FieldAccessNode) {
       return sourceReceiverTypes(expression.expression, bindings).flatMap((parent) =>
         parent instanceof StructType

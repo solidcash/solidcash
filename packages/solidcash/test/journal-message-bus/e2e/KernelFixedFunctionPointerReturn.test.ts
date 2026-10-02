@@ -188,6 +188,66 @@ describe('kernel function-pointer BCH VM', () => {
     expect((await store.getState()).calls).toBe(1n);
   }, 120_000);
 
+  it('dispatches a ternary interface receiver to either runtime-selected callee', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
+      interface ISink { function note(uint amount) external; }
+      contract Sink {
+        uint value;
+        function note(uint amount) public { value = value + amount; require(true); }
+      }
+      contract SinkAlt {
+        uint value;
+        function note(uint amount) public { value = value + amount * 2; require(true); }
+      }
+      contract Router(ISink left, ISink right) {
+        uint calls;
+        function forward(bool choose, uint amount) public {
+          (choose ? left : right).note(amount);
+          calls = calls + 1;
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      solidityImportCompat: true,
+      suppressWarnings: true,
+    });
+    expect(artifacts.SinkAlt.bytecode).not.toBe(artifacts.Sink.bytecode);
+    const connect = async (
+      selected: Artifact, args: readonly unknown[], state: Record<string, unknown>,
+    ): Promise<StatefulContract> => {
+      const base = new Contract(selected, args as never[], { provider });
+      const setup = await setupStatefulUtxos(
+        provider, base, selected.stateLayout!, state, { saltContract: true },
+      );
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const left = await connect(artifacts.Sink, [], { value: 5n });
+    const right = await connect(artifacts.SinkAlt, [], { value: 10n });
+    const router = await connect(artifacts.Router,
+      [left.inner.lockingBytecode, right.inner.lockingBytecode], { calls: 0n });
+    const compose = async (
+      choose: boolean, target: StatefulContract,
+    ): Promise<ReturnType<typeof messageBus.compose>> => {
+      const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+      return messageBus.compose({
+        preparedCalls: [
+          { contract: router, functionName: 'forward', args: [choose, 2n] },
+          { contract: target, functionName: 'note', args: [2n] },
+        ],
+        funder,
+        changeAddress: funder.unlocker.generateLockingBytecode(),
+      });
+    };
+    expect(vmAccepts(await (await compose(true, left)).build())).toBe(true);
+    expect(vmAccepts(await (await compose(false, right)).build())).toBe(true);
+    await expect((await compose(false, left)).build()).rejects.toThrow(/BCH-2026 preflight failed/);
+  }, 120_000);
+
   it('composes a reached conditional function-pointer call by its compiler callsite', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`pragma solidity ^0.8.0;

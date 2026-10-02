@@ -32883,7 +32883,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const rtAddrTemps = new Map<number, string>();
     for (const slot of this.externalCallSlots) {
       const address = slot.sourceCallNode?.addressExpression;
-      if (!slot.fnPtrCall || !slot.runtimeSelector || slot.addressParam || slot.addressStateVar
+      if ((!slot.fnPtrCall || !slot.runtimeSelector) && !slot.runtimeTernaryAddress) continue;
+      if (slot.addressParam || slot.addressStateVar
         || !(address instanceof TernaryOpNode)
         || !(address.condition instanceof IdentifierNode)
         || !(address.ifTrue instanceof IdentifierNode)

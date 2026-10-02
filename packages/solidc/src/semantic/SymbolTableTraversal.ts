@@ -3870,6 +3870,12 @@ export default class SymbolTableTraversal extends AstTraversal {
               node.opRolls.delete(slot.addressParam.slice('__extaddr_ll_'.length));
             }
           }
+          if (slot.runtimeTernaryAddress && slot.sourceCallNode?.addressExpression instanceof TernaryOpNode) {
+            const address = slot.sourceCallNode.addressExpression;
+            for (const operand of [address.condition, address.ifTrue, address.ifFalse]) {
+              if (operand instanceof IdentifierNode) node.opRolls.delete(operand.name);
+            }
+          }
           // Graph emission may read a forwarded argument more than once
           // (raw calldata is split once for its selector and once for its ABI
           // tail). Keep every compiler-declared forwarded source PICK-only;
@@ -9158,6 +9164,29 @@ export default class SymbolTableTraversal extends AstTraversal {
       // applied to the serialized expression tree after the final slot layout is known.
       const provisionalSlotIndex = slots.length;
       node.callInfo.externalCallSlotIndex = provisionalSlotIndex;
+      const ternaryTarget = node.addressExpression instanceof TernaryOpNode
+        ? node.addressExpression : undefined;
+      const ternaryNames = ternaryTarget?.condition instanceof IdentifierNode
+        && ternaryTarget.ifTrue instanceof IdentifierNode
+        && ternaryTarget.ifFalse instanceof IdentifierNode
+        ? [ternaryTarget.condition.name, ternaryTarget.ifTrue.name, ternaryTarget.ifFalse.name]
+        : undefined;
+      const stableAddressNames = new Set([
+        ...(this.currentFunction?.parameters ?? []), ...(this.currentContract?.parameters ?? []),
+      ].map((parameter) => parameter.name));
+      let ternaryOperandWritten = false;
+      if (ternaryNames && ternaryNames.every((name) => stableAddressNames.has(name))) {
+        const selected = new Set(ternaryNames);
+        walkInvocationAst(this.currentFunction?.body, (candidate) => {
+          if ((candidate instanceof AssignNode || candidate instanceof DeleteLocalNode)
+            && selected.has(candidate.identifier.name)) ternaryOperandWritten = true;
+          if (candidate instanceof TupleAssignmentNode
+            && candidate.elements.some((element) => element.existing && element.name
+              && selected.has(element.name))) ternaryOperandWritten = true;
+        });
+      }
+      const runtimeTernaryAddress = !!ternaryNames
+        && ternaryNames.every((name) => stableAddressNames.has(name)) && !ternaryOperandWritten;
       slots.push({
         interfaceName: node.callInfo.interfaceName,
         functionName: node.callInfo.functionName,
@@ -9182,6 +9211,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(loopArrayElemStructType && { loopArrayElemStructType, loopArrayElemFieldName }),
         ...(node.selectorArrayVar && { selectorArrayVar: node.selectorArrayVar }),
         ...(addressLiteral !== undefined && { addressLiteral }),
+        ...(runtimeTernaryAddress && { runtimeTernaryAddress: true }),
         ...(addressIsMsgSender && { addressIsMsgSender: true }),
         ...(addressSource && { addressSource }),
         ...(rawFunctionName && { rawFunctionName }),
@@ -14825,6 +14855,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       const base = this.resolveLowLevelReceiverType(expr.tuple);
       return base instanceof ArrayType ? base.elementType : undefined;
     }
+    if (expr instanceof TernaryOpNode) {
+      const whenTrue = this.resolveLowLevelReceiverType(expr.ifTrue);
+      const whenFalse = this.resolveLowLevelReceiverType(expr.ifFalse);
+      // Both branches must promise the SAME callable interface. The selected address stays runtime-dynamic;
+      // this resolves only the ABI used to encode and verify its method.
+      return whenTrue instanceof AddressType && whenFalse instanceof AddressType
+        && whenTrue.interfaceName && whenTrue.interfaceName === whenFalse.interfaceName
+        ? whenTrue : undefined;
+    }
     // `arr.length` / `bytes.length` is a UnaryOp SIZE, typed uint256 - lets a using-for method bind on a length
     // receiver (BoringMath `lpToken.length.sub(1)` in MasterChefV2).
     if (expr instanceof UnaryOpNode && expr.operator === UnaryOperator.SIZE) return new IntType(false, 256);
@@ -15299,7 +15338,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     const isStateElemFieldReceiver = node.object instanceof FieldAccessNode
       && (node.object.expression instanceof MappingAccessNode || node.object.expression instanceof ArrayAccessNode);
     if (node.object instanceof MappingAccessNode || node.object instanceof ArrayAccessNode
-      || node.object instanceof TupleIndexOpNode || isStateElemFieldReceiver) {
+      || node.object instanceof TupleIndexOpNode || node.object instanceof TernaryOpNode
+      || isStateElemFieldReceiver) {
       const recvType = this.resolveLowLevelReceiverType(node.object);
       const calleeName = recvType instanceof AddressType ? recvType.interfaceName : undefined;
       const ifaceFunc = calleeName

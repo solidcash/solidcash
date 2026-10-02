@@ -2835,6 +2835,9 @@ export interface ExternalCallSlot {
   // expected address instead of reading a param/state - caller-independent. A non-locking-bytecode literal
   // (e.g. a 20-byte ETH address) makes the identity check un-satisfiable (fails closed). Never a caller input.
   addressLiteral?: string;
+  // A source ternary whose condition and both same-interface address arms are unmodified function/constructor
+  // parameters. The direct epilogue may re-evaluate this exact choice to authenticate the co-spent callee.
+  runtimeTernaryAddress?: boolean;
   // Set when the call target is an array element `IFoo(arr[i]).m()`: the state array (of addresses) whose
   // every element is co-spent + verified as a callee in a loop (the source `for` loop is left as harmless
   // iteration; the epilogue reads the array and loop-verifies callee[base+i].master.LBC == arr[i]).

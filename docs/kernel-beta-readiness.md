@@ -418,6 +418,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   pruning. An unused internal repeated-call pair compiles direct-only by default and matches explicit direct
   bytecode; calling that helper still makes `messageBus: false` fail closed. The exact title went red-to-green and
   its immediately preceding unreachable-library title passes. No broad suite was run.
+- 2026-10-02 ternary-interface target follow-up: `(choose ? left : right).note(amount)` now resolves a single
+  same-interface ABI without pinning either receiver's bytecode. Automatic selection recognizes the reachable
+  foreign edge, and the direct epilogue authenticates the runtime-selected locking bytecode only when the branch
+  condition and both address operands are stable parameters. A post-call condition write is refused at compile
+  time. The focused BCH-2026 proof accepts both branches with different callee bytecode and rejects a wrong-owner
+  child; that title and its immediately preceding pointer title pass individually. The compiler selection title
+  and its immediately preceding indexed-receiver title also pass individually. No broad suite was run.
 
 ## Gate before the next leap
 

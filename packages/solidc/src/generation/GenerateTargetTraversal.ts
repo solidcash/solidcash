@@ -21060,6 +21060,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
     }
 
+    // Reached only when the call runs, so its callee must be co-spent: the epilogue skips a slot whose master index
+    // is below 0 (an untaken conditional call). Loop and batch slots authenticate reachedness per iteration or row.
+    if (batchRow === undefined && node.callInfo) {
+      const guardSlot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
+      if (guardSlot && !guardSlot.inlineLoopDispatch && !guardSlot.loopArrayVar && !guardSlot.batchInvocations
+        && !this.isExternalCallSlotLoopNested(guardSlot)) {
+        this.emitSlotMasterIndex(guardSlot, locationData);
+        this.emit(encodeInt(0n), locationData);
+        this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+        this.emit(Op.OP_VERIFY, locationData);
+      }
+    }
+
     // Handle {value: X} call option - emit a transfer to the callee's address
     if (node.callOptions?.value && node.valueTransferIndex >= 0 && node.callInfo) {
       const slot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];

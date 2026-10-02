@@ -469,6 +469,7 @@ async function syncPerCallRegisters(
 async function syncMockBlockOracleDeployments(
   provider: NetworkProvider,
   deployments: Iterable<{ contract: unknown }>,
+  keeperRule = false,
 ): Promise<number> {
   const storage = (provider as { indexer?: { storage?: MockUtxoStorage } }).indexer?.storage;
   if (!storage?._test) return 0;
@@ -510,6 +511,16 @@ async function syncMockBlockOracleDeployments(
           continue;
         }
       }
+      // The production keeper (`syncOnce`) pushes only when the chain is ahead of the oracle, and an implicit
+      // refresh follows the same rule. A register at or past the tip height stands as it would on chain: state
+      // seeded for a fixed block, or a signed owner update the covenant admitted (it requires tx.time >= number).
+      // Without this the refresh before every call replaced an owner's update with the mock tip's fields. A layout
+      // without a height register carries no freshness and is always refreshed, and an explicit tip move (mine,
+      // evm_increaseTime) refreshes unconditionally.
+      if (keeperRule) {
+        const recorded = onChain.state.__block_number;
+        if (typeof recorded === 'bigint' && recorded >= fields.number) continue;
+      }
       const next = { ...onChain.state };
       for (const variable of touched) {
         next[variable.name] = byRegister[variable.name];
@@ -526,12 +537,15 @@ async function syncMockBlockOracleDeployments(
   return updated;
 }
 
-/** Refresh only one freshly deployed contract graph (including proxy/implementation pairs). */
+/**
+ * Refresh only one contract graph (including proxy/implementation pairs), as the keeper would: a direct contract
+ * whose height register is already at or past the tip is left alone.
+ */
 export async function syncMockBlockOracleDeployment(
   provider: NetworkProvider,
   deployment: { contract: unknown },
 ): Promise<number> {
-  return syncMockBlockOracleDeployments(provider, [deployment]);
+  return syncMockBlockOracleDeployments(provider, [deployment], true);
 }
 
 export async function syncMockBlockOracles(provider: NetworkProvider): Promise<number> {

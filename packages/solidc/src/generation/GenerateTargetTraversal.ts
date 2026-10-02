@@ -2070,7 +2070,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private conditionalSortedWriteFlagSlots: Set<number> = new Set();
   // Multi-slot sorted batches (`m[a] -= v; m[b] += v`) under a branch arm, keyed by lowest slot -> target slots. The
   // topology verifier pins slot/next, not value, and the per-slot flag above cannot follow a relinked predecessor, so
-  // one "batch ran" flag gates whole-batch node preservation on the arm not taken. Direct convention only.
+  // one "batch ran" flag gates whole-batch node preservation on the arm not taken: the direct epilogue, or a per-call
+  // master's batch transition.
   private conditionalSortedBatchFlags: Map<number, readonly number[]> = new Map();
   // Dynamic (chunk-backed) writes whose value+A$len slots were pushed before a conditional (branch/switch) with
   // the current value, so a conditionally-taken write replaces them in place (survives the branch) - by var name.
@@ -27409,6 +27410,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // packed batch slot/next blob
       }
 
+      // A per-call master has no generic epilogue: a conditional batch that did not run (its flag clear) leaves every
+      // node it spends unchanged, so bind each target's recreated record to the commitment it was spent with. A batch
+      // record is recreated where its proof spent it, so both sides take the proof's coordinate.
+      const batchRepr = Math.min(...targets);
+      if (this.readsRecordsFromFrame && this.conditionalSortedBatchFlags.has(batchRepr)) {
+        const flagName = GenerateTargetTraversalWithLocation.condSortedBatchFlagName(batchRepr);
+        const flagIndex = this.getStackIndex(flagName, true);
+        if (flagIndex >= 0) {
+          this.emit(encodeInt(BigInt(flagIndex)), loc); bin(Op.OP_PICK);
+          bin(Op.OP_NOTIF);
+          for (const slot of [...targets].sort((a, b) => a - b)) {
+            this.emitEntryInputIndex(slot, loc, 0); bin(Op.OP_UTXOTOKENCOMMITMENT);
+            this.emitEntryOutputIndex(slot, loc, 1); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
+            bin(Op.OP_EQUALVERIFY);
+          }
+          bin(Op.OP_ENDIF);
+        }
+      }
+
       // Direct entry points already performed this combined fixed+runtime scan before executing the body. Routes
       // must defer it until now because only their authenticated activity flags reveal which fixed rows exist.
       if (!this.isCompilerMessageBusRoute(node) && runtimeCollections.has(batch.collection)) continue;
@@ -41376,16 +41396,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Push a false "batch ran" flag, below the body's locals, for each multi-slot sorted batch whose every write sits
-   * under a branch arm. Any of the batch's upserts sets it; emitConditionalSortedBatchPreservation preserves every
-   * node where it stays false. Same guards as the per-slot allocator; direct convention only, so per-call and
-   * message-bus builds allocate nothing and keep their bytes.
+   * under a branch arm. Any of the batch's upserts sets it; where it stays false the direct epilogue
+   * (emitConditionalSortedBatchPreservation) or a per-call master's batch transition binds every node unchanged.
+   * Same guards as the per-slot allocator: a message-bus route allocates nothing and keeps its bytes.
    */
   private allocateConditionalSortedBatchFlags(node: FunctionDefinitionNode): void {
-    if (this.isDefineSubTraversal || this.perCallMaster || this.functionHasDelegatecall) return;
-    if (this.compilerOptions.composition === 'per-call') return;
-    if ((this.compilerOptions as { __messageBusExplicitlyDisabled?: boolean }).__messageBusExplicitlyDisabled !== true) {
-      return;
-    }
+    if (this.isDefineSubTraversal || this.functionHasDelegatecall) return;
+    const messageBusDisabled = (this.compilerOptions as { __messageBusExplicitlyDisabled?: boolean })
+      .__messageBusExplicitlyDisabled === true;
+    const direct = messageBusDisabled && this.compilerOptions.composition !== 'per-call' && !this.perCallMaster;
+    if (!direct && !this.perCallMaster) return;
     const batches = (node.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.length > 1);
     if (batches.length === 0) return;
     const conditional = new Set<number>();

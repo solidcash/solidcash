@@ -82,6 +82,15 @@ describe('local array-element delete (int[] d; delete d[i])', () => {
   });
 });
 
+describe('local array-element assignment', () => {
+  it('reuses the decoded length when rebuilding a fixed array', () => {
+    const artifact = compileString('contract C { function f(uint256 x) public returns(uint256) {'
+      + ' uint256[5] memory p; p[0]=x; p[1]=x+1; p[2]=x+2; p[3]=x+3; p[4]=x+4;'
+      + ' return p[4]; } }', { solidityImportCompat: true, messageBus: false });
+    expect(artifact.bytecode.length / 2).toBeLessThan(4100);
+  });
+});
+
 describe('Tuple forwarding and whole fixed-array assignment', () => {
   it('forwards a tuple-returning call directly in a return statement', () => {
     // `return g()` where g returns (int, int) forwards the tuple's components (Solidity tuple forwarding),

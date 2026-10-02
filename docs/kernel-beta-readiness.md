@@ -185,6 +185,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   compiler increased the unchanged claim estimate to 10,293 bytes, so the experiment was reverted. Source,
   compiler, and generated artifacts are unchanged after these probes; `yarn build` passes. A real graph-preserving
   reduction, not a smaller spend reserve or an omitted route, remains necessary.
+- 2026-10-02 local-array write reduction: element assignment now retains its already-decoded length prefix instead
+  of reading and decoding the same local array a second time after replacing the element. A focused five-write
+  compiler fixture fell from 5,230 to 3,944 bytes; its exact red-to-green size title and immediately preceding
+  local-delete byte-identity title pass. A BCH-2026 VM send checks all five resulting elements, and its immediately
+  preceding bounded-array assignment title passes. `yarn build` and focused lint pass. The unchanged UnicrowClaim
+  split still refuses `claim`: its measured whole-spend estimate fell only from 10,256 to 10,249 bytes, leaving
+  249 bytes. No broad suite or beta gate was run.
 - 2026-10-02 focused proxy-application checkpoint: the unchanged Marketplace `job posting > post job 1` title
   now reaches its event-data assertion but remains red (1 selected, 65 skipped). The proxy application's
   `abi.encodePacked(uint160(token_))` publishes a 20-byte identity, as the existing compiler cast test requires;

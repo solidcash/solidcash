@@ -14030,9 +14030,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(elements)');
     this.pushToStack('(length)');
 
+    // Keep an encoded count prefix below the elements while the numeric length checks the index. Re-reading
+    // and decoding the old array after the replacement duplicates work for every element write.
+    this.emit(Op.OP_DUP, locationData);
+    this.pushToStack('(length_for_prefix)');
+    this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    this.emit(Op.OP_ROT, locationData); // [..., length_prefix, elements_blob, length]
+    this.popFromStack(3);
+    this.pushToStack('(length_prefix)');
+    this.pushToStack('(elements)');
+    this.pushToStack('(length)');
+
     // Visit index
     node.index = this.visit(node.index);
-    // [..., elements_blob, length, index]
+    // [..., length_prefix, elements_blob, length, index]
 
     // Bounds check
     this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, index, length]
@@ -14100,25 +14112,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(elements)');
     }
 
-    // Re-encode with original length prefix (length hasn't changed)
-    // We need to get the original blob's length. Since we only modified elements,
-    // we can re-read the array to get the original length... but that's wasteful.
-    // Alternative: save the length before the assign operation.
-    // For now, re-read the old blob and extract its length prefix, then prepend.
-    // Actually, simpler: we have the modified elements on stack. We need to
-    // get the length back. Let's re-read the original blob for its prefix.
-    const stackIdx2 = this.getStackIndex(node.name);
-    this.emit(encodeInt(BigInt(stackIdx2)), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.pushToStack('(old_arr)');
-    // Decode length from old arr
-    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
-    this.emit(Op.OP_DROP, locationData); // drop remainder, keep length
-    this.popFromStack();
-    this.pushToStack('(length)');
-    // Re-encode length and prepend
-    this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
-    this.emit(Op.OP_SWAP, locationData); // [..., len_enc, elements]
+    // The prefix retained before the bounds check is immediately below the rebuilt elements.
     this.emit(Op.OP_CAT, locationData); // [..., new_blob]
     this.popFromStack(2);
     this.pushToStack('(value)');

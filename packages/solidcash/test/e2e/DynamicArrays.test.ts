@@ -553,7 +553,7 @@ describe('Dynamic Arrays', () => {
       const artifact = compileString('contract C { function test(uint256 x) {'
         + ' uint256[5] memory p; p[0]=x; p[1]=x+1; p[2]=x+2; p[3]=x+3; p[4]=x+4;'
         + ' require(p[0]==x && p[1]==x+1 && p[2]==x+2 && p[3]==x+3 && p[4]==x+4); } }');
-      expect(artifact.bytecode.length / 2).toBeLessThan(5000);
+      expect(artifact.debug.bytecode.length / 2).toBeLessThan(1400);
 
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });

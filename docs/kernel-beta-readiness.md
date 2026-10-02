@@ -187,7 +187,7 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   reduction, not a smaller spend reserve or an omitted route, remains necessary.
 - 2026-10-02 local-array write reduction: element assignment now retains its already-decoded length prefix instead
   of reading and decoding the same local array a second time after replacing the element. A focused five-write
-  compiler fixture fell from 5,230 to 3,944 bytes; its exact red-to-green size title and immediately preceding
+  compiler fixture fell from 1,446 to 1,119 emitted bytes; its exact red-to-green size title and immediately preceding
   local-delete byte-identity title pass. A BCH-2026 VM send checks all five resulting elements, and its immediately
   preceding bounded-array assignment title passes. `yarn build` and focused lint pass. The unchanged UnicrowClaim
   split still refuses `claim`: its measured whole-spend estimate fell only from 10,256 to 10,249 bytes, leaving

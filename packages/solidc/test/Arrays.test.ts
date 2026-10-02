@@ -87,7 +87,7 @@ describe('local array-element assignment', () => {
     const artifact = compileString('contract C { function f(uint256 x) public returns(uint256) {'
       + ' uint256[5] memory p; p[0]=x; p[1]=x+1; p[2]=x+2; p[3]=x+3; p[4]=x+4;'
       + ' return p[4]; } }', { solidityImportCompat: true, messageBus: false });
-    expect(artifact.bytecode.length / 2).toBeLessThan(4100);
+    expect(artifact.debug.bytecode.length / 2).toBeLessThan(1200);
   });
 });
 

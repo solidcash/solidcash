@@ -221,6 +221,17 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   alone would leave a second spend of A's master UTXO; no callback acceptance change was made on this evidence.
   The source path to prove is `UnicrowArbitrator.arbitrate → UnicrowClaim.claim →
   UnicrowArbitrator.getArbitratorData`, with the getter observing the earlier `arbitrated = true` write.
+- 2026-10-02 finite-callback follow-up: a neutral BCH-2026 A.run → B.relay → A.observe graph now passes
+  through ordinary `send()` by discovering the compiler-described typed edges before legacy transitive
+  derivation, then composing one physical A master with ordered logical A rows. A separate explicit-composer
+  proof checks every VM input and the authenticated post-write return. A third focused title changes B's stored
+  typed address to a separately compiled implementation while its interface registry still names A; the sent
+  transaction follows the stored address and returns that implementation's value. All three titles passed
+  individually; each formerly red natural-call title was followed by its immediate preceding title. This
+  establishes the finite neutral callback and dynamic-target semantics, not the specific Unicrow source path,
+  10KB deployability, or a broad Marketplace/beta-gate result. `build()` remains a preliminary builder for
+  transparent atomic promotion;
+  `send()` is the transaction-producing API for this path.
 - The unchanged proxy Marketplace `arbitrate > arbitrate 80-20` title passes individually on mock BCH-2026
   (1 selected, 65 skipped; 411.56 seconds in the test body). It is not a reproduction of the same-owner
   callback gap above and does not establish the other arbitration titles or the 66-title gate. No predecessor

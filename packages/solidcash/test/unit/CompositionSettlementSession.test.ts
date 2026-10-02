@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { sha256 } from '@solidcash/utils';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
 import { keyToSlot } from '../../src/stateful/SortedList.js';
-import { ensurePersistedJobEventsInputs } from '../../src/stateful/stb-ensure-persisted-job-events-inputs.js';
+import { ensurePersistedValueChunkInputs } from '../../src/stateful/stb-ensure-persisted-value-chunk-inputs.js';
 import { persistPlacedValueChunkBand } from '../../src/stateful/stb-value-chunk-band.js';
 import {
   persistedCompatibilityContinuation,
@@ -170,7 +170,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
       messageBusConvention: 'legacy-unroll',
       builderOptions: { provider: { network: 'chipnet' } },
       allInputs: [],
-      setPendingJobEventsPredecessors: () => {},
+      setPendingValueChunkPredecessors: () => {},
       getChunkableValueWriteBand: () => ({ start: 1, end: 1, nNew: 1 }),
       persistedValueChunkCategory: () => selected,
       chunkableValueWriteCategory: () => selected,
@@ -184,13 +184,13 @@ describe('composition settlement session CompositionSettlementSession', () => {
         requestedCategories.push(categoryId);
         return -1;
       },
-      placeJobEventsPredecessorInputs: () => {},
+      placeValueChunkPredecessorInputs: () => {},
     };
     expect(runWithCompositionSettlementSession(session, () => persistedJobEventsUnlockRecipe(selected)))
       .toBeUndefined();
     expect(runWithCompositionSettlementSession(session, () => persistedCompatibilityContinuation(selected)))
       .toEqual({ lockingBytecode: undefined, value: undefined, spends: [] });
-    await runWithCompositionSettlementSession(session, () => ensurePersistedJobEventsInputs(host as never));
+    await runWithCompositionSettlementSession(session, () => ensurePersistedValueChunkInputs(host as never));
     expect(requestedCategories).toEqual([selected]);
   });
 
@@ -338,7 +338,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
       messageBusConvention: 'kernel-row-loop',
       builderOptions: { provider },
       allInputs: [],
-      setPendingJobEventsPredecessors: () => {},
+      setPendingValueChunkPredecessors: () => {},
       getChunkableValueWriteBand: () => ({ start: 1, end: 1, nNew: 1 }),
       persistedValueChunkCategory: () => categoryId,
       chunkableValueWriteCategory: () => categoryId,
@@ -352,10 +352,10 @@ describe('composition settlement session CompositionSettlementSession', () => {
         externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,
       }),
       findMintingInputIndex: () => 0,
-      placeJobEventsPredecessorInputs: (extras: unknown[]) => { placed = extras; },
+      placeValueChunkPredecessorInputs: (extras: unknown[]) => { placed = extras; },
     };
 
-    await runWithCompositionSettlementSession(session, () => ensurePersistedJobEventsInputs(host as never));
+    await runWithCompositionSettlementSession(session, () => ensurePersistedValueChunkInputs(host as never));
     expect(legacyUnlockerProviders).toBe(0);
     expect(queries).toBe(0);
     expect(placed).toEqual([]);
@@ -365,7 +365,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
       hasChunkableValueWriteMetadata: () => false,
       permitsLegacyNamedValueChunkFallback: () => true,
     };
-    await runWithCompositionSettlementSession(session, () => ensurePersistedJobEventsInputs(legacyHost as never));
+    await runWithCompositionSettlementSession(session, () => ensurePersistedValueChunkInputs(legacyHost as never));
     expect(legacyUnlockerProviders).toBeGreaterThan(0);
     expect(queries).toBe(1);
     expect(queriedAddress).toMatch(/^bchtest:/);
@@ -375,7 +375,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
       getValueChunkLockingBytecode(categoryId, 'jobEvents', slot, root),
     );
     provider.network = 'regtest';
-    await runWithCompositionSettlementSession(session, () => ensurePersistedJobEventsInputs(legacyHost as never));
+    await runWithCompositionSettlementSession(session, () => ensurePersistedValueChunkInputs(legacyHost as never));
     expect(queries).toBe(2);
     expect(queriedAddress).toMatch(/^bchreg:/);
   });

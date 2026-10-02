@@ -548,9 +548,9 @@ import {
   type GetChunkableValueWriteBandHost,
 } from './stb-get-chunkable-value-write-band.js';
 import {
-  ensurePersistedJobEventsInputs as ensurePersistedJobEventsInputsImpl,
-  type EnsurePersistedJobEventsInputsHost,
-} from './stb-ensure-persisted-job-events-inputs.js';
+  ensurePersistedValueChunkInputs as ensurePersistedValueChunkInputsImpl,
+  type EnsurePersistedValueChunkInputsHost,
+} from './stb-ensure-persisted-value-chunk-inputs.js';
 import {
   resolveDeferredEcrecoverArgument as resolveDeferredEcrecoverArgumentImpl,
   type ResolveDeferredEcrecoverArgumentHost,
@@ -3018,15 +3018,15 @@ export class StatefulTransactionBuilder {
 
   /**
    * After extraTransfer, persist predecessors are often missing from `allInputs`.
-   * Fetch the last successful jobEvents spends and pin them on the live band.
+   * Fetch the last successful value-chunk spends and pin them on the live band.
    */
-  private _ensurePersistedJobEventsInputsHost(): EnsurePersistedJobEventsInputsHost {
+  private _ensurePersistedValueChunkInputsHost(): EnsurePersistedValueChunkInputsHost {
     return {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       messageBusConvention: this.messageBusConvention,
       builderOptions: this.builderOptions,
       allInputs: this.allInputs,
-      setPendingJobEventsPredecessors: (extras) => {
+      setPendingValueChunkPredecessors: (extras) => {
         this.pendingJobEventsPredecessors = extras;
       },
       getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
@@ -3039,14 +3039,19 @@ export class StatefulTransactionBuilder {
       permitsLegacyNamedValueChunkFallback: () => this._permitsLegacyNamedValueChunkFallback(),
       chunkableValueWriteGroups: () => this._chunkableValueWriteGroups(),
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
-      placeJobEventsPredecessorInputs: (extras) => {
+      placeValueChunkPredecessorInputs: (extras) => {
         this._placeJobEventsPredecessorInputs(extras);
       },
     };
   }
 
+  async ensurePersistedValueChunkInputs(): Promise<void> {
+    return ensurePersistedValueChunkInputsImpl(this._ensurePersistedValueChunkInputsHost());
+  }
+
+  /** @deprecated Historical name for descriptor-free continuation restoration. */
   async ensurePersistedJobEventsInputs(): Promise<void> {
-    return ensurePersistedJobEventsInputsImpl(this._ensurePersistedJobEventsInputsHost());
+    return this.ensurePersistedValueChunkInputs();
   }
 
   /**

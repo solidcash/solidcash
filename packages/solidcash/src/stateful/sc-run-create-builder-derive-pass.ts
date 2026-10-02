@@ -245,7 +245,7 @@ export async function runCreateBuilderDerivePass(
         name: variable.name, delegate: variable.delegate, suffix: variable.delegateSuffix,
       })),
     });
-    await builder.ensurePersistedJobEventsInputs();
+    await builder.ensurePersistedValueChunkInputs();
     timing?.('persisted-inputs-ready');
     // The route ABI owns one continuation coordinate. Derivation executes this participant in an isolated
     // transaction, so its witness must remain participant-local until every dynamic resource has converged.

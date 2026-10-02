@@ -480,6 +480,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   network-prefix mapping, so regtest queries `bchreg:` rather than `bchtest:` while chipnet keeps `bchtest:`.
   The exact title went red-to-green with both networks covered, and its immediately preceding lock-derivation
   title passes. No broad suite or full beta gate was run.
+- 2026-10-02 continuation naming follow-up: the active derive pass and extracted restoration helper now use
+  `ensurePersistedValueChunkInputs` and generic host hooks. The historical `JobEvents` builder method and module
+  remain deprecated adapters for existing callers; legacy collection inference stays fenced inside the helper.
+  The focused predecessor-fetch title and its immediately preceding lock-derivation title pass after the rename.
 
 ## Gate before the next leap
 

@@ -39799,6 +39799,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * [] -> [surviving master's input index] for a merge. A route or proxy names the lifecycle owner; a plain direct
+   * master's own index is the input running the code on either path, so its survivor is the transaction's first.
+   */
+  private emitMergeSurvivorIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
+    if (!(this.readsRecordsFromFrame && this.stack.includes(categoryOwnerSlotName()))
+      && !this.usesMessageBusOwnerBlockBase() && !this.usesProxyStateBlockBase()) {
+      this.emit(encodeInt(0n), locationData);
+      return;
+    }
+    this.emitMasterInputIndex(locationData, extraStackOffset);
+  }
+
+  /**
    * Emit merge covenant verification: verifies N consumed master inputs are merged into 1.
    * Dual-path: surviving master (INPUTINDEX==0) vs consumed master (INPUTINDEX>0).
    * Transaction shape: [master_surviving, dataNft*D?, consumed_1..N, funding...] -> [master_preserved, dataNft*D?, change]
@@ -39809,7 +39822,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Dual-path dispatch: surviving master at the participant owner index vs consumed masters after the prefix.
     this.emit(Op.OP_INPUTINDEX, locationData);
-    this.emitMasterInputIndex(locationData);
+    this.emitMergeSurvivorIndex(locationData);
     this.emit(Op.OP_NUMEQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
 
@@ -39914,9 +39927,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // === Path B: Consumed master (INPUTINDEX != lifecycle owner) ===
 
     // Surviving master category+capability must match ours (minting + same category).
-    // Use emitMasterInputIndex (not hardcoded input[0]) so multi-participant compose works when
+    // Address the survivor (not hardcoded input[0]) so multi-participant compose works when
     // the survivor sits at a non-zero base.
-    this.emitMasterInputIndex(locationData);
+    this.emitMergeSurvivorIndex(locationData);
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);    // surviving master cat_cap
     this.pushToStack('(master_cat_cap_b)');
     this.emit(Op.OP_INPUTINDEX, locationData);
@@ -39926,7 +39939,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
 
     // Surviving master LBC must match ours (same contract)
-    this.emitMasterInputIndex(locationData);
+    this.emitMergeSurvivorIndex(locationData);
     this.emit(Op.OP_UTXOBYTECODE, locationData);          // surviving master lbc
     this.pushToStack('(master_lbc_b)');
     this.emit(Op.OP_INPUTINDEX, locationData);
@@ -39939,7 +39952,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_INPUTINDEX, locationData);
     this.emit(Op.OP_UTXOTOKENAMOUNT, locationData);
     this.pushToStack('(self_ft)');
-    this.emitMasterInputIndex(locationData);
+    this.emitMergeSurvivorIndex(locationData);
     this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
     this.pushToStack('(out_master_ft)');
     this.emit(Op.OP_LESSTHANOREQUAL, locationData);
@@ -39949,7 +39962,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Verify owner+D < INPUTINDEX <= owner+D+N (consumed masters after the fixed dataNft prefix)
     this.emit(Op.OP_INPUTINDEX, locationData);
     this.pushToStack('(input_idx)');
-    this.emitMasterInputIndex(locationData);
+    this.emitMergeSurvivorIndex(locationData);
     this.emit(encodeInt(BigInt(lifecyclePrefixSize)), locationData);
     this.emit(Op.OP_ADD, locationData);
     this.pushToStack('(prefix_end)');
@@ -39962,7 +39975,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(mergeIdxB)), locationData);
     this.emit(Op.OP_PICK, locationData);
     this.pushToStack('(merge_n_b)');
-    this.emitMasterInputIndex(locationData, 1);
+    this.emitMergeSurvivorIndex(locationData, 1);
     this.emit(Op.OP_ADD, locationData);
     this.emit(encodeInt(BigInt(lifecyclePrefixSize)), locationData);
     this.emit(Op.OP_ADD, locationData);

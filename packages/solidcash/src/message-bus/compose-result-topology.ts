@@ -313,6 +313,25 @@ async function rebuildCallTopology(
           )) {
             // Argument propagation already refreshed existing rows. A result unrelated to this edge's
             // reachability must not reinterpret an independently prepared loop or its occurrence domain.
+            // Later sibling guards may still consume this unchanged producer by source iteration. Preserve its
+            // compiler-qualified source-to-reached map even though the producer rows need no refresh.
+            if (sourceTemplate.hasReturnValues && sourceTemplate.callsiteId !== undefined
+              && sourceTemplate.sourceLogicalIndex === undefined && outerDomainKey !== undefined
+              && existing.every((child) => child.call.topologyOuterDomainKey === outerDomainKey
+                && Number.isSafeInteger(child.call.topologyOuterIteration)
+                && Number.isSafeInteger(child.call.occurrenceIndex))) {
+              const bySourceIteration = new Map<number, number>();
+              for (const child of existing) {
+                const sourceIndex = child.call.topologyOuterIteration!;
+                if (bySourceIteration.has(sourceIndex)) {
+                  throw new Error('messageBus: producer source iteration has ambiguous reached occurrence');
+                }
+                bySourceIteration.set(sourceIndex, child.call.occurrenceIndex!);
+              }
+              reachedProducerOccurrences.set(sourceTemplate.callsiteId, {
+                domainKey: outerDomainKey, bySourceIteration,
+              });
+            }
             next.push(...existing);
             continue;
           }

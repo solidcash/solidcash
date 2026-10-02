@@ -724,6 +724,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   unresolved source-callsite selection publishes no candidate lanes. The exact red-to-green BCH-2026 title
   settles both Sink rows (total four, count two), its immediately preceding sparse-target title passes, and
   `yarn build` plus focused lint pass. No comprehensive suite or 10 KB gate ran.
+- 2026-10-02 sparse return-guard follow-up: the later Reader result now selects whether its Sink row exists.
+  The first focused run reached BCH-2026 with no Sink row and failed at an invalid `OP_SPLIT`: return probing had
+  observed the actual values 1 and 3, but topology refresh reused unchanged Reader rows without restoring their
+  source-iteration-to-occurrence map. The reuse path now preserves that map only from compiler-qualified prepared
+  coordinates, allowing the authenticated second return to select the Sink row. The exact title went red-to-green
+  with Sink total three/count one; its immediately preceding two-sparse-return title, `yarn build`, and focused
+  lint pass. No comprehensive suite or size gate ran.
 
 ## Gate before the next leap
 

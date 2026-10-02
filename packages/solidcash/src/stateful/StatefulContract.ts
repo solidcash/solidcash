@@ -14463,6 +14463,7 @@ export class StatefulFunctionCall {
       trySplitMergeBuild: () => (this as any)._trySplitMergeBuild(),
       sendRawBuilder: (b) => this._sendRawBuilder(b),
       applyOverrides: () => this._applyOverrides(),
+      preparedRootCall: () => this._messageBusCompositionDescriptor(),
       requiresRecursivePreflight: () => (this as any)._requiresRecursivePreflight(),
       kashiSoftRejectReason: () => this._kashiSoftRejectReason(),
       softApplyNoopReceipt: (e) => this._softApplyNoopReceipt(e),

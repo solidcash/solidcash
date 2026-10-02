@@ -6,6 +6,7 @@ import { binToHex } from '@bitauth/libauth';
 import type { StateValue } from '@solidcash/utils';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
+import { discoverInitialCallTopology } from '../message-bus/compose-result-topology.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type Signer from '../Signer.js';
 import {
@@ -22,6 +23,7 @@ export interface SendWithoutLogicalNonceHost {
   trySplitMergeBuild(): Promise<TransactionBuilder | undefined>;
   sendRawBuilder(builder: TransactionBuilder): Promise<TransactionDetails>;
   applyOverrides(): Promise<StatefulTransactionBuilder>;
+  preparedRootCall(): PreparedAtomicMessageBusCall;
   requiresRecursivePreflight(): boolean;
   kashiSoftRejectReason(): string | undefined;
   softApplyNoopReceipt(error: unknown): TransactionDetails | undefined;
@@ -31,6 +33,115 @@ export interface SendWithoutLogicalNonceHost {
   invalidateSignerUtxos(signer: Signer): void;
   signerUtxoSnapshot(signer: Signer): Promise<Utxo[]>;
   retireSignerUtxos(signer: Signer, utxos: readonly Utxo[]): void;
+}
+
+/** Close compiler-described typed edges before the legacy builder duplicates a callback owner's master. */
+async function prepareTypedCallbackGraph(
+  host: SendWithoutLogicalNonceHost,
+): Promise<PreparedAtomicMessageBusCall[] | undefined> {
+  const contract = host.parentContract;
+  const signer = contract?._logicalNonceSigner ?? contract?._signer;
+  if (!contract || !signer) return undefined;
+  let root: PreparedAtomicMessageBusCall;
+  try {
+    root = host.preparedRootCall();
+  } catch {
+    // Imperative call overrides cannot be replayed by the atomic composer. Keep the ordinary builder path.
+    return undefined;
+  }
+  const artifact = root.contract.inner.artifact;
+  const entry = artifact.abi.find((candidate) => root.selector !== undefined
+    ? candidate.selector?.toLowerCase() === root.selector.toLowerCase()
+    : candidate.name === root.functionName);
+  if (!entry?.externalCalls?.length || artifact.messageBus?.handlers.some((handler) =>
+    handler.selector.toLowerCase() === entry.selector?.toLowerCase() && handler.eligible) !== true) {
+    return undefined;
+  }
+  // A callback needs at least one reachable callee which can itself call onward (or directly alias the root).
+  // Most ordinary cross-contract calls end at a leaf; do not hydrate and traverse their graph on every send.
+  // An unregistered/dynamic target is unknown, not proof of a leaf, so it still enters exact discovery.
+  const registry = (contract as unknown as {
+    _externalRegistry: ReadonlyMap<string, unknown>;
+  })._externalRegistry;
+  const mayReachCallback = entry.externalCalls.some((edge) => {
+    const registered = registry.get(edge.interfaceName);
+    if (!registered || typeof registered !== 'object') return true;
+    const target = registered as {
+      categoryId?: string;
+      inner?: { artifact?: typeof artifact };
+      proxy?: { categoryId: string };
+      implementation?: { inner: { artifact: typeof artifact } };
+    };
+    if ((target.proxy?.categoryId ?? target.categoryId)?.toLowerCase() === contract.categoryId.toLowerCase()) {
+      return true;
+    }
+    const calleeAbi = target.implementation?.inner.artifact.abi ?? target.inner?.artifact?.abi;
+    const callee = calleeAbi?.find((candidate) => candidate.name === edge.functionName
+      || (edge.rawSelector !== undefined && candidate.selector === edge.rawSelector));
+    return callee === undefined || (callee.externalCalls?.length ?? 0) > 0;
+  });
+  if (!mayReachCallback) return undefined;
+  const rootOwner = `${contract.categoryId.toLowerCase()}:${contract.inner.lockingBytecode.toLowerCase()}`;
+  const registeredPathReturnsToRoot = (
+    participant: StatefulContract,
+    functionName: string,
+    depth: number,
+    seen: Set<string>,
+  ): boolean => {
+    if (depth > 7) return false;
+    const participantArtifact = participant?.inner?.artifact;
+    if (!participantArtifact) return false;
+    const fn = participantArtifact.abi.find((candidate) => candidate.name === functionName);
+    if (!fn?.externalCalls?.length) return false;
+    const participantKey = `${participant.categoryId.toLowerCase()}:${participant.inner.lockingBytecode.toLowerCase()}`;
+    const frame = `${participantKey}:${fn.selector ?? fn.name}`;
+    if (seen.has(frame)) return false;
+    const ancestors = new Set([...seen, frame]);
+    const participantRegistry = (participant as unknown as {
+      _externalRegistry: ReadonlyMap<string, unknown>;
+    })._externalRegistry;
+    return fn.externalCalls.some((edge) => {
+      const registered = participantRegistry.get(edge.interfaceName);
+      if (!registered || typeof registered !== 'object') return false;
+      const target = registered as { categoryId?: string; inner?: { lockingBytecode?: string };
+        proxy?: StatefulContract; implementation?: StatefulContract };
+      const owner = target.proxy ?? target as StatefulContract;
+      const ownerKey = `${owner.categoryId?.toLowerCase()}:${owner.inner?.lockingBytecode?.toLowerCase()}`;
+      if (ownerKey === rootOwner) return true;
+      const callee = target.implementation ?? owner;
+      return registeredPathReturnsToRoot(callee, edge.functionName, depth + 1, ancestors);
+    });
+  };
+  const registeredCallback = registeredPathReturnsToRoot(contract, entry.name, 0, new Set());
+  const stateCache = new Map<StatefulContract, Promise<Record<string, unknown>>>();
+  const stateOf = (participant: StatefulContract): Promise<Record<string, unknown>> => {
+    let pending = stateCache.get(participant);
+    if (!pending) {
+      pending = participant.getState() as Promise<Record<string, unknown>>;
+      stateCache.set(participant, pending);
+    }
+    return pending;
+  };
+  let calls: PreparedAtomicMessageBusCall[];
+  try {
+    calls = await discoverInitialCallTopology({
+      ...root,
+      producerPath: { status: 'complete', context: { version: 1, sourcePath: [] } },
+    }, signer.getLockingBytecode(), stateOf);
+  } catch {
+    // Discovery is speculative for ordinary graphs; legacy planning retains its existing diagnostic.
+    return undefined;
+  }
+  const ownerCounts = new Map<string, number>();
+  for (const call of calls) {
+    const owner = `${call.contract.categoryId.toLowerCase()}:${call.contract.inner.lockingBytecode.toLowerCase()}`;
+    ownerCounts.set(owner, (ownerCounts.get(owner) ?? 0) + 1);
+  }
+  // A typed address can select a different deployed owner than the interface registry suggests. If the
+  // registered path is a callback, compose the runtime-resolved finite graph even when that choice removes
+  // the repeated owner; falling back to the legacy registry-only guard would pin the callee incorrectly.
+  return registeredCallback || [...ownerCounts.values()].some((count) => count > 1)
+    ? calls : undefined;
 }
 
 export async function sendWithoutLogicalNonce(
@@ -49,12 +160,13 @@ export async function sendWithoutLogicalNonce(
   // should implement their own locking or sequencing.
   const maxRetries = 3;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const stb = await host.applyOverrides();
-    if (host.locktimeOverride !== undefined) stb.setLocktime(host.locktimeOverride);
+    const typedCallbackCalls = await prepareTypedCallbackGraph(host);
+    const stb = typedCallbackCalls ? undefined : await host.applyOverrides();
+    if (host.locktimeOverride !== undefined) stb?.setLocktime(host.locktimeOverride);
     try {
-      const preparedAtomicCalls = (stb as StatefulTransactionBuilder & {
+      const preparedAtomicCalls = typedCallbackCalls ?? (stb as StatefulTransactionBuilder & {
         __preparedAtomicCalls?: readonly PreparedAtomicMessageBusCall[];
-      }).__preparedAtomicCalls;
+      } | undefined)?.__preparedAtomicCalls;
       let receipt: TransactionDetails;
       if (preparedAtomicCalls) {
         // The fee input is the transaction's first P2PKH input, and the platform derives `tx.origin` - and with
@@ -106,8 +218,8 @@ export async function sendWithoutLogicalNonce(
           changeAddress: signer.getAddress(),
         }).send();
       } else {
-        if (host.requiresRecursivePreflight()) stb.enableStrictVmPreflight();
-        receipt = await stb.send();
+        if (host.requiresRecursivePreflight()) stb!.enableStrictVmPreflight();
+        receipt = await stb!.send();
       }
       if (host.parentContract?._signer) host.invalidateSignerUtxos(host.parentContract._signer);
       if (host.parentContract?._logicalNonceSigner

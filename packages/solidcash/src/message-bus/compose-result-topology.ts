@@ -56,9 +56,29 @@ export async function propagateResultDependentCallTopology(
   prepared: readonly Prepared[],
   results: Readonly<Record<number, string>>,
 ): Promise<{ propagated: boolean; calls: Prepared[] }> {
-  const resultsByParent = decodeResultsByParent(ctx, results);
+  return rebuildCallTopology(ctx.rootCaller, ctx.stateOf, prepared, ctx, results);
+}
+
+/** Discover a finite typed graph before the first VM pass; later passes reuse the same source-edge walker. */
+export async function discoverInitialCallTopology(
+  root: Prepared,
+  rootCaller: Uint8Array,
+  stateOf: (contract: StatefulContract) => Promise<Record<string, unknown>>,
+): Promise<Prepared[]> {
+  return (await rebuildCallTopology(rootCaller, stateOf, [root])).calls;
+}
+
+async function rebuildCallTopology(
+  rootCaller: Uint8Array,
+  stateOf: (contract: StatefulContract) => Promise<Record<string, unknown>>,
+  prepared: readonly Prepared[],
+  ctx?: ResultPropagationContext,
+  results: Readonly<Record<number, string>> = {},
+): Promise<{ propagated: boolean; calls: Prepared[] }> {
+  const resultsByParent: ReturnType<typeof decodeResultsByParent> = ctx
+    ? decodeResultsByParent(ctx, results) : new Map();
   const childrenByParent = new Map<number, Child[]>();
-  for (const invocation of ctx.plan.invocations) {
+  for (const invocation of ctx?.plan.invocations ?? []) {
     if (invocation.parent === null) continue;
     const siblings = childrenByParent.get(invocation.parent) ?? [];
     siblings.push({ call: prepared[invocation.index], previous: invocation.index });
@@ -80,7 +100,7 @@ export async function propagateResultDependentCallTopology(
     const self = artifact.messageBus?.route.inputs.some(
       (input) => input.name === '__internal__graphSelfIdentityInput',
     ) ? addressToLockScript(call.contract.target) : hexToBin(call.contract.inner.lockingBytecode);
-    const argsChanged = previous !== undefined
+    const argsChanged = previous !== undefined && ctx !== undefined
       && semanticJson(call.args) !== semanticJson(ctx.descriptors[previous].args);
     if (argsChanged) {
       // Filtering a loop can reuse a reached occurrence for a different source iteration. Its arguments
@@ -97,7 +117,7 @@ export async function propagateResultDependentCallTopology(
     if (fn?.externalCalls?.length && (childResults.size > 0 || argsChanged || previous === undefined)) {
       const sources = fn.externalCalls;
       const args = projectMessageBusHandlerArguments(artifact, fn.name, fn.selector, call.args);
-      let state = { ...await ctx.stateOf(call.contract) };
+      let state = { ...await stateOf(call.contract) };
       const returnsFor = (argSources: readonly ArgSource[], condition?: ExternalCallAbi):
       Map<string, FunctionArgument> => externalReturnsForCallsites(argSources, childResults, sources,
         condition?.callsiteId === undefined ? undefined : {
@@ -125,7 +145,7 @@ export async function propagateResultDependentCallTopology(
         // would silently discard every existing sibling during a result-dependent topology refresh.
         const existingSite = children.filter((child) => (
           child.previous === undefined ? child.call.callsiteId
-            : ctx.plan.invocations[child.previous]?.consumerCallsiteId
+            : ctx?.plan.invocations[child.previous]?.consumerCallsiteId
         ) === source.callsiteId);
         const templates = source.batchInvocations?.map((row) => ({
           ...source, ...row, argSources: row.argSources, rawArgSources: undefined,
@@ -137,10 +157,10 @@ export async function propagateResultDependentCallTopology(
           const existing = existingSite.filter((child) => (
             child.previous === undefined
               ? child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex
-              : ctx.plan.invocations[child.previous]?.sourceLogicalIndex
+              : ctx?.plan.invocations[child.previous]?.sourceLogicalIndex
                 ?? child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex
           ) === template.sourceLogicalIndex);
-          if (previous !== undefined && !hasChangedDependency(
+          if (previous !== undefined && ctx !== undefined && !hasChangedDependency(
             [template.condition, template.iterationDomain, template.addressSource], childResults,
             ctx.descriptors[previous].args, call.args,
           )) {
@@ -187,7 +207,7 @@ export async function propagateResultDependentCallTopology(
             const prior = existing.find((child) => (
               child.previous === undefined
                 ? child.call.occurrenceIndex ?? child.call.batchOccurrenceIndex
-                : ctx.plan.invocations[child.previous]?.occurrenceIndex
+                : ctx?.plan.invocations[child.previous]?.occurrenceIndex
                   ?? child.call.occurrenceIndex ?? child.call.batchOccurrenceIndex
             ) === reachedOccurrence);
             const argSources = template.rawArgSources ?? template.argSources ?? [];
@@ -272,7 +292,7 @@ export async function propagateResultDependentCallTopology(
     }
     for (const child of children) await visit(child, self, depth + 1);
   };
-  await visit({ call: prepared[0], previous: 0 }, ctx.rootCaller, 0);
+  await visit({ call: prepared[0], ...(ctx && { previous: 0 }) }, rootCaller, 0);
   // Results are already carried by `prepared` at their original invocation identity; never remap the old
   // numeric result table over the new DFS indices (insertion/removal would cross-wire unrelated producers).
   return { propagated, calls };

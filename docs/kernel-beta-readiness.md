@@ -467,6 +467,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   a proxy owner from whichever unrelated persisted lock or recipe entered the settlement cache first. An explicit
   state-owner descriptor still selects the proxy, and a direct low-level call selects its own category. The
   focused title went red-to-green and its immediately preceding append-owner title passes. No broad suite ran.
+- 2026-10-02 compatibility lock-derivation follow-up: a cached legacy unlock recipe must name the requested
+  category before it can derive that category's P2SH32 lock. The focused title went red-to-green, also proves a
+  correctly owned recipe still derives its lock, and its immediately preceding unselected-value title passes.
+  This is a category-identity check, not a solution for the oversized Unicrow singleton closures.
 
 ## Gate before the next leap
 

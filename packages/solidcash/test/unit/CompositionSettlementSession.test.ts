@@ -13,6 +13,7 @@ import { persistPlacedValueChunkBand } from '../../src/stateful/stb-value-chunk-
 import {
   persistedCompatibilityContinuation,
   persistedJobEventsUnlockRecipe,
+  persistUpdateRedeemLock,
   rememberJobEventsUnlockRecipe,
 } from '../../src/stateful/value-chunk-persist.js';
 import {
@@ -274,6 +275,27 @@ describe('composition settlement session CompositionSettlementSession', () => {
       expect(builder._persistedValueChunkValue()).toBeUndefined();
       expect(builder._stagedValueChunkWrite(unrelated)).toEqual(stagedValue);
       expect(builder._persistedValueChunkValue(unrelated)).toEqual(stagedValue);
+    });
+  });
+
+  it('does not derive a compatibility lock from another category recipe', () => {
+    const session = createCompositionSettlementSession();
+    const selected = 'aa'.repeat(32);
+    const unrelated = 'bb'.repeat(32);
+    const slot = keyToSlot(new Uint8Array());
+    const root = sha256(new Uint8Array(80));
+    session.persistedJobEventsRecipes.set(selected, {
+      slot, root, collection: 'jobEvents', categoryId: unrelated,
+    });
+
+    runWithCompositionSettlementSession(session, () => {
+      expect(persistUpdateRedeemLock(selected, undefined, undefined, true)).toBeUndefined();
+      session.persistedJobEventsRecipes.set(selected, {
+        slot, root, collection: 'jobEvents', categoryId: selected,
+      });
+      expect(persistUpdateRedeemLock(selected, undefined, undefined, true)).toEqual(
+        getValueChunkLockingBytecode(selected, 'jobEvents', slot, root),
+      );
     });
   });
 

@@ -1032,12 +1032,9 @@ export function persistUpdateRedeemLock(
   if (!categoryId) return undefined;
   // Compatibility only: descriptor-free legacy plans retain the historical category/name recipe.
   const recipe = persistedJobEventsUnlockRecipe(categoryId);
-  if (recipe) {
+  if (recipe?.categoryId.toLowerCase() === categoryId.toLowerCase()) {
     try {
       return getValueChunkLockingBytecode(categoryId, recipe.collection, recipe.slot, recipe.root);
-    } catch { /* invalid recipe */ }
-    try {
-      return getValueChunkLockingBytecode(recipe.categoryId, recipe.collection, recipe.slot, recipe.root);
     } catch { /* invalid recipe */ }
   }
   return persistedCompatibilityValueChunkLock(categoryId);

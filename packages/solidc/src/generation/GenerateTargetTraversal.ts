@@ -8712,6 +8712,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && this.condDeleteSlots.size > 0) {
         this.emitConditionalDeleteVerification(node);
       }
+      // C3 below counts the own-category mutable NFTs of the functions it covers. An upgrade pins its own count.
+      const countsOwnCategoryNfts = !this.functionHasDelegatecall && !this.currentFunctionIsDelegate
+        && isStatefulContract && !isSelfdestruct && !isUpgrade && !hasEntryAccess && !hasTokenContainerAccess
+        && !hasTokenContainerTransfers && this.pendingDynamicWrites.size === 0 && !hasDeploys
+        && !this.perCallCensusSettlesOwnRecords();
+      if (!this.functionHasDelegatecall && isStatefulContract && !isSelfdestruct && !isUpgrade
+        && !countsOwnCategoryNfts && node.name !== '__construct') {
+        this.emitDirectCollectionCensus(node);
+      }
       // An invoked graph handler authenticates its occurrence-specific transfer window inside the subroutine.
       // The route's synthetic transfer locals are only layout placeholders and remain empty on that path.
       if (!this.functionHasDelegatecall && hasTransfers && !this.graphTransferFlagActive) {
@@ -8850,10 +8859,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       //
       // A per-call master whose records a census always settles is exempt, as at C1: the count would refuse a node a
       // sibling frame of its contract inserts, or a chunk one consumes, which that census admits as declared.
-      if (!this.functionHasDelegatecall && !this.currentFunctionIsDelegate && isStatefulContract
-        && !isSelfdestruct && !isUpgrade && !hasEntryAccess && !hasTokenContainerAccess
-        && !hasTokenContainerTransfers && this.pendingDynamicWrites.size === 0 && !hasDeploys
-        && !this.perCallCensusSettlesOwnRecords()) {
+      if (countsOwnCategoryNfts) {
         const skipRetirement = this.beginAtomicSelfdestructExclusion(
           { location: node.body.location, positionHint: PositionHint.END },
         );
@@ -41754,6 +41760,67 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(Op.OP_ENDIF, locationData);
     }
+  }
+
+  /**
+   * Direct convention: an entry node's write path admits any spend beside the master, so a function that no
+   * own-category count covers pins each sorted collection's inputs to the fixed slots naming a node at its address,
+   * and, for a collection it does not write, its outputs to the same count (each such node is preserved). A
+   * collection a batch, runtime-loop or iteration verifier counts is left to it.
+   */
+  private emitDirectCollectionCensus(node: FunctionDefinitionNode): void {
+    if (this.isDefineSubTraversal || this.perCallMaster || this.readsRecordsFromFrame) return;
+    if (this.compilerOptions.composition === 'per-call') return;
+    if ((this.compilerOptions as { __messageBusExplicitlyDisabled?: boolean }).__messageBusExplicitlyDisabled !== true) {
+      return;
+    }
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    const counted = new Set([
+      ...(node.sortedBatchInfo ?? []).map((batch) => batch.collection),
+      ...this.vmapRuntimeCollections(node),
+      ...(node.collectionIterations ?? []).map((iteration) => iteration.collection),
+      ...this.entrySlots.filter((slot) => slot.inLoop).map((slot) => slot.collection),
+    ]);
+    for (const collection of this.collectionDefinitions) {
+      if (!collection.sorted || counted.has(collection.name)) continue;
+      const slots = this.entrySlots.flatMap((slot, index) => (
+        slot.collection === collection.name && this.ownsFixedEntrySlot(index) ? [index] : []));
+      const written = slots.some((slot) => this.entrySlots[slot].operations.includes('write')
+        || this.entrySlots[slot].operations.includes('delete'));
+      const addr = `(__collection_census_addr_${collection.name})`;
+      const expected = `(__collection_census_expected_${collection.name})`;
+      this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emitTakeFirst32(loc);
+      this.pushToStack(addr);
+      this.emitSortedEntryAddress(computeCollectionHash(this.vmapCollectionSignature(collection.name)!), loc);
+      this.stack[0] = addr;
+      this.emit(Op.OP_0, loc);
+      this.pushToStack(expected);
+      for (const slot of slots) {
+        this.emitFixedEntryInputIndex(slot, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+        this.emit(encodeInt(BigInt(this.getStackIndex(addr) + 1)), loc); this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_ADD, loc);
+      }
+      this.emitAddressCountCheck(false, loc);
+      if (!written) this.emitAddressCountCheck(true, loc);
+      this.emit(Op.OP_2DROP, loc);
+      this.popFromStack(2);
+    }
+  }
+
+  /** [addr, expected] -> [addr, expected]: the inputs (outputs) locked to addr number exactly expected. */
+  private emitAddressCountCheck(isOutput: boolean, loc: SingleLocationData): void {
+    this.emit(Op.OP_0, loc);
+    this.emit(isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_ROT, loc); this.emit(Op.OP_ADD, loc); this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
   }
 
   /**

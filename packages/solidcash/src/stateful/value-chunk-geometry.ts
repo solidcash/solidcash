@@ -507,14 +507,14 @@ export function participantRelocationExtraFunders(parts: {
 export function valueChunkBandWidth(parts: {
   minimum?: number;
   planned?: number;
-  jobEventsCount?: number;
+  entryChunkCount?: number;
   derivedEnd?: number;
   chunkBase?: number;
 }): number {
   const derivedWidth = parts.derivedEnd !== undefined && parts.chunkBase !== undefined
     ? Math.max(0, parts.derivedEnd - parts.chunkBase + 1)
     : 0;
-  return Math.max(parts.minimum ?? 3, parts.planned ?? 0, parts.jobEventsCount ?? 0, derivedWidth);
+  return Math.max(parts.minimum ?? 3, parts.planned ?? 0, parts.entryChunkCount ?? 0, derivedWidth);
 }
 
 /** Total trailing width reserved by ordered per-resource continuation bands. */
@@ -523,7 +523,7 @@ export function valueChunkBandWidthForContinuationClaims(
   parts: {
     minimum?: number;
     planned?: number;
-    jobEventsCount?: number;
+    entryChunkCount?: number;
     derivedEnd?: number;
     chunkBase?: number;
   } = {},
@@ -554,11 +554,9 @@ export function selectValueChunkOutputBase(parts: {
 
 
 /**
- * Extra occupancy for view-tail packing. Tails that already sit *before* the
- * live jobEvents band (arbitratorRegistered at 17, meceTags at 19) must stay;
- * moving them after a getEvents-populated write-count makes the next
- * updateJobPost read an empty bool (ip 8913 "arbitrator not registered").
- * Only tails that land inside the band are pushed past `band.end`.
+ * Extra occupancy for view-tail packing. Tails already before the live
+ * continuation band must stay there; only tails that overlap the band
+ * are pushed past `band.end`.
  */
 export function viewTailOccupancyCap(
   plannedTails: readonly number[],
@@ -578,9 +576,9 @@ export type ViewTailPackOptions = {
 };
 
 /**
- * Keep planned view witnesses (16/17) when a prior getEvents grew nNew and
- * packing would land on the jobEvents band or the terminal OP_RETURN. A
- * FakeToken writer still parks tails after its swapped block.
+ * Keep planned view witnesses when a prior write grew the continuation band
+ * and packing would land on it or the terminal OP_RETURN. A separate minting
+ * writer still parks tails after its swapped block.
  */
 export function clampViewTailPlacement(parts: {
   planned: number;
@@ -600,7 +598,7 @@ export function clampViewTailPlacement(parts: {
     && parts.packed > parts.band.end;
   if (onBand(parts.packed) || onSuffix(parts.packed) || packedPastBand) {
     if (plannedSafe) return parts.planned;
-    // A prior FakeToken park (29+) leaked into a view-only probe. Sit just after
+    // A prior minting-writer park leaked into a view-only probe. Sit just after
     // the implementation (band.start - blockSize + 1 === impl+1).
     if (!parts.tokenWriterPresent && parts.band) return Math.max(0, parts.band.start - 4);
     return parts.packed;
@@ -613,7 +611,7 @@ export function clampViewTailPlacement(parts: {
 }
 
 /** Occupancy width: planned write, last extracted/persisted v, and already-derived slots. */
-export function liveJobEventsBandWidth(parts: {
+export function liveChunkableValueBandWidth(parts: {
   plannedWidth?: number;
   persistWidth?: number;
   derivedWidth?: number;

@@ -103,7 +103,7 @@ export {
   viewTailOccupancyCap,
   ViewTailPackOptions,
   clampViewTailPlacement,
-  liveJobEventsBandWidth,
+  liveChunkableValueBandWidth,
   scaledInputPreserveExclusiveEnd,
   scaledEventOutputIndex,
 } from './value-chunk-geometry.js';
@@ -212,7 +212,7 @@ export {
   tokenWriterOccupiedDests,
   persistAndTokenWriterOccupancy,
   findDisposableValueChunkOutputBase,
-  computePublishJobEventsBand,
+  computeChunkableValueWriteBand,
   boundedDerivationIterations,
   shouldGrowSpeculativeChunkRegion,
   seedChunksFromPersistedValue,

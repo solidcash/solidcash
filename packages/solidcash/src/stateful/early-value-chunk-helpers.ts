@@ -24,7 +24,7 @@ import {
 } from './value-chunk-band-helpers.js';
 import { persistUpdatePredecessorDests } from './persist-predecessor-layout.js';
 import {
-  liveJobEventsBandWidth,
+  liveChunkableValueBandWidth,
   valueChunkBandWidth,
 } from './value-chunk-geometry.js';
 import {
@@ -46,14 +46,14 @@ import {
 
 /** legacy JobEvent naming retirement: neutral legacy* wrappers for JobEvents/value-chunk helpers (fixtures tip). */
 export function legacyLiveValueChunkBandWidth(
-  ...args: Parameters<typeof liveJobEventsBandWidth>
-): ReturnType<typeof liveJobEventsBandWidth> {
-  return liveJobEventsBandWidth(...args);
+  ...args: Parameters<typeof liveChunkableValueBandWidth>
+): ReturnType<typeof liveChunkableValueBandWidth> {
+  return liveChunkableValueBandWidth(...args);
 }
 export function legacyComputePublishValueChunkBand(
-  ...args: Parameters<typeof computePublishJobEventsBand>
-): ReturnType<typeof computePublishJobEventsBand> {
-  return computePublishJobEventsBand(...args);
+  ...args: Parameters<typeof computeChunkableValueWriteBand>
+): ReturnType<typeof computeChunkableValueWriteBand> {
+  return computeChunkableValueWriteBand(...args);
 }
 export function legacyFillValueChunkBandHoles(
   ...args: Parameters<typeof fillJobEventsBandHoles>
@@ -224,17 +224,17 @@ export function findDisposableValueChunkOutputBase(
 }
 
 /**
- * Exclusive output range where publishJobEvent value chunks are verified
- * (`INPUTINDEX + blockSize` for `nNew` slots). View tails, FakeToken, and
- * identity pads must not occupy this range.
+ * Exclusive output range where the selected writer's value chunks are verified
+ * (`INPUTINDEX + blockSize` for `nNew` slots). View tails, other participants,
+ * and identity pads must not occupy this range.
  */
 
-export function computePublishJobEventsBand(parts: {
+export function computeChunkableValueWriteBand(parts: {
   implIndex?: number;
   blockSize?: number;
   start?: number;
   plannedWidth?: number;
-  jobEventsCount?: number;
+  entryChunkCount?: number;
   derivedIndices?: readonly number[];
   liveWidth?: number;
   /** Absent-key INSERT places chunks after the NEW node (master+blockSize+1). */
@@ -258,7 +258,7 @@ export function computePublishJobEventsBand(parts: {
       planned: derivedInBand.length > 0
         ? Math.min(parts.plannedWidth ?? Number.POSITIVE_INFINITY, derivedInBand.length)
         : (parts.plannedWidth ?? 0),
-      jobEventsCount: parts.jobEventsCount,
+      entryChunkCount: parts.entryChunkCount,
       derivedEnd: derivedInBand.length === 0 ? undefined : Math.max(...derivedInBand),
       chunkBase: start,
     });

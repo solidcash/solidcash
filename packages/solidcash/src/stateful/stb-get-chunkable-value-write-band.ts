@@ -11,14 +11,14 @@ import {
   legacyNamedJobEventCollectionFallback,
 } from './legacy-planning-heuristics.js';
 import {
-  computePublishJobEventsBand,
+  computeChunkableValueWriteBand,
   shouldKeepPersistAtLayoutBase,
 } from './early-value-chunk-helpers.js';
 import { persistValueChunkBase } from './persist-predecessor-layout.js';
 import {
   isCompilerDescribedMintingBandWriter,
   liveChunkWidthForGroup,
-  liveJobEventsBandWidth,
+  liveChunkableValueBandWidth,
 } from './value-chunk-geometry.js';
 import {
   isEmptyValueChunkCommitment,
@@ -202,7 +202,7 @@ export function getChunkableValueWriteBand(
     ? composedTrailing[Math.max(0, composedTrailing.length - composedContinuationWidth)]
     : undefined;
   let start = composedBase ?? forcedLayoutStart ?? layoutStart;
-  // Never park the jobEvents band on another participant's minting master (FakeToken).
+  // Never park the selected writer's continuation band on another participant's minting master.
   // View-tail packing and surplus strips key off band.end and would rewrite that block.
   const publishCategoryLower = publishCategory?.toLowerCase();
   if (start !== undefined && start >= 0) {
@@ -223,12 +223,12 @@ export function getChunkableValueWriteBand(
   }
   const probeShift = Number((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_CHUNK_SHIFT ?? '0');
-  const band = computePublishJobEventsBand({
+  const band = computeChunkableValueWriteBand({
     start: start === undefined ? undefined : start + (Number.isFinite(probeShift) ? probeShift : 0),
     preserveEndExclusive: Math.max(preserveEndExclusive, forcedStart ?? -1),
     plannedWidth,
-    jobEventsCount: valueChunkEntryCount,
-    liveWidth: liveJobEventsBandWidth({ plannedWidth, persistWidth, derivedWidth }),
+    entryChunkCount: valueChunkEntryCount,
+    liveWidth: liveChunkableValueBandWidth({ plannedWidth, persistWidth, derivedWidth }),
   });
   if (probeShift !== 0 && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {

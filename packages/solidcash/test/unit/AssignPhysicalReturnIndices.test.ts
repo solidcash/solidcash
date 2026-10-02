@@ -3426,7 +3426,7 @@ describe('assignPhysicalReturnIndices', () => {
     })).toEqual({ start: 20, end: 24, nNew: 5 });
     expect(legacyPersistedValueChunkWidth('missing')).toBe(0);
     expect(legacyComputePublishValueChunkBand({
-      implIndex: 15, blockSize: 5, jobEventsCount: 4,
+      implIndex: 15, blockSize: 5, entryChunkCount: 4,
     })).toEqual({ start: 20, end: 23, nNew: 4 });
     const viewTail = {
       to: Uint8Array.of(0x51),

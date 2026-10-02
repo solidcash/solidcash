@@ -31,7 +31,7 @@ import {
 } from './value-chunk-band-helpers.js';
 import {
   groupOwnsInBlockReturnEvent,
-  liveJobEventsBandWidth,
+  liveChunkableValueBandWidth,
   selectTokenBandRepairOwner,
 } from './value-chunk-geometry.js';
 import {
@@ -413,7 +413,7 @@ export function ensureLiveJobEventsBand(
     ?? fromDerived[0]?.lockingBytecode;
   if (!siblingLock || siblingLock.length !== 35) return;
   const persistWidth = categoryId ? persistedJobEventsWidth(categoryId) : 0;
-  const liveN = liveJobEventsBandWidth({
+  const liveN = liveChunkableValueBandWidth({
     plannedWidth: band.nNew,
     persistWidth,
     derivedWidth: source.length,

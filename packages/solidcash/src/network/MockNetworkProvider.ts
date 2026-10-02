@@ -235,6 +235,41 @@ export const assertConsensusOverridesHonoured = (
 /** Testing seam: drop the cached verdicts so a probe can be re-measured. Not part of the provider contract. */
 export const resetConsensusProbeCacheForTests = (): void => consensusProbeVerdicts.clear();
 
+type LiveUtxoEntry = ReturnType<Indexer['storage']['snapshot']>['utxos'] extends Map<string, infer E> ? E : never;
+
+/**
+ * Write counters for indexer stores. mem-cash calls its storage by property lookup, so wrapping the writer methods
+ * and the `_test` helpers (which edit the internals directly) sees every change to the UTXO set.
+ */
+const storeGenerations = new WeakMap<object, { value: number }>();
+const STORE_WRITERS = ['applyBlock', 'undoBlock', 'addMempoolTx', 'removeMempoolTx', 'clearMempool', 'addMempoolUtxo',
+  'restore', 'storeRawTx'];
+
+function storeGeneration(storage: object): { value: number } {
+  const known = storeGenerations.get(storage);
+  if (known !== undefined) return known;
+  const counter = { value: 0 };
+  storeGenerations.set(storage, counter);
+  type Writer = (...args: unknown[]) => unknown;
+  const counted = (fn: Writer): Writer => function countedWrite(this: unknown, ...args: unknown[]): unknown {
+    counter.value += 1;
+    return fn.apply(this, args);
+  };
+  const store = storage as Record<string, unknown>;
+  for (const name of STORE_WRITERS) {
+    const fn = store[name];
+    if (typeof fn === 'function') store[name] = counted(fn as Writer);
+  }
+  const countTree = (node: Record<string, unknown>): void => {
+    for (const [key, value] of Object.entries(node)) {
+      if (typeof value === 'function') node[key] = counted(value as Writer);
+      else if (value !== null && typeof value === 'object') countTree(value as Record<string, unknown>);
+    }
+  };
+  if (store._test !== null && typeof store._test === 'object') countTree(store._test as Record<string, unknown>);
+  return counter;
+}
+
 /** An opaque snapshot handle mirroring hardhat's SnapshotRestorer. */
 export interface SnapshotRestorer {
   /** Restore the chain to the state captured when this snapshot was taken. Repeatable. */
@@ -263,6 +298,8 @@ export default class MockNetworkProvider implements NetworkProvider {
   private fundingNonce = 0x1000;
   private snapshotNonce = 0;
   private snapshotRestorers = new Map<string, SnapshotRestorer>();
+  /** The live UTXO set as of one store write count; see `liveUtxoEntries`. */
+  private liveUtxoView?: { storage: object; generation: number; entries: readonly LiveUtxoEntry[] };
   private signerCache = new Map<string, HDSigner>();
   private fundedSignerKeys = new Set<string>();
   private preparedTransaction?: PreparedTransaction;
@@ -332,6 +369,7 @@ export default class MockNetworkProvider implements NetworkProvider {
       )
       : stockVerifier;
     this.indexer = createIndexer({ verifier });
+    storeGeneration(this.indexer.storage);
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }
 
@@ -361,27 +399,41 @@ export default class MockNetworkProvider implements NetworkProvider {
       const reversed = binToHex(hexToBin(categoryId).reverse());
       wanted.add(reversed.toLowerCase());
     } catch { /* not hex */ }
-    const snap = this.indexer.storage.snapshot();
-    const live: typeof snap.utxos = new Map(snap.utxos);
-    for (const key of snap.mempoolSpends.keys()) live.delete(key);
-    for (const [key, entry] of snap.mempoolUtxos) live.set(key, entry);
     const found: Utxo[] = [];
-    for (const entry of live.values()) {
+    for (const entry of this.liveUtxoEntries()) {
       const category = entry.tokenData?.category?.toLowerCase() ?? '';
       if (!wanted.has(category) && !wanted.has(category.slice(0, 64))) continue;
+      // Every read shares the view until the next write, so each match is a fresh copy.
       found.push({
         txid: entry.outpoint.txid,
         vout: entry.outpoint.vout,
         satoshis: entry.satoshis,
-        lockingBytecode: entry.lockingBytecode,
+        lockingBytecode: entry.lockingBytecode.slice(),
         token: entry.tokenData ? {
           amount: entry.tokenData.amount,
           category: entry.tokenData.category,
-          nft: entry.tokenData.nft,
+          nft: entry.tokenData.nft && { ...entry.tokenData.nft },
         } : undefined,
       });
     }
     return found;
+  }
+
+  /**
+   * The live UTXO set (confirmed minus mempool spends, plus mempool outputs). The store only enumerates through a
+   * whole-store snapshot, so the set is rebuilt once per store write count rather than once per read.
+   */
+  private liveUtxoEntries(): readonly LiveUtxoEntry[] {
+    const { storage } = this.indexer;
+    const generation = storeGeneration(storage).value;
+    const view = this.liveUtxoView;
+    if (view !== undefined && view.storage === storage && view.generation === generation) return view.entries;
+    const snap = storage.snapshot();
+    const live: typeof snap.utxos = new Map(snap.utxos);
+    for (const key of snap.mempoolSpends.keys()) live.delete(key);
+    for (const [key, entry] of snap.mempoolUtxos) live.set(key, entry);
+    this.liveUtxoView = { storage, generation, entries: [...live.values()] };
+    return this.liveUtxoView.entries;
   }
 
   setBlockHeight(newBlockHeight: number): void {

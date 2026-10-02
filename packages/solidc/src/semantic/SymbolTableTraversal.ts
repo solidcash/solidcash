@@ -4262,10 +4262,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
 
-    // Emit statement pre-scan: collect all emit statements and assign sequential indices
+    // Emit statement pre-scan: collect all emit statements and assign sequential indices. The per-call convention
+    // keeps the numbering its witness blocks were built on; the direct convention places each slot by path.
     if (this.eventMap.size > 0) {
       const emitInfos: EmitInfo[] = [];
-      this.collectEmitStatements(node.body, emitInfos, 0);
+      if (this.compilerOptions.composition === 'per-call') this.collectEmitStatements(node.body, emitInfos, 0);
+      else emitInfos.push(...this.allocateEmitSlots(node.body));
 
       if (emitInfos.length > 0) {
         // Update emitIndex for each collected emit
@@ -4857,6 +4859,88 @@ export default class SymbolTableTraversal extends AstTraversal {
       startIndex = this.assignTransferIndices((node as any).block, startIndex);
     }
     return startIndex;
+  }
+
+  /**
+   * The direct convention's event slots: one per output the function's event verification checks. Sequential
+   * statements take consecutive slots; the arms of a branch or switch are laid over one another, each arm's events
+   * taking, in order, the first later slot an earlier arm gave the same event, or a new slot after them. So
+   *  - the events on one path take increasing slots: none shares a slot with another of its path, and the outputs
+   *    keep their source order;
+   *  - exclusive arms share a slot only for the same event, since a slot's output is placed under its event's
+   *    own locking bytecode and another event there could not settle.
+   * Wherever the earlier numbering (`collectEmitStatements`, kept for the per-call convention) compiled and met both
+   * rules, this reproduces it slot for slot. That numbering took the if arm as the reference whenever it held at
+   * least half the else arm's events, so an else arm with two events beside one in the if arm ran past the slots
+   * the reference reserved; a nested branch in the other arm ended at its if arm's count, so a longer else arm
+   * shared its last slot with the next event of its path; and arms shared slots by position, whatever their events.
+   */
+  private allocateEmitSlots(body: Node): EmitInfo[] {
+    type Plan = { slots: string[]; sites: { emit: EmitStatementNode; slot: number }[] };
+    const empty = (): Plan => ({ slots: [], sites: [] });
+    let unresolved = 0;
+    const merge = (arms: Plan[]): Plan => {
+      const merged = empty();
+      for (const arm of arms) {
+        let previous = -1;
+        const placed = arm.slots.map((key) => {
+          let slot = merged.slots.indexOf(key, previous + 1);
+          if (slot < 0) {
+            merged.slots.push(key);
+            slot = merged.slots.length - 1;
+          }
+          previous = slot;
+          return slot;
+        });
+        for (const site of arm.sites) merged.sites.push({ emit: site.emit, slot: placed[site.slot] });
+      }
+      return merged;
+    };
+    const plan = (node: Node | undefined): Plan => {
+      if (node === undefined) return empty();
+      if (node instanceof EmitStatementNode) {
+        // A counter-loop event settles in its own runtime stream and takes no slot.
+        if (node.runtimeLoopEvent) return empty();
+        const definition = node.eventDefinition;
+        if (!definition && !(node.eventCandidates && node.eventCandidates.length > 0)) return empty();
+        // An overloaded event is resolved only by type checking, so it keeps a slot of its own. An anonymous event
+        // is placed under another locking bytecode than a named one of the same signature.
+        const key = definition === undefined ? `? ${unresolved++}`
+          : `${definition.signature}${definition.isAnonymous ? ' anonymous' : ''}`;
+        return { slots: [key], sites: [{ emit: node, slot: 0 }] };
+      }
+      if (node instanceof BranchNode) {
+        return merge([plan(node.ifBlock), ...(node.elseBlock ? [plan(node.elseBlock)] : [])]);
+      }
+      if (node instanceof SwitchNode) {
+        return merge([...node.cases.map((arm) => plan(arm.body)), ...(node.defaultCase ? [plan(node.defaultCase)] : [])]);
+      }
+      // try/catch: only the try block is compiled, as `collectEmitStatements` says.
+      if (node instanceof TryCatchNode) return plan(node.tryBlock);
+      const container = node as unknown as { statements?: unknown; body?: unknown; block?: unknown };
+      const children: Node[] = Array.isArray(container.statements) ? [...(container.statements as Node[])] : [];
+      if (container.body instanceof Node) children.push(container.body);
+      if (container.block instanceof Node) children.push(container.block);
+      const sequence = empty();
+      for (const child of children) {
+        const part = plan(child);
+        for (const site of part.sites) sequence.sites.push({ emit: site.emit, slot: sequence.slots.length + site.slot });
+        sequence.slots.push(...part.slots);
+      }
+      return sequence;
+    };
+    const { slots, sites } = plan(body);
+    for (const site of sites) site.emit.emitIndex = site.slot;
+    return slots.map((_key, emitIndex) => {
+      const { emit } = sites.find((site) => site.slot === emitIndex)!;
+      return {
+        eventName: emit.eventName,
+        eventSignature: emit.eventDefinition?.signature ?? '',
+        emitIndex,
+        chunkCount: 1,
+        eventDefinition: emit.eventDefinition,
+      };
+    });
   }
 
   private collectEmitStatements(node: Node, emitInfos: EmitInfo[], emitIndex: number): number {

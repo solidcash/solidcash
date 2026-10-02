@@ -2069,8 +2069,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Conditional transfer/emit/tcTransfer indices (only active in one branch)
   private conditionalTransferIndices: Set<number> = new Set();
   private conditionalEmitIndices: Set<number> = new Set();
-  // Whether this body has an early return beside an emit (see hasEarlyReturnBesideEmit): its event slots are then
-  // reserved and marked by the indices each path settles, not by the per-branch counts.
+  // Whether this body's event slots are also reserved and marked by the indices each path settles (the direct
+  // convention, whose slots semantic analysis places by path), not only by the per-branch counts.
   private eventSlotsByPath = false;
   private conditionalTokenContainerTransferIndices: Set<number> = new Set();
 
@@ -7421,7 +7421,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.conditionalTransferIndices = new Set();
     this.conditionalEmitIndices = new Set();
     // The per-call convention places events in its own witness blocks; it is left as it was.
-    this.eventSlotsByPath = !this.perCallMaster && this.hasEarlyReturnBesideEmit(node.body);
+    this.eventSlotsByPath = !this.perCallMaster;
     this.conditionalTokenContainerTransferIndices = new Set();
     this.tokenContainerSlots = node.tokenContainerAccesses ?? [];
     this.pendingTokenContainerTransfers = [];
@@ -7554,8 +7554,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (minCounts.tcTransfers > totalTcTransfers) minCounts.tcTransfers = totalTcTransfers;
 
-      // Beside an early return, an event the body emits on some completing paths only is conditional even where
-      // the count above misses it. Same rule as visitBranch's reservation.
+      // An event the body emits on some completing paths only is conditional even where the count above misses it
+      // (an arm that returns early, or exclusive arms holding different events). Same rule as visitBranch's.
       const bodyEmits = this.eventSlotsByPath ? this.fixedEmitIndices(node.body) : new Set<number>();
       const settledEmits = this.eventSlotsByPath ? this.alwaysEmittedIndices(node.body) : new Set<number>();
 
@@ -9424,10 +9424,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.conditionalEmitIndices.add(emitStartIndex + i);
         }
       }
-      // An early return nests the statements after it into this branch's other arm only after semantic analysis
-      // gave their emits sequential indices, so the arms can hold an index past the counted range, and the
-      // `return` arm still ends at the function's event verification. In such a body, reserve every index the
-      // arms hold, and mark one conditional unless every path through the branch settles it.
+      // The count above starts at the slots visited so far and spans one path's maximum. The arms' own slots can
+      // lie past it: exclusive arms holding different events take a slot each, an early return nests the
+      // statements after it into this branch's other arm after semantic analysis gave their emits sequential slots
+      // (and its `return` arm still ends at the function's event verification), and a branch in a later arm starts
+      // where an earlier arm's slots already counted. So reserve every slot the arms hold, and mark one
+      // conditional unless every path through the branch settles it.
       if (this.eventSlotsByPath) {
         const settledEmits = this.alwaysEmittedIndices(node);
         for (const globalIdx of [...this.fixedEmitIndices(node)].sort((left, right) => left - right)) {
@@ -10356,46 +10358,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       transferIndexMemo.set(block, collected);
       for (const index of collected) indices.add(index);
     }
-  }
-
-  /**
-   * Whether a body has a branch with an arm that returns early (the rest of the body nested into its other arm)
-   * and an emit in either arm. Semantic analysis numbered those emits before the nesting, as statements in
-   * sequence, so the per-branch counts that reserve and mark event slots do not describe them.
-   */
-  private hasEarlyReturnBesideEmit(body: BlockNode): boolean {
-    const endsWithReturn = (block: BlockNode | undefined): boolean => {
-      const statements = (block?.statements ?? []).filter((statement) => !(statement instanceof ConsoleStatementNode));
-      const last = statements[statements.length - 1];
-      if (last instanceof ReturnNode) return true;
-      return last instanceof BranchNode && endsWithReturn(last.ifBlock) && endsWithReturn(last.elseBlock);
-    };
-    let found = false;
-    const walk = (current: Node | undefined): void => {
-      if (found || current === undefined) return;
-      if (current instanceof BranchNode) {
-        if ((endsWithReturn(current.ifBlock) || endsWithReturn(current.elseBlock))
-          && this.fixedEmitIndices(current).size > 0) {
-          found = true;
-          return;
-        }
-        walk(current.ifBlock);
-        walk(current.elseBlock);
-      } else if (current instanceof TryCatchNode) {
-        walk(current.tryBlock);
-      } else if (current instanceof DoWhileNode || current instanceof WhileNode || current instanceof UncheckedNode) {
-        walk(current.block);
-      } else if (current instanceof CollectionIterationNode) {
-        walk(current.body);
-      } else if (current instanceof SwitchNode) {
-        for (const switchCase of current.cases) walk(switchCase.body);
-        walk(current.defaultCase);
-      } else if (current instanceof BlockNode) {
-        for (const statement of current.statements ?? []) walk(statement);
-      }
-    };
-    walk(body);
-    return found;
   }
 
   /** The fixed emit indices anywhere under `node`; a counter-loop event has none (it settles in its own stream). */

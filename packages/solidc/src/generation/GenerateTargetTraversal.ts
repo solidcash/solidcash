@@ -12822,6 +12822,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     node.parameters = this.visitList(node.parameters);
 
+    // A direct upgrade's authorizing signature must sign all outputs, binding its replacement bytecode and minted
+    // data-NFT run; a message-bus upgrade fences its signatures in the route.
+    if (node.identifier.name === GlobalFunction.CHECKSIG
+      && this.currentFunction.modifiers.includes(FunctionModifier.UPGRADE)
+      && this.currentFunction.messageBusUpgradeRoute !== true
+      && this.currentFunction.messageBusEligible !== true
+      && !this.currentFunctionIsMessageBusRoute) {
+      this.emitUpgradeSighashAllFence({ location: node.location, positionHint: PositionHint.END });
+    }
+
     this.emit(
       compileGlobalFunction(node.identifier.name as GlobalFunction),
       { location: node.location, positionHint: PositionHint.END },
@@ -12830,6 +12840,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
 
     return node;
+  }
+
+  // [.., sig, pubkey] -> same: the signature's sighash byte must have base type ALL (low 5 bits == 1).
+  private emitUpgradeSighashAllFence(loc: SingleLocationData): void {
+    this.emit(Op.OP_OVER, loc); // copy the sig from below the pubkey
+    this.pushToStack('(upgrade_sig_fence)');
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_SPLIT, loc); // [.., sig_head, sighash_byte]
+    this.emit(Op.OP_NIP, loc);   // [.., sighash_byte]
+    this.emit(hexToBin('1f'), loc);
+    this.emit(Op.OP_AND, loc);   // base sighash type
+    this.emit(hexToBin('01'), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(); // (upgrade_sig_fence)
   }
 
   visitMultiSig(node: FunctionCallNode): Node {

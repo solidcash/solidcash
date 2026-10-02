@@ -377,7 +377,9 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
         provider,
         oldContract,
         upgradeFunctionName: 'migrate',
-        upgradeFunctionArgs: [new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)],
+        // SIGHASH_ALL: an upgrade's authorizing signature must sign all outputs (the direct-upgrade sighash fence),
+        // so the tampered-output mutations below are refused by the signature as well as the covenant.
+        upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
         newArtifact,
         newConstructorArgs: [alicePub],
         fundingUtxo: funding,

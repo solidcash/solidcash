@@ -3,7 +3,7 @@ import {
 } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, getDataNftAddress, HashType, SignatureTemplate, StatefulContract,
+  Contract, HashType, SignatureTemplate, StatefulContract,
 } from '../../src/index.js';
 import { buildPushdataCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import {
@@ -755,10 +755,11 @@ describe('StatefulContract.upgrade()', () => {
   });
 
   // An overflow upgrade mints the new layout's data NFTs as a run at the canonical data-NFT covenant, right after the
-  // old data NFTs. The old covenant's census takes exactly the old data NFTs in, and out the same plus that run. These
-  // upgrades sign SIGHASH_NONE | SIGHASH_ANYONECANPAY and pay from an OP_TRUE coin: no signature binds an output or an
-  // input other than the master, so the census alone decides each spend.
-  describe('overflow data NFT run under an authorization that signs no outputs', () => {
+  // old data NFTs. The census pins the run's SHAPE (exactly the old data NFTs in; out the same plus a contiguous run
+  // at the covenant). A direct upgrade's authorizing signature must sign all outputs (base sighash type ALL), which
+  // binds the run's CONTENTS: the replacement bytecode, the run length and the new commitments cannot be rebound
+  // under a NONE/SINGLE signature (kernel lane 4b89cce8e signature fence; ledger D10, R1-R3).
+  describe('overflow data NFT run under a signature over all outputs', () => {
     const wideArtifact = compileString(OVERFLOW_WIDE);
     const OP_TRUE = hexToBin('51');
     const anyoneCanSpend = {
@@ -769,12 +770,15 @@ describe('StatefulContract.upgrade()', () => {
     const coin = (label: string): Utxo => ({ txid: binToHex(field(label)), vout: 0, satoshis: 100_000n });
     const keyLock = encodeLockingBytecodeP2pkh(alicePkh);
     const refused = /mandatory-script-verify-flag-failed/;
+    const defaultHashType = HashType.SIGHASH_ALL | HashType.SIGHASH_UTXOS;
     type Tx = ReturnType<typeof decodeTransactionUnsafe>;
 
-    // Deploys OverflowV1 and signs its upgrade to OverflowWide, which the provider keeps instead of broadcasting.
-    // Inputs: the master, the old data NFT, the funding coin. Outputs: the master at its new covenant, the old data
-    // NFT, the two new data NFTs, change.
-    const prepare = async (label: string): Promise<{ hex: string; wide: Contract; categoryId: string }> => {
+    // Deploys OverflowV1 and signs its upgrade to OverflowWide under `hashType`, which the provider keeps instead of
+    // broadcasting. Inputs: the master, the old data NFT, the funding coin. Outputs: the master at its new covenant,
+    // the old data NFT, the two new data NFTs, change.
+    const prepare = async (
+      label: string, hashType: number = defaultHashType,
+    ): Promise<{ hex: string; wide: Contract; categoryId: string }> => {
       const deployFunding = coin(`${label} deploy`);
       await provider.addUtxo(p2pkh.address, deployFunding);
       const { contract, categoryId } = await StatefulContract.deploy(overflowV1Artifact, [alicePub], {
@@ -797,9 +801,7 @@ describe('StatefulContract.upgrade()', () => {
           provider,
           oldContract: contract,
           upgradeFunctionName: 'migrate',
-          upgradeFunctionArgs: [
-            new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE | HashType.SIGHASH_ANYONECANPAY),
-          ],
+          upgradeFunctionArgs: [new SignatureTemplate(alicePriv, hashType)],
           newArtifact: wideArtifact,
           newConstructorArgs: [alicePub],
           fundingUtxo: funding,
@@ -829,8 +831,8 @@ describe('StatefulContract.upgrade()', () => {
       });
     };
 
-    it('settles the honest run and refuses a new data NFT off the covenant, a gap, a detached extra, or an old one '
-      + 'left unspent', async () => {
+    it('settles under SIGHASH_ALL, and refuses a new data NFT off the covenant, a gap, a detached extra, or an old '
+      + 'one left unspent', async () => {
       const { hex, wide, categoryId } = await prepare('wide run');
       const honest = decodeTransactionUnsafe(hexToBin(hex));
       expect(honest.outputs.map((output) => output.token?.nft?.capability))
@@ -839,7 +841,8 @@ describe('StatefulContract.upgrade()', () => {
       expect(honest.outputs.slice(2, 4).map((output) => binToHex(output.lockingBytecode)))
         .toEqual([dataLock, dataLock]);
 
-      // The second new data NFT at a key's locking bytecode.
+      // Each tamper changes outputs (or inputs), which the output signature no longer covers, and also breaks the
+      // census shape; both refuse it. The second new data NFT at a key's locking bytecode.
       await expect(submit(hex, (tx) => { tx.outputs[3].lockingBytecode = keyLock; })).rejects.toThrow(refused);
       // A gap in the run: the second new data NFT after the change output.
       await expect(submit(hex, (tx) => { [tx.outputs[3], tx.outputs[4]] = [tx.outputs[4], tx.outputs[3]]; }))
@@ -847,8 +850,7 @@ describe('StatefulContract.upgrade()', () => {
       // An extra data NFT detached from the run, after the change output.
       await expect(submit(hex, (tx) => { addDataNft(tx, tx.outputs.length, field('detached')); }))
         .rejects.toThrow(refused);
-      // The old data NFT left unspent and a replacement minted into the run: the output count balances, and the
-      // exact old data-NFT input count is what refuses it.
+      // The old data NFT left unspent and a replacement minted into the run.
       await expect(submit(hex, (tx) => {
         const old = tx.outputs[1];
         tx.inputs.splice(1, 1);
@@ -864,23 +866,25 @@ describe('StatefulContract.upgrade()', () => {
       expect([state.a, state.c, state.g, state.h]).toEqual([field('a'), field('c'), new Uint8Array(32), field('h')]);
     });
 
-    // RESIDUAL (kernel lane 4b89cce8e, ledger D10), pinned rather than claimed: the census bounds neither the run's
-    // length nor the new data NFTs' commitments, which the old covenant cannot derive from a layout it does not know.
-    // Only a signature over the outputs binds them, so under this authorization a run with one more data NFT, and a
-    // new data NFT whose commitment was rewritten, both settle. Closing this must turn the expectation here around.
-    it('residual: admits a run longer than the layout and a rewritten new commitment', async () => {
-      const { hex, wide, categoryId } = await prepare('wide run residual');
-      const rewritten = buildPushdataCommitment(wideArtifact.stateLayout!, {
-        d: field('rewritten d'), e: field('rewritten e'), f: field('rewritten f'),
-      }, 1);
-      await expect(submit(hex, (tx) => {
-        tx.outputs[2].token!.nft!.commitment = hexToBin(rewritten);
-        addDataNft(tx, 4, field('appended'));
-      })).resolves.toBeTypeOf('string');
-      const dataNfts = (await provider.getUtxos(getDataNftAddress(wide, categoryId)))
-        .filter((utxo) => utxo.token?.category === categoryId);
-      expect(dataNfts).toHaveLength(wideArtifact.stateLayout!.dataNftCount + 1);
-      expect(dataNfts.map((utxo) => utxo.token!.nft!.commitment)).toContain(rewritten);
-    });
+    // The fence refuses an authorization that does not sign all outputs. This closes the rebind the census alone did
+    // not: once the replacement bytecode, the run length and the new commitments are signed, none can be swapped
+    // without the signer's key. Formerly a documented residual (kernel lane 4b89cce8e; ledger D10, R1-R3).
+    it('refuses a NONE or SINGLE authorization, so the replacement, run length and commitments cannot be rebound',
+      async () => {
+        // The honest run shape, authorized under each output-free base type, is refused at the covenant.
+        for (const [tag, hashType] of [['none', HashType.SIGHASH_NONE], ['single', HashType.SIGHASH_SINGLE]] as const) {
+          const { hex } = await prepare(`wide ${tag}`, hashType);
+          await expect(submit(hex)).rejects.toThrow(refused);
+        }
+        // The exact rebind that a NONE signature used to admit - a run one longer than the layout, with a rewritten
+        // new commitment - is refused now that the authorization must sign the outputs it changes.
+        const { hex } = await prepare('wide rebind', HashType.SIGHASH_NONE);
+        await expect(submit(hex, (tx) => {
+          tx.outputs[2].token!.nft!.commitment = hexToBin(buildPushdataCommitment(wideArtifact.stateLayout!, {
+            d: field('rewritten d'), e: field('rewritten e'), f: field('rewritten f'),
+          }, 1));
+          addDataNft(tx, 4, field('appended'));
+        })).rejects.toThrow(refused);
+      });
   });
 });

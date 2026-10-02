@@ -108,8 +108,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   without checking source fingerprints or running tests or cold compiles. The complete cold matrix and beta gate
   remain unrun.
 - 2026-10-02 verifier-size checkpoint: the unchanged graph verifier/compute-sidecar size title now passes. For a
-  fixed-state participant without collections, containers, upgrades, or lifecycle, the detached verifier rejects
-  nonzero resource modes instead of carrying the unreachable INSERT/DELETE/container/replacement parsers. The
+  fixed-state participant without collections, containers, upgrades, lifecycle, or a delegatecall resource slot,
+  the detached verifier rejects nonzero resource modes instead of carrying the unreachable INSERT/DELETE/container/
+  replacement parsers. Ordinary typed graph calls do not reserve that slot; the compiler computes the delegate-slot
+  count once for both specialization and route layout. The
   mode-zero checks are retained, and the sidecar verifier's pure conjunctions are emitted as equivalent individual
   requirements. The measured graph verifier fell from 7,902 to 7,137 bytes; its same-source SHA256 control is
   6,806 bytes. The immediately preceding pure-returning-sink title passes. The separate scalar-master size title

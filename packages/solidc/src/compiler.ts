@@ -10538,14 +10538,22 @@ function synthesizeMessageBusRoute(
     return footprint.reads.length > 0 || footprint.writes.length > 0;
   }) || valueEffectMode || tokenContainerMode
     || contract.stateVariables.length > 0 || contract.collections.length > 0;
-  // A fixed-state participant with no collection, container, upgrade, or lifecycle surface owns only mutable
-  // data-NFT preservation/update rows (mode 0). Its detached verifier must reject other resource modes, not
-  // carry the general INSERT/DELETE/container/replacement parsers that those contracts cannot authorize.
+  // A fixed-state route with no collection, container, upgrade, or lifecycle surface owns only mutable data-NFT
+  // preservation/update rows (mode 0), unless an admitted delegatecall reserves a co-spent low-level-call slot
+  // (mode 4). Ordinary typed calls use runtime input indices and do not add a fixed resource slot. Mirror the
+  // graphDelegateSlotCount source scan so those callers retain this specialization safely.
+  const graphDelegateSlotCount = eligible.reduce((maximum, handler) => {
+    let count = 0;
+    walkInvocationAst(handler.body, (node) => {
+      if (node instanceof LowLevelCallStatementNode && node.callMode === 'delegatecall') count += 1;
+    });
+    return Math.max(maximum, count);
+  }, 0);
   const fixedStateOnlyResourceMode = contract.stateVariables.length > 0
     && contract.collections.length === 0
     && contract.stateVariables.every((state) => staticAbiByteSize(state.type) !== undefined)
     && !valueEffectMode && !tokenContainerMode && !kernelUpgradeMode
-    && kernelLifecycleHandlers.size === 0 && !isDelegateRoute;
+    && kernelLifecycleHandlers.size === 0 && !isDelegateRoute && graphDelegateSlotCount === 0;
   // Early route synthesis runs before the later recovery-closure survey sets `ecrecoverCompute`.
   // Inspect the named closure here too: a recovery/keccak call inside a free or library helper still
   // produces kind-6 sidecar rows, which the detached verifier must authenticate and exclude from
@@ -12562,13 +12570,7 @@ function synthesizeMessageBusRoute(
   if (isDelegateRoute && !route.modifiers.includes(FunctionModifier.DELEGATE)) {
     route.modifiers.push(FunctionModifier.DELEGATE);
   }
-  route.graphDelegateSlotCount = eligible.reduce((maximum, handler) => {
-    let count = 0;
-    walkInvocationAst(handler.body, (node) => {
-      if (node instanceof LowLevelCallStatementNode && node.callMode === 'delegatecall') count += 1;
-    });
-    return Math.max(maximum, count);
-  }, 0);
+  route.graphDelegateSlotCount = graphDelegateSlotCount;
   route.messageBusMaximumRows = routeMaximumRows;
   if (graphBlockhashReadWidth > 0) {
     route.messageBusBlockhashReadWidth = graphBlockhashReadWidth;

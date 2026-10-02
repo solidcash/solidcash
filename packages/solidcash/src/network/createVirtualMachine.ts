@@ -1,9 +1,9 @@
 import {
   applyError, authenticationInstructionsAreMalformed, AuthenticationErrorCommon, binToHex,
   conditionallyEvaluate, createVirtualMachine, createVirtualMachineBch2026, decodeAuthenticationInstructions,
-  disassembleAuthenticationInstructionMalformed, isPayToScriptHash20, isPayToScriptHash32,
-  isWitnessProgram, pushToStackChecked, pushToStackVmNumber, ripemd160, secp256k1, sha1, sha256,
-  stackItemIsTruthy, useTransactionOutput, useTransactionUtxo,
+  disassembleAuthenticationInstructionMalformed, encodeAuthenticationInstructions, incrementOperationCount,
+  isPayToScriptHash20, isPayToScriptHash32, isWitnessProgram, pushToStackChecked, pushToStackVmNumber, ripemd160,
+  secp256k1, sha1, sha256, stackItemIsTruthy, useTransactionOutput, useTransactionUtxo,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { AuthenticationErrorBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-errors.js';
@@ -351,6 +351,36 @@ function installCachedInvokeEvaluator(
   }
 }
 
+/**
+ * OP_ACTIVEBYTECODE as libauth builds it (`incrementOperationCount(conditionallyEvaluate(...))`), but encoding the
+ * active instructions once per instruction array and code-separator offset instead of on every execution. The cached
+ * evaluators above decode each program and OP_DEFINE body once, and nothing rewrites an instruction array in place.
+ * Every push is a copy, so no stack item aliases the cache.
+ */
+function installCachedActiveBytecode(
+  instructionSet: ReturnType<typeof createInstructionSetBch2026>,
+  maximumStackItemLength: number | undefined,
+): void {
+  type State = Parameters<(typeof instructionSet.operations)[number]>[0];
+  const encodings = new WeakMap<object, Map<number, Uint8Array>>();
+  const activeBytecode = (state: State): State => {
+    let byOffset = encodings.get(state.instructions);
+    if (byOffset === undefined) {
+      byOffset = new Map();
+      encodings.set(state.instructions, byOffset);
+    }
+    let bytecode = byOffset.get(state.lastCodeSeparator);
+    if (bytecode === undefined) {
+      bytecode = encodeAuthenticationInstructions(state.instructions.slice(state.lastCodeSeparator + 1));
+      byOffset.set(state.lastCodeSeparator, bytecode);
+    }
+    return pushToStackChecked(state, bytecode.slice(), { maximumStackItemLength });
+  };
+  instructionSet.operations[OpcodesBch2026.OP_ACTIVEBYTECODE] = incrementOperationCount(
+    conditionallyEvaluate(activeBytecode),
+  ) as (typeof instructionSet.operations)[number];
+}
+
 interface InactiveBranchTargets {
   falseBranch: Int32Array;
   elseBranch: Int32Array;
@@ -549,6 +579,7 @@ function buildVirtualMachineBch2026ForProvider(
       instructionSet, provider!, limits.maximumInputBytes, observer?.onPhaseComplete,
     );
     installCachedInvokeEvaluator(instructionSet);
+    installCachedActiveBytecode(instructionSet, consensus.maximumStackItemLength);
 
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RUNTIME_ASSIGN === '1') {
@@ -774,15 +805,23 @@ function buildVirtualMachineBch2026ForProvider(
         let stepped = false;
         let ip = current.ip;
         let instructions = current.instructions;
-        let stack: MachineState['stack'] | undefined;
+        // Only the last step's stack is kept, so an OP_EQUALVERIFY step notes its depth and the two items it may
+        // consume instead of copying the stack: the stack before it is the stack after it plus what it popped.
+        let closeDepth = -1;
+        let closeOperands: MachineState['stack'] = [];
         while (machine.stateContinue(current)) {
           ({ ip, instructions } = current);
-          stack = instructions[ip]?.opcode === OpcodesBch2026.OP_EQUALVERIFY ? current.stack.slice() : undefined;
+          if (instructions[ip]?.opcode === OpcodesBch2026.OP_EQUALVERIFY) {
+            closeDepth = current.stack.length;
+            closeOperands = current.stack.slice(-2);
+          } else closeDepth = -1;
           current = machine.stateStepMutate(current);
           stepped = true;
         }
+        const stack = closeDepth < 0 ? current.stack
+          : current.stack.concat(closeOperands.slice(closeOperands.length - (closeDepth - current.stack.length)));
         const previous = stepped
-          ? { ...current, error: undefined, ip, instructions, stack: stack ?? current.stack } as MachineState
+          ? { ...current, error: undefined, ip, instructions, stack } as MachineState
           : initial;
         states.push(previous, current);
         return current;

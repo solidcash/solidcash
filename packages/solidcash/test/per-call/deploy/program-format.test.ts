@@ -33,6 +33,19 @@ describe('the form a program is published in', () => {
     expect(() => deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM)).toThrow();
   });
 
+  it('reuses an assembled program only while the artifact publishes the same one', () => {
+    // A fill must leave the kept program untouched, and a changed publication on the same object is assembled anew.
+    const artifact = artifactFixture();
+    const other = new Uint8Array(32).fill(0x33);
+    const first = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
+    const second = deployMaster(artifact, other, VALIDATOR_PROGRAM);
+    expect(second.script).not.toEqual(first.script);
+    expect(() => verifyMasterDeployment(second, artifact, other, VALIDATOR_PROGRAM)).not.toThrow();
+    expect(deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM)).toEqual(first);
+    (artifact as { bytecode: string }).bytecode = SLOT_SCRIPT_HEX;
+    expect(() => deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM)).toThrow();
+  });
+
   it('refuses an artifact that publishes no composition block', () => {
     const artifact = artifactFixture({ composition: undefined });
     expect(() => deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM)).toThrow();

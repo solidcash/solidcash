@@ -74,6 +74,12 @@ function slotPayloadRange(offset: number, length: number): { start: number; end:
 }
 
 /**
+ * Programs by artifact, assembled once while the artifact publishes the bytecode they came from. Assembly is a pure
+ * function of that bytecode, the bytes never leave this module, and a fill copies them before writing.
+ */
+const assembledPrograms = new WeakMap<Artifact, { readonly bytecode: string; readonly program: Uint8Array }>();
+
+/**
  * Fills both slots with the category and the address derived from it, and derives the master lock.
  *
  * The address is `addrV(category)`, computed through the same rule the validator sits at, so a deployment and a
@@ -88,6 +94,8 @@ function slotPayloadRange(offset: number, length: number): { start: number; end:
  * it.
  */
 function programBytes(artifact: Artifact): Uint8Array {
+  const assembled = assembledPrograms.get(artifact);
+  if (assembled !== undefined && assembled.bytecode === artifact.bytecode) return assembled.program;
   let script: ReturnType<typeof asmToScript>;
   try {
     script = asmToScript(artifact.bytecode);
@@ -97,7 +105,9 @@ function programBytes(artifact: Artifact): Uint8Array {
       + (error as Error).message,
     );
   }
-  return scriptToBytecode(script);
+  const program = scriptToBytecode(script);
+  assembledPrograms.set(artifact, { bytecode: artifact.bytecode, program });
+  return program;
 }
 
 export function deployMaster(

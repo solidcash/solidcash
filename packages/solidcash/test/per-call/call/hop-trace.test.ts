@@ -1,14 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import { FrameKind, bytesToHex } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
+import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
-import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
-import { fundShippedFacets } from '../shapes/harness.js';
+import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * A hop traced from the plan through the frames the settle touches.
@@ -65,6 +67,7 @@ function funding(txid: string): { txid: string; vout: number; satoshis: bigint }
  * same address from its own record and the callee is resolved from it, not from a named external.
  */
 async function deployThroughProxiedCallee(network: MockNetworkProvider): Promise<{
+  readonly innerImplementationCategoryId: string;
   readonly outerProxyCategoryId: string;
   readonly outerImplementationCategoryId: string;
   readonly deployerLock: Uint8Array;
@@ -117,6 +120,7 @@ async function deployThroughProxiedCallee(network: MockNetworkProvider): Promise
   expect(outerDeployment.initialize.broadcast).toBeDefined();
 
   return {
+    innerImplementationCategoryId: innerDeployment.implementation.categoryId,
     outerProxyCategoryId: outerDeployment.proxy.categoryId,
     outerImplementationCategoryId: outerDeployment.implementation.categoryId,
     deployerLock,
@@ -126,12 +130,12 @@ async function deployThroughProxiedCallee(network: MockNetworkProvider): Promise
   };
 }
 
-/** The message a call throws, or undefined for one that settles. */
-async function callMessage(
+/** Enters one of the caller's entries through its proxy, naming no externals. */
+function enter(
   network: MockNetworkProvider,
   funded: Awaited<ReturnType<typeof deployThroughProxiedCallee>>,
   functionName: string,
-): Promise<string | undefined> {
+): Promise<PerCallProxyCallResult> {
   return callPerCallProxyEntry({
     provider: network,
     implementationArtifact: outer,
@@ -145,7 +149,17 @@ async function callMessage(
     funder: funded.funder,
     changeAddress: funded.changeAddress,
     vm: compositionMachine(),
-  }).then(() => undefined, (error: unknown) => (error instanceof Error ? error.message : String(error)));
+  });
+}
+
+/** The message a call throws, or undefined for one that settles. */
+async function callMessage(
+  network: MockNetworkProvider,
+  funded: Awaited<ReturnType<typeof deployThroughProxiedCallee>>,
+  functionName: string,
+): Promise<string | undefined> {
+  return enter(network, funded, functionName)
+    .then(() => undefined, (error: unknown) => (error instanceof Error ? error.message : String(error)));
 }
 
 /**
@@ -199,22 +213,46 @@ async function deployed(): Promise<World> {
   return world;
 }
 
-let settledRun: Promise<readonly string[]> | undefined;
+/** The one `runOk` hop that settles, which the first two cases read: its result and its trace. */
+interface SettledHop {
+  readonly funded: Funded;
+  readonly result: PerCallProxyCallResult;
+  readonly traced: readonly string[];
+}
 
-/** The trace of the one `runOk` hop that settles, which the first two cases read. */
-function settledTrace(): Promise<readonly string[]> {
-  settledRun ??= (async (): Promise<readonly string[]> => {
+let settledRun: Promise<SettledHop> | undefined;
+
+/** The trace only observes the draft, so the traced hop settles as an untraced one would. */
+function settledHop(): Promise<SettledHop> {
+  settledRun ??= (async (): Promise<SettledHop> => {
     const { network, funded } = await deployed();
-    return tracedLines(await withHopTrace(true, async () => {
-      await callMessage(network, funded, 'runOk');
-    }));
+    let result: PerCallProxyCallResult | undefined;
+    const lines = await withHopTrace(true, async () => {
+      result = await enter(network, funded, 'runOk');
+    });
+    return { funded, result: result!, traced: tracedLines(lines) };
   })();
   return settledRun;
 }
 
 describe('the hop trace', () => {
-  it('lays the callee chain as a proxy fallback plus the implementation entry it delegates to', async () => {
-    const traced = await settledTrace();
+  it('lays the callee chain as a proxy fallback plus the implementation entry it delegates to, and settles it', async () => {
+    const { funded, result, traced } = await settledHop();
+    // The callee is resolved from the address the caller's record holds, with no externals named, and placed as
+    // the root hop places its own proxy: the callee's delegate frame and its fallback run before the caller's.
+    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual([
+      'Inner.ping()', 'InnerProxy.__fallback()', 'Outer.runOk()', 'OuterProxy.__fallback()',
+    ]);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    // The callee's proxy leg delegates to the implementation's own master, at the address its category derives.
+    const callee = result.draft.blockOf('callee-master-1');
+    expect(callee.calls).toHaveLength(1);
+    expect(callee.calls[0]!.kind).toBe(FrameKind.DELEGATE);
+    expect(bytesToHex(callee.calls[0]!.target)).toBe(bytesToHex(
+      deployMaster(inner, hexToBin(funded.innerImplementationCategoryId), VALIDATOR_PROGRAM).address));
+
     expect(traced.some((line) => line.includes('plan frame=proxy-master fn=OuterProxy.__fallback() kind=ROOT')))
       .toBe(true);
     expect(traced.some((line) => line.includes('plan frame=implementation-master fn=Outer.runOk() kind=DELEGATE')))
@@ -229,7 +267,7 @@ describe('the hop trace', () => {
   });
 
   it('records each frame\'s call records before and after an attempt, sentinel while unfilled', async () => {
-    const traced = await settledTrace();
+    const { traced } = await settledHop();
     // The callee's fallback is settled on its own: its delegate reference is unfilled before the attempt fills it.
     const fallbackAttempt = traced.find((line) =>
       line.startsWith('HOPTRACE attempt callee=callee-master-1 '));

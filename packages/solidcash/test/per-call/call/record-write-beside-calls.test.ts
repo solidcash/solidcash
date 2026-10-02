@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexToBin } from '@bitauth/libauth';
+import {
+  binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexToBin, utf8ToBin,
+} from '@bitauth/libauth';
 import { bytesToHex, encodeIntegerValue, hash256, validatorAddress, type Artifact } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
@@ -60,19 +62,13 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function awardOf(int id) view returns (int) { return this.awarded[id]; }'
   + ' }';
 
-/** The key the held variant's initialize writes, so `record(ID)` splices in beside a node the collection holds. */
+/** The key a first call writes, so a later `record(ID)` splices in beside a node the collection holds. */
 const HELD_ID = 1n;
-
-// The same contracts, with an initialize that already holds a key: `record` then inserts after a live node.
-const HELD_SOURCE = SOURCE.replace(
-  'this.initialized = 1; }', `this.initialized = 1; this.awarded[${HELD_ID}] = 1; }`,
-);
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
 const impl = artifacts.Impl!;
 const oracle = artifacts.Oracle!;
 const escrow = artifacts.Escrow!;
-const heldImpl = compileStringMulti(HELD_SOURCE, { composition: 'per-call' }).Impl!;
 
 /** The segment the artifact publishes for the entry's own record write. */
 function publishedWriteSegment(artifact: Artifact, functionName: string): number | 'last' | undefined {
@@ -108,7 +104,7 @@ async function deployCallee(
  * The callees are deployed at the categories the implementation's address literals were compiled from, so each
  * call's target names the address the deployed callee actually presents.
  */
-async function deployedWithCallees(network: MockNetworkProvider, implementation: Artifact = impl): Promise<{
+async function deployedWithCallees(network: MockNetworkProvider): Promise<{
   readonly proxyCategoryId: string;
   readonly implementationCategoryId: string;
   readonly deployerLock: Uint8Array;
@@ -144,8 +140,8 @@ async function deployedWithCallees(network: MockNetworkProvider, implementation:
 
   const deployment = await deployPerCallProxy({
     provider: network,
-    implementationArtifact: implementation,
-    proxyArtifact: buildProxyArtifact(implementation),
+    implementationArtifact: impl,
+    proxyArtifact: buildProxyArtifact(impl),
     implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress: source.address },
     proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress: source.address },
     initialize: { functionName: 'initialize', args: [deployerLock] },
@@ -159,6 +155,50 @@ async function deployedWithCallees(network: MockNetworkProvider, implementation:
     implementationCategoryId: deployment.implementation.categoryId,
     deployerLock, changeAddress: source.address, callCoin, funder: callerFunder,
   };
+}
+
+type Funded = Awaited<ReturnType<typeof deployedWithCallees>>;
+
+/** The deployment the cases share, and the chain as it stood when it was done. */
+interface World {
+  readonly network: MockNetworkProvider;
+  readonly funded: Funded;
+  readonly snapshot: SnapshotRestorer;
+}
+
+let worldRun: Promise<World> | undefined;
+
+/** One deployment serves both cases, each rewinding the chain to it first, so no case reads another's broadcast. */
+async function deployed(): Promise<World> {
+  worldRun ??= (async (): Promise<World> => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funded = await deployedWithCallees(network);
+    return { network, funded, snapshot: await network.takeSnapshot() };
+  })();
+  const world = await worldRun;
+  await world.snapshot.restore();
+  return world;
+}
+
+/** Enters `record(id)` through the hop with the caller's coin. */
+function record(
+  network: MockNetworkProvider, funded: Funded, id: bigint, callerUtxo: Funded['callCoin'] = funded.callCoin,
+): ReturnType<typeof callPerCallProxyEntry> {
+  return callPerCallProxyEntry({
+    provider: network,
+    implementationArtifact: impl,
+    proxyArtifact: buildProxyArtifact(impl),
+    proxyCategoryId: funded.proxyCategoryId,
+    implementationCategoryId: funded.implementationCategoryId,
+    functionName: 'record',
+    args: [id],
+    externals: externals(),
+    callerUtxo,
+    callerLockingBytecode: funded.deployerLock,
+    funder: funded.funder,
+    changeAddress: funded.changeAddress,
+    vm: compositionMachine(),
+  });
 }
 
 /** The mapping node's value the hop writes, found among the transaction's outputs by the slot the key names. */
@@ -180,24 +220,8 @@ describe('a proxied entry that writes a sorted-mapping record beside external ca
     // write precedes every call the entry makes.
     expect(publishedWriteSegment(impl, 'record')).toBe(0);
 
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallees(network);
-
-    const result = await callPerCallProxyEntry({
-      provider: network,
-      implementationArtifact: impl,
-      proxyArtifact: buildProxyArtifact(impl),
-      proxyCategoryId: funded.proxyCategoryId,
-      implementationCategoryId: funded.implementationCategoryId,
-      functionName: 'record',
-      args: [ID],
-      externals: externals(),
-      callerUtxo: funded.callCoin,
-      callerLockingBytecode: funded.deployerLock,
-      funder: funded.funder,
-      changeAddress: funded.changeAddress,
-      vm: compositionMachine(),
-    });
+    const { network, funded } = await deployed();
+    const result = await record(network, funded, ID);
 
     // Both callees run before the entry that called them, which runs before the fallback that entered it.
     expect(result.completed.map((frame) => frame.functionName)).toStrictEqual([
@@ -216,24 +240,11 @@ describe('a proxied entry that writes a sorted-mapping record beside external ca
     // The insert's predecessor is a live node the transaction spends: the write's segment relinks it and the later
     // segments keep it at the relinked view, so the batch's verification has to read the write's own segment
     // rather than the one the run ends in, or it compares the relinked successor with the one it spliced against.
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallees(network, heldImpl);
-
-    const result = await callPerCallProxyEntry({
-      provider: network,
-      implementationArtifact: heldImpl,
-      proxyArtifact: buildProxyArtifact(heldImpl),
-      proxyCategoryId: funded.proxyCategoryId,
-      implementationCategoryId: funded.implementationCategoryId,
-      functionName: 'record',
-      args: [ID],
-      externals: externals(),
-      callerUtxo: funded.callCoin,
-      callerLockingBytecode: funded.deployerLock,
-      funder: funded.funder,
-      changeAddress: funded.changeAddress,
-      vm: compositionMachine(),
-    });
+    const { network, funded } = await deployed();
+    expect((await record(network, funded, HELD_ID)).broadcast).toBeDefined();
+    const coin = { txid: binToHex(hash256(utf8ToBin('record write beside calls, held'))), vout: 0, satoshis: 300_000n };
+    await network.addUtxo(hexOf(funded.deployerLock), coin);
+    const result = await record(network, funded, ID, coin);
 
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.accepted).toBe(true);

@@ -1304,7 +1304,9 @@ describe('the validator program refuses each rule it enforces', () => {
     console.log('padding', VALIDATOR_INPUT_PADDING_BYTES);
   });
 
-  test('measures the widest compositions the fixture can lay out at the published density', () => {
+  // A measurement rather than a gate, so it runs at milestones (`PER_CALL_FULL=1`).
+  const measuring = process.env.PER_CALL_FULL === '1';
+  test.runIf(measuring)('measures the widest compositions the fixture can lay out at the published density', () => {
     // The densest case the suites build is the twenty-four-master composition of `primitives/many-masters.test.ts`,
     // which runs under the relaxed profile. This builds the same width from the fixture — three contracts entering
     // eight masters each — and narrower ones beside it, so the parts can be priced at the published density. The

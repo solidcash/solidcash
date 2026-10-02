@@ -1151,7 +1151,9 @@ risk. Take the slices in order, each with its own tests.
     eight nodes linked in slot order, each holding its value); through the shipped proxy hop thirty appends grow one
     log over thirty transactions, each with its event at the proxy's event covenant, the log's length and elements
     read back through the shipped read path; thirty registrations add a linked node each, and a second registration
-    of a held key is refused with nothing broadcast. The thirty-transaction cases run by default (about 6 s and 5 s).
+    of a held key is refused with nothing broadcast. Six transactions run by default (the log's run still grows
+    into its second chunk and the registrations insert at every position of the list); the row's thirty run under
+    `PER_CALL_FULL=1`.
   - [x] Row 24: `string => string` mapping set and delete. Guarded by `conformance/string-mapping-rows.test.ts`:
     served through the shipped proxy path (set, read back, delete, read back, through the shipped decoders) and
     refused by name on the direct call path, which cannot declare the run of chunk records a chunkable mapping

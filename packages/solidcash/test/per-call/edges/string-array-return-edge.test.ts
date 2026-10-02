@@ -82,18 +82,19 @@ const deployed = edgeDeployment({
  * The views-calling-views reader, deployed on its own beside the edge.
  *
  * The read path resolves a call's target from an address the caller's code carries, so the reader is compiled with
- * the shelf's address as a literal once the shelf is deployed.
+ * the shelf's address as a literal once the shelf is deployed, beside only the struct and the interface it reads
+ * through: the shelf and the front are deployed already, and compiling them again took most of the case's time.
  */
 async function deployReader(run: EdgeRun): Promise<{ readonly read: (entry: string) => Promise<PerCallReadResult> }> {
   const shelf = `IShelf(0x${binToHex(run.calleeAddress)})`;
-  const reader = compileStringMulti(SOURCE.replace(' contract Front {', ' contract Reader {'
+  const reader = compileStringMulti(SOURCE.slice(0, SOURCE.indexOf(' contract Shelf {'))
+    + ' contract Reader {'
     + '   int public reads;'
     + `   function summary() view returns (string, int) { Listing l = ${shelf}.catalog();`
     + '     return (l.tags[l.tags.length - 1], l.tags.length); }'
     + `   function lastTag() view returns (string) { string[] tags = ${shelf}.catalogTags(); return tags[1]; }`
     + `   function headline() view returns (string) { Listing l = ${shelf}.listing(); return l.title; }`
-    + ' }'
-    + ' contract Front {'), { composition: 'per-call' }).Reader!;
+    + ' }', { composition: 'per-call' }).Reader!;
   const categoryId = await deployBeside(run, reader, 'reader');
   return {
     read: (entry) => readPerCallEntry({

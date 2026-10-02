@@ -29,7 +29,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * runs once per transaction through the shipped proxy hop. The log's length and its elements read back through the
  * shipped read path, each transaction's event is the payload it emitted, and the member list grows by one linked
  * node per registration. A second registration of a held key is refused with the entry's own reason, and the
- * provider sees no transaction.
+ * provider sees no transaction. Six transactions run by default: the log's run grows into its second chunk and the
+ * registrations insert into an empty list, before its first node, after its last and between two. The row's thirty
+ * run under `PER_CALL_FULL=1`.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */
@@ -46,8 +48,8 @@ const TAGS: readonly (readonly [string, string])[] = [
   ['AU', 'AUDIO'], ['VI', 'VIDEO'], ['TX', 'TEXT'], ['SW', 'SOFTWARE'],
   ['MAP', 'MAPS_AND_PLACES'], ['GDS', 'PHYSICAL_GOODS'], ['SVC', 'SERVICES_IN_PERSON'], ['OTH', 'OTHER'],
 ];
-/** The transactions the growth runs over, one entry each. */
-const TRANSACTIONS = 30;
+/** The transactions the growth runs over, one entry each: the row's thirty at milestones. */
+const TRANSACTIONS = process.env.PER_CALL_FULL === '1' ? 30 : 6;
 /** The id every append writes. */
 const LOG_ID = 7n;
 /** The members' keys, distinct and spread over the slot space. */

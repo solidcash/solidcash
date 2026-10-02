@@ -201,15 +201,6 @@ describe('a mapping upsert inside a run-time loop, through the shipped call path
     expectMutatedRecordRefused(answered);
   });
 
-  it('accepts a three-turn varying-key loop, and refuses a record it wrote being changed', async () => {
-    // Three elements in one gap chain through the node each turn before created, so the frame declares four records:
-    // the rewritten predecessor and three created nodes, each read at the position the emitted coordinate names.
-    const answered = await call(VARYING_SOURCE, 'move', [ascendingKeys(3), 42n]);
-    expect({ accepted: answered.accepted, objections: objectionsOf(answered) })
-      .toStrictEqual({ accepted: true, objections: '' });
-    expectMutatedRecordRefused(answered);
-  });
-
   it('accepts a descending array, whose frame carries the keys in the order the body walks them', async () => {
     // The entry stores one value under every key, so the array is handed to the frame in slot order however the
     // caller ordered it: a two-element array that descends settles exactly as an ascending one does, and the record
@@ -219,7 +210,8 @@ describe('a mapping upsert inside a run-time loop, through the shipped call path
       .toStrictEqual({ accepted: true, objections: '' });
     expectMutatedRecordRefused(answered);
     // Three elements descend too: the whole array is handed over in slot order, so the chain the body builds is the
-    // chain the plan declared, and the record is refused once a byte of it is changed.
+    // chain the plan declared, three inserts in one gap each through the node the turn before created, and the
+    // record is refused once a byte of it is changed.
     const three = await call(VARYING_SOURCE, 'move', [ascendingKeys(3).reverse(), 42n]);
     expect({ accepted: three.accepted, objections: objectionsOf(three) })
       .toStrictEqual({ accepted: true, objections: '' });

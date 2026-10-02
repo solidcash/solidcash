@@ -51,7 +51,9 @@ const pairSource = (type: string, entry: string): string => 'pragma solidcash ^0
   + `   ${entry}`
   + ' }';
 
-describe.each(['string', 'bytes'])('a per-call master that overwrites two %s values', (type) => {
+// A `bytes` pair runs the same census at its own chunk address, which `dynamic-bytes-record.test.ts` drives.
+describe('a per-call master that overwrites two string values', () => {
+  const type = 'string';
   const pair = deploy(
     pairSource(type, `function set(${type} x, ${type} y) { this.first = x; this.second = y; }`), `${type} pair`,
   );

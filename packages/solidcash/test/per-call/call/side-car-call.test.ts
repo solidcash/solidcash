@@ -45,7 +45,13 @@ interface Signer {
 
 const leBytes = (hex: string): Uint8Array => hexToBin(hex.replace(/^0x/, '')).slice().reverse();
 
-/** Signs the digest with fresh wallets until the shipped split probe accepts the signature. */
+/**
+ * A key whose signature over the digest splits (at 57). A random key's signature can fail the probe, and a failed
+ * probe tries every split (about 17 s of CPU), so the search starts here.
+ */
+const SPLITTING_KEY = '0x65b605e09337ea34c9b99b8e943317a7ac778adf254ca5b8a283904fda98a5ec';
+
+/** Signs the digest with the known key, then with fresh wallets, until the shipped split probe accepts it. */
 function splittableSigner(): Signer {
   const probeUtxo = (odd: boolean): never => ({
     txid: (odd ? 'bb' : 'aa').repeat(32), vout: 1, satoshis: 100_000n,
@@ -53,7 +59,7 @@ function splittableSigner(): Signer {
   }) as never;
   const signed = `0x${binToHex(DIGEST.slice().reverse())}`;
   for (let attempt = 0; attempt < 200; attempt += 1) {
-    const wallet = ethers.Wallet.createRandom();
+    const wallet = attempt === 0 ? new ethers.Wallet(SPLITTING_KEY) : ethers.Wallet.createRandom();
     const { r, s, v } = wallet.signingKey.sign(signed);
     const signer = { v, r: leBytes(r), s: leBytes(s), owner: hexToBin(wallet.signingKey.compressedPublicKey.slice(2)) };
     try {

@@ -62,12 +62,14 @@ const dummyUtxo = (odd: boolean): never => ({
 }) as never;
 
 /**
- * Signs one message with a fresh wallet, re-drawing until the shipped split probe accepts the signature. A given
- * `hash` (little-endian, as the builtin reads it) is signed instead of a message.
+ * Signs one message, re-drawing fresh wallets until the shipped split probe accepts the signature. A given `hash`
+ * (little-endian, as the builtin reads it) is signed instead of a message. The first draw is the key `firstKey`
+ * names, known to split, because a refused probe tries every split and costs seconds.
  */
-async function splittableSigner(hash?: Uint8Array): Promise<Signer> {
+async function splittableSigner(firstKey: string, hash?: Uint8Array): Promise<Signer> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
-    const wallet = ethers.Wallet.createRandom();
+    const wallet = attempt === 0
+      ? new ethers.Wallet(ethers.sha256(ethers.toUtf8Bytes(firstKey))) : ethers.Wallet.createRandom();
     const message = `composer recovery ${attempt}`;
     const digest = hash === undefined ? ethers.hashMessage(message) : `0x${binToHex(hash.slice().reverse())}`;
     const signature = hash === undefined ? await wallet.signMessage(message) : wallet.signingKey.sign(digest).serialized;
@@ -89,7 +91,7 @@ async function splittableSigner(hash?: Uint8Array): Promise<Signer> {
 let signer: Signer;
 
 beforeAll(async () => {
-  signer = await splittableSigner();
+  signer = await splittableSigner('composer recovery key 1');
 }, 120_000);
 
 /** One recovery call the entry makes: the scalars, the value it compares against, and its projection. */
@@ -210,14 +212,12 @@ const recoveryCase = (
   projection: 'pubkey' | 'evm',
 ): RecoveryCase => buildCase([{ scalars, comparison, evm: projection === 'evm' }]);
 
-const oneCall: Partial<Record<'pubkey' | 'evm', RecoveryCase>> = {};
+let evmCase: RecoveryCase | undefined;
 
-/** The signer's one-call case per projection, built once: the cases that read it change nothing in it. */
-function signerCase(projection: 'pubkey' | 'evm'): RecoveryCase {
-  const built = oneCall[projection] ?? recoveryCase(signer, projection === 'evm'
-    ? `bytes20(0x${binToHex(signer.address)})` : `pubkey(0x${binToHex(signer.owner)})`, projection);
-  oneCall[projection] = built;
-  return built;
+/** The signer's one-call EVM-projection case, built once: the cases that read it change nothing in it. */
+function signerCase(): RecoveryCase {
+  evmCase ??= recoveryCase(signer, `bytes20(0x${binToHex(signer.address)})`, 'evm');
+  return evmCase;
 }
 
 /** Composes, derives and evaluates a case; returns each participant's machine verdict by identity. */
@@ -244,7 +244,7 @@ describe('a composed per-call recovery', () => {
   it('is accepted when the EVM projection reads its address from a keccak side-car', () => {
     // A trailing output, as an event or a send adds: the side-car must recreate at its own index, not at an offset
     // from the end of the outputs.
-    const evm = signerCase('evm');
+    const evm = signerCase();
     const test = { ...evm, plan: { ...evm.plan, trailingOutputs: [{ lockingBytecode: USER_LOCK, valueSatoshis: 1_000n }] } };
     const verdicts = verdictsOf(test);
     expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
@@ -253,7 +253,7 @@ describe('a composed per-call recovery', () => {
   });
 
   it('is accepted with one A/B pair per call when the entry makes two recoveries', async () => {
-    const second = await splittableSigner();
+    const second = await splittableSigner('composer recovery key 2');
     const test = buildCase([
       { scalars: signer, comparison: `pubkey(0x${binToHex(signer.owner)})`, evm: false },
       { scalars: second, comparison: `pubkey(0x${binToHex(second.owner)})`, evm: false },
@@ -280,7 +280,8 @@ describe('a composed per-call recovery over a digest the body computes', () => {
     const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
     const prefix = utf8('per-call signed digest:');
     const left = utf8('per-call recovery left');
-    const computed = await splittableSigner(keccak_256(Uint8Array.from([...prefix, ...keccak_256(left)])));
+    const computed = await splittableSigner('composer recovery key 1',
+      keccak_256(Uint8Array.from([...prefix, ...keccak_256(left)])));
     const { artifacts, program, abiFunction } = compiled('pragma solidcash ^0.13.0;'
       + ' contract Auth {'
       + '   function check(bytes prefix, bytes left, int v, bytes32 r, bytes32 s) {'
@@ -410,21 +411,10 @@ describe('a composed per-call recovery in a frame that runs on its caller\'s rec
   }, 120_000);
 });
 
+// One A/B pair per call, right after the master: the two-recovery case above and `layout.test.ts`.
 describe('the recovery side-cars the composer places', () => {
-  it('are one A/B pair per call, immediately after the master input', () => {
-    const test = signerCase('pubkey');
-    const { layout } = composeDraft(test.plan);
-    expect(test.ids).toStrictEqual([`${MASTER_ID}/recovery-A0`, `${MASTER_ID}/recovery-B0`]);
-    expect(layout.participants.map((placed) => [placed.id, placed.index, placed.kind])).toStrictEqual([
-      [MASTER_ID, 0, 'master'],
-      [`${MASTER_ID}/recovery-A0`, 1, 'recovery'],
-      [`${MASTER_ID}/recovery-B0`, 2, 'recovery'],
-    ]);
-    expect(layout.funderInputBase).toBe(3);
-  });
-
   it('are a pair plus a keccak side-car for the EVM projection', () => {
-    const test = signerCase('evm');
+    const test = signerCase();
     expect(test.ids).toStrictEqual([
       `${MASTER_ID}/recovery-A0`, `${MASTER_ID}/recovery-B0`, `${MASTER_ID}/recovery-K0`,
     ]);

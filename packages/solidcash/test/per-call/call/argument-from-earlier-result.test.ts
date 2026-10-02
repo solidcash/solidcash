@@ -4,7 +4,7 @@ import { parsePushdataCommitment } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
@@ -170,6 +170,27 @@ async function enter(
   });
 }
 
+/** The deployment the cases share, and the chain as it stood when it was done. */
+interface World {
+  readonly network: MockNetworkProvider;
+  readonly deployed: Deployed;
+  readonly snapshot: SnapshotRestorer;
+}
+
+let worldRun: Promise<World> | undefined;
+
+/** One deployment serves both cases, each rewinding the chain to it first, so no case reads another's broadcast. */
+async function world(): Promise<World> {
+  worldRun ??= (async (): Promise<World> => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const deployed = await deployAll(network);
+    return { network, deployed, snapshot: await network.takeSnapshot() };
+  })();
+  const shared = await worldRun;
+  await shared.snapshot.restore();
+  return shared;
+}
+
 /** The value the entry left in the caller's `last` field, read from the record the hop wrote. */
 function lastOf(result: PerCallProxyCallResult): unknown {
   const layout = buildProxyArtifact(root).stateLayout!;
@@ -179,8 +200,7 @@ function lastOf(result: PerCallProxyCallResult): unknown {
 
 describe('calls whose arguments and loop bound are earlier calls\' results, planned in execution order', () => {
   it('passes each result on to the next call and broadcasts the chain', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const deployed = await deployAll(network);
+    const { network, deployed } = await world();
     const result = await enter(network, deployed, 'chain');
     expect(result.accepted).toBe(true);
     expect(result.verdicts.every((verdict) => verdict.accepted)).toBe(true);
@@ -190,8 +210,7 @@ describe('calls whose arguments and loop bound are earlier calls\' results, plan
   });
 
   it('turns a loop as often as an earlier call returned and broadcasts it', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const deployed = await deployAll(network);
+    const { network, deployed } = await world();
     const result = await enter(network, deployed, 'sum');
     expect(result.accepted).toBe(true);
     expect(result.verdicts.every((verdict) => verdict.accepted)).toBe(true);

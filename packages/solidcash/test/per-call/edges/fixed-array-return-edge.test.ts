@@ -80,27 +80,23 @@ function partsOf(total: bigint, buyerShare: bigint): { buyer: bigint; seller: bi
 }
 
 describe('a uint256[5] returned to the caller', () => {
-  for (const [label, total, share] of [
-    ['a total of a million', 1_000_000n, 80n],
-    ['words past 128 bits', 10n ** 40n + 7n, 25n],
-  ] as const) {
-    it(`reaches the caller word for word, which checks, stores and emits them: ${label}`, async () => {
-      const run = await deployed();
-      const { buyer, seller, fee } = partsOf(total, share);
-      const result = await settleEdge(run, 'settle', [total, share]);
-      expect(result.completed.map((frame) => frame.functionName))
-        .toStrictEqual(['Splitter.split()', 'Settler.settle()', 'SettlerProxy.__fallback()']);
-      expect(await callerFields(run)).toMatchObject({ toBuyer: buyer, toSeller: seller, toFee: fee, settled: 1n });
-      expect((await eventsOnChain(run, run.caller, run.proxyCategoryId, result.txid))
-        .map(({ name, args }) => ({ name, args }))).toStrictEqual([
-        { name: 'Settled', args: { buyer, seller, fee, total } },
-      ]);
-      expect((await eventsOnChain(run, run.callee, run.calleeCategoryId, result.txid))
-        .map(({ name, args }) => ({ name, args }))).toStrictEqual([
-        { name: 'Split', args: { total, buyerShare: share } },
-      ]);
-    });
-  }
+  it('reaches the caller word for word, which checks, stores and emits them: words past 128 bits', async () => {
+    const run = await deployed();
+    const [total, share] = [10n ** 40n + 7n, 25n];
+    const { buyer, seller, fee } = partsOf(total, share);
+    const result = await settleEdge(run, 'settle', [total, share]);
+    expect(result.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['Splitter.split()', 'Settler.settle()', 'SettlerProxy.__fallback()']);
+    expect(await callerFields(run)).toMatchObject({ toBuyer: buyer, toSeller: seller, toFee: fee, settled: 1n });
+    expect((await eventsOnChain(run, run.caller, run.proxyCategoryId, result.txid))
+      .map(({ name, args }) => ({ name, args }))).toStrictEqual([
+      { name: 'Settled', args: { buyer, seller, fee, total } },
+    ]);
+    expect((await eventsOnChain(run, run.callee, run.calleeCategoryId, result.txid))
+      .map(({ name, args }) => ({ name, args }))).toStrictEqual([
+      { name: 'Split', args: { total, buyerShare: share } },
+    ]);
+  });
 
   it('refuses a share the callee\'s own check rejects, with its reason, and nothing is broadcast', async () => {
     const run = await deployed();

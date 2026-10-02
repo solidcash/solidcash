@@ -206,10 +206,12 @@ const leBytes = (hex: string): Uint8Array => hexToBin(hex.replace(/^0x/, '')).sl
  * Signs one message with a fresh random wallet and returns the LE scalars, the recovered signer, the recovery
  * witnesses and the split they fit. A small share of signatures have a GLV ladder too long for the two-covenant
  * split, so the wallet is re-drawn until the split probe accepts - the same remedy the shipped e2e fixture uses.
+ * The first draw is a key known to split, because a refused probe tries every split and costs seconds.
  */
 async function splittableSigner(): Promise<Recovery> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
-    const wallet = ethers.Wallet.createRandom();
+    const wallet = attempt === 0
+      ? new ethers.Wallet(ethers.sha256(ethers.toUtf8Bytes('per-call ecrecover key 1'))) : ethers.Wallet.createRandom();
     const message = `per-call ecrecover ${attempt}`;
     const signature = await wallet.signMessage(message);
     const digest = ethers.hashMessage(message);

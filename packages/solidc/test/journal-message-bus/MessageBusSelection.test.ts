@@ -569,6 +569,48 @@ describe('message-bus compilation selection', () => {
     expect(refuse?.batchKeyWitnesses?.some((binding) => binding.source === 'expression')).toBe(false);
   });
 
+  it('does not retain an inactive helper key when another collection remains active', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Refusal {
+        mapping(uint => mapping(address => bool)) whitelistWorkers;
+        mapping(uint => uint) jobs;
+        function settle(uint id, bool removeWorker) internal {
+          jobs[id] = 1;
+          if (removeWorker) { whitelistWorkers[id][removeWorker ? address(1) : address(0)] = false; }
+        }
+        function refund(uint id) public {
+          settle(id, true);
+          require(true);
+        }
+        function refuse(uint id) public {
+          settle(id, false);
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    const refuseAbi = artifact.abi.find((entry) => entry.name === 'refuse');
+    const refuse = artifact.messageBus?.handlers.find((handler) => handler.name === 'refuse');
+    const refund = artifact.messageBus?.handlers.find((handler) => handler.name === 'refund');
+    expect(refuseAbi?.entryAccesses).toEqual([
+      expect.objectContaining({ collection: 'jobs' }),
+    ]);
+    expect(refuse?.batchKeyWitnesses?.some((binding) => binding.source === 'expression'
+      && binding.routeInput.startsWith('__message_bus_key_whitelistWorkers_'))).toBe(false);
+    expect(refuse?.batchKeyWitnesses).toContainEqual(expect.objectContaining({
+      routeInput: '__message_bus_key_jobs_0', source: 'argument', inputIndex: 0,
+    }));
+    expect(refund?.batchKeyWitnesses).toContainEqual(expect.objectContaining({
+      routeInput: '__message_bus_key_whitelistWorkers_1', source: 'expression',
+    }));
+  });
+
   it('does not taint a typed kernel getter with an unrelated low-level return consumer', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract Registry(address peer) {

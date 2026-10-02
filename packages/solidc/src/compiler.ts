@@ -15907,6 +15907,12 @@ function compileResolvedAst(
   };
   if (mergedCompilerOptions.messageBus
     && ast.contract.functions.some((fn) => fn.messageBusRoute)) {
+    const messageBusRouteFn = ast.contract.functions.find((fn) => fn.messageBusRoute);
+    const routeEntries = messageBusRouteFn?.entryAccesses ?? [];
+    const knownCollections = new Set([
+      ...ast.contract.collections.map((collection) => collection.name),
+      ...routeEntries.map((entry) => entry.collection),
+    ]);
     for (const fn of ast.contract.functions) {
       for (const witness of fn.messageBusKeyWitnesses ?? []) {
         if (witness.source !== 'expression' || witness.expressionLabel) continue;
@@ -15919,22 +15925,26 @@ function compileResolvedAst(
           if (source?.kind === 'expression') witness.expressionLabel = source.canonical;
         }
       }
-      // Admission inspects the helper closure before constant arguments are folded. A helper's computed
-      // collection key can therefore survive in the provisional witness list even when the emitted handler
-      // never touches an entry (for example, a helper called with a literal false branch guard). The route
-      // still owns the union key parameter, but this handler has no value from which to derive it. Only omit
-      // unresolved expression metadata after the final handler layout proves that it has no entry footprint;
-      // argument/msg.sender witnesses may be checked by the route and must remain published.
-      const hasEntryFootprint = (fn.entryAccesses?.length ?? 0) > 0
-        || (fn.entryLoopWrites?.length ?? 0) > 0
-        || (fn.messageBusPhysicalEntrySlots?.length ?? 0) > 0
-        || fn.blockLayout?.slots.some((slot) => slot.kind === 'entry') === true;
-      if (!hasEntryFootprint && fn.messageBusKeyWitnesses) {
+      // Admission inspects helper closures before constant arguments are folded. A dead helper branch can
+      // leave a provisional expression key even when another collection keeps this handler's entry footprint
+      // nonempty. Reconcile per collection against the lowered accesses and exact physical route slots; the
+      // route-wide block layout is a union and cannot prove this handler uses a particular collection.
+      const activeCollections = new Set([
+        ...(fn.entryAccesses ?? []).map((entry) => entry.collection),
+        ...(fn.entryLoopWrites ?? []),
+        ...routeEntries.filter((entry) => fn.messageBusPhysicalEntrySlots?.includes(entry.slotIndex))
+          .map((entry) => entry.collection),
+      ]);
+      if (fn.messageBusKeyWitnesses) {
         fn.messageBusKeyWitnesses = fn.messageBusKeyWitnesses.filter((witness) =>
-          witness.source !== 'expression' || witness.expressionLabel !== undefined);
+          witness.source !== 'expression' || ![...knownCollections].some((collection) => {
+            if (activeCollections.has(collection)) return false;
+            const safeName = collection.replace(/[^A-Za-z0-9_]/g, '_');
+            return new RegExp(`^__message_bus_key_${safeName}_(\\d+)(?:_row)?$`)
+              .test(witness.routeInput);
+          }));
       }
     }
-    const messageBusRouteFn = ast.contract.functions.find((fn) => fn.messageBusRoute);
     const messageBusMaximumRows = messageBusRouteFn?.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;
     const messageBusMaximumBlobBytes = messageBusRouteFn?.messageBusDispatch === 'kernel-row-loop'
       ? MAX_KERNEL_MESSAGE_BUS_BLOB_BYTES : MAX_MESSAGE_BUS_BLOB_BYTES;

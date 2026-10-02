@@ -152,6 +152,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   parameters are added; otherwise the retained source-arity call failed type checking. The new reachable-helper
   and shadowed-helper titles each pass individually, with the immediately preceding title checked after each
   fix. `yarn build`, targeted lint, and the static sources-only gate pass; no broad tests or cold gate ran.
+- 2026-10-02 graph-free library-call checkpoint: a reachable `Library.call(...)` helper was misread as an address
+  `.call(data)` edge and enabled the default message bus. Source selection now recognizes declared library
+  functions while conservatively retaining the graph interpretation if a value binding may shadow the library.
+  Auto-narrowed graph-free contracts use the same direct lowering as an explicit `messageBus: false` compile.
+  The focused new title and its immediately preceding local-helper title pass; `yarn build`, targeted lint, and
+  the static sources-only gate pass. Regenerated GoldenToken and transfer-with-timeout scripts shrink from
+  786 to 752 and 40 to 35 bytes respectively. No broad suite or cold beta gate ran.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

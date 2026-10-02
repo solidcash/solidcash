@@ -40,6 +40,26 @@ describe('message-bus compilation selection', () => {
     expect(artifact.compiler.options?.messageBus).toBe(false);
   });
 
+  it('keeps a namespaced library helper named call on the direct route', () => {
+    const source = `library Helpers {
+        function call(int value) internal pure returns (int) { return value + 1; }
+      }
+      contract LibraryCaller {
+        int value;
+        function set(int next) public {
+          value = Helpers.call(next);
+          require(value > 0);
+        }
+      }`;
+    const automatic = compileString(source, { solidityImportCompat: true, suppressWarnings: true });
+    const direct = compileString(source, {
+      solidityImportCompat: true, suppressWarnings: true, messageBus: false,
+    });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.bytecode).toBe(direct.bytecode);
+  });
+
   it('keeps an unreachable foreign-call helper off the default route', () => {
     const source = `interface ISink { function ping(int amount) external; }
       contract Simple(address target) {

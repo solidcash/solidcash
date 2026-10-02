@@ -1862,10 +1862,7 @@ function compileWithExternalAdmissionFallback(
     );
   delete (mergedCompilerOptions as InternalCompilerOptions).__parsedAst;
   const messageBusMode = (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode ?? 'auto';
-  if (messageBusMode === 'auto' && !mergedCompilerOptions.messageBusGraphContext
-    && !hasMessageBusGraphEdge(initialAst)) {
-    mergedCompilerOptions.messageBus = false;
-  }
+  narrowGraphFreeAutoMessageBus(initialAst, mergedCompilerOptions);
   if (messageBusMode === 'required' && !supportsAtomicMessageBus(initialAst, mergedCompilerOptions)) {
     throw new Error('messageBus: required route generation did not produce a composable artifact');
   }
@@ -2265,7 +2262,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       code, mergedCompilerOptions, errorListener, primaryContractName,
     );
     mergedCompilerOptions.__parsedAst = selectionAst;
-    if (!hasMessageBusGraphEdge(selectionAst)) mergedCompilerOptions.messageBus = false;
+    narrowGraphFreeAutoMessageBus(selectionAst, mergedCompilerOptions);
   }
   const pristineAstBox = { ast: undefined as Ast | undefined };
   mergedCompilerOptions.__pristineAstBox = pristineAstBox;
@@ -3878,6 +3875,16 @@ function supportsAtomicMessageBus(ast: Ast, compilerOptions: CompilerOptions): b
     || contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 }
 
+/** Auto-narrowing is a direct compile, including its lowering and source-error policy. */
+function narrowGraphFreeAutoMessageBus(ast: Ast, options: CompilerOptions): void {
+  const internal = options as InternalCompilerOptions;
+  if (internal.__messageBusMode !== 'auto' || options.messageBusGraphContext
+    || hasMessageBusGraphEdge(ast)) return;
+  options.messageBus = false;
+  options.messageBusKernel = false;
+  internal.__messageBusExplicitlyDisabled = true;
+}
+
 /**
  * Source-level signal that a contract participates in an atomic call graph.
  *
@@ -4048,6 +4055,26 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       parameter.type instanceof AddressType && parameter.type.interfaceName !== undefined);
     if (hasTypedReceiverCall(surface.body, typedReceivers)) return true;
   }
+  // A declared `Library.call(...)` is a local namespaced function call, not an address.call(data) edge.
+  // The closure above still visits the library helper, so a real external call inside it remains visible.
+  // If a value binding shares the library's name, keep the low-level-call interpretation conservative:
+  // source-only selection does not have enough type information to decide which namespace wins.
+  const valueNamespaces = new Set([
+    ...contract.parameters, ...contract.stateVariables,
+    ...surveyedFunctions.flatMap((fn) => fn.parameters),
+    ...[...activeModifiers].flatMap((modifier) => modifier.parameters),
+  ].map((binding) => binding.name));
+  for (const fn of surveyedFunctions) walkInvocationAst(fn.body, (node) => {
+    if (node instanceof VariableDefinitionNode) valueNamespaces.add(node.name);
+  });
+  for (const member of otherMembers) walkInvocationAst(member, (node) => {
+    if (node instanceof VariableDefinitionNode) valueNamespaces.add(node.name);
+  });
+  const namespacedLowLevelCall = (node: FunctionCallNode): boolean => {
+    if (!/\.(call|staticcall)$/.test(node.identifier.name)) return false;
+    const namespace = node.identifier.name.slice(0, node.identifier.name.lastIndexOf('.'));
+    return valueNamespaces.has(namespace) || !ast.libraryFunctionSignatures.has(node.identifier.name);
+  };
   let found = false;
   const checkGraphEdge = (node: Node): void => {
     if (found) return;
@@ -4056,7 +4083,7 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       || (node instanceof MethodCallNode && node.methodName !== 'delegatecall'
         && ((node.object instanceof InstantiationNode)
           || (node.object instanceof FunctionCallNode && interfaceNames.has(node.object.identifier.name))))
-      || (node instanceof FunctionCallNode && /\.(call|staticcall)$/.test(node.identifier.name))) {
+      || (node instanceof FunctionCallNode && namespacedLowLevelCall(node))) {
       found = true;
     }
   };

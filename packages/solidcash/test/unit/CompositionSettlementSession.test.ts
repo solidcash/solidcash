@@ -253,6 +253,30 @@ describe('composition settlement session CompositionSettlementSession', () => {
     expect(session.stagedJobEventsValues.get(unrelated)).toEqual(unrelatedValue);
   });
 
+  it('does not resolve an unselected compatibility value from the latest category', () => {
+    const session = createCompositionSettlementSession();
+    const unrelated = 'bb'.repeat(32);
+    const stagedValue = new Uint8Array(80).fill(7);
+    const persistedValue = new Uint8Array(80).fill(8);
+    session.stagedJobEventsValues.set(unrelated, stagedValue);
+    session.persistedJobEventsValues.set(unrelated, persistedValue);
+    const builder = Object.assign(Object.create(StatefulTransactionBuilder.prototype) as object, {
+      _valueChunkWriteCategorySelection: () => ({ status: 'absent' }),
+      _hasChunkableValueWriteMetadata: () => false,
+      _permitsLegacyNamedValueChunkFallback: () => true,
+    }) as {
+      _stagedValueChunkWrite: (categoryId?: string) => Uint8Array | undefined;
+      _persistedValueChunkValue: (categoryId?: string) => Uint8Array | undefined;
+    };
+
+    runWithCompositionSettlementSession(session, () => {
+      expect(builder._stagedValueChunkWrite()).toBeUndefined();
+      expect(builder._persistedValueChunkValue()).toBeUndefined();
+      expect(builder._stagedValueChunkWrite(unrelated)).toEqual(stagedValue);
+      expect(builder._persistedValueChunkValue(unrelated)).toEqual(stagedValue);
+    });
+  });
+
   it('STB production helpers and clearPersistedJobEvents go through settlement()', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const persistSrc = readFileSync(

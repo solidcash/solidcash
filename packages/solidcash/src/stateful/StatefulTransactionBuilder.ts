@@ -190,7 +190,6 @@ import {
   persistedValueChunkWriteState,
   selectPersistedValueChunkWrite,
   persistUpdateRedeemLock,
-  latestPersisted,
   valueChunkCountFor,
   coherentAuthenticatedValueChunkRun,
 } from './value-chunk-persist.js';
@@ -6107,9 +6106,8 @@ export class StatefulTransactionBuilder {
     }
     if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()
       || !this._permitsLegacyNamedValueChunkFallback()) return undefined;
-    return categoryId
-      ? settlement().stagedJobEventsValues.get(categoryId)
-      : latestPersisted(settlement().stagedJobEventsValues);
+    // Descriptor-free compatibility storage still needs a selected owner; insertion order is not authority.
+    return categoryId ? settlement().stagedJobEventsValues.get(categoryId) : undefined;
   }
 
   /** Exact committed value, with category-wide storage retained only for descriptor-free legacy plans. */
@@ -6123,7 +6121,7 @@ export class StatefulTransactionBuilder {
     }
     if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()
       || !this._permitsLegacyNamedValueChunkFallback()) return undefined;
-    return categoryId ? persistedJobEventsValue(categoryId) : latestPersisted(settlement().persistedJobEventsValues);
+    return categoryId ? persistedJobEventsValue(categoryId) : undefined;
   }
 
   /** Exact descriptor path, with the historical schema available only to descriptor-free legacy plans. */

@@ -459,6 +459,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   own value and lock to match its derived script. A successful value-chunk send no longer borrows the latest staged
   value from another category or broadcasts one committed value and recipe across all cached categories. Both new
   focused titles went red-to-green, each with its immediately preceding title passing. No broad suite was run.
+- 2026-10-02 unselected compatibility owner follow-up: the SDK no longer reads the latest cached staged or
+  committed value when descriptor-free planning cannot identify a category. An exact category lookup still works;
+  compiler-described exact resources are unaffected. The focused title went red-to-green and its immediately
+  preceding compatibility-band title passes. No broad suite was run.
 
 ## Gate before the next leap
 

@@ -155,8 +155,9 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   implementation.
 - 2026-10-02 arbitration-source size follow-up: a fresh single-root UnicrowArbitrator kernel compile emits
   18,761 redeem-script bytes, and `compileFileSplit` refuses its 16,267-byte singleton `arbitrate` closure at
-  `SPLIT_CLOSURE_CAPACITY`. Both ends of the Unicrow arbitration callback path therefore need a deployability
-  design before that exact path can receive a BCH consensus VM proof; the neutral callback proofs do not cover it.
+  `SPLIT_CLOSURE_CAPACITY`. At that checkpoint both ends needed a deployability design before the exact path
+  could receive a BCH consensus VM proof; the later verifier-binding result below supersedes the arbitrator
+  capacity finding but not the missing source-path VM proof.
 - 2026-10-02 pre-binding UnicrowClaim cut-boundary check: the old split pipeline measured the unchanged `claim`
   singleton at 16,800 bytes. A diagnostic in-memory source variant replacing all three application helper bodies
   (`calculatePayments`, `calculateSplits`, and `claimPayments`) with trivial bodies still measured 14,226 bytes.
@@ -171,8 +172,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   co-spends the bound split facet and a typed stateful peer, settles both writes, and passes its immediately
   preceding constructor title. The unchanged UnicrowClaim `claim` singleton estimate fell from 16,800 to
   10,256 bytes, including the compiler's spend reserve; its 9,090-byte redeem script fits alone, but the
-  10,000-byte whole-spend gate still correctly refuses the shard by 256 bytes. Neither UnicrowClaim nor
-  UnicrowArbitrator is thereby deployable, and no broad suite or beta gate was run.
+  10,000-byte whole-spend gate still correctly refuses the shard by 256 bytes. The unchanged UnicrowArbitrator
+  now passes `compileFileSplit` at the default whole-spend gate with a 2,749-byte root and three bound facets
+  of 7,559, 8,523, and 7,362 redeem-script bytes. This is compiler capacity evidence, not a deployment or
+  arbitration callback VM proof. UnicrowClaim remains refused; no broad suite or beta gate was run.
 - 2026-10-02 focused proxy-application checkpoint: the unchanged Marketplace `job posting > post job 1` title
   now reaches its event-data assertion but remains red (1 selected, 65 skipped). The proxy application's
   `abi.encodePacked(uint160(token_))` publishes a 20-byte identity, as the existing compiler cast test requires;

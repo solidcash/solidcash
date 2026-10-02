@@ -425,6 +425,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   time. The focused BCH-2026 proof accepts both branches with different callee bytecode and rejects a wrong-owner
   child; that title and its immediately preceding pointer title pass individually. The compiler selection title
   and its immediately preceding indexed-receiver title also pass individually. No broad suite was run.
+- 2026-10-02 legacy value-chunk readiness follow-up: descriptor-free compatibility sends now record readiness by
+  category rather than one mutable session-wide boolean. Clearing one category no longer makes a different
+  category appear unready; both historical event-reassert paths use the selected publisher category when deciding
+  whether to stamp an append timestamp. The neutral readiness name is available while the historical export stays
+  as a compatibility alias. The exact new session title went red-to-green and its immediately preceding isolation
+  title passes. This does not retire the remaining legacy schema adapter or establish a broad SDK gate.
 
 ## Gate before the next leap
 

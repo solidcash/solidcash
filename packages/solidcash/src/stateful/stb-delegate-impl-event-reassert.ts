@@ -24,7 +24,7 @@ import { isScidIdentityCommitment } from './logical-identity.js';
 import { isJobEventEmitCommitment } from './same-index-twin-emit.js';
 import { permitsLegacyNamedValueChunkFallbackForGroups } from './stb-chunkable-write-planning.js';
 import {
-  isPersistedJobEventsReady,
+  isPersistedCompatibilityValueChunkReady,
   persistedJobEventsWidth,
 } from './value-chunk-persist.js';
 import { legacyGroupLooksLikePublishJobEvent } from './legacy-planning-heuristics.js';
@@ -130,7 +130,8 @@ export function ensureDistinctJobEventNfts(
     (host.builderOptions.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
   );
   const unixThreshold = 500_000_000;
-  const appending = isPersistedJobEventsReady() && persistedJobEventsWidth() > 0;
+  const appending = isPersistedCompatibilityValueChunkReady(categoryId)
+    && persistedJobEventsWidth(categoryId) > 0;
   const locktime = appending && Number.isFinite(providerTime) && providerTime >= unixThreshold
     ? (providerTime > unixThreshold ? Math.trunc(providerTime) - 1 : Math.trunc(providerTime))
     : undefined;

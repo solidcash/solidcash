@@ -40,6 +40,7 @@ import {
   firstUsableValueChunkRun,
   isEmptyValueChunkCommitment,
   latestPersisted,
+  markPersistedCompatibilityValueChunkReady,
   persistUpdateRedeemLock,
   persistedCompatibilityValueChunkLock,
   persistedJobEventsWidth,
@@ -566,6 +567,6 @@ export function persistPlacedValueChunkBand(
       for (const otherId of settlement().persistedJobEventsValues.keys()) rememberJobEventsUnlockRecipe(otherId);
     }
     settlement().stagedJobEventsValues.delete(categoryId);
-    settlement().persistedJobEventsSendReady = true;
+    markPersistedCompatibilityValueChunkReady(categoryId);
   }
 }

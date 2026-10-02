@@ -41,7 +41,7 @@ import {
 } from './stb-scaled-preserve-emit.js';
 import { selectCompilerWriterEvent } from './value-chunk-base-writer-select.js';
 import {
-  isPersistedJobEventsReady,
+  isPersistedCompatibilityValueChunkReady,
   persistedJobEventsWidth,
 } from './value-chunk-persist.js';
 import { placeChunkableWriterEventOutput } from './writer-event-delegate-layout.js';
@@ -288,7 +288,8 @@ export function reassertNestedEmitEvents(
             (host.builderOptions.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
           );
           const unixThreshold = 500_000_000;
-          const appending = isPersistedJobEventsReady() && persistedJobEventsWidth() > 0;
+          const appending = isPersistedCompatibilityValueChunkReady(categoryId)
+            && persistedJobEventsWidth(categoryId) > 0;
           const locktime = appending && Number.isFinite(tip) && tip >= unixThreshold
             ? (tip > unixThreshold ? Math.trunc(tip) - 1 : Math.trunc(tip))
             : undefined;

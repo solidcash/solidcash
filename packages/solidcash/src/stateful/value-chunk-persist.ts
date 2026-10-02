@@ -264,7 +264,12 @@ export class CompositionSettlementSession {
   readonly stagedJobEventsValues = new Map<string, Uint8Array>();
   readonly createdDigestLocks = new Set<string>();
   readonly persistedCreatedValues = new Map<string, Uint8Array>();
-  persistedJobEventsSendReady = false;
+  readonly readyPersistedCompatibilityValueChunks = new Set<string>();
+  /** Historical aggregate view; new consumers should supply a category to the neutral readiness helper. */
+  get persistedJobEventsSendReady(): boolean {
+    return this.readyPersistedCompatibilityValueChunks.size > 0;
+  }
+
   /** Settle-time ExecutionContext lifecycle (isolated per composition session). */
   readonly executionContexts = createExecutionContextLifecycle();
   /** constraint fixpoint: multi-domain monotone fixpoint session (isolated per composition). */
@@ -296,6 +301,7 @@ export class CompositionSettlementSession {
       this.stagedJobEventsValues.delete(categoryId);
       this.createdDigestLocks.delete(categoryId);
       this.persistedCreatedValues.delete(categoryId);
+      this.readyPersistedCompatibilityValueChunks.delete(categoryId.toLowerCase());
       const prefix = `${categoryId.toLowerCase()}:`;
       for (const key of this.observedValueChunksByCollection.keys()) {
         if (key.startsWith(prefix)) this.observedValueChunksByCollection.delete(key);
@@ -314,12 +320,12 @@ export class CompositionSettlementSession {
       this.stagedJobEventsValues.clear();
       this.createdDigestLocks.clear();
       this.persistedCreatedValues.clear();
+      this.readyPersistedCompatibilityValueChunks.clear();
       this.observedValueChunksByCollection.clear();
       this.executionContexts.clear();
       this.constraintFixpoint.clear();
       this.executionEffectPlans = [];
     }
-    this.persistedJobEventsSendReady = false;
   }
 }
 
@@ -1033,7 +1039,19 @@ export function persistUpdateRedeemLock(
   return persistedCompatibilityValueChunkLock(categoryId);
 }
 
-/** True only after a successful publishJobEvent send, not compose/extract. */
-export function isPersistedJobEventsReady(): boolean {
+/** Mark one descriptor-free compatibility value ready only after its transaction was sent. */
+export function markPersistedCompatibilityValueChunkReady(categoryId: string): void {
+  if (!/^[0-9a-f]{64}$/i.test(categoryId)) return;
+  settlement().readyPersistedCompatibilityValueChunks.add(categoryId.toLowerCase());
+}
+
+/** True only after a successful compatibility-value send, not compose/extract. */
+export function isPersistedCompatibilityValueChunkReady(categoryId?: string): boolean {
+  if (categoryId !== undefined) {
+    return settlement().readyPersistedCompatibilityValueChunks.has(categoryId.toLowerCase());
+  }
   return settlement().persistedJobEventsSendReady;
 }
+
+/** @deprecated Historical name retained for the legacy adapter. */
+export const isPersistedJobEventsReady = isPersistedCompatibilityValueChunkReady;

@@ -161,6 +161,8 @@ export {
   selectPersistedValueChunkWrite,
   persistUpdateRedeemLock,
   isPersistedJobEventsReady,
+  isPersistedCompatibilityValueChunkReady,
+  markPersistedCompatibilityValueChunkReady,
   valueChunkIndexFromCommitment,
   isEmptyValueChunkCommitment,
   latestPersisted,

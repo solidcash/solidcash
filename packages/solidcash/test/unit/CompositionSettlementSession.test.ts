@@ -9,12 +9,15 @@ import {
   CompositionSettlementSession,
   createCompositionSettlementSession,
   getCompositionSettlementSession,
+  isPersistedCompatibilityValueChunkReady,
+  isPersistedJobEventsReady,
   legacyPersistedValueChunkLock,
   legacyPersistedValueChunkValue,
   legacyRememberValueChunkLock,
   legacyRememberValueChunkValue,
   runWithCompositionSettlementSession,
   legacyStageValueChunkValue,
+  markPersistedCompatibilityValueChunkReady,
   StatefulTransactionBuilder,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
@@ -93,6 +96,29 @@ describe('composition settlement session CompositionSettlementSession', () => {
     a.clear(categoryId);
     expect(legacyPersistedValueChunkLock(categoryId, a)).toBeUndefined();
     expect(legacyPersistedValueChunkLock(categoryId, b)).toEqual(lock);
+  });
+
+  it('clearing one persisted compatibility category keeps another ready', () => {
+    const session = createCompositionSettlementSession();
+    const first = 'aa'.repeat(32);
+    const second = 'bb'.repeat(32);
+    runWithCompositionSettlementSession(session, () => {
+      markPersistedCompatibilityValueChunkReady(first);
+      markPersistedCompatibilityValueChunkReady(second);
+      expect(isPersistedJobEventsReady(first)).toBe(true);
+      expect(isPersistedJobEventsReady(second)).toBe(true);
+      expect(isPersistedJobEventsReady()).toBe(true);
+      expect(isPersistedCompatibilityValueChunkReady(second)).toBe(true);
+    });
+    session.clear(first);
+    runWithCompositionSettlementSession(session, () => {
+      expect(isPersistedJobEventsReady(first)).toBe(false);
+      expect(isPersistedJobEventsReady(second)).toBe(true);
+      expect(isPersistedJobEventsReady()).toBe(true);
+      expect(isPersistedCompatibilityValueChunkReady(first)).toBe(false);
+    });
+    session.clear(second);
+    expect(runWithCompositionSettlementSession(session, () => isPersistedJobEventsReady())).toBe(false);
   });
 
   it('STB production helpers and clearPersistedJobEvents go through settlement()', () => {

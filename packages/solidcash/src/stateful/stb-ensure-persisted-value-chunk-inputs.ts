@@ -84,10 +84,14 @@ export async function ensurePersistedValueChunkInputs(
     if (write) rememberValueChunkUnlockRecipe(write, persistValue, persistLock);
     else if (write === undefined) rememberJobEventsUnlockRecipe(categoryId);
   }
-  const recipe = write === null
+  const storedRecipe = write === null
     ? undefined
     : (write ? persistedValueChunkWriteState(write)?.recipe
       : (legacyFallback ? persistedJobEventsUnlockRecipe(categoryId) : undefined));
+  // A cache entry keyed by the selected writer is not authority for a different token master. In particular,
+  // do not let a stale compatibility recipe redirect predecessor restoration to another category.
+  const recipe = storedRecipe?.categoryId.toLowerCase() === categoryId.toLowerCase()
+    ? storedRecipe : undefined;
   const unlockCategory = recipe?.categoryId ?? categoryId;
   const unlockMaster = host.findMintingInputIndex(unlockCategory);
   const unlocker = contract && unlockMaster >= 0 && recipe

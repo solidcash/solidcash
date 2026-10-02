@@ -499,6 +499,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   normalized; a foreign token sent to the same lock cannot enter the selected writer's predecessor list. The
   exact new title went red-to-green and its immediately preceding fetch-gating title passes. `yarn build` and
   focused lint pass; no broad test suite was run.
+- 2026-10-02 stored recipe category follow-up: a recipe cached under the selected writer cannot redirect
+  predecessor restoration to a different token master named inside the recipe. The exact foreign-recipe title
+  went red-to-green, and its immediately preceding cached-predecessor title passes. `yarn build` and focused
+  lint pass; no broad test suite was run.
 
 ## Gate before the next leap
 

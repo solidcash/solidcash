@@ -437,6 +437,54 @@ describe('composition settlement session CompositionSettlementSession', () => {
     expect(placed[0].token.category).toBe(selected);
   });
 
+  it('does not restore a selected continuation through a foreign stored recipe', async () => {
+    const session = createCompositionSettlementSession();
+    const selected = 'aa'.repeat(32);
+    const foreign = 'bb'.repeat(32);
+    const slot = keyToSlot(new Uint8Array());
+    const root = sha256(new Uint8Array(80));
+    session.persistedJobEventsRecipes.set(selected, {
+      slot, root, collection: 'jobEvents', categoryId: foreign,
+    });
+    session.persistedJobEventsSpends.set(selected, [{
+      txid: '01'.repeat(32), vout: 0, satoshis: 1000n,
+      lockingBytecode: getValueChunkLockingBytecode(foreign, 'jobEvents', slot, root),
+      token: { category: foreign, nft: { capability: 'mutable', commitment: '0000' } },
+    }]);
+    const provider = { network: 'chipnet', getUtxos: async () => [] };
+    let placed: Array<{ txid: string }> = [];
+    const host = {
+      externalCallUtxoGroups: [{
+        functionName: 'transferFrom',
+        compilerRoute: { abiFunction: {
+          writesState: true,
+          entryAccesses: [{ operations: ['write'] }, { operations: ['write'] }],
+        } },
+      }],
+      messageBusConvention: 'legacy-unroll',
+      builderOptions: { provider },
+      allInputs: [],
+      setPendingValueChunkPredecessors: () => {},
+      getChunkableValueWriteBand: () => ({ start: 1, end: 1, nNew: 1 }),
+      persistedValueChunkCategory: () => selected,
+      chunkableValueWriteCategory: () => selected,
+      isInitialChunkableValueWrite: () => false,
+      isPersistedChunkableValueWriteReady: () => true,
+      persistedValueChunkWrite: () => undefined,
+      hasChunkableValueWriteMetadata: () => false,
+      permitsLegacyNamedValueChunkFallback: () => true,
+      chunkableValueWriteGroups: () => ({
+        external: { externalContract: { inner: { provider, addressType: 'p2sh32', artifact: {} } } },
+        externalIndex: 0, externalIndices: [0], lowLevelIndex: -1,
+      }),
+      findMintingInputIndex: () => 0,
+      placeValueChunkPredecessorInputs: (extras: Array<{ txid: string }>) => { placed = extras; },
+    };
+
+    await runWithCompositionSettlementSession(session, () => ensurePersistedValueChunkInputs(host as never));
+    expect(placed).toEqual([]);
+  });
+
   it('STB production helpers and clearPersistedJobEvents go through settlement()', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const persistSrc = readFileSync(

@@ -221,6 +221,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   recognizes qualified address-state `call` and `staticcall` while retaining the delegatecall exclusion. The
   focused red-to-green title proves both modes publish one external call on an available graph route; its
   immediately preceding typed-state-receiver title passes. No broad compiler suite or beta gate was run.
+- 2026-10-02 interface-collection receiver checkpoint: an interface-valued mapping entry call
+  `strategy[id].note(...)` also narrowed to direct-only code. The parser represents its receiver as an indexed
+  array-access node rooted at the collection name. Auto selection now follows the declared terminal element
+  type in its lexical-scope survey, so local declarations can still shadow the collection. The focused
+  red-to-green title publishes an available graph route and one external call; its immediately preceding
+  low-level state-address title passes. No broad compiler suite or beta gate was run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

@@ -3004,7 +3004,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitSlotExistsCheck(
     kind: BlockSlotKind, slotIndex: number, locationData: SingleLocationData,
   ): void {
-    this.emitBlockSlotIndex(kind, slotIndex, locationData);
+    // An entry is looked for where it is spent: after a delegate executor's implementation block, not beside the
+    // proxy master. Reading the proxy's coordinate there finds another input and skips the checks this gates.
+    if (kind === 'entry') this.emitFixedEntryInputIndex(slotIndex, locationData);
+    else this.emitBlockSlotIndex(kind, slotIndex, locationData);
     // Token-free genesis-capable inputs can expose a potential category through introspection. Entry NFTs always
     // carry a non-empty slot commitment, so commitment presence distinguishes an entry from a plain slot funder.
     this.emit(kind === 'entry' ? Op.OP_UTXOTOKENCOMMITMENT : Op.OP_UTXOTOKENCATEGORY, locationData);
@@ -25888,7 +25891,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
     if (guard?.slotIndex !== undefined) {
-      this.emitBlockSlotIndex('entry', guard.slotIndex, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+      this.emitFixedEntryInputIndex(guard.slotIndex, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
       this.emit(encodeInt(64n), loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc); this.emit(Op.OP_IF, loc);
       this.emitTakeFirst32(loc);

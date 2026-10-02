@@ -157,6 +157,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   18,761 redeem-script bytes, and `compileFileSplit` refuses its 16,267-byte singleton `arbitrate` closure at
   `SPLIT_CLOSURE_CAPACITY`. Both ends of the Unicrow arbitration callback path therefore need a deployability
   design before that exact path can receive a BCH consensus VM proof; the neutral callback proofs do not cover it.
+- 2026-10-02 UnicrowClaim cut-boundary check: a current whole-spend split probe measures the unchanged `claim`
+  singleton at 16,800 bytes. A diagnostic in-memory source variant replacing all three application helper bodies
+  (`calculatePayments`, `calculateSplits`, and `claimPayments`) with trivial bodies still measures 14,226 bytes.
+  The variant is intentionally not executable or committed: it is a lower-bound size probe, not an optimisation.
+  Cutting those helpers, even for free, cannot close the 10,000-byte gap; adding authenticated transport would
+  only add cost. The deployability design must also divide or substantially reduce the entry/route closure itself.
 - 2026-10-02 focused proxy-application checkpoint: the unchanged Marketplace `job posting > post job 1` title
   now reaches its event-data assertion but remains red (1 selected, 65 skipped). The proxy application's
   `abi.encodePacked(uint160(token_))` publishes a 20-byte identity, as the existing compiler cast test requires;

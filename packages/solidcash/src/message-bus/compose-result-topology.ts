@@ -1,6 +1,6 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
-  decodePushdataValue, scriptToBytecode,
+  decodePushdataValue, getDefaultStateValue, scriptToBytecode,
   type ArgSource, type Artifact, type ExternalCallAbi, type ExternalCallExpression,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
@@ -154,7 +154,8 @@ async function rebuildCallTopology(
     const expressionHost = { resolveExternalArgs: logical._resolveExternalArgs.bind(logical) };
     const fn = resolveMessageBusAbiFunction(artifact, call.functionName, call.selector);
     let children = previous === undefined ? [] : childrenByParent.get(previous) ?? [];
-    const childResults = previous === undefined ? new Map<number, FunctionArgument>()
+    const candidateResults = new Map<number, FunctionArgument>();
+    const childResults = previous === undefined ? candidateResults
       : resultsByParent.get(previous) ?? new Map<number, FunctionArgument>();
     const self = artifact.messageBus?.route.inputs.some(
       (input) => input.name === '__internal__graphSelfIdentityInput',
@@ -351,6 +352,17 @@ async function rebuildCallTopology(
               resolveArgsFromResults,
             };
             selected.push({ call: child });
+            // A newly discovered producer may feed a mandatory later edge before any aggregate VM pass exists.
+            // Seed only this in-memory candidate topology with a typed empty result; never publish it as a
+            // prepared return commitment. The composer must replace it with the observed producer result,
+            // rebuild the graph, and pass the complete transaction VM before admission.
+            if (previous === undefined && template.occurrence !== 'loop' && template.hasReturnValues
+              && template.returnTypes?.length === 1 && template.callsiteId !== undefined
+              && (template.maximumOccurrences ?? 1) === 1) {
+              candidateResults.set(template.callsiteId, getDefaultStateValue(
+                template.returnTypes[0], artifact.structs ?? artifact.stateLayout?.structs,
+              ) as FunctionArgument);
+            }
             occurrence += 1;
           }
           next.push(...(unresolved ? existing : selected));

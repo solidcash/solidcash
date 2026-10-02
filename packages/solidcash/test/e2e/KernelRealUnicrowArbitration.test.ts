@@ -41,7 +41,10 @@ describe('real Unicrow kernel arbitration callback', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('sends real arbitration through claim and reads the earlier arbitrated write', async () => {
+  it.each([
+    ['explicit composition', false],
+    ['ordinary send', true],
+  ] as const)('%s executes real arbitration through claim and reads the earlier arbitrated write', async (_mode, natural) => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x4e), provider);
     for (let index = 0; index < 16; index += 1) {
@@ -137,29 +140,30 @@ describe('real Unicrow kernel arbitration callback', () => {
       return id;
     };
     const feeUtxo = (await provider.getUtxos(signer.getAddress()))[0]!;
-    const composition = messageBus.compose({
-      preparedCalls: [
-        { contract: arbitrator, functionName: 'arbitrate', args: [1n, [8_000n, 2_000n]] },
-        { contract: unicrow, functionName: 'getEscrow', args: [1n], parent: 0,
-          callsiteId: callsite('UnicrowArbitrator', 'arbitrate', 'getEscrow') },
-        { contract: unicrow, functionName: 'settle', args: [1n, [8_000n, 2_000n, 0n, 0n], [1n, 1n]],
-          parent: 0, callsiteId: callsite('UnicrowArbitrator', 'arbitrate', 'settle') },
-        { contract: claim, functionName: 'claim', args: [1n], parent: 0,
-          callsiteId: callsite('UnicrowArbitrator', 'arbitrate', 'claim') },
-        { contract: unicrow, functionName: 'getEscrow', args: [1n], parent: 3,
-          callsiteId: callsite('UnicrowClaim', 'claim', 'getEscrow') },
-        { contract: arbitrator, functionName: 'getArbitratorData', args: [1n], parent: 3,
-          callsiteId: callsite('UnicrowClaim', 'claim', 'getArbitratorData') },
-        { contract: arbitrator, functionName: 'arbitrationCalculation',
-          args: [[8_000n, 2_000n, 0n, 0n, 0n]], parent: 3,
-          callsiteId: callsite('UnicrowClaim', 'claim', 'arbitrationCalculation') },
-        { contract: unicrow, functionName: 'setClaimed', args: [1n], parent: 3,
-          callsiteId: callsite('UnicrowClaim', 'claim', 'setClaimed') },
-      ],
-      funder: { ...feeUtxo, unlocker: signer.unlockP2PKH() },
-      changeAddress: signer.getAddress(),
-    });
-    const receipt = await composition.send();
+    const receipt = natural
+      ? await arbitrator.connect(signer).call.arbitrate(1n, [8_000n, 2_000n]).send()
+      : await messageBus.compose({
+        preparedCalls: [
+          { contract: arbitrator, functionName: 'arbitrate', args: [1n, [8_000n, 2_000n]] },
+          { contract: unicrow, functionName: 'getEscrow', args: [1n], parent: 0,
+            callsiteId: callsite('UnicrowArbitrator', 'arbitrate', 'getEscrow') },
+          { contract: unicrow, functionName: 'settle', args: [1n, [8_000n, 2_000n, 0n, 0n], [1n, 1n]],
+            parent: 0, callsiteId: callsite('UnicrowArbitrator', 'arbitrate', 'settle') },
+          { contract: claim, functionName: 'claim', args: [1n], parent: 0,
+            callsiteId: callsite('UnicrowArbitrator', 'arbitrate', 'claim') },
+          { contract: unicrow, functionName: 'getEscrow', args: [1n], parent: 3,
+            callsiteId: callsite('UnicrowClaim', 'claim', 'getEscrow') },
+          { contract: arbitrator, functionName: 'getArbitratorData', args: [1n], parent: 3,
+            callsiteId: callsite('UnicrowClaim', 'claim', 'getArbitratorData') },
+          { contract: arbitrator, functionName: 'arbitrationCalculation',
+            args: [[8_000n, 2_000n, 0n, 0n, 0n]], parent: 3,
+            callsiteId: callsite('UnicrowClaim', 'claim', 'arbitrationCalculation') },
+          { contract: unicrow, functionName: 'setClaimed', args: [1n], parent: 3,
+            callsiteId: callsite('UnicrowClaim', 'claim', 'setClaimed') },
+        ],
+        funder: { ...feeUtxo, unlocker: signer.unlockP2PKH() },
+        changeAddress: signer.getAddress(),
+      }).send();
     const outpoints = receipt.inputs.map((input) =>
       `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
     expect(new Set(outpoints).size).toBe(outpoints.length);

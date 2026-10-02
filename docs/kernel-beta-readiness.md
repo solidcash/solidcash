@@ -430,10 +430,15 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   the claimant observes the arbitrator's preceding `arbitrated = true` mapping write, and the final Unicrow escrow
   is claimed with the 80/20 split. This is a semantic VM proof under relaxed capacity, not a proxy-carrier,
   10 KB, or relay claim.
-  Ordinary `arbitrator.call.arbitrate(...).send()` remains red with `L3_TARGET_UNRESOLVED` at the mandatory
-  `Unicrow.settle` edge: initial automatic topology discovery cannot yet supply arguments derived from the
-  earlier `getEscrow` return before constructing its first complete graph. The explicit-composition title and
-  its immediately preceding real-source metadata title pass individually; no broad suite ran.
+- 2026-10-02 real-source natural-send follow-up: ordinary `arbitrator.call.arbitrate(...).send()` initially refused
+  the mandatory `Unicrow.settle` edge with `L3_TARGET_UNRESOLVED`, because topology discovery could not form a
+  complete candidate graph before receiving `getEscrow`'s result. Initial discovery now uses typed empty results
+  only to enumerate candidate downstream rows. They are never prepared/authenticated return commitments: the
+  composition must observe actual producer returns, rebuild result-dependent arguments and branch topology,
+  then pass its complete VM preflight before send. The exact ordinary-send title now passes against the same three
+  unchanged direct compiled sources and reads the arbitrator's post-write value through Claim. Its immediately
+  preceding explicit-composition title passes individually. This is still not a proxy-carrier or production-
+  capacity proof; no broad suite ran.
 - The unchanged proxy Marketplace `arbitrate > arbitrate 80-20` title passes individually on mock BCH-2026
   (1 selected, 65 skipped; 411.56 seconds in the test body). It is not a reproduction of the same-owner
   callback gap above and does not establish the other arbitration titles or the 66-title gate. No predecessor

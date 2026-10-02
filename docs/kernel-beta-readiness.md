@@ -663,6 +663,19 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   effects, orders its reached rows by the published outer/inner coordinates, and offers the worklist a complete
   schedule only when every repeated child has authenticated source metadata. The exact formerly red neutral VM
   title and its immediately preceding two-outer sibling title pass; build/lint scope is recorded with the commit.
+- 2026-10-02 producer-bound inner-loop follow-up: a loop whose inner bound came from the current outer
+  Reader result had no compiler iteration domain. The compiler now replays only the enclosing block prefix
+  for that inner recurrence and publishes the exact producer identity; a bound mutated inside the inner loop
+  still has no domain in a focused compiler proof. SDK domain evaluation selects the authenticated outer
+  occurrence before computing each inner count. The two-outer VM title now passes with three rows per Sink.
+  A one-outer variant exposed a second, more serious gap: its initial graph contained only the Reader, so
+  legacy fallback broadcast one inner row although the returned bound was two. Compiler-published deferred
+  result domains now retain atomic composition through result propagation; the formerly red one-outer title
+  passes with two rows per Sink, and its immediately preceding nested-skip title passes. Two focused
+  conditional-row VM probes also pass. A scalar Reader result bounding a direct repeated call exposed the
+  same partial legacy fallback (one broadcast row instead of two); graph retention now keys on any compiler-
+  published result-dependent iteration domain, not just a nested domain. Its exact VM title went red-to-green,
+  and its immediately preceding two-outer dynamic-bound title passes. No comprehensive suite or size gate ran.
 
 ## Gate before the next leap
 

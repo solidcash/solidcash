@@ -155,10 +155,15 @@ async function prepareTypedCallbackGraph(
     const owner = `${call.contract.categoryId.toLowerCase()}:${call.contract.inner.lockingBytecode.toLowerCase()}`;
     ownerCounts.set(owner, (ownerCounts.get(owner) ?? 0) + 1);
   }
+  // A result-bound loop can initially discover only its producer, whether the loop is direct or nested.
+  // Returning to legacy planning at that point may broadcast a prefix of the calls before their exact
+  // bound is known. Retain the atomic graph for every compiler-published result-dependent domain.
+  const deferredResultDomain = entry.resultConsumers?.some((lane) => 'iterationDomain' in lane
+    && lane.iterationDomain === true) === true;
   // A typed address can select a different deployed owner than the interface registry suggests. If the
   // registered path is a callback, compose the runtime-resolved finite graph even when that choice removes
   // the repeated owner; falling back to the legacy registry-only guard would pin the callee incorrectly.
-  return registeredCallback || [...ownerCounts.values()].some((count) => count > 1)
+  return registeredCallback || deferredResultDomain || [...ownerCounts.values()].some((count) => count > 1)
     ? calls : undefined;
 }
 

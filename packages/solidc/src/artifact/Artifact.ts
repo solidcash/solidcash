@@ -663,8 +663,10 @@ const externalCallIterationDomains = (
         break;
       }
       const state = clone(initial);
-      // Only the outer loop may depend on writes before its header. Inner recurrences are published only
-      // when they serialize from parameters/constants without relying on loop-carried local state.
+      // The inner header may read a local assigned earlier in this exact outer iteration (notably a
+      // single-result external call). Replay only the enclosing outer body prefix: that producer identity
+      // is then occurrence-qualified by the SDK before evaluating this inner recurrence. An earlier loop
+      // in the prefix is not replayable here, so it still withholds the domain.
       if (depth === 0 && !replayBefore(fn.body, counter, state, (prior) => {
         const stableRead = ![counter.expression!, loop.condition, magnitude].some(recurrenceHasLiveExternalRead);
         const earlyExit = loopCanExitEarly(prior);
@@ -672,6 +674,7 @@ const externalCallIterationDomains = (
         const dependencyWrites = [...deps].filter((dependency) => assignedIn(prior, dependency, counter));
         return stableRead && !earlyExit && !opaqueEffect && dependencyWrites.length === 0;
       })) break;
+      if (depth === 1 && !replayBefore(block, counter, state, () => false)) break;
       const initialValue = serialize(counter.expression, state);
       // The declaration starts the live induction binding only after its initializer is evaluated.
       state.bindings.set(counter, { kind: 'identifier', name: counter.name });

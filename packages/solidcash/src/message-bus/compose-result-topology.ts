@@ -295,9 +295,11 @@ async function rebuildCallTopology(
             // supply the value on the next graph epoch. Invalid resolved domains still fail closed.
             let unresolved = false;
             try {
-              const domainIndices = async (selected: NonNullable<typeof domain>): Promise<number[]> => {
+              const domainIndices = async (selected: NonNullable<typeof domain>,
+                producerOccurrenceIndex?: number): Promise<number[]> => {
                 const expressions = [selected.initialValue, selected.stepValue, selected.continueCondition];
-                const returns = returnsFor(expressions.map((expression) => ({ kind: 'expression', expression })));
+                const returns = returnsFor(expressions.map((expression) => ({ kind: 'expression', expression })),
+                  undefined, producerOccurrenceIndex);
                 await hydrate(expressions, [0], returns);
                 return externalCallIterationIndices(selected, (expression, bindings) => {
                   const value = evaluate(expression, 0, returns, bindings);
@@ -344,7 +346,7 @@ async function rebuildCallTopology(
                       nested![1]!.counterName,
                     )) throw new Error('messageBus: nested call has an unresolved loop coordinate');
                     const inner = bindOuterLoopCounter(nested![1]!, nested![0]!.counterName, coordinate);
-                    for (const iteration of await domainIndices(inner)) {
+                    for (const iteration of await domainIndices(inner, outerIndex)) {
                       occurrences.push({ iteration, edge, outerIndex });
                       if (occurrences.length > ATOMIC_MESSAGE_BUS_MAX_ROWS) {
                         throw new Error('messageBus: nested call exceeds the graph row limit');

@@ -768,6 +768,30 @@ describe('Release 0 shared invocation analysis', () => {
     expect(calls?.[1].iterationDomain).toBeUndefined();
   });
 
+  it('withholds a producer-bound inner domain when the inner loop changes its bound', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IReader { function read(bigint key) view returns (bigint); }
+      interface ITarget { function step(bigint value); }
+      contract MutatedInnerBound() {
+        function run(address reader, address target) public {
+          for (bigint i = 0; i < 2; i = i + 1) {
+            bigint bound = IReader(reader).read(i);
+            for (bigint j = 0; j < bound; j = j + 1) {
+              bound = bound - 1;
+              ITarget(target).step(j);
+            }
+          }
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls;
+    expect(calls).toHaveLength(2);
+    expect(calls?.[0].iterationDomain).toBeDefined();
+    expect(calls?.[1].nestedIterationDomains).toBeUndefined();
+  });
+
   it('publishes both affine domains for a nested external-call loop', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface ITarget { function step(bigint value); }

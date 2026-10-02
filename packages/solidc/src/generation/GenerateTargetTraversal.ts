@@ -100,6 +100,7 @@ import {
 } from './upsertKeySources.js';
 import { MAX_INPUT_BYTESIZE } from '../constants.js';
 import { hasEffectiveCallValue } from '../semantic/branchOps.js';
+import { checksTransactionSignature, inlinesSignatureChecks } from '../semantic/transactionSignatureCheck.js';
 import {
   deriveKernelJournalDispositionHandlerScope, isKernelReadCarrierBindingToken,
   kernelJournalDispositionScopeKey, refreshKernelReadCarrierAuthorization,
@@ -5987,6 +5988,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         || Math.max(func.recoveryEffectCount ?? 0, func.ecrecoverCallCount ?? 0) > 0
         || this.constructorCaptures(func).length > 0)) {
       throw new Error('Detached message-bus verifier cannot require compiler-internal call-frame operands');
+    }
+    // An invoked body's transaction-signature check covers that body, which no signer covers here: the helper
+    // inliners keep such checks in the entry point, so one still invoked (a function-pointer target, an uninlinable
+    // shape, a `this.f()` self-call in a direct build) could never verify. A message-bus build keeps them, and
+    // publishes the body to its signer; its own bodies, and an entry its route may invoke, are left to it.
+    const busOwned = func.name.startsWith('__message_bus') || !!func.graphEmissionHandler
+      || !!func.messageBusDetachedSignatureHandler;
+    const directOnly = this.compilerOptions.messageBus !== true && this.compilerOptions.composition !== 'per-call';
+    if (emitDefinition && !busOwned && inlinesSignatureChecks(this.compilerOptions)
+      && (!func.isEntryPoint || directOnly) && checksTransactionSignature(func, new Map())) {
+      throw new SolidcDiagnosticError(
+        'SIGNATURE_CHECK_IN_SUBROUTINE',
+        `'${func.name}' checks a transaction signature in an invoked subroutine, whose own bytecode that signature `
+          + 'would have to cover. Call it directly from the entry point (as a statement, or as a single-return '
+          + 'expression) so it is inlined there, or move the check into the entry point.',
+        { functionName: func.name },
+      );
     }
 
     // Create a sub-traversal to compile the function body independently

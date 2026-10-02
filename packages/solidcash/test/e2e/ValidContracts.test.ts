@@ -996,7 +996,15 @@ describe('Valid Contracts - SDK e2e', () => {
       expect(tx.txid).toBeDefined();
     });
 
-    // public_function mint: skipped - internal validate() call has sig verification issue
+    // mint calls the public validate(), which is inlined into it, so the signature covers mint's own body.
+    it('public_function: mint(sig, pubkey, int) through its internal validate() call', async () => {
+      const { provider, contract } = setupContract(loadCash('public_function.scash'));
+      await addUtxos(provider, contract.address);
+      const tx = await sendTx(provider, contract, contract.unlock.mint(
+        new SignatureTemplate(alicePriv), alicePub, 5n,
+      ));
+      expect(tx.txid).toBeDefined();
+    });
 
     // event_simple, emit_in_if_else, emit_in_loop: skipped - events require StatefulContract
 

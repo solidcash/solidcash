@@ -60,6 +60,7 @@ import { substituteInFunction } from './InheritanceExpansionTransformation.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
 import { readsMessageField } from './selfMessageCall.js';
+import { checksTransactionSignature, namesCalledFrom } from './transactionSignatureCheck.js';
 
 /**
  * Inlines internal calls to void functions that take `storage` reference parameters
@@ -109,6 +110,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     private readonly inlineSolidityInitializers = false,
     private readonly inlineDelegateStateHelpers = false,
     private readonly keepSelfMessageCalls = false,
+    // Keep transaction-signature checks in the entry point (see inlinesSignatureChecks).
+    private readonly inlineSignatureChecks = false,
   ) { super(); }
 
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
@@ -228,6 +231,14 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // A function used as a VALUE (function pointer arg / stored pointer) must keep its definition and is
     // not safely droppable-after-inline; exclude such names from the state-touching criteria.
     const valueReferenced = this.collectValueReferencedNames(node);
+    // A transaction-signature check covers the body it runs in, and the SDK signs over the entry point's. So a helper
+    // that checks one inlines into its callers, as does an entry point another body calls by name. A DELEGATE
+    // library entry does not: it runs from the library's own co-spent input.
+    const calledByName = this.inlineSignatureChecks
+      ? namesCalledFrom([...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef, ...this.freeFns])
+      : new Set<string>();
+    const checksSignature = (fn: FunctionDefinitionNode): boolean => this.inlineSignatureChecks
+      && !fn.modifiers.includes(FunctionModifier.DELEGATE) && checksTransactionSignature(fn, this.funcByName);
     for (const fn of node.functions) {
       // Compiler-owned graph and detached-signature handlers are physical OP_INVOKE bodies. Their hidden
       // protocol context belongs to that invocation, so no storage/effect shape may flatten them into the route.
@@ -265,13 +276,15 @@ export default class InlineStoragePointerCalls extends AstTraversal {
               || hasTokenContainerEffects
               || hasPhysicalEffects
               || this.transitiveSortedWriters.has(fn.name)
+              || checksSignature(fn)
               || (this.inlineSolidityInitializers && /^__.*_init(?:_unchained)?$/.test(fn.name)))))) {
         this.inlinedFns.add(fn.name);
       } else if (fn.body && fn.returnTypes.length === 0 && !this.isInternalHelper(fn)
         && !valueReferenced.has(fn.name)
         && (this.readsEntry(fn) || (this.touchesScalarState(fn) && !scalarJournalEligible)
           || hasPhysicalEffects
-          || this.transitiveSortedWriters.has(fn.name))) {
+          || this.transitiveSortedWriters.has(fn.name)
+          || (calledByName.has(fn.name) && checksSignature(fn)))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -317,7 +330,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     for (const fn of this.freeFns) {
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn)
-          || (this.hasPhysicalEffects(fn) && !fn.modifiers.includes(FunctionModifier.DELEGATE)))) {
+          || (this.hasPhysicalEffects(fn) && !fn.modifiers.includes(FunctionModifier.DELEGATE))
+          || checksSignature(fn))) {
         this.inlinedFns.add(fn.name);
       }
     }

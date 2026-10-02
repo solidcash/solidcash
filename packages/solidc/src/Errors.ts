@@ -59,6 +59,8 @@ export type SolidcDiagnosticCode =
   | 'PER_CALL_CODEGEN_UNAVAILABLE'
   // A Solidity-compat low-level call whose payload arguments the covenant cannot bind to the co-spent callee.
   | 'COMPAT_CALL_UNBOUND_ARGUMENTS'
+  // A transaction-signature check left in an invoked subroutine, whose covered bytecode no SDK signature matches.
+  | 'SIGNATURE_CHECK_IN_SUBROUTINE'
   | 'INTERFACE_CONTRACT_BASE'
   | 'SPLIT_CLOSURE_CAPACITY'
   | 'SPLIT_ROOT_CAPACITY'

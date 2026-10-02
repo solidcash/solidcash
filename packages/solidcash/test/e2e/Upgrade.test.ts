@@ -194,7 +194,7 @@ contract MultisigUpgrade(pubkey first, pubkey second) {
 }
 `;
 
-// HELPER_UPGRADE: the authorizing checkSig is in an internal helper that a non-upgrade entry shares
+// HELPER_UPGRADE: the authorizing checkSig is in an internal helper that a non-upgrade entry also calls
 const HELPER_UPGRADE = `
 pragma solidcash >=0.8.0;
 
@@ -962,8 +962,8 @@ describe('StatefulContract.upgrade()', () => {
   });
 
   // The fence covers every transaction signature an upgrade's authorization checks: each signature of a multisig, and
-  // a checkSig in an internal helper the upgrade invokes. The helper's OP_DEFINE body is shared by all its callers, so
-  // a non-upgrade entry calling it is held to the same rule. An empty signature is not fenced: it can only fail.
+  // a checkSig in an internal helper the upgrade calls, which is inlined into it. An empty signature is not fenced:
+  // it can only fail.
   describe('upgrade authorizations beyond a direct checkSig', () => {
     const artifacts = {
       multisig: compileString(MULTISIG_UPGRADE),
@@ -1040,21 +1040,22 @@ describe('StatefulContract.upgrade()', () => {
         await expect(provider.sendRawTransaction(all)).resolves.toBeTypeOf('string');
       });
 
-    // A checkSig in an invoked body covers that body (OP_INVOKE swaps the active bytecode), while the SDK signs over
-    // the redeem script, so no SDK signature verifies there yet: an ALL one passes the fence and is refused by
-    // NULLFAIL, a pre-existing limitation pinned here. A NONE one is refused by the fence first, on either entry.
-    it('fences a checkSig in the helper the upgrade invokes, and so in the non-upgrade entry sharing it', async () => {
-      const contract = await deploy('helper', artifacts.helper, [alicePub]);
-      const nullfail = /NULLFAIL/;
-      await expect(contract.call.bump(new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)).send())
-        .rejects.toThrow(fenced);
-      await expect(contract.call.bump(new SignatureTemplate(alicePriv)).send()).rejects.toThrow(nullfail);
+    // A signature-checking helper is inlined into each caller, so its check runs in that entry's own body, which is
+    // the body an SDK signature covers. The upgrade's copy is fenced; the non-upgrade entry's copy is its own and is
+    // not, so a NONE signature settles there.
+    it('fences the upgrade\'s inlined copy of a checkSig helper, and settles both callers with an SDK signature',
+      async () => {
+        const contract = await deploy('helper', artifacts.helper, [alicePub]);
+        await contract.call.bump(new SignatureTemplate(alicePriv)).send();
+        await contract.call.bump(new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)).send();
+        expect((await contract.getState()).counter).toBe(2n);
 
-      const none = await capture('helper none', contract, [new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)]);
-      await expect(provider.sendRawTransaction(none)).rejects.toThrow(fenced);
-      const all = await capture('helper all', contract, [new SignatureTemplate(alicePriv)]);
-      await expect(provider.sendRawTransaction(all)).rejects.toThrow(nullfail);
-    });
+        const none = await capture('helper none', contract,
+          [new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)]);
+        await expect(provider.sendRawTransaction(none)).rejects.toThrow(fenced);
+        const all = await capture('helper all', contract, [new SignatureTemplate(alicePriv)]);
+        await expect(provider.sendRawTransaction(all)).resolves.toBeTypeOf('string');
+      });
 
     // The second key authorizes, so the first, empty, signature is checked first and must pass the fence.
     it('settles an either-key upgrade whose unused signature is empty, and refuses a NONE one', async () => {

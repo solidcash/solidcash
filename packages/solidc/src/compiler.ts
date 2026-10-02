@@ -161,6 +161,7 @@ import PromoteConstructorExternalReads from './semantic/PromoteConstructorExtern
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
+import { inlinesSignatureChecks } from './semantic/transactionSignatureCheck.js';
 import LowerSelfLowLevelCalls from './semantic/LowerSelfLowLevelCalls.js';
 import LowerStaticLowLevelCalls from './semantic/LowerStaticLowLevelCalls.js';
 import LowerValueLowLevelCalls from './semantic/LowerValueLowLevelCalls.js';
@@ -12749,6 +12750,9 @@ function compileResolvedAst(
   // delegate entry whether the variant came from `autoDelegate` or Solidity initializer inference.
   const inlineDelegateStateHelpers = (mergedCompilerOptions.autoDelegate ?? false)
     || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
+  // The SDK signs over an entry point's body, so a helper's transaction-signature check is inlined into it. A
+  // message-bus build keeps the helper and publishes its body to the route's signer instead.
+  const signatureChecksInlined = inlinesSignatureChecks(mergedCompilerOptions);
   // Auto-delegate compilation is an explicit whole-artifact owner context even before every function is marked.
   // Ordinary explicit/inferred surfaces are resolved from the actual oracle-consumer graph in the synthesis pass.
   const oracleDelegateExecutionContext = mergedCompilerOptions.autoDelegate === true;
@@ -12991,10 +12995,12 @@ function compileResolvedAst(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
       mergedCompilerOptions.composition === 'per-call',
+      signatureChecksInlined,
     )) as Ast;
     ast = ast.accept(new InlineReturningStateHelpers(
       mergedCompilerOptions.solidityImportCompat ?? false,
       mergedCompilerOptions.composition === 'per-call',
+      signatureChecksInlined,
     )) as Ast;
     // Returning-helper reduction can expose scalar state inside a previously context-only void wrapper
     // (`_checkOwner -> owner()` is the canonical Solidity shape). Reach the same state-helper fixed point as
@@ -13004,6 +13010,7 @@ function compileResolvedAst(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
       mergedCompilerOptions.composition === 'per-call',
+      signatureChecksInlined,
     )) as Ast;
     if (earlyEntryFeatures?.needsExternalCallLowering) {
       // External-call covenant operands belong to the physical function which owns the call. Inline eligible
@@ -13365,10 +13372,12 @@ function compileResolvedAst(
         mergedCompilerOptions.solidityImportCompat ?? false,
         inlineDelegateStateHelpers,
         mergedCompilerOptions.composition === 'per-call',
+        signatureChecksInlined,
       )) as Ast;
       ast = ast.accept(new InlineReturningStateHelpers(
         mergedCompilerOptions.solidityImportCompat ?? false,
         mergedCompilerOptions.composition === 'per-call',
+        signatureChecksInlined,
       )) as Ast;
     }
   }
@@ -13426,6 +13435,7 @@ function compileResolvedAst(
     ast = ast.accept(new InlineReturningStateHelpers(
       mergedCompilerOptions.solidityImportCompat ?? false,
       mergedCompilerOptions.composition === 'per-call',
+      signatureChecksInlined,
     )) as Ast;
   }
 
@@ -13447,6 +13457,7 @@ function compileResolvedAst(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
       mergedCompilerOptions.composition === 'per-call',
+      signatureChecksInlined,
     )) as Ast;
   }
   // A function returning a REASSIGNED `mapping storage` pointer (`returns (mapping storage r){ r=a; r=b; }`) is
@@ -17076,6 +17087,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new InlineReturningStateHelpers(
       compilerOptions.solidityImportCompat ?? false,
       compilerOptions.composition === 'per-call',
+      inlinesSignatureChecks(compilerOptions),
     )) as Ast;
     singleAst = singleAst.accept(new LowerDynamicStateJournalHelpers()) as Ast;
     singleAst = singleAst.accept(new LowerCollectionJournalHelpers(
@@ -17083,6 +17095,7 @@ function compileReferencedContracts(
     )) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls(
       compilerOptions.solidityImportCompat ?? false, false, compilerOptions.composition === 'per-call',
+      inlinesSignatureChecks(compilerOptions),
     )) as Ast;
     singleAst = singleAst.accept(new InlineMappingReturnFunctions()) as Ast;
     singleAst = singleAst.accept(new LowerMappingStorageAlias()) as Ast;

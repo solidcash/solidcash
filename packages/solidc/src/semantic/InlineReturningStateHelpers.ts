@@ -68,6 +68,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
+import { checksTransactionSignature, namesCalledFrom } from './transactionSignatureCheck.js';
 
 /**
  * Inlines internal/private functions that RETURN a value and need their physical caller's context: state-entry
@@ -182,8 +183,19 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private readonly analysisNodes = new Map<FunctionDefinitionNode, Node[]>();
 
 
-  constructor(private solidityImportCompat = false, private readonly keepSelfMessageCalls = false) {
+  constructor(
+    private solidityImportCompat = false, private readonly keepSelfMessageCalls = false,
+    // Keep transaction-signature checks in the entry point (see inlinesSignatureChecks).
+    private readonly inlineSignatureChecks = false,
+  ) {
     super();
+  }
+
+  // A transaction-signature check covers the body it runs in, and the SDK signs over the entry point's. A DELEGATE
+  // library entry is not inlined: it runs from the library's own co-spent input.
+  private checksSignature(fn: FunctionDefinitionNode): boolean {
+    return this.inlineSignatureChecks && !fn.modifiers.includes(FunctionModifier.DELEGATE)
+      && checksTransactionSignature(fn, this.funcByName);
   }
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -437,14 +449,18 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // internal call sites but keep the definition (still dispatchable). A PUBLIC/external returning helper that
     // makes a LOW-LEVEL or EXTERNAL call is the same case: the covenant param it injects is threaded only at an
     // entry, so it cannot be an OP_INVOKE subroutine - an internal call to it must inline (Multicall2 `tryAggregate`
-    // called by `tryBlockAndAggregate`). The public definition still stands as its own dispatched entry.
+    // called by `tryBlockAndAggregate`). The public definition still stands as its own dispatched entry. So is one
+    // that checks a transaction signature, which must run in the calling entry point's body.
+    const calledByName = this.inlineSignatureChecks
+      ? namesCalledFrom([...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef, ...this.freeFns])
+      : new Set<string>();
     for (const fn of node.functions) {
       if (!fn.graphEmissionHandler && !fn.messageBusDetachedSignatureHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && (this.readsEntry(fn) || this.writesSortedEntry(fn) || this.touchesScalarState(fn)
           || this.containsMsgSender(fn) || this.containsKeccak(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
-          || this.transitivelyContainsEvent(fn))) {
+          || this.transitivelyContainsEvent(fn) || (calledByName.has(fn.name) && this.checksSignature(fn)))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -532,10 +548,11 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       // A returning library helper that makes an EXTERNAL call (`UniswapV2Library.getReserves` ->
       // `IPair(..).getReserves()`) must inline like a low-level-call one: the external-call covenant param is only
       // threaded at an entry point, so a subroutine holding it surfaces phantom params at the call site. Transitive
-      // so a helper reaching the external call only through another inlined helper inlines too.
+      // so a helper reaching the external call only through another inlined helper inlines too. So does one that
+      // checks a transaction signature.
       } else if (this.eligibleShape(fn)
         && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
-          || this.transitivelyContainsEvent(fn))) {
+          || this.transitivelyContainsEvent(fn) || this.checksSignature(fn))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -674,7 +691,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!this.eligibleShape(fn)) return false;
     return this.readsEntry(fn) || this.writesSortedEntry(fn) || this.touchesScalarState(fn)
       || this.containsLowLevelCall(fn) || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn)
-      || this.transitivelyContainsEvent(fn);
+      || this.transitivelyContainsEvent(fn) || this.checksSignature(fn);
   }
 
   /**

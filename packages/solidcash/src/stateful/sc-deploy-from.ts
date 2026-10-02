@@ -59,7 +59,7 @@ import {
   keyToSlotMulti,
   SortedList,
 } from './SortedList.js';
-import { artifactUsesSolidityAbi } from './solidityAbi.js';
+import { artifactUsesSolidityAbi, sortAddressPair, sortedAddressPairPacked } from './solidityAbi.js';
 import type {
   DeployFromOptions, DeployFromResult,
 } from './stateful-lifecycle-types.js';
@@ -170,7 +170,8 @@ export async function deployFromStatefulContract<T extends Artifact>(
         return undefined;
       };
       // Uniswap-style factories compute keccak256(abi.encodePacked(token0, token1)) after sorting their two
-      // address arguments. Reproduce that canonical expression so callers need not redundantly pass childSalt.
+      // address arguments. Reproduce that canonical expression, by the covenant's own ordering and packing
+      // rules, so callers need not redundantly pass childSalt.
       const addressArgIndices = deployAbi.inputs
         .map((input, index) => ({ input, index }))
         .filter(({ input }) => !input.name.startsWith('__internal__')
@@ -179,13 +180,10 @@ export async function deployFromStatefulContract<T extends Artifact>(
       if (addressArgIndices.length >= 2) {
         const a = toLockingBytecode(deployFunctionArgs[addressArgIndices[0]]);
         const b = toLockingBytecode(deployFunctionArgs[addressArgIndices[1]]);
-        if (a && b) {
-          const [token0, token1] = binToHex(a) < binToHex(b) ? [a, b] : [b, a];
-          const packed = new Uint8Array(token0.length + token1.length);
-          packed.set(token0, 0);
-          packed.set(token1, token0.length);
-          childSalt = keccak_256(packed);
-        }
+        const packed = a && b
+          ? sortedAddressPairPacked(a, b, artifactUsesSolidityAbi(factory.inner.artifact))
+          : undefined;
+        if (packed) childSalt = keccak_256(packed);
       }
       if (!childSalt) {
         throw new Error(
@@ -438,7 +436,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
     if (typeof v === 'string' && /^(?:0x)?[0-9a-f]+$/i.test(v)) return hexToBin(v.replace(/^0x/i, ''));
     return undefined;
   };
-  // UniswapV2 createPair locals: (token0, token1) = sort(tokenA, tokenB) by address byte order.
+  // UniswapV2 createPair locals: (token0, token1) = sort(tokenA, tokenB), ordered as the covenant orders addresses.
   const sortedTokenLbcs = ((): [Uint8Array, Uint8Array] | undefined => {
     const idxs: number[] = [];
     for (let i = 0; i < deployAbi.inputs.length; i++) {
@@ -450,9 +448,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
     const a = toKeyLbc(deployFunctionArgs[idxs[0]]);
     const b = toKeyLbc(deployFunctionArgs[idxs[1]]);
     if (!a || !b) return undefined;
-    const ah = binToHex(a);
-    const bh = binToHex(b);
-    return ah < bh ? [a, b] : [b, a];
+    return sortAddressPair(a, b);
   })();
   const encodeDeployKey = (keyType: string, raw: unknown): Uint8Array => {
     if (keyType === 'address' || keyType.startsWith('address ')) {

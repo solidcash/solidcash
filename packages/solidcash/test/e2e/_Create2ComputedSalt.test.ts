@@ -9,7 +9,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import type { Utxo } from '../../src/interfaces.js';
-import { addressToLockScript } from '../../src/utils.js';
+import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../../src/utils.js';
 
 const childSrc = `
   contract PairChild() {
@@ -160,12 +160,16 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
       fundingUtxo: fundC, funder, changeAddress: p2pkh.address, fee: 30_000n,
     });
     expect(result.tx.txid).toBeDefined();
-    // Offline salt for parity check
+    // Offline salt for parity check, by the covenant's rules: `tokenA < tokenB` orders the address bytes as
+    // unsigned big-endian numbers, and this Solidity-compat source packs each address as its 20-byte identity
+    // (HASH160 of these P2SH32 locks), so the preimage is 40 bytes, not the two locking bytecodes.
     const a = addressToLockScript(tokenA);
     const b = addressToLockScript(tokenB);
-    const [t0, t1] = binToHex(a) < binToHex(b) ? [a, b] : [b, a];
-    const packed = new Uint8Array(t0.length + t1.length);
-    packed.set(t0, 0); packed.set(t1, t0.length);
+    const asNumber = (value: Uint8Array): bigint => BigInt(`0x${binToHex(value)}`);
+    const [t0, t1] = asNumber(a) < asNumber(b) ? [a, b] : [b, a];
+    const [p0, p1] = [lockingBytecodeToSolidityAddressPayload(t0)!, lockingBytecodeToSolidityAddressPayload(t1)!];
+    const packed = new Uint8Array(p0.length + p1.length);
+    packed.set(p0, 0); packed.set(p1, p0.length);
     const salt = keccak_256(packed);
     const expected = new Contract(childArt, [], {
       provider, addressType: 'p2sh32', category: hexToBin(result.childCategoryId), salt,

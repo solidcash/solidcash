@@ -13,6 +13,7 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
+import { sortAddressPair } from './solidityAbi.js';
 import type { ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 
 /**
@@ -72,7 +73,7 @@ export function evalComputedKey(
           const a = encode(args[addressIndices[0]]);
           const b = encode(args[addressIndices[1]]);
           if (a && b) {
-            const [token0, token1] = binToHex(a) < binToHex(b) ? [a, b] : [b, a];
+            const [token0, token1] = sortAddressPair(a, b);
             return m[1] === 'token0' ? token0 : token1;
           }
         }

@@ -8,6 +8,7 @@ import {
   keccakComputeLockingBytecode,
   keccakComputeLockingBytecodeLegacy,
   type AbiFunction,
+  type Artifact,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
@@ -18,11 +19,14 @@ import {
   computeSideCarStandIn,
   hasOutpoint,
 } from './stateful-abi-resolve.js';
+import { artifactUsesSolidityAbi, sortedAddressPairPacked } from './solidityAbi.js';
 
 export interface ResolveKeccakComputeCoSpendsHost {
   readonly categoryId: string;
   readonly inner: {
     bytecode: string;
+    /** The contract artifact, whose compiler options decide how `abi.encodePacked(address)` packs. */
+    artifact?: Pick<Artifact, 'compiler'>;
     provider: NetworkProvider & {
       getUtxosForLockingBytecode(lockingBytecode: Uint8Array): Promise<Utxo[]>;
       addUtxo?: (address: string, utxo: Utxo) => Promise<Utxo>;
@@ -142,13 +146,10 @@ export async function resolveKeccakComputeCoSpends(
     if (addressIndices.length >= 2) {
       const a = toLbc(args[addressIndices[0]]);
       const b = toLbc(args[addressIndices[1]]);
-      if (a && b) {
-        const [first, second] = binToHex(a) < binToHex(b) ? [a, b] : [b, a];
-        const packed = new Uint8Array(first.length + second.length);
-        packed.set(first, 0);
-        packed.set(second, first.length);
-        preimages[0] = packed;
-      }
+      // The covenant's own ordering and packing rules; a Solidity-compat source packs 20-byte identities.
+      const solidityAddresses = host.inner.artifact !== undefined && artifactUsesSolidityAbi(host.inner.artifact);
+      const packed = a && b ? sortedAddressPairPacked(a, b, solidityAddresses) : undefined;
+      if (packed) preimages[0] = packed;
     }
   }
   preimages.push(...recoveryPreimages.map((preimage) =>

@@ -156,8 +156,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   that P2SH32 locking bytecode. Solidity-compatible `abi.encodePacked(address)` also projects to 20 bytes, so
   removing the explicit `uint160` cast alone would not preserve the full BCH address; the testing shim
   intentionally does not equate an untyped hash with a native address. The proxy application was not modified.
-  Individually retested titles from an older red compiler/SDK log passed, confirming that log is stale; they do
-  not establish any broader suite status.
+  Individually retested titles from an older red compiler/SDK log passed, confirming that log is stale. On
+  2026-10-02, exact SDK titles for ABI argument-field updates, bounded probe traces, generic value-chunk
+  construction, recursive EVM result layout, and independent same-category value-chunk resources each passed
+  unchanged (one selected title per run). These checks do not establish any broader suite status or retire
+  failures that have not been individually rechecked.
 - 2026-10-02 focused whitelist follow-up: the unchanged Marketplace `job posting > post job with whitelist`
   title passes on the proxy branch (1 selected, 65 skipped). This does not resolve the separate `post job 1`
   event-format assertion or establish a 66-title result. After the active band-helper rename,

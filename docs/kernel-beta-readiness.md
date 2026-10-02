@@ -252,6 +252,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   The focused new title and its immediately preceding local-helper title pass; `yarn build`, targeted lint, and
   the static sources-only gate pass. Regenerated GoldenToken and transfer-with-timeout scripts shrink from
   786 to 752 and 40 to 35 bytes respectively. No broad suite or cold beta gate ran.
+- 2026-10-02 using-for `call` follow-up: file-level `using Helpers for uint` and
+  `using {Helpers.call} for uint` left `value.call()` at source-selection time, falsely treating a pure local
+  extension as an address `.call(data)` edge. Auto selection now recognizes a type-matched, call-free pure library
+  leaf while retaining graph selection for address receivers, nested calls, and assembly. Both exact red titles
+  now pass with their immediately preceding regression titles; build and focused lint pass. A representative
+  extension shrinks from 2,379 to 623 redeem-script bytes, matching explicit direct compilation. No broad suite
+  or beta gate was run.
 - 2026-10-02 typed-state receiver checkpoint: the auto-selection survey missed a cross-contract call spelled
   `this.sink.note(...)` because it is a method call on a state-access node, not the namespaced call used by
   `sink.note(...)`. It now selects the graph route for an explicitly qualified interface-typed state receiver;

@@ -60,6 +60,46 @@ describe('message-bus compilation selection', () => {
     expect(automatic.bytecode).toBe(direct.bytecode);
   });
 
+  it('keeps a pure using-for extension named call on the direct route', () => {
+    const source = `library Helpers {
+        function call(uint value) internal pure returns (uint) { return value + 1; }
+      }
+      using Helpers for uint;
+      contract ExtensionCaller {
+        uint value;
+        function set(uint next) public {
+          value = next.call();
+          require(value > 0);
+        }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.bytecode).toBe(direct.bytecode);
+  });
+
+  it('keeps a pure named using-for extension called call on the direct route', () => {
+    const source = `library Helpers {
+        function call(uint value) internal pure returns (uint) { return value + 1; }
+      }
+      using { Helpers.call } for uint;
+      contract ExtensionCaller {
+        uint value;
+        function set(uint next) public {
+          value = next.call();
+          require(value > 0);
+        }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.bytecode).toBe(direct.bytecode);
+  });
+
   it('admits a finite typed external call through a using-for helper by default', () => {
     const source = `pragma solidity ^0.8.0;
       interface ISink { function ping(uint value) external returns (bool); }

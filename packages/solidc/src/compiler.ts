@@ -4137,6 +4137,39 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
     ...[...activeModifierArgs].map((arg) => ({ parameters: [], body: arg })),
     ...otherMembers.map((member) => ({ parameters: [], body: member })),
   ];
+  // A file-level `using L for uint` (or `using {L.call} for uint`) extension remains `value.call()` until the
+  // semantic using-for pass. The spelling alone is not an address `.call(data)` edge. Only suppress the graph
+  // signal when the receiver's declared type matches and every attached method is a call-free pure leaf;
+  // unresolved calls and assembly stay conservative so a real foreign edge cannot disappear here.
+  const localUsingForCall = (receiver: string, method: string,
+    receivers: Map<string, Type | undefined>): boolean => {
+    const type = receivers.get(receiver);
+    if (!type || type instanceof AddressType) return false;
+    const typeName = type.toString();
+    const matchesType = (target: string | undefined): boolean => target === typeName
+      || (target === 'uint' && typeName === 'uint256')
+      || (target === 'int' && typeName === 'int256');
+    const directives = [...ast.usingForDirectives, ...contract.usingForDirectives];
+    const candidates = directives.filter((directive) => matchesType(directive.targetTypeName))
+      .flatMap((directive) => directive.libraryName
+        ? [`${directive.libraryName}.${method}`]
+        : (directive.functionBindings ?? [])
+          .filter((binding) => !binding.operator && binding.funcName.split('.').at(-1) === method)
+          .map((binding) => binding.funcName));
+    return candidates.length > 0 && candidates.every((qualified) => {
+      const definitions = ast.freeFunctions.filter((fn) => fn.name === qualified);
+      return definitions.length > 0 && definitions.every((fn) => {
+        if (!fn.modifiers.includes(FunctionModifier.PURE)) return false;
+        let calls = false;
+        walkReachable(fn.body, (node) => {
+          if (node instanceof FunctionCallNode || node instanceof MethodCallNode
+            || node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallStatementNode
+            || node instanceof IndirectCallNode || node instanceof AssemblyStatementNode) calls = true;
+        });
+        return !calls;
+      });
+    });
+  };
   const hasNamespacedGraphCall = (body: Node, initialReceivers: Map<string, Type | undefined>): boolean => {
     const seen = new Set<Node>();
     const visit = (node: Node, receivers: Map<string, Type | undefined>): boolean => {
@@ -4172,7 +4205,10 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
         // A binding in another function or a later/nested block must not turn it into address.call(data).
         if (/\.(call|staticcall)$/.test(node.identifier.name)) {
           const namespace = node.identifier.name.slice(0, node.identifier.name.lastIndexOf('.'));
-          if (receivers.has(namespace) || !ast.libraryFunctionSignatures.has(node.identifier.name)) return true;
+          const method = node.identifier.name.slice(node.identifier.name.lastIndexOf('.') + 1);
+          if (receivers.has(namespace)) {
+            if (!localUsingForCall(namespace, method, receivers)) return true;
+          } else if (!ast.libraryFunctionSignatures.has(node.identifier.name)) return true;
         }
       }
       if (node instanceof MethodCallNode && node.methodName !== 'delegatecall') {

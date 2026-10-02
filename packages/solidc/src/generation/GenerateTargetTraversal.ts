@@ -21111,6 +21111,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
+    // Option-free compat raw call: bind the callee's selector and visible arguments here, where the payload's
+    // parameters are still live; the epilogue pins the target. Stack-neutral.
+    if (batchRow === undefined && node.callInfo && physicalSlot
+      && this.isDirectRawCompatBindingSlot(physicalSlot)) {
+      const data = node.parameters[0];
+      const binding = this.compatCallArguments(data, locationData);
+      this.visit(data);
+      this.popFromStack();                                   // [.., data] (untracked)
+      this.emitSlotMasterIndex(physicalSlot, locationData);  // [.., data, idx]
+      this.emitCompatCalleeSelectorAndArgs(binding, locationData); // [.., data, idx] -> [..]
+    }
+
     // Handle {value: X} call option - emit a transfer to the callee's address
     if (node.callOptions?.value && node.valueTransferIndex >= 0 && node.callInfo) {
       const slot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
@@ -22653,51 +22665,66 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);                                    // [data, target]
     this.emit(encodeInt(BigInt(this.getStackIndex(callInputParam) + 2)), locationData);
     this.emit(Op.OP_PICK, locationData);                     // [data, target, idx]
-    // 1. Identity. A 20-byte imported-Solidity identity is compared with the candidate's canonical projection; an
-    //    empty target equals no locking bytecode, so a call to address(0) fails closed.
+    // 1. Identity. A 20-byte imported-Solidity identity must name a canonical lock of that identity; an empty
+    //    target equals no locking bytecode, so a call to address(0) fails closed.
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_UTXOBYTECODE, locationData);             // [data, target, idx, lbc]
     this.emit(Op.OP_ROT, locationData);                      // [data, idx, lbc, target]
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(encodeInt(20n), locationData);
-    this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_SWAP, locationData);                     // [data, idx, target20, lbc]
-    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_EQUALVERIFY, locationData);              // [data, idx]
-    // 2. Function. MINIMALDATA encodes a dispatch selector as `0x04 || bytes4`, always the first push of a
-    //    multi-method callee's direct unlocking.
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_INPUTBYTECODE, locationData);            // [data, idx, ubc]
-    this.emit(encodeInt(1n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);                    // [data, idx, prefix, rest]
-    this.emit(Op.OP_SWAP, locationData);                     // [data, idx, rest, prefix]
-    this.emit(encodeInt(4n), locationData);
-    this.emit(Op.OP_EQUAL, locationData);                    // [data, idx, rest, isPush4]
-    this.emit(Op.OP_IF, locationData);
-    this.emit(encodeInt(4n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);
-    this.emit(Op.OP_DROP, locationData);                     // [data, idx, calleeSelector]
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_PICK, locationData);                     // [data, idx, calleeSelector, data]
-    this.emit(encodeInt(4n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);
-    this.emit(Op.OP_DROP, locationData);                     // [data, idx, calleeSelector, payloadSelector]
-    this.emit(Op.OP_EQUALVERIFY, locationData);              // [data, idx]
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_DROP, locationData);                     // [data, idx]
-    this.emit(Op.OP_ENDIF, locationData);
-    // 3. Arguments.
-    if (binding) {
-      this.emitCompatCallArgumentBinding(binding, locationData); // [data]
-      this.emit(Op.OP_DROP, locationData);
-    } else {
-      this.emit(Op.OP_2DROP, locationData);
-    }
+    this.emitCompatTargetIdentity(locationData);             // [data, idx]
+    // 2+3. Function and arguments against the co-spent callee at idx.
+    this.emitCompatCalleeSelectorAndArgs(binding, locationData); // [data, idx] -> []
     this.emit(Op.OP_0, locationData);                        // dummy remainder
+  }
+
+  /**
+   * [.., data, idx] -> [..]: a push4-led callee unlocking at input `idx` must dispatch the payload's selector, then
+   * emitCompatCallArgumentBinding binds the visible arguments.
+   */
+  private emitCompatCalleeSelectorAndArgs(binding: CompatCallArguments | undefined, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_INPUTBYTECODE, loc);                     // [data, idx, ubc]
+    this.emit(encodeInt(1n), loc);
+    this.emit(Op.OP_SPLIT, loc);                             // [data, idx, prefix, rest]
+    this.emit(Op.OP_SWAP, loc);                              // [data, idx, rest, prefix]
+    this.emit(encodeInt(4n), loc);
+    this.emit(Op.OP_EQUAL, loc);                             // [data, idx, rest, isPush4]
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(4n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);                              // [data, idx, calleeSelector]
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_PICK, loc);                              // [data, idx, calleeSelector, data]
+    this.emit(encodeInt(4n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);                              // [data, idx, calleeSelector, payloadSelector]
+    this.emit(Op.OP_EQUALVERIFY, loc);                       // [data, idx]
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);                              // [data, idx]
+    this.emit(Op.OP_ENDIF, loc);
+    if (binding) {
+      this.emitCompatCallArgumentBinding(binding, loc);      // [data, idx] -> [data]
+      this.emit(Op.OP_DROP, loc);                            // [..]
+    } else {
+      this.emit(Op.OP_2DROP, loc);                           // [..]
+    }
+  }
+
+  /**
+   * [.., candidateLbc, target] -> [..]: a 20-byte target must be a canonical lock of that identity
+   * (emitCompatAddressMatch); any other target must match exactly, so address(0) fails closed.
+   */
+  private emitCompatTargetIdentity(loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(20n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc);                              // [.., target20, candidateLbc] = [identity, lock]
+    this.emitCompatAddressMatch(loc);                        // consumes both, EQUALVERIFY inside
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);                       // lbc == target (full lock, exact)
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -22756,6 +22783,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return { kind: 'bytes', size: value.bound };
     }
     return undefined;
+  }
+
+  /**
+   * Whether a compat call's payload is an abi.encode* expression with bindable selector and arguments; an opaque
+   * payload keeps the target pin alone.
+   */
+  private isVisibleCompatEncodePayload(data: ExpressionNode): boolean {
+    const payload = this.resolveCompatPayload(data);
+    return payload instanceof AbiEncodeWithSelectorNode || payload instanceof AbiEncodeCallNode
+      || payload instanceof AbiEncodeWithSignatureNode;
   }
 
   /** A payload expression, followed through locals the function declares once and writes nowhere else. */
@@ -37028,6 +37065,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * A direct option-free `__raw__` compat call reached straight-line (not a loop, batch row or fn-ptr call) with a
+   * visible abi.encode* payload; mirrors the per-slot loop's skips, so a staged payload is always consumed.
+   */
+  private isDirectRawCompatBindingSlot(slot: ExternalCallSlot): boolean {
+    if (slot.interfaceName !== '__raw__' || slot.functionName !== '__raw__') return false;
+    const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
+    if (callMode !== ExternalCallMode.REGULAR && callMode !== ExternalCallMode.STATICCALL) return false;
+    if (slot.inlineLoopDispatch || slot.loopArrayVar || slot.batchInvocations || slot.fnPtrCall) return false;
+    if (this.isExternalCallSlotLoopNested(slot)) return false;
+    if (this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex
+      && candidate.addressParam === slot.addressParam && candidate.batchInvocations)) return false;
+    const data = slot.sourceCallNode?.parameters[0];
+    return data !== undefined && this.isVisibleCompatEncodePayload(data);
+  }
+
+  /**
    * Emit covenant checks for external function calls:
    * 1. Verify B's token category matches the expected category parameter
    * 2. Verify B's master locking bytecode is preserved (input == output)
@@ -37084,6 +37137,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && candidate.addressParam === slot.addressParam && candidate.batchInvocations);
       if (batchOwner) continue;
       const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
+      // A direct raw compat call's target is pinned here; its selector and arguments are bound at the call site
+      // (visitExternalFunctionCall), where the payload's parameters are still live.
+      const tightenRawIdentity = this.isDirectRawCompatBindingSlot(slot);
 
       // B's master input index (per-slot runtime index when the SDK filled one - fn-ptr calls + multi-call
       // slots - else the compile-time co-spend base + offset).
@@ -37154,7 +37210,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           + `(target '${slot.interfaceName}.${slot.functionName}' in function '${node.name}')`,
         );
       }
-      if (anchorParamIdx < 0) {
+      if (anchorParamIdx < 0 && tightenRawIdentity) {
+        // A 20-byte identity target must name a canonical lock of it; a full-lock target keeps the exact compare.
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(Op.OP_SIZE, locationData);
+        this.emit(Op.OP_NIP, locationData);
+        this.emit(encodeInt(20n), locationData);
+        this.emit(Op.OP_NUMEQUAL, locationData);
+        this.emit(Op.OP_IF, locationData);
+        this.emit(Op.OP_SWAP, locationData);          // [idx, target20, lbc] = [identity, lock]
+        this.emitCompatAddressMatch(locationData);    // consumes both, EQUALVERIFY inside
+        this.emit(Op.OP_ELSE, locationData);
+        this.emitPreferLockingBytecode(locationData);
+        this.emit(Op.OP_EQUALVERIFY, locationData);
+        this.emit(Op.OP_ENDIF, locationData);         // [idx]
+      } else if (anchorParamIdx < 0) {
         this.emitPreferLockingBytecode(locationData);
         this.emit(Op.OP_EQUALVERIFY, locationData);   // [idx]
       } else {

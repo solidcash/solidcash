@@ -97,6 +97,59 @@ const setup = async (signed = false): Promise<{
   return { provider, a, b, aArtifact, bArtifact };
 };
 
+const setupRawSenderCallback = async (signed = false): Promise<{
+  provider: ReturnType<typeof createMessageBusCapstoneTestProvider>;
+  a: StatefulContract;
+  b: StatefulContract;
+  aArtifact: ReturnType<typeof compileString>;
+  bArtifact: ReturnType<typeof compileString>;
+  payload: Uint8Array;
+}> => {
+  const provider = createMessageBusCapstoneTestProvider();
+  const aArtifact = compileString(`interface IB { function relay(bytes payload) external; }
+      contract A {
+        address peer;
+        uint256 public stored;
+        function setPeer(address target) public { peer = target; require(true); }
+        function run(bytes payload) public {
+          stored = 7;
+          IB(peer).relay(payload);
+          require(true);
+        }
+        function observe() public view returns (uint256) { return stored; }
+      }`, OPTIONS);
+  const bArtifact = compileString(`contract B {
+      function relay(bytes payload) public {
+        (bool ok, bytes result) = msg.sender.call(payload);
+        require(ok && abi.decode(result, (uint256)) == 7);
+      }
+    }`, {
+    forceStateful: true, messageBusKernel: true, messageBusGraphContext: true,
+    maximumInputBytes: 1_000_000, solidityImportCompat: true, suppressWarnings: true,
+  });
+  const aBase = new Contract(aArtifact, [], { provider });
+  const bBase = new Contract(bArtifact, [], { provider });
+  const aSetup = await setupStatefulUtxos(provider, aBase, aArtifact.stateLayout!, {}, { saltContract: true });
+  const bSetup = await setupStatefulUtxos(provider, bBase, bArtifact.stateLayout!, {}, { saltContract: true });
+  const aPlain = StatefulContract.withCategory(aBase, aSetup.categoryId);
+  const bPlain = StatefulContract.withCategory(bBase, bSetup.categoryId);
+  await aPlain.call.setPeer(hexToBin(bPlain.inner.lockingBytecode)).send();
+  const b = StatefulContract.withCategory(bBase, bSetup.categoryId, { externals: { __raw__: aPlain } });
+  const aUnconnected = StatefulContract.withCategory(aBase, aSetup.categoryId, { externals: { IB: b } });
+  const signer = signed ? new Signer(new Uint8Array(32).fill(0x4d), provider) : undefined;
+  if (signer) {
+    for (let index = 0; index < 12; index += 1) {
+      await provider.addUtxo(signer.getAddress(), {
+        txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+      });
+    }
+  }
+  const a = signer ? aUnconnected.connect(signer) : aUnconnected;
+  const selector = aArtifact.abi.find((fn) => fn.name === 'observe')?.selector;
+  if (!selector) throw new Error('A.observe missing selector');
+  return { provider, a, b, aArtifact, bArtifact, payload: hexToBin(selector) };
+};
+
 describe('kernel same-owner callback composition', () => {
   it('coalesces explicit A.run → B.relay → A.observe rows and authenticates the post-write return', async () => {
     const { provider, a, b, aArtifact, bArtifact } = await setup();
@@ -134,45 +187,12 @@ describe('kernel same-owner callback composition', () => {
   }, 180_000);
 
   it('settles an automatic msg.sender raw callback against the authenticated graph caller', async () => {
-    const provider = createMessageBusCapstoneTestProvider();
-    const aArtifact = compileString(`interface IB { function relay(bytes payload) external; }
-      contract A {
-        address peer;
-        uint256 public stored;
-        function setPeer(address target) public { peer = target; require(true); }
-        function run(bytes payload) public {
-          stored = 7;
-          IB(peer).relay(payload);
-          require(true);
-        }
-        function observe() public view returns (uint256) { return stored; }
-      }`, OPTIONS);
-    const bArtifact = compileString(`contract B {
-      function relay(bytes payload) public {
-        (bool ok, bytes result) = msg.sender.call(payload);
-        require(ok && abi.decode(result, (uint256)) == 7);
-      }
-    }`, {
-      forceStateful: true, messageBusKernel: true, messageBusGraphContext: true,
-      maximumInputBytes: 1_000_000, solidityImportCompat: true, suppressWarnings: true,
-    });
+    const { provider, a, b, aArtifact, bArtifact, payload } = await setupRawSenderCallback();
     expect(bArtifact.compiler.options?.messageBus).toBe(true);
     expect(bArtifact.messageBus?.handlers.find((handler) => handler.name === 'relay'))
       .toMatchObject({ eligible: true });
     expect(bArtifact.abi.find((fn) => fn.name === 'relay')?.externalCalls)
       .toEqual([expect.objectContaining({ addressIsMsgSender: true, interfaceName: '__raw__' })]);
-    const aBase = new Contract(aArtifact, [], { provider });
-    const bBase = new Contract(bArtifact, [], { provider });
-    const aSetup = await setupStatefulUtxos(provider, aBase, aArtifact.stateLayout!, {}, { saltContract: true });
-    const bSetup = await setupStatefulUtxos(provider, bBase, bArtifact.stateLayout!, {}, { saltContract: true });
-    const aPlain = StatefulContract.withCategory(aBase, aSetup.categoryId);
-    const bPlain = StatefulContract.withCategory(bBase, bSetup.categoryId);
-    await aPlain.call.setPeer(hexToBin(bPlain.inner.lockingBytecode)).send();
-    const b = StatefulContract.withCategory(bBase, bSetup.categoryId, { externals: { __raw__: aPlain } });
-    const a = StatefulContract.withCategory(aBase, aSetup.categoryId, { externals: { IB: b } });
-    const selector = aArtifact.abi.find((fn) => fn.name === 'observe')?.selector;
-    if (!selector) throw new Error('A.observe missing selector');
-    const payload = hexToBin(selector);
     const runCallsite = aArtifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0]?.callsiteId;
     const relayCallsite = bArtifact.abi.find((fn) => fn.name === 'relay')?.externalCalls?.[0]?.callsiteId;
     if (runCallsite === undefined || relayCallsite === undefined) throw new Error('raw callback callsite missing');
@@ -198,6 +218,15 @@ describe('kernel same-owner callback composition', () => {
       `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
     expect(new Set(outpoints).size).toBe(outpoints.length);
     await expect(composition.send()).resolves.toBeDefined();
+    expect((await a.getState()).stored).toBe(7n);
+  }, 180_000);
+
+  it('automatically settles a msg.sender raw callback through natural send', async () => {
+    const { a, payload } = await setupRawSenderCallback(true);
+    const receipt = await a.call.run(payload).send();
+    const outpoints = receipt.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    expect(new Set(outpoints).size).toBe(outpoints.length);
     expect((await a.getState()).stored).toBe(7n);
   }, 180_000);
 

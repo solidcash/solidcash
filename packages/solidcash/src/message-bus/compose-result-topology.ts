@@ -1,6 +1,9 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import type { ArgSource, ExternalCallAbi, ExternalCallExpression } from '@solidcash/utils';
-import type { FunctionArgument } from '../Argument.js';
+import {
+  decodePushdataValue, scriptToBytecode,
+  type ArgSource, type Artifact, type ExternalCallAbi, type ExternalCallExpression,
+} from '@solidcash/utils';
+import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';
 import {
   findDeploymentByAddressValue, registeredAddressValueLockingBytecode,
@@ -21,6 +24,62 @@ import { decodeResultsByParent, type ResultPropagationContext } from './compose-
 
 type Prepared = PreparedAtomicMessageBusCall;
 type Child = { call: Prepared; previous?: number };
+
+/** Resolve a forwarded low-level payload against the selected runtime callee, then require its exact
+ * canonical BCH call encoding. The worklist and the participant VM independently authenticate this row. */
+function decodeCanonicalRawInvocation(
+  artifact: Artifact,
+  payload: FunctionArgument | undefined,
+): { fn: Artifact['abi'][number]; args: FunctionArgument[] } {
+  if (!(payload instanceof Uint8Array) || payload.length < 4) {
+    throw new Error('messageBus: raw call has no four-byte calldata selector');
+  }
+  const selector = binToHex(payload.subarray(0, 4));
+  const matches = artifact.abi.filter((candidate) => candidate.selector?.toLowerCase() === selector);
+  if (matches.length !== 1) {
+    throw new Error(`messageBus: raw selector ${selector} has no unique runtime callee`);
+  }
+  const fn = matches[0]!;
+  const inputs = fn.inputs.filter((input) => !input.name.startsWith('__internal__'));
+  const args: FunctionArgument[] = [];
+  let cursor = 4;
+  for (const input of inputs) {
+    const aggregate = input.type.endsWith(']')
+      || artifact.structs?.some((candidate) => candidate.name === input.type) === true;
+    const outer = decodePushdataValue(payload, cursor, aggregate ? 'bytes' : input.type, artifact.structs);
+    let value = outer.value as FunctionArgument;
+    if (aggregate) {
+      if (!(outer.value instanceof Uint8Array)) {
+        throw new Error('messageBus: raw aggregate argument is not a pushed byte sequence');
+      }
+      if (input.type.endsWith('[]') && outer.value.length === 2
+        && outer.value[0] === 0x01 && outer.value[1] === 0x00) {
+        value = [];
+      } else {
+        const inner = decodePushdataValue(outer.value, 0, input.type, artifact.structs);
+        if (inner.bytesConsumed !== outer.value.length) {
+          throw new Error('messageBus: raw aggregate argument has trailing bytes');
+        }
+        value = inner.value as FunctionArgument;
+      }
+    }
+    args.push(value);
+    cursor += outer.bytesConsumed;
+  }
+  if (cursor !== payload.length) throw new Error('messageBus: raw calldata has trailing bytes');
+  const encoded = args.map((argument, index) =>
+    encodeFunctionArgument(argument, inputs[index]!.type, artifact.structs));
+  if (encoded.some((argument) => !(argument instanceof Uint8Array))) {
+    throw new Error('messageBus: raw calldata cannot contain a transaction signature');
+  }
+  const canonical = Uint8Array.from([
+    ...hexToBin(fn.selector!), ...scriptToBytecode(encoded as Uint8Array[]),
+  ]);
+  if (binToHex(canonical) !== binToHex(payload)) {
+    throw new Error('messageBus: raw calldata is not the canonical runtime ABI encoding');
+  }
+  return { fn, args };
+}
 
 function registeredExternal(contract: StatefulContract, name: string): unknown {
   return (contract as unknown as { _externalRegistry: ReadonlyMap<string, unknown> })._externalRegistry.get(name);
@@ -215,9 +274,9 @@ async function rebuildCallTopology(
             const returns = returnsFor([...argSources, ...addressSources]);
             await hydrate([...argSources, ...addressSources].map((argSource) =>
               ({ kind: 'source', source: argSource })), [iteration], returns);
-            const childArgs = logical._resolveExternalArgs(argSources, [...args], artifact, state, fn.inputs,
+            const sourceArgs = logical._resolveExternalArgs(argSources, [...args], artifact, state, fn.inputs,
               returns, iteration, false, self, incoming);
-            if (!childArgs) { unresolved = true; break; }
+            if (!sourceArgs) { unresolved = true; break; }
             const target = template.addressSource
               ? logical._resolveExternalArgs([template.addressSource], [...args], artifact, state, fn.inputs,
                 returns, iteration, false, self, incoming)?.[0]
@@ -240,16 +299,30 @@ async function rebuildCallTopology(
             const contract = proxy?.proxy ?? registered as StatefulContract;
             const executor = proxy?.implementation;
             const childArtifact = (executor ?? contract).inner.artifact;
-            const childFn = template.selectedSelector
+            const rawPayload = template.interfaceName === '__raw__'
+              && template.functionName === '__raw__' && template.rawArgSources === undefined;
+            const decodedRaw = rawPayload
+              ? decodeCanonicalRawInvocation(childArtifact, sourceArgs[0]) : undefined;
+            const childFn = decodedRaw?.fn ?? (template.selectedSelector
               ? childArtifact.abi.find((candidate) => candidate.selector === template.selectedSelector)
-              : resolveMessageBusAbiFunction(childArtifact, template.rawFunctionName ?? template.functionName);
+              : resolveMessageBusAbiFunction(childArtifact, template.rawFunctionName ?? template.functionName));
             if (!childFn?.selector) throw new Error('messageBus: newly reached call has no exact ABI selector');
+            if (decodedRaw && ((template.selectedSelector !== undefined
+              && childFn.selector.toLowerCase() !== template.selectedSelector.toLowerCase())
+              || (template.rawFunctionName !== undefined && childFn.name !== template.rawFunctionName))) {
+              throw new Error('messageBus: raw calldata selector disagrees with compiler callsite');
+            }
+            const childArgs = decodedRaw?.args ?? sourceArgs;
             const targetLock = address === undefined ? undefined
               : registeredAddressValueLockingBytecode(provider, address) ?? tryCashAddressToLockScript(address);
             const snapshot = state;
-            const resolveArgsFromResults: Prepared['resolveArgsFromResults'] = (updated, frame) =>
-              logical._resolveExternalArgs(argSources, [...(frame ?? args)], artifact, snapshot, fn.inputs,
-                externalReturnsForCallsites(argSources, updated, sources), iteration, false, self, incoming);
+            const resolveArgsFromResults: Prepared['resolveArgsFromResults'] = (updated, frame) => {
+              const resolved = logical._resolveExternalArgs(argSources, [...(frame ?? args)], artifact,
+                snapshot, fn.inputs, externalReturnsForCallsites(argSources, updated, sources),
+                iteration, false, self, incoming);
+              return rawPayload && resolved
+                ? decodeCanonicalRawInvocation(childArtifact, resolved[0]).args : resolved;
+            };
             if (prior && prior.call.contract === contract && prior.call.selector === childFn.selector
               && prior.call.executor === executor) {
               const rebuilt = rebuildPreparedInvocation(prior.call, childArgs, undefined);

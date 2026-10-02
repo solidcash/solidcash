@@ -249,9 +249,15 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   proof passes with byte-identical caller code in auto and explicit modes; its immediately preceding explicit
   proof passes. A separately prepared A→B→A graph passes every VM input with one A master while B calls
   `msg.sender` and requires A's authenticated post-write return; its immediately preceding typed callback proof
-  passes. The focused compiler admission title and its preceding literal-index title pass. Natural `.send()`
-  discovery for the raw A→B→A form remains red at the legacy circular-call refusal; manual graph composition
-  does not establish that automatic SDK path. No broad suite or beta gate was run.
+  passes. The focused compiler admission title and its preceding literal-index title pass. At this checkpoint,
+  natural `.send()` discovery for the raw A→B→A form remained red at the legacy circular-call refusal; manual
+  graph composition did not establish that automatic SDK path. No broad suite or beta gate was run.
+- 2026-10-02 natural raw-callback follow-up: early graph discovery now resolves a bounded low-level call's
+  concrete selector and arguments from its forwarded canonical payload, after selecting the runtime callee.
+  The ordinary `a.call.run(payload).send()` path settles the `msg.sender` A→B→A callback and uses distinct
+  outpoints; it does not bypass the legacy duplicate-owner guard. The exact natural-send title and its
+  immediately preceding manual BCH-2026 VM proof pass. `yarn build`, focused lint, and the static sources-only
+  beta gate pass. No broad suite or cold beta gate was run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

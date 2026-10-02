@@ -600,6 +600,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     valueRuntimeExpression?: boolean;
     /** A turn reads the entry the loop writes (besides a read-modify-write base), so a repeated key cannot merge. */
     readsWrittenEntry?: boolean;
+    /** The loop body has a per-turn effect besides this write (event, require, another write), so no repeat can merge. */
+    siblingEffect?: boolean;
     /** Source-ordered values for a loop-carried expression, authenticated in the executable source loop. */
     valueTraceWitnessParam?: string;
     valueTraceLocal?: string;

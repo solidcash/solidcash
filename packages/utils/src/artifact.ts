@@ -953,6 +953,11 @@ export interface SortedUpsertLoopAbi {
    * what an earlier turn wrote, so its occurrences cannot be merged into one. Published for the direct convention.
    */
   readsWrittenEntry?: boolean;
+  /**
+   * The loop body runs a per-turn effect besides this write (an event, a require, another write), which the EVM
+   * runs once per turn. Merging a repeated key's turns would run it one time fewer, so the SDK refuses the repeat.
+   */
+  siblingEffect?: boolean;
   /** Authenticated source-order trace for a mapping value which carries state between loop iterations. */
   valueTraceWitnessParam?: string;
   valueTraceLocal?: string;

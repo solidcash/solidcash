@@ -29351,6 +29351,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitKernelJournalCursorHelperInline(loc);
   }
 
+  /**
+   * Whether a sorted-loop body has an observable per-turn effect besides the single write this stream describes: a
+   * second write, an event, a require, a transfer, an array mutation or a deploy. The SDK merges a repeated key's
+   * turns into one, so such an effect would run one time fewer than the source does; the merge is then not
+   * equivalent and the SDK refuses the repeat. The write's own read-modify-write base and key reads are not effects.
+   */
+  private loopBodyHasSiblingEffect(block: Node, write: MappingAssignNode | MappingDeleteNode): boolean {
+    let effect = false;
+    walkInvocationAst(block, (candidate) => {
+      if (candidate === write || effect) return;
+      if ((candidate instanceof MappingAssignNode || candidate instanceof MappingDeleteNode
+        || candidate instanceof MappingFieldAssignNode) && candidate !== write) effect = true;
+      else if (candidate instanceof StateAssignNode || candidate instanceof EmitStatementNode
+        || candidate instanceof RequireNode || candidate instanceof TransferStatementNode
+        || candidate instanceof AddressTransferStatementNode || candidate instanceof AddressSendExpressionNode
+        || candidate instanceof ArrayPushNode || candidate instanceof ArrayPopNode
+        || candidate instanceof StateArrayAssignNode || candidate instanceof InstantiationNode) effect = true;
+    });
+    return effect;
+  }
+
   /** Whether a loop body reads the entry its sorted write targets, besides that write's read-modify-write base. */
   private loopReadsWrittenEntry(
     block: Node, write: MappingAssignNode | MappingDeleteNode, slotIndex: number,
@@ -29699,6 +29720,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const readsWrittenEntry = this.compilerOptions.composition !== 'per-call'
       && this.loopReadsWrittenEntry(block, writeNode, slotIndex);
     if (existingInfo && readsWrittenEntry) existingInfo.readsWrittenEntry = true;
+    const siblingEffect = this.compilerOptions.composition !== 'per-call'
+      && this.loopBodyHasSiblingEffect(block, writeNode);
+    if (existingInfo && siblingEffect) existingInfo.siblingEffect = true;
     if (!existingInfo) {
       const condition = this.currentFunction.runtimeCounterLoopConditions?.get(varyingArrayParam);
       const iteration = this.currentFunction.runtimeCounterLoopIterationConditions?.get(varyingArrayParam);
@@ -29778,6 +29802,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }),
         ...(valueRuntimeExpression && { valueRuntimeExpression: true }),
         ...(readsWrittenEntry && { readsWrittenEntry: true }),
+        ...(siblingEffect && { siblingEffect: true }),
         ...(valueArrayOffset !== undefined && { valueArrayOffset }),
         ...(valueRuntimeLocal && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }),
         ...(writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeOldValueWitness

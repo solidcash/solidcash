@@ -11044,17 +11044,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
       // A repeated key whose turns are observable cannot be merged: when a turn reads the entry it writes, a later
-      // occurrence reads what an earlier one wrote, and a value computed at run time is the last occurrence's, not
-      // the first's. The covenant cannot serve that later turn (each entry is co-spent once), so refuse it by name
-      // rather than run a call with fewer keys than the caller passed.
-      if (!counterSpec && !info.mutation && (info.readsWrittenEntry || info.valueRuntimeExpression)
-        && Array.isArray(keysArr) && keysArr.length > 1) {
+      // occurrence reads what an earlier one wrote; a value computed at run time is the last occurrence's, not the
+      // first's; and a per-turn effect (an event, a require, another write) runs once per turn, which the merge would
+      // run one time fewer. The covenant cannot serve that later turn (each entry is co-spent once), so refuse the
+      // repeat by name rather than run a call with fewer keys than the caller passed.
+      const observableTurns = info.readsWrittenEntry || info.valueRuntimeExpression || info.siblingEffect;
+      const turnReason = (): string => (info.readsWrittenEntry ? 'each turn reads the entry it writes'
+        : info.siblingEffect ? 'each turn has its own effect' : 'the value is computed per turn');
+      if (!counterSpec && !info.mutation && observableTurns && Array.isArray(keysArr) && keysArr.length > 1) {
         const slotHexes = (keysArr as unknown[]).map((key) => binToHex(slotForKey(key)));
         const repeat = slotHexes.findIndex((hex, at) => slotHexes.indexOf(hex) !== at);
         if (repeat >= 0) {
           throw new Error(`vmap upsert loop ${info.collection}: key ${repeat} of '${info.varyingArrayParam}' repeats `
-            + `an earlier key, and ${info.readsWrittenEntry ? 'each turn reads the entry it writes' : 'the value is '
-              + 'computed per turn'}, so its turns cannot be merged; pass each key once`);
+            + `an earlier key, and ${turnReason()}, so its turns cannot be merged; pass each key once`);
         }
       }
       // DUPLICATE RECIPIENT: the same key listed 2+ times. Solidity ACCUMULATES for += / -= ([a,a],[10,20] -> a += 30),
@@ -11126,6 +11128,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           kArr.forEach((k, i) => {
             if (binToHex(slotForKey(k)) !== senderSlotHex) keepIdx.push(i);
           });
+          if (keepIdx.length < kArr.length && info.siblingEffect) {
+            // Netting out the sender's own credit drops that turn, and with it the turn's per-turn effect; refuse.
+            throw new Error(`vmap upsert loop ${info.collection}: a credit to the sender itself cannot be netted out `
+              + 'because each turn has its own effect; send it as its own call');
+          }
           if (keepIdx.length < kArr.length) {
             keysArr = keepIdx.map((i) => kArr[i]);
             const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);

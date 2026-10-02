@@ -344,7 +344,8 @@ const sortedUpsertLoopAbiFields = Object.freeze({
   sameIterationMutableSelectionReplay: true, keyDecodeTupleIndex: true, keyDecodeTupleTypes: true,
   predicateArrayParam: true, predicateEquals: true, valueArrayParam: true, valueArrayIndexParam: true,
   valueArrayOffset: true, valueScalarParam: true, valueConst: true, valueBool: true, valueRuntimeLocal: true,
-  valueRuntimeExpression: true, readsWrittenEntry: true, valueTraceWitnessParam: true, valueTraceLocal: true,
+  valueRuntimeExpression: true, readsWrittenEntry: true, siblingEffect: true, valueTraceWitnessParam: true,
+  valueTraceLocal: true,
   valueTraceInitial: true, valueTraceUpdates: true, valueTraceAfterUpdates: true,
   prefixCountWitnessParam: true, prefixCountCondition: true, mutation: true,
   mutationValueArrayParam: true, mutationValueArrayIndexParam: true, mutationValueScalarParam: true,
@@ -436,9 +437,9 @@ const genericJournalStreamDigest = (
   };
   const normalized: Record<string, unknown> = { collectionHash: access.collectionHash.toLowerCase() };
   for (const key of Object.keys(access).sort()) {
-    // `readsWrittenEntry` only tells the SDK not to merge a repeated key; the stream's semantics do not include it.
+    // `readsWrittenEntry` and `siblingEffect` only tell the SDK not to merge a repeated key; not stream semantics.
     if (key === 'collectionHash' || key === 'collection' || key === 'fixedKeyParams'
-      || key === 'iterationCounter' || key === 'readsWrittenEntry') continue;
+      || key === 'iterationCounter' || key === 'readsWrittenEntry' || key === 'siblingEffect') continue;
     const raw = (access as unknown as Record<string, unknown>)[key];
     // AST-backed descriptors can retain own-properties whose value is undefined while their serialized ABI
     // counterpart omits those fields. Both mean the same absent semantic property.

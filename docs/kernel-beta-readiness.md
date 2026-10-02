@@ -142,7 +142,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   calls in `calculateSplits`; source-side receiver tracking now reports `externalCalls: true` for that helper
   while `calculatePayments` remains false. The focused red diagnostic title and its immediately preceding title
   pass; a fresh single-root split still refuses the 16,839-byte closure. This profile is diagnostic evidence,
-  not authorization to cut a helper without an authenticated transport design.
+  not authorization to cut a helper without an authenticated transport design. A later source-namespace repair
+  corrected another cut-profile omission: inherited `_nonReentrantBefore` reads and writes `_status`, and
+  `_nonReentrantAfter` writes it. The focused inherited-state title went red-to-green, its preceding generic cut
+  title passed, and the real Unicrow split still refuses the same 16,839-byte closure.
 - 2026-10-02 arbitration-source size follow-up: a fresh single-root UnicrowArbitrator kernel compile emits
   18,761 redeem-script bytes, and `compileFileSplit` refuses its 16,267-byte singleton `arbitrate` closure at
   `SPLIT_CLOSURE_CAPACITY`. Both ends of the Unicrow arbitration callback path therefore need a deployability

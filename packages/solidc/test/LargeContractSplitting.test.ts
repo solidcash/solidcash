@@ -234,6 +234,39 @@ describe('large-contract state-local splitting', () => {
     }
   });
 
+  it('classifies bare inherited state effects in split helper cut profiles', () => {
+    const source = `pragma solidity ^0.8.0;
+      contract BareStateBase {
+        int status;
+        function enter() internal { require(status == 0); status = 1; }
+        function resetState() internal { status = 0; }
+        function increment() internal { status = status + 1; }
+      }
+      contract BareStateCuts is BareStateBase {
+        function localOnly() internal { int status = 1; require(status > 0); }
+        function run() public { enter(); increment(); localOnly(); resetState(); require(true); }
+      }`;
+    try {
+      compileStringSplit(source, {
+        forceSplit: true, maxShardBytes: 100, solidityImportCompat: true, suppressWarnings: true,
+      });
+      throw new Error('expected split capacity diagnostic');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'SPLIT_CLOSURE_CAPACITY',
+        context: expect.objectContaining({
+          handlers: ['run'],
+          helperCuts: expect.arrayContaining([
+            expect.objectContaining({ name: 'enter()', readsLocalState: true, writesState: true }),
+            expect.objectContaining({ name: 'increment()', readsLocalState: true, writesState: true }),
+            expect.objectContaining({ name: 'resetState()', readsLocalState: false, writesState: true }),
+            expect.objectContaining({ name: 'localOnly()', readsLocalState: false, writesState: false }),
+          ]),
+        }),
+      });
+    }
+  });
+
   it('reports typed external calls inside internal helper cut profiles', () => {
     const source = `pragma solidity ^0.8.0;
       interface IRemote { function value() external returns (int); }

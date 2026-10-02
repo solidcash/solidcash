@@ -159,6 +159,7 @@ export function analyseFunctionFootprint(
       const directReads = new Set<string>();
       const directWrites = new Set<string>();
       const directEffects = new Set<string>();
+      const bareWriteTargets = new WeakSet<IdentifierNode>();
       let directUnknown = false;
       let locallyBound: Set<string>;
       let nodes: Node[] | undefined;
@@ -186,6 +187,11 @@ export function analyseFunctionFootprint(
         }
       }
       const analyseNode = (node: Node): void => {
+        // The generic walk also visits an Assign/Delete target's IdentifierNode. A plain write does not read
+        // that value; compound assignments retain a separate identifier in their desugared RHS and still do.
+        if (node instanceof AssignNode || node instanceof DeleteLocalNode) {
+          bareWriteTargets.add(node.identifier);
+        }
         const kind = node.constructor.name;
         const shaped = node as unknown as { name?: string; keys?: Node[] };
         const resourceName = shaped.name;
@@ -212,7 +218,8 @@ export function analyseFunctionFootprint(
         } else if (node instanceof DeleteLocalNode && cache?.stateNames?.has(node.identifier.name)
           && !locallyBound.has(node.identifier.name)) {
           directWrites.add(`state:${node.identifier.name}`);
-        } else if (node instanceof IdentifierNode && cache?.stateNames?.has(node.name)
+        } else if (node instanceof IdentifierNode && !bareWriteTargets.has(node)
+          && cache?.stateNames?.has(node.name)
           && !locallyBound.has(node.name)) {
           directReads.add(`state:${node.name}`);
         } else if (bareReadName !== undefined && !locallyBound.has(bareReadName)) {

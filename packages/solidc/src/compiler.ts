@@ -17122,7 +17122,12 @@ function compileStringSplitUnchecked(
   // consensus capacity, they must become delegate-return facets too; otherwise an oversized query surface can
   // leave the forwarding root undeployable (BoringHelperV1).
   const moveReadOnlyEntries = byteSize(baseline) > maxShardBytes;
-  const splitFootprintCache = createFootprintAnalysisCache();
+  // Split planning runs before semantic resolution of Solidity-compatible bare state identifiers. Give its
+  // footprint survey the contract namespace so inherited helpers like ReentrancyGuard._nonReentrantBefore are
+  // not misreported as effect-free cut candidates; the analyzer still excludes shadowing locals.
+  const splitFootprintCache = createFootprintAnalysisCache(new Set(
+    probe.contract.stateVariables.map((state) => state.name),
+  ));
   const rootFunctionNames = new Set(rootFunctions);
   const plans = (baseline.stateLayout
     ? functions.filter((fn) => isMovableSplitEntry(fn, moveReadOnlyEntries)

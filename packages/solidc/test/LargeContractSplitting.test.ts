@@ -268,6 +268,11 @@ describe('large-contract state-local splitting', () => {
           callChain: ['addX'],
           measured: expect.any(Number),
           limit: 100,
+          overCapacityClosures: expect.arrayContaining([
+            expect.objectContaining({ handlers: ['addX'], measured: expect.any(Number) }),
+            expect.objectContaining({ handlers: ['setX'], measured: expect.any(Number) }),
+            expect.objectContaining({ handlers: ['setY'], measured: expect.any(Number) }),
+          ]),
         }),
       });
       expect((error as Error).message).toContain("Cannot split 'SplitCounter'");

@@ -17244,10 +17244,15 @@ function compileStringSplitUnchecked(
   // body and its internal callees. Test these before the quadratic affinity search. Besides producing the useful
   // handler/closure diagnostic directly, this prevents a large contract with one impossible entry from spending
   // minutes compiling every larger pair even though none can remove bytes from the required closure.
+  const overCapacityClosures: Array<{
+    handlers: string[]; callChain: string[]; helperCuts: ReturnType<typeof splitHelperCutProfiles>;
+    measured: number; redeemBytes: number; reserveBytes: number;
+  }> = [];
   for (const group of [...groups].sort((a, b) => groupKey(a).localeCompare(groupKey(b)))) {
     if (group.length !== 1) continue;
     const measured = measure(group);
     if (measured <= maxShardBytes) continue;
+    const artifact = measuredArtifacts.get(groupKey(group))!;
     const handlers = group.map((plan) => plan.name);
     const callChain = group.flatMap((plan) => [
       plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name),
@@ -17255,13 +17260,24 @@ function compileStringSplitUnchecked(
     const helperCuts = splitHelperCutProfiles(
       group[0], byName, splitFootprintCache, probe.contract, interfaceNames,
     );
+    overCapacityClosures.push({
+      handlers, callChain, helperCuts, measured,
+      redeemBytes: byteSize(artifact), reserveBytes: spendReserve(artifact, artifact.constructorInputs),
+    });
+  }
+  if (overCapacityClosures.length > 0) {
+    const first = overCapacityClosures[0];
+    const remaining = overCapacityClosures.slice(1);
     throw new SolidcDiagnosticError(
       'SPLIT_CLOSURE_CAPACITY',
-      `Cannot split '${logicalName}': indivisible closure '${handlers.join(', ')}' is ${measured} bytes `
-        + `(limit ${maxShardBytes}).`,
+      `Cannot split '${logicalName}': indivisible closure '${first.handlers.join(', ')}' is `
+        + `${first.measured} bytes (limit ${maxShardBytes}).`
+        + (remaining.length > 0 ? ` Also over capacity: ${remaining.map((closure) =>
+          `'${closure.handlers.join(', ')}' ${closure.measured} bytes`).join(', ')}.` : ''),
       {
-        contractName: logicalName, facet: 'singleton', handlers, callChain, helperCuts,
-        measured, limit: maxShardBytes,
+        contractName: logicalName, facet: 'singleton',
+        handlers: first.handlers, callChain: first.callChain, helperCuts: first.helperCuts,
+        measured: first.measured, limit: maxShardBytes, overCapacityClosures,
       },
     );
   }

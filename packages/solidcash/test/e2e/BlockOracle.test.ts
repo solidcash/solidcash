@@ -434,9 +434,10 @@ describe('blobhash / blockhash', () => {
   });
 
   // block.prevrandao: no randomness on BCH. A transaction-local shim - abs(int(sha256(input[0] prevout
-  // txid))), grindable by the tx-builder - with NO oracle co-spend or state. Compiler warns.
+  // txid))), grindable by the tx-builder - with NO oracle co-spend or state. Compiler warns. It is uint256, as in
+  // Solidity, so it compares against a uint256: comparing it with an int256 is a type error.
   it('block.prevrandao lowers to abs(int(sha256(input[0] prevout txid))), no oracle', () => {
-    const p = compileString('contract A(){ function f(int e){ require(block.prevrandao % 6 == e); } }');
+    const p = compileString('contract A(){ function f(uint256 e){ require(block.prevrandao % 6 == e); } }');
     expect(p.bytecode).toContain('OP_0 OP_OUTPOINTTXHASH OP_SHA256 OP_BIN2NUM OP_ABS');
     expect(p.stateLayout).toBeUndefined(); // transaction-local - no oracle register
   });

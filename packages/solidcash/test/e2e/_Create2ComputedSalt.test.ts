@@ -84,6 +84,13 @@ const factoryFull = `
   }
 `;
 
+/** The 20-byte Solidity identity of a locking bytecode, as a Solidity-compat ABI result carries an address. */
+function solidityIdentity(lockingBytecode: Uint8Array): Uint8Array {
+  const identity = lockingBytecodeToSolidityAddressPayload(lockingBytecode);
+  if (identity === undefined) throw new Error(`no Solidity identity for ${binToHex(lockingBytecode)}`);
+  return identity;
+}
+
 function compileFactory(src: string): { factory: any; child: any } {
   const arts = compileStringMulti(src, {
     solidityImportCompat: true,
@@ -191,11 +198,12 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
     await (factory as any).setBoth(new SignatureTemplate(alicePriv), tokenA, tokenB, pairAddr).send();
     const ab = await (factory as any).getPair(tokenA, tokenB);
     const ba = await (factory as any).getPair(tokenB, tokenA);
-    const exp = binToHex(addressToLockScript(pairAddr));
-    const abHex = ab instanceof Uint8Array ? binToHex(ab) : binToHex(addressToLockScript(String(ab)));
-    const baHex = ba instanceof Uint8Array ? binToHex(ba) : binToHex(addressToLockScript(String(ba)));
-    expect(abHex).toBe(exp);
-    expect(baHex).toBe(exp);
+    // Both entries store the pair's full locking bytecode. A Solidity-compat function returns its result in the EVM
+    // ABI encoding, where an address is its 20-byte Solidity identity (HASH160 of a P2SH32 lock), so that is what
+    // the getter returns for the stored pair.
+    const exp = solidityIdentity(addressToLockScript(pairAddr));
+    expect(ab).toEqual(exp);
+    expect(ba).toEqual(exp);
   }, 120_000);
 
   it('C: computed salt + dual getPair vmap succeeds', async () => {
@@ -218,10 +226,9 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
     const sc = factory as any;
     const ab = await sc.getPair(tokenA, tokenB);
     const ba = await sc.getPair(tokenB, tokenA);
-    const expectedLbc = addressToLockScript(result.child.address);
-    const abHex = ab instanceof Uint8Array ? binToHex(ab) : binToHex(addressToLockScript(String(ab)));
-    const baHex = ba instanceof Uint8Array ? binToHex(ba) : binToHex(addressToLockScript(String(ba)));
-    expect(abHex).toBe(binToHex(expectedLbc));
-    expect(baHex).toBe(binToHex(expectedLbc));
+    // The getter's EVM ABI result carries the child's 20-byte Solidity identity, as in C0.
+    const expected = solidityIdentity(addressToLockScript(result.child.address));
+    expect(ab).toEqual(expected);
+    expect(ba).toEqual(expected);
   }, 180_000);
 });

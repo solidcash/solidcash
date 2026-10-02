@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { binToHex } from '@bitauth/libauth';
 import { compileStringSplit } from 'solidc';
-import { parsePushdataCommitment } from '@solidcash/utils';
+import { messageBusVerifierCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import { Signer, SplitContractBundle, deriveLogicalCreateAddress, upgrades } from '../../src/index.js';
 import { alicePub } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
@@ -63,11 +64,19 @@ describe('split contract SDK', () => {
     expect(new Set(Object.values(deployed.facets).map((facet) => facet.categoryId)).size).toBe(1);
     expect(Object.values(deployed.facets).every((facet) => facet.categoryId !== deployed.categoryId)).toBe(true);
 
-    // Each facet genesis contains its minting master but no application mutable data NFT.
-    for (const tx of deployed.deploymentTransactions.slice(0, -1) as any[]) {
+    // Each facet genesis contains its minting master but no application mutable data NFT. A facet that publishes a
+    // message-bus verifier program also mints that verifier's NFT, which is mutable but holds no application state,
+    // so the only mutable output allowed is the verifier's own commitment.
+    const facetGeneses = deployed.deploymentTransactions.slice(0, -1) as any[];
+    expect(facetGeneses).toHaveLength(compiled.manifest.facets.length);
+    for (const [index, tx] of facetGeneses.entries()) {
+      const facetArtifact = compiled.facets[compiled.manifest.facets[index]!.name]!;
+      const verifierCommitments = facetArtifact.messageBus?.verifierProgram
+        ? [binToHex(messageBusVerifierCommitment(0))] : [];
       const tokenOutputs = getTxOutputs(tx).filter((output) => output.token);
       expect(tokenOutputs.filter((output) => output.token?.nft?.capability === 'minting')).toHaveLength(1);
-      expect(tokenOutputs.some((output) => output.token?.nft?.capability === 'mutable')).toBe(false);
+      expect(tokenOutputs.filter((output) => output.token?.nft?.capability === 'mutable')
+        .map((output) => output.token!.nft!.commitment)).toEqual(verifierCommitments);
     }
 
     const setTx = await deployed.call.setX(7n).send();

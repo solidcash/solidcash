@@ -685,6 +685,80 @@ describe('kernel result-dependent call topology', () => {
     expect((await sink.getState()).count).toBe(3n);
   }, 180_000);
 
+  it('uses each producer result stored in state as its inner loop bound', async () => {
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
+      interface IReader { function read(uint key) external view returns (uint); }
+      interface ISink { function record(uint value) external; }
+      contract Reader {
+        function read(uint key) public pure returns (uint) { return key + 1; }
+      }
+      contract Sink {
+        uint public total;
+        uint public count;
+        function record(uint value) public { this.total += value; this.count += 1; }
+      }
+      contract Router(address reader, address sink) {
+        uint public bound;
+        function route() public {
+          for (uint i = 0; i < 2; i++) {
+            this.bound = IReader(reader).read(i);
+            for (uint j = 0; j < this.bound; j++) { ISink(sink).record(j + 1); }
+          }
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x84), provider);
+    for (let index = 0; index < 24; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const reader = await getContractFactory(artifacts.Reader, signer).deploy();
+    const sink = await getContractFactory(artifacts.Sink, signer).deploy();
+    const router = await getContractFactory(artifacts.Router, signer).deploy(
+      reader.inner.lockingBytecode, sink.inner.lockingBytecode,
+    );
+    router._registerResolvedExternal('IReader', reader);
+    router._registerResolvedExternal('ISink', sink);
+    await router.call.route().send();
+    expect((await router.getState()).bound).toBe(2n);
+    expect((await sink.getState()).total).toBe(4n);
+    expect((await sink.getState()).count).toBe(3n);
+  }, 180_000);
+
+  it('uses a state bound assigned on both branches of each outer iteration', async () => {
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
+      interface ISink { function record(uint value) external; }
+      contract Sink {
+        uint public total;
+        uint public count;
+        function record(uint value) public { this.total += value; this.count += 1; }
+      }
+      contract Router(address sink) {
+        uint public bound;
+        function route() public {
+          for (uint i = 0; i < 2; i++) {
+            if (i == 0) { this.bound = 1; } else { this.bound = 2; }
+            for (uint j = 0; j < this.bound; j++) { ISink(sink).record(j + 1); }
+          }
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x85), provider);
+    for (let index = 0; index < 24; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const sink = await getContractFactory(artifacts.Sink, signer).deploy();
+    const router = await getContractFactory(artifacts.Router, signer).deploy(sink.inner.lockingBytecode);
+    router._registerResolvedExternal('ISink', sink);
+    await router.call.route().send();
+    expect((await router.getState()).bound).toBe(2n);
+    expect((await sink.getState()).total).toBe(4n);
+    expect((await sink.getState()).count).toBe(3n);
+  }, 180_000);
+
   it('refuses a changing inner state bound before broadcasting any row', async () => {
     const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       interface ISink { function record(uint value) external; }

@@ -714,10 +714,12 @@ const externalCallIterationDomains = (
         const stateName = typeof dependency === 'string' && dependency.startsWith('state:')
           ? dependency.slice('state:'.length) : undefined;
         const writes = stateName === undefined ? undefined : stateWrites.get(stateName);
-        // A sole, direct write in this block's prefix is re-executed before the inner header on every
-        // reached outer iteration. Any other state write could change the next inner test or carry over.
-        return !(depth === 1 && writes?.length === 1 && writes[0] !== undefined
-          && block.statements?.slice(0, index - 1).includes(writes[0]));
+        // Writes in direct prefix statements (including a replayable branch) execute before this inner
+        // header on each outer reach. A missing branch arm still retains a pre-call snapshot in the
+        // serialized recurrence, which the guard below rejects. Writes elsewhere may carry over.
+        const prefix = block.statements?.slice(0, index - 1) ?? [];
+        return !(depth === 1 && writes?.length && writes.every((write) => prefix.some((statement) =>
+          statement === write || (statement instanceof BranchNode && contains(statement, write)))));
       })) {
         break;
       }

@@ -691,6 +691,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   also cannot reuse the pre-call state snapshot: its exact compiler title went red-to-green and its preceding
   mutation title passes. A focused VM refusal confirms a changing inner state bound makes zero Router
   or Sink changes. No comprehensive suite or size gate ran.
+- 2026-10-02 branch-complete state-bound follow-up: a state bound assigned in both arms of an outer
+  branch previously had no compiler inner-domain certificate, so ordinary send refused it. Recurrence
+  replay now accepts state writes contained in replayable outer-prefix branches, while a missing arm still
+  cannot use the stale pre-call snapshot. The exact BCH-2026 title went red-to-green with three Sink rows;
+  its immediately preceding producer-result-to-state title and the one-arm compiler refusal title pass.
+  No comprehensive suite or size gate ran. For this relaxed showcase, the 10 KB deployment limit is not
+  a semantic blocker; production-capacity measurement remains a separate gate.
 
 ## Gate before the next leap
 

@@ -256,9 +256,13 @@ async function rebuildCallTopology(
             [template.condition, template.iterationDomain, template.nestedIterationDomains,
               template.addressSource], childResults,
             ctx.descriptors[previous].args, call.args,
-          )) {
+          ) && (existing.length > 0 || !hasChangedDependency(
+            template.rawArgSources ?? template.argSources, childResults,
+            ctx.descriptors[previous].args, call.args,
+          ))) {
             // Argument propagation already refreshed existing rows. A result unrelated to this edge's
             // reachability must not reinterpret an independently prepared loop or its occurrence domain.
+            // A previously unresolved row has no arguments to refresh: revisit it when its producer arrives.
             next.push(...existing);
             continue;
           }

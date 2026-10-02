@@ -793,6 +793,85 @@ describe('Release 0 shared invocation analysis', () => {
     expect(edge?.nestedIterationDomains).toBeUndefined();
   });
 
+  it('publishes a later affine call domain after an independent earlier loop', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface ITarget { function step(uint256 value) external; }
+      contract SequentialLoops(address target) {
+        function run(uint256[] memory first, uint256[] memory second) public {
+          uint256 observed = 0;
+          for (uint256 i = 0; i < first.length; i++) {
+            observed = observed + 1;
+            ITarget(target).step(first[i]);
+          }
+          for (uint256 j = 0; j < second.length; j++) {
+            ITarget(target).step(second[j]);
+          }
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls!;
+    expect(calls.map((call) => call.iterationDomain?.counterName)).toEqual(['i', 'j']);
+    expect(calls[1].iterationDomain?.continueCondition).toMatchObject({
+      kind: 'binary', operator: '<',
+      right: { kind: 'unary', operator: '.length', expression: {
+        kind: 'source', source: { kind: 'forward', paramIndex: 1 },
+      } },
+    });
+  });
+
+  it('withholds a later loop domain when an earlier loop changes its bound', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface ITarget { function step(uint256 value) external; }
+      contract ChangedLoopBound(address target) {
+        function run(uint256[] memory first, uint256[] memory second) public {
+          uint256 bound = second.length;
+          for (uint256 i = 0; i < first.length; i++) {
+            bound = bound + 1;
+            ITarget(target).step(first[i]);
+          }
+          for (uint256 j = 0; j < bound; j++) {
+            ITarget(target).step(second[j]);
+          }
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls!;
+    expect(calls[0].iterationDomain).toBeDefined();
+    expect(calls[1].iterationDomain).toBeUndefined();
+  });
+
+  it('uses only the reaching branch to resolve a later loop domain', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface ITarget { function step(uint256 value) external; }
+      contract ReachingLoopBound(address target) {
+        function run(uint256[] memory values, bool stop) public {
+          uint256 bound = 0;
+          if (stop) { bound = 3; revert("stop"); }
+          else { bound = values.length; }
+          for (uint256 i = 0; i < bound; i++) {
+            ITarget(target).step(values[i]);
+          }
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    const domain = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls![0].iterationDomain;
+    expect(domain?.continueCondition).toMatchObject({
+      kind: 'binary', operator: '<',
+      right: { kind: 'unary', operator: '.length', expression: {
+        kind: 'source', source: { kind: 'forward', paramIndex: 0 },
+      } },
+    });
+  });
+
   it('uses an authenticated prior producer result in the loop domain and publishes its consumer lane', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface IProbe { function limit(bigint seed) returns (bigint, bool); }

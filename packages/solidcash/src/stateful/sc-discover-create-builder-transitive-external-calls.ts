@@ -3,10 +3,12 @@
  */
 
 import { hexToBin } from '@bitauth/libauth';
-import type { Artifact, StateLayout, StateValue } from '@solidcash/utils';
+import type { AbiFunction, Artifact, ExternalCallAbi, StateLayout, StateValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
+import { findDeploymentByAddressValue } from './deployment-registry.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
@@ -18,10 +20,12 @@ export type TransitiveExternalContract = {
     masterUtxo: UnlockableUtxo | undefined;
     dataNftUtxos: UnlockableUtxo[];
   }>;
+  getState(): Promise<Record<string, unknown>>;
   inner: {
     artifact: Artifact;
     stateLayout?: StateLayout;
     lockingBytecode: string;
+    provider: NetworkProvider;
   };
   _externalRegistry: Map<string, unknown>;
   _resolveExternalArgs(...args: any[]): FunctionArgument[] | undefined;
@@ -34,6 +38,25 @@ export class DeferredTransitiveReturnProbeError extends Error {
     super(message);
     this.name = 'DeferredTransitiveReturnProbeError';
   }
+}
+
+/** Resolve an unconnected transitive callee from the compiler's exact typed address source. */
+export async function resolveTransitiveExternalContract(
+  caller: TransitiveExternalContract,
+  edge: ExternalCallAbi,
+  args: readonly FunctionArgument[],
+  abi: AbiFunction,
+): Promise<TransitiveExternalContract | undefined> {
+  const connected = caller._externalRegistry.get(edge.interfaceName);
+  if (connected) return connected as TransitiveExternalContract;
+  if (!edge.addressSource) return undefined;
+  const state = await caller.getState();
+  const target = caller._resolveExternalArgs(
+    [edge.addressSource], [...args], caller.inner.artifact, state, abi.inputs,
+  )?.[0];
+  if (typeof target !== 'string' && !(target instanceof Uint8Array)) return undefined;
+  const deployment = findDeploymentByAddressValue(caller.inner.provider, target);
+  return deployment?.contract as TransitiveExternalContract | undefined;
 }
 
 /**
@@ -56,8 +79,10 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
     if (!bAbiFunc?.externalCalls?.length) continue;
 
     for (const bEc of bAbiFunc.externalCalls) {
-      // Resolve C from B's external registry
-      const cRegistered = bContract._externalRegistry.get(bEc.interfaceName);
+      // Resolve C from the exact compiler-published address when B has no connect-time interface binding.
+      const cRegistered = await resolveTransitiveExternalContract(
+        bContract, bEc, directGroup.functionArgs, bAbiFunc,
+      );
       if (!cRegistered) {
         throw new DeferredTransitiveReturnProbeError(
           `Transitive external call: ${bEc.interfaceName}.${bEc.functionName} not found `

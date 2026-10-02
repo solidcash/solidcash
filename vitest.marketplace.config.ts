@@ -1,9 +1,12 @@
 import { defineConfig } from 'vitest/config';
 import { solidhatPreset } from '@solidcash/solidhat/vitest-preset';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
-const cipher = (entry: string): string => fileURLToPath(new URL(`node_modules/@noble/ciphers/${entry}.js`, import.meta.url));
+const require = createRequire(import.meta.url);
+const cipher = (entry: string): string => require.resolve(`@noble/ciphers/${entry}.js`);
 const worktreeRoot = fileURLToPath(new URL('.', import.meta.url));
+const projectRoot = fileURLToPath(new URL('./.marketplace/project/', import.meta.url));
 const requestedWorkerHeapMb = Number.parseInt(
   process.env.SOLIDCASH_MARKETPLACE_WORKER_HEAP_MB ?? '8192', 10,
 );
@@ -18,7 +21,7 @@ const workerInspectPort = Number.parseInt(process.env.SOLIDCASH_MARKETPLACE_WORK
 if (Number.isSafeInteger(workerInspectPort) && workerInspectPort > 0 && workerInspectPort < 65_536) {
   workerExecArgv.push(`--inspect=127.0.0.1:${workerInspectPort}`);
 }
-process.env.SOLIDCASH_PROJECT_ROOT = worktreeRoot;
+process.env.SOLIDCASH_PROJECT_ROOT = projectRoot;
 
 export default defineConfig(solidhatPreset(
   { hardhat: 2, ethers: 6 },

@@ -11,6 +11,7 @@ import {
   type CompiledGraphInvocation, type CompiledGraphParticipant, type CompiledGraphPlan,
 } from './graph.js';
 import { MessageBusDiagnosticError, type MessageBusDiagnosticContext } from './diagnostics.js';
+import { projectMessageBusHandlerArguments } from './message-bus.js';
 
 const MAX_WORKLIST_DEPTH = 7;
 
@@ -486,6 +487,9 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     });
     activeInvocations.push(invocation);
     const fn = functionAbi(participant, functionName, selector);
+    // Outgoing expressions read the decoded handler frame. Solidity value-address inputs are ABI words in
+    // that frame, while a parameter used to select a call target retains its authenticated native lock.
+    const executionArgs = projectMessageBusHandlerArguments(participant.artifact, fn.name, fn.selector, args);
     assertNoUnboundCallOptions(
       participant.lockingBytecode, participant.artifact, fn, functionName,
     );
@@ -581,7 +585,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               throw new Error(`messageBus: raw callsite ${call.callsiteId} decoded selector disagrees with source`);
             }
             const expectedArgs = resolveArguments(
-              participant, args, { ...call, argSources: call.rawArgSources }, functionName, fn.selector,
+              participant, executionArgs, { ...call, argSources: call.rawArgSources }, functionName, fn.selector,
               invocation, reached, options.expressionArgument,
             );
             const sourceUsesSolidityAddresses = participant.artifact.compiler?.options?.solidityImportCompat === true
@@ -623,7 +627,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             }
           } else {
             const payload = resolveArguments(
-              participant, args, call, functionName, fn.selector, invocation, reached, options.expressionArgument,
+              participant, executionArgs, call, functionName, fn.selector, invocation, reached,
+              options.expressionArgument,
             )[0];
             if (!(payload instanceof Uint8Array)) {
               throw new Error(`messageBus: raw callsite ${call.callsiteId} calldata is not bytes`);
@@ -769,7 +774,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               targetFunction.selector,
               resolveArguments(
                 participant,
-                args,
+                executionArgs,
                 { ...call, functionName: targetFunction.name, argSources: row.argSources },
                 functionName,
                 fn.selector,
@@ -848,7 +853,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             resolvedFunction.selector,
             resolveArguments(
               participant,
-              args,
+              executionArgs,
               { ...call, functionName: resolved.function },
               functionName,
               fn.selector,
@@ -884,7 +889,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           call.functionName,
           targetFunction.selector,
           resolveArguments(
-            participant, args, call, functionName, fn.selector, invocation, reached, options.expressionArgument,
+            participant, executionArgs, call, functionName, fn.selector, invocation, reached,
+            options.expressionArgument,
           ),
           invocation,
           edgeCallMode(call),

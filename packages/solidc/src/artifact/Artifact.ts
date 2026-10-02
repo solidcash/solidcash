@@ -318,16 +318,18 @@ const externalCallIterationDomains = (
 }[]> => {
   if (!fn.body || !fn.externalCalls?.length) return new Map();
   type Binding = ExternalCallExpression | undefined;
-  type ReplayState = { bindings: Map<object | string, Binding> };
+  type ReplayState = { bindings: Map<object | string, Binding>; reachable: boolean };
   const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-  const initial: ReplayState = { bindings: new Map() };
+  const initial: ReplayState = { bindings: new Map(), reachable: true };
   visible.forEach((parameter, index) => {
     initial.bindings.set(parameter, { kind: 'source', source: { kind: 'forward', paramIndex: index } });
     initial.bindings.set(`name:${parameter.name}`, {
       kind: 'source', source: { kind: 'forward', paramIndex: index },
     });
   });
-  const clone = (state: ReplayState): ReplayState => ({ bindings: new Map(state.bindings) });
+  const clone = (state: ReplayState): ReplayState => ({
+    bindings: new Map(state.bindings), reachable: state.reachable,
+  });
   const same = (left: Binding, right: Binding): boolean =>
     left !== undefined && right !== undefined && JSON.stringify(left) === JSON.stringify(right);
   const definitionKey = (identifier: IdentifierNode): object | string => {
@@ -449,6 +451,7 @@ const externalCallIterationDomains = (
   };
   const processBlock = (block: BlockNode, state: ReplayState): boolean => {
     for (const statement of block.statements ?? []) {
+      if (!state.reachable) break;
       if (statement instanceof VariableDefinitionNode) {
         const value = statement.expression ? serialize(statement.expression, state) : undefined;
         state.bindings.set(statement, value);
@@ -483,13 +486,56 @@ const externalCallIterationDomains = (
         const elseState = clone(state);
         if (!processBlock(statement.ifBlock, ifState)
           || (statement.elseBlock && !processBlock(statement.elseBlock, elseState))) return false;
+        if (!ifState.reachable && !elseState.reachable) {
+          state.reachable = false;
+          continue;
+        }
+        if (!ifState.reachable || !elseState.reachable) {
+          state.bindings = new Map(ifState.reachable ? ifState.bindings : elseState.bindings);
+          continue;
+        }
         for (const key of before.bindings.keys()) {
           state.bindings.set(key, join(condition, ifState.bindings.get(key), elseState.bindings.get(key)));
         }
       } else if (statement instanceof BlockNode || statement instanceof UncheckedNode) {
         if (!processBlock(statement instanceof BlockNode ? statement : statement.block, state)) return false;
-      } else if (statement instanceof WhileNode || statement instanceof TryCatchNode
-        || statement instanceof SwitchNode || /^(ReturnNode|BreakNode|ContinueNode|RevertNode)$/.test(
+      } else if (statement instanceof WhileNode) {
+        // A preceding canonical loop can be crossed after invalidating every local it may change.
+        // State effects are read at the later call's actual entry; reference-data mutations cannot be
+        // reconstructed from a source parameter, so leave those later domains unpublished.
+        const update = statement.block.statements?.at(-1);
+        if (statement.forLoopUpdateCount !== 1 || !(update instanceof AssignNode)) return false;
+        let safe = true;
+        const changed = new Set<object | string>();
+        const seen = new Set<Node>();
+        const check = (value: unknown): void => {
+          if (!safe || !(value instanceof Node) || seen.has(value)) return;
+          seen.add(value);
+          if (value instanceof AssignNode) {
+            if (value.isReferenceDataWrite) { safe = false; return; }
+            changed.add(definitionKey(value.identifier));
+            changed.add(`name:${value.identifier.name}`);
+          } else if (value instanceof TupleAssignmentNode
+            || /^(AssignmentExpressionNode|DeleteLocalNode|Array(?:Push|Pop|Assign|Delete)Node)$/.test(
+              value.constructor.name,
+            ) || (value instanceof FunctionCallNode && value.resolvedFunction)) {
+            safe = false;
+            return;
+          }
+          for (const [key, child] of Object.entries(value)) {
+            if (skip.has(key)) continue;
+            if (child instanceof Node) check(child);
+            else if (Array.isArray(child)) child.forEach(check);
+          }
+        };
+        check(statement.block);
+        if (!safe) return false;
+        for (const key of changed) state.bindings.set(key, undefined);
+      } else if (/^(ReturnNode|RevertNode)$/.test(statement.constructor.name)) {
+        // Terminating arms contribute no value to a later loop's entry state.
+        state.reachable = false;
+      } else if (statement instanceof TryCatchNode
+        || statement instanceof SwitchNode || /^(BreakNode|ContinueNode)$/.test(
         statement.constructor.name,
       )) {
         return false;
@@ -502,6 +548,7 @@ const externalCallIterationDomains = (
       if (statement === target) return true;
       if (!contains(statement, target)) {
         if (!processBlock(new BlockNode([statement]), state)) return false;
+        if (!state.reachable) return false;
         continue;
       }
       if (statement instanceof BlockNode) return replayBefore(statement, target, state);

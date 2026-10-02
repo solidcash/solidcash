@@ -73,6 +73,37 @@ function fixture(): ResultPropagationContext & {
 }
 
 describe('result-dependent topology propagation', () => {
+  it('discovers a missing void child after its argument producer returns', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0].contract;
+    const fn = root.inner.artifact.abi[0];
+    fn.externalCalls = [
+      sources[0],
+      { ...sources[1], condition: undefined, argSources: [{ kind: 'expression', expression: producer }] },
+      sources[3],
+    ];
+    fn.resultConsumers = [{ consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0, resultIndex: 0 }];
+    Object.assign(root, {
+      _resolveExternalArgs: (argSources: readonly { expression?: ExternalCallExpression }[], ...rest: unknown[]) => {
+        const returns = rest[4] as ReadonlyMap<string, boolean> | undefined;
+        return argSources.map((source) => source.expression
+          ? returns?.get(JSON.stringify(source.expression)) : undefined);
+      },
+    });
+    const rows = [ctx.plan.invocations[0], ctx.plan.invocations[1],
+      { ...ctx.plan.invocations[4], index: 2 }];
+    ctx.plan = { ...ctx.plan, invocations: rows };
+    ctx.descriptors = [ctx.descriptors[0], ctx.descriptors[1], ctx.descriptors[4]];
+    ctx.returning = [rows[1], rows[2]];
+
+    const results = { 1: '01'.padStart(64, '0') };
+    const argumentsResult = propagateResultDependentArguments(ctx, results);
+    const changed = await propagateResultDependentCallTopology(ctx, argumentsResult.calls, results);
+    expect(changed.propagated).toBe(true);
+    expect(changed.calls.map((call) => call.callsiteId)).toEqual([undefined, 0, 1, 3]);
+    expect(changed.calls[2].args).toEqual([true]);
+  });
+
   it('replaces the selected subtree without moving a later producer seed to the new branch', async () => {
     const ctx = fixture();
     const results = { 1: '01'.padStart(64, '0'), 4: '4d'.padStart(64, '0') };

@@ -450,6 +450,35 @@ type ProviderVmObserver = {
   onPhaseComplete?: (state: unknown) => void;
 };
 
+/** Keep libauth's boundary checks and errors while avoiding layered callbacks on in-budget instructions. */
+export function installFastBch2026Every(
+  instructionSet: ReturnType<typeof createInstructionSetBch2026>,
+  consensus: typeof ConsensusBch2026,
+  standard: boolean,
+): void {
+  const originalEvery = instructionSet.every;
+  if (originalEvery === undefined) return;
+  const hashIterationCost = standard
+    ? consensus.hashDigestIterationCostStandard : consensus.hashDigestIterationCostConsensus;
+  instructionSet.every = (state) => {
+    const { metrics } = state;
+    metrics.operationCost = metrics.evaluatedInstructionCount * consensus.baseInstructionCost
+      + metrics.signatureCheckCount * consensus.signatureCheckCost
+      + metrics.hashDigestIterations * hashIterationCost
+      + metrics.arithmeticCost + metrics.stackPushedBytes;
+    const stackSlots = state.stack.length + state.alternateStack.length;
+    if (metrics.operationCost > metrics.maximumOperationCost
+      || metrics.hashDigestIterations > metrics.maximumHashDigestIterations
+      || stackSlots > consensus.maximumStackDepth
+      || state.controlStack.length > consensus.maximumControlStackDepth
+      || (standard && metrics.signatureCheckCount > metrics.maximumSignatureCheckCount)
+      || stackSlots + state.functionCount > consensus.maximumMemorySlots) {
+      return originalEvery(state);
+    }
+    return state;
+  };
+}
+
 /** Every opcode of the BCH-2026 instruction set: the faithful tracer observes the whole execution, not a subset. */
 const ALL_OPCODES: ReadonlySet<number> = new Set(Array.from({ length: 256 }, (_unused, opcode) => opcode));
 
@@ -529,6 +558,7 @@ function buildVirtualMachineBch2026ForProvider(
     consensus, ripemd160, secp256k1, sha1, sha256,
   } as never);
   if (limits !== undefined && limits.maximumInputBytes > 10_000) {
+    installFastBch2026Every(instructionSet, consensus, standard);
     installCachedP2shEvaluator(
       instructionSet, provider!, limits.maximumInputBytes, observer?.onPhaseComplete,
     );

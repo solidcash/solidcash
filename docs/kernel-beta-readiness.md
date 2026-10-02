@@ -413,6 +413,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   The focused library title went red-to-green, its immediately preceding multi-artifact/split opt-out title passes,
   and a fresh direct-only UnicrowClaim probe advances to the legitimate `claimMultiple` repeated-owner refusal.
   This does not make either UnicrowClaim entry deployable or relax the reached-call safety check.
+- 2026-10-02 unreachable-internal opt-out follow-up: the same runtime-only `MESSAGE_BUS_REQUIRED` guard also
+  inspected dead internal contract methods. It now shares the conservative entry-root closure used by dead-method
+  pruning. An unused internal repeated-call pair compiles direct-only by default and matches explicit direct
+  bytecode; calling that helper still makes `messageBus: false` fail closed. The exact title went red-to-green and
+  its immediately preceding unreachable-library title passes. No broad suite was run.
 
 ## Gate before the next leap
 

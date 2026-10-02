@@ -226,6 +226,7 @@ import {
 import { binToHex } from '@bitauth/libauth';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { reachableFreeFunctionsInSource } from './PruneUnreachableFreeFunctions.js';
+import { reachableContractFunctions } from './PruneUnreachableMsgDataMethods.js';
 
 // Correctness-first bound for runtime-variable resources inside a relocatable balanced block.
 //
@@ -651,6 +652,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   private sourceFile?: SourceFileNode;
   private sourceFreeFunctions = new Set<FunctionDefinitionNode>();
   private reachableSourceFreeFunctions = new Set<FunctionDefinitionNode>();
+  private sourceContractFunctions = new Set<FunctionDefinitionNode>();
+  private reachableSourceContractFunctions = new Set<FunctionDefinitionNode>();
   // Location instance -> the import path of the file that declares it. A `Location` has no file identity, so a
   // diagnostic printing a bare `at line N` cites a line that is real in an IMPORTED file and impossible in the
   // file the user named (`ERC20Mock.sol` is 15 lines and reports `line 170`, which is SafeMath.sol's). Keyed on
@@ -1172,6 +1175,15 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitContract(node: ContractNode): Node {
     node.symbolTable = new SymbolTable(this.symbolTables[0]);
     this.symbolTables.unshift(node.symbolTable);
+
+    this.sourceContractFunctions.clear();
+    this.reachableSourceContractFunctions.clear();
+    if (node.functions.length > 0 && (this.compilerOptions as CompilerOptions & {
+      __messageBusExplicitlyDisabled?: boolean;
+    }).__messageBusExplicitlyDisabled === true) {
+      this.sourceContractFunctions = new Set(node.functions);
+      this.reachableSourceContractFunctions = reachableContractFunctions(node);
+    }
 
     // Register current contract in contractMap so type(ContractName).name works
     this.contractMap.set(node.name, node);
@@ -3734,10 +3746,11 @@ export default class SymbolTableTraversal extends AstTraversal {
             // graph planner until the route format grows an authenticated zero-row representation.
             && group.some((slot) => !slot.condition && !callOccursInLoop(slot.sourceCallNode)));
           const knownRepeated = [...allByTarget.values()].filter((group) => group.length > 1);
-          // A retained but unreachable source/library helper is still typechecked. Its hypothetical transaction
-          // does not make the selected contract require a graph route; enforce the opt-out on reachable helpers.
+          // Retained but unreachable helpers are still typechecked. Their hypothetical transactions do not make
+          // the selected contract require a graph route; enforce the opt-out on reachable functions only.
           if (knownRepeated.length > 0 && messageBusExplicitlyDisabled
-            && (!this.sourceFreeFunctions.has(node) || this.reachableSourceFreeFunctions.has(node))) {
+            && (!this.sourceFreeFunctions.has(node) || this.reachableSourceFreeFunctions.has(node))
+            && (!this.sourceContractFunctions.has(node) || this.reachableSourceContractFunctions.has(node))) {
             const chains = knownRepeated.map((group) => group.map((slot) =>
               `${slot.interfaceName}.${slot.functionName}`).join(' -> '));
             throw new SolidcDiagnosticError(

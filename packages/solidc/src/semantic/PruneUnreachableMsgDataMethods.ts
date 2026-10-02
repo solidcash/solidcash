@@ -6,6 +6,11 @@ import { NullaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { ArrayType, MappingType, Type } from '@solidcash/utils';
 
+/** Share the pruner's conservative runtime reachability with diagnostics that run before codegen. */
+export function reachableContractFunctions(contract: ContractNode): Set<FunctionDefinitionNode> {
+  return new PruneUnreachableMsgDataMethods().reachableFunctions(contract);
+}
+
 /**
  * Drops unreachable internal/private contract methods in two fail-closed subgraphs:
  * - methods that transitively read `msg.data` (unavailable inside an OP_DEFINE subroutine);
@@ -49,8 +54,26 @@ export default class PruneUnreachableMsgDataMethods extends AstTraversal {
       }
     }
 
-    // Reachable = every non-(internal|private) method (public/external/unmarked entry points) + the constructor,
-    // transitively by NAME. Anything a reached method names is kept.
+    const reachable = this.reachableFunctions(contract, byName);
+
+    // Prune only tainted-AND-unreachable methods.
+    contract.functions = fns.filter((f) => reachable.has(f) || !tainted.has(f));
+  }
+
+  // Reachable = every non-(internal|private) method (public/external/unmarked entry points) + the constructor,
+  // transitively by NAME. Anything a reached method names is kept.
+  reachableFunctions(
+    contract: ContractNode,
+    byName = new Map<string, FunctionDefinitionNode[]>(),
+  ): Set<FunctionDefinitionNode> {
+    const fns = contract.functions;
+    if (byName.size === 0) {
+      for (const fn of fns) {
+        const group = byName.get(fn.name) ?? [];
+        group.push(fn);
+        byName.set(fn.name, group);
+      }
+    }
     const reachable = new Set<FunctionDefinitionNode>();
     const seenName = new Set<string>();
     const queue: string[] = [];
@@ -65,8 +88,7 @@ export default class PruneUnreachableMsgDataMethods extends AstTraversal {
       }
     }
 
-    // Prune only tainted-AND-unreachable methods.
-    contract.functions = fns.filter((f) => reachable.has(f) || !tainted.has(f));
+    return reachable;
   }
 
   // Conservative: only a clearly internal/private method can be pruned; everything else is a reachable root.

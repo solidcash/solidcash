@@ -2200,7 +2200,10 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   delete artifactCompilerOptions.compileDeclarations;
   const parsedAst = (compilerOptions as InternalCompilerOptions).__parsedAst;
   delete (artifactCompilerOptions as InternalCompilerOptions).__parsedAst;
-  const cacheable = artifactCacheEnabled(artifactCompilerOptions, errorListener, suppressWarnings);
+  // A caller-supplied tree can be a projected split facet rather than the artifact described by `code`.
+  // Never return an ordinary source-cache hit in place of that physical AST.
+  const cacheable = parsedAst === undefined
+    && artifactCacheEnabled(artifactCompilerOptions, errorListener, suppressWarnings);
   let cacheKey = '';
   if (cacheable) {
     // Keep cached artifacts tied to their published shape. Compiler versions can remain unchanged throughout
@@ -13589,7 +13592,7 @@ function compileResolvedAst(
   // X169: the split path already ran this on the COMPLETE function set (`prepareSplitAst`). Re-running it on a
   // shard's filtered set would re-decide a table this pass declined there, and the decision appends state
   // variables - see `assertSplitLayoutsAgree`.
-  if (!fnPtrArraysPreLowered
+  if (!fnPtrArraysPreLowered && !ast.contract.isSplitFacet
     && !(rootSourceCoversProgram(ast) && !code.includes('function(') && !code.includes('function ('))) {
     ast = ast.accept(new LowerForeignFunctionPointerArrayElements(messageBusGraphMode)) as Ast;
   }
@@ -17820,9 +17823,14 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
     fn.modifiers.push(FunctionModifier.INTERNAL);
   }
   contract.isSplitFacet = true;
-  const artifact = compileResolvedAst(
-    ast, code, options, true, true, true, true, true, true, undefined, splitPreLowersFnPtrArrays(options),
-  );
+  // Facets need the same verifier-binder pass as ordinary graph contracts. Compiling only the resolved AST
+  // publishes a detached verifier program but leaves its 6 KB atomic body inlined into this shard's route.
+  // The complete compiler owns admission, pristine-AST retries, exact verifier binding, and final certificates.
+  const artifact = compileStringUnchecked(code, { ...options, __parsedAst: ast } as InternalCompilerOptions);
+  if (!artifact.isLibrary || !artifact.brandedLibrary
+    || artifact.constructorInputs.length !== 1 || artifact.constructorInputs[0].name !== '__brand') {
+    throw new Error(`Split facet '${facetName}' lost its projected branded-library compilation context`);
+  }
   artifact.contractName = facetName;
   artifact.delegateOnly = true;
   return artifact;

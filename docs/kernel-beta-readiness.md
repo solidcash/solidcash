@@ -157,12 +157,22 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   18,761 redeem-script bytes, and `compileFileSplit` refuses its 16,267-byte singleton `arbitrate` closure at
   `SPLIT_CLOSURE_CAPACITY`. Both ends of the Unicrow arbitration callback path therefore need a deployability
   design before that exact path can receive a BCH consensus VM proof; the neutral callback proofs do not cover it.
-- 2026-10-02 UnicrowClaim cut-boundary check: a current whole-spend split probe measures the unchanged `claim`
+- 2026-10-02 pre-binding UnicrowClaim cut-boundary check: the old split pipeline measured the unchanged `claim`
   singleton at 16,800 bytes. A diagnostic in-memory source variant replacing all three application helper bodies
-  (`calculatePayments`, `calculateSplits`, and `claimPayments`) with trivial bodies still measures 14,226 bytes.
-  The variant is intentionally not executable or committed: it is a lower-bound size probe, not an optimisation.
-  Cutting those helpers, even for free, cannot close the 10,000-byte gap; adding authenticated transport would
-  only add cost. The deployability design must also divide or substantially reduce the entry/route closure itself.
+  (`calculatePayments`, `calculateSplits`, and `claimPayments`) with trivial bodies still measured 14,226 bytes.
+  The variant was intentionally not executable or committed. The verifier-binding change below supersedes its
+  size conclusion; neither this old probe nor a hypothetical helper cut establishes deployability.
+- 2026-10-02 split-facet verifier-binding follow-up: split facets previously bypassed the normal second compiler
+  pass, so a facet with a detached verifier program still inlined roughly 6 KB of atomic verification into its
+  own redeem script. Facets now run through the ordinary admission and exact verifier-binding pipeline, while
+  preserving the source-wide function-pointer-array layout decision and refusing a lost branded-library AST.
+  The focused compiler regression went red-to-green (a representative graph facet fell from 8,710 to 2,637
+  redeem-script bytes); its immediately preceding getter-layout title passes. A focused BCH-2026 send also
+  co-spends the bound split facet and a typed stateful peer, settles both writes, and passes its immediately
+  preceding constructor title. The unchanged UnicrowClaim `claim` singleton estimate fell from 16,800 to
+  10,256 bytes, including the compiler's spend reserve; its 9,090-byte redeem script fits alone, but the
+  10,000-byte whole-spend gate still correctly refuses the shard by 256 bytes. Neither UnicrowClaim nor
+  UnicrowArbitrator is thereby deployable, and no broad suite or beta gate was run.
 - 2026-10-02 focused proxy-application checkpoint: the unchanged Marketplace `job posting > post job 1` title
   now reaches its event-data assertion but remains red (1 selected, 65 skipped). The proxy application's
   `abi.encodePacked(uint160(token_))` publishes a 20-byte identity, as the existing compiler cast test requires;

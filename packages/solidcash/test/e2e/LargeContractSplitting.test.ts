@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex } from '@bitauth/libauth';
-import { compileStringSplit } from 'solidc';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { compileString, compileStringSplit } from 'solidc';
 import { messageBusVerifierCommitment, parsePushdataCommitment } from '@solidcash/utils';
-import { Signer, SplitContractBundle, deriveLogicalCreateAddress, upgrades } from '../../src/index.js';
+import {
+  Contract, Signer, SplitContract, SplitContractBundle, StatefulContract,
+  deriveLogicalCreateAddress, upgrades,
+} from '../../src/index.js';
 import { alicePub } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 
 const SOURCE = `
 contract SplitCounter() {
@@ -159,5 +162,47 @@ describe('split contract SDK', () => {
       initialState: { __block_timestamp: 0n, __blockOracleOwner: alicePub },
     });
     expect((await deployed.root.getState()).value).toBe(7n);
+  });
+
+  it('settles a typed graph call through a verifier-bound split facet', async () => {
+    const signer = await fundedSigner();
+    const provider = signer.provider;
+    const peerArtifact = compileString(`contract Peer() {
+      int stored;
+      function ping(int next) { this.stored = next; require(next >= 0); }
+    }`);
+    const peerContract = new Contract(peerArtifact, [], { provider });
+    const { categoryId: peerCategory } = await setupStatefulUtxos(
+      provider, peerContract, peerArtifact.stateLayout!, { stored: 0n }, { saltContract: true },
+    );
+    const peer = StatefulContract.withCategory(peerContract, peerCategory);
+    const bundle = compileStringSplit(`interface IPeer { function ping(int value) external; }
+      contract GraphFacet {
+        int value;
+        function step(address target, int next) public {
+          IPeer(target).ping(next);
+          value = next;
+          require(next >= 0);
+        }
+      }`, {
+      solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+      messageBusGraphContext: true, optimizeForCompilationSpeed: true,
+      suppressWarnings: true, forceSplit: true,
+    });
+    const deployed = await SplitContractBundle.from(bundle, signer).deploy([], {
+      initialState: { value: 0n },
+    });
+    const facetName = bundle.manifest.facets[0].name;
+    const facet = deployed.facets[facetName];
+    const connectedFacet = StatefulContract.withCategory(facet.inner, facet.categoryId, {
+      externals: { IPeer: peer },
+    }).connect(signer);
+    const routed = new SplitContract(bundle, deployed.root, {
+      ...deployed.facets, [facetName]: connectedFacet,
+    }, deployed.deploymentTransactions);
+    const target = peerContract.withCategory(hexToBin(peerCategory)).lockingBytecode;
+    const tx = await routed.call.step(target, 7n).send();
+    expect(stateFromTx(tx, deployed.categoryId, bundle.root.stateLayout).value).toBe(7n);
+    expect((await peer.getState()).stored).toBe(7n);
   });
 });

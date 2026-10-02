@@ -108,6 +108,28 @@ describe('large-contract state-local splitting', () => {
     expect(bundle.manifest.routes.find((route) => route.function === 'balances')?.target).toBe('root');
   });
 
+  it('binds a detached graph verifier into a split facet route', () => {
+    const bundle = compileStringSplit(`interface IPeer { function ping(int value) external; }
+      contract GraphFacet {
+        int value;
+        function step(address target, int next) public {
+          IPeer(target).ping(next);
+          value = next;
+          require(next >= 0);
+        }
+      }`, {
+      solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+      messageBusGraphContext: true, optimizeForCompilationSpeed: true,
+      suppressWarnings: true, forceSplit: true,
+    });
+    const facet = bundle.facets[bundle.manifest.facets[0].name];
+    expect(facet.messageBus?.verifierProgram).toBeDefined();
+    expect(facet.messageBus?.route?.inputs?.map((input) => input.name))
+      .toContain('__internal__activeVerifierIndex');
+    // The same source emitted 8,710 bytes when the facet bypassed verifier binding.
+    expect(asmToBytecode(facet.bytecode).length).toBeLessThan(5_000);
+  });
+
   it('does not expose a root-owned public view call closure as a facet selector', () => {
     const bundle = compileStringSplit(`contract ViewClosure() {
       int counter;

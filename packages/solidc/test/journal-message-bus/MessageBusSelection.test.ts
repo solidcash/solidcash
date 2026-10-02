@@ -60,6 +60,27 @@ describe('message-bus compilation selection', () => {
     expect(automatic.bytecode).toBe(direct.bytecode);
   });
 
+  it('admits a finite typed external call through a using-for helper by default', () => {
+    const source = `pragma solidity ^0.8.0;
+      interface ISink { function ping(uint value) external returns (bool); }
+      library Forward {
+        function forward(ISink sink, uint value) internal { require(sink.ping(value)); }
+      }
+      contract Caller {
+        ISink sink;
+        using Forward for ISink;
+        function invoke(uint value) public { sink.forward(value); }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true };
+    const automatic = compileString(source, options);
+    const optedIn = compileString(source, { ...options, messageBus: true });
+    expect(automatic.compiler.options?.messageBus).toBe(true);
+    expect(automatic.abi.find((entry) => entry.name === 'invoke')?.externalCalls).toHaveLength(1);
+    expect(optedIn.messageBus?.handlers.find((handler) => handler.name === 'invoke')?.eligible).toBe(true);
+    expect(automatic.messageBus?.available).toBe(true);
+    expect(automatic.messageBus?.handlers.find((handler) => handler.name === 'invoke')?.eligible).toBe(true);
+  });
+
   it('distinguishes out-of-scope library names from real low-level receivers', () => {
     const source = `library Helpers {
         function call(int value) internal pure returns (int) { return value + 1; }

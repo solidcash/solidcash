@@ -6806,15 +6806,15 @@ function synthesizeMessageBusRoute(
       return { bounded, acyclic: acyclic(fn.name) };
     })();
     const boundedNamedClosure = namedClosureShape.bounded && namedClosureShape.acyclic;
-    // An explicitly requested route may use the runtime emission form for a general conditional call DAG when
-    // every outgoing call and internal-helper invocation has a compiler-proven finite reach count and the named
-    // closure is acyclic. Later helper inlining places each edge at its actual callsite; semantic analysis then
-    // publishes the multiplied occurrence ceiling from that final body. Runtime emission consumes and authenticates
-    // a row there, so branches, computed/local arguments, and an independent source return value remain exact.
-    // Auto mode retains its narrower compatibility heuristic.
+    // Runtime emission can use a source-bounded, acyclic call closure: later helper inlining places each edge at
+    // its callsite, where the row is consumed and authenticated. Auto mode admits only typed edges with that
+    // finite proof. Raw calls and the protocol-only row ceiling still require an explicit route.
     const kernelCompatibleEffect = (effect: string): boolean => effect === 'external-call'
       || (compilerOptions.messageBusKernel === true && (effect === 'events' || effect === 'value'));
-    const graphBoundedRuntimeEligible = explicitlyEnabledMessageBus
+    const finiteTypedAutoGraph = compilerOptions.messageBusKernel === true
+      && (compilerOptions as InternalCompilerOptions).__messageBusMode === 'auto'
+      && !graphHasLowLevelCall;
+    const graphBoundedRuntimeEligible = (explicitlyEnabledMessageBus || finiteTypedAutoGraph)
       && methodCallCount > 0
       && boundedNamedClosure
       && !graphHasDelegatecall

@@ -357,6 +357,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   unrelated or nested block turn `Library.call(...)` into a speculative low-level graph edge. It still selects a
   real scoped `address.call(data)` edge. The exact new title and its immediately preceding library-call title
   pass individually; no broad compiler suite was run.
+- 2026-10-02 finite typed-helper follow-up: a `using-for` helper with one typed foreign call published that edge,
+  but automatic mode refused its handler while an explicit route admitted it. Automatic kernel admission now uses
+  the same source-bounded, acyclic runtime row form for typed calls; raw calls and protocol-only bounds remain
+  explicit-only. The exact compiler title went red-to-green and its preceding graph-free library title passed.
+  A focused BCH-2026 composition and send proved the automatic caller against an explicitly prepared leaf,
+  including the callee's state change; its immediately preceding VM title passed. Build, focused lint, and the
+  source-only beta fence passed. No comprehensive suite or cold gate was run.
 - 2026-10-02 pointer-selection follow-up: an unused internal function-pointer declaration no longer expands
   source selection to unrelated dormant foreign-call helpers. The measured fixture previously auto-emitted
   2,141 bytes versus 687 direct bytes; it now matches the direct artifact, while an actual internal pointer

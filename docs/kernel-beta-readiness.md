@@ -239,6 +239,9 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   post-write state 7, and authenticated root return 14. Its preceding dynamic-target title passes. A focused
   compiler metadata title and its preceding predicate-call title pass as well. This does not prove the full
   Unicrow source path or 10KB deployability.
+- 2026-10-02 guard-false follow-up: the same neutral A→B→A callback fixture also sends successfully when the
+  first authenticated return is zero, omitting B's later conditional call to A. The focused new title and its
+  immediately preceding guard-true title pass individually; no broad suite was run.
 - The unchanged proxy Marketplace `arbitrate > arbitrate 80-20` title passes individually on mock BCH-2026
   (1 selected, 65 skipped; 411.56 seconds in the test body). It is not a reproduction of the same-owner
   callback gap above and does not establish the other arbitration titles or the 66-title gate. No predecessor

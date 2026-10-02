@@ -44,6 +44,10 @@ const setup = async (signed = false): Promise<{
           stored = 7;
           return IB(peer).relayConditional();
         }
+        function runConditionalZero() public returns (uint256) {
+          stored = 0;
+          return IB(peer).relayConditional();
+        }
         function observe() public view returns (uint256) { return stored; }
         function calculate(uint256 amount) public view returns (uint256) { return stored + amount; }
       }`, OPTIONS);
@@ -186,5 +190,20 @@ describe('kernel same-owner callback composition', () => {
     expect(rootReturn?.token?.nft?.commitment).toBeDefined();
     expect(binToHex(rootReturn!.token!.nft!.commitment as Uint8Array))
       .toContain(ethers.AbiCoder.defaultAbiCoder().encode(['uint256'], [14n]).slice(2));
+  }, 180_000);
+
+  it('omits the second same-owner callback when the authenticated guard is false', async () => {
+    const { a } = await setup(true);
+    const receipt = await a.call.runConditionalZero().send();
+    const outpoints = receipt.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    expect(new Set(outpoints).size).toBe(outpoints.length);
+    expect((await a.getState()).stored).toBe(0n);
+    const rootReturn = receipt.outputs.find((output) =>
+      output.token?.category && binToHex(output.token.category) === a.categoryId
+      && output.token.nft?.capability === 'none');
+    expect(rootReturn?.token?.nft?.commitment).toBeDefined();
+    expect(binToHex(rootReturn!.token!.nft!.commitment as Uint8Array))
+      .toContain(ethers.AbiCoder.defaultAbiCoder().encode(['uint256'], [0n]).slice(2));
   }, 180_000);
 });

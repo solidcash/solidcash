@@ -113,8 +113,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   mode-zero checks are retained, and the sidecar verifier's pure conjunctions are emitted as equivalent individual
   requirements. The measured graph verifier fell from 7,902 to 7,137 bytes; its same-source SHA256 control is
   6,806 bytes. The immediately preceding pure-returning-sink title passes. The separate scalar-master size title
-  remains **red** at 1,403 bytes against its 1,400-byte ceiling (framework tax 1,263 against 1,250). No broad
-  suite or beta gate was run.
+  also passes after splitting ordered, side-effect-free binder requirements: composed size fell from 1,403 to
+  1,372 bytes and framework tax from 1,263 to 1,232. Its exact-size drift pin was lowered accordingly; the
+  1,400/1,250 ceilings were unchanged. That first title has no predecessor, so its immediate successor was the
+  one regression check. No broad suite or beta gate was run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

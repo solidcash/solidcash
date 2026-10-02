@@ -10751,8 +10751,8 @@ function synthesizeMessageBusRoute(
             activeMasterOutput = masterOutput;
           }
         }
-        require(tx.inputs[activeInputIndex].tokenCategory.length == 33
-          && tx.inputs[activeInputIndex].tokenCategory.slice(32, 33) == hex"02");
+        require(tx.inputs[activeInputIndex].tokenCategory.length == 33);
+        require(tx.inputs[activeInputIndex].tokenCategory.slice(32, 33) == hex"02");
         ${compactAllowsSelfdestructRetirement ? `
         // Offloaded routes only bind the active master here; the detached verifier authenticates retirement.
         // Resource-free selfdestruct replaces the master with a token-free reclaim at the same slot, so the
@@ -10764,17 +10764,19 @@ function synthesizeMessageBusRoute(
           require(tx.outputs[activeMasterOutput].nftCommitment
             == tx.inputs[activeInputIndex].nftCommitment);
         }` : `
-        require(activeMasterOutput >= 0
-          && tx.outputs[activeMasterOutput].nftCommitment == tx.inputs[activeInputIndex].nftCommitment);`}
+        require(activeMasterOutput >= 0);
+        require(tx.outputs[activeMasterOutput].nftCommitment
+          == tx.inputs[activeInputIndex].nftCommitment);`}
         bytes activeCategory = tx.inputs[activeInputIndex].tokenCategory.slice(0, 32);
         bigint activeVerifier = __internal__activeVerifierIndex;
-        require(activeVerifier >= 0 && activeVerifier < tx.inputs.length
-          && tx.inputs[activeVerifier].lockingBytecode == hex"${offloadedVerifierLock}"
-          && tx.inputs[activeVerifier].tokenCategory.length == 33
-          && tx.inputs[activeVerifier].tokenCategory.slice(0, 32) == activeCategory
-          && tx.inputs[activeVerifier].tokenCategory.slice(32, 33) == hex"01");
-        require(tx.inputs[activeVerifier].nftCommitment.length >= 6
-          && tx.inputs[activeVerifier].nftCommitment.slice(0, 4) == hex"4c335631");
+        require(activeVerifier >= 0);
+        require(activeVerifier < tx.inputs.length);
+        require(tx.inputs[activeVerifier].lockingBytecode == hex"${offloadedVerifierLock}");
+        require(tx.inputs[activeVerifier].tokenCategory.length == 33);
+        require(tx.inputs[activeVerifier].tokenCategory.slice(0, 32) == activeCategory);
+        require(tx.inputs[activeVerifier].tokenCategory.slice(32, 33) == hex"01");
+        require(tx.inputs[activeVerifier].nftCommitment.length >= 6);
+        require(tx.inputs[activeVerifier].nftCommitment.slice(0, 4) == hex"4c335631");
         bigint activeVerifierOutput = -1;
         for (bigint verifierOutput = 0; verifierOutput < tx.outputs.length; verifierOutput = verifierOutput + 1) {
           if (tx.outputs[verifierOutput].lockingBytecode == tx.inputs[activeVerifier].lockingBytecode
@@ -10782,11 +10784,12 @@ function synthesizeMessageBusRoute(
             activeVerifierOutput = verifierOutput;
           }
         }
-        ${kernelLifecycleHandlers.size > 0 ? `require(activeVerifierOutput >= 0
-          && tx.outputs[activeVerifierOutput].nftCommitment.length == 40
-          && tx.outputs[activeVerifierOutput].nftCommitment.slice(0, 38) == bytes.concat(
+        ${kernelLifecycleHandlers.size > 0 ? `require(activeVerifierOutput >= 0);
+        require(tx.outputs[activeVerifierOutput].nftCommitment.length == 40);
+        require(tx.outputs[activeVerifierOutput].nftCommitment.slice(0, 38) == bytes.concat(
             tx.inputs[activeVerifier].nftCommitment.slice(0, 6), bindingDigest
-          ));` : `require(activeVerifierOutput >= 0 && tx.outputs[activeVerifierOutput].nftCommitment == bytes.concat(
+          ));` : `require(activeVerifierOutput >= 0);
+        require(tx.outputs[activeVerifierOutput].nftCommitment == bytes.concat(
           tx.inputs[activeVerifier].nftCommitment.slice(0, 6),
           bindingDigest
         ));`}

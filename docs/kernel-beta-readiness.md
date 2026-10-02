@@ -476,6 +476,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   successful `{ address }` result, so the allowed legacy route can actually query and place its mutable predecessor;
   the compiler-described route does neither. The exact title went red-to-green and its immediately preceding
   lock-derivation title passes. No broad suite or full beta gate was run.
+- 2026-10-02 regtest predecessor follow-up: the same selected legacy predecessor fetch now uses the SDK's shared
+  network-prefix mapping, so regtest queries `bchreg:` rather than `bchtest:` while chipnet keeps `bchtest:`.
+  The exact title went red-to-green with both networks covered, and its immediately preceding lock-derivation
+  title passes. No broad suite or full beta gate was run.
 
 ## Gate before the next leap
 

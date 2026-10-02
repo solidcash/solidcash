@@ -359,12 +359,13 @@ describe('composition settlement session CompositionSettlementSession', () => {
     expect(legacyUnlockerProviders).toBe(0);
     expect(queries).toBe(0);
     expect(placed).toEqual([]);
-    await runWithCompositionSettlementSession(session, () => ensurePersistedJobEventsInputs({
+    const legacyHost = {
       ...host,
       messageBusConvention: 'legacy-unroll',
       hasChunkableValueWriteMetadata: () => false,
       permitsLegacyNamedValueChunkFallback: () => true,
-    } as never));
+    };
+    await runWithCompositionSettlementSession(session, () => ensurePersistedJobEventsInputs(legacyHost as never));
     expect(legacyUnlockerProviders).toBeGreaterThan(0);
     expect(queries).toBe(1);
     expect(queriedAddress).toMatch(/^bchtest:/);
@@ -373,6 +374,10 @@ describe('composition settlement session CompositionSettlementSession', () => {
       .unlocker.generateLockingBytecode()).toEqual(
       getValueChunkLockingBytecode(categoryId, 'jobEvents', slot, root),
     );
+    provider.network = 'regtest';
+    await runWithCompositionSettlementSession(session, () => ensurePersistedJobEventsInputs(legacyHost as never));
+    expect(queries).toBe(2);
+    expect(queriedAddress).toMatch(/^bchreg:/);
   });
 
   it('STB production helpers and clearPersistedJobEvents go through settlement()', () => {

@@ -6,6 +6,7 @@ import { binToHex, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import type { TransactionBuilderOptions } from '../TransactionBuilder.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { Contract } from '../Contract.js';
+import { getNetworkPrefix } from '../utils.js';
 import { createValueChunkUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import type { ChunkableValueWriteGroups } from './stb-chunkable-write-planning.js';
@@ -115,7 +116,7 @@ export async function ensurePersistedJobEventsInputs(
     try {
       const encoded = lockingBytecodeToCashAddress({
         bytecode: unlockerLock,
-        prefix: host.builderOptions.provider.network === 'mainnet' ? 'bitcoincash' : 'bchtest',
+        prefix: getNetworkPrefix(host.builderOptions.provider.network),
         tokenSupport: true,
       });
       const address = typeof encoded === 'string' ? undefined : encoded.address;

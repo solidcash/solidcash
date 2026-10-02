@@ -11,7 +11,6 @@ import {
 } from './chunkable-value-write-selection.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
-  legacyGroupLooksLikePublishJobEvent,
   legacyInitialValueChunkWrite,
   legacyIsPublishJobEventName,
 } from './legacy-planning-heuristics.js';
@@ -28,7 +27,6 @@ import {
   persistedValueChunkReadiness,
   persistedValueChunkWriteState,
   selectValueChunkWriteCategory,
-  settlement,
   shouldRematerializeDescribedValueChunkWrite,
   type ValueChunkWriteCategorySelection,
 } from './value-chunk-persist.js';
@@ -294,20 +292,9 @@ export function persistedValueChunkCategory(host: ChunkableWritePlanningHost): s
     return selectedCategories.size === 1 ? [...selectedCategories][0] : undefined;
   }
   if (!permitsLegacyNamedValueChunkFallbackForGroups(host)) return undefined;
-  // The selected external publisher is the proxy/state owner of this legacy write. An unrelated category's
-  // cached predecessor cannot override it merely because that cache was populated earlier in the session.
-  if (selected.external?.categoryId) return selected.external.categoryId;
-  // Compatibility only for artifacts/plans predating compiler-authored valueChunkWrites that expose only the
-  // implementation group; in that case the legacy cache may still identify a separate proxy category.
-  const impl = host.lowLevelCallUtxoGroups.find((group) =>
-    legacyGroupLooksLikePublishJobEvent(group))?.categoryId;
-  for (const categoryId of settlement().persistedJobEventsLocks.keys()) {
-    if (categoryId && categoryId !== impl) return categoryId;
-  }
-  for (const categoryId of settlement().persistedJobEventsRecipes.keys()) {
-    if (categoryId && categoryId !== impl) return categoryId;
-  }
-  return chunkableValueWriteCategory(host);
+  // An implementation-only delegate group does not identify its state owner. Cached predecessors belong to
+  // their own categories and cannot supply the missing proxy identity by insertion order.
+  return selectedPersistedValueChunkCategory(host);
 }
 
 /** Select a derive-pass append owner from the active writer, never from an unrelated cached predecessor. */

@@ -463,6 +463,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   committed value when descriptor-free planning cannot identify a category. An exact category lookup still works;
   compiler-described exact resources are unaffected. The focused title went red-to-green and its immediately
   preceding compatibility-band title passes. No broad suite was run.
+- 2026-10-02 delegate persist-owner follow-up: an implementation-only legacy delegate group no longer selects
+  a proxy owner from whichever unrelated persisted lock or recipe entered the settlement cache first. An explicit
+  state-owner descriptor still selects the proxy, and a direct low-level call selects its own category. The
+  focused title went red-to-green and its immediately preceding append-owner title passes. No broad suite ran.
 
 ## Gate before the next leap
 

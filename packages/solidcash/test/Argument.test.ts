@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { binToHex } from '@bitauth/libauth';
 import { encodeInt } from '@solidcash/utils';
 import { encodeFunctionArgument, SignatureTemplate } from '../src/index.js';
 import { addressToLockScript } from '../src/utils.js';
@@ -7,6 +8,19 @@ import { aliceAddress, alicePriv, bobPriv } from './fixture/vars.js';
 describe('encodeFunctionArgument: empty arrays', () => {
   it('preserves the zero count prefix through the outer unlocking-script push', () => {
     expect(encodeFunctionArgument([], 'address[]')).toEqual(Uint8Array.from([0x01, 0x00]));
+  });
+});
+
+describe('encodeFunctionArgument: address arrays', () => {
+  it('normalizes hex locking bytecodes at address-typed leaves of nested arrays', () => {
+    const lockingBytecode = addressToLockScript(aliceAddress);
+    const hex = binToHex(lockingBytecode);
+    expect(encodeFunctionArgument([hex, `0x${hex}`, aliceAddress, '0x0000000000000000000000000000000000000000'], 'address[]'))
+      .toEqual(encodeFunctionArgument([
+        lockingBytecode, lockingBytecode, lockingBytecode, new Uint8Array(),
+      ], 'address[]'));
+    expect(encodeFunctionArgument([[hex], [`0x${hex}`, aliceAddress]], 'address[][]'))
+      .toEqual(encodeFunctionArgument([[lockingBytecode], [lockingBytecode, lockingBytecode]], 'address[][]'));
   });
 });
 

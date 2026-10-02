@@ -706,6 +706,15 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   Unsupported or unresolved mappings remain fail-closed, and no comprehensive suite or size gate ran.
   A separate focused BCH-2026 title also passes when both branch-local producer callsites use one physical
   Reader owner; the consumer selects the correct authenticated result for each outer reach.
+- 2026-10-02 sparse forwarded-target follow-up: a producer reached only at source iteration one used its
+  compact occurrence zero to validate `readers[0]`, even though the compiled call targets `readers[1]`.
+  The worklist now validates the forwarded owner at the compiler-certified source coordinate. That exposed
+  a separate SDK encoding gap: hex locking bytecodes inside `address[]` were serialized as UTF-8 text,
+  unlike scalar addresses. Array leaves now share scalar address normalization, including nested arrays and
+  zero addresses. Both regressions were reproduced by focused red titles and pass after the fixes; the new
+  BCH-2026 route title settles ReaderB's result and all three Sink rows. Its immediately preceding branch-local
+  title and the SDK unit title's preceding empty-array title pass. `yarn build` passes. No comprehensive suite
+  or 10 KB gate ran.
 
 ## Gate before the next leap
 

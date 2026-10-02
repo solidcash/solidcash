@@ -107,17 +107,17 @@ export const isSignatureTemplateArgumentForType = (
 export type EncodeFunction =
   (arg: FunctionArgument, typeStr: string, structs?: readonly StructDefinitionInfo[]) => EncodedFunctionArgument;
 
-// Recursively convert CashAddress string elements of an `address[]` (or nested `address[][]`) to their locking
-// bytecode, so the pushdata encoder stores the lockscript (== addressToLockScript / keyToSlot) not the raw string.
+// Normalize address-typed array leaves using the same rules as scalar address arguments. The pushdata encoder
+// must receive locking bytecode, not a CashAddress or hex string to encode as UTF-8 text.
 // Non-address arrays pass through untouched.
 function convertAddressArg(value: unknown, typeStr: string): unknown {
   const t = parseType(typeStr);
   if (!(t instanceof ArrayType) || !Array.isArray(value)) return value;
-  // Only touch arrays whose element type is `address` (convert CashAddress strings) or a nested array (recurse to
+  // Only touch arrays whose element type is `address` or a nested array (recurse to
   // reach an inner address[]). Structs, ints, bytes, etc. are returned UNCHANGED - never remapped - so their
   // struct-tuple / packed encodings are untouched.
   if (t.elementType instanceof AddressType) {
-    return value.map((el) => (typeof el === 'string' && el.includes(':') ? addressToLockScript(el) : el));
+    return value.map((el) => encodeFunctionArgument(el as FunctionArgument, t.elementType.toString()));
   }
   if (t.elementType instanceof ArrayType) {
     return value.map((el) => convertAddressArg(el, t.elementType.toString()));
@@ -149,10 +149,9 @@ export function encodeFunctionArgument(
     const parsed = parseType(typeStr);
     if (parsed instanceof ArrayType) {
       if (isSignatureTemplateArgumentForType(argument, typeStr)) return argument;
-      // A CashAddress string inside an `address[]` (or nested) arg must become its locking bytecode BEFORE the
-      // pushdata encoder runs - the scalar path below converts it, but the array path delegates straight to
-      // encodePushdataValue, which would otherwise encode the raw address STRING (mismatching addressToLockScript
-      // everywhere the value is used, e.g. keyToSlot of an address[] mapping key).
+      // Address strings inside an `address[]` (or nested array) must become their locking bytecode BEFORE the
+      // pushdata encoder runs. Otherwise it encodes hex strings as UTF-8 text, while scalar address arguments
+      // and the compiler's address operations use the binary locking bytecode.
       const coerced = coerceArrayElements(argument);
       const encoded = encodePushdataValue(convertAddressArg(coerced, typeStr) as StateValue, typeStr, structs);
       // The unlocking template pushes each encoded argument as one stack item. A sole 0x00 count prefix would be

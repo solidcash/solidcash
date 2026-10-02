@@ -396,6 +396,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
   const assertForwardedTarget = (
     source: WorklistParticipant,
     fn: AbiFunction,
+    functionName: string,
+    invocation: number,
     visibleArgs: readonly FunctionArgument[],
     call: ExternalCallAbi,
     target: WorklistParticipant,
@@ -406,8 +408,18 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     if (!targetName) return undefined;
     const input = fn.inputs.findIndex((candidate) => candidate.name === targetName);
     if (input < 0) return undefined;
+    const outerCounter = (call.iterationDomain ?? call.nestedIterationDomains?.[0])?.counterName;
+    const sourceIndex = call.loopArrayVar ? options.sourceIteration?.({
+      participant: source, function: functionName,
+      ...(fn.selector !== undefined && { selector: fn.selector }),
+      invocation, callsiteId: call.callsiteId!, occurrence,
+      ...(outerCounter !== undefined && { counterName: outerCounter }),
+    }) ?? occurrence : occurrence;
+    if (!Number.isSafeInteger(sourceIndex) || sourceIndex < 0) {
+      throw new Error(`messageBus: callsite ${call.callsiteId} has an invalid target source iteration`);
+    }
     const supplied = call.loopArrayVar && Array.isArray(visibleArgs[input])
-      ? visibleArgs[input][occurrence] : visibleArgs[input];
+      ? visibleArgs[input][sourceIndex] : visibleArgs[input];
     if (supplied === undefined) {
       throw new Error(`messageBus: callsite ${call.callsiteId} target argument is unavailable`);
     }
@@ -692,7 +704,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           // A visible forwarded address is checked here. State/expression-derived targets intentionally have no
           // public ABI argument; their compiler-emitted graph projection binds the concrete owner on-chain.
           const provedTarget = assertForwardedTarget(
-            participant, fn, args, call, resolved.participant, reached, resolved.targetLockingBytecode,
+            participant, fn, functionName, invocation, args, call,
+            resolved.participant, reached, resolved.targetLockingBytecode,
           );
           expand(
             resolved.participant,
@@ -937,7 +950,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         const target = resolvedTarget.participant;
         const targetFunction = functionAbi(target, call.functionName, resolvedTarget.selector);
         const provedTarget = assertForwardedTarget(
-          participant, fn, args, call, target, reached, resolvedTarget.targetLockingBytecode,
+          participant, fn, functionName, invocation, args, call,
+          target, reached, resolvedTarget.targetLockingBytecode,
         );
         expand(
           target,

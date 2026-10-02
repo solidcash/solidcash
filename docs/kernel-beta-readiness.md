@@ -682,6 +682,15 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   coordinate before inner-domain evaluation and refuses any unfrozen outer coordinate. The exact BCH-2026 VM
   title went red-to-green with four Sink rows across two outer iterations; its immediately preceding scalar
   result-bound title passes. Build and changed-file lint pass; no comprehensive suite or size gate ran.
+- 2026-10-02 same-iteration state-bound follow-up: `this.bound = values[i]` before an inner loop previously
+  broadcast only one Sink row across outer values `[1, 2]`, even though the Router ended with `bound = 2`.
+  Recurrence replay now resolves direct state writes and indexed public-array values at that program point;
+  the exact BCH-2026 title went red-to-green with three Sink rows, and its immediately preceding mixed
+  index/result title passes. State writes inside the inner loop now invalidate that domain, with a focused
+  red-to-green compiler title and adjacent check. A conditional outer state write copied through a local alias
+  also cannot reuse the pre-call state snapshot: its exact compiler title went red-to-green and its preceding
+  mutation title passes. A focused VM refusal confirms a changing inner state bound makes zero Router
+  or Sink changes. No comprehensive suite or size gate ran.
 
 ## Gate before the next leap
 

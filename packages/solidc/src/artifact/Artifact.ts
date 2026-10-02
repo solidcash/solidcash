@@ -384,6 +384,22 @@ const externalCallIterationDomains = (
     }
   };
   indexLoopContexts(fn.body);
+  const stateWrites = new Map<string, StateAssignNode[]>();
+  const indexStateWrites = (value: unknown, seen = new Set<object>()): void => {
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof StateAssignNode) {
+      const writes = stateWrites.get(value.name) ?? [];
+      writes.push(value);
+      stateWrites.set(value.name, writes);
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (skip.has(key)) continue;
+      if (child instanceof Node) indexStateWrites(child, seen);
+      else if (Array.isArray(child)) child.forEach((item) => indexStateWrites(item, seen));
+    }
+  };
+  indexStateWrites(fn.body);
   const serialize = (
     expression: ExpressionNode, state: ReplayState, counter?: VariableDefinitionNode,
     seen = new Set<Node>(),
@@ -409,7 +425,15 @@ const externalCallIterationDomains = (
       const value = expression.value instanceof Uint8Array ? binToHex(expression.value) : String(expression.value);
       return { kind: 'literal', value, ...(expression.type && { type: expression.type.toString() }) };
     }
-    if (expression instanceof StateAccessNode) return { kind: 'state', name: expression.name };
+    if (expression instanceof StateAccessNode) {
+      const key = `state:${expression.name}`;
+      return state.bindings.has(key) ? state.bindings.get(key) : { kind: 'state', name: expression.name };
+    }
+    if (expression instanceof ArrayAccessNode) {
+      const left = serialize(expression.array, state, counter, seen);
+      const right = serialize(expression.index, state, counter, seen);
+      return left && right && { kind: 'arrayAccess', left, right };
+    }
     if (expression instanceof CastNode) {
       const inner = serialize(expression.expression, state, counter, seen);
       return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
@@ -462,6 +486,8 @@ const externalCallIterationDomains = (
         const key = definitionKey(statement.identifier);
         state.bindings.set(key, value);
         state.bindings.set(`name:${statement.identifier.name}`, value);
+      } else if (statement instanceof StateAssignNode) {
+        state.bindings.set(`state:${statement.name}`, serialize(statement.expression, state));
       } else if (statement instanceof TupleAssignmentNode) {
         const callsiteId = statement.tuple instanceof ExternalFunctionCallNode
           ? statement.tuple.callInfo?.externalCallSlotIndex ?? callByNode.get(statement.tuple)
@@ -487,8 +513,15 @@ const externalCallIterationDomains = (
         const elseState = clone(state);
         if (!processBlock(statement.ifBlock, ifState)
           || (statement.elseBlock && !processBlock(statement.elseBlock, elseState))) return false;
-        for (const key of before.bindings.keys()) {
-          state.bindings.set(key, join(condition, ifState.bindings.get(key), elseState.bindings.get(key)));
+        const keys = new Set([...before.bindings.keys(), ...ifState.bindings.keys(),
+          ...elseState.bindings.keys()]);
+        for (const key of keys) {
+          const prior = before.bindings.has(key) ? before.bindings.get(key)
+            : typeof key === 'string' && key.startsWith('state:')
+              ? { kind: 'state', name: key.slice('state:'.length) } : undefined;
+          const ifValue = ifState.bindings.has(key) ? ifState.bindings.get(key) : prior;
+          const elseValue = elseState.bindings.has(key) ? elseState.bindings.get(key) : prior;
+          state.bindings.set(key, join(condition, ifValue, elseValue));
         }
       } else if (statement instanceof BlockNode || statement instanceof UncheckedNode) {
         if (!processBlock(statement instanceof BlockNode ? statement : statement.block, state)) return false;
@@ -539,6 +572,10 @@ const externalCallIterationDomains = (
           || (typeof key === 'string' && key === `name:${counter.name}`);
         if (!isCounterUpdate && key === dependency) { assigned = true; return; }
       }
+      if (value instanceof StateAssignNode && dependency === `state:${value.name}`) {
+        assigned = true;
+        return;
+      }
       for (const [key, child] of Object.entries(value)) {
         if (skip.has(key)) continue;
         if (child instanceof Node) visit(child, seen);
@@ -557,6 +594,7 @@ const externalCallIterationDomains = (
         const key = definitionKey(value);
         if (key !== counter && key !== `name:${counter.name}`) result.add(key);
       }
+      if (value instanceof StateAccessNode) result.add(`state:${value.name}`);
       for (const [key, child] of Object.entries(value)) {
         if (skip.has(key)) continue;
         if (child instanceof Node) visit(child, seen);
@@ -605,6 +643,16 @@ const externalCallIterationDomains = (
     };
     visit(root);
     return found;
+  };
+
+  const usesStateSnapshotAfterWrite = (
+    value: unknown, seen = new Set<object>(),
+  ): boolean => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return false;
+    seen.add(value);
+    const expression = value as { kind?: string; name?: string };
+    if (expression.kind === 'state' && expression.name && stateWrites.has(expression.name)) return true;
+    return Object.values(value).some((child) => usesStateSnapshotAfterWrite(child, seen));
   };
 
   type Domain = {
@@ -658,8 +706,19 @@ const externalCallIterationDomains = (
         ...dependencies(loop.condition, counter),
         ...dependencies(magnitude, counter),
       ]);
-      if ([...deps].some((dependency) => assignedIn(loop.block, dependency, counter)
-        || enclosing.slice(0, depth).some((ancestor) => assignedIn(ancestor.loop.block, dependency, counter)))) {
+      if ([...deps].some((dependency) => {
+        if (assignedIn(loop.block, dependency, counter)) return true;
+        const ancestorWrite = enclosing.slice(0, depth).some((ancestor) =>
+          assignedIn(ancestor.loop.block, dependency, counter));
+        if (!ancestorWrite) return false;
+        const stateName = typeof dependency === 'string' && dependency.startsWith('state:')
+          ? dependency.slice('state:'.length) : undefined;
+        const writes = stateName === undefined ? undefined : stateWrites.get(stateName);
+        // A sole, direct write in this block's prefix is re-executed before the inner header on every
+        // reached outer iteration. Any other state write could change the next inner test or carry over.
+        return !(depth === 1 && writes?.length === 1 && writes[0] !== undefined
+          && block.statements?.slice(0, index - 1).includes(writes[0]));
+      })) {
         break;
       }
       const state = clone(initial);
@@ -706,6 +765,11 @@ const externalCallIterationDomains = (
       ?? loop.compilerAuthenticatedMaximumIterations
       ?? (compilerOptions.messageBusKernel === true ? ATOMIC_MESSAGE_BUS_MAX_ROWS : undefined);
       if (!initialValue || !stepValue || !continueCondition || maximumIterations === undefined) break;
+      // A serialized state read after any write in this handler would use the SDK's pre-call snapshot, not
+      // necessarily the value reached by this loop. Direct, unconditional prefix writes above serialize to
+      // their value expression instead; conditional/local-alias fallbacks remain deliberately unpublished.
+      if ([initialValue, stepValue, continueCondition].some((expression) =>
+        usesStateSnapshotAfterWrite(expression))) break;
       domains.push({
         sourceLoopId: loopIds.get(loop)!,
         counterName: counter.name, initialValue, stepValue, continueCondition, maximumIterations,

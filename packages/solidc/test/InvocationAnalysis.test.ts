@@ -792,6 +792,75 @@ describe('Release 0 shared invocation analysis', () => {
     expect(calls?.[1].nestedIterationDomains).toBeUndefined();
   });
 
+  it('withholds a state-bound inner domain when the inner loop changes that state', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint value); }
+      contract MutatedInnerState() {
+        bigint public bound;
+        function run(address target) public {
+          for (bigint i = 0; i < 2; i = i + 1) {
+            this.bound = 2;
+            for (bigint j = 0; j < this.bound; j = j + 1) {
+              this.bound = this.bound - 1;
+              ITarget(target).step(j);
+            }
+          }
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls;
+    expect(calls).toHaveLength(1);
+    expect(calls?.[0].nestedIterationDomains).toBeUndefined();
+  });
+
+  it('withholds a state-bound inner domain after a conditional outer write through a local alias', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint value); }
+      contract ConditionalOuterState() {
+        bigint public bound;
+        function run(address target) public {
+          for (bigint i = 0; i < 2; i = i + 1) {
+            if (i == 0) { this.bound = 2; }
+            bigint snapshot = this.bound;
+            for (bigint j = 0; j < snapshot; j = j + 1) {
+              ITarget(target).step(j);
+            }
+          }
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls;
+    expect(calls).toHaveLength(1);
+    expect(calls?.[0].nestedIterationDomains).toBeUndefined();
+  });
+
+  it('withholds an array-state inner domain after a prior element write', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint value); }
+      contract ArrayStateBound() {
+        bigint[1] public bounds;
+        function run(address target) public {
+          for (bigint i = 0; i < 2; i = i + 1) {
+            this.bounds[0] = 2;
+            for (bigint j = 0; j < this.bounds[0]; j = j + 1) {
+              ITarget(target).step(j);
+            }
+          }
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    const steps = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls
+      ?.filter((call) => call.functionName === 'step');
+    expect(steps).toHaveLength(2);
+    expect(steps?.every((call) => call.nestedIterationDomains === undefined)).toBe(true);
+  });
+
   it('publishes both affine domains for a nested external-call loop', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface ITarget { function step(bigint value); }

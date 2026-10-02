@@ -31,6 +31,18 @@ export interface InvocationAnalysis {
 
 const contractInvocationAnalysisCache = new WeakMap<ContractNode, InvocationAnalysis>();
 
+/** A same-signature contract member shadows a file-level function in a contract body. */
+export function visibleFreeFunctionsForContract(
+  contractFunctions: readonly FunctionDefinitionNode[],
+  freeFunctions: readonly FunctionDefinitionNode[],
+): FunctionDefinitionNode[] {
+  const sourceSignature = (fn: FunctionDefinitionNode): string => `${fn.name}(${fn.parameters
+    .filter((parameter) => !parameter.name.startsWith('__internal__'))
+    .map((parameter) => parameter.type.toString()).join(',')})`;
+  const memberSignatures = new Set(contractFunctions.map(sourceSignature));
+  return freeFunctions.filter((fn) => !memberSignatures.has(sourceSignature(fn)));
+}
+
 /**
  * Solidity `address.transfer` / `.send` before symbol resolution. `this.transfer` is already a
  * TransferStatementNode at parse; the address-receiver spelling is still `to.transfer` / `to.send`.

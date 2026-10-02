@@ -143,6 +143,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   survey now follows declaration order and block scope; the regression and its immediately preceding typed-state-
   receiver title pass individually. `yarn build`, lint for the changed compiler/test files, and the static
   sources-only beta gate pass. No broad compiler suite or beta gate was run.
+- 2026-10-02 reachable free-helper checkpoint: auto selection now follows calls into reachable file-level
+  functions without treating a same-signature function shadowed by a contract member as a graph edge. The
+  external-call helper inliner also recognizes interface-instantiation method calls before semantic hidden
+  parameters are added; otherwise the retained source-arity call failed type checking. The new reachable-helper
+  and shadowed-helper titles each pass individually, with the immediately preceding title checked after each
+  fix. `yarn build`, targeted lint, and the static sources-only gate pass; no broad tests or cold gate ran.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

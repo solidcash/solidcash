@@ -229,6 +229,7 @@ import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
   analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, createFootprintAnalysisCache,
   directCallNames,
+  visibleFreeFunctionsForContract,
   walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
@@ -3887,9 +3888,11 @@ function supportsAtomicMessageBus(ast: Ast, compilerOptions: CompilerOptions): b
  */
 function hasMessageBusGraphEdge(ast: Ast): boolean {
   const { contract } = ast;
-  const functions = [
+  const contractFunctions = [
     ...contract.functions, contract.constructorDef, contract.fallbackDef, contract.receiveDef,
   ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+  const functions = [...contractFunctions,
+    ...visibleFreeFunctionsForContract(contractFunctions, ast.freeFunctions)];
   const byName = new Map<string, FunctionDefinitionNode[]>();
   for (const fn of functions) (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
   const reachableFunctions = new Set<FunctionDefinitionNode>();
@@ -3911,7 +3914,7 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   // Public/external entries, constructor, fallback, and receive can execute. An internal helper only justifies an
   // automatic route when one of those roots can call it. Before semantic resolution, arity distinguishes
   // overloads with different signatures; ambiguous same-arity calls retain every candidate.
-  for (const fn of functions) {
+  for (const fn of contractFunctions) {
     if (fn.isEntryPoint || fn === contract.constructorDef
       || fn === contract.fallbackDef || fn === contract.receiveDef) addClosure(fn);
   }

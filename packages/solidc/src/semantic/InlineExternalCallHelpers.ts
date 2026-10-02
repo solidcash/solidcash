@@ -13,6 +13,7 @@ import {
   FieldAccessNode,
   AbiEncodeCallNode,
   MethodCallNode,
+  InstantiationNode,
   CastNode,
   TupleAssignmentNode,
   BranchNode,
@@ -35,6 +36,7 @@ import { AddressType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { normalizeVoidInlineReturns } from './EarlyReturnTransformation.js';
+import { visibleFreeFunctionsForContract } from '../analysis/InvocationAnalysis.js';
 
 /**
  * Inlines internal calls to VOID helper functions that make external calls. An external call is a co-spend
@@ -85,7 +87,9 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
-    const all = [...node.functions, ...this.freeFns];
+    // Contract members shadow same-signature free functions. Excluding those hidden declarations also keeps the
+    // name/arity inliner from mistaking the legal shadow for an ambiguous overload or choosing the free body.
+    const all = [...visibleFreeFunctionsForContract(node.functions, this.freeFns), ...node.functions];
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys(all);
     this.funcByName = new Map();
     for (const fn of all) this.funcByName.set(fn.name, fn);
@@ -218,10 +222,12 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       }
       if (n instanceof MethodCallNode) {
         if (n.object instanceof IdentifierNode && this.isInterfaceTyped(env.get(n.object.name))) { found = true; return; }
+        if (n.object instanceof InstantiationNode
+          && this.interfaceNames.has(n.object.identifier.name)) { found = true; return; }
+        if (n.object instanceof FunctionCallNode
+          && this.interfaceNames.has(n.object.identifier.name)) { found = true; return; }
         if (this.earlyRootFilter && n.object instanceof CastNode
           && this.isInterfaceTyped(n.object.type)) { found = true; return; }
-        if (this.earlyRootFilter && n.object instanceof FunctionCallNode
-          && this.interfaceNames.has(n.object.identifier.name)) { found = true; return; }
         if (InlineExternalCallHelpers.isLowLevel(n.methodName)) found = true;
       }
     });

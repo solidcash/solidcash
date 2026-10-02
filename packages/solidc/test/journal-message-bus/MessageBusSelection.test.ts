@@ -141,6 +141,37 @@ describe('message-bus compilation selection', () => {
     expect(artifact.messageBus).toBeDefined();
   });
 
+  it('selects a reachable free-function external call graph by default', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      function relay(address target, int next) { ISink(target).note(next); }
+      contract FreeRelay(address target) {
+        int value;
+        function forward(int next) public {
+          relay(target, next);
+          value = next;
+          require(next >= 0);
+        }
+      }`, { optimizeForCompilationSpeed: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus).toBeDefined();
+  });
+
+  it('keeps a shadowed free-function external edge off the default route', () => {
+    const artifact = compileString(`interface ISink { function note(int value) external; }
+      function relay(address target, int next) { ISink(target).note(next); }
+      contract LocalRelay(address target) {
+        int value;
+        function relay(address ignored, int next) internal pure { require(next >= 0); }
+        function forward(int next) public {
+          relay(target, next);
+          value = next;
+          require(next >= 0);
+        }
+      }`, { optimizeForCompilationSpeed: true, solidityImportCompat: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(false);
+    expect(artifact.messageBus).toBeUndefined();
+  });
+
   it('treats explicit true as an opt-in that skips narrowing and builds a graph-free leaf participant', () => {
     const artifact = compileString(STATEFUL_LEAF, { messageBus: true });
     expect(artifact.messageBus).toBeDefined();

@@ -4046,6 +4046,9 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
     declaration.name,
     declaration.type instanceof AddressType && declaration.type.interfaceName !== undefined,
   ]));
+  const addressStateReceivers = new Set([
+    ...contract.parameters, ...contract.stateVariables,
+  ].filter((declaration) => declaration.type instanceof AddressType).map((declaration) => declaration.name));
   const namespacedCallSurfaces: Array<{ parameters: readonly ParameterNode[]; body: Node | undefined }> = [
     ...surveyedFunctions.map((fn) => ({ parameters: fn.parameters, body: fn.body })),
     ...[...activeModifiers].map((modifier) => ({ parameters: modifier.parameters, body: modifier })),
@@ -4119,7 +4122,10 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
           || (node.object instanceof FunctionCallNode && interfaceNames.has(node.object.identifier.name))
           // `this.sink.note(...)` is a MethodCallNode on a StateAccessNode, not a namespaced
           // FunctionCallNode. Its explicit state qualification cannot be shadowed by a local.
-          || (node.object instanceof StateAccessNode && typedStateReceivers.get(node.object.name) === true)))) {
+          || (node.object instanceof StateAccessNode
+            && (typedStateReceivers.get(node.object.name) === true
+              || (addressStateReceivers.has(node.object.name)
+                && (node.methodName === 'call' || node.methodName === 'staticcall'))))))) {
       found = true;
     }
   };

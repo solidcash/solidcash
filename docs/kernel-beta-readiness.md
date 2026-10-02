@@ -216,6 +216,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   `sink.note(...)`. It now selects the graph route for an explicitly qualified interface-typed state receiver;
   the focused red-to-green title confirms one published external call and an available route. Its immediately
   preceding bare-state-receiver title passes. No broad compiler suite or beta gate was run.
+- 2026-10-02 qualified low-level receiver follow-up: the same pre-semantic gap also narrowed
+  `this.peer.call(data)` to direct-only code when `peer` was an ordinary address state field. Auto selection now
+  recognizes qualified address-state `call` and `staticcall` while retaining the delegatecall exclusion. The
+  focused red-to-green title proves both modes publish one external call on an available graph route; its
+  immediately preceding typed-state-receiver title passes. No broad compiler suite or beta gate was run.
 - The 2026-09-28 comprehensive run is **red**. With one Vitest worker per package, `utils` passed 358/358,
   `testing` 77/77, `solidhat` 69 passed/1 skipped, `create-solidhat` had no tests, and `testing-suite` passed
   27/27. `solidc` finished with 5,200 passed/143 failed (36 failing files). The non-root `solidcash` suite

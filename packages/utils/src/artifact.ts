@@ -614,6 +614,12 @@ export interface AbiFunction {
      * `lowLevelCallTargetProvenance`, which makes that unknown leg explicit.
      */
     target?: ValueProvenance;
+    /**
+     * A Solidity-compat call site's target and payload, serialized as a `__raw__` call's, so the SDK can co-spend the
+     * pinned callee without a `.withCall()`. Absent when the compiler could not serialize them.
+     */
+    targetSource?: ArgSource;
+    dataSource?: ArgSource;
   }[];
   /**
    * Compiler proof that this function is only a singular delegate frame: one unconditional low-level

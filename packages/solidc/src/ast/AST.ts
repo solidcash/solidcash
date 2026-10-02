@@ -541,6 +541,10 @@ export class FunctionDefinitionNode extends Node implements Named {
     dataParamIndex?: number;
     occurrence?: 'once' | 'conditional' | 'loop';
     maximumOccurrences?: number;
+    // Solidity-compat call/staticcall sites: the target and payload as an opaque `__raw__` call serializes its
+    // addressSource and payload argument, published so the SDK can co-spend the pinned callee.
+    targetSource?: import('@solidcash/utils').ArgSource;
+    dataSource?: import('@solidcash/utils').ArgSource;
   }[];
   // Delegate-library calls desugared from `L.f()` (SynthesizeLibraryDelegateCalls), in source order. The SDK
   // auto-wires the delegatecall co-spend from a registered library instance, so the caller need not name the

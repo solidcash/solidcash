@@ -333,6 +333,11 @@ export async function fixCreateBuilderDelegateUnlockers(
           return -1n;
         }
         if (inp.name === '__internal__msgSenderCategory') {
+          // A top-level `call` / `staticcall` runs the callee as itself, called BY this contract, so its msg.sender is
+          // this contract: the one co-spent minting master of this category. Only a delegatecall keeps its caller's.
+          if (group.callMode !== 'delegatecall' && !nestedDelegateProxyGroupByLowLevel.has(groupLocalIdx)) {
+            return hexToBin(host.categoryId).reverse();
+          }
           const nestedProxyGroup = nestedDelegateProxyGroupByLowLevel.has(groupLocalIdx)
             ? externalCallUtxoGroups[nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx)!]
             : undefined;

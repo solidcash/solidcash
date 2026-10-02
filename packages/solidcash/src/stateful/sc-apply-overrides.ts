@@ -15,6 +15,7 @@ import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import { addressToLockScript } from '../utils.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
+import { autoWireLowLevelCalls, type AutoWireLowLevelCallsHost } from './sc-auto-wire-low-level-calls.js';
 import type { ExternalCallInfo } from './stateful-lifecycle-types.js';
 import type {
   CallInfo,
@@ -158,6 +159,8 @@ export async function applyOverrides(
 
   await host.resolveLibrariesFromRegistry();
   host.autoWireLibraryDelegatecalls();
+  // A Solidity-compat low-level call names its callee through the compiler-published target and payload.
+  await autoWireLowLevelCalls(host as unknown as AutoWireLowLevelCallsHost);
   // Auto-wiring can append library calls after the first pass. Validate those frames before any builder work.
   validatePreparedFrames();
   const needsRebuild = (host.externalCallInfos.length > 0 || host.callInfos.length > 0

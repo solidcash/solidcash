@@ -4305,6 +4305,11 @@ export default class SymbolTableTraversal extends AstTraversal {
             maximumOccurrences: callsiteShapes[index].maximumOccurrences,
           }),
         }));
+        // A Solidity-compat call/staticcall site pins its co-spent callee to the call's target (see
+        // emitLowLevelCallVerification). Publish that target and the payload so the SDK can name the callee.
+        if (this.compilerOptions.solidityImportCompat && this.compilerOptions.composition !== 'per-call') {
+          this.publishLowLevelCallSources(node);
+        }
 
         // Inject _callInputIndex for every non-delegatecall low-level call.
         // Stateful contracts previously pinned the callee to a fixed block-layout slot, but a multi-UTXO
@@ -5146,6 +5151,96 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (node.elseBlock) count += this.countLowLevelCalls(node.elseBlock);
     }
     return count;
+  }
+
+  /**
+   * Publish each Solidity-compat call/staticcall site's target and payload as an opaque `__raw__` call serializes
+   * them, through a synthetic probe collected into a scratch slot list. A site whose target or payload holds an
+   * external call, or that the serializer refuses, publishes nothing.
+   */
+  private publishLowLevelCallSources(node: FunctionDefinitionNode): void {
+    if (!node.lowLevelCalls || !node.body) return;
+    const skipped = new Set(['location', 'type', 'definition', 'symbolTable', 'resolvedFunction',
+      'functionReference', 'referencedContract', 'sourceCallNode', 'stateVariable', 'collection']);
+    const walk = (value: unknown, seen: Set<object>, onNode: (candidate: Node) => boolean): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (onNode(value)) return;
+      for (const [key, child] of Object.entries(value)) {
+        if (skipped.has(key)) continue;
+        if (child instanceof Node) walk(child, seen, onNode);
+        else if (Array.isArray(child)) for (const item of child) walk(item, seen, onNode);
+      }
+    };
+    const sites: (LowLevelCallNode | LowLevelCallStatementNode)[] = [];
+    walk(node.body, new Set(), (candidate) => {
+      if (candidate instanceof LowLevelCallNode || candidate instanceof LowLevelCallStatementNode) sites.push(candidate);
+      return false;
+    });
+    const containsExternalCall = (expression: ExpressionNode): boolean => {
+      let found = false;
+      walk(expression, new Set(), (candidate) => {
+        if (candidate instanceof ExternalFunctionCallNode) found = true;
+        return found;
+      });
+      return found;
+    };
+    const savedReceiverCounts = this.extCallReceiverCounts;
+    const savedLoopLocals = this.loopDeclaredLocals;
+    this.extCallReceiverCounts = this.buildExtCallReceiverCounts(node.body);
+    this.loopDeclaredLocals = this.collectLoopDeclaredLocals(node.body);
+    try {
+      for (const site of sites) {
+        const entry = node.lowLevelCalls[site.callIndex];
+        if (!entry || site.callMode === 'delegatecall') continue;
+        if (containsExternalCall(site.targetExpression) || containsExternalCall(site.data)) continue;
+        const probe = new ExternalFunctionCallNode('__raw__', site.targetExpression, '__raw__', [site.data]);
+        probe.location = site.location;
+        probe.opaqueReturn = true;
+        probe.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
+        probe.callInfo = {
+          interfaceName: '__raw__',
+          functionName: '__raw__',
+          externalCallSlotIndex: -1,
+          hasReturnValues: true,
+          returnTypes: [new BytesType()],
+          returnEventSignature: '_Return___raw__(bytes)',
+          callMode: site.callMode === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
+        };
+        const scratch: ExternalCallSlot[] = [];
+        try {
+          this.collectExternalCalls(probe, scratch);
+        } catch {
+          continue;
+        }
+        const slot = scratch.at(-1);
+        if (slot?.addressSource) entry.targetSource = slot.addressSource;
+        // An `abi.encodeWithSelector` / `abi.encodeCall` payload has no whole-expression form; the `__raw__` collector
+        // publishes it as its selector and per-argument sources instead. Carry those, so the callee's function is
+        // the selector's and its arguments evaluate natively (a full locking bytecode, not a 20-byte ABI identity).
+        const rawArgs = slot?.rawArgSources;
+        if (slot?.rawSelector && rawArgs
+          && rawArgs.every((source) => source.kind !== 'expression' || source.expression !== undefined)) {
+          entry.dataSource = {
+            kind: 'expression',
+            expression: {
+              kind: 'abiEncodeWithSelector',
+              args: [
+                { kind: 'literal', type: 'bytes4', value: binToHex(slot.rawSelector) },
+                ...rawArgs.map((source) => (source.kind === 'expression'
+                  ? source.expression! : { kind: 'source', source })),
+              ],
+            },
+          };
+        } else if (slot?.argSources?.[0]
+          && !(slot.argSources[0].kind === 'expression' && slot.argSources[0].expression?.kind === 'unsupported')) {
+          entry.dataSource = slot.argSources[0];
+        }
+      }
+    } finally {
+      this.extCallReceiverCounts = savedReceiverCounts;
+      this.loopDeclaredLocals = savedLoopLocals;
+    }
   }
 
   /**

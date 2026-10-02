@@ -22502,7 +22502,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     data: ExpressionNode,
     callIndex: number,
     locationData: SingleLocationData,
+    target?: ExpressionNode,
   ): void {
+    const callInputParam = this.lowLevelCallCount === 1
+      ? '__internal__callInputIndex' : `__internal__callInputIndex${callIndex}`;
+    if (this.compilerOptions.solidityImportCompat && target !== undefined && !this.perCallMaster
+      && !this.isEmptyLiteralPayload(data) && this.getStackIndex(callInputParam, true) >= 0) {
+      this.emitCompatLowLevelCallPin(data, target, callInputParam, locationData);
+      return;
+    }
     // Visit the data expression FIRST while the tracked stack is in a known
     // state.  Visiting after pushing untracked values (inputIndex, ubcode)
     // would cause getStackIndex to return wrong positions.
@@ -22568,6 +22576,72 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData); // [remaining]
   }
 
+  /** A literal empty payload (`call{value: v}("")`): no callee function runs, so there is nothing to pin. */
+  private isEmptyLiteralPayload(data: ExpressionNode): boolean {
+    if (data instanceof StringLiteralNode) return data.value.length === 0;
+    if (data instanceof HexLiteralNode) return data.value.length === 0;
+    return false;
+  }
+
+  /**
+   * Solidity-compat `call`/`staticcall`: the input at `callInputIndex` must be locked by the call's target, and a
+   * callee whose unlocking leads with a 4-byte push must dispatch the payload's selector. Not bound: the payload's
+   * arguments, and the function of a callee whose unlocking leads with no push4 (single-method, delegate-index).
+   * Leaves one dummy item, as the other branches of emitLowLevelCallVerification do.
+   */
+  private emitCompatLowLevelCallPin(
+    data: ExpressionNode,
+    target: ExpressionNode,
+    callInputParam: string,
+    locationData: SingleLocationData,
+  ): void {
+    // Evaluate both expressions while the tracked stack is exact, then leave them untracked on the real stack.
+    this.visit(data);
+    this.visit(target);
+    this.popFromStack(2);                                    // [data, target]
+    this.emit(encodeInt(BigInt(this.getStackIndex(callInputParam) + 2)), locationData);
+    this.emit(Op.OP_PICK, locationData);                     // [data, target, idx]
+    // 1. Identity. A 20-byte imported-Solidity identity is compared with the candidate's canonical projection; an
+    //    empty target equals no locking bytecode, so a call to address(0) fails closed.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOBYTECODE, locationData);             // [data, target, idx, lbc]
+    this.emit(Op.OP_ROT, locationData);                      // [data, idx, lbc, target]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(20n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_SWAP, locationData);                     // [data, idx, target20, lbc]
+    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);              // [data, idx]
+    // 2. Function. MINIMALDATA encodes a dispatch selector as `0x04 || bytes4`, always the first push of a
+    //    multi-method callee's direct unlocking.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_INPUTBYTECODE, locationData);            // [data, idx, ubc]
+    this.emit(encodeInt(1n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);                    // [data, idx, prefix, rest]
+    this.emit(Op.OP_SWAP, locationData);                     // [data, idx, rest, prefix]
+    this.emit(encodeInt(4n), locationData);
+    this.emit(Op.OP_EQUAL, locationData);                    // [data, idx, rest, isPush4]
+    this.emit(Op.OP_IF, locationData);
+    this.emit(encodeInt(4n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);                     // [data, idx, calleeSelector]
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_PICK, locationData);                     // [data, idx, calleeSelector, data]
+    this.emit(encodeInt(4n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);                     // [data, idx, calleeSelector, payloadSelector]
+    this.emit(Op.OP_EQUALVERIFY, locationData);              // [data, idx]
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DROP, locationData);                     // [data, idx]
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_2DROP, locationData);
+    this.emit(Op.OP_0, locationData);                        // dummy remainder
+  }
+
   visitLowLevelCall(node: LowLevelCallNode): Node {
     const locationData: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
 
@@ -22599,7 +22673,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_1, locationData);           // [true]
       this.emit(encodeInt(0n), locationData);      // [true, empty]
     } else {
-      this.emitLowLevelCallVerification(node.data, node.callIndex, locationData);
+      this.emitLowLevelCallVerification(node.data, node.callIndex, locationData, node.targetExpression);
       // Stack: [remaining unlocking after the calldata prefix pin]. That remainder is
       // redeem-script, not ERC20 return data. SafeERC20 treats empty returndata as
       // success (optional-return tokens); decoding leftover pushes as a bool OP_VERIFYs.
@@ -22710,7 +22784,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.markDelegateEdgeReached(node);
     } else if (!this.isCompilerRoutedLowLevelBatch(node)) {
-      this.emitLowLevelCallVerification(node.data, node.callIndex, locationData);
+      this.emitLowLevelCallVerification(node.data, node.callIndex, locationData, node.targetExpression);
       // Stack: [remaining] - drop it
       this.emit(Op.OP_DROP, locationData);
     }

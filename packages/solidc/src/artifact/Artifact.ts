@@ -2808,6 +2808,9 @@ function buildFunctionAbiMetadata(
         // Always published, `computed` included, so a row that carries NO `target` identifies an artifact
         // compiled before the field existed. Absent is read as unknown, never as an unconstrained target.
         target: callTargets[index] ?? COMPUTED_PROVENANCE,
+        // The serialized target and payload of a Solidity-compat call site, for the SDK to name the pinned callee.
+        ...(lc.targetSource !== undefined && { targetSource: lc.targetSource }),
+        ...(lc.dataSource !== undefined && { dataSource: lc.dataSource }),
       })),
     }),
     ...(delegateForwarding && { delegateForwarding }),

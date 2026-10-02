@@ -137,6 +137,16 @@ export interface DeriveCompiledGraphOptions {
     argument: number;
     occurrence: number;
   }) => FunctionArgument;
+  /** Reached source-loop iteration when a conditional row's compact occurrence differs from its source index. */
+  sourceIteration?: (context: {
+    participant: WorklistParticipant;
+    function: string;
+    selector?: string;
+    invocation: number;
+    callsiteId: number;
+    occurrence: number;
+    counterName?: string;
+  }) => number | undefined;
   /**
    * Runtime-resolved target and method for compiler-labelled function-pointer
    * and varying-selector callsites. The derivation probe supplies the concrete
@@ -201,6 +211,7 @@ const resolveArguments = (
   invocation: number,
   occurrence: number,
   expressionArgument: DeriveCompiledGraphOptions['expressionArgument'],
+  sourceIteration: DeriveCompiledGraphOptions['sourceIteration'],
 ): FunctionArgument[] => (call.argSources ?? []).map((source, argument) => {
   if (source.kind === 'forward' && source.paramIndex !== undefined) {
     const value = visibleArgs[source.paramIndex];
@@ -221,7 +232,16 @@ const resolveArguments = (
   if (source.kind === 'literal') return literal(source);
   if (source.kind === 'loopIndex' && source.initialValue !== undefined) {
     if (source.stepValue !== undefined) {
-      return BigInt(source.initialValue) + BigInt(source.stepValue) * BigInt(occurrence);
+      const sourceIndex = sourceIteration?.({
+        participant: sourceParticipant, function: functionName,
+        ...(functionSelector !== undefined && { selector: functionSelector }),
+        invocation, callsiteId: call.callsiteId!, occurrence,
+        ...(source.counterName !== undefined && { counterName: source.counterName }),
+      }) ?? occurrence;
+      if (!Number.isSafeInteger(sourceIndex) || sourceIndex < 0) {
+        throw new Error(`messageBus: callsite ${call.callsiteId} has an invalid source iteration`);
+      }
+      return BigInt(source.initialValue) + BigInt(source.stepValue) * BigInt(sourceIndex);
     }
     if (source.stepExpression) {
       const value = expressionArgument?.({
@@ -618,7 +638,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             }
             const expectedArgs = resolveArguments(
               participant, args, { ...call, argSources: call.rawArgSources }, functionName, fn.selector,
-              invocation, reached, options.expressionArgument,
+              invocation, reached, options.expressionArgument, options.sourceIteration,
             );
             const sourceUsesSolidityAddresses = participant.artifact.compiler?.options?.solidityImportCompat === true
               || participant.artifact.compiler?.options?.evmCompat === true;
@@ -659,7 +679,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             }
           } else {
             const payload = resolveArguments(
-              participant, args, call, functionName, fn.selector, invocation, reached, options.expressionArgument,
+              participant, args, call, functionName, fn.selector, invocation, reached,
+              options.expressionArgument, options.sourceIteration,
             )[0];
             if (!(payload instanceof Uint8Array)) {
               throw new Error(`messageBus: raw callsite ${call.callsiteId} calldata is not bytes`);
@@ -812,6 +833,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
                 invocation,
                 occurrence,
                 options.expressionArgument,
+                options.sourceIteration,
               ),
               invocation,
               edgeCallMode(call),
@@ -891,6 +913,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               invocation,
               reached,
               options.expressionArgument,
+              options.sourceIteration,
             ),
             invocation,
             edgeCallMode(call),
@@ -921,7 +944,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           call.functionName,
           targetFunction.selector,
           resolveArguments(
-            participant, args, call, functionName, fn.selector, invocation, reached, options.expressionArgument,
+            participant, args, call, functionName, fn.selector, invocation, reached,
+            options.expressionArgument, options.sourceIteration,
           ),
           invocation,
           edgeCallMode(call),

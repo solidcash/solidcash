@@ -291,6 +291,30 @@ export function deriveComposeInvocationPlan(
       }
       return count;
     },
+    sourceIteration: ({ participant, function: ownerFunction, selector, callsiteId, occurrence,
+      counterName }) => {
+      if (!requirePreparedIdentity || counterName === undefined) return undefined;
+      const descriptor = descriptors[next - 1];
+      if (descriptor?.callsiteId !== callsiteId || descriptor.occurrenceIndex !== occurrence) return undefined;
+      const abi = resolveMessageBusAbiFunction(participant.artifact, ownerFunction, selector);
+      const callsite = abi?.externalCalls?.find((candidate) => candidate.callsiteId === callsiteId);
+      const outer = callsite?.iterationDomain ?? callsite?.nestedIterationDomains?.[0];
+      if (outer?.counterName === counterName
+        && descriptor.topologyOuterDomainKey === semanticJson(outer)
+        && Number.isSafeInteger(descriptor.topologyOuterIteration)
+        && descriptor.topologyOuterIteration! >= 0
+        && descriptor.topologyOuterIteration! < outer.maximumIterations) {
+        return descriptor.topologyOuterIteration;
+      }
+      const inner = callsite?.nestedIterationDomains?.[1];
+      if (inner?.counterName === counterName
+        && Number.isSafeInteger(descriptor.topologyInnerIteration)
+        && descriptor.topologyInnerIteration! >= 0
+        && descriptor.topologyInnerIteration! < inner.maximumIterations) {
+        return descriptor.topologyInnerIteration;
+      }
+      return undefined;
+    },
     expressionArgument: ({ callsiteId, argument }) => {
       const reached = descriptors[next - 1];
       const value = reached?.args[argument];

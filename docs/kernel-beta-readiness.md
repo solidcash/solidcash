@@ -698,6 +698,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   its immediately preceding producer-result-to-state title and the one-arm compiler refusal title pass.
   No comprehensive suite or size gate ran. For this relaxed showcase, the 10 KB deployment limit is not
   a semantic blocker; production-capacity measurement remains a separate gate.
+- 2026-10-02 conditional-producer coordinate follow-up: a producer reached only at outer source iteration
+  one has compact authenticated occurrence zero. When its result sets that iteration's inner-loop state bound,
+  topology discovery now maps the compiler guard's reached source indices to result occurrences, and the
+  symbolic worklist derives loop-index arguments from the certified source coordinate. The exact BCH-2026
+  title went red-to-green with three Sink rows; its immediately preceding branch-complete title passes.
+  Unsupported or unresolved mappings remain fail-closed, and no comprehensive suite or size gate ran.
 
 ## Gate before the next leap
 

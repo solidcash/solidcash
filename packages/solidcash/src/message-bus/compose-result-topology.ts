@@ -9,6 +9,7 @@ import {
   findDeploymentByAddressValue, registeredAddressValueLockingBytecode,
 } from '../stateful/deployment-registry.js';
 import { externalReturnsForCallsites } from '../stateful/external-returns-for-callsites.js';
+import { AuthenticatedProducerResults } from './authenticated-producer-results.js';
 import { externalCallIterationIndices } from '../stateful/external-call-iteration-domain.js';
 import { hydrateExternalPredicateState } from '../stateful/sc-hydrate-external-predicate-state.js';
 import { evaluateExternalExpression } from '../stateful/sc-evaluate-external-expression.js';
@@ -262,6 +263,34 @@ async function rebuildCallTopology(
         })) ?? [{ ...source, sourceCallsiteId: source.callsiteId,
           sourceLogicalIndex: undefined, selectedSelector: source.rawSelector }];
         for (const sourceTemplate of templates) {
+          const conditionalProducerOccurrences = new Map<number, Map<number, number>>();
+          const returnsForOuter = (
+            argSources: readonly ArgSource[], condition: ExternalCallAbi | undefined,
+            outerIndex: number | undefined,
+            available: ReadonlyMap<number, FunctionArgument> = childResults,
+          ): Map<string, FunctionArgument> => {
+            if (outerIndex === undefined || conditionalProducerOccurrences.size === 0) {
+              return externalReturnsForCallsites(argSources, available, sources,
+                condition?.callsiteId === undefined ? undefined : {
+                  callsiteId: condition.callsiteId, resultConsumers: fn.resultConsumers, lane: 'condition',
+                }, outerIndex);
+            }
+            const selected = new Map<number, FunctionArgument>();
+            for (const producer of sources) {
+              if (producer.callsiteId === undefined) continue;
+              const mapped = conditionalProducerOccurrences.get(producer.callsiteId);
+              const occurrenceIndex = mapped ? mapped.get(outerIndex) : outerIndex;
+              if (occurrenceIndex === undefined) continue;
+              const result = available instanceof AuthenticatedProducerResults
+                ? available.getOccurrence({ callsiteId: producer.callsiteId, occurrenceIndex })
+                : available.get(producer.callsiteId);
+              if (result !== undefined) selected.set(producer.callsiteId, result);
+            }
+            return externalReturnsForCallsites(argSources, selected, sources,
+              condition?.callsiteId === undefined ? undefined : {
+                callsiteId: condition.callsiteId, resultConsumers: fn.resultConsumers, lane: 'condition',
+              });
+          };
           const existing = existingSite.filter((child) => (
             child.previous === undefined
               ? child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex
@@ -298,10 +327,14 @@ async function rebuildCallTopology(
             let unresolved = false;
             try {
               const domainIndices = async (selected: NonNullable<typeof domain>,
-                producerOccurrenceIndex?: number): Promise<number[]> => {
+                producerOccurrenceIndex?: number, remapConditionalProducers = false): Promise<number[]> => {
                 const expressions = [selected.initialValue, selected.stepValue, selected.continueCondition];
-                const returns = returnsFor(expressions.map((expression) => ({ kind: 'expression', expression })),
-                  undefined, producerOccurrenceIndex);
+                const sourcesForExpressions = expressions.map((expression) => ({
+                  kind: 'expression' as const, expression,
+                }));
+                const returns = remapConditionalProducers
+                  ? returnsForOuter(sourcesForExpressions, undefined, producerOccurrenceIndex)
+                  : returnsFor(sourcesForExpressions, undefined, producerOccurrenceIndex);
                 await hydrate(expressions, [0], returns);
                 return externalCallIterationIndices(selected, (expression, bindings) => {
                   const value = evaluate(expression, 0, returns, bindings);
@@ -319,7 +352,7 @@ async function rebuildCallTopology(
                 const producerCallsites = [...producerResultCallsites(sourceTemplate)];
                 if (outer.length > 1 && producerCallsites.some((callsiteId) => {
                   const producer = sources.find((candidate) => candidate.callsiteId === callsiteId);
-                  return !producer || producer.batchInvocations || producer.condition
+                  return !producer || producer.batchInvocations
                     || producer.occurrence !== 'loop' || !producer.iterationDomain
                     || producer.sourceEffectOrdinal === undefined
                     || sourceTemplate.sourceEffectOrdinal === undefined
@@ -328,6 +361,30 @@ async function rebuildCallTopology(
                 })) {
                   throw new Error('messageBus: nested call repeats an outer producer occurrence');
                 }
+                for (const callsiteId of producerCallsites) {
+                  const producer = sources.find((candidate) => candidate.callsiteId === callsiteId);
+                  if (!producer?.condition || !producer.iterationDomain
+                    || semanticJson(producer.iterationDomain) !== semanticJson(nested![0])) continue;
+                  // A conditional producer's authenticated rows use compact reached ordinals, not outer
+                  // source indices. Re-evaluate its published guard in the same outer domain before binding
+                  // any nested consumer result; a skipped source index has no result lane.
+                  const reached = new Map<number, number>();
+                  for (const outerIndex of outer) {
+                    const guardReturns = returnsFor([{
+                      kind: 'expression', expression: producer.condition,
+                    }], producer, outerIndex);
+                    await hydrate([producer.condition], [outerIndex], guardReturns);
+                    const active = evaluate(producer.condition, outerIndex, guardReturns);
+                    if (active === undefined) { unresolved = true; break; }
+                    if (typeof active !== 'boolean') throw new Error(
+                      'messageBus: conditional outer producer guard is not boolean',
+                    );
+                    if (active) reached.set(outerIndex, reached.size);
+                  }
+                  if (unresolved) break;
+                  conditionalProducerOccurrences.set(callsiteId, reached);
+                }
+                if (unresolved) { next.push(...existing); continue; }
                 if (outer.length === 0) occurrences = [];
                 else {
                   const outerInitial = evaluate(nested![0]!.initialValue, 0, returnsFor([{
@@ -351,7 +408,7 @@ async function rebuildCallTopology(
                     if (usesAnotherLoopCounter(
                       [inner.initialValue, inner.stepValue, inner.continueCondition], inner.counterName,
                     )) throw new Error('messageBus: nested domain has an unresolved outer loop coordinate');
-                    for (const iteration of await domainIndices(inner, outerIndex)) {
+                    for (const iteration of await domainIndices(inner, outerIndex, true)) {
                       occurrences.push({ iteration, edge, outerIndex });
                       if (occurrences.length > ATOMIC_MESSAGE_BUS_MAX_ROWS) {
                         throw new Error('messageBus: nested call exceeds the graph row limit');
@@ -371,7 +428,7 @@ async function rebuildCallTopology(
           let occurrence = 0;
           for (const { iteration, edge: template, outerIndex } of occurrences) {
             if (template.condition) {
-              const returns = returnsFor([{ kind: 'expression', expression: template.condition }],
+              const returns = returnsForOuter([{ kind: 'expression', expression: template.condition }],
                 template, outerIndex);
               await hydrate([template.condition], [iteration], returns);
               const active = evaluate(template.condition, iteration, returns);
@@ -388,7 +445,7 @@ async function rebuildCallTopology(
             ) === reachedOccurrence);
             const argSources = template.rawArgSources ?? template.argSources ?? [];
             const addressSources = template.addressSource ? [template.addressSource] : [];
-            const returns = returnsFor([...argSources, ...addressSources], undefined, outerIndex);
+            const returns = returnsForOuter([...argSources, ...addressSources], undefined, outerIndex);
             await hydrate([...argSources, ...addressSources].map((argSource) =>
               ({ kind: 'source', source: argSource })), [iteration], returns);
             const sourceArgs = logical._resolveExternalArgs(argSources, [...args], artifact, state, fn.inputs,
@@ -435,8 +492,7 @@ async function rebuildCallTopology(
             const snapshot = state;
             const resolveArgsFromResults: Prepared['resolveArgsFromResults'] = (updated, frame) => {
               const resolved = logical._resolveExternalArgs(argSources, [...(frame ?? args)], artifact,
-                snapshot, fn.inputs, externalReturnsForCallsites(argSources, updated, sources,
-                  undefined, outerIndex),
+                snapshot, fn.inputs, returnsForOuter(argSources, undefined, outerIndex, updated),
                 iteration, false, self, incoming);
               return rawPayload && resolved
                 ? decodeCanonicalRawInvocation(childArtifact, resolved[0]).args : resolved;

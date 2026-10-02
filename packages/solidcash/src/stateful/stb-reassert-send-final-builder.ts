@@ -13,7 +13,7 @@ export interface ReassertSendFinalBuilderHost {
   scidReservedIndices(outputCount: number): Set<number>;
   reassertNestedEmitEvents(builder: TransactionBuilder): void;
   reassertDelegateImplEvents(builder: TransactionBuilder): void;
-  materializeJobEventsBand(builder: TransactionBuilder): void;
+  materializeValueChunkBand(builder: TransactionBuilder): void;
   placeTailReturnAfterSwappedTokenBlock(builder: TransactionBuilder): void;
   ensureAuthenticatedViewReturns(builder: TransactionBuilder): void;
   reassertScaledPreserveOneToOnes(builder: TransactionBuilder): void;
@@ -41,7 +41,7 @@ export function reassertSendFinalBuilder(
   host.reassertNestedEmitEvents(finalBuilder);
   host.reassertDelegateImplEvents(finalBuilder);
   // Materialize first; view tails must win over value-chunk band writes.
-  host.materializeJobEventsBand(finalBuilder);
+  host.materializeValueChunkBand(finalBuilder);
   host.placeTailReturnAfterSwappedTokenBlock(finalBuilder);
   host.ensureAuthenticatedViewReturns(finalBuilder);
   host.reassertScaledPreserveOneToOnes(finalBuilder);

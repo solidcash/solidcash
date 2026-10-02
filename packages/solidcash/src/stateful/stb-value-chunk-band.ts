@@ -1,6 +1,6 @@
 /**
  * phase-boundary extract: STB class-body extract — materialize / ensure-live / pack-suffix / persist
- * JobEvents (value-chunk) band placement.
+ * Chunkable-value band placement.
  */
 
 import { binToHex } from '@bitauth/libauth';
@@ -56,7 +56,7 @@ import {
   type ValueChunkWriteStagingSession,
 } from './value-chunk-persist.js';
 
-export interface JobEventsBandHost extends ScaledPreserveEmitHost {
+export interface ValueChunkBandHost extends ScaledPreserveEmitHost {
   readonly categoryId: string;
   readonly allInputs: UnlockableUtxo[];
   readonly mintingOutputSwap?: { from: number; width: number; categoryId: string };
@@ -91,7 +91,7 @@ export interface JobEventsBandHost extends ScaledPreserveEmitHost {
 
 /** Pack a reverse-indexed mutable value-chunk run against the OP_RETURN trailer. */
 export function packReverseIndexedValueChunkSuffix(
-  host: JobEventsBandHost,
+  host: ValueChunkBandHost,
   builder: TransactionBuilder,
 ): void {
   const band = host.getChunkableValueWriteBand();
@@ -114,11 +114,11 @@ export function packReverseIndexedValueChunkSuffix(
 }
 
 /**
- * Last writer on the view-only path: put publishJobEvent value chunks at
- * impl+trailingBase. Leaves view tails (16/17) and minting masters alone.
+ * Last writer on the view-only path: place the selected writer's value chunks
+ * after its implementation window, leaving view tails and minting masters alone.
  */
-export function materializeJobEventsBand(
-  host: JobEventsBandHost,
+export function materializeValueChunkBand(
+  host: ValueChunkBandHost,
   builder: TransactionBuilder,
 ): void {
   const band = host.getChunkableValueWriteBand();
@@ -128,13 +128,13 @@ export function materializeJobEventsBand(
     return;
   }
   // Identity-scan chunks are already appended via stageValueChunkOutputs. Do not re-place them
-  // onto a persist band that sits on another participant's minting master (FakeToken).
+  // onto a persist band that sits on another participant's minting master.
   if (!permitsLegacyNamedValueChunkFallbackForGroups(host) && host.hasStagedValueChunkOutputs() && band) {
     const at = host.allInputs[band.start];
     if (at?.token?.nft?.capability === 'minting') {
-      const publishCat = chunkableValueWriteCategory(host);
-      // Missing publishCat must still refuse: otherwise FakeToken's minting slot becomes the band.
-      if (!publishCat || at.token.category?.toLowerCase() !== publishCat.toLowerCase()) {
+      const writerCategory = chunkableValueWriteCategory(host);
+      // An unknown writer must not claim another participant's minting slot.
+      if (!writerCategory || at.token.category?.toLowerCase() !== writerCategory.toLowerCase()) {
         return;
       }
     }
@@ -313,12 +313,12 @@ export function materializeJobEventsBand(
 }
 
 /**
- * Send-time: size the jobEvents band to the live extracted/persisted nNew and
- * place every continuation, including when transferFrom skipped materialize.
+ * Send-time: size the value-chunk band to the live extracted/persisted width and
+ * place every continuation, including when earlier materialization was skipped.
  * Minting 1:1s stay reserved.
  */
-export function ensureLiveJobEventsBand(
-  host: JobEventsBandHost,
+export function ensureLiveValueChunkBand(
+  host: ValueChunkBandHost,
   builder: TransactionBuilder,
 ): void {
   const band = host.getChunkableValueWriteBand();
@@ -326,8 +326,8 @@ export function ensureLiveJobEventsBand(
   if (!permitsLegacyNamedValueChunkFallbackForGroups(host) && host.hasStagedValueChunkOutputs()) {
     const at = host.allInputs[band.start];
     if (at?.token?.nft?.capability === 'minting') {
-      const publishCat = chunkableValueWriteCategory(host);
-      if (!publishCat || at.token.category?.toLowerCase() !== publishCat.toLowerCase()) {
+      const writerCategory = chunkableValueWriteCategory(host);
+      if (!writerCategory || at.token.category?.toLowerCase() !== writerCategory.toLowerCase()) {
         return;
       }
     }
@@ -361,9 +361,9 @@ export function ensureLiveJobEventsBand(
     ?? host.stagedValueChunkWrite(persistTokenCategory);
   const persistValue = stagedValue
     ?? host.persistedValueChunkValue(persistTokenCategory);
-  const publishCategory = chunkableValueWriteCategory(host);
+  const writerCategory = chunkableValueWriteCategory(host);
   const persistVLock = host.persistValueChunkLock(persistTokenCategory, persistValue)
-    ?? host.persistValueChunkLock(publishCategory, persistValue);
+    ?? host.persistValueChunkLock(writerCategory, persistValue);
 
   const redeemLock = persistVLock
     ?? persistDigestLock
@@ -466,12 +466,12 @@ export function ensureLiveJobEventsBand(
 }
 
 /**
- * Successful publishJobEvent writes must seed persist even when derivation
+ * Successful chunkable writes must seed persistence even when derivation
  * never failed (the extract-on-fail path never ran). The next UPDATE uses
  * persistWidth to drop insertShift so chunks stay at impl+blockSize.
  */
-export function persistPlacedJobEventsBand(
-  host: JobEventsBandHost,
+export function persistPlacedValueChunkBand(
+  host: ValueChunkBandHost,
   builder: TransactionBuilder,
   txid?: string,
 ): void {

@@ -11,8 +11,8 @@ export interface ReassertSendAfterViewRepackHost {
   refreshInputs(): void;
   syncBuilderUnlockers(builder: TransactionBuilder): void;
   applyDerivedValueChunks(builder: TransactionBuilder): void;
-  materializeJobEventsBand(builder: TransactionBuilder): void;
-  ensureLiveJobEventsBand(builder: TransactionBuilder): void;
+  materializeValueChunkBand(builder: TransactionBuilder): void;
+  ensureLiveValueChunkBand(builder: TransactionBuilder): void;
   placeTailReturnAfterSwappedTokenBlock(builder: TransactionBuilder): void;
   ensureAuthenticatedViewReturns(builder: TransactionBuilder): void;
   isPersistedChunkableValueWriteReady(): boolean;
@@ -42,8 +42,8 @@ export function reassertSendAfterViewRepack(
     host.syncBuilderUnlockers(finalBuilder);
   }
   if (reboundViews) host.applyDerivedValueChunks(finalBuilder);
-  host.materializeJobEventsBand(finalBuilder);
-  host.ensureLiveJobEventsBand(finalBuilder);
+  host.materializeValueChunkBand(finalBuilder);
+  host.ensureLiveValueChunkBand(finalBuilder);
   // Re-assert view tails after materialization so value-chunk bands cannot clobber
   // authenticated none-cap returns (same ordering as build()).
   host.placeTailReturnAfterSwappedTokenBlock(finalBuilder);

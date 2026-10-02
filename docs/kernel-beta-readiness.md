@@ -214,9 +214,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   band-range helpers now use chunkable-value names and an entry-chunk count; this is a naming change, not
   retirement of the remaining legacy adapter. The active continuation-lock field and SDK-internal callers now
   use value-chunk names; the historical getter/setter remain deprecated compatibility aliases. The band planner
-  now reads the historical `jobEvents` collection only for the selected historical publisher; a renamed selected
-  writer cannot
-  inherit the name from another group, and multiple compiler-published collections fail closed. Both focused new
+  and placement module now expose value-chunk names as well; their legacy persistence backing remains fenced.
+  The band planner reads the historical `jobEvents` collection only for the selected historical publisher; a
+  renamed selected writer cannot inherit the name from another group, and multiple compiler-published collections
+  fail closed. Both focused new
   regression titles and their immediately preceding titles pass; this does not establish a broad SDK gate.
 - The focused `post two jobs` scenario is green after a fresh compile. A neutral BCH-2026 regression proves zero,
   one, and two repeated getter results whose exact affine domain consumes an authenticated earlier scalar result.

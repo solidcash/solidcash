@@ -29,7 +29,7 @@ export interface SubmitFinalTransactionHost {
   getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   getLowLevelCallMasterInputIndex(index: number): number;
   logCovenantFailureTrace(builder: TransactionBuilder, reason: string): void;
-  persistPlacedJobEventsBand(builder: TransactionBuilder, txid: string): void;
+  persistPlacedValueChunkBand(builder: TransactionBuilder, txid: string): void;
   decodeEmittedEvents(outputs: readonly LibauthOutput[]): ReceiptEvent[];
 }
 
@@ -317,7 +317,7 @@ export async function submitFinalTransaction(
     + 'The network provider may be compromised.',
     );
   }
-  host.persistPlacedJobEventsBand(finalBuilder, txid);
+  host.persistPlacedValueChunkBand(finalBuilder, txid);
 
   const decoded = decodeTransactionUnsafe(rawTxBin);
   const details = attachWait({ ...decoded, txid, hex: rawTx } as TransactionDetails, host.builderOptions.provider);

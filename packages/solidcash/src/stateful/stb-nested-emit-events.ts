@@ -52,7 +52,7 @@ export interface NestedEmitEventsHost extends ScaledPreserveEmitHost {
   detachedEventReceipts: Array<{ eventSignature: string; commitment: string }>;
   readonly builderOptions: { provider: object };
   ensureDistinctJobEventNfts(builder: TransactionBuilder): void;
-  materializeJobEventsBand(builder: TransactionBuilder): void;
+  materializeValueChunkBand(builder: TransactionBuilder): void;
   placeJobEventsPredecessorInputs(extras?: UnlockableUtxo[]): void;
   reassertPersistedJobEventsOneToOnes(builder: TransactionBuilder, emitDest: number): void;
 }
@@ -320,7 +320,7 @@ export function reassertNestedEmitEvents(
   if (persistEmit && dest >= 0) {
     host.forcedChunkableValueWriteBandStart = dest + 1;
     host.placeJobEventsPredecessorInputs(host.pendingJobEventsPredecessors);
-    host.materializeJobEventsBand(builder);
+    host.materializeValueChunkBand(builder);
     host.reassertPersistedJobEventsOneToOnes(builder, dest);
   }
   const executingDest = legacyEventFallback && dest >= 0

@@ -458,12 +458,12 @@ import {
   type LateValueSuffixRebindHost,
 } from './stb-late-value-suffix-rebind.js';
 import {
-  ensureLiveJobEventsBand,
-  materializeJobEventsBand,
+  ensureLiveValueChunkBand,
+  materializeValueChunkBand,
   packReverseIndexedValueChunkSuffix,
-  persistPlacedJobEventsBand,
-  type JobEventsBandHost,
-} from './stb-jobevents-band.js';
+  persistPlacedValueChunkBand,
+  type ValueChunkBandHost,
+} from './stb-value-chunk-band.js';
 import {
   delegateLoopEntryVars,
   loopEntryTransitionSatoshis,
@@ -1524,8 +1524,8 @@ export class StatefulTransactionBuilder {
       ensureDistinctJobEventNfts: (builder) => {
         this._ensureDistinctJobEventNfts(builder);
       },
-      materializeJobEventsBand: (builder) => {
-        this._materializeJobEventsBand(builder);
+      materializeValueChunkBand: (builder) => {
+        this._materializeValueChunkBand(builder);
       },
       placeJobEventsPredecessorInputs: (extras) => {
         this._placeJobEventsPredecessorInputs(extras);
@@ -2095,7 +2095,7 @@ export class StatefulTransactionBuilder {
       getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       getLowLevelCallMasterInputIndex: (index) => this.getLowLevelCallMasterInputIndex(index),
       logCovenantFailureTrace: (b, reason) => { this._logCovenantFailureTrace(b, reason); },
-      persistPlacedJobEventsBand: (b, txid) => { this._persistPlacedJobEventsBand(b, txid); },
+      persistPlacedValueChunkBand: (b, txid) => { this._persistPlacedValueChunkBand(b, txid); },
       decodeEmittedEvents: (outputs) => this.decodeEmittedEvents(outputs),
     };
   }
@@ -2451,7 +2451,7 @@ export class StatefulTransactionBuilder {
       repackViewTailsAfterMaterialization: (b) => this._repackViewTailsAfterMaterialization(b),
       refreshInputs: () => { this._refreshInputs(); },
       reassertStagedValueChunkOutputs: (b) => { this._reassertStagedValueChunkOutputs(b); },
-      materializeValueChunkBand: (b) => { this._materializeJobEventsBand(b); },
+      materializeValueChunkBand: (b) => { this._materializeValueChunkBand(b); },
       placeTailReturnAfterSwappedTokenBlock: (b, refs) => {
         this._placeTailReturnAfterSwappedTokenBlock(b, refs);
       },
@@ -2481,7 +2481,7 @@ export class StatefulTransactionBuilder {
     };
   }
 
-  private _jobEventsBandHost(): JobEventsBandHost {
+  private _valueChunkBandHost(): ValueChunkBandHost {
     const self = this;
     return {
       ...this._scaledPreserveEmitHost(),
@@ -2543,7 +2543,7 @@ export class StatefulTransactionBuilder {
       scidReservedIndices: (outputCount) => this._scidReservedIndices(outputCount),
       reassertNestedEmitEvents: (builder) => { this._reassertNestedEmitEvents(builder); },
       reassertDelegateImplEvents: (builder) => { this._reassertDelegateImplEvents(builder); },
-      materializeJobEventsBand: (builder) => { this._materializeJobEventsBand(builder); },
+      materializeValueChunkBand: (builder) => { this._materializeValueChunkBand(builder); },
       placeTailReturnAfterSwappedTokenBlock: (builder) => {
         this._placeTailReturnAfterSwappedTokenBlock(builder);
       },
@@ -2572,8 +2572,8 @@ export class StatefulTransactionBuilder {
       refreshInputs: () => { this._refreshInputs(); },
       syncBuilderUnlockers: (builder) => { this._syncBuilderUnlockers(builder); },
       applyDerivedValueChunks: (builder) => { this._applyDerivedValueChunks(builder); },
-      materializeJobEventsBand: (builder) => { this._materializeJobEventsBand(builder); },
-      ensureLiveJobEventsBand: (builder) => { this._ensureLiveJobEventsBand(builder); },
+      materializeValueChunkBand: (builder) => { this._materializeValueChunkBand(builder); },
+      ensureLiveValueChunkBand: (builder) => { this._ensureLiveValueChunkBand(builder); },
       placeTailReturnAfterSwappedTokenBlock: (builder) => {
         this._placeTailReturnAfterSwappedTokenBlock(builder);
       },
@@ -4635,28 +4635,28 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Last writer on the view-only path: put publishJobEvent value chunks at
-   * impl+trailingBase. Leaves view tails (16/17) and minting masters alone.
+   * Last writer on the view-only path: place the selected writer's value chunks
+   * after its implementation window, leaving view tails and minting masters alone.
    */
-  private _materializeJobEventsBand(builder: TransactionBuilder): void {
-    materializeJobEventsBand(this._jobEventsBandHost(), builder);
+  private _materializeValueChunkBand(builder: TransactionBuilder): void {
+    materializeValueChunkBand(this._valueChunkBandHost(), builder);
   }
 
-  private _ensureLiveJobEventsBand(builder: TransactionBuilder): void {
-    ensureLiveJobEventsBand(this._jobEventsBandHost(), builder);
+  private _ensureLiveValueChunkBand(builder: TransactionBuilder): void {
+    ensureLiveValueChunkBand(this._valueChunkBandHost(), builder);
   }
 
   private _packReverseIndexedValueChunkSuffix(builder: TransactionBuilder): void {
-    packReverseIndexedValueChunkSuffix(this._jobEventsBandHost(), builder);
+    packReverseIndexedValueChunkSuffix(this._valueChunkBandHost(), builder);
   }
 
   /**
-   * Successful publishJobEvent writes must seed persist even when derivation
+   * Successful chunkable writes must seed persistence even when derivation
    * never failed (the extract-on-fail path never ran). The next UPDATE uses
    * persistWidth to drop insertShift so chunks stay at impl+blockSize.
    */
-  private _persistPlacedJobEventsBand(builder: TransactionBuilder, txid?: string): void {
-    persistPlacedJobEventsBand(this._jobEventsBandHost(), builder, txid);
+  private _persistPlacedValueChunkBand(builder: TransactionBuilder, txid?: string): void {
+    persistPlacedValueChunkBand(this._valueChunkBandHost(), builder, txid);
   }
 
   /**

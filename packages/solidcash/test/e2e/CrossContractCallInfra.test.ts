@@ -121,7 +121,9 @@ describe('unbounded bytes return', () => {
       expect(state.seen).toBe(73n);
     });
 
-    it('CROSS-CONTRACT: authenticates mixed result encodings per callsite in one participant', async () => {
+    // Two distinct returning methods cannot both execute from the callee's one master input without an
+    // authenticated batch route: the second return output would only be a placeholder. Refused by name.
+    it('CROSS-CONTRACT: refuses two returning calls to one participant without a batch route', async () => {
       const src = `
         interface IA {
           function echo(bytes b) external returns (bytes);
@@ -154,16 +156,37 @@ describe('unbounded bytes return', () => {
       );
       const aSc = StatefulContract.withCategory(a, ac);
       const bSc = StatefulContract.withCategory(b, bc);
-      await bSc.use(hexToBin(aAddr), VAL, 73n, wide)
+      await expect(bSc.use(hexToBin(aAddr), VAL, 73n, wide)
         .withExternalCall(aSc, 'echo', [VAL])
         .withExternalCall(aSc, 'wide', [73n, wide])
-        .send();
-      const state = await bSc.getState();
-      expect(binToHex(state.digest as Uint8Array)).toBe(
-        '8f33bbbe76e4f01dd1b24499fc6ab72e92f704f9444722cd3805ba8cc18fd2c6',
+        .send()).rejects.toThrow(/calls to echo and wide share one state owner but both return values.*compose/);
+    });
+
+    it('CROSS-CONTRACT: settles two non-returning calls to one participant as one batch', async () => {
+      const src = `
+        interface IA { function note(uint n) external; }
+        contract A { bigint marker; function note(uint n) public { this.marker = this.marker + n; } }
+        contract B { uint seen;
+          function use(address a, uint n) public { IA(a).note(n); IA(a).note(n + 1); this.seen = n; }
+        }`;
+      const arts = compileStringMulti(src, { solidityImportCompat: true, messageBus: true });
+      const a = new Contract(arts.A, [], { provider });
+      const { categoryId: ac } = await setupStatefulUtxos(
+        provider, a, arts.A.stateLayout!, { marker: 0n }, { saltContract: true },
       );
-      expect(state.seen).toBe(73n);
-      expect(binToHex(state.saved as Uint8Array)).toBe(binToHex(wide));
+      const aAddr = a.withCategory(hexToBin(ac)).lockingBytecode;
+      const b = new Contract(arts.B, [], { provider });
+      const { categoryId: bc } = await setupStatefulUtxos(
+        provider, b, arts.B.stateLayout!, { seen: 0n }, { saltContract: true },
+      );
+      const aSc = StatefulContract.withCategory(a, ac);
+      const bSc = StatefulContract.withCategory(b, bc);
+      await bSc.use(hexToBin(aAddr), 5n)
+        .withExternalCall(aSc, 'note', [5n])
+        .withExternalCall(aSc, 'note', [6n])
+        .send();
+      expect((await aSc.getState()).marker).toBe(11n);
+      expect((await bSc.getState()).seen).toBe(5n);
     });
 
   });

@@ -134,6 +134,24 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   const directSharedGroupIndex = physicalExternalCallGroupIndexByMasterOutpoint(
     externalCallUtxoGroups, bState.masterUtxo,
   );
+  const sharedPhysical = directSharedGroupIndex < 0
+    ? undefined : externalCallUtxoGroups[directSharedGroupIndex];
+  // A direct caller can share a physical block with a view/writer pair, but two distinct returning methods
+  // cannot both execute from its one master input unless the compiler published one authenticated batch route.
+  // Without that route the second return output is only a placeholder, and deriving it would turn an invalid
+  // transaction into a late VM failure (or, for some schemas, an ambiguous provisional result).
+  if (!returnProbeOnly && ec.hasReturnValues && sharedPhysical
+    && sharedPhysical.functionName !== callInfo.functionName
+    && !compilerRoute && !sharedPhysical.compilerRoute) {
+    const priorAbi = (sharedPhysical.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
+      ?.find((candidate) => candidate.name === sharedPhysical.functionName);
+    if ((priorAbi?.outputs?.length ?? 0) > 0) {
+      throw new Error(
+        `Direct external calls to ${sharedPhysical.functionName} and ${callInfo.functionName} share one state owner `
+        + 'but both return values. Use messageBus.compose() to authenticate both logical invocations.',
+      );
+    }
+  }
   // A return probe evaluates ONLY the contract input, so a callee's covenant never executes and its return
   // event would keep the neutral placeholder the builder seeds (`setReturnEventOutput`), which a caller
   // decoding a `bool` success reads as failure and answers with its library's catch path. Fabricate the value

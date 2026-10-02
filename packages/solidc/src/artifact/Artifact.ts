@@ -674,7 +674,22 @@ const externalCallIterationDomains = (
         const dependencyWrites = [...deps].filter((dependency) => assignedIn(prior, dependency, counter));
         return stableRead && !earlyExit && !opaqueEffect && dependencyWrites.length === 0;
       })) break;
-      if (depth === 1 && !replayBefore(block, counter, state, () => false)) break;
+      if (depth === 1) {
+        const outerContext = enclosing[0]!;
+        const outerCounter = outerContext.block.statements?.[outerContext.index - 1];
+        if (!(outerCounter instanceof VariableDefinitionNode)
+          || domains[0]?.counterName !== outerCounter.name) break;
+        // This symbolic source is substituted with the already reached outer coordinate by the SDK before
+        // any inner-domain expression is evaluated. It must not be interpreted as occurrence zero here.
+        const outerReference: ExternalCallExpression = {
+          kind: 'source', source: {
+            kind: 'loopIndex', counterName: outerCounter.name, initialValue: '0', stepValue: '1',
+          },
+        };
+        state.bindings.set(outerCounter, outerReference);
+        state.bindings.set(`name:${outerCounter.name}`, outerReference);
+        if (!replayBefore(block, counter, state, () => false)) break;
+      }
       const initialValue = serialize(counter.expression, state);
       // The declaration starts the live induction binding only after its initializer is evaluated.
       state.bindings.set(counter, { kind: 'identifier', name: counter.name });

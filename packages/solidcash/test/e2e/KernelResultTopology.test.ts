@@ -612,6 +612,46 @@ describe('kernel result-dependent call topology', () => {
     expect((await sink.getState()).count).toBe(2n);
   }, 180_000);
 
+  it('combines the current outer coordinate with its producer-bound inner count', async () => {
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
+      interface IReader { function read(uint key) external view returns (uint); }
+      interface ISink { function record(uint value) external; }
+      contract Reader {
+        function read(uint key) public pure returns (uint) { return key; }
+      }
+      contract Sink {
+        uint public total;
+        uint public count;
+        function record(uint value) public { this.total += value; this.count += 1; }
+      }
+      contract Router(address reader, address sink) {
+        function route(uint[] memory values) public {
+          for (uint i = 0; i < values.length; i++) {
+            uint observed = IReader(reader).read(values[i]);
+            uint bound = observed + i;
+            for (uint j = 0; j < bound; j++) { ISink(sink).record(j + 1); }
+          }
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x81), provider);
+    for (let index = 0; index < 24; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const reader = await getContractFactory(artifacts.Reader, signer).deploy();
+    const sink = await getContractFactory(artifacts.Sink, signer).deploy();
+    const router = await getContractFactory(artifacts.Router, signer).deploy(
+      reader.inner.lockingBytecode, sink.inner.lockingBytecode,
+    );
+    router._registerResolvedExternal('IReader', reader);
+    router._registerResolvedExternal('ISink', sink);
+    await router.call.route([1n, 2n]).send();
+    expect((await sink.getState()).total).toBe(7n);
+    expect((await sink.getState()).count).toBe(4n);
+  }, 180_000);
+
   it('refuses an unproven later loop before broadcasting any earlier row', async () => {
     const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       interface ISink { function record(uint value) external; }

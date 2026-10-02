@@ -106,8 +106,10 @@ function hasChangedDependency(
 function usesAnotherLoopCounter(value: unknown, innerCounter: string, seen = new Set<object>()): boolean {
   if (!value || typeof value !== 'object' || seen.has(value)) return false;
   seen.add(value);
-  const source = value as { kind?: string; counterName?: string; indexStepValue?: number };
-  if ((source.kind === 'loopIndex' || (source.kind === 'arrayElement' && source.indexStepValue !== 0))
+  const source = value as { kind?: string; counterName?: string; indexStepValue?: number;
+    stepValue?: string; stepExpression?: ExternalCallExpression };
+  if (((source.kind === 'loopIndex' && (source.stepValue !== '0' || source.stepExpression !== undefined))
+    || (source.kind === 'arrayElement' && source.indexStepValue !== 0))
     && source.counterName !== innerCounter) return true;
   return Object.values(value).some((child) => usesAnotherLoopCounter(child, innerCounter, seen));
 }
@@ -346,6 +348,9 @@ async function rebuildCallTopology(
                       nested![1]!.counterName,
                     )) throw new Error('messageBus: nested call has an unresolved loop coordinate');
                     const inner = bindOuterLoopCounter(nested![1]!, nested![0]!.counterName, coordinate);
+                    if (usesAnotherLoopCounter(
+                      [inner.initialValue, inner.stepValue, inner.continueCondition], inner.counterName,
+                    )) throw new Error('messageBus: nested domain has an unresolved outer loop coordinate');
                     for (const iteration of await domainIndices(inner, outerIndex)) {
                       occurrences.push({ iteration, edge, outerIndex });
                       if (occurrences.length > ATOMIC_MESSAGE_BUS_MAX_ROWS) {

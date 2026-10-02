@@ -676,6 +676,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   same partial legacy fallback (one broadcast row instead of two); graph retention now keys on any compiler-
   published result-dependent iteration domain, not just a nested domain. Its exact VM title went red-to-green,
   and its immediately preceding two-outer dynamic-bound title passes. No comprehensive suite or size gate ran.
+- 2026-10-02 mixed outer-index/result bound follow-up: an inner count of `Reader.read(values[i]) + i`
+  initially had no compiler domain because prefix replay lacked the validated outer induction binding. The
+  compiler now publishes that binding as a symbolic loop-index source; the SDK substitutes the reached outer
+  coordinate before inner-domain evaluation and refuses any unfrozen outer coordinate. The exact BCH-2026 VM
+  title went red-to-green with four Sink rows across two outer iterations; its immediately preceding scalar
+  result-bound title passes. Build and changed-file lint pass; no comprehensive suite or size gate ran.
 
 ## Gate before the next leap
 

@@ -2,8 +2,9 @@ import {
   applyError, authenticationInstructionsAreMalformed, AuthenticationErrorCommon, binToHex,
   conditionallyEvaluate, createVirtualMachine, createVirtualMachineBch2026, decodeAuthenticationInstructions,
   disassembleAuthenticationInstructionMalformed, encodeAuthenticationInstructions, incrementOperationCount,
-  isPayToScriptHash20, isPayToScriptHash32, isWitnessProgram, pushToStackChecked, pushToStackVmNumber, ripemd160,
-  secp256k1, sha1, sha256, stackItemIsTruthy, useTransactionOutput, useTransactionUtxo,
+  isPayToScriptHash20, isPayToScriptHash32, isWitnessProgram, pushToStack, pushToStackChecked, pushToStackVmNumber,
+  ripemd160, secp256k1, sha1, sha256, stackItemIsTruthy, useFourStackItems, useOneStackItem, useOneVmNumber,
+  useThreeStackItems, useTransactionOutput, useTransactionUtxo, useTwoStackItems,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { AuthenticationErrorBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-errors.js';
@@ -381,6 +382,66 @@ function installCachedActiveBytecode(
   ) as (typeof instructionSet.operations)[number];
 }
 
+/**
+ * libauth's stack operations without their defensive copies: the duplicating operations push the item they
+ * duplicate, and OP_SPLIT pushes two views of its operand. No operation writes a stack item in place (each builds
+ * its result in a fresh array) and a state clone copies the stack shallowly, so an aliased or viewed item is never
+ * seen to change. Wrapping, errors and pushed-byte accounting are libauth's, item for item.
+ */
+function installZeroCopyStackOperations(instructionSet: ReturnType<typeof createInstructionSetBch2026>): void {
+  type State = Parameters<(typeof instructionSet.operations)[number]>[0];
+  const set = (opcode: number, operation: (state: State) => State): void => {
+    instructionSet.operations[opcode] = incrementOperationCount(
+      conditionallyEvaluate(operation),
+    ) as (typeof instructionSet.operations)[number];
+  };
+  set(OpcodesBch2026.OP_DUP, (state) => useOneStackItem(state, (next, [item]) =>
+    pushToStack(next, [item!, item!], { pushedBytes: item!.length })));
+  set(OpcodesBch2026.OP_IFDUP, (state) => useOneStackItem(state, (next, [item]) => (stackItemIsTruthy(item!)
+    ? pushToStack(next, [item!, item!], { pushedBytes: item!.length })
+    : pushToStack(next, [item!], { pushedBytes: 0 }))));
+  set(OpcodesBch2026.OP_OVER, (state) => useTwoStackItems(state, (next, [a, b]) =>
+    pushToStack(next, [a!, b!, a!], { pushedBytes: a!.length })));
+  set(OpcodesBch2026.OP_2DUP, (state) => useTwoStackItems(state, (next, [a, b]) =>
+    pushToStack(next, [a!, b!, a!, b!], { pushedBytes: a!.length + b!.length })));
+  set(OpcodesBch2026.OP_3DUP, (state) => useThreeStackItems(state, (next, [a, b, c]) =>
+    pushToStack(next, [a!, b!, c!, a!, b!, c!], { pushedBytes: a!.length + b!.length + c!.length })));
+  set(OpcodesBch2026.OP_2OVER, (state) => useFourStackItems(state, (next, [a, b, c, d]) =>
+    pushToStack(next, [a!, b!, c!, d!, a!, b!], { pushedBytes: a!.length + b!.length })));
+  set(OpcodesBch2026.OP_TUCK, (state) => useTwoStackItems(state, (next, [a, b]) =>
+    pushToStack(next, [b!, a!, b!], { pushedBytes: b!.length })));
+  set(OpcodesBch2026.OP_PICK, (state) => useOneVmNumber(state, (next, [depth]) => {
+    const item = next.stack[next.stack.length - 1 - Number(depth)];
+    return item === undefined
+      ? applyError(state, AuthenticationErrorCommon.invalidStackIndex,
+        `Current stack depth: ${next.stack.length}; requested depth: ${depth}.`)
+      : pushToStack(next, [item]);
+  }));
+  set(OpcodesBch2026.OP_SPLIT, (state) => useOneVmNumber(state, (next, value) => {
+    const index = Number(value);
+    return useOneStackItem(next, (final, [item]) => (index < 0 || index > item!.length
+      ? applyError(final, AuthenticationErrorCommon.invalidSplitIndex,
+        `stack item length: ${item!.length}; requested split index: ${index}.`)
+      : pushToStack(final, [item!.subarray(0, index), item!.subarray(index)])));
+  }));
+  // A view must not become an OP_DEFINE body: libauth's state clone deep-copies the function table, and a view
+  // carries its whole underlying buffer into that copy. A defined body is stored compact instead.
+  const define = instructionSet.operations[OpcodesBch2026.OP_DEFINE]!;
+  instructionSet.operations[OpcodesBch2026.OP_DEFINE] = ((state: State): State => {
+    const before = state.functionCount;
+    // OP_DEFINE pops the identifier first, so the new entry's key is the current top item's.
+    const identifier = state.stack[state.stack.length - 1];
+    const next = define(state) as State;
+    if (next.functionCount === before || identifier === undefined) return next;
+    const key = functionTableKeyOf(identifier);
+    const body = next.functionTable[key];
+    if (body !== undefined && (body.byteOffset !== 0 || body.byteLength !== body.buffer.byteLength)) {
+      next.functionTable[key] = body.slice();
+    }
+    return next;
+  }) as (typeof instructionSet.operations)[number];
+}
+
 interface InactiveBranchTargets {
   falseBranch: Int32Array;
   elseBranch: Int32Array;
@@ -580,6 +641,7 @@ function buildVirtualMachineBch2026ForProvider(
     );
     installCachedInvokeEvaluator(instructionSet);
     installCachedActiveBytecode(instructionSet, consensus.maximumStackItemLength);
+    installZeroCopyStackOperations(instructionSet);
 
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RUNTIME_ASSIGN === '1') {

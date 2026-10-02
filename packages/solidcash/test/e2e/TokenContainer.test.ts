@@ -19,7 +19,9 @@ import {
   buildInitialStateCommitments,
   buildTokenContainerCovenantBytecode,
 } from '@solidcash/utils';
-import { hexToBin } from '@bitauth/libauth';
+import {
+  binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
+} from '@bitauth/libauth';
 import { Utxo } from '../../src/interfaces.js';
 import {
   createTestProvider, verifyTransaction, getTxOutputs,
@@ -30,6 +32,25 @@ import {
 } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
+
+/** The raw `.send()` funds and would broadcast, captured unbroadcast; `.build()` returns it without its fee. */
+async function captureSend(
+  provider: ReturnType<typeof createTestProvider>, send: () => Promise<unknown>,
+): Promise<string> {
+  let raw = '';
+  const realSend = provider.sendRawTransaction.bind(provider);
+  (provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+    raw = hex;
+    throw new Error('capture-only');
+  };
+  try {
+    await expect(send()).rejects.toThrow('capture-only');
+  } finally {
+    (provider as any).sendRawTransaction = realSend;
+  }
+  expect(raw).not.toBe('');
+  return raw;
+}
 
 // A stateful contract that reads token container token amounts
 const TOKEN_CONTAINER_READ_CONTRACT = `
@@ -1931,15 +1952,16 @@ contract C() {
       // Fund the token container with 1000 FT of a fresh category.
       const ft = await genesisFtContainer(provider, bare, deployed.categoryId, [1000n]);
 
-      // Honest: transfer 300 FT to bob; the container remainder (700 FT) stays at the container address.
-      const builder = await contract.call.sendTokens(ft.category, bobPkh, 300n).build();
-      const cIdx = builder.outputs.findIndex((o) => (o as { token?: { amount: bigint } }).token?.amount === 700n);
+      // Honest: transfer 300 FT to bob; the container remainder (700 FT) stays at the container address. The raw is
+      // the one `.send()` funds, captured unbroadcast; `.build()` is the covenant transaction without its fee.
+      const honestRaw = await captureSend(provider, () => contract.call.sendTokens(ft.category, bobPkh, 300n).send());
+      const attackTx = decodeTransactionUnsafe(hexToBin(honestRaw));
+      const cIdx = attackTx.outputs.findIndex((o) => o.token?.amount === 700n);
       expect(cIdx).toBeGreaterThanOrEqual(0);
-      const honestRaw = builder.build();
 
       // ATTACK: redirect the 700-FT container remainder to bob (keep the tokens so token consensus balances).
-      builder.outputs[cIdx].to = addressToLockScript(bobAddress);
-      const attackRaw = builder.build();
+      attackTx.outputs[cIdx].lockingBytecode = addressToLockScript(bobAddress);
+      const attackRaw = binToHex(encodeTransaction(attackTx));
 
       // Attack first (live utxos, a rejected tx spends nothing): rejected by the covenant, not a utxo error.
       let msg = '';

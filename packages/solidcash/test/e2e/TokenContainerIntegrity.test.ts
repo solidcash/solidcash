@@ -19,6 +19,25 @@ const SOURCE = `contract TokenContainerState() {
   }
 }`;
 
+/** The raw `.send()` funds and would broadcast, captured unbroadcast. */
+async function captureSend(
+  provider: ReturnType<typeof createTestProvider>, send: () => Promise<unknown>,
+): Promise<string> {
+  let raw = '';
+  const realSend = provider.sendRawTransaction.bind(provider);
+  (provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+    raw = hex;
+    throw new Error('capture-only');
+  };
+  try {
+    await expect(send()).rejects.toThrow('capture-only');
+  } finally {
+    (provider as any).sendRawTransaction = realSend;
+  }
+  expect(raw).not.toBe('');
+  return raw;
+}
+
 describe('token-container transaction integrity', () => {
   it('preserves container and transfer inputs, positions, destinations, and amounts', async () => {
     const provider = createTestProvider();
@@ -36,8 +55,9 @@ describe('token-container transaction integrity', () => {
     });
     const ft = await genesisFtContainer(provider, bare, deployed.categoryId, [1_000n]);
 
-    const builder = await deployed.contract.call.sendTokens(hexToBin(ft.category), bobPkh, 300n).build();
-    const captured = builder.build();
+    // The raw `.send()` funds, captured unbroadcast; `.build()` is the covenant transaction without its fee.
+    const captured = await captureSend(provider,
+      () => deployed.contract.call.sendTokens(hexToBin(ft.category), bobPkh, 300n).send());
     const base = decodeTransactionUnsafe(hexToBin(captured));
     const remainderOutput = base.outputs.findIndex((output) => output.token?.amount === 700n);
     const transferOutput = base.outputs.findIndex((output) => output.token?.amount === 300n);

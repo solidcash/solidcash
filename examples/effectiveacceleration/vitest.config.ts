@@ -5,7 +5,7 @@ import { solidcashHardhatPreset } from '@solidcash/testing/vitest-preset';
 // This project only aliases the older @noble/ciphers subpaths to the installed v2 build.
 export default defineConfig(solidcashHardhatPreset({
   test: {
-    include: ['test/marketplace.test.ts', 'test/decodeData.test.ts', 'test/encryption.test.ts'],
+    include: ['test/marketplace.test.ts', 'test/decodeData.test.ts', 'test/encryption.test.ts', 'test/wagmiAbi.test.ts'],
     testTimeout: 120000,
   },
   resolve: {

@@ -179,8 +179,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   preceding packed-identity title pass. The event-format decision for `post job 1` remains open. The root build
   passes. The app's independent TypeScript check originally reported a missing generated wagmi module, an obsolete
   cipher import, and two implicit-any callbacks outside these edited decoder files. The cipher import has since
-  been replaced with WebCrypto nonce generation; its focused encrypted/unencrypted titles pass, leaving the
-  missing wagmi module and two callback diagnostics. No broader tests were run.
+  been replaced with WebCrypto nonce generation; its focused encrypted/unencrypted titles pass. At that
+  checkpoint the missing wagmi module and two callback diagnostics remained. No broader tests were run.
+- 2026-10-02 proxy app typecheck follow-up: the proxy application's source-level `MarketplaceDataV1` wagmi ABI
+  was restored from the original proxy project after confirming its Solidity source SHA-256 matches the port
+  exactly. This is the EVM-facing ABI used by the replay model, not the SolidCash artifact's hidden-argument
+  execution ABI. The app TypeScript check now passes; focused ABI source-pin and read-method titles pass
+  individually. The `post job 1` 20-byte versus 35-byte event-format decision remains open.
 - 2026-10-02 typegen checkpoint (`91600bd8f`): a complete compile reproduced unrelated imported enum aliases
   in interface binding modules. Type generation now includes only enum names mentioned by the declaration's
   source (or the artifact's recorded source when that declaration file is unavailable), and its cache key tracks

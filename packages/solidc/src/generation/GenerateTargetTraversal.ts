@@ -188,6 +188,7 @@ import {
   ReturnNode,
   FunctionCallStatementNode,
   ExpressionStatementNode,
+  StatementNode,
   MethodCallStatementNode,
   ExpressionNode,
   ConstantDefinitionNode,
@@ -273,7 +274,7 @@ import {
   ChainedEntryElementReadError, ConditionalDeployError, NegativeExponentError, SolidCashError,
   RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
   BlockLayoutUnavailableError, StackVariableUnavailableError, SolidcDiagnosticError,
-  DirectStaleReadError, ConstructorStaleReadError,
+  DirectStaleReadError, ConstructorStaleReadError, UnpublishableLoopGuardError, importedFileCaveat,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
@@ -1217,6 +1218,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * message.
    */
   private perCallRefusedEntries: ReadonlyMap<string, string> = new Map();
+  /** Functions refused for a loop guard their published recipe cannot carry; each is emitted as a refusal. */
+  private loopGuardRefusals: ReadonlySet<string> = new Set();
   /**
    * The functions whose body carries the contract's own address as a hidden invocation operand.
    *
@@ -2184,6 +2187,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallReservesValidatorHash = (compilerOptions as {
       __perCallReservesValidatorHash?: boolean;
     }).__perCallReservesValidatorHash === true;
+    this.loopGuardRefusals = new Set((compilerOptions as {
+      __loopGuardRefusals?: ReadonlyMap<string, string>;
+    }).__loopGuardRefusals?.keys() ?? []);
   }
 
   // Outlining splices bodies element-for-element, so their location data must be exactly as long as the script.
@@ -7276,8 +7282,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.currentFunction = node;
     // A body the master cannot serve is emitted as a refusal: the selector still reaches it and the program fails
     // there, so a caller of an unsupported function is refused at run time while the bodies it can serve compile
-    // and settle. The reason is published on the artifact, which is what a builder reports.
-    if (this.perCallMaster && this.perCallRefusedEntries.has(node.name)) {
+    // and settle. The reason is published on the artifact, which is what a builder reports. A function refused for
+    // its loop guard is emitted the same way in either convention.
+    if ((this.perCallMaster && this.perCallRefusedEntries.has(node.name)) || this.loopGuardRefusals.has(node.name)) {
       const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
       this.emit(Op.OP_0, loc);
       this.emit(Op.OP_VERIFY, loc);
@@ -28839,6 +28846,251 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
   }
 
+  /**
+   * The refusal of a varying-key loop upsert whose write sits in an arm the published recipe cannot tell apart (only
+   * a lowered counter loop or an `array[i] == literal` predicate is carried). An arm decided on every path that has
+   * not failed, such as an else arm after a revert on the same condition, is no guard.
+   */
+  private unpublishableUpsertGuard(
+    block: Node, write: MappingAssignNode | MappingDeleteNode,
+    recipe: { predicateArrayParam?: string; predicateEquals?: string } | undefined, varyingArrayParam: string,
+  ): UnpublishableLoopGuardError | undefined {
+    // A loop the counter-loop lowering rewrote publishes its own selection (the counter, and its iteration and path
+    // conditions), and a message-bus route or handler clone is admitted by the bus rather than by this recipe.
+    const fn = this.currentFunction;
+    if (fn.runtimeCounterLoopCounters?.has(varyingArrayParam) || fn.runtimeCounterLoopConditions?.has(varyingArrayParam)
+      || this.currentFunctionIsMessageBusRoute || fn.name.startsWith('__message_bus')) return undefined;
+    const backReferences = new Set(['location', 'collection', 'symbol', 'symbolTable', 'type', 'resolvedFunction',
+      'definition', 'referencedContract', 'stateVariable', 'functionReference']);
+    const children = (node: Node): Node[] => Object.entries(node).flatMap(([key, value]) => {
+      if (backReferences.has(key)) return [];
+      if (value instanceof Node) return [value];
+      return Array.isArray(value) ? value.filter((item): item is Node => item instanceof Node) : [];
+    });
+    const reaches = new Map<Node, boolean>();
+    const contains = (node: Node): boolean => {
+      const known = reaches.get(node);
+      if (known !== undefined) return known;
+      reaches.set(node, false);
+      const found = node === write || children(node).some(contains);
+      reaches.set(node, found);
+      return found;
+    };
+    let step: Node | undefined = block;
+    while (step !== undefined && step !== write && !(step instanceof BranchNode) && !(step instanceof SwitchNode)) {
+      step = children(step).find(contains);
+    }
+    if (step === undefined || step === write) return undefined;
+    // A name the function declares once is one variable, and a scalar one is a value no callee can change. Facts and
+    // values are kept for those alone, so a shadowed or reused name never carries one variable's fact to another.
+    const declared = new Map<string, number>();
+    const declare = (name: string): void => { declared.set(name, (declared.get(name) ?? 0) + 1); };
+    for (const parameter of this.currentFunction.parameters) declare(parameter.name);
+    const visitDeclarations = (node: Node): void => {
+      if (node instanceof VariableDefinitionNode) declare(node.name);
+      if (node instanceof TupleAssignmentNode) {
+        for (const element of node.elements) if (element.name && element.type && !element.existing) declare(element.name);
+      }
+      children(node).forEach(visitDeclarations);
+    };
+    visitDeclarations(this.currentFunction.body);
+    const scalar = (node: IdentifierNode): boolean => declared.get(node.name) === 1
+      && !(node.type instanceof ArrayType) && !(node.type instanceof StructType);
+    // A condition's structural key and the locals it names, or undefined when it reads anything else (state, a
+    // mapping, an array element, a call). Facts are the keys known to hold on every path that has not failed.
+    const negate = (key: string): string => (key.startsWith('!') ? key.slice(1) : `!${key}`);
+    const keyOf = (expression: Node, names: Set<string>): string | undefined => {
+      if (expression instanceof IdentifierNode) {
+        if (!scalar(expression)) return undefined;
+        names.add(expression.name);
+        return expression.name;
+      }
+      if (expression instanceof IntLiteralNode || expression instanceof BoolLiteralNode) return `${expression.value}`;
+      if (expression instanceof HexLiteralNode) return `0x${binToHex(expression.value)}`;
+      if (expression instanceof NullaryOpNode) return `<${expression.operator}>`;
+      if (expression instanceof CastNode) {
+        const inner = keyOf(expression.expression, names);
+        return inner === undefined ? undefined : `${expression.type}(${inner})`;
+      }
+      if (expression instanceof UnaryOpNode) {
+        const inner = keyOf(expression.expression, names);
+        if (inner === undefined) return undefined;
+        return expression.operator === UnaryOperator.NOT ? negate(inner) : `${expression.operator}(${inner})`;
+      }
+      if (expression instanceof BinaryOpNode) {
+        const left = keyOf(expression.left, names);
+        const right = keyOf(expression.right, names);
+        if (left === undefined || right === undefined) return undefined;
+        return expression.operator === BinaryOperator.NE
+          ? negate(`(${left} == ${right})`) : `(${left} ${expression.operator} ${right})`;
+      }
+      return undefined;
+    };
+    type Facts = Map<string, ReadonlySet<string>>;
+    const learn = (facts: Facts, expression: ExpressionNode, holds: boolean): void => {
+      const names = new Set<string>();
+      const key = keyOf(expression, names);
+      if (key !== undefined) facts.set(holds ? key : negate(key), names);
+    };
+    const holds = (facts: Facts, expression: ExpressionNode): boolean | undefined => {
+      const key = keyOf(expression, new Set());
+      if (key === undefined) return undefined;
+      return facts.has(key) ? true : facts.has(negate(key)) ? false : undefined;
+    };
+    // The locals a statement assigns, declares or mutates; undefined when it holds assembly, which assigns unseen.
+    const assignedNames = (statement: Node): Set<string> | undefined => {
+      const assigned = new Set<string>();
+      let opaque = false;
+      const visit = (node: Node): void => {
+        if (node instanceof AssemblyStatementNode) opaque = true;
+        if (node instanceof StatementNode) {
+          const named = node as unknown as { identifier?: unknown; name?: unknown; elements?: { name?: string }[] };
+          if (named.identifier instanceof IdentifierNode) assigned.add(named.identifier.name);
+          if (typeof named.name === 'string') assigned.add(named.name);
+          for (const element of named.elements ?? []) if (element.name !== undefined) assigned.add(element.name);
+        }
+        children(node).forEach(visit);
+      };
+      visit(statement);
+      return opaque ? undefined : assigned;
+    };
+    const forget = (facts: Facts, statement: Node): void => {
+      const assigned = assignedNames(statement);
+      for (const [key, names] of facts) {
+        if (assigned === undefined || [...names].some((name) => assigned.has(name))) facts.delete(key);
+      }
+    };
+    // The values the body gave its locals straight-line from constants, such as a collection journal's dirty mask.
+    type Values = Map<string, bigint | boolean>;
+    const evaluate = (expression: Node, values: Values): bigint | boolean | undefined => {
+      if (expression instanceof IntLiteralNode || expression instanceof BoolLiteralNode) return expression.value;
+      if (expression instanceof IdentifierNode) return scalar(expression) ? values.get(expression.name) : undefined;
+      if (expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT) {
+        const inner = evaluate(expression.expression, values);
+        return typeof inner === 'boolean' ? !inner : undefined;
+      }
+      if (!(expression instanceof BinaryOpNode)) return undefined;
+      const left = evaluate(expression.left, values);
+      const right = evaluate(expression.right, values);
+      if (typeof left !== 'bigint' || typeof right !== 'bigint' || left < 0n || right < 0n) return undefined;
+      if (expression.operator === BinaryOperator.BIT_OR) return left | right;
+      if (expression.operator === BinaryOperator.BIT_AND) return left & right;
+      if (expression.operator === BinaryOperator.EQ) return left === right;
+      return expression.operator === BinaryOperator.NE ? left !== right : undefined;
+    };
+    const run = (values: Values, statement: Node): void => {
+      if (statement instanceof VariableDefinitionNode || statement instanceof AssignNode) {
+        const name = statement instanceof AssignNode ? statement.identifier.name : statement.name;
+        const value = statement.expression === undefined ? undefined : evaluate(statement.expression, values);
+        if (value === undefined || declared.get(name) !== 1) values.delete(name);
+        else values.set(name, value);
+        return;
+      }
+      if (statement instanceof BlockNode) {
+        for (const inner of statement.statements ?? []) run(values, inner);
+        return;
+      }
+      if (statement instanceof UncheckedNode) {
+        run(values, statement.block);
+        return;
+      }
+      const decided = statement instanceof BranchNode ? evaluate(statement.condition, values) : undefined;
+      if (statement instanceof BranchNode && typeof decided === 'boolean') {
+        const taken = decided ? statement.ifBlock : statement.elseBlock;
+        if (taken !== undefined) run(values, taken);
+        return;
+      }
+      const assigned = assignedNames(statement);
+      if (assigned === undefined) values.clear();
+      else for (const name of assigned) values.delete(name);
+    };
+    const fails = (node: Node | undefined): boolean => {
+      if (node instanceof RevertNode) return true;
+      if (node instanceof RequireNode) return node.expression instanceof BoolLiteralNode && !node.expression.value;
+      if (node instanceof BranchNode) return fails(node.ifBlock) && fails(node.elseBlock);
+      if (node instanceof UncheckedNode) return fails(node.block);
+      if (node instanceof BlockNode) {
+        return fails((node.statements ?? []).filter((statement) => !(statement instanceof ConsoleStatementNode))
+          .at(-1));
+      }
+      return false;
+    };
+    // The arms between the loop body and the write, outermost first, with the side the write is on.
+    type Arm = { guard: BranchNode | SwitchNode; then: boolean };
+    const arms: Arm[] = [];
+    const walk = (node: Node, facts: Facts, values: Values): void => {
+      if (node === write) return;
+      if (node instanceof BlockNode) {
+        for (const statement of node.statements ?? []) {
+          if (contains(statement)) { walk(statement, facts, values); return; }
+          forget(facts, statement);
+          run(values, statement);
+          if (statement instanceof RequireNode) learn(facts, statement.expression, true);
+          if (statement instanceof BranchNode && fails(statement.ifBlock) !== fails(statement.elseBlock)) {
+            learn(facts, statement.condition, fails(statement.elseBlock));
+          }
+        }
+        return;
+      }
+      if (node instanceof BranchNode) {
+        const then = contains(node.ifBlock);
+        const decided = evaluate(node.condition, values);
+        if ((typeof decided === 'boolean' ? decided : holds(facts, node.condition)) !== then) {
+          arms.push({ guard: node, then });
+        }
+        const inner = new Map(facts);
+        learn(inner, node.condition, then);
+        walk(then ? node.ifBlock : node.elseBlock!, inner, new Map(values));
+        return;
+      }
+      if (node instanceof SwitchNode) arms.push({ guard: node, then: false });
+      const next = children(node).find(contains);
+      if (next !== undefined) walk(next, facts, values);
+    };
+    walk(block, new Map(), new Map());
+    const literalGuard = (expression: ExpressionNode): { array: string; value: string } | undefined => {
+      if (!(expression instanceof BinaryOpNode) || expression.operator !== BinaryOperator.EQ) return undefined;
+      for (const [element, literal] of [[expression.left, expression.right], [expression.right, expression.left]]) {
+        if (element instanceof ArrayAccessNode && element.array instanceof IdentifierNode
+          && literal instanceof IntLiteralNode) return { array: element.array.name, value: literal.value.toString() };
+      }
+      return undefined;
+    };
+    const covered = ({ guard, then }: Arm): boolean => {
+      const literal = guard instanceof BranchNode ? literalGuard(guard.condition) : undefined;
+      if (!literal || recipe?.predicateArrayParam !== literal.array || recipe.predicateEquals === undefined) return false;
+      return then ? literal.value === recipe.predicateEquals : literal.value !== recipe.predicateEquals;
+    };
+    const uncovered = arms.find((arm) => !covered(arm));
+    if (uncovered === undefined) return undefined;
+    // The verified mappings the uncovered guard selects writes to, in source order.
+    const collections: string[] = [];
+    const seen = new Set<Node>();
+    const collect = (node: Node): void => {
+      if (seen.has(node)) return;
+      seen.add(node);
+      if ((node instanceof MappingAssignNode || node instanceof MappingDeleteNode) && node.collection?.sorted
+        && !collections.includes(node.collection.name)) collections.push(node.collection.name);
+      children(node).forEach(collect);
+    };
+    children(uncovered.guard).forEach(collect);
+    const location = uncovered.guard.location;
+    const where = location === undefined ? 'a compiler-built guard'
+      : `the guard at ${location.start}${importedFileCaveat(location)}`;
+    const carried = 'it tells iterations apart only by an \'array[i] == literal\' predicate';
+    const layout = collections.length > 1;
+    return new UnpublishableLoopGuardError(
+      layout ? 'KERNEL_LAYOUT' : 'KERNEL_UNBOUNDED_KEY',
+      this.currentFunction.name,
+      layout
+        ? `${where} selects writes to ${collections.map((name) => `'${name}'`).join(', ')} in one loop, and the `
+          + `published recipe cannot carry it: ${carried}`
+        : `the loop writes '${write.collection?.name}' under ${where}, and the published recipe cannot carry it: `
+          + `${carried}, so a call that skips the guard could not settle`,
+      { collections, line: location?.start.line, column: location?.start.column },
+    );
+  }
+
   private isLoopStructRuntimeRmw(block: Node, write: MappingAssignNode, localName: string): boolean {
     let read: MappingAccessNode | ArrayAccessNode | undefined;
     const rebuilds: FunctionCallNode[] = [];
@@ -29373,6 +29625,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && this.entrySlots[writeNode.entrySlotIndex]?.inLoop === true && !!varyingArrayParam)
     );
     if (!varyingArrayParam || (!isDelete && !hasValue && !valueRuntimeExpression)) return false;
+    const unpublishable = this.unpublishableUpsertGuard(block, writeNode, decodedKeyRecipe, varyingArrayParam);
+    if (unpublishable !== undefined) {
+      (this.compilerOptions as { __loopGuardRefusalRecord?: Map<string, string> }).__loopGuardRefusalRecord
+        ?.set(unpublishable.functionName, `${unpublishable.code}: ${unpublishable.reason}`);
+      throw unpublishable;
+    }
     this.sortedUpsertLoopOp = op;
     const infos = (this.currentFunction.sortedUpsertLoopInfo ??= []);
     // Two loops can write the same mapping from different key arrays and values. Key by

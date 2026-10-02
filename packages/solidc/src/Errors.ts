@@ -86,6 +86,21 @@ export class SolidcDiagnosticError extends Error {
 }
 
 /**
+ * A varying-key upsert loop writes under a guard its published recipe cannot carry. Code generation raises it at the
+ * loop; the compile driver then refuses the function by name and compiles again, so the other functions still compile.
+ */
+export class UnpublishableLoopGuardError extends SolidcDiagnosticError {
+  constructor(
+    code: 'KERNEL_UNBOUNDED_KEY' | 'KERNEL_LAYOUT',
+    readonly functionName: string,
+    readonly reason: string,
+    context: Readonly<Record<string, unknown>>,
+  ) {
+    super(code, `'${functionName}' is refused: ${reason}`, { functionName, ...context });
+  }
+}
+
+/**
  * X92. Say so when a Line/Column is a position in COMPILER-GENERATED source.
  *
  * X71 named the synthetic position for the route PARSE. The same class has a second site the parse guard cannot

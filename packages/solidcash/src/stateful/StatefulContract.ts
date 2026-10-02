@@ -8160,6 +8160,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   ): Promise<StatefulTransactionBuilder> {
     const physicalAbiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
     const abiFunction = overrides?.abiFunction ?? physicalAbiFunction;
+    // A function the compiler refused is emitted as a program that fails wherever it is reached: name its reason.
+    const refusedName = `${this.inner.artifact.contractName}.${abiFunction?.name ?? functionName}()`;
+    const refusal = this.inner.artifact.refusedFunctions?.find((entry) => entry.functionName === refusedName);
+    if (refusal !== undefined) throw new Error(`${refusedName} is refused by the compiler: ${refusal.reason}`);
     // Stateful derivation can copy a supplied value into a larger state/row blob. Validate first so an invalid
     // bytesN reports its ABI error rather than an incidental PUSHDATA limit reached by that derived blob.
     if (abiFunction) args = this._validateAbiFrame(abiFunction, args);

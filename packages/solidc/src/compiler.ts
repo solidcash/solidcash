@@ -57,7 +57,7 @@ import {
   assertCompositionConventionSupported,
   resolveCompositionConvention,
 } from './per-call/master/composition.js';
-import { assessPerCallMasterShape, stripFrameParameters } from './per-call/master/support.js';
+import { assessPerCallMasterShape, directRefusedEntries, stripFrameParameters } from './per-call/master/support.js';
 import type { MasterCallSite } from './per-call/master/frame-tail.js';
 import {
   entryFunctionName,
@@ -239,7 +239,7 @@ import {
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
   CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
   SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
-  UnboundReturnCallError,
+  UnboundReturnCallError, UnpublishableLoopGuardError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -537,6 +537,13 @@ type InternalCompilerOptions = CompilerOptions & {
   __perCallStopSites?: PublishedPerCallStopSites;
   /** Set when the master reserves a slot for the validator program's hash, i.e. it can be reached through a call. */
   __perCallReservesValidatorHash?: boolean;
+  /**
+   * Functions refused for a loop guard their published recipe cannot carry, by name, with the published reason. Set
+   * by `compileStringUnchecked` after code generation reached the loop; never seeded by a caller.
+   */
+  __loopGuardRefusals?: ReadonlyMap<string, string>;
+  /** Where every compile of one `compileStringUnchecked` attempt records a function it refused for its loop guard. */
+  __loopGuardRefusalRecord?: Map<string, string>;
 };
 
 const freezeKernelReadCarrierScopes = (
@@ -1205,6 +1212,9 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   delete keyOptions.__strictNoInternalRecovery;
   delete keyOptions.__internalAttemptFailureState;
   delete keyOptions.__kernelReadCarrierAuthorizationBox;
+  // Derived from the source and the public options by the compile that sets it.
+  delete keyOptions.__loopGuardRefusals;
+  delete keyOptions.__loopGuardRefusalRecord;
   // Fold enabled production-semantics features into the cache identity (item 4).
   const featureBits = solidcFeatureIdentityBits({
     ownerAltAnchor: options.ownerAltAnchor === true,
@@ -2189,7 +2199,47 @@ function compileWithExternalAdmissionFallback(
   }
 }
 
+/**
+ * Compiles one contract, refusing each function whose loop upsert writes under a guard its published recipe cannot
+ * carry: every admission rung records such a function in one record per attempt, and the compile reruns with the
+ * recorded functions refused until none is new. Retries are silent; one warning per refused function is printed.
+ */
 function compileStringUnchecked(code: string, compilerOptions: CompileOptions = {}): Artifact {
+  const inherited = (compilerOptions as InternalCompilerOptions).__loopGuardRefusals;
+  const refusals = new Map(inherited ?? []);
+  for (let attempt = 0; ; attempt += 1) {
+    const found = new Map<string, string>();
+    const options = {
+      ...compilerOptions,
+      ...(attempt > 0 && { suppressWarnings: true, __loopGuardRefusals: new Map(refusals) }),
+      __loopGuardRefusalRecord: found,
+    } as InternalCompilerOptions as CompileOptions;
+    // A failed attempt lowered the tree its caller parsed, so a retry parses its own.
+    if (attempt > 0) delete (options as InternalCompilerOptions).__parsedAst;
+    let artifact: Artifact | undefined;
+    let failure: unknown;
+    try {
+      artifact = attempt === 0 ? compileStringUncheckedAttempt(code, options)
+        : withCompilerWarnings(true, () => compileStringUncheckedAttempt(code, options));
+    } catch (error) {
+      failure = error;
+      if (error instanceof UnpublishableLoopGuardError) {
+        found.set(error.functionName, `${error.code}: ${error.reason}`);
+      }
+    }
+    const fresh = [...found].filter(([name]) => !refusals.has(name));
+    if (fresh.length === 0) {
+      if (artifact === undefined) throw failure;
+      for (const [name, reason] of refusals) {
+        if (!inherited?.has(name)) console.log(`Warning: function '${name}' is refused: ${reason}`);
+      }
+      return artifact;
+    }
+    for (const [name, reason] of fresh) refusals.set(name, reason);
+  }
+}
+
+function compileStringUncheckedAttempt(code: string, compilerOptions: CompileOptions = {}): Artifact {
   pendingSpanAdmissionAnalysis = undefined;
   // A binding identity authorizes exactly one compiler-owned code-generation pass. Sanitize it before even
   // considering a cache return: cached artifacts execute no pass and must not leave caller-visible authority live.
@@ -14216,6 +14266,7 @@ function compileResolvedAst(
       hasFunctionPointers: functionTypeOutsideDeclarations,
       assemblyBodies,
       emitsEvent: contractEmitsEvent,
+      loopGuardRefusals: (mergedCompilerOptions as InternalCompilerOptions).__loopGuardRefusals,
     });
     if (!assessment.supported) {
       throw new SolidcDiagnosticError(
@@ -14381,6 +14432,16 @@ function compileResolvedAst(
       composition.balanceReaders = balanceReaders.map((name) => entryFunctionName(ast.contract.name, name));
     }
     artifact.composition = composition;
+  } else {
+    // A direct artifact names its functions refused for a loop guard as a master names its refused entries, with
+    // every entry that runs one: the program fails wherever it reaches a refusal, and a builder reports why.
+    const loopGuardRefusals = (mergedCompilerOptions as InternalCompilerOptions).__loopGuardRefusals;
+    const refusedFunctions = loopGuardRefusals === undefined ? []
+      : directRefusedEntries(ast.contract, loopGuardRefusals).map(([name, reason]) => ({
+        functionName: entryFunctionName(ast.contract.name, name),
+        reason,
+      }));
+    if (refusedFunctions.length > 0) artifact.refusedFunctions = refusedFunctions;
   }
   let verifiedKernelEntryJournal:
   NonNullable<NonNullable<Artifact['messageBus']>['kernelEntryJournal']> | undefined;

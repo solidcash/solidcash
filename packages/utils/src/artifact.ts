@@ -1728,7 +1728,8 @@ export interface PublishedPerCallStopSites {
 }
 
 /**
- * A body a per-call master cannot serve, published on `composition.refusedEntries`.
+ * A body a per-call master cannot serve, published on `composition.refusedEntries` (`refusedFunctions` on a direct
+ * artifact).
  *
  * The entry stays in the ABI and the dispatcher, its program fails whenever it is reached, and `reason` is the fact
  * that refuses it, so a builder reports which function is unsupported rather than a failed spend.
@@ -1778,6 +1779,11 @@ export interface Artifact {
    * master program: an entry recreates it in place, and its frame fields come from the witness block that leads its
    * unlocking bytecode. `placeholders` names the two constants only deployment can fill.
    */
+  /**
+   * The direct convention's refused functions: each stays in the ABI and the dispatcher, its program fails whenever it
+   * is reached, and `reason` names why, as `composition.refusedEntries` does for a per-call master.
+   */
+  refusedFunctions?: readonly PublishedRefusedEntry[];
   composition?: {
     convention: 'per-call';
     placeholders: CompositionPlaceholders;

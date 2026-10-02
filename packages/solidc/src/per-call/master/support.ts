@@ -1155,6 +1155,8 @@ export interface PerCallMasterShapeInput {
    */
   readonly assemblyBodies: ReadonlySet<string>;
   readonly emitsEvent: boolean;
+  /** The bodies code generation refused for a loop guard their published recipe cannot carry, with the reason. */
+  readonly loopGuardRefusals?: ReadonlyMap<string, string>;
 }
 
 /** One entry's external calls, in execution order, which that entry's own sites bind. */
@@ -1438,7 +1440,16 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
       // balance from, so it is emitted as a refusal stub; the bodies that run it are refused with it.
       if (!entryNames.has(fn.name)) stubbed.add(fn.name);
     }
+    // A loop guard the published recipe cannot carry is found by code generation, which compiles again with it here.
+    const loopGuard = input.loopGuardRefusals?.get(fn.name);
+    if (loopGuard !== undefined) {
+      refuseBody(fn, loopGuard);
+      if (!entryNames.has(fn.name)) stubbed.add(fn.name);
+    }
   }
+  const { constructorDef } = contract;
+  const constructorLoopGuard = constructorDef && input.loopGuardRefusals?.get(constructorDef.name);
+  if (constructorDef && constructorLoopGuard !== undefined) refuseBody(constructorDef, constructorLoopGuard);
   // The constructor runs only at its genesis, and no genesis shows a balance: another address's shows only in the
   // inputs a transaction spends, and the contract's own is the containers a transaction spends beside one of its
   // masters, which do not exist before the genesis. A read the constructor makes, itself or through a body it runs,
@@ -1680,6 +1691,29 @@ function closeRefusalsOverInvocations(
     if (found !== undefined) reached.set(entry, found);
   }
   return reached;
+}
+
+/**
+ * The bodies a direct artifact publishes as refused, given the bodies refused on their own: the callable ones among
+ * those (an entry point, receive(), the fallback or the constructor), and every callable body that runs one, since a
+ * refused body is emitted as a refusal wherever it is reached.
+ */
+export function directRefusedEntries(
+  contract: ContractNode, refusals: ReadonlyMap<string, string>,
+): [string, string][] {
+  const callable = [
+    contract.constructorDef, ...contract.functions.filter((fn) => fn.isEntryPoint), contract.receiveDef,
+    contract.fallbackDef,
+  ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+  const bodies = [...callable, ...contract.functions.filter((fn) => !fn.isEntryPoint)];
+  const invokes = new Map(bodies.map((fn) => [fn.name, invokedFunctionNames(fn.body)]));
+  const reached = closeRefusalsOverInvocations(invokes, refusals);
+  return callable.flatMap((fn): [string, string][] => {
+    const own = refusals.get(fn.name);
+    if (own !== undefined) return [[fn.name, own]];
+    const via = reached.get(fn.name);
+    return via === undefined ? [] : [[fn.name, `it runs '${via.name}', which is refused: ${via.reason}`]];
+  });
 }
 
 /**

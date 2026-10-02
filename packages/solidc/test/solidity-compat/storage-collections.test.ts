@@ -1394,16 +1394,22 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
     expect(info?.valueRuntimeExpression).toBe(true);
   });
   it('tracks decoded keys and computed values through a returning external-call helper', () => {
-    const art = compileString('interface IV { function ping() external; } contract C {'
+    const source = (guard: string): string => 'interface IV { function ping() external; } contract C {'
       + ' mapping(address => uint) m; IV v; function addOne(address to, uint share) internal returns (uint fraction) {'
-      + ' fraction = share + 1; if (fraction < 2) { return 0; } m[to] = m[to] + fraction; v.ping(); }'
+      + ` fraction = share + 1; ${guard} m[to] = m[to] + fraction; v.ping(); }`
       + ' function cook(uint[] actions, bytes[] datas) public { uint value1=0; for (uint i=0;i<actions.length;i=i+1) {'
       + ' if(actions[i]==1) { (address to,uint share)=abi.decode(datas[i],(address,uint)); value1=addOne(to,share); }'
-      + ' } require(value1>=0); } }', { forceStateful: true, solidityImportCompat: true });
+      + ' } require(value1>=0); } }';
+    const art = compileString(source(''), { forceStateful: true, solidityImportCompat: true });
     const info = art.abi.find((f) => f.name === 'cook')?.sortedUpsertLoopInfo?.[0];
     expect(info?.varyingArrayParam).toBe('datas');
     expect(info?.keyDecodeTupleIndex).toBe(0);
     expect(info?.valueRuntimeExpression).toBe(true);
+    // An early return on the decoded share skips the write, which the published recipe cannot tell apart.
+    const guarded = compileString(source('if (fraction < 2) { return 0; }'), {
+      forceStateful: true, solidityImportCompat: true,
+    });
+    expect(guarded.refusedFunctions?.map((entry) => entry.functionName)).toEqual(['C.cook()']);
   });
   it('allocates independent vmap regions for multiple conditional collections in one runtime loop', () => {
     const art = compileString('contract C { mapping(address=>uint) a; mapping(address=>uint) b;'

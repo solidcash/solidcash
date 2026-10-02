@@ -24,9 +24,43 @@ import {
   CastNode,
   NullaryOpNode,
   ExpressionNode,
+  FunctionModifier,
+  TupleAssignmentNode,
+  AssemblyStatementNode,
+  ParameterNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
+import { Modifier } from '../ast/Globals.js';
+
+const NAME_WALK_SKIP = new Set(['location', 'type', 'symbolTable', 'definition', 'collection']);
+
+/** Every name a statement tree declares: locals, tuple-declared names and catch-clause parameters. */
+function declaredNames(root: Node, into: Set<string>): void {
+  const walk = (node: Node): void => {
+    if (node instanceof VariableDefinitionNode || node instanceof ParameterNode) into.add(node.name);
+    if (node instanceof TupleAssignmentNode) {
+      for (const element of node.elements) if (element.name !== undefined) into.add(element.name);
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (NAME_WALK_SKIP.has(key)) continue;
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+    }
+  };
+  walk(root);
+}
+
+/** Whether a function body holds inline assembly, whose effects the mutability label does not bound here. */
+function holdsAssembly(root: Node): boolean {
+  if (root instanceof AssemblyStatementNode) return true;
+  for (const [key, value] of Object.entries(root)) {
+    if (NAME_WALK_SKIP.has(key)) continue;
+    if (value instanceof Node && holdsAssembly(value)) return true;
+    if (Array.isArray(value) && value.some((item) => item instanceof Node && holdsAssembly(item))) return true;
+  }
+  return false;
+}
 
 /**
  * Coalesce consecutive whole-field writes to the SAME struct-valued vmap mapping entry into one entry read + one
@@ -47,17 +81,38 @@ import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
   private counter = 0;
   private mappings = new Map<string, { keyCount: number; struct: StructType }>();
+  // Callee lookup for a call inside a coalesced value (see isPureLibraryOrFreeCall). The pass runs before symbol
+  // analysis, so these are the declarations a call's parse-time name can mean.
+  private freeFunctionsByName = new Map<string, FunctionDefinitionNode[]>();
+  private libraryNames = new Set<string>();
+  private contractNames = new Set<string>();
+  private functionNames = new Set<string>();
 
   constructor(private readonly rewriteSingles = false) {
     super();
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.freeFunctionsByName = new Map();
+    for (const fn of node.freeFunctions ?? []) {
+      this.freeFunctionsByName.set(fn.name, [...(this.freeFunctionsByName.get(fn.name) ?? []), fn]);
+    }
+    this.libraryNames = new Set(node.declaredLibraryNames ?? []);
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
 
+  visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    this.functionNames = new Set(node.parameters.map((parameter) => parameter.name));
+    if (node.body) declaredNames(node.body, this.functionNames);
+    return super.visitFunctionDefinition(node);
+  }
+
   visitContract(node: ContractNode): Node {
+    this.contractNames = new Set([
+      ...node.functions, ...node.stateVariables, ...node.transientStateVars, ...node.collections,
+      ...node.modifierDefinitions, ...node.eventDefinitions, ...node.constantDefinitions, ...node.structDefinitions,
+    ].map((declaration) => declaration.name));
     this.mappings = new Map();
     for (const col of node.collections) {
       if (!col.sorted || !(col.type instanceof MappingType)) continue;
@@ -265,12 +320,14 @@ export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
   }
 
   // A side effect that field-order evaluation could reorder: a call (function / instantiation / indirect) or an
-  // embedded assignment. Pure reads / arithmetic / casts / literals are order-independent.
+  // embedded assignment. Pure reads / arithmetic / casts / literals are order-independent, and so is a call to a
+  // pure library or free function, whose arguments are still checked.
   private hasSideEffects(expr: ExpressionNode): boolean {
     let found = false;
     const walk = (n: Node): void => {
       if (found) return;
-      if (n instanceof FunctionCallNode || n instanceof InstantiationNode
+      if (n instanceof FunctionCallNode && !this.isPureLibraryOrFreeCall(n)) { found = true; return; }
+      if (n instanceof InstantiationNode
         || n instanceof IndirectCallNode || n instanceof AssignmentExpressionNode) { found = true; return; }
       for (const k of Object.keys(n)) {
         if (k === 'location' || k === 'type' || k === 'symbolTable' || k === 'definition' || k === 'collection') continue;
@@ -281,6 +338,36 @@ export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
     };
     walk(expr);
     return found;
+  }
+
+  /**
+   * Whether a call in a coalesced value is to a `pure` library or free function: one that reads no state, so it
+   * cannot see the half-written entry, and whose only effect, a revert, fails the transaction in either order.
+   *
+   * The pass runs before symbol analysis, so the callee is the free function the call's parse-time name denotes:
+   * `L.f` with `L` a declared library (a library call, or a using-for call the parser desugared to one), or a plain
+   * `f`. Anything else refuses: no declaration by that name, any overload that is not pure, is public or external,
+   * takes a storage pointer or holds inline assembly, a library or function name a parameter, a local or a contract
+   * member shadows, and a call carrying options.
+   */
+  private isPureLibraryOrFreeCall(call: FunctionCallNode): boolean {
+    if (!(call.identifier instanceof IdentifierNode) || call.callOptions !== undefined) return false;
+    const { name } = call.identifier;
+    const dot = name.indexOf('.');
+    const shadowed = (candidate: string): boolean =>
+      this.functionNames.has(candidate) || this.contractNames.has(candidate);
+    if (dot >= 0) {
+      const library = name.slice(0, dot);
+      if (name.includes('.', dot + 1) || !this.libraryNames.has(library) || shadowed(library)) return false;
+    } else if (shadowed(name)) {
+      return false;
+    }
+    const overloads = this.freeFunctionsByName.get(name) ?? [];
+    return overloads.length > 0 && overloads.every((fn) => fn.isFreeFunction
+      && fn.modifiers.includes(FunctionModifier.PURE)
+      && !fn.modifiers.includes(FunctionModifier.PUBLIC) && !fn.modifiers.includes(FunctionModifier.EXTERNAL)
+      && !fn.parameters.some((parameter) => parameter.modifier.includes(Modifier.STORAGE))
+      && !(fn.body !== undefined && holdsAssembly(fn.body)));
   }
 
   // A key that can be evaluated twice (at the read and the write) with no observable difference.

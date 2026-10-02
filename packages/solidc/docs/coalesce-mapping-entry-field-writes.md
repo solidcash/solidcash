@@ -47,6 +47,12 @@ gates that make the reorder observationally identical:
   value the run wrote EARLIER for that field, or to the snapshot's field when the run has not written it, so a self-read
   (`m[k].b = m[k].a`) takes the `a` the run just wrote, as the statement-sequential program does.
 - **No value has side effects** (no call / instantiation / assignment expression) - pure values are order-independent.
+  The one call let through is to a `pure` library or free function (MasterChefV2's `amount.mul(...)`, desugared to
+  `BoringMath.mul(amount, ...)`): it reads no state, so it cannot see the half-written entry, and its only effect, a
+  revert, fails the transaction in either order. The pass runs before symbol analysis, so the callee is the free
+  function the parse-time name denotes (`L.f` with `L` a declared library, or a plain `f`); every overload must be
+  pure, internal and free of storage-pointer parameters and inline assembly, and a name a parameter, a local or a
+  contract member shadows refuses.
 
 Plus: same collection (a `sorted`/vmap struct-valued mapping), keys structurally equal across the run and side-effect
 free (a stable entry), and only whole-field writes (`keys.length == keyCount`; array-ELEMENT writes `m[k].a[i]=v` are

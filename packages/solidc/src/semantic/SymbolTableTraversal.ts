@@ -4640,6 +4640,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (node instanceof BranchNode && node.branchOps && node.branchOps.transferCount > 0) {
       const startIndex = transferInfos.length;
+      if (this.compilerOptions.composition !== 'per-call') {
+        // Direct convention: each arm is numbered from the branch's first slot, as switch arms are, and the branch
+        // spans its longest arm. Per-call value sends keep the numbering below.
+        let maximumEnd = startIndex;
+        for (const arm of [node.ifBlock, ...(node.elseBlock ? [node.elseBlock] : [])]) {
+          const armInfos = transferInfos.slice();
+          this.collectTransferStatements(arm, armInfos, seen);
+          maximumEnd = Math.max(maximumEnd, armInfos.length);
+        }
+        for (let index = startIndex; index < maximumEnd; index++) transferInfos.push({ transferIndex: index });
+        return;
+      }
       const ifIsLonger = node.branchOps.ifTransferCount >= node.branchOps.transferCount - node.branchOps.ifTransferCount;
       if (ifIsLonger || !node.elseBlock) {
         this.collectTransferStatements(node.ifBlock, transferInfos, seen);

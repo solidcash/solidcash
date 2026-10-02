@@ -98,30 +98,31 @@ export function deriveFullPhase2ApplyTransfers(
     const tcTransferOutputBase = absoluteDelegateSlot('tcTransfer')
       ?? stb.getTokenContainerTransferOutputBase();
 
-    // Satoshi transfer bytecodes: filter by output index range [transferOutputBase, tcTransferOutputBase)
-    const satoshiBytecodes = extractVerifiedValuesFromTrace(
-      fullTrace2, Op.OP_OUTPUTBYTECODE,
-      { min: transferOutputBase, max: transferOutputBase + satoshiTransferCount },
-    );
-    // Satoshi transfer amounts: same output index range
-    const satoshiValues = extractVerifiedValuesFromTrace(
-      fullTrace2, Op.OP_OUTPUTVALUE,
-      { min: transferOutputBase, max: transferOutputBase + satoshiTransferCount },
-    );
+    // Satoshi transfers, read per reserved slot: a conditional transfer the path skips leaves its slot unpinned.
+    const satoshiFields = Array.from({ length: satoshiTransferCount }, (_, slot) => {
+      const range = { min: transferOutputBase + slot, max: transferOutputBase + slot + 1 };
+      return {
+        bytecode: extractVerifiedValuesFromTrace(fullTrace2, Op.OP_OUTPUTBYTECODE, range)[0],
+        amount: extractVerifiedValuesFromTrace(fullTrace2, Op.OP_OUTPUTVALUE, range)[0],
+      };
+    });
 
     // Satoshi transfers: apply progressively (partial bytecodes + amounts).
     // The VM stops at the first mismatching OP_EQUALVERIFY, so for N transfers
-    // we may only extract K<N bytecodes per iteration. Apply what we have and
-    // keep placeholders for the rest - re-probing will extract more.
-    if (satoshiTransferCount > 0 && satoshiBytecodes.length > 0) {
+    // we may only extract K<N bytecodes per iteration. Apply what we have; re-probing will extract more.
+    if (satoshiTransferCount > 0 && satoshiFields.some((field) => field.bytecode !== undefined)) {
       stb.clearTransfers();
       derivedTransfers = [];
-      if (satoshiValues.length >= satoshiTransferCount) satoshiAmountsFullyDerived = true;
-      for (let i = 0; i < satoshiTransferCount; i++) {
-        const lbc = i < satoshiBytecodes.length ? satoshiBytecodes[i] : dummyLbc;
-        // Use extracted amount if available, otherwise keep placeholder
-        const amt = i < satoshiValues.length
-          ? decodeScriptNumber(satoshiValues[i]) : 1200n;
+      if (satoshiFields.every((field) => field.bytecode === undefined || field.amount !== undefined)) {
+        satoshiAmountsFullyDerived = true;
+      }
+      for (const field of satoshiFields) {
+        // An unpinned slot is inactive: the builder fills it with the balanced OP_TRUE output, outside the
+        // container's accounting.
+        const lbc = field.bytecode ?? new Uint8Array();
+        // Use the extracted amount if available, otherwise keep a placeholder.
+        const amt = field.bytecode === undefined ? 0n
+          : field.amount === undefined ? 1200n : decodeScriptNumber(field.amount);
         stb._addDerivedTransfer(lbc, amt);
         derivedTransfers.push({ lockingBytecode: lbc, amount: amt });
       }

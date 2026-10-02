@@ -204,6 +204,8 @@ export interface RuntimeLoopIterationDomainAbi {
 
 /** Exact bounded recurrence for a pre-test loop containing one external graph callsite. */
 export interface ExternalCallIterationDomainAbi {
+  /** Function-local lexical loop identity; equal recurrences in separate loops are not one execution domain. */
+  sourceLoopId?: number;
   counterName: string;
   initialValue: ExternalCallExpression;
   stepValue: ExternalCallExpression;

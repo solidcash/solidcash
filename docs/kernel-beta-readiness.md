@@ -644,6 +644,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   refuses any unresolved registered callback or repeated owner before that fallback. The exact refusal title and
   its immediately preceding sequential-loop title pass, with no Sink state change on refusal. No 10 KB limit or
   comprehensive suite was run.
+- 2026-10-02 lexical loop-order follow-up: a third call before a repeated Reader-result/Sink pair in the same
+  loop exposed an `OP_VERIFY` preflight failure: the worklist still grouped the earlier call's occurrences.
+  The compiler now publishes a function-local lexical identity with each affine call domain, so the SDK can
+  interleave all direct sibling effects in that one loop. Equal recurrences in separate loops retain distinct
+  identities and cannot be conflated. Nested sibling interleaving still requires its narrower producer-result
+  proof. The exact neutral three-call title went red-to-green in BCH-2026 VM; its immediately preceding
+  separate-loop title passes. The build passes; no comprehensive suite or 10 KB gate ran.
 
 ## Gate before the next leap
 

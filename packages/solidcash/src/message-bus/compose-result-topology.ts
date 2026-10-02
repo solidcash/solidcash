@@ -281,7 +281,8 @@ async function rebuildCallTopology(
             { iteration: 0, edge: sourceTemplate },
           ];
           const outerDomain = sourceTemplate.iterationDomain ?? sourceTemplate.nestedIterationDomains?.[0];
-          const outerDomainKey = outerDomain && semanticJson(outerDomain);
+          const outerDomainKey = outerDomain?.sourceLoopId === undefined
+            ? undefined : semanticJson(outerDomain);
           if (sourceTemplate.occurrence === 'loop') {
             const domain = sourceTemplate.iterationDomain;
             const nested = sourceTemplate.nestedIterationDomains;
@@ -497,17 +498,21 @@ async function rebuildCallTopology(
           next.push(...(unresolved ? existing : selected));
         }
       }
-      // A result-dependent consumer executes inside the same outer iteration as its producer. Identical
-      // affine domains in two separate lexical loops do not prove they interleave, so require the qualified
-      // producer-to-consumer effect span as well as a complete shared domain before changing source order.
+      // Direct siblings in one compiler-identified lexical loop execute in effect order per iteration.
+      // Nested calls retain the narrower producer-to-consumer proof: their inner iteration order needs a
+      // separately authenticated coordinate before unrelated sibling effects can be interleaved safely.
       const sharedDomain = next[0]?.call.topologyOuterDomainKey;
+      const directSiblings = next.every(({ call: child }) => {
+        const source = sources.find((candidate) => candidate.callsiteId === child.callsiteId);
+        return source?.iterationDomain?.sourceLoopId !== undefined && !source.nestedIterationDomains;
+      });
       if (sharedDomain !== undefined && next.every((child) =>
         child.call.topologyOuterDomainKey === sharedDomain
         && child.call.topologyOuterIteration !== undefined
         && child.call.sourceEffectOrdinal !== undefined)
-        && qualifiedInterleaveRanges.some((range) => range.domainKey === sharedDomain
+        && (directSiblings || qualifiedInterleaveRanges.some((range) => range.domainKey === sharedDomain
           && next.every((child) => child.call.sourceEffectOrdinal! >= range.firstEffect
-            && child.call.sourceEffectOrdinal! <= range.lastEffect))) {
+            && child.call.sourceEffectOrdinal! <= range.lastEffect)))) {
         next.sort((left, right) => left.call.topologyOuterIteration! - right.call.topologyOuterIteration!
           || left.call.sourceEffectOrdinal! - right.call.sourceEffectOrdinal!
           || (left.call.occurrenceIndex ?? 0) - (right.call.occurrenceIndex ?? 0));

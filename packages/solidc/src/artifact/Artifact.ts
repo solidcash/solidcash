@@ -311,6 +311,7 @@ const externalCallIterationDomains = (
   fn: FunctionDefinitionNode, compilerOptions: CompilerOptions,
   interfaces: readonly InterfaceNode[],
 ): ReadonlyMap<number, readonly {
+  sourceLoopId: number;
   counterName: string;
   initialValue: ExternalCallExpression;
   stepValue: ExternalCallExpression;
@@ -355,6 +356,7 @@ const externalCallIterationDomains = (
   };
   type LoopContext = { block: BlockNode; index: number; loop: WhileNode };
   const loopContexts = new Map<number, readonly LoopContext[]>();
+  const loopIds = new Map<WhileNode, number>();
   const indexLoopContexts = (
     value: unknown, stack: readonly LoopContext[] = [], ancestors = new Set<object>(),
   ): void => {
@@ -365,6 +367,7 @@ const externalCallIterationDomains = (
     if (value instanceof BlockNode) {
       for (const [index, statement] of (value.statements ?? []).entries()) {
         if (statement instanceof WhileNode) {
+          if (!loopIds.has(statement)) loopIds.set(statement, loopIds.size);
           // A call in the pre-test condition is not a body occurrence and therefore has no affine body domain.
           indexLoopContexts(statement.condition, stack, ancestors);
           indexLoopContexts(statement.block, [...stack, { block: value, index, loop: statement }], ancestors);
@@ -605,6 +608,7 @@ const externalCallIterationDomains = (
   };
 
   type Domain = {
+    sourceLoopId: number;
     counterName: string;
     initialValue: ExternalCallExpression;
     stepValue: ExternalCallExpression;
@@ -685,6 +689,7 @@ const externalCallIterationDomains = (
       ?? (compilerOptions.messageBusKernel === true ? ATOMIC_MESSAGE_BUS_MAX_ROWS : undefined);
       if (!initialValue || !stepValue || !continueCondition || maximumIterations === undefined) break;
       domains.push({
+        sourceLoopId: loopIds.get(loop)!,
         counterName: counter.name, initialValue, stepValue, continueCondition, maximumIterations,
       });
     }

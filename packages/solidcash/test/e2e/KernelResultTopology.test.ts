@@ -137,4 +137,60 @@ describe('kernel result-dependent call topology', () => {
     expect((await router.getState()).count).toBe(1n);
     expect((await coordinator.getState()).count).toBe(1n);
   }, 180_000);
+
+  it.each([
+    ['refreshes inner call arguments from one outer producer result', [7n], 17n, 2n, false],
+    ['refuses repeated outer producer results before broadcasting', [7n, 11n], 0n, 0n, true],
+  ] as const)('%s', async (_title, values, total, count, rejects) => {
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
+      interface IReader { function read(uint key) external view returns (uint); }
+      interface ISink { function record(uint value) external; }
+      contract Reader {
+        function read(uint key) public pure returns (uint) { return key + 1; }
+      }
+      contract Sink {
+        uint public total;
+        uint public count;
+        function record(uint value) public { this.total += value; this.count += 1; }
+      }
+      contract Router(address reader, address sink) {
+        uint public count;
+        function route(uint[] memory values) public {
+          for (uint i = 0; i < values.length; i++) {
+            uint base = IReader(reader).read(values[i]);
+            for (uint j = 0; j < 2; j++) {
+              ISink(sink).record(base + j);
+            }
+          }
+          this.count += 1;
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x76), provider);
+    for (let index = 0; index < 20; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const reader = await getContractFactory(artifacts.Reader, signer).deploy();
+    const sink = await getContractFactory(artifacts.Sink, signer).deploy();
+    const router = await getContractFactory(artifacts.Router, signer).deploy(
+      reader.inner.lockingBytecode, sink.inner.lockingBytecode,
+    );
+    router._registerResolvedExternal('IReader', reader);
+    router._registerResolvedExternal('ISink', sink);
+    if (rejects) {
+      await expect(router.call.route(values).send()).rejects.toThrow(
+        'messageBus: nested call repeats an outer producer occurrence',
+      );
+    } else {
+      const receipt = await router.call.route(values).send();
+      const outpoints = receipt.inputs.map((input) =>
+        `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+      expect(new Set(outpoints).size).toBe(outpoints.length);
+    }
+    expect((await sink.getState()).total).toBe(total);
+    expect((await sink.getState()).count).toBe(count);
+    expect((await router.getState()).count).toBe(rejects ? 0n : 1n);
+  }, 180_000);
 });

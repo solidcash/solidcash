@@ -263,7 +263,7 @@ async function rebuildCallTopology(
           ) === sourceTemplate.sourceLogicalIndex);
           if (previous !== undefined && ctx !== undefined && !hasChangedDependency(
             [sourceTemplate.condition, sourceTemplate.iterationDomain, sourceTemplate.nestedIterationDomains,
-              sourceTemplate.addressSource], childResults,
+              sourceTemplate.argSources, sourceTemplate.rawArgSources, sourceTemplate.addressSource], childResults,
             ctx.descriptors[previous].args, call.args,
           )) {
             // Argument propagation already refreshed existing rows. A result unrelated to this edge's

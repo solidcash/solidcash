@@ -626,6 +626,15 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   retains graph compilation. A `do ... while (false)` call still selects the bus because its body executes once.
   The exact loop-selection title and its immediately preceding literal-branch title pass individually; no broad
   test suite ran.
+- 2026-10-02 repeated-return topology checkpoint under relaxed showcase capacity: a neutral Router loop that
+  reads one Reader result and sends two dependent Sink calls passes BCH-2026 VM with the exact authenticated
+  result in each argument. Its two-outer variant exposed a real ordering gap: the atomic worklist groups both
+  Reader occurrences before the four Sink occurrences, but the compiled handler executes Reader/Sink/Sink for
+  each outer iteration. A planner-only occurrence pairing still fails the VM emission-order check, so it was
+  not retained. The legacy fallback previously broadcast only the first dependent Sink call; discovery now
+  refuses this shape before broadcast, with zero Router/Sink state changes. The exact refusal title and its
+  immediately preceding one-outer title pass individually. Positive support requires source-execution-order
+  worklist interleaving and occurrence-qualified result arguments; no 10 KB limit was involved or tested here.
 
 ## Gate before the next leap
 

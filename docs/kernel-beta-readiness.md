@@ -176,6 +176,15 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   now passes `compileFileSplit` at the default whole-spend gate with a 2,749-byte root and three bound facets
   of 7,559, 8,523, and 7,362 redeem-script bytes. This is compiler capacity evidence, not a deployment or
   arbitration callback VM proof. UnicrowClaim remains refused; no broad suite or beta gate was run.
+- 2026-10-02 UnicrowClaim capacity probes: the unchanged default split still refuses `claim` at 10,256 estimated
+  whole-spend bytes. In a diagnostic, in-memory source variant, returning the existing fixed array directly
+  instead of reconstructing it from all five indexed elements reduced the facet redeem script from 9,090 to
+  8,917 bytes, only 173 of the required 256. Hoisting the two identical split-calculation array literals into
+  the existing local produced a much smaller script only because kernel admission refused `claim` and omitted
+  its graph route; that number is not deployability evidence. Adding an extra window-8 outlining attempt to the
+  compiler increased the unchanged claim estimate to 10,293 bytes, so the experiment was reverted. Source,
+  compiler, and generated artifacts are unchanged after these probes; `yarn build` passes. A real graph-preserving
+  reduction, not a smaller spend reserve or an omitted route, remains necessary.
 - 2026-10-02 focused proxy-application checkpoint: the unchanged Marketplace `job posting > post job 1` title
   now reaches its event-data assertion but remains red (1 selected, 65 skipped). The proxy application's
   `abi.encodePacked(uint160(token_))` publishes a 20-byte identity, as the existing compiler cast test requires;

@@ -41806,6 +41806,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_2DROP, loc);
       this.popFromStack(2);
     }
+
+    // A data record's covenant self-authorizes on any master spend too, so an extra data NFT co-spent beside a
+    // collection read -- which skips the C3 count because it has entry access -- could be rewritten the same way.
+    // The records this function names are exactly its accessed data NFTs, each recreated by the auto covenant, so
+    // pin the data-NFT address to that count on both sides.
+    if (this.dataNftCount > 0) {
+      const addr = '(__data_census_addr)';
+      const expected = '(__data_census_expected)';
+      this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emitTakeFirst32(loc);
+      this.pushToStack(addr);
+      this.emitDataNftLbc(loc);
+      this.stack[0] = addr;
+      this.emit(encodeInt(BigInt(this.compactOffsetMap.size)), loc);
+      this.pushToStack(expected);
+      this.emitAddressCountCheck(false, loc);
+      this.emitAddressCountCheck(true, loc);
+      this.emit(Op.OP_2DROP, loc);
+      this.popFromStack(2);
+    }
   }
 
   /** [addr, expected] -> [addr, expected]: the inputs (outputs) locked to addr number exactly expected. */

@@ -125,6 +125,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   check before its broad test commands. A single current UnicrowClaim kernel spot compile measured 16,875 redeem-
   script bytes (still over the 10,000-byte limit), 2,640 route bytes, and zero caught compiler attempts. This is
   not a deterministic cold-matrix result and does not repin the stale manifest baseline.
+- 2026-10-02 size-breakdown follow-up: one fresh, single-root UnicrowClaim diagnostic compile still emits a
+  16,875-byte redeem script. Its 2,640-byte route is not the dominant cost: five routed handler bodies total
+  5,731 bytes (the two claim handlers are 2,651 and 2,606), direct selector bodies total 5,599 bytes, and
+  163 outlined source spans total 2,426 bytes. Among 207 invoke bodies, exact duplicate bytecode accounts for
+  at most 388 raw body bytes before dispatch overhead. Merely deduplicating identical bodies cannot close the
+  6,875-byte deployability gap; this is a spot diagnostic, not a cold-matrix result or manifest repin.
 - 2026-10-02 focused proxy-application checkpoint: the unchanged Marketplace `job posting > post job 1` title
   now reaches its event-data assertion but remains red (1 selected, 65 skipped). The proxy application's
   `abi.encodePacked(uint160(token_))` publishes a 20-byte identity, as the existing compiler cast test requires;
@@ -208,6 +214,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   The compiler preserves the source callsite-to-returned-array link before memory lowering; the SDK retains one
   physical callsite and resolves each reached occurrence from its planned arguments. This is a focused checkpoint,
   not evidence that the 66-title beta gate or the previously observed shared-owner callback cycle is resolved.
+- A static audit of the same-owner callback path identifies two separate missing proofs: the physical-owner
+  derivation plan deliberately declines cyclic components until authenticated convergence exists, while late
+  transitive expansion searches only external-call groups for an existing owner and therefore cannot identify
+  the transaction root as the physical carrier of an A→B→A callback. Removing the legacy circular-call refusal
+  alone would leave a second spend of A's master UTXO; no callback acceptance change was made on this evidence.
 - Internally consumed repeated returns now use compact carriers only for a dense zero-based reached prefix; sparse
   source iterations and downstream graph consumers remain fail-closed without occurrence-qualified identities.
   Read-only argument-keyed entry handlers publish two authenticated fixed tuple lanes, independent of the route's

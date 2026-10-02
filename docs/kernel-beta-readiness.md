@@ -451,8 +451,9 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   for the unchanged `UnicrowClaim.claimMultiple` → `claimPayments` → `sendEscrowShare` edge, retaining the
   input-array-length domain added earlier. The SDK binds each exact outer induction coordinate before evaluating
   the inner loop, and a neutral VM title now executes four `Sink.record` rows across two outer occurrences; its
-  immediately preceding one-outer title passes. Repeated outer paths requiring producer results remain fail-closed
-  pending occurrence-qualified return lanes. The compiler withholds a nested domain if an inner bound mutates
+  immediately preceding one-outer title passes. At this checkpoint, repeated outer paths requiring producer
+  results remained fail-closed; the later occurrence-qualified interleaving checkpoint below supersedes that
+  limitation for an exact shared outer domain. The compiler withholds a nested domain if an inner bound mutates
   inside its outer loop. The unchanged proxy `claimMultiple([1])` title also
   passes with the seeded zero-amount escrow, including its immediately preceding arbitration title. A later
   funded claim also passes BCH-2026 preflight and sends 1,000 sats to the seller's P2PKH locking bytecode, with
@@ -626,15 +627,23 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   retains graph compilation. A `do ... while (false)` call still selects the bus because its body executes once.
   The exact loop-selection title and its immediately preceding literal-branch title pass individually; no broad
   test suite ran.
-- 2026-10-02 repeated-return topology checkpoint under relaxed showcase capacity: a neutral Router loop that
-  reads one Reader result and sends two dependent Sink calls passes BCH-2026 VM with the exact authenticated
-  result in each argument. Its two-outer variant exposed a real ordering gap: the atomic worklist groups both
-  Reader occurrences before the four Sink occurrences, but the compiled handler executes Reader/Sink/Sink for
-  each outer iteration. A planner-only occurrence pairing still fails the VM emission-order check, so it was
-  not retained. The legacy fallback previously broadcast only the first dependent Sink call; discovery now
-  refuses this shape before broadcast, with zero Router/Sink state changes. The exact refusal title and its
-  immediately preceding one-outer title pass individually. Positive support requires source-execution-order
-  worklist interleaving and occurrence-qualified result arguments; no 10 KB limit was involved or tested here.
+- 2026-10-02 repeated-return topology checkpoint under relaxed showcase capacity: a neutral Router loop exposed
+  that the atomic worklist grouped both Reader occurrences before four dependent Sink occurrences, while the
+  compiled handler executes Reader/Sink/Sink per outer iteration. The first response fail-closed instead of
+  allowing the legacy builder to broadcast only the first Sink call. The follow-up now selects exact
+  authenticated producer results by outer occurrence, interleaves compiler-discovered children only when they
+  share the same published affine outer domain and source-effect ordinals, and feeds that ordered schedule to the
+  symbolic worklist. The complete two-outer route passes BCH-2026 VM with Sink values 8/9/12/13 and count four;
+  its immediately preceding one-outer title passes. Unqualified producer domains still refuse before broadcast.
+  A second red fixture found that two sequential, identical-bound loops published a domain only for the first:
+  the compiler's recurrence replay stopped at the earlier loop, and legacy send silently settled just its first
+  call. Replay now crosses a prior loop only when its effects cannot change the later recurrence's inputs; the
+  two separate domains remain in source order and both Sink owners settle two calls each in the VM. Its exact
+  title and immediately preceding repeated-return title pass. A mutated-bound variant still cannot publish a
+  later domain; its previously successful legacy fallback broadcast a partial first row. Automatic discovery now
+  refuses any unresolved registered callback or repeated owner before that fallback. The exact refusal title and
+  its immediately preceding sequential-loop title pass, with no Sink state change on refusal. No 10 KB limit or
+  comprehensive suite was run.
 
 ## Gate before the next leap
 

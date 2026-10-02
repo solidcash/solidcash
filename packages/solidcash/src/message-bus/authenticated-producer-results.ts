@@ -49,6 +49,14 @@ export class AuthenticatedProducerResults implements ReadonlyMap<number, Functio
     return values.values().next().value;
   }
 
+  /** Select only one compiler-authenticated source occurrence, never a scalar fallback. */
+  getOccurrence(occurrence: ProducerResultOccurrence): FunctionArgument | undefined {
+    const { callsiteId, sourceCallsiteId = callsiteId, sourceLogicalIndex, occurrenceIndex = 0 } = occurrence;
+    return this.lanes.get(callsiteId)?.get(JSON.stringify([
+      sourceCallsiteId, sourceLogicalIndex ?? null, occurrenceIndex,
+    ]));
+  }
+
   keys(): MapIterator<number> { return this.lanes.keys(); }
 
   *values(): MapIterator<FunctionArgument> {

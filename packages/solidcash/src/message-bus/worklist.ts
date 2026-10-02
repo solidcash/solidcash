@@ -100,6 +100,17 @@ export interface DeriveCompiledGraphOptions {
     kind: 'conditional' | 'loop';
   }) => number;
   /**
+   * Compiler-discovered direct children in source execution order when two loop callsites share one
+   * authenticated outer domain. This is only a traversal schedule: every row still binds to its published
+   * callsite/occurrence and the caller's VM emission covenant authenticates the resulting order.
+   */
+  orderedOccurrences?: (context: {
+    participant: WorklistParticipant;
+    function: string;
+    selector?: string;
+    invocation: number;
+  }) => readonly { callsiteId: number; occurrence: number }[] | undefined;
+  /**
    * Exact reached source-loop indices for one runtime-sized row template in a collapsed repeated-call batch.
    * Transparent graph discovery supplies this when predicates can remove individual loop iterations; ordinary
    * callers can omit it when the compiler-authored array cardinality alone determines the reached rows.
@@ -500,7 +511,32 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       );
     }
     active.set(key, activeCount + 1);
-    for (const call of fn.externalCalls ?? []) {
+    const publishedCalls = fn.externalCalls ?? [];
+    const ordered = options.orderedOccurrences?.({
+      participant, function: functionName, ...(fn.selector !== undefined && { selector: fn.selector }), invocation,
+    });
+    const scheduledCounts = new Map<number, number>();
+    const scheduledCalls = ordered?.map(({ callsiteId, occurrence }) => {
+      const call = publishedCalls.find((candidate) => candidate.callsiteId === callsiteId);
+      if (!call || call.batchInvocations || call.opaqueReturn || call.interfaceName === '__raw__'
+        || call.selectorArrayVar || call.fnPtrCall) {
+        throw new Error(`messageBus: ordered occurrence ${callsiteId} is not a typed non-batched callsite`);
+      }
+      const expected = scheduledCounts.get(callsiteId) ?? 0;
+      if (occurrence !== expected) {
+        throw new Error(`messageBus: ordered callsite ${callsiteId} occurrence ${occurrence} is not ${expected}`);
+      }
+      scheduledCounts.set(callsiteId, expected + 1);
+      return { call, occurrence };
+    });
+    if (scheduledCalls) {
+      for (const call of publishedCalls) {
+        const count = scheduledCounts.get(call.callsiteId!) ?? 0;
+        assertPlannedOccurrenceCount(call, count);
+      }
+    }
+    for (const { call, occurrence: scheduledOccurrence } of scheduledCalls
+      ?? publishedCalls.map((publishedCall) => ({ call: publishedCall, occurrence: undefined }))) {
       // Recognize a raw edge by its compiler-authored identity, not by opaqueReturn. A VOID low-level call is
       // a raw edge that returns nothing, so it must not claim opaqueReturn - that flag means "opaque
       // integrity-bound return". Keying the branch off the flag left the honestly published void artifact
@@ -797,8 +833,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         continue;
       }
       const occurrenceKind = call.occurrence ?? 'once';
-      let count = 1;
-      if (occurrenceKind !== 'once') {
+      let count = scheduledCalls ? scheduledCounts.get(call.callsiteId!) ?? 0 : 1;
+      if (occurrenceKind !== 'once' && !scheduledCalls) {
         count = options.occurrence?.({
           participant,
           function: functionName,
@@ -872,7 +908,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         }
         continue;
       }
-      for (let reached = 0; reached < count; reached += 1) {
+      for (const reached of scheduledOccurrence === undefined
+        ? Array.from({ length: count }, (_, occurrence) => occurrence) : [scheduledOccurrence]) {
         const resolvedTarget = takeTarget(call, participant, fn, functionName, invocation, reached);
         const target = resolvedTarget.participant;
         const targetFunction = functionAbi(target, call.functionName, resolvedTarget.selector);

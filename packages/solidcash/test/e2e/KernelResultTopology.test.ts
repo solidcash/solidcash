@@ -139,9 +139,9 @@ describe('kernel result-dependent call topology', () => {
   }, 180_000);
 
   it.each([
-    ['refreshes inner call arguments from one outer producer result', [7n], 17n, 2n, false],
-    ['refuses repeated outer producer results before broadcasting', [7n, 11n], 0n, 0n, true],
-  ] as const)('%s', async (_title, values, total, count, rejects) => {
+    ['refreshes inner call arguments from one outer producer result', [7n], 17n, 2n],
+    ['pairs repeated outer producer results with their inner call rows', [7n, 11n], 42n, 4n],
+  ] as const)('%s', async (_title, values, total, count) => {
     const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       interface IReader { function read(uint key) external view returns (uint); }
       interface ISink { function record(uint value) external; }
@@ -179,18 +179,89 @@ describe('kernel result-dependent call topology', () => {
     );
     router._registerResolvedExternal('IReader', reader);
     router._registerResolvedExternal('ISink', sink);
-    if (rejects) {
-      await expect(router.call.route(values).send()).rejects.toThrow(
-        'messageBus: nested call repeats an outer producer occurrence',
-      );
-    } else {
-      const receipt = await router.call.route(values).send();
-      const outpoints = receipt.inputs.map((input) =>
-        `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
-      expect(new Set(outpoints).size).toBe(outpoints.length);
-    }
+    const receipt = await router.call.route(values).send();
+    const outpoints = receipt.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    expect(new Set(outpoints).size).toBe(outpoints.length);
     expect((await sink.getState()).total).toBe(total);
     expect((await sink.getState()).count).toBe(count);
-    expect((await router.getState()).count).toBe(rejects ? 0n : 1n);
+    expect((await router.getState()).count).toBe(1n);
+  }, 180_000);
+
+  it('keeps separate identical loop domains in source order', async () => {
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
+      interface ILeft { function record(uint value) external; }
+      interface IRight { function record(uint value) external; }
+      contract Sink {
+        uint public total;
+        uint public count;
+        function record(uint value) public { this.total += value; this.count += 1; }
+      }
+      contract Router(address left, address right) {
+        function route(uint[] memory values) public {
+          for (uint i = 0; i < values.length; i++) { ILeft(left).record(values[i]); }
+          for (uint i = 0; i < values.length; i++) { IRight(right).record(values[i] + 10); }
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
+    const sourceCalls = artifacts.Router.abi.find((entry) => entry.name === 'route')?.externalCalls;
+    expect(sourceCalls).toHaveLength(2);
+    expect(sourceCalls?.every((call) => call.iterationDomain !== undefined)).toBe(true);
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x77), provider);
+    for (let index = 0; index < 20; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const left = await getContractFactory(artifacts.Sink, signer).deploy();
+    const right = await getContractFactory(artifacts.Sink, signer).deploy();
+    const router = await getContractFactory(artifacts.Router, signer).deploy(
+      left.inner.lockingBytecode, right.inner.lockingBytecode,
+    );
+    router._registerResolvedExternal('ILeft', left);
+    router._registerResolvedExternal('IRight', right);
+    const receipt = await router.call.route([7n, 11n]).send();
+    const outpoints = receipt.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    expect(new Set(outpoints).size).toBe(outpoints.length);
+    expect((await left.getState()).total).toBe(18n);
+    expect((await left.getState()).count).toBe(2n);
+    expect((await right.getState()).total).toBe(38n);
+    expect((await right.getState()).count).toBe(2n);
+  }, 180_000);
+
+  it('refuses an unproven later loop before broadcasting any earlier row', async () => {
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
+      interface ISink { function record(uint value) external; }
+      contract Sink {
+        uint public total;
+        uint public count;
+        function record(uint value) public { this.total += value; this.count += 1; }
+      }
+      contract Router(address sink) {
+        function route(uint[] memory values) public {
+          uint bound = values.length;
+          for (uint i = 0; i < values.length; i++) {
+            bound = 1;
+            ISink(sink).record(values[i]);
+          }
+          for (uint j = 0; j < bound; j++) { ISink(sink).record(values[j] + 10); }
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true, sortedMappingsAll: false });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x78), provider);
+    for (let index = 0; index < 20; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const sink = await getContractFactory(artifacts.Sink, signer).deploy();
+    const router = await getContractFactory(artifacts.Router, signer).deploy(sink.inner.lockingBytecode);
+    router._registerResolvedExternal('ISink', sink);
+    await expect(router.call.route([7n, 11n]).send()).rejects.toThrow(
+      'messageBus: result-dependent loop has no compiler iteration domain',
+    );
+    expect((await sink.getState()).total).toBe(0n);
+    expect((await sink.getState()).count).toBe(0n);
   }, 180_000);
 });

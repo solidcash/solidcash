@@ -112,13 +112,17 @@ function usesAnotherLoopCounter(value: unknown, innerCounter: string, seen = new
   return Object.values(value).some((child) => usesAnotherLoopCounter(child, innerCounter, seen));
 }
 
-/** Repeated outer rows cannot borrow an unqualified return value from another occurrence. */
-function usesProducerResult(value: unknown, seen = new Set<object>()): boolean {
-  if (!value || typeof value !== 'object' || seen.has(value)) return false;
+/** Identify the exact producer callsites whose results a nested edge consumes. */
+function producerResultCallsites(
+  value: unknown, ids = new Set<number>(), seen = new Set<object>(),
+): ReadonlySet<number> {
+  if (!value || typeof value !== 'object' || seen.has(value)) return ids;
   seen.add(value);
-  const kind = (value as { kind?: string }).kind;
-  if (kind === 'producerResult' || kind === 'externalCall') return true;
-  return Object.values(value).some((child) => usesProducerResult(child, seen));
+  const node = value as { kind?: string; callsiteId?: number };
+  if ((node.kind === 'producerResult' || node.kind === 'externalCall')
+    && node.callsiteId !== undefined) ids.add(node.callsiteId);
+  for (const child of Object.values(value)) producerResultCallsites(child, ids, seen);
+  return ids;
 }
 
 /** Select the sole reached outer coordinate before evaluating the inner loop. This rewrites metadata only;
@@ -219,11 +223,12 @@ async function rebuildCallTopology(
       const sources = fn.externalCalls;
       const args = projectMessageBusHandlerArguments(artifact, fn.name, fn.selector, call.args);
       let state = { ...await stateOf(call.contract) };
-      const returnsFor = (argSources: readonly ArgSource[], condition?: ExternalCallAbi):
+      const returnsFor = (argSources: readonly ArgSource[], condition?: ExternalCallAbi,
+        producerOccurrenceIndex?: number):
       Map<string, FunctionArgument> => externalReturnsForCallsites(argSources, childResults, sources,
         condition?.callsiteId === undefined ? undefined : {
           callsiteId: condition.callsiteId, resultConsumers: fn.resultConsumers, lane: 'condition',
-        });
+        }, producerOccurrenceIndex);
       const evaluate = (expression: ExternalCallExpression, iteration: number,
         returns: ReadonlyMap<string, FunctionArgument>, bindings?: ReadonlyMap<string, bigint>):
       FunctionArgument | undefined => evaluateExternalExpression(expressionHost,
@@ -240,6 +245,7 @@ async function rebuildCallTopology(
         }, expressions, [...args], artifact, state, fn.inputs, self, iterations);
       };
       const next: Child[] = [];
+      const qualifiedInterleaveRanges: Array<{ domainKey: string; firstEffect: number; lastEffect: number }> = [];
       for (const source of sources) {
         // A prepared call may omit its callsiteId when the compiled graph can infer the exact edge from source
         // order. Once planned, that graph identity is authoritative: filtering by the optional descriptor field
@@ -271,7 +277,11 @@ async function rebuildCallTopology(
             next.push(...existing);
             continue;
           }
-          let occurrences = [{ iteration: 0, edge: sourceTemplate }];
+          let occurrences: Array<{ iteration: number; edge: typeof sourceTemplate; outerIndex?: number }> = [
+            { iteration: 0, edge: sourceTemplate },
+          ];
+          const outerDomain = sourceTemplate.iterationDomain ?? sourceTemplate.nestedIterationDomains?.[0];
+          const outerDomainKey = outerDomain && semanticJson(outerDomain);
           if (sourceTemplate.occurrence === 'loop') {
             const domain = sourceTemplate.iterationDomain;
             const nested = sourceTemplate.nestedIterationDomains;
@@ -296,14 +306,32 @@ async function rebuildCallTopology(
                 });
               };
               if (domain) occurrences = (await domainIndices(domain)).map((iteration) => ({
-                iteration, edge: sourceTemplate,
+                iteration, edge: sourceTemplate, outerIndex: iteration,
               }));
               else {
                 const outer = await domainIndices(nested![0]!);
-                // A repeated outer producer result still needs occurrence-qualified consumer lanes. An exact
-                // argument-only domain can instead enumerate the Cartesian row order without such a lane.
-                if (outer.length > 1 && usesProducerResult(sourceTemplate)) {
+                // A nested consumer can select its outer producer occurrence only if one unconditional,
+                // non-batched producer precedes it in the same exact compiler-published outer domain.
+                const producerCallsites = [...producerResultCallsites(sourceTemplate)];
+                if (outer.length > 1 && producerCallsites.some((callsiteId) => {
+                  const producer = sources.find((candidate) => candidate.callsiteId === callsiteId);
+                  return !producer || producer.batchInvocations || producer.condition
+                    || producer.occurrence !== 'loop' || !producer.iterationDomain
+                    || producer.sourceEffectOrdinal === undefined
+                    || sourceTemplate.sourceEffectOrdinal === undefined
+                    || producer.sourceEffectOrdinal >= sourceTemplate.sourceEffectOrdinal
+                    || semanticJson(producer.iterationDomain) !== semanticJson(nested![0]);
+                })) {
                   throw new Error('messageBus: nested call repeats an outer producer occurrence');
+                }
+                if (outer.length > 1 && producerCallsites.length > 0 && outerDomainKey !== undefined) {
+                  qualifiedInterleaveRanges.push({
+                    domainKey: outerDomainKey,
+                    firstEffect: Math.min(...producerCallsites.map((callsiteId) => sources.find(
+                      (candidate) => candidate.callsiteId === callsiteId,
+                    )!.sourceEffectOrdinal!)),
+                    lastEffect: sourceTemplate.sourceEffectOrdinal!,
+                  });
                 }
                 if (outer.length === 0) occurrences = [];
                 else {
@@ -326,7 +354,7 @@ async function rebuildCallTopology(
                     )) throw new Error('messageBus: nested call has an unresolved loop coordinate');
                     const inner = bindOuterLoopCounter(nested![1]!, nested![0]!.counterName, coordinate);
                     for (const iteration of await domainIndices(inner)) {
-                      occurrences.push({ iteration, edge });
+                      occurrences.push({ iteration, edge, outerIndex });
                       if (occurrences.length > ATOMIC_MESSAGE_BUS_MAX_ROWS) {
                         throw new Error('messageBus: nested call exceeds the graph row limit');
                       }
@@ -343,9 +371,10 @@ async function rebuildCallTopology(
           const selected: Child[] = [];
           let unresolved = false;
           let occurrence = 0;
-          for (const { iteration, edge: template } of occurrences) {
+          for (const { iteration, edge: template, outerIndex } of occurrences) {
             if (template.condition) {
-              const returns = returnsFor([{ kind: 'expression', expression: template.condition }], template);
+              const returns = returnsFor([{ kind: 'expression', expression: template.condition }],
+                template, outerIndex);
               await hydrate([template.condition], [iteration], returns);
               const active = evaluate(template.condition, iteration, returns);
               if (active === undefined) { unresolved = true; break; }
@@ -361,7 +390,7 @@ async function rebuildCallTopology(
             ) === reachedOccurrence);
             const argSources = template.rawArgSources ?? template.argSources ?? [];
             const addressSources = template.addressSource ? [template.addressSource] : [];
-            const returns = returnsFor([...argSources, ...addressSources]);
+            const returns = returnsFor([...argSources, ...addressSources], undefined, outerIndex);
             await hydrate([...argSources, ...addressSources].map((argSource) =>
               ({ kind: 'source', source: argSource })), [iteration], returns);
             const sourceArgs = logical._resolveExternalArgs(argSources, [...args], artifact, state, fn.inputs,
@@ -408,7 +437,8 @@ async function rebuildCallTopology(
             const snapshot = state;
             const resolveArgsFromResults: Prepared['resolveArgsFromResults'] = (updated, frame) => {
               const resolved = logical._resolveExternalArgs(argSources, [...(frame ?? args)], artifact,
-                snapshot, fn.inputs, externalReturnsForCallsites(argSources, updated, sources),
+                snapshot, fn.inputs, externalReturnsForCallsites(argSources, updated, sources,
+                  undefined, outerIndex),
                 iteration, false, self, incoming);
               return rawPayload && resolved
                 ? decodeCanonicalRawInvocation(childArtifact, resolved[0]).args : resolved;
@@ -417,6 +447,10 @@ async function rebuildCallTopology(
               && prior.call.executor === executor) {
               const rebuilt = rebuildPreparedInvocation(prior.call, childArgs, undefined);
               rebuilt.resolveArgsFromResults = resolveArgsFromResults;
+              if (outerDomainKey !== undefined && outerIndex !== undefined) {
+                rebuilt.topologyOuterDomainKey = outerDomainKey;
+                rebuilt.topologyOuterIteration = outerIndex;
+              }
               selected.push({ call: rebuilt, previous: prior.previous });
               occurrence += 1;
               continue;
@@ -426,6 +460,9 @@ async function rebuildCallTopology(
               callsiteId: template.callsiteId, sourceCallsiteId: template.sourceCallsiteId,
               occurrenceIndex: occurrence, sourceLogicalIndex: template.sourceLogicalIndex,
               sourceEffectOrdinal: template.sourceEffectOrdinal,
+              ...(outerDomainKey !== undefined && outerIndex !== undefined && {
+                topologyOuterDomainKey: outerDomainKey, topologyOuterIteration: outerIndex,
+              }),
               ...(template.sourceLogicalIndex !== undefined && {
                 batchLogicalIndex: template.sourceLogicalIndex, batchOccurrenceIndex: occurrence,
               }),
@@ -459,6 +496,21 @@ async function rebuildCallTopology(
           }
           next.push(...(unresolved ? existing : selected));
         }
+      }
+      // A result-dependent consumer executes inside the same outer iteration as its producer. Identical
+      // affine domains in two separate lexical loops do not prove they interleave, so require the qualified
+      // producer-to-consumer effect span as well as a complete shared domain before changing source order.
+      const sharedDomain = next[0]?.call.topologyOuterDomainKey;
+      if (sharedDomain !== undefined && next.every((child) =>
+        child.call.topologyOuterDomainKey === sharedDomain
+        && child.call.topologyOuterIteration !== undefined
+        && child.call.sourceEffectOrdinal !== undefined)
+        && qualifiedInterleaveRanges.some((range) => range.domainKey === sharedDomain
+          && next.every((child) => child.call.sourceEffectOrdinal! >= range.firstEffect
+            && child.call.sourceEffectOrdinal! <= range.lastEffect))) {
+        next.sort((left, right) => left.call.topologyOuterIteration! - right.call.topologyOuterIteration!
+          || left.call.sourceEffectOrdinal! - right.call.sourceEffectOrdinal!
+          || (left.call.occurrenceIndex ?? 0) - (right.call.occurrenceIndex ?? 0));
       }
       if (next.length !== children.length || next.some((child, index) =>
         child.previous === undefined || child.previous !== children[index].previous

@@ -10,6 +10,7 @@ import type {
   ExternalResultConsumerAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { AuthenticatedProducerResults } from '../message-bus/authenticated-producer-results.js';
 
 export function externalReturnsForCallsites(
   argSources: readonly ArgSource[] | undefined,
@@ -20,6 +21,7 @@ export function externalReturnsForCallsites(
     resultConsumers?: readonly ExternalResultConsumerAbi[];
     lane?: 'condition';
   },
+  producerOccurrenceIndex?: number,
 ): Map<string, FunctionArgument> {
   const resolved = new Map<string, FunctionArgument>();
   const producerById = new Map<number, ExternalCallAbi>();
@@ -92,7 +94,13 @@ export function externalReturnsForCallsites(
           );
         }
       }
-      const result = results.get(expression.callsiteId);
+      const result = producerOccurrenceIndex === undefined
+        || !(results instanceof AuthenticatedProducerResults)
+        ? results.get(expression.callsiteId)
+        : results.getOccurrence({
+          callsiteId: expression.callsiteId,
+          occurrenceIndex: producerOccurrenceIndex,
+        });
       if (result !== undefined && (producer.returnTypes?.length ?? 0) > 1
         && (!Array.isArray(result) || result.length !== producer.returnTypes!.length)) {
         throw new Error(
@@ -106,7 +114,13 @@ export function externalReturnsForCallsites(
       return;
     }
     if (expression.kind !== 'externalCall' || expression.callsiteId === undefined) return;
-    const result = results.get(expression.callsiteId);
+    const result = producerOccurrenceIndex === undefined
+      || !(results instanceof AuthenticatedProducerResults)
+      ? results.get(expression.callsiteId)
+      : results.getOccurrence({
+        callsiteId: expression.callsiteId,
+        occurrenceIndex: producerOccurrenceIndex,
+      });
     if (result !== undefined) resolved.set(JSON.stringify(expression), result);
   };
   for (const [argument, source] of (argSources ?? []).entries()) visit(source.expression, argument);

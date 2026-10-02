@@ -309,6 +309,7 @@ export const occurrenceInfoOf = (
  */
 const externalCallIterationDomains = (
   fn: FunctionDefinitionNode, compilerOptions: CompilerOptions,
+  interfaces: readonly InterfaceNode[],
 ): ReadonlyMap<number, readonly {
   counterName: string;
   initialValue: ExternalCallExpression;
@@ -497,19 +498,27 @@ const externalCallIterationDomains = (
     }
     return true;
   };
-  const replayBefore = (block: BlockNode, target: Node, state: ReplayState): boolean => {
+  const replayBefore = (
+    block: BlockNode, target: Node, state: ReplayState,
+    canSkipPriorLoop: (loop: WhileNode) => boolean,
+  ): boolean => {
     for (const statement of block.statements ?? []) {
       if (statement === target) return true;
       if (!contains(statement, target)) {
+        // A completed earlier loop need not be symbolically replayed if it cannot change any input to
+        // this recurrence. Its own calls/effects remain separate compiler graph edges.
+        if (statement instanceof WhileNode && canSkipPriorLoop(statement)) continue;
         if (!processBlock(new BlockNode([statement]), state)) return false;
         continue;
       }
-      if (statement instanceof BlockNode) return replayBefore(statement, target, state);
-      if (statement instanceof UncheckedNode) return replayBefore(statement.block, target, state);
+      if (statement instanceof BlockNode) return replayBefore(statement, target, state, canSkipPriorLoop);
+      if (statement instanceof UncheckedNode) return replayBefore(statement.block, target, state, canSkipPriorLoop);
       if (statement instanceof BranchNode) {
-        if (contains(statement.ifBlock, target)) return replayBefore(statement.ifBlock, target, state);
+        if (contains(statement.ifBlock, target)) {
+          return replayBefore(statement.ifBlock, target, state, canSkipPriorLoop);
+        }
         if (statement.elseBlock && contains(statement.elseBlock, target)) {
-          return replayBefore(statement.elseBlock, target, state);
+          return replayBefore(statement.elseBlock, target, state, canSkipPriorLoop);
         }
       }
       return false;
@@ -553,6 +562,46 @@ const externalCallIterationDomains = (
     };
     visit(root);
     return result;
+  };
+
+  const recurrenceHasLiveExternalRead = (root: ExpressionNode): boolean => {
+    let found = false;
+    const visit = (value: unknown, seen = new Set<object>()): void => {
+      if (found || !(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof StateAccessNode || value instanceof MappingAccessNode
+        || value instanceof FunctionCallNode || value instanceof ExternalFunctionCallNode
+        || value instanceof LowLevelCallNode) { found = true; return; }
+      for (const [key, child] of Object.entries(value)) {
+        if (skip.has(key)) continue;
+        if (child instanceof Node) visit(child, seen);
+        else if (Array.isArray(child)) child.forEach((item) => visit(item, seen));
+      }
+    };
+    visit(root);
+    return found;
+  };
+
+  const interfaceNames = new Set(interfaces.map((iface) => iface.name));
+  const priorLoopHasOpaqueLocalEffect = (root: WhileNode): boolean => {
+    let found = false;
+    const visit = (value: unknown, seen = new Set<object>()): void => {
+      if (found || !(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      const interfaceCast = value instanceof FunctionCallNode && value.parameters.length === 1
+        && value.resolvedFunction === undefined && value.lexicalIndirectCall !== true
+        && interfaceNames.has(value.identifier.name);
+      if ((value instanceof FunctionCallNode && !interfaceCast) || value instanceof TupleAssignmentNode
+        || /^(ArrayAssignNode|ArrayPushNode|ArrayPopNode|ArrayDeleteNode|DeleteLocalNode|AssignmentExpressionNode)$/
+          .test(value.constructor.name)) { found = true; return; }
+      for (const [key, child] of Object.entries(value)) {
+        if (skip.has(key)) continue;
+        if (child instanceof Node) visit(child, seen);
+        else if (Array.isArray(child)) child.forEach((item) => visit(item, seen));
+      }
+    };
+    visit(root);
+    return found;
   };
 
   type Domain = {
@@ -612,7 +661,13 @@ const externalCallIterationDomains = (
       const state = clone(initial);
       // Only the outer loop may depend on writes before its header. Inner recurrences are published only
       // when they serialize from parameters/constants without relying on loop-carried local state.
-      if (depth === 0 && !replayBefore(fn.body, counter, state)) break;
+      if (depth === 0 && !replayBefore(fn.body, counter, state, (prior) => {
+        const stableRead = ![counter.expression!, loop.condition, magnitude].some(recurrenceHasLiveExternalRead);
+        const earlyExit = loopCanExitEarly(prior);
+        const opaqueEffect = priorLoopHasOpaqueLocalEffect(prior);
+        const dependencyWrites = [...deps].filter((dependency) => assignedIn(prior, dependency, counter));
+        return stableRead && !earlyExit && !opaqueEffect && dependencyWrites.length === 0;
+      })) break;
       const initialValue = serialize(counter.expression, state);
       // The declaration starts the live induction binding only after its initializer is evaluated.
       state.bindings.set(counter, { kind: 'identifier', name: counter.name });
@@ -1620,7 +1675,7 @@ function buildFunctionAbiMetadata(
 ): Partial<AbiFunction> {
   const dynamicWriteSources = dynamicWriteSourcesOf(func, contract);
   const dynamicWriteRecipes = dynamicWriteRecipesOf(func, contract);
-  const iterationDomains = externalCallIterationDomains(func, compilerOptions);
+  const iterationDomains = externalCallIterationDomains(func, compilerOptions, interfaces);
   const possibleSelectorTargets = (
     interfaceName: string, parameters: readonly ExpressionNode[],
   ): readonly { functionName: string; selector: string }[] => {

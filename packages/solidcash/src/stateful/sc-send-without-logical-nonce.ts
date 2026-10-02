@@ -144,14 +144,10 @@ async function prepareTypedCallbackGraph(
       producerPath: { status: 'complete', context: { version: 1, sourcePath: [] } },
     }, signer.getLockingBytecode(), stateOf);
   } catch (error) {
-    // A repeated producer result inside a nested loop is not a speculative ordinary graph: the legacy
-    // builder can broadcast only its first dependent call, silently omitting later state effects. Keep
-    // the compiler-discovered limitation fail-closed until the atomic worklist can interleave each outer
-    // producer with its dependent inner rows in source execution order.
-    if (error instanceof Error && error.message.includes('nested call repeats an outer producer occurrence')) {
-      throw error;
-    }
-    // Discovery is speculative for ordinary graphs; legacy planning retains its existing diagnostic.
+    // If a registered callback or repeated owner cannot be fully discovered, the legacy builder can
+    // broadcast a prefix of its state effects. Keep these compiler-described shapes fail-closed; only
+    // ordinary speculative graph discovery may fall back to the legacy planner.
+    if (registeredCallback || mayRepeatOwner) throw error;
     return undefined;
   }
   const ownerCounts = new Map<string, number>();

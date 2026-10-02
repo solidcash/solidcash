@@ -745,6 +745,29 @@ describe('Release 0 shared invocation analysis', () => {
       });
   });
 
+  it('withholds a later loop domain when an earlier loop rewrites its bound', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint value); }
+      contract EarlierLoopWrite() {
+        function run(address target, bigint bound) public {
+          for (bigint i = 0; i < 2; i = i + 1) {
+            bound = bound - 1;
+            ITarget(target).step(i);
+          }
+          for (bigint j = 0; j < bound; j = j + 1) {
+            ITarget(target).step(j);
+          }
+          require(bound >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls;
+    expect(calls).toHaveLength(2);
+    expect(calls?.[0].iterationDomain).toBeDefined();
+    expect(calls?.[1].iterationDomain).toBeUndefined();
+  });
+
   it('publishes both affine domains for a nested external-call loop', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface ITarget { function step(bigint value); }

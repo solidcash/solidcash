@@ -87,6 +87,10 @@ export interface PreparedAtomicMessageBusCall {
   occurrenceIndex?: number;
   /** @internal Compiler-authored program point shared with entry mutations in the parent handler. */
   sourceEffectOrdinal?: number;
+  /** @internal Exact compiler outer-loop domain shared by callsites interleaved during graph discovery. */
+  topologyOuterDomainKey?: string;
+  /** @internal Reached outer induction iteration, before conditional calls are filtered. */
+  topologyOuterIteration?: number;
   /** @internal Independently derived root-to-invocation compiler source path. */
   producerPath?: ValueChunkProducerPathDisposition;
   /** @internal Exact terminal post-values authenticated while discovering this compiler call edge. */

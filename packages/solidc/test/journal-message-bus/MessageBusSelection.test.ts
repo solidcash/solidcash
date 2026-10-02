@@ -177,6 +177,36 @@ describe('message-bus compilation selection', () => {
     expect(reached.messageBus?.available).toBe(true);
   });
 
+  it('keeps a zero-iteration foreign-call loop direct while admitting a do-while call', () => {
+    const source = `interface ISink { function ping(int value) external; }
+      contract DeadLoop(address target) {
+        int value;
+        function set(int next) public {
+          while (false) { ISink(target).ping(next); }
+          value = next;
+          require(next >= 0);
+        }
+      }`;
+    const options = { solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true };
+    const automatic = compileString(source, options);
+    const direct = compileString(source, { ...options, messageBus: false });
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.bytecode).toBe(direct.bytecode);
+
+    const repeated = source.replace('ISink(target).ping(next); }',
+      'ISink(target).ping(next); ISink(target).ping(next); }');
+    const repeatedAutomatic = compileString(repeated, options);
+    const repeatedDirect = compileString(repeated, { ...options, messageBus: false });
+    expect(repeatedAutomatic.compiler.options?.messageBus).toBe(false);
+    expect(repeatedAutomatic.bytecode).toBe(repeatedDirect.bytecode);
+    const optedIn = compileString(repeated, { ...options, messageBus: true });
+    expect(optedIn.messageBus?.available).toBe(true);
+
+    const doWhile = source.replace('while (false) { ISink(target).ping(next); }',
+      'do { ISink(target).ping(next); } while (false);');
+    expect(compileString(doWhile, options).compiler.options?.messageBus).toBe(true);
+  });
+
   it('broadens unreachable helpers only when a function pointer is invoked', () => {
     const source = `interface ISink { function ping(int amount) external; }
       contract PointerLeaf(address target) {

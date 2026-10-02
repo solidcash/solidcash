@@ -3914,7 +3914,7 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       candidate.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length
         === call.parameters.length);
   const walkReachable = (value: unknown, visit: (node: Node) => void): void => {
-    walkInvocationAst(value, visit, new Set<object>(), { pruneLiteralBranches: true });
+    walkInvocationAst(value, visit, new Set<object>(), { pruneLiteralDeadControlFlow: true });
   };
   const addClosure = (fn: FunctionDefinitionNode): void => {
     const pending = [fn];
@@ -4009,6 +4009,8 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
         if (active) visit(active, bindings);
         return;
       }
+      if (node instanceof WhileNode && node.condition instanceof BoolLiteralNode
+        && node.condition.value === false) return;
       if (node instanceof VariableDefinitionNode) {
         if (node.expression) visit(node.expression, bindings);
         bindings.set(node.name, node.type instanceof FunctionType ? node.type : undefined);
@@ -4146,6 +4148,8 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
         const active = node.condition.value ? node.ifBlock : node.elseBlock;
         return active ? visit(active, receivers) : false;
       }
+      if (node instanceof WhileNode && node.condition instanceof BoolLiteralNode
+        && node.condition.value === false) return false;
       if (node instanceof VariableDefinitionNode) {
         // Solidity resolves an initializer before publishing the local binding.
         if (node.expression && visit(node.expression, receivers)) return true;

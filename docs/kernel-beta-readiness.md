@@ -518,6 +518,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   repeated-dead, dead-then-live, and explicit-opt-in cases, retains a live `if (true)` route, and requires auto
   bytecode to equal explicit direct bytecode. Its immediately preceding unreachable-helper title passes.
   `yarn build` and focused lint pass; no broad suite ran.
+- 2026-10-02 zero-iteration loop follow-up: `while (false)` around a typed foreign call no longer selects
+  `messageBus` automatically (2,809-byte bus script versus 691 bytes direct in the initial probe). Direct-only
+  call-slot accounting also ignores repeated calls in that unreachable body, while explicit `messageBus: true`
+  retains graph compilation. A `do ... while (false)` call still selects the bus because its body executes once.
+  The exact loop-selection title and its immediately preceding literal-branch title pass individually; no broad
+  test suite ran.
 
 ## Gate before the next leap
 

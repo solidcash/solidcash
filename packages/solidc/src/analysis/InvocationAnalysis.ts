@@ -5,7 +5,7 @@ import {
   DeleteLocalNode, FunctionCallNode,
   FunctionCallStatementNode,
   FunctionDefinitionNode, IdentifierNode, IndirectCallNode, Node, TupleAssignmentNode,
-  TryCatchNode, VariableDefinitionNode,
+  TryCatchNode, VariableDefinitionNode, WhileNode,
 } from '../ast/AST.js';
 
 export interface InvocationFunctionSummary {
@@ -62,7 +62,7 @@ export function walkInvocationAst(
   value: unknown,
   visit: (node: Node) => void,
   seen = new Set<object>(),
-  options: { pruneLiteralBranches?: boolean } = {},
+  options: { pruneLiteralDeadControlFlow?: boolean } = {},
 ): void {
   if (!(value instanceof Node) || seen.has(value)) return;
   seen.add(value);
@@ -74,12 +74,17 @@ export function walkInvocationAst(
     walkInvocationAst(value.tryBlock, visit, seen, options);
     return;
   }
-  if (options.pruneLiteralBranches && value instanceof BranchNode
+  if (options.pruneLiteralDeadControlFlow && value instanceof BranchNode
     && value.condition instanceof BoolLiteralNode) {
     // Auto-selection asks whether a graph edge can execute. Keep normal analysis conservative; only this
     // explicit opt-in ignores the arm that a literal condition makes unreachable.
     const active = value.condition.value ? value.ifBlock : value.elseBlock;
     if (active) walkInvocationAst(active, visit, seen, options);
+    return;
+  }
+  if (options.pruneLiteralDeadControlFlow && value instanceof WhileNode
+    && value.condition instanceof BoolLiteralNode && value.condition.value === false) {
+    // Unlike do-while, a while loop with a literal-false condition executes zero body iterations.
     return;
   }
   // Node data fields are enumerable; class prototype methods are not. Iterate them directly to avoid allocating

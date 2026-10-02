@@ -7643,6 +7643,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (active) this.collectExternalCalls(active, slots, enclosingConditions);
       return;
     }
+    if (this.compilerOptions.messageBus === false && node instanceof WhileNode
+      && node.condition instanceof BoolLiteralNode && node.condition.value === false) return;
     if (node instanceof ExternalFunctionCallNode && node.callInfo && !node.foldedIntoDeploy) {
       // `call{value: amount}("")` has no selector-bearing callee operation. Its independently indexed transfer
       // output is the complete BCH effect, and a reached required output reconstructs `(true, bytes(""))`.
@@ -9372,6 +9374,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (active) this.assignExternalCallSlotIndices(active, slots, counter);
       return;
     }
+    if (this.compilerOptions.messageBus === false && node instanceof WhileNode
+      && node.condition instanceof BoolLiteralNode && node.condition.value === false) return;
     if (node instanceof ExternalFunctionCallNode && node.callInfo) {
       if (node.addressExpression instanceof Node) {
         this.assignExternalCallSlotIndices(node.addressExpression, slots, counter);

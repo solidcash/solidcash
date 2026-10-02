@@ -44,9 +44,13 @@ import {
   MethodCallNode,
   InstantiationNode,
   NullaryOpNode,
+  BoolLiteralNode,
+  UnaryOpNode,
+  SwitchNode,
+  TryCatchNode,
 } from '../ast/AST.js';
-import { NullaryOperator } from '../ast/Operator.js';
-import { StructType, MappingType } from '@solidcash/utils';
+import { NullaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { StructType, MappingType, PrimitiveType } from '@solidcash/utils';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
 import { Modifier } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -81,6 +85,23 @@ import { readsMessageField } from './selfMessageCall.js';
  * private helper that touches a mapping work.
  */
 const PREFIX = '__sp';
+
+const RETURN_WALK_SKIP = new Set([
+  'location', 'type', 'symbolTable', 'definition', 'resolvedFunction', 'functionReference', 'collection',
+  'stateVariable',
+]);
+
+/** Whether a statement holds a source `return;`. A Yul `return` ends the whole call frame and is not counted. */
+function containsSourceReturn(node: Node | undefined): boolean {
+  if (!node) return false;
+  if (node instanceof ReturnNode) return !node.isYulReturn;
+  for (const [key, value] of Object.entries(node)) {
+    if (RETURN_WALK_SKIP.has(key)) continue;
+    if (value instanceof Node && containsSourceReturn(value)) return true;
+    if (Array.isArray(value) && value.some((item) => item instanceof Node && containsSourceReturn(item))) return true;
+  }
+  return false;
+}
 
 export default class InlineStoragePointerCalls extends AstTraversal {
   constructor(
@@ -769,7 +790,99 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     });
     const inlined = this.inlineStatements(cloned.body.statements ?? [],
       [...stack, inlineKey(callee.name, callee.parameters.length)]);
-    return [...bindings, ...rmwPrologue, ...inlined, ...rmwEpilogue];
+    return [...bindings, ...rmwPrologue, ...this.confineHelperReturns(inlined, n, callee), ...rmwEpilogue];
+  }
+
+  /**
+   * A `return;` in an inlined void helper leaves the helper, not the function it is inlined into. Spliced verbatim
+   * it left the caller instead: KashiPair's withdrawFees inlines accrue(), whose `if (elapsedTime == 0) return;`
+   * then skipped the rest of withdrawFees. A body whose only return is its last statement drops it; otherwise each
+   * return sets a fresh flag and every statement after it is gated on that flag. A Yul `return` ends the whole call
+   * frame, as it does on the EVM, so it stays.
+   */
+  private confineHelperReturns(
+    stmts: StatementNode[], n: number, callee: FunctionDefinitionNode,
+  ): StatementNode[] {
+    if (!stmts.some(containsSourceReturn)) return stmts;
+    const last = stmts[stmts.length - 1];
+    if (last instanceof ReturnNode && !last.isYulReturn && !stmts.slice(0, -1).some(containsSourceReturn)) {
+      return stmts.slice(0, -1);
+    }
+    const flag = `__internal__inlineReturned_${n}`;
+    const unset = new BoolLiteralNode(false);
+    unset.location = callee.location;
+    const declaration = new VariableDefinitionNode(PrimitiveType.BOOL, [], flag, unset);
+    declaration.location = callee.location;
+    declaration.allowUnused = true;
+    return [declaration, ...this.gateAfterHelperReturns(stmts, flag, callee)];
+  }
+
+  private gateAfterHelperReturns(
+    stmts: StatementNode[], flag: string, callee: FunctionDefinitionNode,
+  ): StatementNode[] {
+    const out: StatementNode[] = [];
+    for (let index = 0; index < stmts.length; index += 1) {
+      const statement = stmts[index];
+      if (statement instanceof ReturnNode && !statement.isYulReturn) {
+        const set = new BoolLiteralNode(true);
+        set.location = statement.location;
+        const target = new IdentifierNode(flag);
+        target.location = statement.location;
+        const assignment = new AssignNode(target, set);
+        assignment.location = statement.location;
+        out.push(assignment);
+        return out; // the rest of this list is unreachable
+      }
+      if (!containsSourceReturn(statement)) {
+        out.push(statement);
+        continue;
+      }
+      out.push(this.confineNestedHelperReturns(statement, flag, callee));
+      const rest = stmts.slice(index + 1);
+      if (rest.length > 0) {
+        const read = new IdentifierNode(flag);
+        read.location = statement.location;
+        const notReturned = new UnaryOpNode(UnaryOperator.NOT, read);
+        notReturned.location = statement.location;
+        const gated = new BlockNode(this.gateAfterHelperReturns(rest, flag, callee));
+        gated.location = statement.location;
+        const gate = new BranchNode(notReturned, gated);
+        gate.location = statement.location;
+        out.push(gate);
+      }
+      return out;
+    }
+    return out;
+  }
+
+  private confineNestedHelperReturns(
+    statement: StatementNode, flag: string, callee: FunctionDefinitionNode,
+  ): StatementNode {
+    const lower = (block: BlockNode | undefined): void => {
+      if (block) block.statements = this.gateAfterHelperReturns(block.statements ?? [], flag, callee);
+    };
+    if (statement instanceof BranchNode) {
+      lower(statement.ifBlock);
+      lower(statement.elseBlock);
+    } else if (statement instanceof BlockNode) {
+      lower(statement);
+    } else if (statement instanceof UncheckedNode) {
+      lower(statement.block);
+    } else if (statement instanceof SwitchNode) {
+      for (const switchCase of statement.cases) lower(switchCase.body);
+      lower(statement.defaultCase);
+    } else if (statement instanceof TryCatchNode) {
+      lower(statement.tryBlock);
+      for (const clause of statement.catchClauses) lower(clause.block);
+    } else {
+      // A return inside a loop is lowered to a flag and a break before this pass runs; one that is still here would
+      // need a loop exit this rewrite does not have, so refuse rather than leave the caller early.
+      throw new Error(
+        `Cannot inline '${callee.name}': it returns from inside a ${statement.constructor.name}, and a return there `
+        + 'would leave its caller',
+      );
+    }
+    return statement;
   }
 
   // Resolve a storage-pointer argument like `fixedMaps[x]` to its root collection and captured prefix keys.

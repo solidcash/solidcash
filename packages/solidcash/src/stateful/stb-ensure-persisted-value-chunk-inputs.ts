@@ -97,17 +97,21 @@ export async function ensurePersistedValueChunkInputs(
     : undefined;
   const unlockerLock = unlocker?.generateLockingBytecode();
   if (unlocker) {
+    const canonicalCategory = unlockCategory.toLowerCase();
     for (const spend of spends) {
       const spendLock = spend.lockingBytecode;
       // An unlocker and its source locking bytecode are one cryptographic identity. Never pair a cached
       // outpoint with a recipe for another P2SH script: changing only generateLockingBytecode makes the source
       // output look plausible but guarantees a redeem-script hash failure at consensus validation.
-      if (!unlockerLock || binToHex(spendLock) !== binToHex(unlockerLock)) continue;
+      // The same script can also lock a token from a different category. It is not this writer's predecessor.
+      if (!unlockerLock || binToHex(spendLock) !== binToHex(unlockerLock)
+        || spend.token.category.toLowerCase() !== canonicalCategory
+        || spend.token.nft?.capability !== 'mutable') continue;
       extras.push({
         txid: spend.txid,
         vout: spend.vout,
         satoshis: spend.satoshis,
-        token: spend.token,
+        token: { ...spend.token, category: canonicalCategory },
         unlocker,
       });
     }

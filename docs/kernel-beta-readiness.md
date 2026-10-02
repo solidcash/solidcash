@@ -488,6 +488,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   category now matches the selected category and enters the builder with canonical lowercase text. The focused
   predecessor-fetch title went red-to-green and its immediately preceding lock-derivation title passes. No broad
   suite was run.
+- 2026-10-02 cached predecessor category follow-up: a cached spend at the selected continuation script lock is
+  restored only when its mutable NFT also has the selected category. Matching uppercase category text is
+  normalized; a foreign token sent to the same lock cannot enter the selected writer's predecessor list. The
+  exact new title went red-to-green and its immediately preceding fetch-gating title passes. `yarn build` and
+  focused lint pass; no broad test suite was run.
 
 ## Gate before the next leap
 

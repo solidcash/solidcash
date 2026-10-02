@@ -131,6 +131,37 @@ describe('message-bus compilation selection', () => {
     expect(routed.messageBus?.available).toBe(true);
   });
 
+  it('keeps external function-pointer parameters aligned with generated message-bus handlers', () => {
+    const source = `contract PointerStore {
+      function(uint) external returns (uint) stored;
+      function save(function(uint) external returns (uint) next) public { stored = next; }
+      function run(uint value) public returns (uint) { return stored(value); }
+    }`;
+    const artifact = compileString(source, { solidityImportCompat: true, suppressWarnings: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.available).toBe(true);
+    const save = artifact.abi.find((entry) => entry.name === 'save');
+    expect(save?.inputs.map((input) => input.type)).toEqual(['address', 'bytes4']);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'save')?.selector)
+      .toBe(save?.selector);
+    expect(artifact.abi.find((entry) => entry.name === 'run')?.externalCalls).toEqual(
+      expect.arrayContaining([expect.objectContaining({ fnPtrCall: true })]),
+    );
+
+    // An unused pointer remains a single ABI value; its canonical `function()external`
+    // spelling must not leak into the generated SolidCash source type or decode schema.
+    const unlowered = compileString(`interface ISink { function ping() external; }
+      contract PointerLeaf(address target) {
+        int value;
+        function retain(function() external pointer) public { require(true); }
+        function callSink() public { ISink(target).ping(); value = value + 1; require(true); }
+      }`, { solidityImportCompat: true, suppressWarnings: true });
+    expect(unlowered.compiler.options?.messageBus).toBe(true);
+    expect(unlowered.messageBus?.available).toBe(true);
+    expect(unlowered.abi.find((entry) => entry.name === 'retain')?.inputs)
+      .toEqual([expect.objectContaining({ type: 'function()external' })]);
+  });
+
   it('keeps an unreachable overloaded foreign-call helper off the default route', () => {
     const source = `interface ISink { function ping(int amount) external; }
       contract Simple(address target) {

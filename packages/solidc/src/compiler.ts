@@ -10170,7 +10170,22 @@ function synthesizeMessageBusRoute(
         .map((parameter, index) => ({ parameter, index }))
         .filter(({ parameter }) => !isEntireTransactionSignatureType(parameter.type)
         && !parameter.name.startsWith('__internal__'));
-      const schema = decodedParameters.map(({ parameter }) => parameter.type.toString()).join(', ');
+      // Type.toString() is the canonical ABI spelling, not source syntax: function pointers
+      // omit the required spaces around `external` and `returns`. The generated handler is
+      // parsed as SolidCash source, including its abi.decodeAt schema.
+      const sourceType = (type: Type): string => {
+        if (type instanceof FunctionType) {
+          const mutability = type.stateMutability === 'nonpayable' ? '' : ` ${type.stateMutability}`;
+          const returns = type.returnTypes.length === 0 ? ''
+            : ` returns (${type.returnTypes.map(sourceType).join(', ')})`;
+          return `function(${type.parameterTypes.map(sourceType).join(', ')})`
+            + `${type.isExternal ? ' external' : ''}${mutability}${returns}`;
+        }
+        if (type instanceof ArrayType) return `${sourceType(type.elementType)}[${type.bound ?? ''}]`;
+        if (type instanceof TupleType) return `(${type.elements.map(sourceType).join(', ')})`;
+        return type.toString();
+      };
+      const schema = decodedParameters.map(({ parameter }) => sourceType(parameter.type)).join(', ');
       const decodedExpression = (parameterIndex: number): string => {
         const position = decodedParameters.findIndex((entry) => entry.index === parameterIndex);
         if (position < 0) throw new Error(`No transport-decoded message-bus argument at index ${parameterIndex}`);
@@ -10179,7 +10194,7 @@ function synthesizeMessageBusRoute(
       const decodedName = (parameterIndex: number): string =>
         `__message_bus_arg_${handlerIndex}_${parameterIndex}`;
       const declarations = decodedParameters.map(({ parameter, index }) =>
-        `${parameter.type.toString()} ${decodedName(index)} = ${decodedExpression(index)}`);
+        `${sourceType(parameter.type)} ${decodedName(index)} = ${decodedExpression(index)}`);
       const signatureReconstruction = parameterSignatureLeaves.flatMap((leaves, parameterIndex) => {
         if (isEntireTransactionSignatureType(fn.parameters[parameterIndex].type)) return [];
         return leaves.flatMap((leaf, leafIndex) => {
@@ -13890,6 +13905,12 @@ function compileResolvedAst(
   const dynamicChunkInputBaseFunctionKeys = markDynamicChunkInputBaseFunctions(ast);
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
     && supportsAtomicMessageBus(ast, mergedCompilerOptions)
+    // Received external function-pointer parameters may lower from one source value to an
+    // (address, selector) ABI pair. An early route snapshots the old arity and selector, then
+    // calls the lowered handler with the wrong transport shape. Synthesize after that lowering.
+    && !ast.contract.functions.some((fn) => fn.isEntryPoint
+      && fn.parameters.some((parameter) => parameter.type instanceof FunctionType
+        && parameter.type.isExternal))
     && ast.contract.functions.some((fn) => {
       const footprint = analyseFunctionFootprint(fn, messageBusFunctionsByName, prefixFootprintCache);
       return [...footprint.reads, ...footprint.writes]

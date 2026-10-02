@@ -423,6 +423,17 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
 - 2026-10-02 guard-false follow-up: the same neutral A→B→A callback fixture also sends successfully when the
   first authenticated return is zero, omitting B's later conditional call to A. The focused new title and its
   immediately preceding guard-true title pass individually; no broad suite was run.
+- 2026-10-02 real-source arbitration follow-up: the unchanged `UnicrowArbitrator`, `UnicrowClaim`, and `Unicrow`
+  sources compile with the relaxed BCH-2026 semantic profile. An explicit eight-row composition of their
+  direct compiled artifacts sends the real
+  `arbitrate → settle → claim → getArbitratorData → arbitrationCalculation → setClaimed` path successfully;
+  the claimant observes the arbitrator's preceding `arbitrated = true` mapping write, and the final Unicrow escrow
+  is claimed with the 80/20 split. This is a semantic VM proof under relaxed capacity, not a proxy-carrier,
+  10 KB, or relay claim.
+  Ordinary `arbitrator.call.arbitrate(...).send()` remains red with `L3_TARGET_UNRESOLVED` at the mandatory
+  `Unicrow.settle` edge: initial automatic topology discovery cannot yet supply arguments derived from the
+  earlier `getEscrow` return before constructing its first complete graph. The explicit-composition title and
+  its immediately preceding real-source metadata title pass individually; no broad suite ran.
 - The unchanged proxy Marketplace `arbitrate > arbitrate 80-20` title passes individually on mock BCH-2026
   (1 selected, 65 skipped; 411.56 seconds in the test body). It is not a reproduction of the same-owner
   callback gap above and does not establish the other arbitration titles or the 66-title gate. No predecessor

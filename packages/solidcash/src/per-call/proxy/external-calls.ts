@@ -93,8 +93,9 @@ import { readEntryNode } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import type { RecoverySideCars } from '../composer/recovery.js';
 import { decodeEntryCommitment } from '../../stateful/SortedList.js';
-import { chainsEnclosedRead } from './enclosed-reads.js';
+import { chainsEnclosedTouch } from './enclosed-reads.js';
 import { PerCallProxyDeployError } from './errors.js';
+import { reachedNodeValue } from './reached-values.js';
 import { lockOfIdentity } from './address-identity.js';
 
 /** One contract the caller names for a call an implementation entry makes, keyed by the interface it calls. */
@@ -1516,6 +1517,12 @@ function calleeReadNodes(options: {
     readonly value?: Uint8Array;
   }[];
   /**
+   * The nodes of collections whose values chunk that reaches placed earlier in this hop rewrote in place, in placement
+   * order. The deployment's own chunks reassemble a node's bytes from before such a write, so a read placed after it
+   * witnesses the bytes the write left (`reached-values.ts`), and the chain walk carries the view it left.
+   */
+  readonly rewrittenNodes?: HopLiveDeployment['rewrittenNodes'];
+  /**
    * The layout the deployment's records were minted under, which is not always the artifact's own.
    *
    * A frame behind a proxy runs on the proxy's records, and the generated proxy declares the implementation's
@@ -1590,7 +1597,13 @@ function calleeReadNodes(options: {
     } else {
       const tail = node.commitment.slice(64);
       const length = tail.length < 4 ? 0 : new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
-      if (node.present && collection?.chunkableValue === true && length > VALUE_INLINE_LIMIT) {
+      // A long value an earlier reach rewrote is witnessed with the bytes that reach left (`reached-values.ts`).
+      const reached = node.present
+        ? reachedNodeValue({ rewrittenNodes: options.rewrittenNodes }, node.collection, node.slot)?.value
+        : undefined;
+      if (collection?.chunkableValue === true && reached !== undefined && reached.length > VALUE_INLINE_LIMIT) {
+        value = reached;
+      } else if (node.present && collection?.chunkableValue === true && length > VALUE_INLINE_LIMIT) {
         value = joinedNodeValue(collection, node.commitment, live);
         if (value === undefined) {
           throw new PerCallProxyDeployError(
@@ -1724,7 +1737,7 @@ async function placeCalleeMasters(
     const readNodes = calleeReadNodesOrNone({
       artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
       senderAddress: caller.selfAddress, categoryId, deployment, nodeIdOf,
-      createdNodes: ctx.writtenNodes.get(categoryId) ?? [],
+      createdNodes: ctx.writtenNodes.get(categoryId) ?? [], rewrittenNodes: ctx.rewrittenNodes.get(categoryId) ?? [],
     });
     // The frame's own write is planned from the reach's own call data, so two reaches that pass different values
     // write different nodes.
@@ -1923,6 +1936,7 @@ async function placeProxiedCallee(
       recordLayout: proxyReadLayout,
       nodeIdOf: (collection, slot) => sharedNodeId(external.categoryId, collection, slot),
       createdNodes: ctx.writtenNodes.get(external.categoryId) ?? [],
+      rewrittenNodes: ctx.rewrittenNodes.get(external.categoryId) ?? [],
     });
     // The implementation entry's own write is planned from this reach's call data, against the proxy's deployment.
     const implementationWrites = calleeEntryWrites(
@@ -2208,8 +2222,8 @@ function chunkingNode(touches: readonly NodeTouch[]): boolean {
  * rewrites it. That covers reads and updates of a fixed-width value in any order. Each remaining shape is refused by
  * name: a touch after an insert relinked the node, which reads a list the planner never saw; an insert through a node
  * an earlier reach wrote, which the master's insert does not chain; and two touches where one frame enters the other,
- * whose segments interleave in an order this hop does not settle, but for a read of the view the entering frame wrote
- * before the call that leads there (`enclosed-reads.ts`).
+ * whose segments interleave in an order this hop does not settle, but for a read or an in-place rewrite after the
+ * entering frame's write of the node, which lands before the call that leads there (`enclosed-reads.ts`).
  *
  * A node whose values chunk is chainable in the same way, except that the bytes a later reach continues from are
  * the ones the reach before it wrote: a reach whose chunkable write states no value leaves none, which
@@ -2222,8 +2236,8 @@ function requireChainableNodes(callees: readonly HopCallee[]): void {
     for (const [at, outer] of touches.entries()) {
       for (const inner of touches.slice(at + 1)) {
         if (!entersFrame(callees, outer.frame, inner.frame) && !entersFrame(callees, inner.frame, outer.frame)) continue;
-        // A read of the view a frame it runs inside wrote before entering it chains (`enclosed-reads.ts`).
-        if (chainsEnclosedRead(callees, outer, inner, collection, id)) continue;
+        // A read or rewrite of a node a frame it runs inside wrote before entering it chains (`enclosed-reads.ts`).
+        if (chainsEnclosedTouch(callees, outer, inner, collection, id)) continue;
         throw new PerCallProxyDeployError(
           `the hop's reaches "${outer.functionName}" and "${inner.functionName}" touch one node of collection `
           + `"${collection}", and one of them enters the other, so their segments interleave in an order this hop `
@@ -2347,7 +2361,10 @@ export function writtenNodeWritersBefore(callees: readonly HopCallee[]): Readonl
       const id = sharedNodeId(bytesToHex(owner.category), node.collection, node.slot);
       const writers = written.get(id) ?? [];
       const earlier = before.get(frame) ?? [];
-      for (const writer of writers) if (!earlier.includes(writer)) earlier.push(writer);
+      // A writer the frame runs inside settles after it; the view it left is learned by deriving it up to its call.
+      for (const writer of writers) {
+        if (!earlier.includes(writer) && !entersFrame(callees, writer, frame)) earlier.push(writer);
+      }
       before.set(frame, earlier);
       if (!writers.includes(frame)) writers.push(frame);
       written.set(id, writers);

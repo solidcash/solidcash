@@ -231,3 +231,24 @@ export function deriveReentryWriters(
       + `derived=[${derivations.map(({ writer }) => callees[writer]!.master).join(',')}]`);
   }
 }
+
+/**
+ * Derives frame `writer` up to the call through which it enters frame `index`, which it encloses, so its run reaches
+ * the code before that call with its earlier calls answered (`enclosed-values.ts`). A stall on the way is the
+ * writer's own to report when it settles, not this derivation's.
+ */
+export function deriveUpToEntering(
+  candidate: { readonly draft: CompositionDraft; readonly host: DerivationHost },
+  callees: readonly HopCallee[],
+  writer: number,
+  index: number,
+): void {
+  try {
+    deriveComposition([requestOf(callees[writer]!)],
+      stoppingAt(candidate, callees[writer]!.master, callToward(callees, writer, index)));
+  } catch (error) {
+    if (hopTraceOn() && !(error instanceof ReachedSettledFrame)) {
+      hopTrace(`enclosing-stop writer=${callees[writer]!.master} reason=${hopTraceError(error)}`);
+    }
+  }
+}

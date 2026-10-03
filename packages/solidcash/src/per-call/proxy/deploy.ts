@@ -95,6 +95,7 @@ import {
 } from './external-calls.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
 import { carriedFromChain, deriveReentryWriters, reentrySettleBefore, withReentryFrames } from './reentry.js';
+import { EnclosingValueLearned, learnEnclosingValues } from './enclosed-values.js';
 import { deferredRefusalMetFirst, dropDeferredBelow, firstDeferredRefusal } from './refusal-order.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
@@ -1438,6 +1439,15 @@ async function settleCallees(options: {
       // A frame that starts from a view an earlier frame of its contract wrote is judged once the draft learned it,
       // so the writers are derived first (`reentry.ts`).
       deriveReentryWriters(candidate, options.callees, calleeIndex);
+      // A frame inside a writer whose long value only the writer's own pin exposes starts from that value, which is
+      // read here; the hop is then planned again from it (`enclosed-values.ts`).
+      learnEnclosingValues(candidate, options.callees, calleeIndex, writeValues, {
+        valueAt: (master) => learnedValueFromClose(options.vm, candidate.draft.programFor(master)),
+        readingAt: (master) => readComputedDeclaration({
+          vm: options.vm, program: candidate.draft.programFor(master),
+          maximumCommitmentBytes: options.maximumCommitmentBytes,
+        }),
+      });
       // A callee that makes calls cannot accept before its own calls are derived, so its subtree is derived first;
       // a stall there is the callee's own return comparison or one of its own write's declarations, read below.
       if (callee.calls.length > 0) {
@@ -2369,6 +2379,20 @@ async function planAndSettleHop(options: {
     plan: HopExternalPlan, settled: SettledHop,
   ): Promise<{ readonly externalPlan: HopExternalPlan; readonly settled: SettledHop }> =>
     await heldPlanOf() ?? { externalPlan: plan, settled };
+  /** The hop planned again from the bytes a settle learned an enclosing writer leaves (`enclosed-values.ts`). */
+  const planFromEnclosingValue = async (learned: EnclosingValueLearned): Promise<HopExternalPlan> => {
+    if (learning.writeValues.has(learned.master)) {
+      throw new PerCallProxyDeployError(
+        `the frame "${learned.master}" still leaves its write unstated after the hop learned the value its own pin `
+        + 'exposed, so the frames it encloses cannot start from it',
+      );
+    }
+    learning.writeValues.set(learned.master, learned.value);
+    const writer = externalPlan.callees.find((callee) => callee.master === learned.master);
+    if (writer !== undefined) learning.writeValues.set(frameKey(writer), learned.value);
+    return options.plan(
+      externalReturns, reached, learning.writeViews, learning.writeValues, externalPlan.heldContinuations);
+  };
   let stops = 0;
   for (let pass = 0; ;) {
     const block = externalPlan.blocked;
@@ -2396,6 +2420,10 @@ async function planAndSettleHop(options: {
       try {
         settlement = await options.settleCallees(planned, frames, seed);
       } catch (error) {
+        if (error instanceof EnclosingValueLearned) {
+          externalPlan = await planFromEnclosingValue(error);
+          continue;
+        }
         // A producer frame refused. A frame that reads a node an earlier frame created is planned against the
         // deployment, which does not hold the value that frame left, so the hop is planned once more with the held
         // reading, the frames that wrote those nodes are settled first, and the producers are settled again from
@@ -2453,6 +2481,10 @@ async function planAndSettleHop(options: {
       settled = await options.settle(
         externalPlan, stops === 0 ? undefined : seedOf(learning, externalPlan.callees), true);
     } catch (error) {
+      if (error instanceof EnclosingValueLearned) {
+        externalPlan = await planFromEnclosingValue(error);
+        continue;
+      }
       // A frame that reads a node an earlier frame created is planned against the deployment, which does not hold
       // the value that frame left, so the hop is planned once more for the held reading and kept only when it
       // settles: a refusal that is not about such a read is thrown as it was.

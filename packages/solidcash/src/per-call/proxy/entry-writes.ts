@@ -98,6 +98,7 @@ import {
 } from '../call/entry-records.js';
 import { PerCallProxyDeployError } from './errors.js';
 import { hopTrace, hopTraceOn } from './hop-trace.js';
+import { reachedNodeValue } from './reached-values.js';
 
 /** The participant id a hop's layout holds for a collection's empty head sentinel. */
 const MAPPING_HEAD_PREFIX = 'mapping-head-';
@@ -718,6 +719,12 @@ function nodeFieldValue(
   }
   const deployment = context.liveDeployment;
   if (deployment === undefined) return getDefaultStateValue(fieldType, context.structs);
+  // A node an earlier reach of this hop wrote is read as that reach left it, and one whose bytes that reach did not
+  // state leaves the field unstated (`reached-values.ts`).
+  const reached = reachedNodeValue(deployment, collectionName, keyToSlotMulti([key]));
+  if (reached !== undefined) {
+    return reached.value === undefined ? undefined : decodedField(reached.value, collection, fieldName, context);
+  }
   const node = liveNode(collection, keyToSlotMulti([key]), deployment);
   if (node === undefined) return getDefaultStateValue(fieldType, context.structs);
   const commitment = node.token?.nft?.commitment;
@@ -730,6 +737,13 @@ function nodeFieldValue(
       + 'chunks',
     );
   }
+  return decodedField(raw, collection, fieldName, context);
+}
+
+/** One field of a node's whole value, decoded at the collection's own value type. */
+function decodedField(
+  raw: Uint8Array, collection: ArtifactCollection, fieldName: string, context: ValueResolutionContext,
+): unknown {
   const decoded = decodePushdataValue(raw, 0, collection.valueType, context.structs).value;
   return decoded !== null && typeof decoded === 'object' && !(decoded instanceof Uint8Array)
     ? (decoded as Record<string, unknown>)[fieldName]

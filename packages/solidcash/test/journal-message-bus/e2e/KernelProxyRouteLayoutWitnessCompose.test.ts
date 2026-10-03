@@ -199,4 +199,82 @@ describe('kernel proxy route layout witness compose', () => {
     expect(bySlot.get(binToHex(keyToSlot(bigIntToVmNumber(3n))))).toBe(5n);
     expect(bySlot.get(binToHex(keyToSlot(bigIntToVmNumber(4n))))).toBe(6n);
   }, 300_000);
+
+  it('settles two distinct parameter-derived keys of one proxy-owned mapping', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x59), provider);
+    for (let index = 0; index < 40; index += 1) {
+      await provider.addUtxo(signer.getAddress(), {
+        txid: (index + 1).toString(16).padStart(64, '0'),
+        vout: 0,
+        satoshis: 1_000_000n,
+      });
+    }
+
+    const counterArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Counter() {
+        int public count;
+        function bump() public { this.count = this.count + 1; }
+      }`, KERNEL);
+    const counterBase = new Contract(counterArtifact, [], { provider });
+    const counterSetup = await setupStatefulUtxos(
+      provider, counterBase, counterArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const counter = StatefulContract.withCategory(
+      counterBase.withCategory(hexToBin(counterSetup.categoryId)), counterSetup.categoryId,
+    );
+
+    const implementationArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface ICounter { function bump() external; }
+      contract Coordinator() {
+        mapping(int => int) balances;
+        function seed() public { this.balances[8] = 10; }
+        function poke(address counter, int base, int value) public {
+          this.balances[base + 1] = value;
+          this.balances[base + 2] = value + 1;
+          ICounter(counter).bump();
+        }
+      }`, KERNEL);
+    const delegate = implementationArtifact.delegateArtifact!;
+    const pokeHandler = delegate.messageBus?.handlers.find((handler) => handler.name === 'poke');
+    expect(pokeHandler).toMatchObject({ eligible: true });
+    expect(pokeHandler?.batchKeyWitnesses?.map((witness) => witness.expressionLabel))
+      .toEqual(['binop:+(id:base,lit:1)', 'binop:+(id:base,lit:2)']);
+    expect(new Set(pokeHandler?.physicalEntrySlots).size).toBe(2);
+    const deployed = await upgrades.deployProxy(
+      getContractFactory(implementationArtifact, signer), [],
+    );
+    deployed.implementation._registerResolvedExternal('ICounter', counter);
+    await expect((deployed as any).seed().send()).resolves.toBeDefined();
+
+    const callsiteId = delegate.abi.find((entry) => entry.name === 'poke')!
+      .externalCalls!.find((call) => call.functionName === 'bump')!.callsiteId!;
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [{
+        contract: deployed.proxy,
+        functionName: 'poke',
+        args: [counter.inner.lockingBytecode, 7n, 5n],
+        executionArtifact: deployed.implementation.inner.artifact,
+        executor: deployed.implementation,
+      }, {
+        contract: counter,
+        functionName: 'bump',
+        args: [],
+        callsiteId,
+      }],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    });
+    const builder = await composition.build();
+    expect(messageBusVmAccepts(builder)).toBe(true);
+    await expect(composition.send()).resolves.toBeDefined();
+    expect((await counter.getState()).count).toBe(1n);
+    const entries = await deployed.proxy.getEntries('balances');
+    const bySlot = new Map(entries.map((entry) => [
+      entry.slot === undefined ? '' : binToHex(entry.slot), entry.value,
+    ]));
+    expect(bySlot.get(binToHex(keyToSlot(bigIntToVmNumber(8n))))).toBe(5n);
+    expect(bySlot.get(binToHex(keyToSlot(bigIntToVmNumber(9n))))).toBe(6n);
+  }, 300_000);
 });

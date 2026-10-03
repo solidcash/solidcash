@@ -97,6 +97,7 @@ import AstBuilder from './ast/AstBuilder.js';
 import { Class, GlobalFunction } from './ast/Globals.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
+import { canonicalizeUpsertKeyExpression } from './generation/upsertKeySources.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
 import SolidCashParser from './grammar/SolidCashParser.js';
 import SymbolTableTraversal, {
@@ -5240,8 +5241,24 @@ function synthesizeMessageBusRoute(
   const routeKeyWitnessCoordinates = new Map<string, {
     collection: string; keyIndex: number; alternativeIndex: number;
   }>();
-  const literalEntryKeyIdentity = (key: ExpressionNode): string | undefined => {
+  const entryKeyExpressionIdentity = (
+    key: ExpressionNode, parameters: readonly ParameterNode[],
+  ): string | undefined => {
     if (key instanceof IntLiteralNode) return `const:${key.value}`;
+    // Only arithmetic over integer ABI parameters and literals can be independently reconstructed by the SDK.
+    // A state/local-dependent expression needs its own proof; its source text is not an entry identity.
+    const numericParameter = (name: string): boolean => {
+      const type = parameters.find((parameter) => parameter.name === name)?.type;
+      return type instanceof IntType || type === PrimitiveType.INT || type === PrimitiveType.BIGINT;
+    };
+    const parameterArithmetic = (node: ExpressionNode): boolean => {
+      if (node instanceof IntLiteralNode) return true;
+      if (node instanceof IdentifierNode) return numericParameter(node.name);
+      return node instanceof BinaryOpNode
+        && [BinaryOperator.PLUS, BinaryOperator.MINUS, BinaryOperator.MUL].includes(node.operator)
+        && parameterArithmetic(node.left) && parameterArithmetic(node.right);
+    };
+    if (parameterArithmetic(key)) return canonicalizeUpsertKeyExpression(key, new Set());
     return undefined;
   };
   const fixedIterationCollections = new Set<string>();
@@ -5252,7 +5269,7 @@ function synthesizeMessageBusRoute(
   const explicitlyEnabledMessageBus = ['enabled', 'required'].includes(
     (compilerOptions as InternalCompilerOptions).__messageBusMode ?? 'auto',
   );
-  const enableLiteralEntryAlternatives = compilerOptions.messageBusKernel === true
+  const enableExpressionEntryAlternatives = compilerOptions.messageBusKernel === true
     && explicitlyEnabledMessageBus;
   // X76(E1). A bare `m[k]` on a PACKED or DYNAMIC state array does not resolve to a mapping entry at all:
   // `SymbolTableTraversal.visitArrayAssign` sends it to `StateArrayAssignNode`, a different physical form with
@@ -7101,13 +7118,13 @@ function synthesizeMessageBusRoute(
       }
       const collectKeys = (includeBare: boolean, flattenBare = false): {
         keys: Map<string, number[][]>;
-        computedKeysAreLiteral: Map<string, boolean>;
-        literalAlternatives: Map<string, Array<string | undefined>>;
+        computedKeysAreProvable: Map<string, boolean>;
+        expressionAlternatives: Map<string, Array<string | undefined>>;
       } => {
         const collected = new Map<string, number[][]>();
         const collectedIdentities = new Map<string, Set<string>>();
-        const computedKeysAreLiteral = new Map<string, boolean>();
-        const literalAlternatives = new Map<string, Array<string | undefined>>();
+        const computedKeysAreProvable = new Map<string, boolean>();
+        const expressionAlternatives = new Map<string, Array<string | undefined>>();
         const consumed = new Set<Node>();
         const senderGetters = new Map<string, boolean>();
         const isSenderGetter = (name: string, visiting = new Set<string>()): boolean => {
@@ -7215,27 +7232,27 @@ function synthesizeMessageBusRoute(
           });
           const group = collected.get(access.name) ?? [];
           const identity = indices.map((index, keyIndex) => index === -1
-            ? (enableLiteralEntryAlternatives
-              ? literalEntryKeyIdentity(access.keys[keyIndex]) : undefined) ?? 'computed'
+            ? (enableExpressionEntryAlternatives
+              ? entryKeyExpressionIdentity(access.keys[keyIndex], fn.parameters) : undefined) ?? 'computed'
             : String(index)).join('|');
           const seen = collectedIdentities.get(access.name) ?? new Set<string>();
           if (!seen.has(identity)) {
             group.push(indices);
             seen.add(identity);
-            // Keep labels positional with the route alternatives, including non-literal placeholders.
-            const alternatives = literalAlternatives.get(access.name) ?? [];
-            alternatives.push(enableLiteralEntryAlternatives && indices.length === 1 && indices[0] === -1
-              ? literalEntryKeyIdentity(access.keys[0]) : undefined);
-            literalAlternatives.set(access.name, alternatives);
+            // Keep labels positional with the route alternatives, including unprovable placeholders.
+            const alternatives = expressionAlternatives.get(access.name) ?? [];
+            alternatives.push(enableExpressionEntryAlternatives && indices.length === 1 && indices[0] === -1
+              ? entryKeyExpressionIdentity(access.keys[0], fn.parameters) : undefined);
+            expressionAlternatives.set(access.name, alternatives);
           }
           collectedIdentities.set(access.name, seen);
-          computedKeysAreLiteral.set(access.name,
-            (computedKeysAreLiteral.get(access.name) ?? true)
+          computedKeysAreProvable.set(access.name,
+            (computedKeysAreProvable.get(access.name) ?? true)
               && indices.every((index, keyIndex) => index !== -1
-                || literalEntryKeyIdentity(access.keys[keyIndex]) !== undefined));
+                || entryKeyExpressionIdentity(access.keys[keyIndex], fn.parameters) !== undefined));
           collected.set(access.name, group);
         });
-        return { keys: collected, computedKeysAreLiteral, literalAlternatives };
+        return { keys: collected, computedKeysAreProvable, expressionAlternatives };
       };
       // X19 admitted the bare spelling only where the route reaches the entry through the handler ITSELF; every
       // other shape - a second key alternative, a msg.sender key - is served by a cloned handler whose keys are
@@ -7396,16 +7413,16 @@ function synthesizeMessageBusRoute(
         // two rows and one handler, so no inactive physical entry slots exist.
         const globalInputs = new Set<number>();
         const perRowInputs = new Set<number>();
-        // Literal keys have compiler-known, distinct identities even when the handler owns a graph tail.
+        // Provable expression keys have distinct identities even when the handler owns a graph tail.
         // Unknown computed keys still require the resource-shaped path rather than borrowing this proof.
-        const kernelLiteralAlternatives = enableLiteralEntryAlternatives
+        const kernelExpressionAlternatives = enableExpressionEntryAlternatives
           && [...directKeys].every(([collectionName, alternatives]) =>
             collectionByName.get(collectionName)?.allKeyTypes.length === 1
             && alternatives.length <= 2
-            && directShape.computedKeysAreLiteral.get(collectionName) === true
+            && directShape.computedKeysAreProvable.get(collectionName) === true
             && alternatives.every((indices) => indices.length === 1 && indices[0] === -1));
         const kernelFixedEntryAlternatives = compilerOptions.messageBusKernel === true
-          && (!graphTailCallEligible || kernelLiteralAlternatives)
+          && (!graphTailCallEligible || kernelExpressionAlternatives)
           && [...directKeys.values()].every((alternatives) =>
             alternatives.every((indices) => indices.every((index) => index >= -2)));
         for (const [collectionName, alternatives] of directKeys) {
@@ -7496,8 +7513,8 @@ function synthesizeMessageBusRoute(
                     : inputIndex === -1
                       ? { source: 'expression' as const }
                       : kernelFixedEntryAlternatives ? { source: 'argument' as const } : {}),
-                  ...(inputIndex === -1 && directShape.literalAlternatives.get(collectionName)?.[alternativeIndex]
-                    && { expressionLabel: directShape.literalAlternatives.get(collectionName)![alternativeIndex] }),
+                  ...(inputIndex === -1 && directShape.expressionAlternatives.get(collectionName)?.[alternativeIndex]
+                    && { expressionLabel: directShape.expressionAlternatives.get(collectionName)![alternativeIndex] }),
                   ...(perRow && { perRow: true }),
                 });
               });
@@ -9255,7 +9272,7 @@ function synthesizeMessageBusRoute(
     node instanceof MappingAccessNode || node instanceof MappingAssignNode || node instanceof MappingDeleteNode
       || node instanceof MappingFieldAssignNode;
   const keySignature = (node: MappingAccessNode | MappingAssignNode | MappingDeleteNode
-  | MappingFieldAssignNode): string =>
+  | MappingFieldAssignNode, parameters: readonly ParameterNode[]): string =>
     node.keys.map((key) => {
       if (key instanceof IdentifierNode) {
         // Modifier expansion binds `onlyOwner(id)` as `id__<line>_<col>_<i> = id`. Treat that local as
@@ -9263,7 +9280,8 @@ function synthesizeMessageBusRoute(
         return `p:${key.name.replace(/__\d+(?:_\d+)*$/, '')}`;
       }
       if (key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER) return 'sender';
-      return (enableLiteralEntryAlternatives ? literalEntryKeyIdentity(key) : undefined) ?? 'other';
+      return (enableExpressionEntryAlternatives
+        ? entryKeyExpressionIdentity(key, parameters) : undefined) ?? 'other';
     }).join('|');
   /**
    * X76(E1). Rewrite the CLONE's bare `m[k]` / `m[k] = v` spellings into the Mapping* nodes
@@ -9347,7 +9365,7 @@ function synthesizeMessageBusRoute(
       if (!isMappingNode(node) || !collectionByName.has(node.name)) return;
       if (runtimeLoopEntry(node)) return;
       const list = alternatives.get(node.name) ?? [];
-      const signature = keySignature(node);
+      const signature = keySignature(node, source.parameters);
       if (!list.includes(signature)) list.push(signature);
       alternatives.set(node.name, list);
     });
@@ -9361,7 +9379,8 @@ function synthesizeMessageBusRoute(
       const collection = collectionByName.get(statement.name);
       if (!collection || statement.keys.length !== collection.allKeyTypes.length) return [statement];
       const safeName = statement.name.replace(/[^A-Za-z0-9_]/g, '_');
-      const alternativeRowLocal = (alternatives.get(statement.name) ?? []).indexOf(keySignature(statement)) > 0;
+      const alternativeRowLocal = (alternatives.get(statement.name) ?? [])
+        .indexOf(keySignature(statement, source.parameters)) > 0;
       const checks: StatementNode[] = [];
       statement.keys.forEach((key, keyIndex) => {
         const keyRowLocal = alternativeRowLocal || crossHandlerPerRowWitnesses.has(
@@ -9392,7 +9411,8 @@ function synthesizeMessageBusRoute(
       const collection = collectionByName.get(node.name);
       if (!collection || node.keys.length !== collection.allKeyTypes.length) return;
       const safeName = node.name.replace(/[^A-Za-z0-9_]/g, '_');
-      const alternativeRowLocal = (alternatives.get(node.name) ?? []).indexOf(keySignature(node)) > 0;
+      const alternativeRowLocal = (alternatives.get(node.name) ?? [])
+        .indexOf(keySignature(node, source.parameters)) > 0;
       node.keys = node.keys.map((key, keyIndex) => {
         const keyRowLocal = alternativeRowLocal || crossHandlerPerRowWitnesses.has(
           `__message_bus_key_${safeName}_${keyIndex}`,

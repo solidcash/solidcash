@@ -40,4 +40,26 @@ describe('kernel literal entry alternatives', () => {
     expect(routeNames).toContain('__message_bus_key_balances_0');
     expect(routeNames).toContain('__message_bus_key_balances_0_row');
   });
+
+  it('publishes separate entry slots for distinct runtime-computed keys', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ICounter { function bump() external; }
+      contract Coordinator() {
+        mapping(int => int) balances;
+        function poke(address counter, int base, int value) public {
+          this.balances[base + 1] = value;
+          this.balances[base + 2] = value + 1;
+          ICounter(counter).bump();
+        }
+      }`, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      suppressWarnings: true,
+    });
+    const handler = artifact.delegateArtifact!.messageBus!.handlers.find((entry) => entry.name === 'poke')!;
+    expect(handler).toMatchObject({ eligible: true });
+    expect(new Set(handler.physicalEntrySlots).size).toBe(2);
+  });
 });

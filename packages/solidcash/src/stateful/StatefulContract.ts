@@ -7177,10 +7177,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Local delegate resources execute at the implementation input, while an outgoing CALL is made in the
     // authenticated proxy/state-owner context. Keep that edge identity as one category+bytecode pair and use it
     // for both call arguments derived from address(this) and the callee's msg.sender.
-    const publicSelfAddress = registeredSelf?.lockingBytecode
+    const registeredSelfAddress = registeredSelf?.lockingBytecode
       ? hexToBin(registeredSelf.lockingBytecode) : hexToBin(this.inner.lockingBytecode);
     const authenticatedSelfAddress = this._logicalAddress === undefined
-      ? publicSelfAddress : addressToLockScript(this._logicalAddress);
+      ? registeredSelfAddress : addressToLockScript(this._logicalAddress);
+    const publicSelfAddress = authenticatedSelfAddress;
     const publicSelfIdentity = Object.freeze({
       categoryId: this.categoryId,
       lockingBytecode: binToHex(authenticatedSelfAddress),

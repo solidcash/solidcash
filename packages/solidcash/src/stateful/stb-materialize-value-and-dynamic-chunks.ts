@@ -167,7 +167,7 @@ export function appendDynamicChunks(
     const hasCanonicalIndex = (commitment: string, index: number): boolean => {
       try { return parseChunkCommitment(commitment).chunkIndex === index; } catch { return false; }
     };
-    const inPlace = oldChunks.length > 0 && commitments.length >= oldChunks.length
+    const inPlace = oldChunks.length > 0
       && commitments.every(hasCanonicalIndex)
       && oldChunks.every((input, index) => hasCanonicalIndex(input.token?.nft?.commitment ?? '', index))
       && inPlaceIndices.every((index, ordinal) => index === base + ordinal
@@ -235,6 +235,16 @@ export function appendDynamicChunks(
       chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
       if (inPlace) builder.outputs[base + chunkIndex] = chunkOutput;
       else builder.addOutput(chunkOutput);
+    }
+    if (inPlace) {
+      // A shrinking write consumes every old chunk, but only the new prefix may remain at this
+      // collection address. Keep the balanced output coordinates for later participants while
+      // removing the retired NFTs from the chunk namespace.
+      for (let chunkIndex = commitments.length; chunkIndex < oldChunks.length; chunkIndex++) {
+        builder.outputs[base + chunkIndex] = {
+          to: Uint8Array.of(0x51), amount: oldChunks[chunkIndex].satoshis,
+        };
+      }
     }
   }
 }

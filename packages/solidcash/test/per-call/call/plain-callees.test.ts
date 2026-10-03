@@ -1,0 +1,206 @@
+import { describe, expect, it } from 'vitest';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import { FrameKind, hash160, parsePushdataCommitment, validatorAddress, type Artifact } from '@solidcash/utils';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { Contract, SignatureTemplate } from '../../../src/index.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
+import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
+import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
+
+/**
+ * Callee frames on the plain call path (spec 10, 18): an entry that calls another plain deployment runs each callee
+ * as a frame of the callee contract's own block, its return learned from its own close before the caller reads it.
+ *
+ * `A.bump` counts itself in its own record, makes a `CALL` into `B.add`, whose body rewrites B's own record and
+ * returns the new total, then writes that total after the call and emits it: A's record is written in both
+ * segments the call splits its frame into. `A.chain` and `A.chainOrigin` are nested `STATIC` frames, A into B into
+ * C: C answers its own `msg.sender`, the contract that called it, and the `tx.origin` the user's input carries.
+ * `A.readTwice` enters B twice, on two masters of B's block, whose category the validator settles, and `A.sumThree`
+ * enters it once per turn of a loop. A contract entered twice that a frame of it writes, two deployments of one
+ * contract, and a callee that emits are refused by name before anything is built.
+ */
+
+const SOURCE = 'pragma solidity ^0.8.0;'
+  + ' contract C { uint256 public marker;'
+  + '   function who() external view returns (address) { return msg.sender; }'
+  + '   function origin() external view returns (address) { return tx.origin; } }'
+  + ' contract B { uint256 public total; event Noted(uint256 x);'
+  + '   function add(uint256 amount) external returns (uint256) { total = total + amount; return total; }'
+  + '   function relay(C c) external view returns (address) { return c.who(); }'
+  + '   function relayOrigin(C c) external view returns (address) { return c.origin(); }'
+  + '   function note(uint256 x) external { emit Noted(x); } }'
+  + ' contract A { B public b; C public c; uint256 public lastTotal; uint256 public bumps; event Bumped(uint256 total);'
+  + '   constructor(B b_, C c_) { b = b_; c = c_; }'
+  + '   function bump(uint256 amount) external returns (uint256) {'
+  + '     bumps = bumps + 1; lastTotal = b.add(amount); emit Bumped(lastTotal); return lastTotal; }'
+  + '   function chain() external view returns (address) { return b.relay(c); }'
+  + '   function chainOrigin() external view returns (address) { return b.relayOrigin(c); }'
+  + '   function notify() external { b.note(1); }'
+  + '   function twice(uint256 amount) external returns (uint256) { return b.add(amount) + b.add(amount); }'
+  + '   function readTwice() external view returns (uint256) { return b.total() + b.total(); }'
+  + '   function sumThree() external view returns (uint256 t) { for (uint256 i = 0; i < 3; i++) { t += b.total(); } }'
+  + '   function both(C other) external view returns (address x, address y) { x = c.who(); y = other.who(); } }';
+
+/** The deployments, by name, and the chain as it stood when they were done. */
+interface Deployed {
+  readonly provider: MockNetworkProvider;
+  /** The artifact each deployment runs, by deployment name. */
+  readonly artifacts: Readonly<Record<string, Artifact>>;
+  readonly categories: ReadonlyMap<string, string>;
+  /** The lock each deployment's category derives, and its `address`, the hash160 of that lock, as hex. */
+  readonly locks: ReadonlyMap<string, Uint8Array>;
+  readonly addresses: ReadonlyMap<string, string>;
+  readonly snapshot: SnapshotRestorer;
+}
+
+let run: Promise<Deployed> | undefined;
+
+/** C, a second C, B and A, A holding B and the first C; each case rewinds the chain to them first. */
+async function deployed(): Promise<Deployed> {
+  run ??= (async (): Promise<Deployed> => {
+    const compiled = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never);
+    const artifacts = { A: compiled.A!, B: compiled.B!, C: compiled.C!, C2: compiled.C! };
+    const { perCallValidator } = await import('solidc');
+    const validatorProgram = perCallValidator.buildValidatorProgram();
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    await fundShippedFacets(provider);
+    const categories = new Map<string, string>();
+    const locks = new Map<string, Uint8Array>();
+    for (const [index, [name, args]] of ([['C', []], ['C2', []], ['B', []], ['A', ['B', 'C']]] as const).entries()) {
+      const fundingUtxo = { txid: `${'71'.repeat(31)}${(0xa0 + index).toString(16)}`, vout: 0, satoshis: 500_000n };
+      await provider.addUtxo(funder.address, fundingUtxo);
+      const deployment = await deployStatefulContract(artifacts[name]!, args.map((arg) => locks.get(arg)!), {
+        provider, fundingUtxo, changeAddress: funder.address,
+        funder: funder.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      });
+      categories.set(name, deployment.categoryId);
+      locks.set(name, validatorAddress(hexToBin(deployment.categoryId), validatorProgram));
+    }
+    const addresses = new Map([...locks].map(([name, lock]) => [name, binToHex(hash160(lock))]));
+    return { provider, artifacts, categories, locks, addresses, snapshot: await provider.takeSnapshot() };
+  })();
+  const chain = await run;
+  await chain.snapshot.restore();
+  return chain;
+}
+
+let coins = 0;
+
+/** Enters one of A's entries with a fresh coin of the user's, naming every deployment as a call may reach it. */
+async function enter(
+  chain: Deployed, functionName: string, args: readonly (bigint | Uint8Array)[] = [],
+): Promise<PerCallCallResult> {
+  coins += 1;
+  const user = encodeLockingBytecodeP2pkh(alicePkh);
+  const callerUtxo = { txid: `${'72'.repeat(31)}${coins.toString(16).padStart(2, '0')}`, vout: 0, satoshis: 300_000n };
+  await chain.provider.addUtxo(binToHex(user), callerUtxo);
+  const externals = Object.fromEntries([...chain.categories]
+    .map(([name, categoryId]) => [name, { artifact: chain.artifacts[name]!, categoryId }]));
+  return callPerCallEntry({
+    provider: chain.provider, artifact: chain.artifacts.A!, categoryId: chain.categories.get('A')!, functionName,
+    args, callerUtxo, callerLockingBytecode: user, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+    vm: compositionMachine(), externals,
+  });
+}
+
+/** A contract's records as its own layout decodes them, read back from the chain. */
+async function recordOf(chain: Deployed, name: string): Promise<Record<string, unknown>> {
+  const layout = chain.artifacts[name]!.stateLayout!;
+  const set = await readPerCallDeployment(chain.provider, chain.categories.get(name)!, layout);
+  return Object.assign({}, ...set.records.slice(0, layout.dataNftCount)
+    .map((record, nftIndex) => parsePushdataCommitment(record.token!.nft!.commitment, layout, nftIndex)));
+}
+
+/** The answer an entry returned, by role: the user who entered, or the contract it names. */
+function roleOf(chain: Deployed, value: unknown): string {
+  const address = value instanceof Uint8Array ? binToHex(value) : String(value);
+  if (address === binToHex(alicePkh)) return 'user';
+  return [...chain.addresses].find(([, known]) => known === address)?.[0] ?? address;
+}
+
+describe('callee frames on the plain call path', () => {
+  it('serves a CALL whose callee writes its own record and returns, and the caller writes what it returned', async () => {
+    const chain = await deployed();
+    const first = await enter(chain, 'bump', [5n]);
+    expect(first.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(first.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(first.values).toStrictEqual([5n]);
+    expect(first.completed.map((frame) => [frame.functionName, frame.kind]))
+      .toStrictEqual([['B.add()', FrameKind.CALL], ['A.bump()', FrameKind.ROOT]]);
+    expect(await recordOf(chain, 'B')).toMatchObject({ total: 5n });
+    expect(await recordOf(chain, 'A')).toMatchObject({ lastTotal: 5n, bumps: 1n });
+    // A second call starts from what the first one left on chain.
+    const second = await enter(chain, 'bump', [7n]);
+    expect(second.accepted).toBe(true);
+    expect(second.values).toStrictEqual([12n]);
+    expect(await recordOf(chain, 'B')).toMatchObject({ total: 12n });
+    expect(await recordOf(chain, 'A')).toMatchObject({ lastTotal: 12n, bumps: 2n });
+  });
+
+  it('serves nested STATIC frames: the innermost callee sees its own caller as msg.sender', async () => {
+    const chain = await deployed();
+    const result = await enter(chain, 'chain');
+    expect(result.accepted).toBe(true);
+    expect(result.completed.map((frame) => [frame.functionName, frame.kind])).toStrictEqual([
+      ['C.who()', FrameKind.STATIC], ['B.relay()', FrameKind.STATIC], ['A.chain()', FrameKind.ROOT],
+    ]);
+    expect(result.values.map((value) => roleOf(chain, value))).toStrictEqual(['B']);
+  });
+
+  it('serves nested STATIC frames: tx.origin two frames down is the user who entered', async () => {
+    const chain = await deployed();
+    const result = await enter(chain, 'chainOrigin');
+    expect(result.accepted).toBe(true);
+    expect(result.values.map((value) => roleOf(chain, value))).toStrictEqual(['user']);
+  });
+
+  it('serves a contract entered twice whose frames only read it, settled by the validator', async () => {
+    const chain = await deployed();
+    expect((await enter(chain, 'bump', [5n])).accepted).toBe(true);
+    const result = await enter(chain, 'readTwice');
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.values).toStrictEqual([10n]);
+    // Two masters of B, each in B's one block.
+    const masters = result.draft.layout.participants.filter((placed) => placed.contract === 'B' && placed.kind === 'master');
+    expect(masters).toHaveLength(2);
+  });
+
+  it('serves a loop of calls: one master and one segment per turn', async () => {
+    const chain = await deployed();
+    expect((await enter(chain, 'bump', [5n])).accepted).toBe(true);
+    const result = await enter(chain, 'sumThree');
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.values).toStrictEqual([15n]);
+    expect(result.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['B.total()', 'B.total()', 'B.total()', 'A.sumThree()']);
+    expect(result.draft.blockOf('master').segments).toHaveLength(4);
+  });
+
+  it('refuses a contract entered twice when a frame of it writes, by name', async () => {
+    const chain = await deployed();
+    await expect(enter(chain, 'twice', [2n])).rejects.toThrow(
+      'entry "twice" makes 2 external call(s): it enters "B" 2 times and a frame of it writes its records',
+    );
+  });
+
+  it('refuses two deployments of one contract by name: its block and records are named by the contract', async () => {
+    const chain = await deployed();
+    await expect(enter(chain, 'both', [chain.locks.get('C2')!])).rejects.toThrow(
+      'entry "both" makes 2 external call(s): it reaches two deployments of "C", whose blocks and records this call '
+      + 'path does not tell apart yet',
+    );
+  });
+
+  it('refuses a callee that emits by name, before anything is built', async () => {
+    const chain = await deployed();
+    await expect(enter(chain, 'notify')).rejects.toThrow(
+      'entry "notify" makes 1 external call(s): the callee "B.note()" emits, which this call path does not plan yet',
+    );
+  });
+});

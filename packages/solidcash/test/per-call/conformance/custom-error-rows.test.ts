@@ -20,9 +20,9 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * path: the shipped compiler under the per-call convention, the shipped deployment and the shipped
  * `callPerCallEntry`, whose refusal report is the shipped decoder for the error's name and arguments.
  *
- * On the plain call path a call to *another* contract still cannot be planned (its callee frames are the hop's
- * held item), so the SafeERC20 spelling that makes the call and carries the assembly re-raise is pinned by the
- * refusal it meets. The spelling whose target is the entry's own address is served: the custom error the callee
+ * The SafeERC20 spelling that makes the call to *another* contract and carries the assembly re-raise is pinned by
+ * the refusal it meets on the plain call path: the path plans the callee frame, and the row's target is no
+ * deployment's. The spelling whose target is the entry's own address is served: the custom error the callee
  * raised is reported with its name, its declared parameters and the values it was raised with, read back from the
  * artifact's error ABI through the shipped refusal decoder. (With the self-call inlined, the callee's `revert`
  * reaches the frame directly, so the served case pins the error decode; the assembly re-raise rides the
@@ -113,7 +113,7 @@ const SELF_SOURCE = 'pragma solidity ^0.8.0;'
   + '   function note() public { calls = calls + 1; }'
   + ' }';
 
-/** The low-level call targets another contract, which the plain call path cannot yet plan. */
+/** The low-level call targets another contract, which the row names by an address no deployment holds. */
 const CROSS_SOURCE = 'pragma solidity ^0.8.0;'
   + ' error InsufficientAllowance(uint256 requested, uint256 available);'
   + ' interface IToken { function transferFrom(address from, address to, uint256 amount) external returns (bool); }'
@@ -167,7 +167,7 @@ describe('spec section 23 row 6: custom errors raised in a callee and re-raised'
     expect(result.value).toBe(2n);
   }, 120_000);
 
-  it('refuses the cross-contract spelling by name: the call path plans no callee frames', async () => {
+  it('refuses the cross-contract spelling by name: its target is no deployment\'s', async () => {
     const artifacts = compileStringMulti(CROSS_SOURCE, { composition: 'per-call', solidityImportCompat: true });
     // The body compiles and publishes the callee it lowered the low-level call to.
     const callSite = artifacts.Caller!.composition?.stopSites?.entries
@@ -176,7 +176,8 @@ describe('spec section 23 row 6: custom errors raised in a callee and re-raised'
     const deployed = await deployedFor(artifacts.Caller!);
     await expect(enter(deployed, artifacts.Caller!, 'pull', [new Uint8Array(35).fill(0x11), FROM, TO, 50n]))
       .rejects.toThrow(
-        /entry "pull" makes 1 external call\(s\), whose callee frames this call path does not plan yet/,
+        new RegExp('entry "pull" makes 1 external call\\(s\\): the call to "IToken\\.transferFrom" targets (11){35}, '
+          + 'and none of the deployment\'s contracts sits at that address'),
       );
   }, 120_000);
 });

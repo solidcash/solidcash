@@ -17,11 +17,12 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  *
  * The row names an event whose payload crosses the direct convention's 128-byte commitment size, emitted from a
  * nested frame. The compiler accepts the payload: five 32-byte fields encode to 160 bytes. The shipped call path
- * (`callPerCallEntry`) plans a single contract's root frame and refuses any entry whose body makes an external call,
- * an entry whose callee frames this path does not plan, so the transaction cannot even be assembled for the row, and
- * the refusal it meets is pinned by name. The control beside it drives the identical >128-byte event through
- * the same path emitted by the root frame itself, which settles, and reads it back through the shipped receipt
- * (`compositionEventLogs`): the size is not what the path refuses, the nested frame is.
+ * (`callPerCallEntry`) plans the callee frame an entry's call reaches, and the row's caller calls an emitter at an
+ * address no deployment holds, so the transaction cannot even be assembled for the row, and the refusal it meets
+ * is pinned by name (a deployed emitting callee is refused by name too: the path plans no callee events yet). The
+ * control beside it drives the identical >128-byte event through the same path emitted by the root frame itself,
+ * which settles, and reads it back through the shipped receipt (`compositionEventLogs`): the size is not what the
+ * path refuses, the nested frame is.
  */
 
 /** Five 32-byte fields, so the encoded event payload is 160 bytes, above the 128-byte direct commitment size. */
@@ -101,7 +102,7 @@ describe('spec section 23 row 13: events above 128 bytes from nested frames', ()
     const callerUtxo = { txid: outpointHash(0x51), vout: 0, satoshis: 300_000n };
     await provider.addUtxo(binToHex(user), callerUtxo);
 
-    // The entry makes one external call, and this path plans no callee frames, so it refuses before assembling.
+    // The entry's one external call reaches an address no deployment holds, so the path refuses before assembling.
     await expect(callPerCallEntry({
       provider,
       artifact: root,
@@ -113,7 +114,8 @@ describe('spec section 23 row 13: events above 128 bytes from nested frames', ()
       funder: signature.unlockP2PKH(),
       vm: compositionMachine(),
     })).rejects.toThrow(
-      /entry "run" makes 1 external call\(s\), whose callee frames this call path does not plan yet/,
+      new RegExp('entry "run" makes 1 external call\\(s\\): the call to "IEmitter\\.publish" targets [0-9a-f]{70}, '
+        + 'and none of the deployment\'s contracts sits at that address'),
     );
   }, 120_000);
 

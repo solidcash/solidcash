@@ -23,7 +23,8 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * Two facts are pinned. The value-0 balance guard is a no-op the per-call path serves: an entry that compares its
  * own balance with zero, records the branch it took, and answers the balance runs, with both the answer and the
  * branch read back through the shipped decoders. The full `functionCallWithValue` shape - that guard around a
- * value-carrying call to another contract - is refused by name, because the plain call path plans no callee frames.
+ * value-carrying call to another contract - is refused by name: the call path plans the callee frame, and the
+ * target the row names is no deployment's.
  */
 
 /** A contract deployed through the shipped deployment, with a caller coin funded at the caller's own lock. */
@@ -117,7 +118,7 @@ describe('spec section 23 row 10: address(this).balance compared with 0', () => 
       .toStrictEqual({ branch: 1n });
   }, 120_000);
 
-  it('refuses the functionCallWithValue shape by name: the call path plans no callee frames', async () => {
+  it('refuses the functionCallWithValue shape by name: its target is no deployment\'s', async () => {
     const forwarder = compileStringMulti(FORWARD_SOURCE, { composition: 'per-call', solidityImportCompat: true })
       .Forwarder!;
     // The body itself compiles: the value-0 call lowers, so the refusal is the call path's, not the compiler's.
@@ -130,7 +131,8 @@ describe('spec section 23 row 10: address(this).balance compared with 0', () => 
       args: [new Uint8Array(35).fill(0x11)] as never, callerUtxo: coin, callerLockingBytecode: deployed.callerLock,
       funder: deployed.funder, vm: compositionMachine(),
     })).rejects.toThrow(
-      /entry "forwarded" makes 1 external call\(s\), whose callee frames this call path does not plan yet/,
+      new RegExp('entry "forwarded" makes 1 external call\\(s\\): the call to "ITarget\\.ping" targets (11){35}, '
+        + 'and none of the deployment\'s contracts sits at that address'),
     );
   }, 120_000);
 });

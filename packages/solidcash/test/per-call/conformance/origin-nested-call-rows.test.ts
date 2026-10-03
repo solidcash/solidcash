@@ -25,8 +25,8 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * EVM, so the owner is admitted through `tx.origin` alone (O1, V5): the vault's frame states the desk's proxy as its
  * sender and the root user's input as its origin, and the claim it writes is on chain after the broadcast. A stranger
  * meets the vault's own reason and nothing is broadcast; the same vault guarded on `msg.sender` alone refuses the
- * owner too, because the desk, not the owner, is the nested frame's sender. The plain call path, which plans no
- * callee frames, refuses the entry by name.
+ * owner too, because the desk, not the owner, is the nested frame's sender. The plain call path on the desk
+ * implementation's own deployment, whose records hold no vault, refuses the entry by name.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */
@@ -259,7 +259,7 @@ describe('spec section 23 row 7: tx.origin authorizes a nested call', () => {
     expect(await claimOf(run.network, CLAIM_ID)).toBeUndefined();
   });
 
-  it('refuses the entry by name on the plain call path, which plans no callee frames', async () => {
+  it('refuses the entry by name on the plain call path, whose implementation records hold no vault', async () => {
     const run = await deployed();
     const coin = funding(idOf('plain path coin'));
     await run.network.addUtxo(binToHex(OWNER_LOCK), coin);
@@ -268,7 +268,8 @@ describe('spec section 23 row 7: tx.origin authorizes a nested call', () => {
       args: [CLAIM_ID, AMOUNT], callerUtxo: coin, callerLockingBytecode: OWNER_LOCK,
       funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),
     })).rejects.toThrow(
-      /entry "request" makes 1 external call\(s\), whose callee frames this call path does not plan yet/,
+      new RegExp('entry "request" makes 1 external call\\(s\\): the call to "IVault\\.release" targets the state '
+        + 'field "vault", which the caller\'s own state does not hold as an address'),
     );
   });
 });

@@ -39,7 +39,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * revert, which the EVM never reaches (the desk not open: the release of escrow 0), so six of the seven checks report
  * their own reason; and the thrown refusal does not carry a callee's custom error arguments (`errorArgs`), which the
  * shipped reporter reads from the refused draft. A first mark, which inserts a node beside the release, settles. The
- * plain call path, which plans no callee frames, refuses the entry by name.
+ * plain call path on the implementation's own deployment, whose records hold no ledger, refuses the entry by name.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */
@@ -569,7 +569,7 @@ describe('spec section 23 row 5: a revert after state-changing calls', () => {
       expect(after.events).toStrictEqual({ ...before.events, Marked: before.events.Marked! + 1, Released: 1 });
     });
 
-  it('refuses the entry by name on the plain call path, which plans no callee frames', async () => {
+  it('refuses the entry by name on the plain call path, whose implementation records hold no ledger', async () => {
     const run = await deployed();
     const coin = funding(idOf('plain path coin'));
     await run.network.addUtxo(binToHex(MEMBER_LOCK), coin);
@@ -578,7 +578,8 @@ describe('spec section 23 row 5: a revert after state-changing calls', () => {
       args: [7n, AMOUNT], callerUtxo: coin, callerLockingBytecode: MEMBER_LOCK,
       funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),
     })).rejects.toThrow(
-      /entry "post" makes 3 external call\(s\), whose callee frames this call path does not plan yet/,
+      new RegExp('entry "post" makes 3 external call\\(s\\): the call to "ILedger\\.approve" targets the state '
+        + 'field "ledger", which the caller\'s own state does not hold as an address'),
     );
   });
 });

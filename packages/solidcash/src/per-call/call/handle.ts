@@ -7,7 +7,8 @@
  * read path runs it — derived and evaluated locally, never broadcast — so awaiting such a call yields the entry's
  * returned value the same way the direct convention's probe does.
  *
- * What this surface covers today: a single contract's entry, entered by a signer, with no external calls. A writing
+ * What this surface covers today: a contract's entry, entered by a signer, whose calls reach plain deployments the
+ * provider registers (`callees.ts`, which refuses by name the callee shapes it does not settle yet). A writing
  * entry that returns a value is carried, and the decoded value is on the call result (`PerCallCallResult.values`); an
  * entry reached through the proxy hop is carried the same way when the proxy's forwarded call records a result (a
  * fallback that consumes the delegated result), and refused by name for the generated closure shape, whose bare

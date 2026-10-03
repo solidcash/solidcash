@@ -20,8 +20,8 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * the shipped `callPerCallEntry`, with the shipped decoder for whatever the entry answers or writes.
  *
  * The per-call convention lowers a low-level call whose calldata names an interface method to the typed call it
- * denotes. On the plain call path a call to *another* contract still cannot be planned (its callee frames are the
- * hop's held item), so that spelling is pinned by the refusal it meets. The spelling whose target is the entry's own
+ * denotes. A call to *another* contract is pinned by the refusal it meets on the plain call path: the path plans
+ * the callee frame, and the row's target is no deployment's. The spelling whose target is the entry's own
  * address is served, and it exercises the same lowering and the same `bool` decode: a true answer runs the entry
  * through, a false answer reaches the caller's own revert.
  */
@@ -115,7 +115,7 @@ const SELF_SOURCE = 'pragma solidity ^0.8.0;'
   + '   function note() public { calls = calls + 1; }'
   + ' }';
 
-/** The low-level call targets another contract, which the plain call path cannot yet plan. */
+/** The low-level call targets another contract, which the row names by an address no deployment holds. */
 const CROSS_SOURCE = 'pragma solidity ^0.8.0;'
   + ' interface IToken { function transfer(address to, uint256 amount) external returns (bool); }'
   + ' contract Token {'
@@ -156,7 +156,7 @@ describe('spec section 23 row 11: low-level call, bool return decoding, revert r
     expect(entered.refusal).toContain('operation did not succeed');
   }, 120_000);
 
-  it('refuses the cross-contract spelling by name: the call path plans no callee frames', async () => {
+  it('refuses the cross-contract spelling by name: its target is no deployment\'s', async () => {
     const artifacts = compileStringMulti(CROSS_SOURCE, { composition: 'per-call', solidityImportCompat: true });
     // The body compiles and publishes the callee it lowered the low-level call to.
     const callSite = artifacts.Caller!.composition?.stopSites?.entries
@@ -166,7 +166,8 @@ describe('spec section 23 row 11: low-level call, bool return decoding, revert r
     const entered = await enter(deployed, artifacts.Caller!, 'move',
       [new Uint8Array(35).fill(0x11), TO, 5n]);
     expect(entered.refusal).toMatch(
-      /entry "move" makes 1 external call\(s\), whose callee frames this call path does not plan yet/,
+      new RegExp('entry "move" makes 1 external call\\(s\\): the call to "IToken\\.transfer" targets (11){35}, '
+        + 'and none of the deployment\'s contracts sits at that address'),
     );
   }, 120_000);
 });

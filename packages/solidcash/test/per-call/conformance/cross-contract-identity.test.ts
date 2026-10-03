@@ -2,7 +2,7 @@ import { createRequire } from 'module';
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { Interface } from 'ethers';
-import { validatorAddress } from '@solidcash/utils';
+import { hash160, validatorAddress } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
@@ -20,8 +20,9 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * deployment, then calls one entry; per-call, rows whose leading contracts compile the same share those deployments,
  * each rewinding the chain to them before it deploys its last. An answer is compared by role: the user who entered,
  * or the name a contract was deployed as. A row the per-call path does not serve yet is pinned with the refusal it
- * meets, by name, beside the EVM's answer. The per-call side enters through the plain call path, which plans no
- * callee frames; the proxy hop, which does, is probed for the marketplace's shapes in `ahead/`.
+ * meets, by name, beside the EVM's answer. The per-call side enters through the plain call path, which plans the
+ * callee frames of a call between plain deployments as the proxy hop does; the hop's own shapes are probed for the
+ * marketplace in `ahead/`.
  */
 
 type Role = string | boolean | bigint;
@@ -90,9 +91,12 @@ const aRow = (label: string, entry: string, members: string, evm: Answer, extra:
   ...extra,
 });
 
-/** The plain call path's refusal for an entry that calls another contract: it plans no callee frames. */
-const noCalleeFrames = (entry: string): RegExp =>
-  new RegExp(`entry "${entry}" makes 1 external call\\(s\\), whose callee frames this call path does not plan yet`);
+/** A frame of the root's own contract below a callee: the planner gives the root's contract one master. */
+const REENTRY = new RegExp('entry "viaReentry" makes 1 external call\\(s\\): the call to "IA\\.k" reaches "A", which '
+  + 'this hop already places; a contract that reaches itself below itself cannot be given a second block');
+/** A value call runs after the entry's own code, so the getter after it would read B before `receive()` ran. */
+const VALUE_THEN_CALL = new RegExp('entry "viaSend" sends value to a contract and makes 1 external call\\(s\\); the '
+  + 'value call runs after the entry\'s own code');
 /** A raw call whose payload is not a typed call is refused by name in the body that makes it. */
 const rawCall = (entry: string): RegExp => new RegExp(`A\\.${entry}\\(\\): the call to '__raw__' takes the direct path's`);
 const NO_CREATE = /contract creation needs the witness `CREATE` checks, which are not emitted yet/;
@@ -102,18 +106,16 @@ const ASSEMBLY_PROXY = /Final statement is expected to be a require\(\) statemen
 
 const ROWS: readonly Row[] = [
   aRow('A -> B.who(): msg.sender', 'viaCross',
-    'function viaCross() external view returns (address) { (address s, ) = b.who(); return s; }', 'A',
-    { refusal: noCalleeFrames('viaCross') }),
+    'function viaCross() external view returns (address) { (address s, ) = b.who(); return s; }', 'A'),
   aRow('A -> B.who(): tx.origin', 'originInCross',
-    'function originInCross() external view returns (address) { (, address o) = b.who(); return o; }', 'EOA',
-    { refusal: noCalleeFrames('originInCross') }),
+    'function originInCross() external view returns (address) { (, address o) = b.who(); return o; }', 'EOA'),
   aRow('A -> staticcall B.who()', 'viaStaticcall',
     'function viaStaticcall() external view returns (address) {'
     + ' (bool ok, bytes memory r) = address(b).staticcall(abi.encodeCall(B.who, ())); require(ok);'
     + ' (address s, ) = abi.decode(r, (address, address)); return s; }', 'A', { refusal: rawCall('viaStaticcall') }),
   aRow('A -> B -> A.k() re-entry', 'viaReentry',
     'function viaReentry() external view returns (address) { return b.callback(IA(address(this))); }', 'B',
-    { refusal: noCalleeFrames('viaReentry') }),
+    { refusal: REENTRY }),
   aRow('A delegatecall Impl.who(): (sender, this)', 'viaDelegateOther',
     'function viaDelegateOther() external returns (address sender, address self_) {'
     + ' (bool ok, bytes memory r) = address(impl).delegatecall(abi.encodeCall(Impl.who, ())); require(ok);'
@@ -126,7 +128,7 @@ const ROWS: readonly Row[] = [
   aRow('A sends value to B: receive() sender', 'viaSend',
     'function viaSend() external payable returns (address) {'
     + ' (bool ok, ) = payable(address(b)).call{value: msg.value}(""); require(ok);'
-    + ' return b.lastReceiveSender(); }', 'A', { value: 5n, refusal: noCalleeFrames('viaSend') }),
+    + ' return b.lastReceiveSender(); }', 'A', { value: 5n, refusal: VALUE_THEN_CALL }),
   aRow('A calls B unknown fn: fallback() sender', 'viaFallback',
     'function viaFallback() external returns (address) {'
     + ' (bool ok, ) = address(b).call(abi.encodeWithSignature("nonexistent()")); require(ok);'
@@ -306,7 +308,8 @@ async function perCallAnswer(row: Row): Promise<{ readonly role?: Answer; readon
     if (typeof value === 'boolean' || typeof value === 'bigint') return value;
     const address = value instanceof Uint8Array ? binToHex(value) : String(value);
     if (address === binToHex(alicePkh)) return 'EOA';
-    return [...addresses].find(([, deployed]) => binToHex(deployed) === address)?.[0] ?? address;
+    // A Solidity `address` is the hash160 of the lock the contract's category derives.
+    return [...addresses].find(([, deployed]) => binToHex(hash160(deployed)) === address)?.[0] ?? address;
   };
   const roles = answered.values.map(roleOf);
   return { role: roles.length === 1 ? roles[0]! : roles };

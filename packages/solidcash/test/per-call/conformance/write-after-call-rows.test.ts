@@ -36,7 +36,8 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * the chain holds (`proxy/deploy.ts`, `buildHopPlan`) and learns only a callee's mapping writes, events and return
  * (`settleHopCallees`), so the escrow's frame closes its record against the kept view while its body computed the
  * advanced counter: the refusal and the hop trace's reading of that close are pinned (the plan's "Walls ahead" MS5
- * row, owner the SDK hop). The plain call path, which plans no callee frames, refuses the entry by name.
+ * row, owner the SDK hop). The plain call path on the broker implementation's own deployment, whose records hold
+ * no escrow, refuses the entry by name.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */
@@ -364,7 +365,7 @@ describe('spec section 23 row 15: writes after an external call', () => {
       .toMatchObject({ ids: { value: 1n } });
   });
 
-  it('refuses the entry by name on the plain call path, which plans no callee frames', async () => {
+  it('refuses the entry by name on the plain call path, whose implementation records hold no escrow', async () => {
     const run = await deployed();
     const callerCoin = funding(idOf('plain path coin'));
     await run.network.addUtxo(binToHex(USER_LOCK), callerCoin);
@@ -373,7 +374,8 @@ describe('spec section 23 row 15: writes after an external call', () => {
       args: [ORDER_ID, AMOUNT], callerUtxo: callerCoin, callerLockingBytecode: USER_LOCK,
       funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),
     })).rejects.toThrow(
-      /entry "open" makes 1 external call\(s\), whose callee frames this call path does not plan yet/,
+      new RegExp('entry "open" makes 1 external call\\(s\\): the call to "IEscrow\\.fund" targets the state '
+        + 'field "escrow", which the caller\'s own state does not hold as an address'),
     );
   });
 });

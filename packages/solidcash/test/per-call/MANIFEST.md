@@ -38,7 +38,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 170 |
-| `packages/solidcash/test/per-call/call/` | `solidcash` | 180 (176 by default, 4 skipped) |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 190 (186 by default, 4 skipped) |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 11 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 145 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 93 |
@@ -311,8 +311,9 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   digests of two reads, since the EVM's calldata and a frame's call data encode a call apart. Beside them, one guard
   per spec-section-23 row the ladder reaches later, each pinning the row's shape served with its observable or
   refused by name: `view-call-revert-rows.test.ts` (19), `string-mapping-rows.test.ts` (24),
-  `paired-event-rows.test.ts` (14), `large-event-rows.test.ts` (13, refused: the call entry point plans no callee
-  frames, with a root-frame control served beside it), `time-window-rows.test.ts` (16),
+  `paired-event-rows.test.ts` (14), `large-event-rows.test.ts` (13, refused: its emitter is at an address no
+  deployment holds, and the call path plans no callee events, with a root-frame control served beside it),
+  `time-window-rows.test.ts` (16),
   `dynamic-argument-rows.test.ts` (12), `balance-rows.test.ts` (10), `low-level-return-rows.test.ts` (11),
   `custom-error-rows.test.ts` (6), `loop-call-rows.test.ts` (4, served but for a call guarded per turn, which the
   hop plans on every turn), `origin-nested-call-rows.test.ts` (7), `write-after-call-rows.test.ts` (15, served but
@@ -322,7 +323,9 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   Beside them `loop-upsert-settlement.test.ts` pins the wall a run-time-loop
   mapping upsert meets on the shipped call path (the machine refuses the frame the path planned itself, while the
   same mapping written once from a parameter settles). The eleven cross-contract rows are
-  `cross-contract-identity.test.ts`, each the EVM's answer beside the refusal the per-call path meets by name.
+  `cross-contract-identity.test.ts`: A to B, `msg.sender` and `tx.origin` across a `STATIC` frame, served with the
+  EVM's answer (the call path plans callee frames between plain deployments, `call/plain-callees.test.ts`); the
+  other nine each the EVM's answer beside the refusal the per-call path meets by name.
 - **`solidcash/test/per-call/pw7-measure.test.ts`** - a measurement instrument rather than a regression guard: it
   drives the shipped composer and derivation on Y2, Y6 and the vault graph, counts the machine's own evaluations
   per master, and prints a JSON summary to `PW7_OUT` (default `/tmp/pw7-measure.json`). It runs only under

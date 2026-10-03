@@ -50,8 +50,8 @@ import {
  * plans a call for the zero share the body skips, and the payout refuses that call. The control beside it composes
  * the same loop on a plain splitter from a plan stating the two calls the body makes: the shipped composer settles
  * it and the machine accepts every input, and a plan naming the skipped turn's index stalls the splitter's own
- * frame, so the gap is the hop's plan alone. The plain call path, which plans no callee frames, refuses the loop
- * entry by name.
+ * frame, so the gap is the hop's plan alone. The plain call path on the implementation's own deployment, whose
+ * records hold no catalog, refuses the loop entry by name.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */
@@ -346,7 +346,7 @@ describe('spec section 23 row 4: calls inside data-dependent loops', () => {
       /the call's callee "Payout\.send\(\)" did not settle through the proxy: frame "callee-master-2" .*zero share/);
   });
 
-  it('refuses the loop entry by name on the plain call path, which plans no callee frames', async () => {
+  it('refuses the loop entry by name on the plain call path, whose implementation records hold no catalog', async () => {
     const run = await deployed();
     const coin = funding(idOf('plain path coin'));
     await run.network.addUtxo(binToHex(USER_LOCK), coin);
@@ -355,7 +355,8 @@ describe('spec section 23 row 4: calls inside data-dependent loops', () => {
       args: [[5n, PRIMARY_A]], callerUtxo: coin, callerLockingBytecode: USER_LOCK,
       funder: new SignatureTemplate(alicePriv).unlockP2PKH(), vm: compositionMachine(),
     })).rejects.toThrow(
-      /entry "post" makes 1 external call\(s\), whose callee frames this call path does not plan yet/,
+      new RegExp('entry "post" makes 1 external call\\(s\\): the call to "ICatalog\\.kindOf" targets the state '
+        + 'field "catalog", which the caller\'s own state does not hold as an address'),
     );
   });
 });

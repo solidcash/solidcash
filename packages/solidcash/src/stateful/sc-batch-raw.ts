@@ -779,7 +779,7 @@ export function batchRaw(
         if (!selectedAccess) continue;
         if (directAccess.activation !== undefined && physicalAlternatives.length > 1
           && rowArgs !== undefined) {
-          const keyMatches = selectedKeys.map((name) => {
+          const keyMatches = selectedKeys.map((name, keyIndex) => {
             const binding = handler.batchKeyWitnesses?.find((candidate) => (
               candidate.source === 'argument'
               && (candidate.keyPool ?? [candidate.routeInput, candidate.alternateRouteInput])
@@ -787,8 +787,13 @@ export function batchRaw(
             ));
             const witness = routeWitnessByName.get(name);
             if (binding === undefined || witness === undefined || binding.inputIndex < 0) return undefined;
+            // A swappable shared/pool pair can use a physical lane whose witness was originally bound to the
+            // opposite source parameter. Match the authenticated lane against this direct effect's logical key.
+            const logicalName = directAccess.keyParams[keyIndex]?.replace(/^id:/, '');
+            const logicalIndex = selected?.inputs.findIndex((input) => input.name === logicalName) ?? -1;
+            const inputIndex = logicalIndex >= 0 ? logicalIndex : binding.inputIndex;
             try {
-              const actual = encodeFunctionArgument(rowArgs[binding.inputIndex], witness.input.type);
+              const actual = encodeFunctionArgument(rowArgs[inputIndex], witness.input.type);
               const selectedKey = encodeFunctionArgument(witness.value, witness.input.type);
               return actual instanceof Uint8Array && selectedKey instanceof Uint8Array
                 ? binToHex(actual) === binToHex(selectedKey) : undefined;

@@ -7361,6 +7361,10 @@ function synthesizeMessageBusRoute(
         // two rows and one handler, so no inactive physical entry slots exist.
         const globalInputs = new Set<number>();
         const perRowInputs = new Set<number>();
+        const kernelParamKeyedResource = compilerOptions.messageBusKernel === true
+          && !graphTailCallEligible
+          && [...directKeys.values()].every((alternatives) =>
+            alternatives.every((indices) => indices.every((index) => index >= -2)));
         for (const [collectionName, alternatives] of directKeys) {
           const collection = collectionByName.get(collectionName)!;
           const kernelJournaledAlts = compilerOptions.messageBusKernel === true
@@ -7394,7 +7398,10 @@ function synthesizeMessageBusRoute(
           alternatives.slice(1).flat().filter((index) => index >= 0)
             .forEach((index) => perRowInputs.add(index));
         }
-        if (!reason && [...perRowInputs].some((index) => globalInputs.has(index))) {
+        // The kernel authenticates every alternative from the selected row's arguments. Its first key is not a
+        // global resource witness, so reusing that argument index in another collection is unambiguous.
+        if (!reason && !kernelParamKeyedResource
+          && [...perRowInputs].some((index) => globalInputs.has(index))) {
           reason = 'collection-route-has-ambiguous-global-and-row-key';
         }
         if (!reason) {
@@ -7403,10 +7410,6 @@ function synthesizeMessageBusRoute(
           // `resourceShapedHandler` or `_rN` copies. A project-wide graph context does not change a graph-free
           // leaf handler's physical shape; only a handler which actually owns a graph tail needs that context.
           // Legacy keeps the compact two-row resource batch.
-          const kernelParamKeyedResource = compilerOptions.messageBusKernel === true
-            && !graphTailCallEligible
-            && [...directKeys.values()].every((alternatives) =>
-              alternatives.every((indices) => indices.every((index) => index >= -2)));
           if (!kernelParamKeyedResource) resourceShapedHandler ??= fn;
           // Witnesses are named by the physical entry they address - collection, key position, and whether the
           // entry is shared by every row or row-local - never by the handler or its parameter names. Two
@@ -15096,9 +15099,24 @@ function compileResolvedAst(
     for (const source of ast.contract.functions.filter((fn) =>
       fn.messageBusEligible && fn.messageBusPhysicalEntrySlots?.length
       && fn.messageBusKeyWitnesses?.some((binding) => binding.entryTupleGroup !== undefined || binding.keyPool))) {
-      const alternatives = source.messageBusPhysicalEntrySlots!.map((primarySlot) => {
+      const swappableBindings = source.messageBusKeyWitnesses?.filter((binding) => binding.swappable) ?? [];
+      const swappableShared = swappableBindings.find((binding) => !binding.keyPool);
+      const swappablePool = swappableBindings.find((binding) => binding.keyPool);
+      const swappableNames = swappableShared && swappablePool?.keyPool
+        ? [swappableShared.routeInput, ...swappablePool.keyPool] : [];
+      const alternatives = source.messageBusPhysicalEntrySlots!.map((primarySlot, directIndex) => {
         const primary = messageBusRoute.entryAccesses?.find((entry) => entry.slotIndex === primarySlot);
         if (!primary) return [primarySlot];
+        // A conditional write may reach the shared lane after the kernel swaps the source keys. Publish that
+        // lane alongside the pool so the SDK can project the active logical effect onto its physical entry.
+        if (source.entryAccesses?.[directIndex]?.activation !== undefined
+          && swappableNames.includes(routeKeyName(primary.keyParams[0] ?? ''))
+          && primary.keyParams.length === 1) {
+          const slots = swappableNames.map((name) => messageBusRoute.entryAccesses?.find((entry) =>
+            entry.collection === primary.collection && entry.keyParams.length === 1
+            && routeKeyName(entry.keyParams[0]) === name)?.slotIndex);
+          if (slots.every((slot): slot is number => slot !== undefined)) return slots;
+        }
         const bindings = primary.keyParams.map((key) => source.messageBusKeyWitnesses?.find((binding) =>
           binding.routeInput === routeKeyName(key)));
         if (bindings.length === 1 && bindings[0]?.keyPool) {

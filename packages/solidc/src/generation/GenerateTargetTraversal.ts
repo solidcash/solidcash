@@ -22367,6 +22367,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && (preferAbsoluteDynBase || !this.usesDelegateTransactionSuffix())) {
         this.emitAddDynamicOutputsBeforeEntries(loc, 5);
       }
+      // A scalar route lane skips the general dynamic-output prefix above. When it is the sole singleton
+      // after the route's complete batches, the batch count includes this lane's own NEW node; subtract it
+      // to locate the prefix of earlier batch outputs. Other orderings cannot use the total as a prefix.
+      const scalarRouteSlots = this.entrySlots.filter((entry) => !entry.inLoop
+        && entry.operations.includes('write')
+        && this.collectionDefinitions.some((candidate) => candidate.name === entry.collection && candidate.sorted)
+        && !this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(entry.slotIndex)));
+      const completeBatchesPrecedeScalar = this.currentFunction.sortedBatchInfo?.every((batch) =>
+        Math.min(...batch.slotIndices) < slotIndex) ?? false;
+      if (routeScalarWitness && scalarRouteSlots.length === 1 && completeBatchesPrecedeScalar) {
+        const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
+        if (batchCountIdx >= 0) {
+          this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 6);
+          this.emit(Op.OP_DUP, loc);
+          this.emit(Op.OP_0, loc);
+          this.emit(Op.OP_GREATERTHAN, loc);
+          this.emit(Op.OP_VERIFY, loc);
+          this.emit(Op.OP_1SUB, loc);
+          this.emit(Op.OP_ADD, loc);
+        }
+      }
     };
     const explicitInsertBase = preferAbsoluteDynBase
       ? this.getStackIndex('__internal__dynamicChunkInputBase', true) : -1;

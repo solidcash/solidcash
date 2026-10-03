@@ -1523,11 +1523,12 @@ export function decodeReturnValues(
  * caller asked for is therefore assembled from the artifact's own layout: the entry's single read access names the
  * collection, and the collection's value type names the struct. The declared output types must be exactly the
  * struct's field types in order, which is what makes this the getter's own flattened record rather than an entry
- * that happens to read the collection and declare the same arity.
+ * that happens to read the collection and declare the same arity. A collection whose values are arrays of a struct
+ * is read one element at a time: its getter takes the keys and then the element's index, and returns that element.
  */
 function mappingValueStruct(entry: ReadEntry, artifact: Artifact): StructDefinitionInfo | undefined {
   if (entry.accesses[0]?.collection !== entry.name) return undefined;
-  const struct = readCollectionStruct(entry, artifact);
+  const struct = readCollectionStruct(entry, artifact) ?? indexedElementStruct(entry, artifact);
   if (struct === undefined) return undefined;
   const declared = entry.outputs.map((output) => output.type);
   const fields = struct.fields.map((field) => field.type);
@@ -1549,6 +1550,22 @@ function readCollectionStruct(entry: ReadEntry, artifact: Artifact): StructDefin
   const collection = (artifact.stateLayout?.collections ?? [])
     .find((candidate) => candidate.name === access.collection);
   return structDefinitionsOf(artifact)?.find((candidate) => candidate.name === collection?.valueType);
+}
+
+/**
+ * The element struct a getter reads out of the dynamic array of structs the collection it only reads holds per key,
+ * when the getter takes exactly the collection's keys and one index past them.
+ */
+function indexedElementStruct(entry: ReadEntry, artifact: Artifact): StructDefinitionInfo | undefined {
+  if (entry.accesses.length !== 1) return undefined;
+  const access = entry.accesses[0]!;
+  if (access.operations.some((operation) => operation !== 'read')) return undefined;
+  const collection = (artifact.stateLayout?.collections ?? [])
+    .find((candidate) => candidate.name === access.collection);
+  const array = collection === undefined ? undefined : parseArrayTypeString(collection.valueType);
+  if (collection === undefined || array === undefined || array.bound !== undefined) return undefined;
+  if (entry.inputs.length !== (collection.keyTypes?.length ?? 1) + 1) return undefined;
+  return structDefinitionsOf(artifact)?.find((candidate) => candidate.name === array.elementType);
 }
 
 /**

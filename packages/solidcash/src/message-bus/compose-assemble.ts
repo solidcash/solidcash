@@ -1514,6 +1514,78 @@ export async function assembleAtomicComposition(
           physicalLocalOffset,
         });
       }
+      // A batch can produce its continuation chunks inside its own physical frame, without a
+      // graph-transported production. In that case the local builder publishes exact output claims;
+      // feed those same physical bands to the transaction layout authority. Never infer a band from
+      // the provisional ABI coordinate alone.
+      const valueChunkParamIndex = masterUnlocker?.abiFunction?.inputs?.findIndex(
+        (input) => input.name === '__internal__valueChunkOutputBase',
+      ) ?? -1;
+      const valueChunkParam = valueChunkParamIndex < 0
+        ? undefined : masterUnlocker?.params?.[valueChunkParamIndex];
+      const localValueChunkBands: Array<{
+        bandOffset: number; chunkCount: number; resourceIdentity: string;
+      }> = [];
+      if (pendingValueChunkClaim === undefined && layoutWitnessIsActiveCoordinate(valueChunkParam)
+        && (dynLocalBase !== undefined || predOutPhysical.length > 0)) {
+        const byResource = new Map<string, Array<{ index: number; offset: number }>>();
+        for (const claim of computedValueChunkMetadata.__messageBusComputedValueChunks ?? []) {
+          const identity = claim.resourceIdentity === undefined
+            ? undefined : canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity);
+          const part = /^chunk:(0|[1-9][0-9]*)$/.exec(claim.resourcePart ?? '');
+          if (identity === undefined || identity !== claim.resourceIdentity || part === null
+            || claim.categoryId === undefined || claim.commitment === undefined
+            || claim.lockingBytecode === undefined) {
+            throw layoutInvariantError({
+              invariantId: 'local-value-chunk-claim-incomplete', participant: participant.participant,
+              resource: 'valueChunkOutputBase',
+              message: 'Active local value-chunk witness lacks a complete physical output claim',
+            });
+          }
+          const offset = claim.offset - publishedBase;
+          const output = local.outputs[offset];
+          const outputLock = output === undefined ? undefined
+            : typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+          if (output?.token?.category.toLowerCase() !== claim.categoryId.toLowerCase()
+            || output.token.nft?.capability !== 'mutable'
+            || output.token.nft.commitment.toLowerCase() !== claim.commitment.toLowerCase()
+            || outputLock === undefined || binToHex(outputLock) !== binToHex(claim.lockingBytecode)) {
+            throw layoutInvariantError({
+              invariantId: 'local-value-chunk-output-mismatch', participant: participant.participant,
+              resource: identity,
+              message: 'Local value-chunk claim does not match its physical output',
+            });
+          }
+          const rows = byResource.get(identity) ?? [];
+          rows.push({ index: Number(part[1]), offset });
+          byResource.set(identity, rows);
+        }
+        for (const [resourceIdentity, rows] of byResource) {
+          rows.sort((a, b) => a.index - b.index);
+          if (rows.some((row, index) => row.index !== index
+            || row.offset !== rows[0]!.offset + index)) {
+            throw layoutInvariantError({
+              invariantId: 'local-value-chunk-band-invalid', participant: participant.participant,
+              resource: resourceIdentity,
+              message: 'Local value-chunk outputs are not a complete contiguous band',
+            });
+          }
+          localValueChunkBands.push({
+            bandOffset: rows[0]!.offset, chunkCount: rows.length, resourceIdentity,
+          });
+        }
+        localValueChunkBands.sort((a, b) => a.bandOffset - b.bandOffset);
+        // The route's provisional coordinate can name its concrete handler band, which need not be
+        // the physical continuation band after batch packing. The authenticated outputs above, and
+        // the shared layout resolve below, are the authority for the absolute witness.
+      }
+      const valueChunkBands = pendingValueChunkClaim === undefined
+        ? localValueChunkBands : orderedContinuationClaims.map((claim) => ({
+          bandOffset: claim.bandOffset,
+          chunkCount: claim.chunkCount,
+          resourceIdentity: claim.producerClaim.resourceIdentity,
+        }));
+      const firstValueChunkBand = valueChunkBands[0];
       if (
         masterUnlocker?.params !== undefined
           && routeTrailingBase !== undefined
@@ -1531,7 +1603,7 @@ export async function assembleAtomicComposition(
           pendingValueChunkClaim?.localSlotOffset !== undefined
             ? pendingValueChunkClaim.localSlotOffset + (pendingValueChunkClaim.chunkCount || 1)
             : 0,
-          ...orderedContinuationClaims.map((claim) => claim.bandOffset + claim.chunkCount),
+          ...valueChunkBands.map((band) => band.bandOffset + band.chunkCount),
           ...predOutPhysical.map((pred) => pred.physicalLocalOffset + 1),
         );
         // Resolve each participant's dynamic, entry, value-chunk, and PredOut layout together.
@@ -1616,13 +1688,13 @@ export async function assembleAtomicComposition(
             },
             rangeWidth: Math.max(1, inferredDynCount),
           }] : []),
-          ...orderedContinuationClaims.map((claim) => ({
+          ...valueChunkBands.map((band) => ({
             participant: participant.participant,
             carrier: 'valueChunk' as const,
-            collection: orderedContinuationClaims.length > 1
-              ? claim.producerClaim.resourceIdentity : claim.collectionSignature,
-            roles: { outputSlot: publishedBase + claim.bandOffset },
-            rangeWidth: claim.chunkCount,
+            collection: valueChunkBands.length > 1
+              ? band.resourceIdentity : pendingValueChunkClaim?.collection ?? band.resourceIdentity,
+            roles: { outputSlot: publishedBase + band.bandOffset },
+            rangeWidth: band.chunkCount,
           })),
           ...predOutPhysical.map((pred) => ({
             participant: participant.participant,
@@ -1643,17 +1715,12 @@ export async function assembleAtomicComposition(
           trailingCapacity: routeTrailingCapacity,
           dynChunkCount: inferredDynCount,
           entryNews: inferredDynCount === undefined ? undefined : [{ entryIndex: 0 }],
-          valueChunkBandOffset: pendingValueChunkClaim === undefined
-            ? undefined
-            : pendingValueChunkClaim.localSlotOffset - routeTrailingBase,
-          valueChunkCollection: pendingValueChunkClaim?.collection,
-          valueChunkCount: pendingValueChunkClaim?.chunkCount,
-          valueChunkBands: orderedContinuationClaims.length > 1
-            ? orderedContinuationClaims.map((claim) => ({
-              bandOffset: claim.bandOffset,
-              chunkCount: claim.chunkCount,
-              resourceIdentity: claim.producerClaim.resourceIdentity,
-            })) : undefined,
+          valueChunkBandOffset: firstValueChunkBand === undefined
+            ? undefined : firstValueChunkBand.bandOffset - routeTrailingBase,
+          valueChunkCollection: pendingValueChunkClaim?.collection ?? firstValueChunkBand?.resourceIdentity,
+          valueChunkCount: valueChunkBands.length === 0 ? undefined
+            : valueChunkBands.reduce((count, band) => count + band.chunkCount, 0),
+          valueChunkBands: valueChunkBands.length > 1 ? valueChunkBands : undefined,
           predOuts: predOutPhysical.map((pred) => ({
             witnessName: pred.witnessName,
             physicalLocalOffset: pred.physicalLocalOffset,

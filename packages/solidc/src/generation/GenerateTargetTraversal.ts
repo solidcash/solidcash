@@ -267,7 +267,8 @@ import {
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
 import {
-  evmStaticResultBytes, externalResultEncoding, isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
+  evmStaticResultBytes, evmResultMayNeedPreimage, externalResultEncoding,
+  isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
 } from '../semantic/ExternalResultEncoding.js';
 import { analyseContractInvocations, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
@@ -19485,7 +19486,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       if (!node.opaqueReturn
         && externalResultEncoding(returnTypes, this.compilerOptions) === 'evm-abi-v1'
-        && (evmStaticResultBytes(returnTypes) ?? 0) > 128) {
+        && evmResultMayNeedPreimage(returnTypes)) {
+        const dynamicResult = evmStaticResultBytes(returnTypes) === undefined;
+        if (dynamicResult) {
+          // A dynamic ABI return is stored raw when it fits the NFT commitment and by SHA256 when
+          // it does not. Canonical dynamic ABI encodings are at least two words, so a 32-byte
+          // commitment is the hashed case. The preimage branch authenticates its full value.
+          this.emit(Op.OP_SIZE, locationData); // [commitment, length]
+          this.emit(encodeInt(32n), locationData);
+          this.emit(Op.OP_EQUAL, locationData);
+          this.emit(Op.OP_IF, locationData); // [commitment]
+        }
         const preimageParamName = returningSlotCount === 1
           ? '__internal__externalReturnPreimage'
           : `__internal__externalReturnPreimage${returnSlotIndex}`;
@@ -19493,10 +19504,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // One untracked output commitment is above the tracked parameters at this point.
         this.emit(encodeInt(BigInt(this.getStackIndex(preimageParamName) + 1)), locationData);
         this.emit(Op.OP_PICK, locationData); // [digest, raw]
+        if (dynamicResult) {
+          this.emit(Op.OP_SIZE, locationData);
+          this.emit(encodeInt(128n), locationData);
+          this.emit(Op.OP_GREATERTHAN, locationData);
+          this.emit(Op.OP_VERIFY, locationData); // only an oversized return may use a digest
+        }
         this.emit(Op.OP_DUP, locationData);
         this.emit(Op.OP_SHA256, locationData); // [digest, raw, SHA256(raw)]
         this.emit(Op.OP_ROT, locationData); // [raw, SHA256(raw), digest]
         this.emit(Op.OP_EQUALVERIFY, locationData); // [raw]
+        if (dynamicResult) this.emit(Op.OP_ENDIF, locationData);
       }
 
       if (node.opaqueReturn) {

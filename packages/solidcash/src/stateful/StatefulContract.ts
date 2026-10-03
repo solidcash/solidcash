@@ -14356,7 +14356,7 @@ export class StatefulFunctionCall {
   /**
    * True when awaiting this call should READ the return value (ethers `view`/`pure` semantics) instead of SENDing
    * a transaction: a single-output function that provably writes no state (`writesState === false`, which fails
-   * closed to `true`), is not a deploy/external-call view, and has no send-intent config attached (transfers,
+   * closed to `true`), is not a deploy, and has no send-intent config attached (transfers,
    * emitReturn, state/entry overrides, split/merge, container ops). Multi-value returns still SEND (their packed
    * encoding is not decodable yet). `.staticCall()` / `.send()` remain the explicit, typed escapes.
    */
@@ -14366,7 +14366,10 @@ export class StatefulFunctionCall {
     if (!abiFn || abiFn.writesState !== false) return false;
     if ((abiFn.outputs?.length ?? 0) !== 1) return false;
     if (abiFn.modifiers?.includes('deploy')) return false;
-    if ((abiFn.externalCalls?.length ?? 0) > 0) return false;
+    // The Solidity import pass checks external callee mutability in view/pure functions. A native
+    // artifact has no equivalent proof, so retain the send path for its external calls.
+    if ((abiFn.externalCalls?.length ?? 0) > 0
+      && this.parentContract.inner.artifact.compiler?.options?.solidityImportCompat !== true) return false;
     return this.transfers.length === 0 && !this.emitReturnFlag
       && this.stateOverrides.length === 0 && this.entryOverrides.length === 0
       && this.entryKeyOverrides.size === 0 && this.externalEntryKeyOverrides.size === 0

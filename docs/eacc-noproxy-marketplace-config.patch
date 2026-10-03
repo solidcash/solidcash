@@ -1,0 +1,11 @@
+diff --git a/solidcash.config.ts b/solidcash.config.ts
+--- a/solidcash.config.ts
++++ b/solidcash.config.ts
+@@ -12,6 +12,6 @@ export default defineConfig({
+       'publishJobPost', 'updateJobPost', 'publishJobEvent', 'userRegistered', 'arbitratorRegistered', 'meceTags',
+       'balanceOf', 'approve', 'transferFrom', 'transfer', 'pay', 'setArbitrator',
+-      'takeJob', 'eventsLength', 'getArbitratorFee',
++      'takeJob', 'deliverResult', 'approveResult', 'review', 'eventsLength', 'getArbitratorFee',
+       'release', 'refund', 'updateUserRating', 'userRefunded', 'challenge',
+       'arbitratorSettled', 'arbitrate', 'arbitratorRefused', 'addReview', 'userDelivered',
+       'claim', 'getEscrow', 'getArbitratorData', 'sendEscrowShare', 'setClaimed',

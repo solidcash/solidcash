@@ -764,7 +764,9 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   pool with inactive lanes: a one-row insert now publishes its rewritten predecessor separately, as the
   multi-slot covenant requires. Focused BCH-2026 checks settle zero, one, and two runtime rows in sequence,
   plus a separate literal three-row route. The signerless refusal title covers both `build()` and `send()`
-  and confirms that a provably zero-trip call can still send the root alone.
+  and confirms that a provably zero-trip call can still send the root alone. A separate focused typed-loop
+  check registers one default Ledger but routes two calls to a different deployed Ledger bytecode selected
+  by the caller's runtime address; only the selected Ledger changes.
   No broad suite ran.
 
 ## Gate before the next leap

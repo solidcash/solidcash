@@ -3,6 +3,7 @@ import { compileString, compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, Signer, StatefulContract, messageBus } from '../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
+import { registerDeployment } from '../../src/stateful/deployment-registry.js';
 import { keyToSlotMulti } from '../../src/stateful/SortedList.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { setupStatefulUtxos } from '../test-util.js';
@@ -240,5 +241,55 @@ describe('kernel complete nested-mapping tuple pool', () => {
     expect(updatedEntries).toHaveLength(2);
     const secondSlot = keyToSlotMulti([bigIntToVmNumber(2n), bigIntToVmNumber(1n)]);
     expect(updatedEntries.find((entry) => binToHex(entry.slot) === binToHex(secondSlot))?.value).toBe(21n);
+  }, 180_000);
+
+  it('routes a typed loop to runtime-deployed bytecode instead of the registered default', async () => {
+    const artifacts = compileStringMulti(GRAPH_SOURCE, GRAPH_OPTIONS);
+    const altArtifact = compileString(`pragma solidity ^0.8.0;
+      contract LedgerAlt {
+        mapping(uint => mapping(uint => uint)) values;
+        function set(uint outer, uint inner, uint value) public {
+          values[outer][inner] = value + 100;
+          require(true);
+        }
+      }`, GRAPH_OPTIONS);
+    expect(altArtifact.bytecode).not.toBe(artifacts.Ledger.bytecode);
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x64), provider);
+    for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const ledgerInner = new Contract(artifacts.Ledger, [], { provider });
+    const ledgerSetup = await setupStatefulUtxos(
+      provider, ledgerInner, artifacts.Ledger.stateLayout!, {}, { saltContract: true },
+    );
+    const ledger = StatefulContract.withCategory(ledgerInner, ledgerSetup.categoryId).connect(signer);
+    const altInner = new Contract(altArtifact, [], { provider });
+    const altSetup = await setupStatefulUtxos(
+      provider, altInner, altArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const alt = StatefulContract.withCategory(altInner, altSetup.categoryId).connect(signer);
+    registerDeployment(provider, {
+      contractName: altArtifact.contractName,
+      address: alt.target,
+      lockingBytecode: alt.inner.lockingBytecode,
+      contract: alt,
+    });
+    const driverInner = new Contract(artifacts.Driver, [alt.inner.lockingBytecode], { provider });
+    const driverSetup = await setupStatefulUtxos(
+      provider, driverInner, artifacts.Driver.stateLayout!, {}, { saltContract: true },
+    );
+    const driver = StatefulContract.withCategory(driverInner, driverSetup.categoryId).connect(signer);
+    driver._registerResolvedExternal('ILedger', ledger);
+    await expect(driver.call.runLimited(2n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(await ledger.getEntries('values')).toHaveLength(0);
+    const altEntries = await alt.getEntries('values');
+    expect(altEntries).toHaveLength(2);
+    for (let inner = 0n; inner < 2n; inner += 1n) {
+      const slot = keyToSlotMulti([bigIntToVmNumber(2n), bigIntToVmNumber(inner)]);
+      expect(altEntries.find((entry) => binToHex(entry.slot) === binToHex(slot))?.value).toBe(inner + 120n);
+    }
   }, 180_000);
 });

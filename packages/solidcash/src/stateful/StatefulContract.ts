@@ -5440,7 +5440,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const childArt = target ? this._getChild(target.contractName) : undefined;
     const dataNfts = BigInt(childArt?.stateLayout?.dataNftCount ?? target?.dataNftCount ?? 1);
     const cost = 1200n + 1200n * dataNfts + 5000n + 2400n; // master + data NFTs + fee + entry buffer
-    const utxo = utxos.find((u) => u.vout === 0 && !u.token && u.satoshis >= cost);
+    // A reserved coin is one a create address was predicted from, so spending it here would strand that address;
+    // it is skipped, as ContractFactory's selection (and the fan-out below) skips it.
+    const { genesisOutpointKey, isReservedGenesisOutpoint } = await import('./genesis-reservations.js');
+    const utxo = utxos.find((u) => u.vout === 0 && !u.token && u.satoshis >= cost
+      && !isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout)));
     if (utxo) return utxo;
     try {
       const { selectGenesisFundingUtxo } = await import('./ContractFactory.js');

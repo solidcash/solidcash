@@ -19,6 +19,10 @@
  * A call from a wallet that holds no coin is simulated before any funding: it is derived and evaluated over a
  * stand-in coin at the signer's own lock, through a provider that refuses the broadcast, so a body that refuses
  * reports its own revert, and only a call that would settle reports that the caller cannot pay for it.
+ *
+ * A writing call waits its turn behind the provider's earlier sends that could touch what it spends (spec section
+ * 18), and picks its coin and reads the records only then, so a call sent without awaiting the one before it is
+ * built on the state that one left rather than spending the same coin or master twice.
  */
 
 import type { Artifact, StateValue } from '@solidcash/utils';
@@ -30,6 +34,7 @@ import { callPerCallEntry, PerCallCallError, type PerCallCallResult } from './ca
 import { callPerCallProxyEntry } from '../proxy/deploy.js';
 import { readPerCallEntry, PerCallReadError, type PerCallReadResult } from '../read/index.js';
 import { PerCallCompositionRefusedError, type CompositionRefusal } from '../composer/index.js';
+import { perCallSendQueue, perCallSendResources, proxyHopSendsAreQueued } from '../queue/index.js';
 
 /** The handle a call is made through: the deployed artifact, its category, its provider and its signer. */
 export interface PerCallHandleContract {
@@ -106,12 +111,26 @@ export class PerCallFunctionCall {
 
   /** Composes and derives the call without requiring it to be accepted, for a caller that wants the verdicts. */
   public async compose(): Promise<PerCallCallResult> {
-    const { provider, signer } = this.contract;
+    const { provider, signer, categoryId, proxyImplementationCategoryId } = this.contract;
     if (signer === undefined) {
       throw new PerCallCallError(
         `a call to "${this.functionName}" needs the signer whose coin enters the frame; connect one to the handle`,
       );
     }
+    // A call through a proxy hop composes at once until the hop's module opts into the queue; any other call waits
+    // its turn behind the sends that could touch what it spends.
+    if (proxyImplementationCategoryId !== undefined && !proxyHopSendsAreQueued()) {
+      return this.composeNow(provider, signer);
+    }
+    const resources = perCallSendResources({
+      callerLockingBytecode: signer.getLockingBytecode(),
+      categoryIds: [categoryId, ...(proxyImplementationCategoryId === undefined ? [] : [proxyImplementationCategoryId])],
+    });
+    return perCallSendQueue(provider).hold(resources, () => this.composeNow(provider, signer));
+  }
+
+  /** Picks the caller's coin and composes over it, or simulates without one; a queued call runs this in its turn. */
+  private async composeNow(provider: NetworkProvider, signer: Signer): Promise<PerCallCallResult> {
     const callerUtxo = await callerCoin(provider, signer);
     if (callerUtxo === undefined) {
       try {

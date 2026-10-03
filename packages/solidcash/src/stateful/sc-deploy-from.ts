@@ -769,9 +769,12 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const funderPool: Utxo[] = [];
   const factorySigner = (factory as any)._signer;
   if (factorySigner && typeof factorySigner.getUtxos === 'function') {
+    // A reserved genesis coin holds a predicted create address, so it funds no alias slot either.
+    const { genesisOutpointKey, isReservedGenesisOutpoint } = await import('./genesis-reservations.js');
     const signerUtxos = await factorySigner.getUtxos();
     for (const u of signerUtxos) {
       if (u.token || fundingKeys.has(`${u.txid}:${u.vout}`) || u.satoshis < 1000n) continue;
+      if (isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout))) continue;
       funderPool.push(u);
     }
   }

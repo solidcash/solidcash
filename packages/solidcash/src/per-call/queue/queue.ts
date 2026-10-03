@@ -15,8 +15,14 @@
  * A failing send releases its resources rather than holding them. A broadcast the provider refuses must not wedge
  * the queue, so its successors run too, each built against the state that is actually live; the failure reaches the
  * caller's own promise and no other's.
+ *
+ * The handle's sends share one queue per provider (`perCallSendQueue`) and name what they may spend before their
+ * turn (`perCallSendResources`): the contract's categories, the caller's coins, and the covenant pools every
+ * composition co-spends. A call through a proxy hop joins once the hop's module opts in (`queueProxyHopSends`).
  */
 
+import { binToHex } from '@bitauth/libauth';
+import type NetworkProvider from '../../network/NetworkProvider.js';
 import type { CompositionDraftPlan } from '../composer/index.js';
 
 /** Raised when a send cannot be queued. */
@@ -89,12 +95,24 @@ export class CompositionQueue {
 
   /** Enqueues one send and returns a promise for its result. */
   public enqueue<Result>(send: QueuedSend<Result>): Promise<Result> {
-    const resources = resolveResources(send);
-    const prior = resources.map((resource) => this.held.get(resource) ?? FREE);
-    const started = Promise.all(prior).then(() => resolvePlan(send)).then((plan) => send.run(plan));
+    return this.hold(resolveResources(send), async () => send.run(await resolvePlan(send)));
+  }
+
+  /**
+   * Runs `task` once every resource named is free, and holds them until it settles. A send that plans inside its
+   * own turn, as a handle's call does, names its resources here and states no plan up front.
+   */
+  public hold<Result>(resources: SendResources, task: () => Promise<Result>): Promise<Result> {
+    const names = [...new Set(resources)];
+    const prior = names.map((resource) => this.held.get(resource) ?? FREE);
+    const started = Promise.all(prior).then(() => task());
     // Reserve each resource for the send's duration before it runs, so a later send that names one waits for it.
     const settled = started.then(() => undefined, () => undefined);
-    for (const resource of resources) this.held.set(resource, settled);
+    for (const resource of names) this.held.set(resource, settled);
+    // A resource nobody holds any more is forgotten, so a long-lived provider's queue does not grow with every send.
+    void settled.then(() => {
+      for (const resource of names) if (this.held.get(resource) === settled) this.held.delete(resource);
+    });
     return started;
   }
 
@@ -102,4 +120,58 @@ export class CompositionQueue {
   public async drain(): Promise<void> {
     await Promise.all([...this.held.values()]);
   }
+}
+
+/** The provider property a provider's send queue is kept under, one symbol across copies of this module. */
+const SEND_QUEUE = Symbol.for('@solidcash/per-call-send-queue');
+
+/**
+ * The queue every per-call send made on `provider` waits its turn in.
+ *
+ * It is kept on the provider itself, as the deployment registry is, so a wrapper that forwards property reads (the
+ * simulation provider an unfunded caller composes over) reaches the queue of the provider it wraps.
+ */
+export function perCallSendQueue(provider: NetworkProvider): CompositionQueue {
+  const existing = (provider as unknown as Record<symbol, CompositionQueue | undefined>)[SEND_QUEUE];
+  if (existing !== undefined) return existing;
+  const queue = new CompositionQueue();
+  Object.defineProperty(provider, SEND_QUEUE, { value: queue, enumerable: false, configurable: true });
+  return queue;
+}
+
+/**
+ * The resource every per-call send names: the validator facets and compute side-cars sit at locks every contract
+ * shares, and each composition through the shipped validator co-spends its facets, so all such sends serialize.
+ */
+export const SHARED_COVENANT_POOLS = 'shared-covenant-pools';
+
+/**
+ * The resources a send names before its turn: the categories whose masters, validators and records it may spend,
+ * the caller's coins (it picks one only in its turn), and the shared covenant pools.
+ */
+export function perCallSendResources(options: {
+  readonly callerLockingBytecode: Uint8Array;
+  readonly categoryIds: readonly string[];
+}): SendResources {
+  return [
+    `caller:${binToHex(options.callerLockingBytecode)}`,
+    ...options.categoryIds.map((categoryId) => `category:${categoryId.toLowerCase()}`),
+    SHARED_COVENANT_POOLS,
+  ];
+}
+
+/** Whether a call through a proxy hop takes its turn in the queue; the hop's module opts in. */
+let proxyHopSendsQueued = false;
+
+/**
+ * Opts calls through a proxy hop into the send queue. The hop's module owns that path, so a handle composes such a
+ * call at once until that module calls this; from then on it waits its turn like a direct call.
+ */
+export function queueProxyHopSends(): void {
+  proxyHopSendsQueued = true;
+}
+
+/** True once calls through a proxy hop take their turn in the send queue. */
+export function proxyHopSendsAreQueued(): boolean {
+  return proxyHopSendsQueued;
 }

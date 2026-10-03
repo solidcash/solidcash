@@ -818,9 +818,9 @@ export function liveMappingValueReader(
       const commitment = utxo.token?.nft?.commitment;
       return commitment !== undefined && bytesEqual(decodeEntryCommitment(hexToBin(commitment)).slot, slot);
     });
-    // A node an earlier reach of this hop rewrote: the deployment's own node for the slot holds the bytes from
-    // before that write, so the value the body reads is the one that reach left.
-    const rewritten = (live.rewrittenNodes ?? []).find((candidate) =>
+    // A node earlier reaches of this hop rewrote: the deployment's own node for the slot holds the bytes from before
+    // those writes, so the value the body reads is the one the last of them left (`reachedNodeValue`).
+    const rewritten = (live.rewrittenNodes ?? []).findLast((candidate) =>
       candidate.collection === collection.name && slots.some((slot) => bytesEqual(candidate.slot, slot)));
     if (rewritten !== undefined) return held(rewritten.value ?? joinedNodeValue(collection, rewritten.commitment, live));
     // Slot candidates are exact-first, so the exact key's node wins over a compatibility alias's.
@@ -833,11 +833,12 @@ export function liveMappingValueReader(
       // A node an earlier reach of this hop created is not among the deployment's own: it carries no input there,
       // and the value the body reads is the one that reach left, not the type default. The deployment's own nodes
       // are read first, so a node the transaction spends wins over a continuation of the same slot. A slot both
-      // hold is a deployment that already carries the write, which is a plan the positions agree on.
-      const continued = (live.continuedNodes ?? []).find((candidate) =>
+      // hold is a deployment that already carries the write, which is a plan the positions agree on. A long value's
+      // chunk records are that reach's own outputs, which no deployment holds, so its value is the bytes it left.
+      const continued = (live.continuedNodes ?? []).findLast((candidate) =>
         candidate.collection === collection.name && slots.some((slot) => bytesEqual(candidate.slot, slot)));
       if (continued === undefined) return mappingValueOf(collection.valueType, undefined, artifact, structs);
-      return held(joinedNodeValue(collection, continued.commitment, live));
+      return held(continued.value ?? joinedNodeValue(collection, continued.commitment, live));
     }
     const commitment = node.token?.nft?.commitment;
     if (commitment === undefined) return undefined;

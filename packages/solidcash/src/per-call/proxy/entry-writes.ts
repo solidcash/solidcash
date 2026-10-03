@@ -355,12 +355,13 @@ export interface HopEntryWritesContext {
   /** The first trailing output index past the events, where a created node sits. */
   readonly createdBase: number;
   /**
-   * The output a continued node was created at by the frame before this one, by slot.
+   * The output a continued node of this frame's category was created at by the frame before this one, by collection
+   * and slot: a slot is the key's alone, so every collection keys its nodes by the same one.
    *
    * A node this transaction spends no input for has only that output to name it by, so a frame that writes one
    * declares it there and continues the view the creating frame left.
    */
-  readonly continuedOutputOf?: (slot: Uint8Array) => number | undefined;
+  readonly continuedOutputOf?: (collection: string, slot: Uint8Array) => number | undefined;
   readonly recordAmount: bigint;
   readonly category: Uint8Array;
   /** The end commitment learned for each value-dependent node, in `learningCandidates` order. */
@@ -381,12 +382,12 @@ export interface LaidHopEntryWrites {
   readonly trailingOutputs: readonly DraftSourceOutput[];
   readonly createdOutputs: readonly number[];
   /**
-   * The nodes this frame created, with the output each sits at, by slot.
+   * The nodes this frame created, with the output each sits at, by collection and slot.
    *
    * A frame placed after this one writes a node this frame created by naming that output: it spends no input for
    * it, so the output is the only coordinate it can carry the declaration at.
    */
-  readonly createdNodes: readonly { readonly slot: Uint8Array; readonly out: number }[];
+  readonly createdNodes: readonly { readonly collection: string; readonly slot: Uint8Array; readonly out: number }[];
   /**
    * The records that only relink a node: a predecessor an insert splices through that the batch does not write.
    *
@@ -396,14 +397,14 @@ export interface LaidHopEntryWrites {
    */
   readonly relinked?: readonly RecordEntry[];
   /**
-   * The nodes whose end view this frame's own settlement stated, by slot.
+   * The nodes whose end view this frame's own settlement stated, by collection and slot.
    *
    * A frame's write whose value its body computes closes against the view the plan stated there, and the settle
    * hands the value the body computed back; a frame that leaves such a node alone never closes it, so it never
    * appears here. The two are otherwise indistinguishable in a plan - both state the same starting view - so this
    * is what tells a frame that rewrote a node from one that only held it.
    */
-  readonly learnedSlots: readonly Uint8Array[];
+  readonly learnedSlots: readonly { readonly collection: string; readonly slot: Uint8Array }[];
   /** The long value each value-witness slot reads, in slot order, where the body reads one from its frame. */
   readonly values?: readonly Uint8Array[];
 }
@@ -1141,20 +1142,11 @@ function planHopCollectionBatch(
       if (access.slotIndex === undefined || !access.operations.includes('read')) continue;
       const keys = access.keyParams.map((_param, index) => resolveHopKey(request, fn, access, index));
       const slot = keyToSlotMulti([...keys]);
-      // A node an earlier frame of this hop created carries its value in the frame's own plan: the deployment holds
-      // neither its commitment nor its chunks, so the bytes the read materializes are the ones that frame left.
-      const continued = (request.liveDeployment.continuedNodes ?? []).find((node) =>
-        node.collection === collection.name && bytesEqual(node.slot, slot));
-      if (continued !== undefined) {
-        if (continued.value !== undefined) valueWitnesses.set(access.slotIndex, continued.value);
-        continue;
-      }
-      // A node an earlier frame of this hop rewrote is one the deployment holds, but it holds the bytes from before
-      // that write: the value the read materializes is the one the earlier frame left.
-      const rewritten = (request.liveDeployment.rewrittenNodes ?? []).find((node) =>
-        node.collection === collection.name && bytesEqual(node.slot, slot));
-      if (rewritten !== undefined) {
-        if (rewritten.value !== undefined) valueWitnesses.set(access.slotIndex, rewritten.value);
+      // A node earlier frames of this hop wrote holds what the last of them left (`reached-values.ts`): the deployment
+      // holds neither a node they created nor the bytes a rewrite left, so the read materializes those bytes.
+      const reached = reachedNodeValue(request.liveDeployment, collection.name, slot);
+      if (reached !== undefined) {
+        if (reached.value !== undefined) valueWitnesses.set(access.slotIndex, reached.value);
         continue;
       }
       const node = liveNode(collection, slot, request.liveDeployment);
@@ -1479,16 +1471,10 @@ function liveNodeValue(
 ): Uint8Array | undefined {
   const deployment = request.liveDeployment;
   if (deployment === undefined) return new Uint8Array(0);
-  // A node an earlier frame of this hop created: the deployment holds no chunks for it, and that frame's own plan
-  // is what carries the value it left, so an append continues from those bytes rather than the deployment's.
-  const continued = (deployment.continuedNodes ?? []).find((candidate) =>
-    candidate.collection === collection.name && bytesEqual(candidate.slot, slot));
-  if (continued !== undefined) return continued.value;
-  // A node an earlier frame of this hop rewrote: the deployment holds the bytes from before that write, so the
-  // value the deployment's own node and chunks reassemble is not the one the frame before this one left.
-  const rewritten = (deployment.rewrittenNodes ?? []).find((candidate) =>
-    candidate.collection === collection.name && bytesEqual(candidate.slot, slot));
-  if (rewritten !== undefined) return rewritten.value;
+  // A node earlier frames of this hop wrote: the deployment holds no chunks for one they created and the bytes from
+  // before a rewrite, so an append continues from what the last of them left (`reached-values.ts`).
+  const reached = reachedNodeValue(deployment, collection.name, slot);
+  if (reached !== undefined) return reached.value;
   const node = liveNode(collection, slot, deployment);
   const commitment = node?.token?.nft?.commitment;
   if (node === undefined || commitment === undefined) return new Uint8Array(0);
@@ -2107,7 +2093,7 @@ function layEntryWrites(
   const dynamicEntries: RecordEntry[] = [];
   const dynamicOutputs: DraftSourceOutput[] = [];
   const dynamicInputs: Record<string, DraftInput> = {};
-  const learnedSlots: Uint8Array[] = [];
+  const learnedSlots: LaidHopEntryWrites['learnedSlots'][number][] = [];
   (dynamicLaid?.records ?? []).forEach((record, offset) => {
     if (record.role === 'removed') {
       // A chunk past the written value's width is consumed with no successor: its input is spent on the write path
@@ -2175,7 +2161,7 @@ function layEntryWrites(
     const learned = context.learnedViews[index];
     if (learned !== undefined) {
       learnedBySlot.set(bytesToHex(slot), learned);
-      learnedSlots.push(slot);
+      learnedSlots.push({ collection: batch.collection, slot });
     }
   });
   const placements = new Map<string, MappingNodePlacement>();
@@ -2187,7 +2173,7 @@ function layEntryWrites(
   for (const node of plan.written) {
     const key = bytesToHex(node.slot);
     if (!node.existed || placements.has(key)) continue;
-    const out = context.continuedOutputOf?.(node.slot);
+    const out = context.continuedOutputOf?.(batch.collection, node.slot);
     if (out === undefined) continue;
     placements.set(key, { out });
   }
@@ -2278,7 +2264,9 @@ function layEntryWrites(
       ...valueChunkEntries.map((entry) => entry.out),
     ],
     // A batch's created nodes sit at the created region's own indices, in the order the segment declares them.
-    createdNodes: created.map((node, position) => ({ slot: node.slot, out: context.createdBase + position })),
+    createdNodes: created.map((node, position) => ({
+      collection: batch.collection, slot: node.slot, out: context.createdBase + position,
+    })),
     ...(relinked.length === 0 ? {} : { relinked }),
     learnedSlots,
     ...(valueSlots === undefined ? {} : { values: valueSlots }),
@@ -2301,9 +2289,9 @@ function layEntryWriteBatches(
   const inputs: Record<string, DraftInput> = {};
   const trailingOutputs: DraftSourceOutput[] = [];
   const createdOutputs: number[] = [];
-  const createdNodes: { slot: Uint8Array; out: number }[] = [];
+  const createdNodes: LaidHopEntryWrites['createdNodes'][number][] = [];
   const relinked: RecordEntry[] = [];
-  const learnedSlots: Uint8Array[] = [];
+  const learnedSlots: LaidHopEntryWrites['learnedSlots'][number][] = [];
   const valueSlots = new Map<number, Uint8Array>();
   let createdBase = context.createdBase;
   let learnedBase = 0;

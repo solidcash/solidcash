@@ -24,6 +24,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * the node's one input carries a chain of declarations whose views link, and the second reach continues from the
  * bytes the first left rather than from the deployment's. The composed transaction's callee node therefore holds both
  * appended elements, read back through the shipped read path.
+ *
+ * A third reach continues from the bytes the second left, the last write before it, not the first's. So does a reach
+ * of a node an earlier reach created at a key the mapping did not hold, once another reach has rewritten it since.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -40,22 +43,26 @@ const ROOT_PROXY_CATEGORY = idOf('root proxy');
 const KEY = 1n;
 const SEED = 100n;
 
-/** A proxied log whose initialize seeds key 1, and a proxied root that reaches its append twice. */
+/** A proxied log whose initialize seeds key 1, and a proxied root that reaches its append twice, or three times. */
 const SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' interface ILog { function append(int value); }'
+  + ' interface ILog { function append(int k, int value); }'
   + ' contract Log {'
   + '   address public implementation;'
   + '   mapping(int => int[]) events;'
   + `   function initialize() { this.events[${KEY}].push(${SEED}); require(true); }`
-  + `   function append(int value) { this.events[${KEY}].push(value); }`
-  + `   function count() view returns (int) { return this.events[${KEY}].length; }`
-  + `   function at(int index) view returns (int) { return this.events[${KEY}][index]; }`
+  + '   function append(int k, int value) { this.events[k].push(value); }'
+  + '   function count(int k) view returns (int) { return this.events[k].length; }'
+  + '   function at(int k, int index) view returns (int) { return this.events[k][index]; }'
   + ' }'
   + ' contract Root {'
   + '   address public implementation;'
   + '   address public log;'
   + '   function initialize(address l) { this.log = l; require(true); }'
-  + '   function run(int first, int second) { ILog(this.log).append(first); ILog(this.log).append(second); }'
+  + `   function run(int first, int second) { ILog(this.log).append(${KEY}, first); `
+  + `ILog(this.log).append(${KEY}, second); }`
+  + '   function run3(int k, int first, int second, int third) {'
+  + '     ILog(this.log).append(k, first); ILog(this.log).append(k, second); ILog(this.log).append(k, third);'
+  + '   }'
   + ' }';
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
@@ -193,8 +200,8 @@ describe('one entry reaching the same append entry twice on one held chunked key
     const second = 6n;
 
     // The deployment seeded key 1 with one element, so both reaches update the node in place rather than insert.
-    expect(await readLog(world, 'count', [])).toBe(1n);
-    expect(await readLog(world, 'at', [0n])).toBe(SEED);
+    expect(await readLog(world, 'count', [KEY])).toBe(1n);
+    expect(await readLog(world, 'at', [KEY, 0n])).toBe(SEED);
 
     const result = await callRoot(world, 'run', [first, second]);
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
@@ -203,8 +210,31 @@ describe('one entry reaching the same append entry twice on one held chunked key
 
     // The composed transaction leaves the key's node holding both appended elements, read back through the log's
     // own view entries over the live records.
-    expect(await readLog(world, 'count', [])).toBe(3n);
-    expect(await readLog(world, 'at', [1n])).toBe(first);
-    expect(await readLog(world, 'at', [2n])).toBe(second);
+    expect(await readLog(world, 'count', [KEY])).toBe(3n);
+    expect(await readLog(world, 'at', [KEY, 1n])).toBe(first);
+    expect(await readLog(world, 'at', [KEY, 2n])).toBe(second);
+  }, 120_000);
+
+  it('continues a third append from the bytes the second left, not the first', async () => {
+    const world = await deployed();
+    const result = await callRoot(world, 'run3', [KEY, 5n, 6n, 7n]);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await readLog(world, 'count', [KEY])).toBe(4n);
+    for (const [index, value] of [SEED, 5n, 6n, 7n].entries()) {
+      expect(await readLog(world, 'at', [KEY, BigInt(index)])).toBe(value);
+    }
+  }, 120_000);
+
+  it('continues a node the first append created from the bytes the last append left', async () => {
+    const world = await deployed();
+    // Key 2 is not held: the first reach creates its node, and the two after it rewrite the node it created.
+    const result = await callRoot(world, 'run3', [2n, 5n, 6n, 7n]);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await readLog(world, 'count', [2n])).toBe(3n);
+    for (const [index, value] of [5n, 6n, 7n].entries()) {
+      expect(await readLog(world, 'at', [2n, BigInt(index)])).toBe(value);
+    }
   }, 120_000);
 });

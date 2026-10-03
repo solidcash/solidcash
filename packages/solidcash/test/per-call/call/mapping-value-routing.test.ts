@@ -26,7 +26,13 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * will make from that value, so it has to read the value in that form; read as a pushdata encoding, each one here
  * comes out as another value or none (its first byte read as a push length or a small-number opcode), and the call
  * the hop states is not the one the body makes. The same holds for the bytes an earlier call of the hop left a node
- * with, and a key the mapping does not hold reads as its type's default: a `string` one as the empty string.
+ * with, the last of them when two rewrote it, and a key the mapping does not hold reads as its type's default: a
+ * `string` one as the empty string.
+ *
+ * A node an earlier call of the hop created is no deployment's, so the reading call names it by the output that call
+ * created it at. A slot is the key's alone, so the sink's node for the same key and the book's node of another
+ * mapping sit at the same slot: the created node is the one of the reader's own contract and mapping, and a hop that
+ * named another settles nothing.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -47,6 +53,7 @@ const SOURCE = [
   'pragma solidity ^0.8.20;',
   'interface IBook {',
   '  function setName(uint256 k, string calldata name) external;',
+  '  function setBlob(uint256 k, bytes calldata blob) external;',
   '  function relayName(uint256 k) external;',
   '  function relayBlob(uint256 k) external;',
   '  function relayAmount(uint256 k) external;',
@@ -107,6 +114,16 @@ const SOURCE = [
   '  function relayName(uint256 k) public { IBook(book).relayName(k); }',
   '  function nameThenRelay(uint256 k, string calldata name) public {',
   '    IBook(book).setName(k, name);',
+  '    IBook(book).relayName(k);',
+  '  }',
+  '  function nameAndBlobThenRelay(uint256 k, string calldata name, bytes calldata blob) public {',
+  '    IBook(book).setName(k, name);',
+  '    IBook(book).setBlob(k, blob);',
+  '    IBook(book).relayName(k);',
+  '  }',
+  '  function renameTwiceThenRelay(uint256 k, string calldata first, string calldata second) public {',
+  '    IBook(book).setName(k, first);',
+  '    IBook(book).setName(k, second);',
   '    IBook(book).relayName(k);',
   '  }',
   '  function relayBlob(uint256 k) public { IBook(book).relayBlob(k); }',
@@ -303,6 +320,37 @@ describe('a call a callee routes through a value its own mapping holds', () => {
     expectSettled(relayed);
     expect(sinkFrames(relayed)).toStrictEqual([`${Sink!.contractName}.takeLong()`]);
     expect(await sinkView(world, 'longNameOf', [7n])).toBe(LONG_NAME);
+  }, 300_000);
+
+  it('forwards the string the last of two earlier calls of the same hop rewrote', async () => {
+    const world = await deployed();
+    expectSettled(await world.enterBook('setName', [14n, SHORT_NAME]));
+    const relayed = await world.enterRoot('renameTwiceThenRelay', [14n, `${SHORT_NAME} again`, LONG_NAME]);
+    expectSettled(relayed);
+    expect(sinkFrames(relayed)).toStrictEqual([`${Sink!.contractName}.takeLong()`]);
+    expect(await sinkView(world, 'longNameOf', [14n])).toBe(LONG_NAME);
+  }, 300_000);
+
+  it('forwards the string an earlier call of the same hop created at a key the mapping did not hold', async () => {
+    const world = await deployed();
+    // The sink's own node for the key, which its `take` creates later in the hop, sits at the same slot.
+    const relayed = await world.enterRoot('nameThenRelay', [11n, SHORT_NAME]);
+    expectSettled(relayed);
+    expect(sinkFrames(relayed)).toStrictEqual([`${Sink!.contractName}.take()`]);
+    expect(await sinkView(world, 'nameOf', [11n])).toBe(SHORT_NAME);
+    // A long one is read as the bytes the creating call left: its chunk records are this transaction's own outputs.
+    const relayedLong = await world.enterRoot('nameThenRelay', [12n, LONG_NAME]);
+    expectSettled(relayedLong);
+    expect(sinkFrames(relayedLong)).toStrictEqual([`${Sink!.contractName}.takeLong()`]);
+    expect(await sinkView(world, 'longNameOf', [12n])).toBe(LONG_NAME);
+  }, 300_000);
+
+  it('forwards the string an earlier call created, not the bytes another created at the same key', async () => {
+    const world = await deployed();
+    const relayed = await world.enterRoot('nameAndBlobThenRelay', [13n, SHORT_NAME, BLOB]);
+    expectSettled(relayed);
+    expect(sinkFrames(relayed)).toStrictEqual([`${Sink!.contractName}.take()`]);
+    expect(await sinkView(world, 'nameOf', [13n])).toBe(SHORT_NAME);
   }, 300_000);
 
   it('forwards the empty string a key the mapping does not hold reads as', async () => {

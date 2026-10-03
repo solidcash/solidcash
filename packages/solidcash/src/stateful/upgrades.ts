@@ -771,6 +771,13 @@ async function deployPerCallProxyThroughFactory<TImpl extends Artifact>(
     callerLockingBytecode: callerFunding.funder.generateLockingBytecode(),
     callerFunding,
   });
+  // A hop a participant refused is not broadcast, so a proxy whose initialize was refused is refused here by the
+  // verdicts that name it, rather than handed back uninitialized.
+  if (!deployment.initialize.accepted) {
+    const refused = deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
+    throw new Error(`The per-call proxy's '${initializer}' hop was refused, so it was not broadcast: ${refused}`);
+  }
   const handle = await perCallProxyHandle(
     implementationArtifact, signer, deployment.proxy.categoryId, deployment.implementation.categoryId,
     deployment.proxy.address,

@@ -74,7 +74,7 @@ import { PerCallProxyDeployError } from './errors.js';
 import { hopTrace, hopTraceError, hopTraceOn } from './hop-trace.js';
 import { learnedReachedValue } from './reached-values.js';
 import {
-  hopEntryWrites, mappingHeadCollection, mappingNodeSlot,
+  hopEntryWrites, mappingHeadCollection, mappingNodeSlot, sharedNodeId,
   type HopEntryWrites, type LaidHopEntryWrites,
 } from './entry-writes.js';
 import {
@@ -209,7 +209,8 @@ export interface PerCallProxyDeployment {
     /** The first returned value, for the common single-value `initialize`. */
     readonly value: StateValue;
     /**
-     * The provider's receipt for the hop, present only when the caller supplied `callerFunding`.
+     * The provider's receipt for the hop, present only when the caller supplied `callerFunding` and every participant
+     * was accepted.
      *
      * The hop's outputs carry what `transaction` describes — the same participants recreated, the record at the
      * commitment the entry computed — placed on the outpoints the geneses created. `transaction` remains the
@@ -1153,8 +1154,8 @@ export async function deployPerCallProxy(
     );
 
   // The hop is the derived transaction until the caller offers its own coin; then it is rebuilt on the geneses'
-  // outpoints, signed and broadcast.
-  const broadcast = options.callerFunding === undefined ? undefined : await broadcastHop({
+  // outpoints, signed and broadcast. A hop a participant refused is never broadcast: its verdicts are the answer.
+  const broadcast = options.callerFunding === undefined || !accepted ? undefined : await broadcastHop({
     provider,
     callerFunding: options.callerFunding,
     callerLockingBytecode: options.callerLockingBytecode,
@@ -3472,10 +3473,15 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   trailingCursor += laidWrites?.trailingOutputs.length ?? 0;
   // Each callee frame's own write is laid in the block its records sit in — a call frame's own block, a delegate
   // frame's caller's — and its created records follow the root entry's, so the cursor advances as each is laid.
-  // The output each node created earlier in this hop sits at, by slot: a later frame names a node it did not spend
-  // by that output rather than by an input, so its own declaration chains onto the frame that created it.
+  // The output each node created earlier in this hop sits at, by the node's own identity (`sharedNodeId`): a later
+  // frame names a node it did not spend by that output rather than by an input, so its own declaration chains onto
+  // the frame that created it. A slot is the key's alone, so every collection of every contract keys a node by it.
   const createdElsewhere = new Map<string, number>();
-  for (const node of laidWrites?.createdNodes ?? []) createdElsewhere.set(bytesToHex(node.slot), node.out);
+  const createdNodeKey = (category: Uint8Array, collection: string, slot: Uint8Array): string =>
+    sharedNodeId(bytesToHex(category), collection, slot);
+  for (const node of laidWrites?.createdNodes ?? []) {
+    createdElsewhere.set(createdNodeKey(options.proxyCategory, node.collection, node.slot), node.out);
+  }
   const calleeTrailing = callees.map((callee, position) => {
     const writes = calleeWritesOf(callee);
     const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner];
@@ -3492,10 +3498,12 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         recordAmount: (owner ?? callee).records[0]?.satoshis ?? options.validatorAmount,
         category,
         learnedViews: options.calleeWriteViews?.get(callee.master) ?? [],
-        continuedOutputOf: (slot) => createdElsewhere.get(bytesToHex(slot)),
+        continuedOutputOf: (collection, slot) => createdElsewhere.get(createdNodeKey(category, collection, slot)),
         releasedLock: options.callerLockingBytecode,
       });
-      for (const node of laid.createdNodes) createdElsewhere.set(bytesToHex(node.slot), node.out);
+      for (const node of laid.createdNodes) {
+        createdElsewhere.set(createdNodeKey(category, node.collection, node.slot), node.out);
+      }
       trailingCursor += laid.trailingOutputs.length;
       // Each of the frame's own writes is declared in its own segment, which the artifact publishes per write.
       const dynamicVariable = dynamicWriteVariable(callee.artifact, callee.entry);
@@ -3568,9 +3576,11 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     // The nodes the entry only reads sit after the data records, in the order its own code reads them.
     const readEntries: RecordEntry[] = callee.readNodes.map((node): RecordEntry => {
       // A node an earlier reach created carries no input, so this frame names it by that reach's output: the
-      // declaration chains onto the created output, exactly as a write over the node does.
+      // declaration chains onto the created output, exactly as a write over the node does. The node is the one of
+      // the category the frame's records sit at.
       if (node.createdSlot !== undefined) {
-        const out = createdElsewhere.get(bytesToHex(node.createdSlot));
+        const category = (callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!).category;
+        const out = createdElsewhere.get(createdNodeKey(category, node.collection, node.createdSlot));
         if (out === undefined) {
           throw new PerCallProxyDeployError(
             `the callee's "${callee.functionName}" entry reads a mapping node an earlier reach created, but the `
@@ -3768,7 +3778,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     const laid = calleeTrailing[position]?.laid;
     if (laid === undefined) return;
     learnedOutputs.set(callee.master, new Set(laid.createdNodes
-      .filter((node) => laid.learnedSlots.some((slot) => bytesEqual(slot, node.slot)))
+      .filter((node) => laid.learnedSlots.some((learned) => learned.collection === node.collection
+        && bytesEqual(learned.slot, node.slot)))
       .map((node) => node.out)));
   });
   // The records that only relink a node: the walk restates each one's end view from the view the chain reaches it at.
@@ -4411,6 +4422,7 @@ export interface PerCallProxyCallResult {
   readonly values: readonly StateValue[];
   /** The first returned value, for the common single-value call; zero when the entry returns nothing. */
   readonly value: StateValue;
+  /** The provider's receipt for the hop, present only when every participant was accepted. */
   readonly broadcast?: TransactionDetails;
 }
 
@@ -4649,7 +4661,9 @@ export async function callPerCallProxyEntry(
     settleCallees: (stated, only, seed) => settleHopCallees(settleOptionsFor(stated, seed), only),
   });
 
-  const broadcast = await broadcastHop({
+  // A hop a participant refused has no transaction to broadcast, the validator's refusal as much as a frame's: the
+  // verdicts name the refusal, as a direct call's do, and nothing reaches the network.
+  const broadcast = !settled.accepted ? undefined : await broadcastHop({
     provider,
     callerFunding: {
       utxo: options.callerUtxo,

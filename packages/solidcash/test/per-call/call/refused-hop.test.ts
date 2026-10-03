@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { bytesToHex, type StateLayout } from '@solidcash/utils';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import { bytesEqual, bytesToHex, validatorAddress, type StateLayout } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
@@ -8,9 +8,10 @@ import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import type { Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
-import { fundShippedFacets } from '../shapes/harness.js';
+import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
  * A hop whose implementation entry refuses.
@@ -18,6 +19,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * A user's coin enters the proxy's fallback, which delegatecalls the implementation, and the implementation's own
  * guard trips before the entry closes anything. The refusal names the entry's own published reason — or, for a bare
  * guard, the entry and the failing line — rather than the opcode the implementation's frame stopped on.
+ *
+ * A participant the frames' own runs never evaluate, such as the validator, is judged by the hop's verdict over every
+ * input. A hop whose verdicts refuse broadcasts nothing, an initialize hop as much as a call: the verdicts name the
+ * participant that refused, and the caller's coin stays unspent.
  */
 
 const IMPL_CATEGORY = '66'.repeat(32);
@@ -54,14 +59,43 @@ async function recordState(network: MockNetworkProvider, categoryId: string): Pr
   return bytesToHex(new Uint8Array(Buffer.from(deployment.records[0]!.token!.nft!.commitment, 'hex')));
 }
 
+/** The objection the refusing machine below states for the validator's input. */
+const VALIDATOR_REFUSAL = 'the validator refused';
+
+/**
+ * A machine that refuses the validator's input of `categoryId` and judges every other input as the composition
+ * machine does. The frames settle on it, since no frame's own run evaluates the validator: only the hop's verdict
+ * over every participant meets the refusal.
+ */
+function refusingValidatorOf(categoryId: string): ReturnType<typeof compositionMachine> {
+  const machine = compositionMachine();
+  const validatorLock = validatorAddress(hexToBin(categoryId), VALIDATOR_PROGRAM);
+  return {
+    ...machine,
+    evaluate: (program) => {
+      const state = machine.evaluate(program);
+      const spent = program.sourceOutputs[program.inputIndex]?.lockingBytecode;
+      return spent !== undefined && bytesEqual(spent, validatorLock) ? { ...state, error: VALIDATOR_REFUSAL } : state;
+    },
+  };
+}
+
+/** True while `coin` is still an unspent output at `lock`. */
+async function unspent(network: MockNetworkProvider, lock: Uint8Array, coin: Utxo): Promise<boolean> {
+  return (await network.getUtxosForLockingBytecode(lock))
+    .some((utxo) => utxo.txid === coin.txid && utxo.vout === coin.vout);
+}
+
 /** A deployment funded from the deployer's own P2PKH lock, plus a coin a caller can enter a hop with. */
-async function deployedWithCallerCoin(network: MockNetworkProvider): Promise<{
+async function deployedWithCallerCoin(network: MockNetworkProvider, vm = compositionMachine()): Promise<{
   readonly proxyCategoryId: string;
   readonly implementationCategoryId: string;
   readonly deployerLock: Uint8Array;
   readonly changeAddress: string;
+  readonly hopCoin: Utxo;
   readonly callCoin: { txid: string; vout: number; satoshis: bigint };
   readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
+  readonly initialize: Awaited<ReturnType<typeof deployPerCallProxy>>['initialize'];
 }> {
   const signature = new SignatureTemplate(alicePriv);
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -87,13 +121,13 @@ async function deployedWithCallerCoin(network: MockNetworkProvider): Promise<{
     initialize: { functionName: 'initialize', args: [deployerLock] },
     callerLockingBytecode: deployerLock,
     callerFunding: { utxo: hopCoin, funder: signature.unlockP2PKH(), changeAddress: source.address },
-    vm: compositionMachine(),
+    vm,
   });
-  expect(deployment.initialize.broadcast).toBeDefined();
   return {
     proxyCategoryId: deployment.proxy.categoryId,
     implementationCategoryId: deployment.implementation.categoryId,
-    deployerLock, changeAddress: source.address, callCoin, funder: signature.unlockP2PKH(),
+    deployerLock, changeAddress: source.address, hopCoin, callCoin, funder: signature.unlockP2PKH(),
+    initialize: deployment.initialize,
   };
 }
 
@@ -109,7 +143,9 @@ let deployedRun: Promise<Deployed> | undefined;
 function sharedDeployment(): Promise<Deployed> {
   deployedRun ??= (async (): Promise<Deployed> => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    return { network, funded: await deployedWithCallerCoin(network) };
+    const funded = await deployedWithCallerCoin(network);
+    expect(funded.initialize.broadcast).toBeDefined();
+    return { network, funded };
   })();
   return deployedRun;
 }
@@ -178,5 +214,42 @@ describe('a hop whose implementation entry refuses', () => {
     expect(refused?.message).toMatch(/revert Short\(int256, int256\)/);
     // The initialize hop left `total` at 5, which the entry read and raised beside the amount it was asked for.
     expect(refused?.errorArgs).toStrictEqual([100n, 5n]);
+  });
+
+  it('broadcasts nothing when a participant past the frames refuses the call, and names it', async () => {
+    const { network, funded } = await sharedDeployment();
+    const before = await recordState(network, funded.proxyCategoryId);
+
+    // The entry accepts, so the frames settle; only the validator's own verdict refuses.
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: impl,
+      proxyArtifact: buildProxyArtifact(impl),
+      proxyCategoryId: funded.proxyCategoryId,
+      implementationCategoryId: funded.implementationCategoryId,
+      functionName: 'add',
+      args: [1n],
+      callerUtxo: funded.callCoin,
+      callerLockingBytecode: funded.deployerLock,
+      funder: funded.funder,
+      changeAddress: funded.changeAddress,
+      vm: refusingValidatorOf(funded.proxyCategoryId),
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted))
+      .toStrictEqual([{ id: 'validator', index: 1, accepted: false, objection: VALIDATOR_REFUSAL }]);
+    expect(result.accepted).toBe(false);
+    expect(result.broadcast).toBeUndefined();
+    expect(await unspent(network, funded.deployerLock, funded.callCoin)).toBe(true);
+    expect(await recordState(network, funded.proxyCategoryId)).toBe(before);
+  });
+
+  it('broadcasts no initialize a participant past the frames refuses, and names it', async () => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funded = await deployedWithCallerCoin(network, refusingValidatorOf(PROXY_CATEGORY));
+    expect(funded.initialize.verdicts.filter((verdict) => !verdict.accepted))
+      .toStrictEqual([{ id: 'validator', index: 1, accepted: false, objection: VALIDATOR_REFUSAL }]);
+    expect(funded.initialize.accepted).toBe(false);
+    expect(funded.initialize.broadcast).toBeUndefined();
+    expect(await unspent(network, funded.deployerLock, funded.hopCoin)).toBe(true);
   });
 });

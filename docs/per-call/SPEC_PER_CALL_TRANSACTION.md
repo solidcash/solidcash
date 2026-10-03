@@ -36,7 +36,12 @@ Revision 14 records what landed after revision 13 (`3c0d52997`), and one place t
 - **Value calls where the sender sends** (sections 4a, 4b, 10). A value send to a contract is a `CALL` made at its
   source position, closing the sender's segment there, so a call after it reads the recipient after its `receive()`
   ran; it was made after the sender's own code. The artifact publishes each send's place among the entry's calls
-  (`sendCallsBefore`), and a data field the sender wrote before the call is read again from the segment it opens.
+  (`sendCallsBefore`), and a data field the sender wrote before the call is read again from the segment it opens
+  (`bc1496a95`).
+- **Raw calls** (section 17). A `call` or `staticcall` whose payload names its call statically compiles as a typed
+  frame of the spelled kind, and a literal signature the target lacks runs its fallback (`dc0307e8d`).
+- **Calls after an early return** (section 18). A call an earlier `return` can skip is published as conditional,
+  under the negated guard of each return before it (`296ae671c`).
 
 ### Since revision 12 (2026-10-03)
 
@@ -1674,9 +1679,13 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
     - `0x81` becomes `OP_1NEGATE`;
     - empty becomes `OP_0`.
 - **Results.** `result` and `retval` use the same concatenated-push encoding of the return values.
-- **Low-level calls whose calldata comes from `abi.encodeCall` or `abi.encodeWithSelector`.**
+- **Low-level calls whose calldata names its call statically** (`abi.encodeCall`, `abi.encodeWithSelector`, or a
+  literal `abi.encodeWithSignature`).
   - This is SafeERC20 in OpenZeppelin 5.0.2 and the vendored 4.9.3.
-  - They compile as typed calls of the named function, so `argsHash` and `result` stay canonical.
+  - They compile as typed calls of the named function, so `argsHash` and `result` stay canonical. The frame kind
+    follows the spelling: `staticcall` is `STATIC`, `call` is `CALL`.
+  - A literal signature that names no function of the target runs its fallback, and the record binds the payload's
+    own selector. A payload computed at run time, `delegatecall` and a call with value are refused by name.
   - Where the caller decodes EVM-ABI return data (`abi.decode(ret, (bool))`), its own code converts from the
     canonical result.
   - The callee's revert data propagates unchanged (section 18).

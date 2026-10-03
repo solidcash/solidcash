@@ -44,15 +44,13 @@ import {
  * catalog rejects (the callee's check, on the second turn) and a zero share (the payout's check, on the second turn)
  * are each refused with the reason that reverted, and the provider sees no transaction.
  *
- * Known wall: `Board.split` pays only the non-zero shares (`if (amounts[i] > 0)`), so the number of calls is the
- * number of turns a per-turn condition admits. The artifact publishes that condition on the loop site, and the hop's
- * planner (`proxy/external-calls.ts`, `occurrenceCountOf`) counts every turn of the loop's domain without it: it
- * plans a call for the zero share the body skips. The payout refuses that call in its own settle, but the entry's
- * frame stops before the call record the body never reads, which is the refusal reported. The control beside it
- * composes the same loop on a plain splitter from a plan stating the two calls the body makes: the shipped composer
- * settles it and the machine accepts every input, and a plan naming the skipped turn's index stalls the splitter's
- * own frame, so the gap is the hop's plan alone. The plain call path on the implementation's own deployment, whose
- * records hold no catalog, refuses the loop entry by name.
+ * `Board.split` pays only the non-zero shares (`if (amounts[i] > 0)`), so the number of calls is the number of turns
+ * a per-turn condition admits. The artifact publishes that condition on the loop site, and the hop's planner places
+ * only the turns it admits (`proxy/external-calls.ts`, `callingTurnsOf`): two shares of three settle as two payouts.
+ * The control beside it composes the same loop on a plain splitter from a plan stating the two calls the body makes:
+ * the shipped composer settles it and the machine accepts every input, and a plan naming the skipped turn's index
+ * stalls the splitter's own frame. The plain call path on the implementation's own deployment, whose records hold no
+ * catalog, refuses the loop entry by name.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */
@@ -330,23 +328,27 @@ describe('spec section 23 row 4: calls inside data-dependent loops', () => {
       /the call's callee "Payout\.send\(\)" did not settle through the proxy: .*zero share/);
   });
 
-  it('known wall: plans a call for a turn whose per-turn condition the body does not take', async () => {
-    // The EVM makes two calls for [4, 0, 6] and pays the two non-zero shares. The compiler publishes the call as a
-    // loop site carrying the per-turn condition `amounts[i] > 0` over the array's own element.
-    const site = board.abi.find((entry) => entry.name === 'split')!.externalCalls![0]!;
-    expect(site.occurrence).toBe('loop');
-    expect(site.condition).toMatchObject({
-      kind: 'binary', operator: '>',
-      left: { kind: 'source', source: { kind: 'arrayElement', paramIndex: 0, indexValue: 0, indexStepValue: 1 } },
+  it('plans a call only on the turns whose per-turn condition the body takes, and pays the two non-zero shares',
+    async () => {
+      // The EVM makes two calls for [4, 0, 6] and pays the two non-zero shares. The compiler publishes the call as a
+      // loop site carrying the per-turn condition `amounts[i] > 0` over the array's own element.
+      const site = board.abi.find((entry) => entry.name === 'split')!.externalCalls![0]!;
+      expect(site.occurrence).toBe('loop');
+      expect(site.condition).toMatchObject({
+        kind: 'binary', operator: '>',
+        left: { kind: 'source', source: { kind: 'arrayElement', paramIndex: 0, indexValue: 0, indexStepValue: 1 } },
+      });
+      // The hop places only the turns that condition admits (`proxy/external-calls.ts`, `callingTurnsOf`).
+      const run = await deployed();
+      const result = await (await enter(run, 'split', [4n, 0n, 6n])).call;
+      expect(result.accepted).toBe(true);
+      expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+      expect(framesOf(result, 'Payout.send()')).toBe(2);
+      const paid = compositionEventLogs(result.draft, [payout, catalog, board, boardProxy])
+        .filter((log) => log.eventName === 'Paid');
+      expect(paid.map((log) => log.args)).toStrictEqual([{ to: 0n, amount: 4n }, { to: 2n, amount: 6n }]);
+      expect(await boardState(run)).toMatchObject({ shares: 2n });
     });
-    // Owner: the SDK hop planner (`proxy/external-calls.ts`, `occurrenceCountOf`), which counts every turn of a loop
-    // site's domain and does not apply its condition, so the second turn's call is planned with the zero share the
-    // body never sends. The payout's frame refuses it in its own settle, but the entry's frame stops after its first
-    // call, before the record of the call it never makes, so that stop is the refusal the execution meets first.
-    const run = await deployed();
-    await expectRefused(run, 'split', [4n, 0n, 6n],
-      /the implementation's "split" entry did not settle through the proxy: frame "implementation-master" .*no source/);
-  });
 
   it('refuses the loop entry by name on the plain call path, whose implementation records hold no catalog', async () => {
     const run = await deployed();

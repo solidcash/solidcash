@@ -316,8 +316,8 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   `paired-event-rows.test.ts` (14), `large-event-rows.test.ts` (13, refused: its emitter is at an address no
   deployment holds, with a root-frame control served beside it), `time-window-rows.test.ts` (16),
   `dynamic-argument-rows.test.ts` (12), `balance-rows.test.ts` (10), `low-level-return-rows.test.ts` (11),
-  `custom-error-rows.test.ts` (6), `loop-call-rows.test.ts` (4, served but for a call guarded per turn, which the
-  hop plans on every turn), `origin-nested-call-rows.test.ts` (7), `write-after-call-rows.test.ts` (15, served but
+  `custom-error-rows.test.ts` (6), `loop-call-rows.test.ts` (4, all served: a call guarded per turn is planned only
+  on the turns its guard admits), `origin-nested-call-rows.test.ts` (7), `write-after-call-rows.test.ts` (15, served but
   for a callee's own data-record write, the walls-ahead MS5 row), `record-growth-rows.test.ts` (23),
   `revert-after-calls-rows.test.ts` (5, all seven checks served: the failure reported is the one the execution
   meets first) and `deep-chain-rows.test.ts` (25, its twenty-four-master case under `PER_CALL_FULL=1`).

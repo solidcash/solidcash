@@ -9,7 +9,7 @@ import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { mappingValueChunkLock } from '../../../src/per-call/composer/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
-import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -22,7 +22,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * The hop has to state the whole value because the collection's node tail holds its byte length, so it decodes the
  * node the key names through the shipped entry-commitment and pushdata decoders and folds the source's fields in
  * declaration order. A field the node does not hold, or a node whose value lives in continuation chunks the hop is
- * not handed, is refused by name rather than guessed.
+ * not handed, is refused by name rather than guessed. A field read of another key's node is declared kept beside the
+ * write, and refused by name when that node is the one the write spends.
  *
  * The expectation is read back out of the node the call wrote with the same shipped decoder.
  */
@@ -110,6 +111,69 @@ async function heldValue(
       return joinValueChunks(tail.slice(36, 36 + VALUE_HEAD_SIZE), chunks, length);
     })();
   return decodePushdataValue(raw, 0, valueType, structs).value as Record<string, unknown>;
+}
+
+/** An entry that reads the mapping under one key and writes it under the caller's: two mapping entries. */
+const DETACHED = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   struct Member { address who; uint up; uint down; }'
+  + '   address public implementation;'
+  + '   mapping(address => Member) public members;'
+  + '   function initialize(address who) { this.members[who] = Member(who, 1, 0); }'
+  + '   function bump(address who) { this.members[msg.sender].up = this.members[who].up + 1; }'
+  + ' }';
+
+const DEPLOYER = encodeLockingBytecodeP2pkh(alicePkh);
+
+/** A holder whose key's slot lies above the deployer's, so no insert of the deployer's key splices through it. */
+const HELD_ABOVE_DEPLOYER = ((): Uint8Array => {
+  const deployer = bytesToSlotValue(keyToSlotMulti([DEPLOYER]));
+  for (let seed = 1; seed < 64; seed += 1) {
+    const lock = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(seed));
+    if (bytesToSlotValue(keyToSlotMulti([lock])) > deployer) return lock;
+  }
+  throw new Error('no holder above the deployer');
+})();
+
+/** Deploys `DETACHED` with `who`'s member written, and calls `bump(who)` from the deployer. */
+async function bumpDetached(who: Uint8Array): Promise<{
+  readonly network: MockNetworkProvider;
+  readonly categoryId: string;
+  readonly structs: ReturnType<typeof compileStringMulti>[string]['structs'];
+  readonly call: ReturnType<typeof callPerCallProxyEntry>;
+}> {
+  const artifact = compileStringMulti(DETACHED, { composition: 'per-call' }).Impl!;
+  const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+  const funding = await funded(network);
+  const deployment = await deployPerCallProxy({
+    provider: network,
+    implementationArtifact: artifact,
+    implementationDeploy: {
+      fundingUtxo: funding.implFunding, funder: funding.funder, changeAddress: funding.changeAddress,
+    },
+    proxyDeploy: {
+      fundingUtxo: funding.proxyFunding, funder: funding.funder, changeAddress: funding.changeAddress,
+    },
+    initialize: { functionName: 'initialize', args: [who] },
+    callerLockingBytecode: funding.deployerLock,
+    callerFunding: { utxo: funding.callerUtxo, funder: funding.signature.unlockP2PKH() },
+    vm: compositionMachine(),
+  });
+  expect(deployment.initialize.accepted).toBe(true);
+  const call = callPerCallProxyEntry({
+    provider: network,
+    implementationArtifact: artifact,
+    proxyCategoryId: deployment.proxy.categoryId,
+    implementationCategoryId: deployment.implementation.categoryId,
+    functionName: 'bump',
+    args: [who],
+    callerUtxo: funding.callUtxo,
+    callerLockingBytecode: funding.deployerLock,
+    funder: funding.signature.unlockP2PKH(),
+    changeAddress: funding.changeAddress,
+    vm: compositionMachine(),
+  });
+  return { network, categoryId: deployment.proxy.categoryId, structs: artifact.structs, call };
 }
 
 describe('a proxied call whose mapping value is built from the node it writes', () => {
@@ -225,51 +289,30 @@ describe('a proxied call whose mapping value is built from the node it writes', 
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
-  it('refuses a field read the master cannot derive operands for, rather than composing a partial value', async () => {
-    // The entry reads the mapping under one key and writes it under another: two mapping entries, one of them
-    // written. The hop declares only the batch's records, so it refuses the read beside it by name.
-    const detached = 'pragma solidcash ^0.13.0;'
-      + ' contract Impl {'
-      + '   struct Member { address who; uint up; uint down; }'
-      + '   address public implementation;'
-      + '   mapping(address => Member) public members;'
-      + '   function initialize(address who) { this.members[who] = Member(who, 1, 0); }'
-      + '   function bump(address who) { this.members[msg.sender].up = this.members[who].up + 1; }'
-      + ' }';
-    const detachedArtifacts = compileStringMulti(detached, { composition: 'per-call' });
-    const detachedNetwork = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const detachedFunding = await funded(detachedNetwork);
-    const detachedDeployment = await deployPerCallProxy({
-      provider: detachedNetwork,
-      implementationArtifact: detachedArtifacts.Impl!,
-      implementationDeploy: {
-        fundingUtxo: detachedFunding.implFunding, funder: detachedFunding.funder,
-        changeAddress: detachedFunding.changeAddress,
-      },
-      proxyDeploy: {
-        fundingUtxo: detachedFunding.proxyFunding, funder: detachedFunding.funder,
-        changeAddress: detachedFunding.changeAddress,
-      },
-      initialize: { functionName: 'initialize', args: [detachedFunding.deployerLock] },
-      callerLockingBytecode: detachedFunding.deployerLock,
-      callerFunding: { utxo: detachedFunding.callerUtxo, funder: detachedFunding.signature.unlockP2PKH() },
-      vm: compositionMachine(),
-    });
-    await expect(callPerCallProxyEntry({
-      provider: detachedNetwork,
-      implementationArtifact: detachedArtifacts.Impl!,
-      proxyCategoryId: detachedDeployment.proxy.categoryId,
-      implementationCategoryId: detachedDeployment.implementation.categoryId,
-      functionName: 'bump',
-      args: [detachedFunding.deployerLock],
-      callerUtxo: detachedFunding.callUtxo,
-      callerLockingBytecode: detachedFunding.deployerLock,
-      funder: detachedFunding.signature.unlockP2PKH(),
-      changeAddress: detachedFunding.changeAddress,
-      vm: compositionMachine(),
-    })).rejects.toThrow(
-      'the implementation\'s "bump" entry reads mapping "members" beside the batch it writes, which this hop does not '
-      + 'declare',
+  it('composes a field read of another key\'s node beside the write, which keeps that node', async () => {
+    // The member read is held above the caller's key, so the caller's member is inserted through the head and the
+    // read's node is one the batch does not spend: the frame declares it kept ahead of the batch.
+    const { network, categoryId, structs, call } = await bumpDetached(HELD_ABOVE_DEPLOYER);
+    const result = await call;
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    // The caller's new member takes `up` from the member read, which is left as it was.
+    const caller = await heldValue(network, categoryId, DEPLOYER, 'Member', structs, DETACHED);
+    expect(caller?.up).toBe(2n);
+    expect(caller?.down).toBe(0n);
+    const read = await heldValue(network, categoryId, HELD_ABOVE_DEPLOYER, 'Member', structs, DETACHED);
+    expect(read?.up).toBe(1n);
+    expect([...read?.who as Uint8Array]).toStrictEqual([...HELD_ABOVE_DEPLOYER]);
+  });
+
+  it('refuses a field read of the node its own write spends, rather than spending that node twice', async () => {
+    // The read key is the caller's, so the node the frame would declare kept is the one the batch rewrites.
+    const { call } = await bumpDetached(DEPLOYER);
+    await expect(call).rejects.toThrow(
+      'the implementation\'s "bump" entry reads mapping "members" at a node its batch also spends, which one '
+      + 'transaction cannot spend twice',
     );
   });
 });

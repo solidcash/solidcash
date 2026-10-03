@@ -4498,6 +4498,13 @@ export async function callPerCallProxyEntry(
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordAmounts = proxyPools.records.map((record) => record.satoshis);
 
+  // The mapping nodes the entry only reads, planned the way a proxied callee's are: from the proxy's own nodes and
+  // records, read with the proxy's layout, and the call data the frame receives.
+  const readNodes = calleeReadNodesOrNone({
+    artifact: implementationArtifact, functionName: options.functionName, args,
+    senderAddress: options.callerLockingBytecode, categoryId: options.proxyCategoryId, deployment: proxyPools,
+    recordLayout: classificationLayout,
+  });
   // The live deployment: the record's commitments give a dynamic value's length, and the category's chunk UTXOs
   // are both a dynamic value's chunks and a mapping value's continuation chunks. `collectionNodes` holds the
   // latter — a mapping node's value chunks sit at their own root-salted covenant, not at the collection's.
@@ -4516,25 +4523,34 @@ export async function callPerCallProxyEntry(
       state: deploymentStateValues(proxyArtifact.stateLayout!, options.proxyCategoryId, proxyPools) as
         Readonly<Record<string, StateValue>>,
     },
+    // A key the entry only reads beside its batch is one of `readNodes`, which the frame declares kept ahead of the
+    // batch's groups, so the batch planner takes a read at its slot as declared rather than refusing it.
+    declaredReadSlots: readNodes.map((node) => node.slotIndex),
   } as const;
   // An entry whose element the artifact cannot state still writes the value's byte length into the record, so the
   // run it grows is re-planned from the commitment the plan states: the first attempt lays it at the live width,
   // the record's own close hands back the length the body wrote, and the run is laid at that length's chunks. A
   // chunkable mapping write whose value the artifact does not publish is re-planned the same way, from the value
-  // the body's own pin close exposed.
+  // the body's own pin close exposed. A read whose node the batch also spends is refused by name, since one
+  // transaction cannot spend that node twice.
   const entryWritesFor = (
     commitments: readonly Uint8Array[], learnedValue?: Uint8Array,
-  ): HopEntryWrites | undefined => hopEntryWrites({
-    ...writesRequest, writtenCommitments: commitments,
-    ...(learnedValue === undefined ? {} : { learnedValue }),
-  });
-  // The mapping nodes the entry only reads, planned the way a proxied callee's are: from the proxy's own nodes and
-  // records, read with the proxy's layout, and the call data the frame receives.
-  const readNodes = calleeReadNodesOrNone({
-    artifact: implementationArtifact, functionName: options.functionName, args,
-    senderAddress: options.callerLockingBytecode, categoryId: options.proxyCategoryId, deployment: proxyPools,
-    recordLayout: classificationLayout,
-  });
+  ): HopEntryWrites | undefined => {
+    const writes = hopEntryWrites({
+      ...writesRequest, writtenCommitments: commitments,
+      ...(learnedValue === undefined ? {} : { learnedValue }),
+    });
+    const spent = new Set([...writes?.spentUtxos.values() ?? []].map((utxo) => `${utxo.txid}:${utxo.vout}`));
+    const shared = readNodes.find((node) => node.utxo !== undefined
+      && spent.has(`${node.utxo.txid}:${node.utxo.vout}`));
+    if (shared !== undefined) {
+      throw new PerCallProxyDeployError(
+        `the implementation's ${entryLabelFor(options.functionName)} reads mapping "${shared.collection}" at a node `
+        + 'its batch also spends, which one transaction cannot spend twice',
+      );
+    }
+    return writes;
+  };
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
   // values, the proxy's own address for `address(this)`, and the caller's lock for `msg.sender`.

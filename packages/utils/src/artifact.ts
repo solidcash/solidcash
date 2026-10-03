@@ -1025,6 +1025,8 @@ export interface KeySourceAbi {
   // kind='msgSender': a msg.sender / tx.origin key; SDK resolves slot = keyToSlot(the sender's P2PKH lockscript).
   senderOp?: 'msg.sender' | 'tx.origin';
   expressionLabel?: string;
+  /** Compiler-proven key expression after an adjacent, unconditional mapping write. */
+  postWriteExpressionLabel?: string;
 }
 
 export interface EntryAccessAbi {

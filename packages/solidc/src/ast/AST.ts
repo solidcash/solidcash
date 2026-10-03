@@ -246,6 +246,8 @@ export interface KeySourceInfo {
   // native P2PKH input's lockscript, so the SDK computes slot = keyToSlot(76a914<pkh>88ac) of the sender.
   senderOp?: 'msg.sender' | 'tx.origin';
   canonical: string;       // canonical string for deduplication (all kinds)
+  /** SDK-only key expression after a proven adjacent, unconditional mapping write. */
+  postWriteExpressionLabel?: string;
 }
 
 export interface EntryAccessInfo {
@@ -1658,6 +1660,8 @@ export class MappingAssignNode extends StatementNode implements Named {
   noArg?: boolean;     // Set for `map[k].push()`: `expression` is a placeholder, replaced with the element default
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
   keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
+  /** SDK-only post-write keys proven from adjacent source statements before entry caching. */
+  postWriteKeyExpressions?: ExpressionNode[];
   /** Function-local program point shared with external-call effects. */
   sourceEffectOrdinal?: number;
   /** Exact argument-only value of a cached final write on its replayable dirty arm. */
@@ -2106,6 +2110,8 @@ export class ArrayAssignNode extends StatementNode implements Named {
   arrayType?: ArrayType;
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
   messageBusRuntimeOldValueWitness?: ArrayAccessNode;
+  /** SDK-only post-write keys proven before this bare mapping assignment is lowered. */
+  postWriteKeyExpressions?: ExpressionNode[];
 
   constructor(
     public name: string,

@@ -1,3 +1,4 @@
+import type { KeySourceAbi } from '@solidcash/utils';
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
 
@@ -299,6 +300,30 @@ describe('vmap fixed-write batch metadata', () => {
       ['data', ['write']], ['flags', ['read']],
     ]);
     expect(accesses?.[0]?.slotIndex).not.toBe(accesses?.[1]?.slotIndex);
+  });
+
+  it('publishes a post-write key only for an adjacent source-ordered mapping write', () => {
+    const compile = (body: string): ReturnType<typeof compileString> => compileString(`pragma solidity ^0.8.0;
+      contract Probe() {
+        mapping(uint256 => bool) flags;
+        mapping(uint256 => uint256) data;
+        function store(uint256 flagKey, uint256 dataKey, uint256 value) public {
+          ${body}
+          require(true);
+        }
+      }`, {
+      forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+      messageBusGraphContext: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+      optimizeForCompilationSpeed: true,
+    });
+    const early = compile('flags[flagKey] = true; data[flags[flagKey] ? dataKey : 0] = value;');
+    const late = compile('data[flags[flagKey] ? dataKey : 0] = value; flags[flagKey] = true;');
+    const key = (artifact: ReturnType<typeof compile>): KeySourceAbi | undefined => artifact.abi
+      .find((fn) => fn.name === 'store')
+      ?.entryAccesses?.find((access) => access.collection === 'data')?.keySources?.[0];
+    expect(key(early)?.expressionLabel).toBe('ternary(map:flags(id:flagKey),id:dataKey,lit:0)');
+    expect(key(early)?.postWriteExpressionLabel).toBe('ternary(lit:true,id:dataKey,lit:0)');
+    expect(key(late)?.postWriteExpressionLabel).toBeUndefined();
   });
 
   it('records a mapping rmw of a parameter delta as valueSource', () => {

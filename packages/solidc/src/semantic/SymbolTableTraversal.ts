@@ -6103,6 +6103,11 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     if (node instanceof MappingAssignNode && node.collection) {
       const { keyParams, keySources } = this.getMappingKeyDescriptors(node.keys);
+      node.postWriteKeyExpressions?.forEach((expression, index) => {
+        if (keySources[index]?.kind === 'expression') {
+          keySources[index].postWriteExpressionLabel = this.canonicalizeExpression(expression);
+        }
+      });
       node.keySources = keySources;
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const existing = map.get(slotKey);
@@ -11251,6 +11256,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         stateNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         stateNode.fromModifier = node.fromModifier;
         stateNode.messageBusRuntimeOldValueWitness = node.messageBusRuntimeOldValueWitness;
+        stateNode.postWriteKeyExpressions = node.postWriteKeyExpressions;
       }
       return this.visit(stateNode);
     }

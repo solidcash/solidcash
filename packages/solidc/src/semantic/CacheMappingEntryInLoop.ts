@@ -124,6 +124,45 @@ function expressionCanon(k: Node): string | undefined {
   return undefined;
 }
 
+/** SDK key planning may substitute only a value that is already fixed by public arguments. */
+function argumentOnlyMappingValue(node: ExpressionNode, parameters: ReadonlySet<string>): boolean {
+  if (node instanceof LiteralNode) return true;
+  if (node instanceof IdentifierNode) return parameters.has(node.name);
+  if (node instanceof BinaryOpNode && ['+', '-', '*'].includes(node.operator)) {
+    return argumentOnlyMappingValue(node.left, parameters)
+      && argumentOnlyMappingValue(node.right, parameters);
+  }
+  return false;
+}
+
+class ProjectWrittenMappingRead extends AstTraversal {
+  replaced = false;
+
+  constructor(
+    private readonly mapping: string,
+    private readonly keyLabel: string,
+    private readonly value: ExpressionNode,
+  ) { super(); }
+
+  visitArrayAccess(node: ArrayAccessNode): Node {
+    if (node.array instanceof IdentifierNode && node.array.name === this.mapping
+      && expressionCanon(node.index) === this.keyLabel) {
+      this.replaced = true;
+      return cloneNode(this.value);
+    }
+    return super.visitArrayAccess(node);
+  }
+
+  visitMappingAccess(node: MappingAccessNode): Node {
+    if (node.name === this.mapping && node.keys.length === 1
+      && expressionCanon(node.keys[0]) === this.keyLabel) {
+      this.replaced = true;
+      return cloneNode(this.value);
+    }
+    return super.visitMappingAccess(node);
+  }
+}
+
 function canonKeyOf(k: Node, allowExpression = false): { canon: string; key: KeyKind } | null {
   if (k instanceof IdentifierNode) return { canon: `id:${k.name}`, key: { kind: 'id', name: k.name } };
   if (k instanceof NullaryOpNode
@@ -296,6 +335,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   }
 
   private transformFunction(fn: FunctionDefinitionNode): void {
+    this.publishAdjacentMappingKeyValues(fn);
     const selected = this.collectCacheableEntries(fn.body).filter((e) => !(this.routeSnapshotKeysOnly
       && e.keys.length === 1
       && !e.keys.some((key) => key.kind === 'expression'
@@ -376,6 +416,34 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         inserted.push(statement);
       }
       fn.body.statements = inserted;
+    }
+  }
+
+  /** Preserve an exact source-order key recipe before the cache pass moves the writer to an epilogue flush. */
+  private publishAdjacentMappingKeyValues(fn: FunctionDefinitionNode): void {
+    const statements = fn.body.statements ?? [];
+    const parameters = new Set(fn.parameters.map((parameter) => parameter.name));
+    for (let index = 1; index < statements.length; index += 1) {
+      const writer = statements[index - 1];
+      const reader = statements[index];
+      const write = writer instanceof ArrayAssignNode && this.scalarMappings.has(writer.name)
+        ? { name: writer.name, key: writer.index, value: writer.value }
+        : writer instanceof MappingAssignNode && writer.keys.length === 1
+          && this.scalarMappings.has(writer.name) && !writer.arrayIndex && !writer.arrayPush && !writer.arrayPop
+          ? { name: writer.name, key: writer.keys[0], value: writer.expression } : undefined;
+      if (!write || !argumentOnlyMappingValue(write.value, parameters)) continue;
+      const keyLabel = expressionCanon(write.key);
+      if (!keyLabel) continue;
+      const readerKeys = reader instanceof ArrayAssignNode && this.scalarMappings.has(reader.name)
+        ? [reader.index]
+        : reader instanceof MappingAssignNode && this.scalarMappings.has(reader.name)
+          ? reader.keys : undefined;
+      if (!readerKeys || readerKeys.length !== 1) continue;
+      const projector = new ProjectWrittenMappingRead(write.name, keyLabel, write.value);
+      const projected = projector.visit(cloneNode(readerKeys[0])) as ExpressionNode;
+      if (projector.replaced && (reader instanceof ArrayAssignNode || reader instanceof MappingAssignNode)) {
+        reader.postWriteKeyExpressions = [projected];
+      }
     }
   }
 

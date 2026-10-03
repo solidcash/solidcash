@@ -2624,6 +2624,7 @@ function buildFunctionAbiMetadata(
               ...(ks.kind === 'constant' && { constantValue: ks.constantValue }),
               ...((ks.kind === 'msgSender' || syntheticSender) && { senderOp: ks.senderOp ?? 'msg.sender' }),
               ...(ks.kind === 'expression' && { expressionLabel: ks.canonical }),
+              ...(ks.postWriteExpressionLabel && { postWriteExpressionLabel: ks.postWriteExpressionLabel }),
             };
           }),
         }),

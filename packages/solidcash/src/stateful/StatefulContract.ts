@@ -7688,7 +7688,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 return addressToLockScript(senderSigner.getAddress());
               }
               // Auto-derive a direct computed key (hash160(pk), sha256(x), ...) from its canonical label.
-              const auto = evalComputedKey(source.expressionLabel, entryArgs, entryAbiFunction!.inputs,
+              const auto = evalComputedKey(source.postWriteExpressionLabel ?? source.expressionLabel,
+                entryArgs, entryAbiFunction!.inputs,
                 onChainState.state, undefined, mappingKeyValue);
               if (auto) return auto;
               // `map:<stateArray>(...)` keys an entry by an element of a dynamic state array, which no ABI input can
@@ -7718,7 +7719,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // on-chain key bytes, so a placeholder key proves an absent entry at the wrong slot and mints a node the
               // covenant never accepts.
               if (source?.kind === 'expression') {
-                const described = evalComputedKey(paramName, entryArgs, entryAbiFunction!.inputs,
+                const described = evalComputedKey(source.postWriteExpressionLabel ?? paramName,
+                  entryArgs, entryAbiFunction!.inputs,
                   describedState, undefined, mappingKeyValue);
                 if (described !== undefined) return described;
               }
@@ -7793,7 +7795,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ) && (this._signer ?? this._logicalNonceSigner)
                   ? addressToLockScript((this._signer ?? this._logicalNonceSigner)!.getAddress())
                   : evalComputedKey(
-                    access.keySources[0].expressionLabel, entryArgs, entryAbiFunction!.inputs, describedState,
+                    access.keySources[0].postWriteExpressionLabel
+                      ?? access.keySources[0].expressionLabel,
+                    entryArgs, entryAbiFunction!.inputs, describedState,
                     undefined, mappingKeyValue,
                   )
                   ?? overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))

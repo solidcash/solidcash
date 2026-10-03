@@ -36,6 +36,13 @@ export interface DeriveReturnBlobHost {
   lastReturnProbeFailure?: string;
 }
 
+/** A failed trace's missing pin or preservation of its provisional output cannot replace an independent seed. */
+export function failedProbeCannotReplaceTransientSeed(
+  traceFailed: boolean, observedPin: string | undefined, materialized: string | undefined,
+): boolean {
+  return traceFailed && (observedPin === undefined || observedPin === materialized);
+}
+
 export function deriveReturnBlob(
   host: DeriveReturnBlobHost,
   builder: StatefulTransactionBuilder,
@@ -385,10 +392,10 @@ export function messageBusReturnBlobFromTransaction(
   // replace a rediscovered seed with the weaker schema scan; a differing output expectation remains authoritative.
   const schemaFallback = extractSchemaFallback(trace);
   const traceFailed = trace.at(-1)?.error !== undefined;
-  if (traceFailed && resultSchema?.protectTransientSeedOnFailedProbe === true
-    && commitments?.[0] === undefined) {
-    // Without the return-output comparison, a failed route's schema-shaped stack word can be a provisional
-    // zero rather than the producer's result. Retain the independent view seed until a verified pin is reached.
+  if (resultSchema?.protectTransientSeedOnFailedProbe === true
+    && failedProbeCannotReplaceTransientSeed(traceFailed, commitments?.[0], materializedReturnHex)) {
+    // A failed route's schema-shaped stack word can be a provisional zero rather than the producer's result.
+    // An early preservation pin merely reasserts the provisional output; only a different pin can advance it.
     return undefined;
   }
   if (schemaFallback !== undefined

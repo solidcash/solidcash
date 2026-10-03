@@ -16,6 +16,7 @@ import {
 } from '../../src/message-bus/compose-result-topology.js';
 import { externalReturnsForCallsites } from '../../src/stateful/external-returns-for-callsites.js';
 import { encodeExternalReturnValue } from '../../src/stateful/external-return-encoding.js';
+import { failedProbeCannotReplaceTransientSeed } from '../../src/stateful/sc-derive-return-blob.js';
 import type { StatefulContract } from '../../src/stateful/StatefulContract.js';
 
 const producer: ExternalCallExpression = { kind: 'producerResult', callsiteId: 0, resultIndex: 0 };
@@ -154,6 +155,13 @@ describe('result-dependent topology propagation', () => {
     expect(discovered.map((call) => call.functionName)).toEqual(['run', 'transferFrom', 'read']);
     expect(discovered[2]?.provisionalResultCommitment).toBeUndefined();
     expect(probes).toBe(0);
+  });
+
+  it('retains a transient seed when a failed trace only pins the provisional return', () => {
+    expect(failedProbeCannotReplaceTransientSeed(true, undefined, 'aa')).toBe(true);
+    expect(failedProbeCannotReplaceTransientSeed(true, 'aa', 'aa')).toBe(true);
+    expect(failedProbeCannotReplaceTransientSeed(true, 'bb', 'aa')).toBe(false);
+    expect(failedProbeCannotReplaceTransientSeed(false, 'aa', 'aa')).toBe(false);
   });
 
   it('replaces the selected subtree without moving a later producer seed to the new branch', async () => {

@@ -1141,6 +1141,13 @@ export class ReturnInExternalFunctionError extends SolidCashError {
   }
 }
 
+/** A `return` the compiler cannot end its path at: the statements after it would run. */
+export class UnsupportedReturnError extends SolidCashError {
+  constructor(node: Node, reason: string) {
+    super(node, `Unsupported return: ${reason}`);
+  }
+}
+
 export class NonCompileTimeExpressionError extends SolidCashError {
   constructor(node: ConstantDefinitionNode) {
     super(node, `Constant '${node.name}' must be initialized with a compile-time expression`);

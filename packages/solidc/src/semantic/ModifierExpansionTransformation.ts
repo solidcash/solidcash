@@ -22,7 +22,15 @@ import {
   AssemblyStatementNode,
   TupleAssignmentNode,
   ReturnNode,
+  BoolLiteralNode,
+  BranchNode,
+  CollectionIterationNode,
+  ConsoleStatementNode,
+  DoWhileNode,
+  UncheckedNode,
+  WhileNode,
 } from '../ast/AST.js';
+import { PrimitiveType } from '@solidcash/utils';
 import {
   YulNode,
   YulBlockNode,
@@ -40,7 +48,10 @@ import {
   ModifierRedefinitionError,
   UndefinedModifierError,
   ModifierPlaceholderError,
+  UnsupportedReturnError,
 } from '../Errors.js';
+import { holdsReturn } from './EarlyReturnTransformation.js';
+import { lowerReturns, stashReturnValues } from './ConfineReturns.js';
 
 function cloneNode<T extends Node>(node: T): T {
   const clone = Object.create(Object.getPrototypeOf(node));
@@ -237,6 +248,110 @@ function countPlaceholdersDeep(stmts: StatementNode[]): number {
   return n;
 }
 
+/** True when nothing of a modifier runs after its placeholder, so a return of the code it wraps ends the call. */
+function placeholderEndsModifier(stmts: StatementNode[]): boolean {
+  const lastIndex = stmts.findLastIndex((s) => !(s instanceof ConsoleStatementNode));
+  return stmts.every((s, index) => {
+    if (countPlaceholdersDeep([s]) === 0) return true;
+    if (index !== lastIndex) return false;
+    if (s instanceof PlaceholderStatementNode) return true;
+    if (s instanceof BranchNode) {
+      return placeholderEndsModifier(s.ifBlock.statements ?? []) && placeholderEndsModifier(s.elseBlock?.statements ?? []);
+    }
+    if (s instanceof BlockNode) return placeholderEndsModifier(s.statements ?? []);
+    if (s instanceof UncheckedNode) return placeholderEndsModifier(s.block.statements ?? []);
+    return false; // a loop, a try or a switch around it
+  });
+}
+
+/** True when a modifier can run its placeholder more than once: it has several, or one in a loop. */
+function placeholderRepeats(stmts: StatementNode[]): boolean {
+  const inLoop = (list: StatementNode[]): boolean => list.some((s) => countPlaceholdersDeep([s]) > 0
+    && (s instanceof WhileNode || s instanceof DoWhileNode || s instanceof CollectionIterationNode
+      || (s instanceof BlockNode && inLoop(s.statements ?? []))
+      || Object.values(s).some((value) => value instanceof BlockNode && inLoop(value.statements ?? []))));
+  return countPlaceholdersDeep(stmts) > 1 || inLoop(stmts);
+}
+
+/** The lowering of the returns of a function and its modifiers, which each leave only the region they are in. */
+interface ReturnRegions {
+  /** The stashed results and region flags, declared ahead of the outermost modifier. */
+  readonly declarations: StatementNode[];
+  /** The function's one return of its results, after the outermost modifier. */
+  readonly result: StatementNode[];
+  confineBody(stmts: StatementNode[]): StatementNode[];
+  confineModifier(index: number, stmts: StatementNode[]): StatementNode[];
+}
+
+/**
+ * A return in a function body leaves the body only, and one in a modifier leaves that modifier only: Solidity then
+ * runs the statements after the `_` of the modifier around it, and returns the results once every modifier ends.
+ * Expanded verbatim, such a return left the whole function and skipped them, `nonReentrant`'s release among them.
+ * When a modifier has code after the region a return is in, or a modifier's bare `return;` would end a function
+ * with unnamed results, every region holding a return is lowered: its returns keep their values in the named or
+ * stashed results and set the region's flag, which gates the rest of the region, and the function returns the
+ * results at its end. Undefined when every return already ends the call, or the body's only one is the scalar
+ * return at its end the expansion defers, which keeps the expansion it had.
+ */
+function returnRegions(
+  func: FunctionDefinitionNode,
+  body: StatementNode[],
+  definitions: (ModifierDefinitionNode | undefined)[],
+  frameSuffix: string,
+  scalarTailDeferred: boolean,
+): ReturnRegions | undefined {
+  const own = (i: number): StatementNode[] => (definitions[i]?.isAbstract === false ? definitions[i]!.statements : []);
+  const followed = (count: number): boolean => definitions.slice(0, count)
+    .some((_, j) => !placeholderEndsModifier(own(j)));
+  const repeated = (count: number): boolean => definitions.slice(0, count).some((_, j) => placeholderRepeats(own(j)));
+  const unnamedResults = func.returnTypes.length > 0 && func.returnNames.length === 0;
+  const needed = (!scalarTailDeferred && body.some(holdsReturn) && followed(definitions.length))
+    || definitions.some((_, i) => own(i).some(holdsReturn) && (followed(i) || unnamedResults));
+  if (!needed) return undefined;
+
+  const located = <T extends Node>(node: T, origin: Node = func): T => Object.assign(node, {
+    location: origin.location,
+  });
+  const results = func.returnNames.length > 0 ? func.returnNames : func.returnTypes.map((_, k) => (
+    func.returnTypes.length === 1 ? `__modifier_return_${frameSuffix}` : `__modifier_return_${frameSuffix}_${k}`));
+  const declarations: StatementNode[] = func.returnNames.length > 0 ? []
+    : func.returnTypes.map((type, k) => located(new VariableDefinitionNode(type, [], results[k])));
+  const confine = (
+    stmts: StatementNode[], flag: string, repeats: boolean, values: (ret: ReturnNode) => StatementNode[],
+  ): StatementNode[] => {
+    // A region whose only return is its last statement needs no flag: the return keeps its values in its place.
+    const last = stmts.at(-1);
+    if (last instanceof ReturnNode && !stmts.slice(0, -1).some(holdsReturn)) {
+      return [...stmts.slice(0, -1), ...values(last)];
+    }
+    const clear = (): BoolLiteralNode => located(new BoolLiteralNode(false));
+    const declaration = located(new VariableDefinitionNode(PrimitiveType.BOOL, [], flag, clear()));
+    declaration.allowUnused = true;
+    declarations.push(declaration);
+    const lowered = lowerReturns(stmts, { flag, values, breaks: true });
+    // A region run more than once, by a modifier with several placeholders or one in a loop, starts each run clear.
+    return repeats ? [located(new AssignNode(located(new IdentifierNode(flag)), clear())), ...lowered] : lowered;
+  };
+  const named = func.returnNames.length > 0;
+  return {
+    declarations,
+    result: func.returnTypes.length > 0
+      ? [located(new ReturnNode(results.map((name) => located(new IdentifierNode(name)))))] : [],
+    // A bare `return;` keeps the named results as they are.
+    confineBody: (stmts) => (stmts.some(holdsReturn)
+      ? confine(stmts, `__modifier_exit_${frameSuffix}`, repeated(definitions.length), (ret) => (
+        ret.expressions.length === 0 && (named || results.length === 0) ? []
+          : stashReturnValues(ret, results, func.name, named)))
+      : stmts),
+    confineModifier: (index, stmts) => (stmts.some(holdsReturn)
+      ? confine(stmts, `__modifier_exit_${frameSuffix}_${index}`, repeated(index), (ret) => {
+        if (ret.expressions.length > 0) throw new UnsupportedReturnError(ret, 'a modifier cannot return a value');
+        return [];
+      })
+      : stmts),
+  };
+}
+
 export function validateModifierDefinitions(ast: SourceFileNode): void {
   const contract = ast.contract;
   const names = new Set<string>();
@@ -361,14 +476,20 @@ function expandFunctionModifiers(
   // A source-body `return value` finishes the body, then Solidity executes every enclosing modifier's
   // statements after `_`. Preserve that order for an unconditional scalar tail return: evaluate its value once
   // at the source return site, run the modifier epilogues, and return the saved value only after expansion.
-  // Nested/conditional returns need path-sensitive unwinding and are left to their existing lowering path.
+  // Other returns that leave a region some modifier code runs after are lowered by returnRegions.
   const sourceReturn = currentBody.at(-1);
   const deferScalarReturn = func.returnTypes.length === 1 && func.returnNames.length === 0
     && sourceReturn instanceof ReturnNode && sourceReturn.expressions.length === 1
     && !currentBody.slice(0, -1).some(containsReturnDeep);
+  const regions = returnRegions(
+    func, currentBody, func.customModifiers.map((invocation) => modifierMap.get(invocation.name)), frameSuffix,
+    deferScalarReturn,
+  );
   let deferredReturnName: string | undefined;
   let deferredReturnDeclaration: VariableDefinitionNode | undefined;
-  if (deferScalarReturn) {
+  if (regions) {
+    currentBody = regions.confineBody(currentBody);
+  } else if (deferScalarReturn) {
     deferredReturnName = `__modifier_return_${frameSuffix}`;
     deferredReturnDeclaration = new VariableDefinitionNode(func.returnTypes[0], [], deferredReturnName);
     deferredReturnDeclaration.location = sourceReturn.location;
@@ -459,12 +580,15 @@ function expandFunctionModifiers(
 
     // Replace placeholder(s) with current body, recursing into nested blocks (if/else, loops).
     const state = { inserted: false };
-    const replaced = replacePlaceholdersDeep(clonedStatements, currentBody, state);
+    const own = regions ? regions.confineModifier(i, clonedStatements) : clonedStatements;
+    const replaced = replacePlaceholdersDeep(own, currentBody, state);
     currentBody = [...paramBindings, ...replaced];
   }
 
   // Replace the function body
-  if (deferredReturnName && deferredReturnDeclaration && sourceReturn instanceof ReturnNode) {
+  if (regions) {
+    currentBody = [...regions.declarations, ...currentBody, ...regions.result];
+  } else if (deferredReturnName && deferredReturnDeclaration && sourceReturn instanceof ReturnNode) {
     const result = new IdentifierNode(deferredReturnName);
     result.location = sourceReturn.location;
     const tail = new ReturnNode([result]);

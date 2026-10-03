@@ -57,6 +57,10 @@ export default function expandBreakContinue(ast: SourceFileNode): SourceFileNode
     transformFunctionBody(func);
   }
 
+  // A break left in fallback() or receive() would emit nothing and run the rest of its loop.
+  if (ast.contract.fallbackDef) transformFunctionBody(ast.contract.fallbackDef);
+  if (ast.contract.receiveDef) transformFunctionBody(ast.contract.receiveDef);
+
   return ast;
 }
 

@@ -133,7 +133,8 @@ import EnsureFinalRequireTraversal, {
   rejectFreeFunctionMissingReturns,
 } from './semantic/EnsureFinalRequireTraversal.js';
 import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversal.js';
-import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
+import EarlyReturnTransformation, { holdsUnconfinedReturn } from './semantic/EarlyReturnTransformation.js';
+import confineReturns from './semantic/ConfineReturns.js';
 import NamedReturnTransformation, {
   synthesizeEmptyVoidBodies, synthesizeFallThroughDefaultReturns,
 } from './semantic/NamedReturnTransformation.js';
@@ -13402,6 +13403,9 @@ function compileResolvedAst(
   // it here, after the nested-return desugar has given its functions their terminal return, and only where the
   // final check would refuse the function, so every function that returns or reverts keeps its lowering.
   if (!needsNamedReturns) synthesizeFallThroughDefaultReturns(ast);
+  // Any other return the early-return nesting would leave statements after -> flag + gated tail, in every function,
+  // fallback, receive and constructor (after every pass above has placed its returns).
+  if (needsNestedBranchReturn) ast = confineReturns(ast);
 
   restoreParkedFunctions(ast, cheapAdmissionPark);
   // Drop unused compatibility-library low-level-call / assembly helpers before journal and memory lowering. A
@@ -13888,6 +13892,11 @@ function compileResolvedAst(
     }
   }
 
+  // A lowering above can place a statement after a return it leaves in place: a write-back flush after a switch one
+  // of whose cases returns, say, which already precedes that return. Lower those returns too, so each path runs the
+  // statement once. A function that still returns from a loop is left to EarlyReturnTransformation's refusal.
+  ast = confineReturns(ast, true);
+
   mark('lowering');
   // Semantic analysis
   const semanticStarted = Date.now();
@@ -14236,8 +14245,9 @@ function compileResolvedAst(
     ast = ast.accept(new InjectLocktimeGuardTraversal()) as Ast;
   }
 
-  // Early return transformation (rewrites return statements into nested if-else)
-  if (needsEarlyReturn) ast = ast.accept(new EarlyReturnTransformation()) as Ast;
+  // Early return transformation (rewrites return statements into nested if-else). A return a later pass placed is
+  // nested too, and the transformation refuses one it cannot end a path at.
+  if (needsEarlyReturn || holdsUnconfinedReturn(ast)) ast = ast.accept(new EarlyReturnTransformation()) as Ast;
 
   // Compile referenced contracts in dependency order
   const referencedStarted = Date.now();
@@ -17254,6 +17264,7 @@ function compileReferencedContracts(
     singleAst.declaredLibraryNames = ast.declaredLibraryNames;
     singleAst = singleAst.accept(new NamedReturnTransformation()) as Ast;
     singleAst = singleAst.accept(new DesugarNestedBranchReturn()) as Ast;
+    singleAst = confineReturns(singleAst);
     singleAst = singleAst.accept(new AlphaRenameLocalShadows()) as Ast;
     singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;
     // Keep the referenced-contract bytecode byte-identical to its standalone compilation (see comment above).

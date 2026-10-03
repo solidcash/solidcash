@@ -18,8 +18,10 @@ import {
   IdentifierNode,
   WhileNode,
   DoWhileNode,
+  CollectionIterationNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { UnsupportedReturnError } from '../Errors.js';
 import { computeBranchOps } from './branchOps.js';
 
 /**
@@ -57,6 +59,14 @@ export default class EarlyReturnTransformation extends AstTraversal {
       node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     }
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
+    // receive() and fallback() are dispatched like any entry point, so a return of theirs that is not already their
+    // last statement is nested too. Their other bodies keep the lowering they had.
+    if (node.fallbackDef && firstUnconfinedReturn(node.fallbackDef.body.statements ?? [])) {
+      node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
+    }
+    if (node.receiveDef && firstUnconfinedReturn(node.receiveDef.body.statements ?? [])) {
+      node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
+    }
     return node;
   }
 
@@ -90,8 +100,103 @@ export default class EarlyReturnTransformation extends AstTraversal {
     }
 
     node.body = this.visit(node.body) as BlockNode;
+    refuseUnconfinedReturns(node);
     return node;
   }
+}
+
+/**
+ * Refuses a function with a return that statements of it still run after. Code generation emits no jump: a void
+ * `return;` emits nothing and a valued one leaves its values, so such a return would not end its path.
+ */
+export function refuseUnconfinedReturns(fn: FunctionDefinitionNode): void {
+  const unconfined = firstUnconfinedReturn(fn.body?.statements ?? []);
+  if (unconfined) {
+    throw new UnsupportedReturnError(unconfined, `statements of '${fn.name}' after this return would still run`);
+  }
+}
+
+/** True when a function the transformation visits has a return that statements of it still run after. */
+export function holdsUnconfinedReturn(ast: SourceFileNode): boolean {
+  const { contract } = ast;
+  return [...ast.freeFunctions, contract.constructorDef, ...contract.functions, contract.fallbackDef,
+    contract.receiveDef].some((fn) => fn?.body !== undefined && !!firstUnconfinedReturn(fn.body.statements ?? []));
+}
+
+/** The statement lists a statement runs its statements in: arms, blocks, a try block, cases and a loop's body. */
+export function nestedStatementLists(statement: StatementNode): StatementNode[][] {
+  if (statement instanceof BranchNode) {
+    return [statement.ifBlock.statements ?? [], statement.elseBlock?.statements ?? []];
+  }
+  if (statement instanceof BlockNode) return [statement.statements ?? []];
+  if (statement instanceof UncheckedNode) return [statement.block.statements ?? []];
+  // A catch clause is not emitted: a failed call fails the transaction.
+  if (statement instanceof TryCatchNode) return [statement.tryBlock.statements ?? []];
+  if (statement instanceof SwitchNode) {
+    return [...statement.cases.map((c) => c.body.statements ?? []), statement.defaultCase?.statements ?? []];
+  }
+  if (statement instanceof WhileNode || statement instanceof DoWhileNode) return [statement.block.statements ?? []];
+  if (statement instanceof CollectionIterationNode) return [statement.body.statements ?? []];
+  return [];
+}
+
+/** True when a statement is a return or holds one in a list it runs. */
+export function holdsReturn(statement: StatementNode): boolean {
+  return statement instanceof ReturnNode
+    || nestedStatementLists(statement).some((statements) => statements.some(holdsReturn));
+}
+
+/**
+ * The first return of `statements` that statements of the function still run after, if any. `statements` ends the
+ * function when `last` is set; a return ends it only as the last statement of a list that does, and never in a loop.
+ */
+export function firstUnconfinedReturn(statements: StatementNode[], last = true): ReturnNode | undefined {
+  const lastIndex = statements.findLastIndex((statement) => !(statement instanceof ConsoleStatementNode));
+  for (const [index, statement] of statements.entries()) {
+    const ends = last && index >= lastIndex;
+    if (statement instanceof ReturnNode) {
+      if (!ends) return statement;
+      continue;
+    }
+    const loop = statement instanceof WhileNode || statement instanceof DoWhileNode
+      || statement instanceof CollectionIterationNode;
+    for (const nested of nestedStatementLists(statement)) {
+      const unconfined = firstUnconfinedReturn(nested, ends && !loop);
+      if (unconfined) return unconfined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * True when nestEarlyReturns leaves no statement of `statements` to run after a return. It nests the statements
+ * after a branch into the branch's other arm only when one arm ends in a return, and drops those after a statement
+ * that returns on every path. After any other statement that holds a return they stay where they are, and it does
+ * not enter a loop at all.
+ */
+export function nestsReturnsToTail(statements: StatementNode[]): boolean {
+  for (const [index, statement] of statements.entries()) {
+    if (statement instanceof ReturnNode || statement instanceof RevertNode) return true;
+    if (statement instanceof BranchNode && index + 1 < statements.length) {
+      const remaining = statements.slice(index + 1);
+      if (blockEndsWithReturn(statement.ifBlock)) {
+        return nestsReturnsToTail(statement.ifBlock.statements ?? [])
+          && nestsReturnsToTail([...(statement.elseBlock?.statements ?? []), ...remaining]);
+      }
+      if (statement.elseBlock && blockEndsWithReturn(statement.elseBlock)) {
+        return nestsReturnsToTail(statement.elseBlock.statements ?? [])
+          && nestsReturnsToTail([...(statement.ifBlock.statements ?? []), ...remaining]);
+      }
+    }
+    if (!holdsReturn(statement)) continue;
+    const container = statement instanceof BranchNode || statement instanceof UncheckedNode
+      || statement instanceof TryCatchNode || statement instanceof SwitchNode || statement instanceof BlockNode;
+    // One that returns on every path drops what follows it; after any other, what follows runs after its return.
+    const followed = statements.slice(index + 1).some((next) => !(next instanceof ConsoleStatementNode));
+    if (!container || (followed && !endsWithReturn(statement))) return false;
+    return nestedStatementLists(statement).every(nestsReturnsToTail);
+  }
+  return true;
 }
 
 class CanonicalizeScalarReturns extends AstTraversal {
@@ -258,6 +363,8 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
         stmt.tryBlock.statements = nestEarlyReturns(stmt.tryBlock.statements);
       }
       result.push(stmt);
+      // A container that returns on every path ends the list: what follows it is unreachable.
+      if (endsWithReturn(stmt)) break;
       continue;
     }
 
@@ -272,6 +379,16 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
         stmt.defaultCase.statements = nestEarlyReturns(stmt.defaultCase.statements);
       }
       result.push(stmt);
+      if (endsWithReturn(stmt)) break;
+      continue;
+    }
+
+    // Recurse into a block holding a return, as a lowering that keeps a write-back beside its return builds one
+    // (`{ flush; return; }` in a branch arm, which therefore ends in a return too).
+    if (stmt instanceof BlockNode && holdsReturn(stmt)) {
+      stmt.statements = nestEarlyReturns(stmt.statements ?? []);
+      result.push(stmt);
+      if (endsWithReturn(stmt)) break;
       continue;
     }
 
@@ -285,6 +402,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
         stmt.block.statements = nestEarlyReturns(stmt.block.statements);
       }
       result.push(stmt);
+      if (endsWithReturn(stmt)) break;
       continue;
     }
 
@@ -324,7 +442,11 @@ export function blockEndsWithReturn(block: BlockNode): boolean {
   const nonLogStatements = block.statements.filter((s) => !(s instanceof ConsoleStatementNode));
   if (nonLogStatements.length === 0) return false;
 
-  const last = nonLogStatements[nonLogStatements.length - 1];
+  return endsWithReturn(nonLogStatements[nonLogStatements.length - 1]);
+}
+
+/** True when a statement returns or reverts on every path through it. */
+function endsWithReturn(last: StatementNode): boolean {
   if (last instanceof ReturnNode) return true;
   if (last instanceof RevertNode) return true;
 
@@ -340,6 +462,10 @@ export function blockEndsWithReturn(block: BlockNode): boolean {
 
   if (last instanceof UncheckedNode) {
     return blockEndsWithReturn(last.block);
+  }
+
+  if (last instanceof BlockNode) {
+    return blockEndsWithReturn(last);
   }
 
   if (last instanceof SwitchNode) {

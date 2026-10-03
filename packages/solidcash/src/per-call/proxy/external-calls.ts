@@ -383,7 +383,7 @@ interface HopWrittenState {
  * segment is kept under that name; a write to a dynamic value is kept under the variable itself. An entry that
  * publishes no write rewrites nothing, and its incoming state is what its body sees.
  */
-function entryWrittenState(artifact: Artifact, functionName: string): HopWrittenState {
+export function entryWrittenState(artifact: Artifact, functionName: string): HopWrittenState {
   const entry = readPublishedStopSites(artifact).entries
     .find((candidate) => candidate.functionName === `${artifact.contractName}.${functionName}()`);
   const writes = (entry as { readonly writeSegments?: readonly {
@@ -573,7 +573,7 @@ function conditionExternalReturns(
  * pass that does not yet hold the result, so the arm the run does not take is never planned and the plan states
  * exactly the calls the execution makes.
  */
-function occurrenceCountOf(
+export function occurrenceCountOf(
   row: ExternalCallAbi, args: readonly FunctionArgument[], resolver: CallResolver, where: string,
   artifact: Artifact, writtenState: HopWrittenState, siteIndex: number,
   routing: readonly ExternalCallAbi[],
@@ -633,7 +633,7 @@ function occurrenceCountOf(
  * the entry's own body rewrites before the site is not fixed by the incoming facts, so every turn is stated. Any
  * other site's visits are all turns.
  */
-function callingTurnsOf(
+export function callingTurnsOf(
   row: ExternalCallAbi, count: number, resolver: CallResolver, artifact: Artifact, writtenState: HopWrittenState,
   siteIndex: number, routing: readonly ExternalCallAbi[],
   producerResults: ReadonlyMap<number, FunctionArgument> | undefined,
@@ -1063,7 +1063,7 @@ function argumentReturnsOf(
  * is not waited for (one a loop returns once per turn, one of a site the plan places no call for), so a site that
  * reads one stays refused by name, as it is when nothing is learned.
  */
-function waitingProducers(
+export function waitingProducers(
   nodes: readonly (ExternalCallExpression | ArgSource)[],
   site: number,
   routing: readonly ExternalCallAbi[],

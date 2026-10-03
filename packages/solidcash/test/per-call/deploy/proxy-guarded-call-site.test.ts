@@ -1,0 +1,150 @@
+import { describe, expect, it } from 'vitest';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import { validatorAddress, type Artifact } from '@solidcash/utils';
+import { perCallValidator } from 'solidc';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { Contract, SignatureTemplate } from '../../../src/index.js';
+import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
+import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { fundShippedFacets } from '../shapes/harness.js';
+
+/**
+ * A proxied entry whose own body guards some of its calls behind a branch this execution does not take.
+ *
+ * The compiled body fixes one call site and one segment close per site the source names, while the plan states a
+ * record only for the sites the execution reaches. This pins the plan's stated handling of that gap - "a body that
+ * guards the call never reaches it and is settled on its own refusal" - from the outermost level: three published
+ * sites, the middle one guarded away by the entry's own argument, one callee master placed for all three, and the
+ * hop settles and broadcasts. A site the execution skips must leave the block's numbering intact rather than
+ * shifting the sites after it.
+ */
+
+const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
+const OUTER_CATEGORY = '55'.repeat(31) + 'aa';
+const INNER_CATEGORY = '66'.repeat(31) + 'bb';
+const CALLER_TXID = '33'.repeat(31) + 'cc';
+
+const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
+const OUTER_ADDRESS = validatorAddress(hexToBin(OUTER_CATEGORY), VALIDATOR_PROGRAM);
+const INNER_ADDRESS = validatorAddress(hexToBin(INNER_CATEGORY), VALIDATOR_PROGRAM);
+
+/** Three call sites, the middle one behind a branch the arguments make unreachable. */
+function sourceOf(): string {
+  return 'pragma solidcash ^0.13.0;'
+    + ' interface IInner { function probe(uint x) view returns (uint); }'
+    + ' contract Inner {'
+    + '   uint public hits;'
+    + '   function probe(uint x) view returns (uint) { return x + 1; }'
+    + ' }'
+    + ' interface IOuter { function run(uint x, uint mode) returns (uint); }'
+    + ' contract Outer {'
+    + '   uint public status;'
+    + '   function run(uint x, uint mode) returns (uint) {'
+    + `     uint a = IInner(0x${binToHex(INNER_ADDRESS)}).probe(x);`
+    + '     if (mode > 0) {'
+    + `       a = a + IInner(0x${binToHex(INNER_ADDRESS)}).probe(a);`
+    + '     }'
+    + `     uint b = IInner(0x${binToHex(INNER_ADDRESS)}).probe(a);`
+    + '     this.status = b;'
+    + '     return b;'
+    + '   }'
+    + ' }'
+    + ' contract Ledger {'
+    + '   address public implementation;'
+    + '   uint public stored;'
+    + '   function initialize() { require(true); }'
+    + `   function run(uint x, uint mode) { this.stored = IOuter(0x${binToHex(OUTER_ADDRESS)}).run(x, mode); }`
+    + ' }';
+}
+
+/** Deploys the callee and its own callee, then the implementation behind its proxy. */
+async function deploy(): Promise<{
+  readonly network: MockNetworkProvider;
+  readonly artifacts: ReturnType<typeof compileStringMulti>;
+  readonly callerUtxos: readonly { txid: string; vout: number; satoshis: bigint }[];
+  readonly deployerLock: Uint8Array;
+  readonly changeAddress: string;
+  readonly signature: SignatureTemplate;
+  readonly initialized: boolean;
+}> {
+  const artifacts = compileStringMulti(sourceOf(), { composition: 'per-call' });
+  const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+  const signature = new SignatureTemplate(alicePriv);
+  const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
+  const implFunding = { txid: IMPL_CATEGORY, vout: 0, satoshis: 500_000n };
+  const proxyFunding = { txid: PROXY_CATEGORY, vout: 0, satoshis: 500_000n };
+  const outerFunding = { txid: OUTER_CATEGORY, vout: 0, satoshis: 5_000_000n };
+  const innerFunding = { txid: INNER_CATEGORY, vout: 0, satoshis: 5_000_000n };
+  const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
+  const callerUtxos = Array.from({ length: 4 }, (_unused, index) => ({
+    txid: `${CALLER_TXID.slice(0, 62)}${(index + 1).toString(16).padStart(2, '0')}`,
+    vout: 0, satoshis: 100_000n,
+  }));
+  await network.addUtxo(funder.address, implFunding);
+  await network.addUtxo(funder.address, proxyFunding);
+  await network.addUtxo(funder.address, outerFunding);
+  await network.addUtxo(funder.address, innerFunding);
+  await fundShippedFacets(network);
+  for (const coin of callerUtxos) await network.addUtxo(binToHex(deployerLock), coin);
+  const funderUnlock = funder.unlock.spend(alicePub, signature);
+  await deployStatefulContract(artifacts.Inner as Artifact, [], {
+    fundingUtxo: innerFunding, funder: funderUnlock, changeAddress: funder.address,
+    provider: network, threadCount: 4,
+  });
+  await deployStatefulContract(artifacts.Outer as Artifact, [], {
+    fundingUtxo: outerFunding, funder: funderUnlock, changeAddress: funder.address,
+    provider: network, threadCount: 4,
+  });
+  const deployment = await deployPerCallProxy({
+    provider: network,
+    implementationArtifact: artifacts.Ledger!,
+    implementationDeploy: { fundingUtxo: implFunding, funder: funderUnlock, changeAddress: funder.address },
+    proxyDeploy: { fundingUtxo: proxyFunding, funder: funderUnlock, changeAddress: funder.address },
+    initialize: { functionName: 'initialize', args: [] as never },
+    callerLockingBytecode: deployerLock,
+    callerFunding: { utxo: callerUtxos[0]!, funder: signature.unlockP2PKH() },
+    vm: compositionMachine(),
+  });
+  return {
+    network, artifacts, callerUtxos, deployerLock, changeAddress: funder.address, signature,
+    initialized: deployment.initialize.accepted,
+  };
+}
+
+describe('a proxied entry whose callee guards one of its calls away', () => {
+  it('settles a callee whose middle call site no execution reaches', async () => {
+    const { network, artifacts, callerUtxos, deployerLock, changeAddress, signature, initialized } = await deploy();
+    expect(initialized).toBe(true);
+    const callee = artifacts.Outer!.abi.find((candidate) => candidate.name === 'run')!;
+    // Three sites are published; the body fixes all three whether or not this execution reaches them.
+    expect((callee.externalCalls ?? []).map((call) => call.functionName))
+      .toStrictEqual(['probe', 'probe', 'probe']);
+
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Ledger!,
+      proxyArtifact: buildProxyArtifact(artifacts.Ledger!),
+      proxyCategoryId: PROXY_CATEGORY,
+      implementationCategoryId: IMPL_CATEGORY,
+      functionName: 'run',
+      args: [3n, 0n] as never,
+      externals: {
+        IOuter: { artifact: artifacts.Outer as Artifact, categoryId: OUTER_CATEGORY },
+        IInner: { artifact: artifacts.Inner as Artifact, categoryId: INNER_CATEGORY },
+      },
+      callerUtxo: callerUtxos[1]!,
+      callerLockingBytecode: deployerLock,
+      funder: signature.unlockP2PKH(),
+      changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+  }, 300_000);
+});

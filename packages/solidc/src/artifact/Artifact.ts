@@ -14,7 +14,8 @@ import {
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
   ExpressionNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
   BlockNode, WhileNode, VariableDefinitionNode,
-  BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode, IntLiteralNode,
+  BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode, RevertNode,
+  IntLiteralNode,
   ArrayNode, NewArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
@@ -511,8 +512,17 @@ const externalCallIterationDomains = (
         const before = clone(state);
         const ifState = clone(state);
         const elseState = clone(state);
-        if (!processBlock(statement.ifBlock, ifState)
-          || (statement.elseBlock && !processBlock(statement.elseBlock, elseState))) return false;
+        // A direct revert aborts this transaction path. Its writes cannot reach a later loop header,
+        // so replay only the surviving arm rather than discarding an otherwise exact recurrence.
+        const ifAborts = statement.ifBlock.statements?.length === 1
+          && statement.ifBlock.statements[0] instanceof RevertNode;
+        const elseAborts = statement.elseBlock?.statements?.length === 1
+          && statement.elseBlock.statements[0] instanceof RevertNode;
+        if ((ifAborts && elseAborts)
+          || (!ifAborts && !processBlock(statement.ifBlock, ifState))
+          || (statement.elseBlock && !elseAborts && !processBlock(statement.elseBlock, elseState))) {
+          return false;
+        }
         const keys = new Set([...before.bindings.keys(), ...ifState.bindings.keys(),
           ...elseState.bindings.keys()]);
         for (const key of keys) {
@@ -521,7 +531,8 @@ const externalCallIterationDomains = (
               ? { kind: 'state', name: key.slice('state:'.length) } : undefined;
           const ifValue = ifState.bindings.has(key) ? ifState.bindings.get(key) : prior;
           const elseValue = elseState.bindings.has(key) ? elseState.bindings.get(key) : prior;
-          state.bindings.set(key, join(condition, ifValue, elseValue));
+          state.bindings.set(key, ifAborts ? elseValue : elseAborts ? ifValue
+            : join(condition, ifValue, elseValue));
         }
       } else if (statement instanceof BlockNode || statement instanceof UncheckedNode) {
         if (!processBlock(statement instanceof BlockNode ? statement : statement.block, state)) return false;

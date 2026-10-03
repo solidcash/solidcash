@@ -745,6 +745,33 @@ describe('Release 0 shared invocation analysis', () => {
       });
   });
 
+  it('publishes a later loop domain across a prior abort-only branch', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint value); }
+      contract AbortBeforeLoop() {
+        function run(address target, bigint[] values, bool fail) public {
+          if (fail) { revert("aborted"); }
+          for (bigint i = 0; i < values.length; i = i + 1) {
+            ITarget(target).step(values[i]);
+          }
+          require(values.length >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0].iterationDomain)
+      .toMatchObject({
+        counterName: 'i',
+        continueCondition: {
+          kind: 'binary', operator: '<',
+          right: {
+            kind: 'unary', operator: '.length',
+            expression: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+          },
+        },
+      });
+  });
+
   it('withholds a later loop domain when an earlier loop rewrites its bound', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface ITarget { function step(bigint value); }

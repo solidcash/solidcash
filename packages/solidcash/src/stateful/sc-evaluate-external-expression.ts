@@ -184,7 +184,9 @@ export function evaluateExternalExpression(
     // else (including a user string that merely starts with malformed hex) keeps the text encoding.
     if (typeof value === 'string') {
       const canonicalHex = /^0x(?:[0-9a-fA-F]{2})*$/.test(value);
-      if (typeHint === 'uint160' && isZeroAddressValue(value)) return new Uint8Array();
+      if (!solidityImportCompat && typeHint === 'uint160' && isZeroAddressValue(value)) {
+        return new Uint8Array();
+      }
       if (solidityImportCompat && typeHint === 'uint160') {
         const locking = addressBytes(value);
         return locking === undefined ? undefined : narrowAddress(locking);

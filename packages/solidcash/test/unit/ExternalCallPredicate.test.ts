@@ -323,6 +323,16 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toEqual(Uint8Array.of(0x00, 0x02, 0xff, 0xfe));
   });
 
+  it('packs a zero Solidity address cast to uint160 as twenty bytes', () => {
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: ['uint160'], args: [source(0)],
+    };
+
+    expect(evaluator._evaluateExternalExpression(
+      expression, [`0x${'00'.repeat(20)}`], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(new Uint8Array(20));
+  });
+
   it('evaluates compiler-published pure helper programs without helper-name knowledge', () => {
     const helperArtifact = compileString(`
       pragma solidity >=0.8.0;

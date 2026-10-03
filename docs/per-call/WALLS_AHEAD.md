@@ -9,13 +9,13 @@ guards, loops, side-cars, write segments), and the sources in `.marketplace/cont
 
 | Titles | Today's wall | Next walls predicted | Owner |
 | --- | --- | --- | --- |
-| #42 take job, #66 integration | `MarketplaceV1.takeJob()` line 662: the entry frame's witness read (`OP_SPLIT` invalid index) | the token fan-in: `Unicrow.pay`'s `transferFrom` reads the allowance the root's `approve` wrote in the same transaction (MS3, `ahead/fan-in.test.ts`) | ladder (hop) |
-| #45 pay start job | `payStartJob()` line 760, the same `OP_SPLIT` signature as `takeJob` | as `takeJob`, without the side-cars | ladder (hop) |
-| #46, #48, #49, #54-#58, #65 | their setup's `takeJob` ("expected not reverted") | none predicted: their own entries match settling shapes (one store call; MS6 dispute served; MS5 refund/refuseArbitration replicas now settle past their pins) | - |
+| #42 take job, #66 integration | the entry frame's `OP_SPLIT` is **served** (`0ad9ecf7f`: an argument's own call was read from the wrong stack slot, so the arbitrator fee became the record loop's count); it now stops at the hop's named refusal of a second `publishJobEvent` reach on one chunking `jobEvents` node (`requireSettledNodeChains`) | the token fan-in behind it is served (`bc67c1f7e`: MS3's `payStart` settles) | hop; in progress (R4) |
+| #45 pay start job | **served** (`0ad9ecf7f`): the title passes | - | - |
+| #46, #48, #49, #54-#58, #65 | their setup's `takeJob` ("expected not reverted") | none predicted: their own entries match settling shapes; sanity titles that expect an entry's own revert before a call need the row below (#52) | - |
 | #19 post two jobs, #30 whitelist worker | a mapping write inside a loop whose body calls `publishJobEvent` (`_updateJobWhitelist`, line 474): no per-turn write segment is published; #30 is refused by the hop, #19 fails the write's check | - | compiler + hop; in progress (R2) |
-| #52 refund sanity, #53 refund | `refund` declares its mapping batch in segment 2 and its dynamic record's chunk run in segment 4, and the frame reads the run past its own block's records (refused by name) | `_refund`'s one-turn whitelist loop (row above) | compiler/composer; in progress (R3) |
-| #50, #51 approve result | the setup's `takeJob` | MS4 (`ahead/reentry-payout.test.ts`) now passes the re-entered guard it was pinned at and stops in the payout loop: `Escrow.sendShare()` line 36 reads an input index the transaction does not have (a node one transfer created, rewritten by the next) | hop; in progress (R1) |
-| #59-#62 arbitrate | the setup's `takeJob` | MS7 (`ahead/deep-arbitration.test.ts`) now stops earlier than pinned: the re-entered `STATIC` `Judge.readFlag()` (line 64) reads the flag its outer frame just wrote through a view that does not parse; a re-entered frame needs the view its outer frame left | hop; in progress (R1) |
+| #52 refund sanity, #53 refund | the batch and run in different segments are **served** (`a4c797027`); #52 now reports the callee's revert ("1-011", `Unicrow.refund`) where the EVM reports the entry's own `onlyWorker` "not worker", which fires before any call | #53: its setup's `takeJob` | hop; in progress (R5: report the first failure in execution order) |
+| #50, #51 approve result | the setup's `takeJob` | MS4 now **settles** (`bc67c1f7e`: a frame starts from the views earlier frames of its contract left) | - |
+| #59-#62 arbitrate | the setup's `takeJob` | MS7 now **settles** (`bc67c1f7e`) | - |
 | #31 update job | **served** (`5c4f232b7`): "incorrect data length" is ethers' own encoder error for a `bytes32` of another length, raised before any contract runs; the per-call handle now checks each argument with the shared encoder (a `bytesN` length, an integer's range) before composing, and the title passes | - | - |
 
 ## Replicas whose pins are stale at `055833fb4`

@@ -15052,9 +15052,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // An imported Solidity address is one 20-byte identity carried in two physical forms (DECISIONS D13): a frame's
     // sender, origin and self and every stored address are full locks, while an evm-abi-v1 result decodes to the
-    // identity. Comparing the bytes made an escrow's buyer, read back through `getEscrow`, unequal to the
-    // `msg.sender` it was recorded from, so both operands are normalized to the identity first, as the kernel lane
-    // does (231810f30). The native language keeps its exact-byte address equality.
+    // identity. Comparing the bytes made a stored sender, read back through another contract's result, unequal to
+    // the `msg.sender` it was recorded from, so both operands are normalized to the identity first, as the kernel
+    // lane does (231810f30). The native language keeps its exact-byte address equality.
     if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
       && (node.operator === BinaryOperator.EQ || node.operator === BinaryOperator.NE)
       && node.left.type instanceof AddressType && node.right.type instanceof AddressType) {

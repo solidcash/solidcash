@@ -301,7 +301,7 @@ import {
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
   derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, perCallBatchWriteFollowsEveryCall,
-  perCallBatchWriteSegment,
+  perCallBatchWriteSegment, perCallRunApartFromBatch,
   callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER, hasForwardingFallback, isOwnAddress,
   isProxyFallbackContract,
   ORIGIN_FRAME_SLOT, SENDER_FRAME_SLOT,
@@ -1294,6 +1294,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * where the write's spent records are declared kept at the views it wrote.
    */
   private perCallReadsWriteSegment = false;
+  /**
+   * True for a body whose batch and the run its dynamic write grows may land in different segments
+   * (`perCallRunApartFromBatch`): the run is addressed in its own segment, the last, past the records every segment
+   * declares ahead of any group, and the batch's groups precede it only where the two segments are one.
+   */
+  private perCallRunApart = false;
+  /** True while a declared-view read resolves against an apart body's run segment, the last its calls open. */
+  private perCallReadsRunSegment = false;
   /**
    * The state fields whose pending stack value belongs to a closed segment, keyed as `pendingStateWrites` is.
    *
@@ -3577,7 +3585,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const sideCars = layout.slots.filter(
       (slot) => slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar',
     ).length;
-    return blockInputSize(layout) - sideCars - layout.slots.filter(
+    // A frame beside a batch declares every data record ahead of its groups, not only the ones its layout names
+    // (`perCallRecordsBeforeGroups`), so the run sits past those too.
+    const unnamedRecords = this.batchTargetSlots().length === 0 ? 0
+      : this.dataNftCount - layout.slots.filter((slot) => slot.kind === 'dataNft').length;
+    return blockInputSize(layout) - sideCars + unnamedRecords - layout.slots.filter(
       (slot) => slot.kind === 'entry' && slot.slotIndex !== undefined && !isOutputOnlyBlockSlot(slot)
         && this.entrySlots[slot.slotIndex]?.inLoop === true,
     ).length;
@@ -7539,6 +7551,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallBatchWriteSegment = 0;
     this.perCallBatchWriteRuntime = false;
     this.perCallReadsWriteSegment = false;
+    this.perCallRunApart = false;
+    this.perCallReadsRunSegment = false;
     this.perCallDeclaredLoopOut = false;
     this.perCallDeclaredLoopSlot = -1;
     this.perCallStaleWrites = new Set();
@@ -8279,6 +8293,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.perCallMaster) this.emitPerCallUnusedSendSlotsCheck(node);
     if (this.perCallMaster) this.emitPerCallCallValueCheck(node);
     if (this.perCallMaster) this.emitPerCallBatchWitnessDerivation(node);
+    this.perCallRunApart = this.perCallMaster && !this.isDefineSubTraversal && perCallRunApartFromBatch(node);
     this.emitRuntimeAliasWitnessPreflight(node);
     if (!this.isDefineSubTraversal) {
       for (const collection of this.vmapRuntimeCollections(node)) {
@@ -8361,9 +8376,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     // A per-call frame that writes both a sorted mapping and a dynamic state value declares the value's chunk
     // records in the same segment, past the batch's groups. The batch settlement holds those extra records to the
-    // chunks the body pinned, so the running chunk width must count the dynamic-state chunks too.
+    // chunks the body pinned, so the running chunk width must count the dynamic-state chunks too. An apart body
+    // whose fixed calls set the run's segment apart from its batch's declares none there.
     const countsDynamicChunkRecords = this.perCallMaster && (node.sortedBatchInfo?.length ?? 0) > 0
-      && ((node.dynamicWrites?.length ?? 0) > 0 || this.pendingDynamicWrites.size > 0);
+      && ((node.dynamicWrites?.length ?? 0) > 0 || this.pendingDynamicWrites.size > 0)
+      && this.perCallRunSharesBatchSegment() !== false;
     if (hasChunkableMappingWrite(node.body) || countsDynamicChunkRecords) {
       // Mapping value chunks precede the entry node which references their digest even when the function has no
       // unrelated dynamic-state write. Keep one path-stable running width so the INSERT verifier can cross the
@@ -27208,7 +27225,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.perCallDeclaredLoopOut) {
       leadings.push(this.perCallEntryOffset(this.perCallDeclaredLoopSlot) - 1);
     }
-    if (atEnd && this.perCallWritesDynamicField()) leadings.push(this.perCallDynamicChunkWidth() - 1);
+    // An apart body's run follows the records every segment declares ahead of any group, which also leaves its
+    // groups to the batch walk where they share the run's segment.
+    if (atEnd && this.perCallWritesDynamicField()) {
+      leadings.push(this.perCallDynamicChunkWidth() - 1 - (this.perCallRunApart ? this.batchTargetSlots().length : 0));
+    }
     const leading = leadings.length === 0 ? {} : { leading: Math.min(...leadings) };
     if (this.perCallCallsMadeActive) {
       // The segment is the one the execution's own calls have reached.
@@ -33125,6 +33146,53 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Whether an apart body's run shares its batch's segment where the source fixes that: the run's segment is the last
+   * one the execution opens, so a body whose calls are fixed names it, and one whose calls vary leaves it to the frame
+   * (undefined), which compares the two as it runs. A body that is not apart always shares it.
+   */
+  private perCallRunSharesBatchSegment(): boolean | undefined {
+    if (!this.perCallRunApart) return true;
+    if (this.perCallCallsMadeActive) return undefined;
+    return this.perCallExecutionCallCount() === this.perCallBatchWriteSegment;
+  }
+
+  /** Leaves, untracked, whether an apart body's run segment is its batch's: the declared call count names the run's. */
+  private emitPerCallRunSegmentIsBatchSegment(loc: SingleLocationData): void {
+    this.emitPickTrackedFromBottom(callCountSlotName(), loc);
+    this.emit(encodeInt(BigInt(this.perCallBatchWriteSegment)), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+  }
+
+  /**
+   * Adds the records the batch's groups put ahead of a per-call body's run in the segment the run is addressed in.
+   *
+   * Entry and exit `[..., coordinate]`. A run that shares its batch's segment sits past the groups and their surplus.
+   * An apart body's run is declared in its own segment, where the batch declares nothing unless the two are one, so
+   * there the coordinate drops the targets the layout width counts.
+   */
+  private emitPerCallRunBatchRecords(loc: SingleLocationData): void {
+    const shares = this.perCallRunSharesBatchSegment();
+    if (shares === true) {
+      this.emitSortedBatchRecordSurplus(loc);
+      return;
+    }
+    const dropTargets = (): void => {
+      this.emit(encodeInt(BigInt(this.batchTargetSlots().length)), loc);
+      this.emit(Op.OP_SUB, loc);
+    };
+    if (shares === false) {
+      dropTargets();
+      return;
+    }
+    this.emitPerCallRunSegmentIsBatchSegment(loc);
+    this.emit(Op.OP_IF, loc);
+    this.emitSortedBatchRecordSurplus(loc);
+    this.emit(Op.OP_ELSE, loc);
+    dropTargets();
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
    * Adds the records a per-call body's sorted batch declares past the run's own layout slots.
    *
    * A per-call segment declares one record per batch target, so the dynamic run's records begin after the targets.
@@ -33415,13 +33483,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // per-call transaction, so a per-call frame holds its own segment's run to both facts record by record.
       if (this.readsRecordsFromFrame) {
         // A sorted batch's walk holds the records past its groups to the chunks the body pins; without one, nothing
-        // follows the last run.
+        // follows the last run, nor in an apart body's run segment that is not its batch's.
         const lastWrite = writesInDeclOrder[writesInDeclOrder.length - 1]![0] === name;
+        const shares = (node.sortedBatchInfo?.length ?? 0) > 0 ? this.perCallRunSharesBatchSegment() : false;
         this.emitPerCallChunkRunCensus({
           sv,
           chunkHash,
           coordinate: { loc, blockSize, hasReturnEventSlot, writesInDeclOrder, fReadTempNames, wPriorTempNames },
-          closesSegment: lastWrite && (node.sortedBatchInfo?.length ?? 0) === 0,
+          closesSegment: lastWrite && (shares === undefined ? 'apart' : !shares),
         });
       } else {
         this.emitVerifyChunkUtxoCount('(dyn_nnew)', true, loc);
@@ -33433,8 +33502,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // the running chunk width before nNew is dropped. A direct frame's running width is a different quantity
       // (the mapping-value chunks it places before a NEW node), so this stays a per-call adjustment. A run the
       // census pinned declares one record per chunk of the wider of its two versions, so a shrink's consumed
-      // chunks count too.
-      if (this.perCallMaster && this.valueChunkTrailingCountActive) {
+      // chunks count too. An apart body's run is past its batch's groups only where the two segments are one.
+      const runSharesBatch = this.perCallRunSharesBatchSegment();
+      if (this.perCallMaster && this.valueChunkTrailingCountActive && runSharesBatch !== false) {
+        if (runSharesBatch === undefined) {
+          this.emitPerCallRunSegmentIsBatchSegment(loc);
+          this.emit(Op.OP_IF, loc);
+        }
         this.emitPickCompilerRouteFrameValue(
           GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, loc,
         );
@@ -33447,6 +33521,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, sv,
         );
         this.popFromStack();
+        if (runSharesBatch === undefined) this.emit(Op.OP_ENDIF, loc);
       }
 
       // Drop nNew / chunk-address / loop i NOW, while the names still exist. A later
@@ -33581,7 +33656,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Returning-call bases do not pass through the ordinary reconstruction branch above.
       if (returningExternalSlots.length > 0) this.emitAddCollectionIterCounts(loc);
       // The run's own record sits after the batch's target slots and the extra records a splice declares.
-      this.emitSortedBatchRecordSurplus(loc);
+      this.emitPerCallRunBatchRecords(loc);
       if (this.runtimeLoopEntryOutputCountActive && !this.perCallMaster) {
         // Runtime mapping entries are verified inline before the epilogue's newly written dynamic chunks. Their
         // exact width can differ from the source iteration count (an insert may emit predecessor + NEW), so use
@@ -33679,7 +33754,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     readonly sv: StateVariableNode;
     readonly chunkHash: Uint8Array;
     readonly coordinate: DynamicWriteRunCoordinate;
-    readonly closesSegment: boolean;
+    readonly closesSegment: boolean | 'apart';
   }): void {
     const { sv, chunkHash, coordinate, closesSegment } = options;
     const { loc } = coordinate;
@@ -33774,13 +33849,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
     this.scopeDepth -= 1;
 
-    if (closesSegment) {
-      // Nothing is declared past the run.
+    if (closesSegment !== false) {
+      // Nothing is declared past the run: `'apart'` asks that only where the run's segment is not its batch's.
+      if (closesSegment === 'apart') {
+        this.emitPerCallRunSegmentIsBatchSegment(loc);
+        this.emit(Op.OP_NOTIF, loc);
+      }
       this.emitDeclaredSegmentRecordCount(loc); // [..., count]
       pick('(dyn_run_base)', 1);
       pick('(dyn_run_width)', 2);
       this.emit(Op.OP_ADD, loc);
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      if (closesSegment === 'apart') this.emit(Op.OP_ENDIF, loc);
     }
     // The width stays for the caller: a sorted batch's walk counts the run's records among those past its groups.
     const temps = ['(dyn_run_i)', '(dyn_run_base)', '(dyn_run_shared)', '(dyn_run_addr)', '(dyn_run_old)'];
@@ -34097,11 +34177,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private declaredViewCounts(loc: SingleLocationData): DeclaredViewCounts {
     if (!this.perCallCallsMadeActive) {
       return {
-        segmentIndex: this.perCallReadSegment ?? this.perCallSegmentIndex,
+        segmentIndex: this.perCallReadsRunSegment
+          ? this.perCallExecutionCallCount() : this.perCallReadSegment ?? this.perCallSegmentIndex,
         callCount: this.perCallExecutionCallCount(),
       };
     }
-    if (this.perCallReadsWriteSegment && this.perCallReadSegment !== undefined) {
+    if (this.perCallReadsRunSegment) {
+      // An apart body's run segment, the last its calls open, whose index the block's declared call count is.
+      this.emitPickTrackedFromBottom(callCountSlotName(), loc);
+    } else if (this.perCallReadsWriteSegment && this.perCallReadSegment !== undefined) {
       // The batch's write segment, which the source fixes, rather than the one the execution has reached.
       this.emit(encodeInt(BigInt(this.perCallReadSegment)), loc);
     } else {
@@ -34278,12 +34362,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDeclaredSegmentRecordCount(loc: SingleLocationData): void {
     if (!this.perCallCallsMadeActive) {
       this.emit(bytecodeToScript(declaredSegmentRecordCountScript({
-        segmentIndex: this.perCallReadSegment ?? this.perCallSegmentIndex,
+        segmentIndex: this.perCallReadsRunSegment
+          ? this.perCallExecutionCallCount() : this.perCallReadSegment ?? this.perCallSegmentIndex,
         callCount: this.perCallExecutionCallCount(),
       })), loc);
       return;
     }
-    if (this.perCallReadsWriteSegment && this.perCallReadSegment !== undefined) {
+    if (this.perCallReadsRunSegment) {
+      this.emitPickTrackedFromBottom(callCountSlotName(), loc);
+    } else if (this.perCallReadsWriteSegment && this.perCallReadSegment !== undefined) {
       this.emit(encodeInt(BigInt(this.perCallReadSegment)), loc);
     } else {
       this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE, loc);
@@ -35132,6 +35219,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * coexisting collection iteration.
    */
   private emitDynamicReadLoop(sv: StateVariableNode, loc: SingleLocationData): void {
+    // An apart body reads its run where the run is declared, in the run's own segment, whichever one the read runs in.
+    const readsRunSegment = this.perCallReadsRunSegment;
+    this.perCallReadsRunSegment = this.perCallRunApart;
     const CHUNK = 120;
     const lenType = new IntType(false, 32);
     const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
@@ -35254,7 +35344,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitLoopDeclaredNodeCount(loc, 1);
           // The read addresses the same record the write does, so it states the same batch surplus: without it the
           // run's coordinate names the record a spliced target's extra declaration displaced.
-          this.emitSortedBatchRecordSurplus(loc);
+          this.emitPerCallRunBatchRecords(loc);
         }
       }
       // Values below -1 encode an inactive-write route while retaining its read-only chunk coordinate:
@@ -35377,6 +35467,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.removeFromStack(idx);
     }
     this.stack[this.getStackIndex('(dyn_racc)')] = '(value)';
+    this.perCallReadsRunSegment = readsRunSegment;
   }
 
   /**

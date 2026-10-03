@@ -27,6 +27,7 @@ import {
   computeFunctionSignature,
   encodeIntegerValue,
   isDynamicStorageType,
+  isOutputOnlyBlockSlot,
 } from '@solidcash/utils';
 import type { Type } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
@@ -900,6 +901,33 @@ export function perCallBatchWriteFollowsEveryCall(entry: FunctionDefinitionNode)
 }
 
 /**
+ * True when a body's verified-mapping batch and the run of chunk records its dynamic write grows can land in
+ * different segments, which its frame serves by addressing the run in the run's own segment.
+ *
+ * The batch's records are declared in the segment the batch's write lands in, a fixed one here, and the run's in the
+ * segment the epilogue pins it in, the last; a call after the batch's write sets the two apart. The frame then reads
+ * and pins the run in its own segment past the records every segment declares ahead of any group, and counts the
+ * batch's groups ahead of it only where the two segments are one, so a builder declares the run in that segment
+ * alone and keeps no batch record there. The run's position has to be a constant of the layout there: a run-time
+ * loop's nodes, or an input the frame does not declare as a record, keep the body on the shared segment, as does a
+ * second dynamic value, whose run a builder lays beside the batch's records.
+ */
+export function perCallRunApartFromBatch(entry: FunctionDefinitionNode): boolean {
+  if (perCallBatchWriteSegment(entry) === undefined || perCallBatchWriteFollowsEveryCall(entry)) return false;
+  if ((entry.sortedUpsertLoopInfo?.length ?? 0) > 0) return false;
+  if ((entry.entryAccesses ?? []).some((access) => access.inLoop === true)) return false;
+  const layout = entry.blockLayout;
+  const declared = new Set(['master', 'dataNft', 'entry', 'keccakSideCar', 'ecrecoverSideCar']);
+  if (layout === undefined || layout.slots.some((slot) => !isOutputOnlyBlockSlot(slot) && !declared.has(slot.kind))) {
+    return false;
+  }
+  const grown = new Set(perCallWriteSteps(entry, perCallBatchSlots(entry))
+    .filter((step) => writesSizedField(step.statement))
+    .map((step) => (step.statement as { readonly stateVariable?: StateVariableNode }).stateVariable?.name));
+  return grown.size === 1;
+}
+
+/**
  * The segment an entry's own record write is declared in, as the artifact publishes it for a builder.
  *
  * A fixed number is the count of external calls the entry makes before the write; `'last'` is the last segment the
@@ -1087,6 +1115,12 @@ export interface PerCallWriteSegmentFact {
    * field of the same record stay decided by the incoming state. Absent means the written variables are not known.
    */
   readonly writtenVariables?: readonly string[];
+  /**
+   * For a dynamic value's run, true when the frame addresses the run in its own segment apart from the entry's
+   * batch (`perCallRunApartFromBatch`): a builder declares the run in that segment alone, with no batch record kept
+   * there, so the run's segment and the batch's may differ. Absent means the run is read past the batch's groups.
+   */
+  readonly apart?: true;
 }
 
 /**
@@ -1162,11 +1196,13 @@ export function perCallWriteSegments(
   }
   // A dynamic value's bytes live in the run of chunk records the epilogue pins in the last segment, whatever the
   // source position of the write that grows it.
+  const apart = collections.length > 0 && perCallRunApartFromBatch(entry);
   for (const variable of records.variables) {
     if (!admit(`dynamic:${variable.name}`, {
       variable: variable.name,
       segment: 'last',
       ...(variable.preservedFields === undefined ? {} : { preservedFields: variable.preservedFields }),
+      ...(apart ? { apart: true } : {}),
     })) return undefined;
   }
   return facts.length > 0 ? facts : (writesOwnRecord(entry) ? undefined : []);

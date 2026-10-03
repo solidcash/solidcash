@@ -279,6 +279,8 @@ interface PublishedWrite {
   readonly collection?: string;
   readonly variable?: string;
   readonly segment: number | 'last';
+  /** For a dynamic value's run, true when the frame reads the run in its own segment apart from the batch. */
+  readonly apart?: true;
 }
 
 /** One entry's published stop sites, in the widened view the compiler attaches the table through. */
@@ -575,16 +577,21 @@ function laidWriteRecords(options: {
  *
  * Each record is declared in its own write's segment, in the order the plan lays the plan's records; every record a
  * write spends is kept in the segments on either side of it, at the commitment it was spent with before and at the
- * written one after, so the segments chain into the one transition each write performs.
+ * written one after, so the segments chain into the one transition each write performs. A run its frame reads apart
+ * from the batch beside it is the exception: the frame addresses that run in the run's own segments alone, past the
+ * records every segment declares ahead of any group, so the run is kept nowhere else and nothing is kept there.
  */
 function placeLaidWrites(
   segments: DraftRecordEntry[][],
-  placed: readonly { readonly span: SegmentSpan; readonly entry: RecordEntry }[],
+  placed: readonly PlacedLaidWrite[],
 ): void {
+  const apartRun = runSpanApartFromBatch(placed);
   segments.forEach((segment, segmentIndex) => {
+    if (apartRun !== undefined && segmentIndex >= apartRun.least && segmentIndex <= apartRun.most) return;
     const declared = new Set<number>();
-    for (const { span, entry } of placed) {
+    for (const { span, entry, write } of placed) {
       if (segmentIndex >= span.least && segmentIndex <= span.most) continue;
+      if (apartRun !== undefined && write.variable !== undefined) continue;
       if (entry.in === INDEX_NONE || declared.has(entry.in)) continue;
       declared.add(entry.in);
       segment.push(segmentIndex < span.least
@@ -617,14 +624,17 @@ function placeLaidWrites(
  * batch and the run of chunk records a dynamic write grows have to share the segments they land in: a frame reads
  * the run past the records its own block declares, and the records a segment declares in front of the run are the
  * position that read resolves against, so a batch whose records land elsewhere leaves the run where the frame's own
- * close refuses it. A run the entry only reads is kept unchanged, so it takes the segments of the write it sits
- * among, which keeps it at its place in every segment, or the first when the entry writes nothing beside it.
+ * close refuses it. The exception is a frame the artifact publishes as reading the run apart (`servesApart`): it
+ * addresses the run in the run's own segment, ahead of any group, so the two may land in different segments. A run
+ * the entry only reads is kept unchanged, so it takes the segments of the write it sits among, which keeps it at
+ * its place in every segment, or the first when the entry writes nothing beside it.
  */
 function resolveLaidWriteSegments(
   records: readonly LaidWriteRecord[],
   segmentOfWrite: (write: LaidWriteIdentity, what: string) => SegmentSpan,
   label: string,
-): readonly { readonly span: SegmentSpan; readonly entry: RecordEntry }[] {
+  servesApart = false,
+): readonly PlacedLaidWrite[] {
   const spans = new Map<string, SegmentSpan>();
   const spanOf = ({ write, what }: LaidWriteRecord): SegmentSpan => {
     const key = `${String(write.record)}|${String(write.collection)}|${String(write.variable)}`;
@@ -640,13 +650,14 @@ function resolveLaidWriteSegments(
   const placed = records.map((record) => ({
     span: record.write.read === true ? readSpan : spanOf(record),
     entry: record.entry,
+    write: record.write,
   }));
   const batchAt = records.findIndex(({ write }) => write.collection !== undefined);
   const runAt = records.findIndex(({ write }) => write.variable !== undefined);
   // A frame reads the run of chunk records a dynamic write grows past the records the segment declares, so the run
   // has to land inside the segments the batch beside it lands in: a batch whose records another segment holds
-  // leaves the run where the frame's own close refuses it.
-  if (batchAt >= 0 && runAt >= 0 && !spansWithin(placed[runAt]!.span, placed[batchAt]!.span)) {
+  // leaves the run where the frame's own close refuses it, unless the artifact publishes the frame reads it apart.
+  if (batchAt >= 0 && runAt >= 0 && !servesApart && !spansWithin(placed[runAt]!.span, placed[batchAt]!.span)) {
     throw new PerCallProxyDeployError(
       `${label} declares its mapping's records in segment ${placed[batchAt]!.span.least} and the run of chunk `
       + `records its dynamic write grows in segment ${placed[runAt]!.span.least}, and a frame reads the run past `
@@ -654,6 +665,26 @@ function resolveLaidWriteSegments(
     );
   }
   return placed;
+}
+
+/** One of an entry's laid records, the write it belongs to, and the segments that write lands in. */
+interface PlacedLaidWrite {
+  readonly span: SegmentSpan;
+  readonly entry: RecordEntry;
+  readonly write: LaidWriteIdentity;
+}
+
+/** The segments the run a dynamic write grows lands in, when they lie outside those of the batch beside it. */
+function runSpanApartFromBatch(placed: readonly PlacedLaidWrite[]): SegmentSpan | undefined {
+  const batch = placed.find(({ write }) => write.collection !== undefined);
+  const run = placed.find(({ write }) => write.variable !== undefined);
+  return batch !== undefined && run !== undefined && !spansWithin(run.span, batch.span) ? run.span : undefined;
+}
+
+/** True when the artifact publishes that the entry's frame reads its dynamic value's run apart from its batch. */
+function readsRunApart(artifact: Artifact, functionName: string): boolean {
+  const variable = dynamicWriteVariable(artifact, functionName)?.variable;
+  return variable !== undefined && publishedWriteFact(artifact, functionName, { variable })?.apart === true;
 }
 
 /**
@@ -3031,6 +3062,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         ...(options.truncated === true ? { truncated: true } : {}),
       }),
       entryWritesLabel,
+      readsRunApart(implementationArtifact, options.entry.functionName),
     );
     for (const { entry } of placedWrites) writeTransitions.add(entry);
     placeLaidWrites(implementationSegments, placedWrites);
@@ -3334,6 +3366,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
           ...(callee.truncated === true ? { truncated: true } : {}),
         }),
         `the callee's "${callee.functionName}" entry`,
+        readsRunApart(callee.artifact, callee.entry),
       );
       for (const { entry } of placed) writeTransitions.add(entry);
       placeLaidWrites(segments, placed);

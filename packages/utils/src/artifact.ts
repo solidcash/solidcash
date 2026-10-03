@@ -1758,6 +1758,13 @@ export interface PublishedWriteSegment {
    * settled by the incoming state. Absent means the written variables are not known, which is the broad case.
    */
   readonly writtenVariables?: readonly string[];
+  /**
+   * For a dynamic value's run, true when the frame addresses the run in its own segment apart from the entry's
+   * verified-mapping batch: a builder declares the run in that segment alone, with no batch record kept there, so the
+   * run's segment and the batch's may differ. Absent means the frame reads the run past the batch's groups, so the
+   * batch and the run have to share a segment.
+   */
+  readonly apart?: true;
 }
 
 /** One per-call entry's stop sites, plus the call facts a driver resolves a callee through. */

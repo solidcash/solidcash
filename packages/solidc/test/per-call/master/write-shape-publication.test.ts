@@ -159,13 +159,14 @@ describe('the write facts an entry publishes', () => {
   it('publishes one fact per write when the batch and the run land in different segments', () => {
     // The batch's write precedes the entry's call, so its records are declared in the segment the frame opens with;
     // the run the append grows is pinned by the epilogue in the segment the call opened, and the record whose field
-    // the run holds is rebuilt there, so no single fact states the entry and each write names its own segment.
+    // the run holds is rebuilt there, so no single fact states the entry and each write names its own segment. The
+    // frame reads that run apart from the batch, in the run's own segment, which the run's fact says.
     const published = publishedWrites(mappingWithRun, 'Ledger', 'move');
     expect(published.single).toBeUndefined();
     expect(published.writes).toStrictEqual([
       { collection: 'balances', segment: 0 },
       { record: 0, segment: 'last', writtenVariables: ['names'] },
-      { variable: 'names', segment: 'last' },
+      { variable: 'names', segment: 'last', apart: true },
     ]);
     expect(published.refused).toStrictEqual([]);
   });

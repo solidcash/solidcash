@@ -23,8 +23,8 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * A call closes the segment the code before it runs in, so an entry that writes a sorted mapping's node and then
  * its own record beside a call it makes declares the two writes in different segments. The artifact publishes the
  * segment of each write, and the hop declares each write's records in its own segment instead of refusing the
- * entry. A batch and the run of chunk records a dynamic write grows have to share a segment, because a frame reads
- * that run past the records its own block declares; a plan that would split them keeps a named refusal.
+ * entry. A batch and the run of chunk records a dynamic write grows may land in different segments too: the frame
+ * reads that run in its own segment, past the records every segment declares ahead of any group.
  *
  * The whole shipped path runs: the deployment through `deployPerCallProxy`, the call through
  * `callPerCallProxyEntry`, and the machine's verdict on every participant is the assertion.
@@ -63,7 +63,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 // The same body beside a dynamic value's write: the run that write grows is pinned in the last segment, so the
-// mapping's records and the run would land in different segments, which the hop refuses by name.
+// mapping's records and the run land in different segments, each declared in its own.
 const DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IEscrow { function settle(int amount); }'
   + ' contract Escrow {'
@@ -89,6 +89,38 @@ const impl = artifacts.Impl!;
 const escrow = artifacts.Escrow!;
 const dynamicArtifacts = compileStringMulti(DYNAMIC_SOURCE, { composition: 'per-call' });
 const dynamicImpl = dynamicArtifacts.Impl!;
+
+// The marketplace's refund in miniature: a call, a whitelist write behind a flag the entry passes as a literal, the
+// event calls after it, and the job's own record written last. The literal leaves the calls varying on the body's
+// paths, so the frame compares the run's segment with the batch's as it runs; the four fixed-width fields put a
+// second data record beside the one the entry names.
+const REFUND_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IEscrow { function settle(int amount); }'
+  + ' contract Escrow {'
+  + '   int public touched;'
+  + '   function settle(int amount) { require(this.touched == 0); require(amount > 0); }'
+  + ' }'
+  + ' contract Impl {'
+  + '   address public implementation;'
+  + '   uint public initialized;'
+  + '   bytes32 public a1; bytes32 public a2; bytes32 public a3; bytes32 public a4;'
+  + '   string[] public names;'
+  + '   mapping(address => uint) awarded;'
+  + '   function initialize(address expected) { require(msg.sender == expected); this.initialized = 1; }'
+  + '   function _refund(address to, uint amount, bool byWorker) internal {'
+  + '     require(this.names.length < 100);'
+  + `     IEscrow(0x${hexOf(ESCROW_ADDRESS)}).settle(amount);`
+  + '     if (byWorker) {'
+  + `       IEscrow(0x${hexOf(ESCROW_ADDRESS)}).settle(amount);`
+  + '       this.awarded[to] = amount;'
+  + `       IEscrow(0x${hexOf(ESCROW_ADDRESS)}).settle(amount);`
+  + '     }'
+  + `     IEscrow(0x${hexOf(ESCROW_ADDRESS)}).settle(amount);`
+  + '     this.names.push("hi");'
+  + '   }'
+  + '   function refund(address to, uint amount) { _refund(to, amount, true); require(true); }'
+  + ' }';
+const refundImpl = compileStringMulti(REFUND_SOURCE, { composition: 'per-call' }).Impl!;
 
 /** One write as the artifact publishes it. */
 type PublishedWrite = PublishedWriteSegment;
@@ -243,17 +275,17 @@ describe('a proxied entry whose writes land in different segments', () => {
     expect(bytesToHex(recordOutput?.token?.nft?.commitment ?? new Uint8Array(0))).toBe(bytesToHex(written));
   });
 
-  it('keeps a named refusal for an entry whose batch and dynamic run cannot share a segment', async () => {
-    // The run a dynamic write grows is read past the records the body's own block declares, so a plan that declares
-    // the batch's records in another segment has nowhere to put them: the hop refuses the entry by name instead.
+  it('settles a batch and the run its dynamic write grows in different segments', async () => {
+    // The frame reads the run in the run's own segment, which the artifact publishes, so the hop declares the
+    // batch's records where the batch lands and the run alone in the segment the call opened.
     expect(publishedWrites(dynamicImpl, 'record').writes).toStrictEqual([
       { collection: 'awarded', segment: 0 },
       { record: 0, segment: 'last', writtenVariables: ['names'] },
-      { variable: 'names', segment: 'last' },
+      { variable: 'names', segment: 'last', apart: true },
     ]);
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployed(network, dynamicImpl);
-    await expect(callPerCallProxyEntry({
+    const result = await callPerCallProxyEntry({
       provider: network,
       implementationArtifact: dynamicImpl,
       proxyArtifact: buildProxyArtifact(dynamicImpl),
@@ -267,8 +299,43 @@ describe('a proxied entry whose writes land in different segments', () => {
       funder: funded.funder,
       changeAddress: funded.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow(
-      /declares its mapping's records in segment 0 and the run of chunk records its dynamic write grows in segment 1/,
-    );
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(bytesToHex(writtenAward(result.transaction)!)).toBe(bytesToHex(encodeIntegerValue(AMOUNT)));
   });
+
+  it('settles a refund-like entry: a call, a mapping write in a later segment, and a dynamic write after the last call',
+    async () => {
+      // The batch lands where two calls precede it and the run in the last of the five segments; the entry's layout
+      // names one of the two data records, and the frame declares both ahead of the batch's group.
+      expect(refundImpl.stateLayout!.dataNftCount).toBe(2);
+      expect(refundImpl.abi.find((row) => row.name === 'refund')!.blockLayout!.slots
+        .filter((slot) => slot.kind === 'dataNft')).toHaveLength(1);
+      expect(publishedWrites(refundImpl, 'refund').writes).toContainEqual({ collection: 'awarded', segment: 2 });
+      expect(publishedWrites(refundImpl, 'refund').writes)
+        .toContainEqual({ variable: 'names', segment: 'last', apart: true });
+      const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+      const funded = await deployed(network, refundImpl);
+      const result = await callPerCallProxyEntry({
+        provider: network,
+        implementationArtifact: refundImpl,
+        proxyArtifact: buildProxyArtifact(refundImpl),
+        proxyCategoryId: funded.proxyCategoryId,
+        implementationCategoryId: funded.implementationCategoryId,
+        functionName: 'refund',
+        args: [alicePkh, AMOUNT],
+        externals: externals(),
+        callerUtxo: funded.callCoin,
+        callerLockingBytecode: funded.deployerLock,
+        funder: funded.funder,
+        changeAddress: funded.changeAddress,
+        vm: compositionMachine(),
+      });
+      expect(result.completed.map((frame) => frame.functionName).filter((name) => name.startsWith('Escrow')))
+        .toHaveLength(4);
+      expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+      expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+      expect(bytesToHex(writtenAward(result.transaction)!)).toBe(bytesToHex(encodeIntegerValue(AMOUNT)));
+    });
 });

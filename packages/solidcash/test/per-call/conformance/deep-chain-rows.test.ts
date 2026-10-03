@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import {
   FrameKind, bytesToHex, encodePushdataValue, parsePushdataCommitment, sha256, validatorAddress, type Artifact,
@@ -32,10 +32,14 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * the reaches chain through it in execution order.
  *
  * With five turns the transaction carries twenty-four masters (the vault entered nine times, the gate three, the
- * token five), the shape the row names; it takes about 25 s, so it runs under `PER_CALL_FULL=1`. One turn carries the
- * same depth and the same proxy hops in sixteen masters and runs by default. Both are driven through the shipped
- * proxy hop and settle with every input accepted, the validator's walk among them, and the writes are read back on
- * chain through the shipped decoders.
+ * token five), the shape the row names; it takes about 11 s. One turn carries the same depth and the same proxy hops
+ * in sixteen masters, about 4 s, and 8 s with its compile. Both are driven through the shipped proxy hop and settle
+ * with every input accepted, the validator's walk among them, and the writes are read back on chain through the
+ * shipped decoders. Both run under `PER_CALL_FULL=1`, compiling only then; by default the row's parts run cheaper
+ * elsewhere: the same four-deep shape composed and derived in `shapes/deep-arbitration.test.ts`, a proxied callee
+ * making its own call through the hop in `call/proxy-callee-proxy.test.ts`, a proxied callee reached at several
+ * sites in `call/proxy-default-pool.test.ts`, calls in a loop through the hop in `loop-call-rows.test.ts`, and
+ * `tx.origin` in a nested frame in `origin-nested-call-rows.test.ts`.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */
@@ -163,11 +167,21 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
-const store = artifacts.Store!;
-const root = artifacts.Root!;
-const storeProxy = buildProxyArtifact(store);
-const rootProxy = buildProxyArtifact(root);
+// Compiled by the gated describe's `beforeAll`, so the default run, which skips the row, compiles nothing.
+let artifacts: ReturnType<typeof compileStringMulti>;
+let store: Artifact;
+let root: Artifact;
+let storeProxy: Artifact;
+let rootProxy: Artifact;
+
+/** Compiles the six contracts and generates the store's and the root's proxies. */
+function compileRow(): void {
+  artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  store = artifacts.Store!;
+  root = artifacts.Root!;
+  storeProxy = buildProxyArtifact(store);
+  rootProxy = buildProxyArtifact(root);
+}
 
 /** A coin a genesis or a call is funded from; a genesis's txid becomes the category it mints. */
 function funding(txid: string): { txid: string; vout: number; satoshis: bigint } {
@@ -355,16 +369,18 @@ async function expectDeepChain(turns: number): Promise<void> {
     .toBe(intValue(1n + BigInt(turns)));
 }
 
-describe('spec section 23 row 25: deep chains, four calls below the root plus proxy hops, about 24 masters', () => {
-  it('settles one payout four calls below the root\'s implementation, through both proxies, in 16 masters',
-    async () => {
-      await expectDeepChain(1);
-    }, 300_000);
+describe.runIf(process.env.PER_CALL_FULL === '1')(
+  'spec section 23 row 25: deep chains, four calls below the root plus proxy hops, about 24 masters', () => {
+    beforeAll(compileRow, 120_000);
 
-  it.runIf(process.env.PER_CALL_FULL === '1')(
-    'settles five payouts four calls below the root\'s implementation, through both proxies, in 24 masters',
-    async () => {
-      await expectDeepChain(5);
-    }, 600_000,
-  );
-});
+    it('settles one payout four calls below the root\'s implementation, through both proxies, in 16 masters',
+      async () => {
+        await expectDeepChain(1);
+      }, 300_000);
+
+    it('settles five payouts four calls below the root\'s implementation, through both proxies, in 24 masters',
+      async () => {
+        await expectDeepChain(5);
+      }, 600_000);
+  },
+);

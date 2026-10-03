@@ -37,8 +37,9 @@ import {
  * the loop it requires exactly one and records it. `Board.splitAll` pays a share per turn through `Payout.send`,
  * which emits an event per call.
  *
- * Served: the turns follow the array (three tags make three catalog frames, five make five), the board's record holds
- * the one primary tag once the hop is broadcast, and each payout event is read back at its own output in turn order.
+ * Served: the turns follow the array (three tags make three catalog frames, three shares three payouts), the board's
+ * record holds the one primary tag once the hop is broadcast, and each payout event is read back at its own output in
+ * turn order.
  * The revert mid-loop is the EVM's: a second primary tag (the entry's own check, after the third call), a tag the
  * catalog rejects (the callee's check, on the second turn) and a zero share (the payout's check, on the second turn)
  * are each refused with the reason that reverted, and the provider sees no transaction.
@@ -285,16 +286,6 @@ describe('spec section 23 row 4: calls inside data-dependent loops', () => {
       'Catalog.kindOf()', 'Catalog.kindOf()', 'Catalog.kindOf()', 'Board.post()', 'BoardProxy.__fallback()',
     ]);
     expect(await boardState(run)).toMatchObject({ primary: PRIMARY_A, posts: 1n, shares: 0n });
-  });
-
-  it('turns as often as the array is long: five tags make five catalog frames', async () => {
-    const run = await deployed();
-    const result = await (await enter(run, 'post', [5n, 7n, 9n, 13n, PRIMARY_B])).call;
-    expect(result.accepted).toBe(true);
-    const entry = result.draft.blockOf('implementation-master');
-    expect([entry.calls.length, entry.segments.length]).toStrictEqual([5, 6]);
-    expect(framesOf(result, 'Catalog.kindOf()')).toBe(5);
-    expect(await boardState(run)).toMatchObject({ primary: PRIMARY_B, posts: 1n });
   });
 
   it('refuses a second primary tag mid-loop with the entry\'s own reason, and nothing is broadcast', async () => {

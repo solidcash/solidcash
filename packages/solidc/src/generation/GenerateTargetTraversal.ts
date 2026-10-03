@@ -1265,6 +1265,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** The call sites already bound in this pass, so an argument's own call is not bound a second time. */
   private perCallLoweredSites = new Set<ExternalFunctionCallNode>();
   /**
+   * The tracked name of the value each argument's own call left, so the expression it feeds reaches it wherever the
+   * operands pushed since have put it.
+   */
+  private perCallArgumentCallValues = new Map<ExternalFunctionCallNode, string>();
+  /**
    * The last segment each record block offset was touched in, which is where a frame that ends after a segment it
    * did not touch rebuilds the record: the record's value there is the one the frame left.
    */
@@ -4114,18 +4119,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
               { interface: node.interfaceName, function: node.functionName, position: index },
             );
           }
-          // The value the code computes replaces itself with the push the wire carries, so the frame is unchanged.
-          if (this.perCallMaster && parameter instanceof ExternalFunctionCallNode
-            && this.perCallLoweredSites.has(parameter)) {
-            // The argument is a call that was lowered into its own site before this one, and the value it left sits
-            // directly beneath the digest built so far. Lifting it over the digest is what visiting it in place
-            // would leave; running the site again would bind a second record. Both items are consumed by the
-            // concatenation below, so the frame is unchanged either way.
-            this.emit(Op.OP_SWAP, loc);
-          } else {
-            this.markArrayArgumentBlobEncoded(parameter);
-            this.visit(parameter);
-          }
+          // The value the code computes replaces itself with the push the wire carries, so the frame is unchanged. A
+          // call the argument makes was lowered into its own site before this one, and visiting it lifts the value
+          // that site left rather than binding a second record.
+          this.markArrayArgumentBlobEncoded(parameter);
+          this.visit(parameter);
           this.emit(bytecodeToScript(canonicalPushScript(argument.numeric)), loc);
         }
         this.emit(Op.OP_CAT, loc);
@@ -7546,6 +7544,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallSegmentIndex = 0;
     this.perCallOrdinal = 0;
     this.perCallLoweredSites = new Set<ExternalFunctionCallNode>();
+    this.perCallArgumentCallValues = new Map<ExternalFunctionCallNode, string>();
     this.perCallRecordSegment = new Map();
     this.perCallReadSegment = undefined;
     this.perCallBatchWriteSegment = 0;
@@ -21259,22 +21258,54 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Lowers the calls an argument expression makes into their own sites, before the call they feed.
    *
    * The execution reaches a call inside an argument before the call it feeds, so it is closed and bound first; the
-   * value it leaves is what the outer site's argument digest consumes.
+   * value it leaves is what the outer site's argument digest consumes. That value is named, because the outer site
+   * pushes its own operands above it before the digest reaches it: the number of calls made, and a target its code
+   * holds.
    */
   private lowerPerCallArgumentCalls(expression: Node): void {
     walkInvocationAst(expression, (candidate) => {
       if (candidate instanceof ExternalFunctionCallNode && !this.perCallLoweredSites.has(candidate)) {
+        const before = this.stack.length;
         this.visit(candidate);
+        if (this.stack.length !== before + 1) return;
+        const name = `(argument_call_value_${this.perCallArgumentCallValues.size})`;
+        this.stack[0] = name;
+        this.perCallArgumentCallValues.set(candidate, name);
       }
     });
+  }
+
+  /**
+   * Lifts the value an argument's own call left to the top, where the expression it feeds reads it.
+   *
+   * The call was bound at its own site before the call it feeds, so visiting it again leaves its value rather than
+   * binding a second record. The value is reached at the slot the model holds it in: the outer site's position and
+   * computed target sit above it, so it is not the item directly beneath the digest being built.
+   */
+  private emitPerCallArgumentCallValue(node: ExternalFunctionCallNode): void {
+    const name = this.perCallArgumentCallValues.get(node);
+    const depth = name === undefined ? -1 : this.getStackIndex(name, true);
+    if (depth < 0) return;
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    if (depth === 1) {
+      this.emit(Op.OP_SWAP, loc);
+    } else if (depth > 1) {
+      this.emit(encodeInt(BigInt(depth)), loc);
+      this.emit(Op.OP_ROLL, loc);
+    }
+    this.removeFromStack(depth);
+    this.pushToStack('(value)');
   }
 
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
     // A call folded into a deploy genesis is inert here - its effect is emitted by the deploy covenant.
     if (node.foldedIntoDeploy) return node;
     // A call an argument expression makes was already lowered into its own site for the call it feeds; visiting it
-    // again would bind a second record, so the value it left on the frame is what the digest consumes.
-    if (this.perCallMaster && this.perCallLoweredSites.has(node)) return node;
+    // again would bind a second record, so the visit lifts the value it left on the frame for the digest instead.
+    if (this.perCallMaster && this.perCallLoweredSites.has(node)) {
+      this.emitPerCallArgumentCallValue(node);
+      return node;
+    }
     // A per-call master binds each call to its own witness record where the call is made: the body reads its
     // block, walks to the site's record and checks kind, target, calleeRef and argsHash against what the source
     // says, then takes the call's result from the record. The head no longer checks the record; it only walks

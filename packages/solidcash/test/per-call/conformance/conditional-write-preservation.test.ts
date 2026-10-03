@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { type Artifact } from '@solidcash/utils';
+import { binToHex, encodeDataPush, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import {
+  concatBytes, encodeWitnessBlock, splitFirstPush, type Artifact, type WitnessBlock,
+} from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { Contract, SignatureTemplate } from '../../../src/index.js';
+import { Contract, SignatureTemplate, encodeFunctionArgument } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
@@ -38,6 +40,8 @@ function outpointHash(seed: number): string {
 }
 
 const KEY = binToHex(Uint8Array.from({ length: 20 }, (_, index) => (0x31 + index * 3) & 0xff));
+/** The node's slot: the shipped encoder widens the 20-byte key to the lock it names, which the body keys by. */
+const SLOT = bytesToHex(keyToSlotMulti([encodeFunctionArgument(KEY, 'address') as Uint8Array]));
 
 interface Deployed {
   readonly provider: MockNetworkProvider;
@@ -90,33 +94,51 @@ const objectionsOf = (answered: CallResult): string => answered.verdicts
 /** The live value the key's node holds, read back through the shipped deployment decoder. */
 async function heldValue(world: Deployed): Promise<bigint | undefined> {
   const pools = await readPerCallDeployment(world.provider, world.categoryId, world.artifact.stateLayout!);
-  const slot = bytesToHex(keyToSlotMulti([hexToBin(KEY)]));
   const node = pools.collectionNodes.find((utxo) => utxo.token?.nft?.commitment !== undefined
-    && bytesToHex(decodeEntryCommitment(hexToBin(utxo.token.nft.commitment)).slot) === slot);
+    && bytesToHex(decodeEntryCommitment(hexToBin(utxo.token.nft.commitment)).slot) === SLOT);
   if (node === undefined) return undefined;
   const value = decodeEntryCommitment(hexToBin(node.token!.nft!.commitment)).value;
   return value.length === 0 ? 0n : BigInt(`0x${bytesToHex(value.slice().reverse())}`);
 }
 
-/** The same transaction with the key's recreated node carrying a different value, which the machine must refuse. */
+/**
+ * The master's verdict on the transaction, and on the same transaction restated with the key's node carrying a
+ * different value: the first is accepted and the second refused, at the same input. The restatement changes the
+ * node's declared end view in the master's witness block as well as its output: an output alone that disagrees
+ * with its declaration is refused whether or not the arm not taken binds the node.
+ */
 function expectForgedValueRefused(answered: CallResult): void {
-  const index = answered.transaction.outputs.findIndex((output) =>
-    (output.token?.nft?.commitment?.length ?? 0) >= 64);
+  const index = answered.transaction.outputs.findIndex((output) => {
+    const commitment = output.token?.nft?.commitment;
+    return commitment !== undefined && commitment.length >= 64
+      && bytesToHex(decodeEntryCommitment(commitment).slot) === SLOT;
+  });
   expect(index).toBeGreaterThanOrEqual(0);
   const committed = answered.transaction.outputs[index]!.token!.nft!.commitment;
   const changed = new Uint8Array(committed);
   changed[changed.length - 1] = (changed[changed.length - 1]! ^ 0x02) & 0xff;
+  const master = answered.verdicts.find((verdict) => verdict.id === 'master');
+  expect(master?.accepted).toBe(true);
+  const block = structuredClone(answered.draft.blockOf('master')) as WitnessBlock;
+  const declared = block.segments.flat().filter((record) => record.out === index);
+  expect(declared.length).toBeGreaterThan(0);
+  for (const record of declared) record.viewOut = changed;
+  const { rest } = splitFirstPush(answered.transaction.inputs[master!.index]!.unlockingBytecode);
   const mutated = {
     ...answered.transaction,
+    inputs: answered.transaction.inputs.map((input, at) => (at === master!.index
+      ? { ...input, unlockingBytecode: concatBytes([encodeDataPush(encodeWitnessBlock(block)), rest]) }
+      : input)),
     outputs: answered.transaction.outputs.map((output, at) => (at === index
       ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: changed } } }
       : output)),
   };
-  const master = answered.verdicts.findIndex((verdict) => verdict.accepted);
-  expect(master).toBeGreaterThanOrEqual(0);
   const vm = compositionMachine();
-  const state = vm.evaluate({ inputIndex: master, sourceOutputs: answered.sourceOutputs, transaction: mutated });
-  expect(vm.stateSuccess(state)).not.toBe(true);
+  const verdict = (transaction: CallResult['transaction']): unknown => vm.stateSuccess(
+    vm.evaluate({ inputIndex: master!.index, sourceOutputs: answered.sourceOutputs, transaction }),
+  );
+  expect(verdict(answered.transaction)).toBe(true);
+  expect(verdict(mutated)).not.toBe(true);
 }
 
 describe('per-call conditional sorted write: the arm not taken preserves the co-spent node', () => {

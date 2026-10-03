@@ -20,11 +20,12 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * The mock chain's clock in a per-call contract's `block.timestamp`.
  *
  * `block.timestamp` compiles to a register of the contract's own record, `__block_timestamp`, which a keeper
- * refreshes on a live chain. The mock chain has none: its `evm_increaseTime` and `evm_mine` (the Hardhat analogue)
- * rewrite the register in the records of every registered deployment. A per-call proxy keeps the application state,
- * the register included, in the proxy's own records under the implementation's layout, so that is where the clock
- * has to land for an entry run through the proxy to read it. A plain per-call deployment the factory registers keeps
- * it in its own records, and a direct contract beside it in its data NFT; one mined block moves both.
+ * refreshes on a live chain. The mock chain has none: its `evm_increaseTime` and `evm_mine` (the Hardhat analogue),
+ * and the block it mines for every transaction it accepts, rewrite the register in the records of every registered
+ * deployment. A per-call proxy keeps the application state, the register included, in the proxy's own records under
+ * the implementation's layout, so that is where the clock has to land for an entry run through the proxy to read it.
+ * A plain per-call deployment the factory registers keeps it in its own records, and a direct contract beside it in
+ * its data NFT; one mined block moves both.
  */
 
 const DAY = 86_400n;
@@ -191,11 +192,15 @@ describe('the mock chain\'s clock in a proxied per-call contract', () => {
   }, 300_000);
 
   it('an entry gated a day after its stamp is refused before the day and settles after it', async () => {
+    const read = (await proxyState(world)).__block_timestamp;
     const marked = await enter(world, 'mark');
     expect(marked.error).toBeUndefined();
     expect(marked.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    // The entry stamps the clock it read; the block that confirms it moves the register on to that block's time.
     const stamped = await proxyState(world);
-    expect(stamped.stamp).toBe(stamped.__block_timestamp);
+    expect(stamped.stamp).toBe(read);
+    expect(stamped.__block_timestamp).toBe(BigInt(world.network.getBlockTime()));
+    expect(stamped.__block_timestamp as bigint).toBeGreaterThan(read as bigint);
 
     const early = await enter(world, 'later');
     expect(early.error).toBeInstanceOf(PerCallProxyDeployError);
@@ -224,12 +229,15 @@ describe('the mock chain\'s clock in a plain per-call contract, with a direct on
     const signer = new Signer(alicePriv, network);
     for (const seed of ['c9', 'da', 'eb']) await network.addUtxo(signer.getAddress(), funding(category(seed)));
     await fundShippedFacets(network);
-    // The factory registers each deployment it makes, which is how the mock chain's clock finds it.
+    // The factory registers each deployment it makes, which is how the mock chain's clock finds it. Each register is
+    // 0 at its own genesis; the mock chain mines a block for every transaction it accepts, so the direct genesis's
+    // block already moves the plain deployment's register.
     const plain = await new ContractFactory(clock, signer).deploy() as unknown as StatefulContract;
-    const direct = await new ContractFactory(timed, signer).deploy() as unknown as StatefulContract;
     const plainState = (): Promise<Record<string, unknown>> => stateOf(network, plain.categoryId, clock.stateLayout!);
     expect((await plainState()).__block_timestamp).toBe(0n);
+    const direct = await new ContractFactory(timed, signer).deploy() as unknown as StatefulContract;
     expect((await direct.getState()).__block_timestamp).toBe(0n);
+    expect((await plainState()).__block_timestamp).toBe(BigInt(network.getBlockTime()));
 
     await network.send('evm_mine', []);
     const now = BigInt(network.getBlockTime());

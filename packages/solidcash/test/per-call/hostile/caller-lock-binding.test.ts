@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind, buildMasterUnlockingBytecode } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import {
+  SIGHASH_ALL, SIGHASH_UTXOS_ALL, callerUnlockingBytecode,
+} from '../../../../solidc/test/per-call/master/caller-input.js';
 import type { CompositionDraftPlan } from '../../../src/per-call/composer/index.js';
 import {
   USER_LOCK,
@@ -25,6 +28,7 @@ import {
  * When a validator is present the validator's edge rules bind the callee side of every call, but a root has no edge
  * above it: the root's own head is what checks that the witness `sender` is its caller's lock. Rewriting `sender`
  * to another user's P2PKH therefore leaves the validator's edges satisfied while the caller's own input is refused.
+ * The same holds for a caller whose signature hash type does not commit to the whole transaction (T20).
  */
 
 const OTHER_USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x55));
@@ -146,5 +150,31 @@ describe('a composed root master binds msg.sender to its caller\'s lock', () => 
     // The validator's edges are unaffected, so the refusal is the root's own caller binding.
     expect(verdict(assembled, validatorIndex)).toBe(true);
     expect(verdict(assembled, calleeIndex)).toBe(true);
+  });
+
+  it('refuses a root whose caller signed other than SIGHASH_ALL, while the validator still accepts (T20)', () => {
+    // ANYONECANPAY, NONE and SINGLE leave inputs or outputs unsigned, so the signature could be reused in a
+    // transaction the user never saw. Only the caller's signature push changes; `0x41` and `0x61` are the controls.
+    const { outcome } = build();
+    const callerIndex = outcome.contractInputs.find((input) => input.id === 'caller-1')!.index;
+    const validatorIndex = outcome.contractInputs.find((input) => input.id === 'validator')!.index;
+    const userIndex = outcome.draft.blockOf('caller-1').callerRef;
+    const signedWith = (hashType: number): {
+      transaction: VmProgram['transaction'];
+      sourceOutputs: VmProgram['sourceOutputs'];
+    } => {
+      const program = structuredClone(outcome.draft.programFor('caller-1')) as {
+        transaction: VmProgram['transaction'];
+        sourceOutputs: VmProgram['sourceOutputs'];
+      };
+      program.transaction.inputs[userIndex]!.unlockingBytecode = callerUnlockingBytecode(hashType);
+      return program;
+    };
+    for (const hashType of [SIGHASH_ALL, SIGHASH_UTXOS_ALL]) expect(verdict(signedWith(hashType), callerIndex)).toBe(true);
+    for (const hashType of [0xc1, 0xc3, 0x42, 0x43, 0xe1]) {
+      const program = signedWith(hashType);
+      expect(verdict(program, callerIndex), `hash type 0x${hashType.toString(16)}`).toBe(false);
+      expect(verdict(program, validatorIndex)).toBe(true);
+    }
   });
 });

@@ -8,7 +8,7 @@ import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeho
 import { MockNetworkProvider } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import {
-  REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory,
+  REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory, validatorSpend,
 } from '../../../../solidc/test/per-call/master/validator-input.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from '../frames/caller-input.js';
 
@@ -19,7 +19,8 @@ import { SIGHASH_ALL, callerUnlockingBytecode } from '../frames/caller-input.js'
  * to be entered by a user: the frame's `callerRef` is the signed P2PKH input, `originRef` is the same input, and a
  * contract input beside it is a stranger. This case mutates exactly that - the caller input is another contract's
  * token-bearing UTXO and the frame presents that contract's lock as its sender - and asks the machine for a verdict,
- * with the faithful user-entered spend beside it as the control.
+ * with the faithful user-entered spend beside it as the control. The same holds for the contract's own validator and
+ * record locks (T19), and for a user whose signature does not commit to the whole transaction (T20).
  */
 
 const CATEGORY = seededCategory('hostile standalone caller');
@@ -62,13 +63,19 @@ const token = (
 ): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable'; commitment: Uint8Array } } =>
   ({ category, amount: 0n, nft: { capability, commitment: new Uint8Array(0) } });
 
-/** Evaluates the real spend of the standalone master with the caller input described by `caller`. */
-function evaluate(caller: {
+/** An input beside the master; the output at its index pays the user unless it recreates the input. */
+interface Spend {
   readonly lockingBytecode: Uint8Array;
   readonly unlockingBytecode: Uint8Array;
   readonly token?: ReturnType<typeof token>;
-  readonly sender: Uint8Array;
-}): { accepted: boolean; objection?: string } {
+  readonly recreated?: boolean;
+}
+
+/** Evaluates the real spend of the standalone master with the caller input `caller`, then `beside` after it. */
+function evaluate(
+  caller: Spend & { readonly sender: Uint8Array },
+  beside: readonly Spend[] = [],
+): { accepted: boolean; objection?: string } {
   const program = masterProgram();
   const masterLock = encodeLockingBytecodeP2sh32(hash256(program));
   const block: WitnessBlock = {
@@ -97,26 +104,28 @@ function evaluate(caller: {
           ...encodeDataPush(program),
         ]),
       },
-      {
+      ...[caller, ...beside].map((spend, at) => ({
         outpointIndex: 0,
-        outpointTransactionHash: new Uint8Array(32).fill(4),
+        outpointTransactionHash: new Uint8Array(32).fill(4 + at),
         sequenceNumber: 0xffffffff,
-        unlockingBytecode: caller.unlockingBytecode,
-      },
+        unlockingBytecode: spend.unlockingBytecode,
+      })),
     ],
     outputs: [
       { lockingBytecode: masterLock, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'minting') },
-      { lockingBytecode: USER_LOCK, valueSatoshis: 10_000n },
+      ...[caller, ...beside].map((spend) => (spend.recreated === true
+        ? { lockingBytecode: spend.lockingBytecode, valueSatoshis: USER_VALUE, token: spend.token }
+        : { lockingBytecode: USER_LOCK, valueSatoshis: 10_000n })),
     ],
     locktime: 0,
   };
   const sourceOutputs = [
     { lockingBytecode: masterLock, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'minting') },
-    {
-      lockingBytecode: caller.lockingBytecode,
+    ...[caller, ...beside].map((spend) => ({
+      lockingBytecode: spend.lockingBytecode,
       valueSatoshis: USER_VALUE,
-      token: caller.token,
-    },
+      token: spend.token,
+    })),
   ];
 
   const provider = new MockNetworkProvider({ consensusLimits: RELAXED_LIMITS, policy: { enforceDust: false } });
@@ -167,5 +176,36 @@ describe('a standalone master is entered by a user, not by a contract', () => {
       token: token(OTHER_CATEGORY, 'minting'),
       sender: USER_LOCK,
     })).toStrictEqual({ accepted: true });
+  });
+
+  it('refuses the contract\'s own validator or data-record lock as the caller (T19)', () => {
+    // The validator sits at `addrV(cat)`, the contract's own address, so a frame it entered would present
+    // `address(this)` as `msg.sender`. Each posing input spends like a user, so only its lock differs. The controls
+    // spend the same input beside a user caller and are accepted, so the caller rule is what refuses each swap. The
+    // record lock carries no token: a spent record no frame declares is refused on its own (T12).
+    const user: Spend = { lockingBytecode: USER_LOCK, unlockingBytecode: callerUnlockingBytecode(SIGHASH_ALL) };
+    const validator: Spend = { ...user, lockingBytecode: DERIVED, token: token(CATEGORY, 'mutable'), recreated: true };
+    const record: Spend = { ...user, lockingBytecode: dataRecordLock(CATEGORY), recreated: true };
+    for (const posing of [validator, record]) {
+      expect(evaluate({ ...user, sender: USER_LOCK }, [posing])).toStrictEqual({ accepted: true });
+      expect(evaluate({ ...posing, sender: posing.lockingBytecode }, [user]).accepted).toBe(false);
+      expect(evaluate({ ...posing, sender: USER_LOCK }, [user]).accepted).toBe(false);
+    }
+    // The validator's own spend, its transcript and program, is refused as the caller too.
+    const transcript = validatorSpend(CATEGORY, { roots: [], masters: [], settles: [] }).unlockingBytecode;
+    expect(evaluate({ ...validator, unlockingBytecode: transcript, sender: DERIVED }, [user]).accepted).toBe(false);
+  });
+
+  it('refuses a caller whose signature hash type does not commit to the whole transaction (T20)', () => {
+    // `0x41` and `0x61` commit to every input and output. ANYONECANPAY, NONE and SINGLE do not, so a signature made
+    // for another transaction, such as a published offer, could enter the master in one the user never saw.
+    for (const hashType of [0x41, 0x61]) {
+      const spend = evaluate({ ...faithfulCaller, unlockingBytecode: callerUnlockingBytecode(hashType) });
+      expect(spend, `hash type 0x${hashType.toString(16)}`).toStrictEqual({ accepted: true });
+    }
+    for (const hashType of [0xc1, 0xc3, 0x42, 0x43, 0xe1]) {
+      const spend = evaluate({ ...faithfulCaller, unlockingBytecode: callerUnlockingBytecode(hashType) });
+      expect(spend.accepted, `hash type 0x${hashType.toString(16)}`).toBe(false);
+    }
   });
 });

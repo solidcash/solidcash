@@ -90,6 +90,14 @@ export function accepted(transaction: ModelledTransaction, validatorIndex: numbe
   return true;
 }
 
+/** Whether the machine accepts one input of a modelled transaction: a head or a facet asked on its own. */
+export function inputAccepted(transaction: ModelledTransaction, inputIndex: number): boolean {
+  const vm = machine();
+  const program = toVm(transaction);
+  const state = vm.evaluate({ inputIndex, sourceOutputs: program.sourceOutputs, transaction: program.transaction });
+  return vm.stateSuccess(state) === true;
+}
+
 /** The fixture composition laid out against the shipped program, with the facets the head binds after it. */
 export function laidOut(plan: CompositionPlan): Composition {
   return planComposition({ ...plan, validatorTemplate: PROGRAM, validatorFacets: buildValidatorFacets() });

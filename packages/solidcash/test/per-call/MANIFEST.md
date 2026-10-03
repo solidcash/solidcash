@@ -381,6 +381,10 @@ listed under the table, and none of those is claimed anywhere else.
 | A master whose declared segments are out of order | `reordered-segments.test.ts` (the derivation refuses `V7_CHAIN_START_MISMATCH`; the program's order-free chain walk accepts, which the case pins) |
 | Two frames that list the same event output | `shared-event-output.test.ts` (the composer refuses the plan's shared list, and a mutation of the assembled spend is refused by the derivation and the program alike) |
 | A payment to a contract made without the recipient's master: a plain output at its address listed as a send, the call record kept without the recipient's master, a send listed to a P2SH32 lock the body pays through a call, another contract or another body taking the value, or a payer claiming to stand alone while it makes the call (T35) | `contract-payment-plain-output.test.ts` (seven cases, beside the composed payment every input accepts) and `solidc/test/per-call/master/value-receive-call.test.ts` (the stand-alone payer) |
+| A frame entered by the contract's own validator or data-record lock, posing as the contract (T19) | `standalone-caller-contract.test.ts` (each lock refused beside an accepted control) and `validator/script.test.ts` (a root and a called master, refused at the validator) |
+| A caller whose signature hash type does not commit to the whole transaction: `0xC1`, `0xC3`, `0x42`, `0x43`, `0xE1` (T20) | `standalone-caller-contract.test.ts` (standalone) and `caller-lock-binding.test.ts` (composed root, the validator still accepting) |
+| A facet not recreated, recreated lighter, moved to read another head's transcript, or reading a transcript pushed ahead of its head's | `validator-facets.test.ts` (four cases; a transcript only the facet refuses is the premise) |
+| A call tree deeper than the head's ordered visit can recurse | `validator/script.test.ts` (31 levels refused at the head, 25 accepted) |
 
 Not covered by `hostile/`, and not claimed by any other directory: a witness selecting a `catch` branch, which no
 witness can express: the block carries no branch field and the compiler makes every catch a no-op.

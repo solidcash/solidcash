@@ -28,6 +28,7 @@ import {
 } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/index.js';
+import { decideReference } from '../../../src/per-call/validator/reference/index.js';
 import {
   VALIDATOR_INPUT_PADDING_BYTES,
   VALIDATOR_PROGRAM_REASONS,
@@ -53,7 +54,8 @@ import {
   type ContractPlan,
   type MasterPlan,
 } from './fixture.js';
-import { MUTATION_COUNT, generateCases } from './generator.js';
+import { MUTATION_COUNT, generateCases, hasDelegateBelowReadOnly } from './generator.js';
+import { disagreement } from './harness.js';
 import { abbaContracts, abbaPlan, singleContractPlan, userPlan } from './plans.js';
 
 /** The program under test: the same bytes every master carries the hash of and every address is derived from. */
@@ -321,6 +323,43 @@ function twoReadOnlyCallsPlan(): CompositionPlan {
   };
 }
 
+/**
+ * One contract entered `depth` call levels deep: a root and a chain of message calls, one master each.
+ *
+ * The contract has more than one master, so the validator settles it, which is where the head derives the order with
+ * its recursive visit; the root reads the record the settlement spends.
+ */
+function chainPlan(depth: number): CompositionPlan {
+  const contract: ContractPlan = {
+    id: 'D',
+    category: categoryOf('depth-D'),
+    masterLock: contractLockOf(seedBytes('code:depth-D', 8)),
+    stateLock: contractLockOf(seedBytes('state:depth-D', 8)),
+    eventLock: contractLockOf(seedBytes('event:depth-D', 8)),
+  };
+  const ids = Array.from({ length: depth + 1 }, (_unused, at) => `D.m${at}`);
+  return {
+    contracts: [contract],
+    users: [userPlan('U')],
+    stateSlots: [{ id: 'S', contract: 'D', commitment: seedBytes('depth:S', 6), value: 3_000n }],
+    createdSlots: [],
+    masters: ids.map((id, at): MasterPlan => ({
+      id,
+      contract: 'D',
+      kind: at === 0 ? FrameKind.ROOT : FrameKind.CALL,
+      caller: at === 0 ? 'U' : ids[at - 1]!,
+      selector: selectorOf(`depth-${at}`),
+      args: [],
+      children: at < depth ? [ids[at + 1]!] : [],
+      callKinds: at < depth ? [FrameKind.CALL] : [],
+      callValues: at < depth ? [0n] : [],
+      segments: at < depth ? [{ touches: at === 0 ? [{ slot: 'S' }] : [] }, { touches: [] }] : [{ touches: [] }],
+      retval: new Uint8Array(0),
+    })),
+    changeUser: 'U',
+  };
+}
+
 /** Replaces the transcript the validator input carries, leaving its redeem script and lock untouched. */
 function withTranscript(composition: Composition, bytes: Uint8Array): ModelledTransaction {
   const modelled = materialise(composition);
@@ -383,6 +422,8 @@ describe('the validator program against the derivation, over generated compositi
     let enforcedRejections = 0;
     let acceptedByBoth = 0;
     let evaluated = 0;
+    // Cases with a delegate frame below a read-only one, the shape V10 admits since PW10, by the machine's verdict.
+    const delegateBelowReadOnly = { accepted: 0, refused: 0 };
 
     for (const testCase of cases) {
       let composition: Composition;
@@ -413,6 +454,16 @@ describe('the validator program against the derivation, over generated compositi
         failures.push(`${testCase.name}: spurious refusal: the derivation accepts and the machine refuses (${verdict.objection})`);
       }
       if (decision.accepted && machineAccepted) acceptedByBoth += 1;
+      // The reference model decides the same bytes and must match the derivation on accept, check and order, so the
+      // machine's agreement with the derivation above is agreement with the model.
+      const validatorIndex = composition.validatorIndex;
+      const model = decideReference(modelled, { validatorTemplate: PROGRAM, validatorInputIndex: validatorIndex });
+      const difference = disagreement({ derivation: decision, reference: model, validatorIndex });
+      if (difference !== undefined) failures.push(`${testCase.name}: the reference model disagrees: ${difference}`);
+      if (hasDelegateBelowReadOnly(testCase.plan)) {
+        if (machineAccepted) delegateBelowReadOnly.accepted += 1;
+        else delegateBelowReadOnly.refused += 1;
+      }
     }
 
     expect(failures).toEqual([]);
@@ -421,6 +472,9 @@ describe('the validator program against the derivation, over generated compositi
     expect(enforcedRejections).toBeGreaterThanOrEqual(5);
     expect(acceptedByBoth).toBeGreaterThanOrEqual(5);
     expect(evaluated).toBeGreaterThanOrEqual(Math.floor(GENERATED_CASES / 4));
+    // The same for the relaxed read-only rule: the run accepts the shape and refuses mutations of it.
+    expect(delegateBelowReadOnly.accepted).toBeGreaterThanOrEqual(1);
+    expect(delegateBelowReadOnly.refused).toBeGreaterThanOrEqual(3);
   }, GENERATED_CASE_TIMEOUT_MS);
 });
 
@@ -685,6 +739,30 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(modelled, index)).toBe(false);
   });
 
+  test('refuses a root or a called master entered by the contract\'s own record or validator (T19)', () => {
+    // Both inputs sit at the contract's locks, the validator's at its very address, so a frame they entered would pose
+    // as the contract. A root's caller must be a user and a called master's a covered master; a record calling a
+    // called master is the case above.
+    for (const posing of ['record', 'validator'] as const) {
+      const composition = laidOut(abbaPlan());
+      const index = composition.validatorIndex;
+      const caller = posing === 'record' ? composition.slotIndex.get('DA')! : index;
+      const root = composition.blocks.get('A.f')!;
+      root.callerRef = caller;
+      root.originRef = caller;
+      root.sender = composition.inputs[caller]!.lockingBytecode;
+      const modelled = materialise(composition);
+      expect(derivationOf(modelled, index).rejection?.reason, posing).toBe('V4_ROOT_CALLER_NOT_P2PKH');
+      expect(accepted(modelled, index), posing).toBe(false);
+    }
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    composition.blocks.get('B.g')!.callerRef = index;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V4_NON_ROOT_CALLER_NOT_A_MASTER');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
   test('refuses a master listed twice', () => {
     const composition = laidOut(abbaPlan());
     const index = composition.validatorIndex;
@@ -942,6 +1020,22 @@ describe('the validator program refuses each rule it enforces', () => {
     const modelled = materialise(composition);
     expect(derivationOf(modelled, index).rejection?.reason).toBe('V6_MASTER_UNREACHABLE');
     expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a call chain 31 levels deep, beside a chain 25 levels deep (V6)', () => {
+    // The head's visit recurses once per call level, three of the machine's 100 control-stack entries a level, as it
+    // gathers a settled contract's records in order. The derivation has no such bound and accepts both chains, so the
+    // refusal is the machine's limit, met at the head (the facet's walk is iterative and is not asked).
+    const shallow = laidOut(chainPlan(25));
+    const shallowModelled = materialise(shallow);
+    expect(derivationOf(shallowModelled, shallow.validatorIndex).accepted).toBe(true);
+    expect(accepted(shallowModelled, shallow.validatorIndex)).toBe(true);
+    const deep = laidOut(chainPlan(31));
+    const modelled = materialise(deep);
+    expect(derivationOf(modelled, deep.validatorIndex).accepted).toBe(true);
+    const verdict = inputVerdict(modelled, deep.validatorIndex);
+    expect(verdict.accepted).toBe(false);
+    expect(verdict.objection).toMatch(/control stack/);
   });
 
   test('refuses a read-only frame that pays an output', () => {

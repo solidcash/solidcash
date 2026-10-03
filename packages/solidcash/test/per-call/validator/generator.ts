@@ -140,8 +140,9 @@ function randomPlan(rng: Rng, seed: number, index: number): CompositionPlan {
   for (let at = specs.length; at < masterCount + rootCount; at += 1) {
     const parent = specs[rng.int(specs.length)]!;
     const inheritedStatic = parent.staticContext || parent.kind === FrameKind.STATIC;
+    // Below a read-only frame a call is read-only or a delegate call (V10 admits a proxied view, PW10).
     const kind = inheritedStatic
-      ? FrameKind.STATIC
+      ? rng.pick([FrameKind.STATIC, FrameKind.DELEGATE])
       : rng.pick([
         FrameKind.CALL, FrameKind.CALL, FrameKind.CREATE, FrameKind.STATIC, FrameKind.DELEGATE, FrameKind.INTERNAL,
       ]);
@@ -330,6 +331,8 @@ function randomPlan(rng: Rng, seed: number, index: number): CompositionPlan {
 const MUTATIONS: ReadonlyArray<{
   readonly name: string;
   readonly apply: (rng: Rng, composition: Composition) => void;
+  /** The plan shape the mutation aims at; its cases draw plans until one has it. */
+  readonly needs?: (plan: CompositionPlan) => boolean;
 }> = [
   { name: 'none', apply: () => {} },
   {
@@ -659,6 +662,36 @@ const MUTATIONS: ReadonlyArray<{
       settled.stateInputs = [settled.stateInputs[settled.stateInputs.length - 1]!];
     },
   },
+  // V10 admits a delegate frame below a read-only one, and holds it to the read-only rule. Each change below is one
+  // the earlier checks let through, so the read-only rule is what decides: the change output is the last output and
+  // no frame lists it, and a delegate call's own value is bound by no edge rule.
+  {
+    name: 'a delegate below a read-only frame emits an event',
+    needs: hasDelegateBelowReadOnly,
+    apply: (rng, composition) => {
+      const below = pickDelegateBelowReadOnly(rng, composition);
+      if (below !== undefined) below.block.events = [...below.block.events, composition.outputs.length - 1];
+    },
+  },
+  {
+    name: 'a delegate below a read-only frame pays',
+    needs: hasDelegateBelowReadOnly,
+    apply: (rng, composition) => {
+      const below = pickDelegateBelowReadOnly(rng, composition);
+      if (below !== undefined) below.block.sends = [...below.block.sends, composition.outputs.length - 1];
+    },
+  },
+  {
+    name: 'a delegate call below a read-only frame carries value',
+    needs: hasDelegateBelowReadOnly,
+    apply: (rng, composition) => {
+      const below = pickDelegateBelowReadOnly(rng, composition);
+      if (below === undefined) return;
+      const calls = [...composition.blocks.values()].flatMap((block) => block.calls);
+      const call = calls.find((candidate) => candidate.calleeRef === below.index);
+      if (call !== undefined) call.value = 1n;
+    },
+  },
 ];
 
 function mutableCapability(capability: number): boolean {
@@ -682,6 +715,24 @@ function pickRecord(rng: Rng, composition: Composition): import('@solidcash/util
   return entries[rng.int(entries.length)]!;
 }
 
+/** A delegate frame whose callers, walked up, reach a read-only frame, with its input index. */
+function pickDelegateBelowReadOnly(
+  rng: Rng,
+  composition: Composition,
+): { index: number; block: import('@solidcash/utils').WitnessBlock } | undefined {
+  const byIndex = new Map([...composition.blocks].map(([id, block]) => [composition.masterIndex.get(id)!, block]));
+  const found = [...byIndex].filter(([, block]) => {
+    if (block.kind !== FrameKind.DELEGATE) return false;
+    for (let above = byIndex.get(block.callerRef); above !== undefined; above = byIndex.get(above.callerRef)) {
+      if (above.kind === FrameKind.STATIC) return true;
+    }
+    return false;
+  });
+  if (found.length === 0) return undefined;
+  const [index, block] = found[rng.int(found.length)]!;
+  return { index, block };
+}
+
 /** Whether a plan lays out and both models accept it as it stands. */
 function isValidComposition(plan: CompositionPlan): boolean {
   try {
@@ -691,6 +742,18 @@ function isValidComposition(plan: CompositionPlan): boolean {
   } catch {
     return false;
   }
+}
+
+/** Whether a plan has a delegate frame below a read-only one, the shape V10 admits since PW10. */
+export function hasDelegateBelowReadOnly(plan: CompositionPlan): boolean {
+  const byId = new Map(plan.masters.map((master) => [master.id, master]));
+  return plan.masters.some((master) => {
+    if (master.kind !== FrameKind.DELEGATE) return false;
+    for (let above = byId.get(master.caller); above !== undefined; above = byId.get(above.caller)) {
+      if (above.kind === FrameKind.STATIC) return true;
+    }
+    return false;
+  });
 }
 
 /** The catalogue's size. Cases cycle through it, so `n * MUTATION_COUNT` cases apply every mutation `n` times. */
@@ -703,14 +766,16 @@ export function generateCases(seed: number, count: number): GeneratedCase[] {
     // Some shapes the grammar can draw are not valid compositions at all (a contract with two masters whose frames
     // both run on another contract's records has nothing to settle; a second root whose callers are never attached
     // leaves its callees unwalkable). Draw again until the layout accepts the plan *and* both models accept it
-    // unmutated, so every compared case is one mutation away from a valid composition.
-    let plan: CompositionPlan | undefined;
-    for (let attempt = 0; attempt < 24 && plan === undefined; attempt += 1) {
-      const candidate = randomPlan(new Rng(seed + index * 7919 + attempt * 2654435761), seed, index);
-      if (isValidComposition(candidate)) plan = candidate;
-    }
-    if (plan === undefined) throw new Error(`seed ${seed} case ${index}: no valid plan after 24 attempts`);
+    // unmutated, so every compared case is one mutation away from a valid composition. A mutation aimed at one
+    // shape draws longer, until the plan also has that shape.
     const mutation = MUTATIONS[index % MUTATIONS.length]!;
+    const attempts = mutation.needs === undefined ? 24 : 240;
+    let plan: CompositionPlan | undefined;
+    for (let attempt = 0; attempt < attempts && plan === undefined; attempt += 1) {
+      const candidate = randomPlan(new Rng(seed + index * 7919 + attempt * 2654435761), seed, index);
+      if ((mutation.needs?.(candidate) ?? true) && isValidComposition(candidate)) plan = candidate;
+    }
+    if (plan === undefined) throw new Error(`seed ${seed} case ${index}: no valid plan after ${attempts} attempts`);
     const mutationRng = new Rng((seed ^ 0x9e3779b9) + index * 104729);
     cases.push({
       name: `seed ${seed} case ${index} (${mutation.name})`,

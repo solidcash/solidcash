@@ -272,6 +272,45 @@ describe('hostile compositions', () => {
     expect(both.derivation.rejection?.reason).toBe('V10_STATIC_SEND');
   });
 
+  test('V10 accepts a read-only frame delegating into a read-only entry, and rejects a write below it', () => {
+    // The proxied view (PW10): a read-only frame on P delegates into I's code, which runs on P's record.
+    const contract = (id: string): CompositionPlan['contracts'][number] => ({
+      id,
+      category: categoryOf(`view-${id}`),
+      masterLock: contractLockOf(seedBytes(`code:view-${id}`, 8)),
+      stateLock: contractLockOf(seedBytes(`state:view-${id}`, 8)),
+      eventLock: contractLockOf(seedBytes(`event:view-${id}`, 8)),
+    });
+    const plan = (viewOut?: Uint8Array): CompositionPlan => ({
+      contracts: [contract('C'), contract('P'), contract('I')],
+      users: [{ id: 'U', lock: userLockOf('view-U'), value: 500_000n }],
+      stateSlots: [{ id: 'S', contract: 'P', commitment: seedBytes('view:S', 6), value: 2_000n }],
+      createdSlots: [],
+      masters: [
+        {
+          id: 'C.go', contract: 'C', kind: FrameKind.ROOT, caller: 'U', selector: selectorOf('go'), args: [],
+          children: ['P.view'], callKinds: [FrameKind.STATIC], callValues: [0n],
+          segments: [{ touches: [] }, { touches: [] }], retval: new Uint8Array(0),
+        },
+        {
+          id: 'P.view', contract: 'P', kind: FrameKind.STATIC, caller: 'C.go', selector: selectorOf('view'), args: [],
+          children: ['I.view'], callKinds: [FrameKind.DELEGATE], callValues: [0n],
+          segments: [{ touches: [] }, { touches: [] }], retval: seedBytes('view:answer', 2),
+        },
+        {
+          id: 'I.view', contract: 'I', kind: FrameKind.DELEGATE, caller: 'P.view', selector: selectorOf('view'),
+          args: [], children: [], segments: [{ touches: [viewOut === undefined ? { slot: 'S' } : { slot: 'S', viewOut }] }],
+          retval: seedBytes('view:answer', 2),
+        },
+      ],
+      changeUser: 'U',
+    });
+    const read = decideMutation(planComposition(plan()), 'a delegate below a read-only frame');
+    expect(read.derivation.accepted).toBe(true);
+    const written = decideMutation(planComposition(plan(seedBytes('view:written', 6))), 'a write below a read-only frame');
+    expect(written.derivation.rejection?.reason).toBe('V10_STATIC_RECORD_CHANGED');
+  });
+
   test('V11 rejects a frame whose address is not its own contract address', () => {
     const composition = abbaComposition();
     composition.blocks.get('A.f')!.self = TAMPERED;

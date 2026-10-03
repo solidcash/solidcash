@@ -3131,11 +3131,12 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // a participant of the same block, after them. A callee the entry calls runs as its own block, its own master and
   // its own records, exactly as a caller the composer builds for itself lays one out.
   const recordIds = options.recordCommitments.map((_commitment, nftIndex) => proxyRecordParticipantId(nftIndex));
-  // The nodes the entry only reads sit after the data records, ahead of any write, as a callee frame's do.
+  // The nodes the entry only reads sit after the data records, ahead of any write, as a callee frame's do. A node two
+  // of its keys share is one input, placed once.
   const readNodes = options.readNodes ?? [];
   // A node an earlier reach created carries no input: the frame that created it places it as an output, so the
   // read that resolves to it declares it there rather than as a state input of its own.
-  const readNodeIds = readNodes.filter((node) => node.createdSlot === undefined).map((node) => node.id);
+  const readNodeIds = [...new Set(readNodes.filter((node) => node.createdSlot === undefined).map((node) => node.id))];
   const entryWriteIds = options.entryWrites?.participantIds ?? [];
   // A contract owns one block, and every master the hop spends of it sits in that block in placement order; a
   // contract reached at several sites therefore contributes several masters to its one block, and its records are
@@ -3312,7 +3313,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       };
     }),
   );
-  // The nodes the entry only reads follow its data records in every segment, kept, ahead of any write.
+  // The nodes the entry only reads follow its data records in every segment, kept, ahead of any write: one record
+  // per key, at the position the frame reads that key from, so a node two keys share is declared at both.
   for (const segment of implementationSegments) {
     for (const node of readNodes) {
       if (node.createdSlot !== undefined) continue;
@@ -4531,11 +4533,15 @@ export async function callPerCallProxyEntry(
   const recordAmounts = proxyPools.records.map((record) => record.satoshis);
 
   // The mapping nodes the entry only reads, planned the way a proxied callee's are: from the proxy's own nodes and
-  // records, read with the proxy's layout, and the call data the frame receives.
+  // records, read with the proxy's layout, and the call data the frame receives. Each is named by its collection and
+  // the node's own slot, as a callee's is, so two keys one node proves, such as a held key and an absent key above
+  // it, name one input, which the frame declares at each key's position. No callee runs on the root's category, so
+  // the id leaves it out.
   const readNodes = calleeReadNodesOrNone({
     artifact: implementationArtifact, functionName: options.functionName, args,
     senderAddress: options.callerLockingBytecode, categoryId: options.proxyCategoryId, deployment: proxyPools,
     recordLayout: classificationLayout,
+    nodeIdOf: (collection, slot) => `mapping-read-${collection}-${bytesToHex(slot)}`,
   });
   // The live deployment: the record's commitments give a dynamic value's length, and the category's chunk UTXOs
   // are both a dynamic value's chunks and a mapping value's continuation chunks. `collectionNodes` holds the

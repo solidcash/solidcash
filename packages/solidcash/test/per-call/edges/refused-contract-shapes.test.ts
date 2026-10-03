@@ -118,6 +118,34 @@ describe('a keccak compute side-car', () => {
   });
 });
 
+describe('a constructor that runs a keccak compute side-car', () => {
+  /**
+   * The two spellings differ only in where the hashing body sits, and the master gives the constructor the same
+   * block it gives an entry: compiled with the constructor arm served, the artifact publishes the constructor's own
+   * `keccakCompute` and a `keccakSideCar` slot in its block beside the entries'. What stops the shape is where the
+   * frame runs: a genesis lays no input for the constructor's frame to read its side-car from, so the refusal names
+   * that rather than emitting a contract whose first transaction would fail.
+   */
+  const sourceOf = (hashingBody: 'entry' | 'constructor'): string => 'pragma solidcash ^0.13.0;'
+    + ' contract Hashes { bytes32 h;'
+    + (hashingBody === 'constructor'
+      ? '   constructor(bytes seed) { this.h = keccak256(seed); }'
+        + '   function peek() returns (bytes32) { return this.h; }'
+      : '   function f(bytes seed) { this.h = keccak256(seed); require(true); }')
+    + ' }';
+
+  it('is served when the hashing body is an entry, which a call lays the side-car for', () => {
+    expect(refusal(sourceOf('entry'))).toBe('');
+  });
+
+  it('is refused by name as a constructor, which no genesis lays the side-car for', () => {
+    const message = refusal(sourceOf('constructor'));
+    expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(message).toContain('the constructor runs a keccak compute side-car, which needs co-spent inputs the '
+      + 'master head does not locate');
+  });
+});
+
 describe('a string-keyed string mapping', () => {
   it('serves its set: the head supplies the value witness from the frame\'s block', () => {
     // The body reads a long value through a value-witness operand, which the frame's block lists; a short value is

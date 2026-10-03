@@ -434,15 +434,28 @@ function parkFirstRecordBase(): number[] {
   ];
 }
 
-/** Consumes one record entry and requires its shape: kept in place, created, or deleted. */
+/**
+ * Consumes one record entry and requires its shape: kept in place, created, or deleted, at an index the transaction
+ * has.
+ *
+ * Settlement walks only the indices the transaction has, so an index naming none would leave the entry's views
+ * unsettled for the body to read. Read as signed numbers, the sentinel is the least an index field holds, so the
+ * larger of the two must name an input or an output; that also refuses an entry with no index at all.
+ */
 function recordEntryCheck(): number[] {
   return [
     ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
     ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
     ...skipLengthPrefixed32(),
     ...skipLengthPrefixed32(),
-    Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK,
-    ...requireRecordShape(),
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, // [..., tail, out, in]
+    Opcodes.OP_2DUP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_MAX,
+    Opcodes.OP_0, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_MAX, Opcodes.OP_WITHIN, Opcodes.OP_VERIFY,
+    // Equal indices, or one of them the sentinel.
+    Opcodes.OP_2DUP, Opcodes.OP_EQUAL,
+    Opcodes.OP_ROT, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL,
+    Opcodes.OP_ROT, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL,
+    Opcodes.OP_BOOLOR, Opcodes.OP_BOOLOR, Opcodes.OP_VERIFY,
   ];
 }
 

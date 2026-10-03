@@ -379,10 +379,23 @@ describe('a master whose tail carries a segment section', () => {
     const block = baseBlock({
       segments: [[
         { in: 0xffff, out: 1, viewIn: new Uint8Array(0), viewOut: new Uint8Array([1]) },
-        { in: 2, out: 0xffff, viewIn: new Uint8Array([1]), viewOut: new Uint8Array(0) },
+        { in: USER_INDEX, out: 0xffff, viewIn: new Uint8Array([1]), viewOut: new Uint8Array(0) },
       ]],
     });
     expect(verdict({ tail: NO_EVENTS, block, outputs: [] }).accepted).toBe(true);
+  });
+
+  it('is refused when a record names an index the transaction does not have', () => {
+    // Two inputs and one output: 2 names neither, and 0x8001 reads as -1. Settlement visits neither.
+    for (const index of [2, 0x8001]) {
+      const shapes: [number, number][] = [[index, 0xffff], [0xffff, index], [index, index]];
+      for (const [inIndex, outIndex] of shapes) {
+        const block = baseBlock({
+          segments: [[{ in: inIndex, out: outIndex, viewIn: new Uint8Array([1]), viewOut: new Uint8Array([1]) }]],
+        });
+        expect(verdict({ tail: NO_EVENTS, block, outputs: [] }).accepted, `${inIndex} ${outIndex}`).toBe(false);
+      }
+    }
   });
 
   it('is refused when a kept record moves its index', () => {

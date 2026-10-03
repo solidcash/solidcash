@@ -21,7 +21,9 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * A per-call frame reads the entry at the coordinate its own block declares. The one coordinate it reads as absent is
  * the no-index sentinel a node an earlier frame created carries; any other is read at the input it names, so one
  * naming no input fails. Before that, `0x8001` (-1) read as absent: settlement never visits a negative index, so the
- * body took the declared view as the entry with no entry spent. A direct frame reads presence at its fixed slot.
+ * body took the declared view as the entry with no entry spent. The head now refuses any declared index the
+ * transaction does not have before a body reads it (`declared-coordinate-range.test.ts`). A direct frame reads
+ * presence at its fixed slot.
  */
 
 const WHO = Uint8Array.from([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x33), 0x88, 0xac]);
@@ -59,7 +61,8 @@ describe('a per-call frame reads an entry\'s presence at its declared coordinate
       ],
     });
     expect(verdict.accepted).toBe(false);
-    expect(verdict.objection).toMatch(/invalid transaction UTXO index.*requested index: -1\./);
+    // The head's walk refuses the index before the body reads presence there.
+    expect(verdict.objection).toBe('Program failed an OP_VERIFY operation.');
   });
 });
 

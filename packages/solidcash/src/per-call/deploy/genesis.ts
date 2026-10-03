@@ -39,12 +39,17 @@
  * ordinal the body reads it from. A value the artifact publishes no source for, or one the arguments do not
  * determine, is refused by name with that fact, because the run's width cannot be known without the value.
  *
+ * A body that hashes through keccak256 or recovers a signer reads one compute side-car per call immediately after
+ * the frame's own input. The genesis co-spends them the way a call site lays them for an entry: the preimage or the
+ * scalars come from the constructor's own argument pushes where the artifact names them, and a call whose value the
+ * body computes is built around a placeholder whose witness the loop settles from the body's own bind.
+ *
  * A shape the constructor frame or the master head does not serve — a call, a value send, a hidden parameter, an
- * event emitted from a loop, a mapping write that spans several collections — is refused by name rather than
- * probed, because this module has no plan for its witnesses. A constructor the compiler itself refused is refused
- * with the reason the artifact publishes for it, before anything is built. Everything else is the shipped
- * deployment: the placeholders are filled by `deployMaster`, the address is `addrV(category)`, and the master lock
- * is the P2SH32 of the filled program.
+ * event emitted from a loop, a hash or recovery inside a loop, a mapping write that spans several collections — is
+ * refused by name rather than probed, because this module has no plan for its witnesses. A constructor the compiler
+ * itself refused is refused with the reason the artifact publishes for it, before anything is built. Everything
+ * else is the shipped deployment: the placeholders are filled by `deployMaster`, the address is `addrV(category)`,
+ * and the master lock is the P2SH32 of the filled program.
  */
 
 import {
@@ -54,6 +59,7 @@ import {
 import {
   FrameKind,
   INDEX_NONE,
+  SHARED_LIBRARY_SALT,
   buildAnonymousEventNftCovenantScript,
   buildEventNftCovenantScript,
   buildInitialStateCommitments,
@@ -82,6 +88,10 @@ import {
   layOutChunkRun, planChunkRun, type ChunkRecordPlacement, type ChunkRunPlan,
 } from '../composer/chunk-plan.js';
 import { publishedEntryName } from '../composer/shipped-host.js';
+import type { DraftComputedWitness, DraftInput, DraftSettledInput, DraftSourceOutput } from '../composer/draft.js';
+import {
+  buildKeccakSideCars, buildRecoverySideCars, keccakPreimagesOf, recoveryCallsOf, type RecoverySideCars,
+} from '../composer/recovery.js';
 import {
   layOutMappingBatch, layOutMappingWrites, planMappingBatch, planMappingWrite,
   type MappingBatchPlan, type MappingNodePlacement, type MappingNodePlacements, type MappingWritePlan,
@@ -332,6 +342,48 @@ function refuseUnservedShape(
       `the constructor of "${artifact.contractName}" makes a value send, which this deployment has no plan for`,
     );
   }
+  // A computed call reads one side-car per turn, so the number the loop co-spends is the loop's to decide, not a
+  // count the artifact fixes and this deployment can lay.
+  if (constructorAbi.keccakInLoop === true) {
+    throw new PerCallGenesisError(
+      `the constructor of "${artifact.contractName}" hashes inside a loop, so how many compute side-cars it co-spends `
+      + 'is the loop\'s to decide and this deployment lays the artifact\'s fixed count',
+    );
+  }
+  if (constructorAbi.ecrecoverLoopReads === true) {
+    throw new PerCallGenesisError(
+      `the constructor of "${artifact.contractName}" recovers inside a loop, so how many recovery side-cars it `
+      + 'co-spends is the loop\'s to decide and this deployment lays the artifact\'s fixed count',
+    );
+  }
+}
+
+/**
+ * The compute side-cars a constructor frame co-spends, in the order its body reads them.
+ *
+ * A body that hashes or recovers reads one side-car per call immediately after its own input, so the frame's own
+ * arguments state each call's preimage or scalars. A call the body computes has no argument to read: its side-car
+ * is built around a placeholder, and the witness that rebuilds it around the value the body binds is settled from
+ * the body's own close, the same channel an unstated write is learned on. The plan is the one a call site lays for
+ * an entry, so the ids, the inputs and the witnesses are the shipped builders' own.
+ */
+function constructorSideCars(
+  constructorAbi: Artifact['abi'][number],
+  argumentPushes: readonly Uint8Array[],
+): RecoverySideCars {
+  // The frame's call data leads with the constructor's own selector, so the arguments start one push in.
+  const leadingPushes = 1;
+  const calls = recoveryCallsOf(constructorAbi, argumentPushes, leadingPushes);
+  const preimages = keccakPreimagesOf(constructorAbi, argumentPushes, leadingPushes);
+  const salt = SHARED_LIBRARY_SALT;
+  const recovery = buildRecoverySideCars('constructor', calls, salt);
+  const hashing = buildKeccakSideCars('constructor', preimages, salt);
+  return {
+    ids: [...recovery.ids, ...hashing.ids],
+    inputs: { ...recovery.inputs, ...hashing.inputs },
+    computedWitnesses: [...recovery.computedWitnesses, ...hashing.computedWitnesses],
+    utxos: { ...recovery.utxos, ...hashing.utxos },
+  };
 }
 
 /**
@@ -725,15 +777,18 @@ function planConstructorDynamicWrites(
   });
 }
 
-/** The synthetic transaction's input indices: a caller, the master, one record per data NFT, a validator, a spare. */
+/** The synthetic transaction's input indices: a caller, the master, its compute side-cars, and the records. */
 function probeLayout(
   dataNftCount: number,
   eventCount: number,
   createdCount: number,
   chunkCount: number,
+  sideCarCount: number,
 ): {
   readonly caller: number;
   readonly master: number;
+  /** The compute side-cars the frame co-spends, immediately after its own input, in body order. */
+  readonly sideCars: readonly number[];
   readonly records: readonly number[];
   readonly validator: number;
   readonly spare: number;
@@ -749,16 +804,19 @@ function probeLayout(
 } {
   const caller = 0;
   const master = 1;
-  const records = Array.from({ length: dataNftCount }, (_, index) => 2 + index);
-  const validator = 2 + dataNftCount;
-  const spare = 3 + dataNftCount;
-  const events = Array.from({ length: eventCount }, (_, index) => 4 + dataNftCount + index);
-  const base = 4 + dataNftCount + eventCount;
+  // A per-call body locates its side-cars from its own input, so they sit immediately after the master and every
+  // other participant follows them.
+  const sideCars = Array.from({ length: sideCarCount }, (_unused, index) => 2 + index);
+  const records = Array.from({ length: dataNftCount }, (_unused, index) => 2 + sideCarCount + index);
+  const validator = 2 + sideCarCount + dataNftCount;
+  const spare = 3 + sideCarCount + dataNftCount;
+  const events = Array.from({ length: eventCount }, (_unused, index) => 4 + sideCarCount + dataNftCount + index);
+  const base = 4 + sideCarCount + dataNftCount + eventCount;
   const hasMapping = createdCount > 0;
-  const created = Array.from({ length: createdCount }, (_, index) => base + 1 + index);
+  const created = Array.from({ length: createdCount }, (_unused, index) => base + 1 + index);
   const chunkBase = chunkCount === 0 ? -1 : base + (hasMapping ? 1 + createdCount : 0);
   return {
-    caller, master, records, validator, spare, events,
+    caller, master, sideCars, records, validator, spare, events,
     head: hasMapping ? base : -1,
     created,
     chunkBase,
@@ -932,7 +990,8 @@ function deriveConstructorFrame(
   });
   const totalChunks = dynamic.reduce((sum, write) => sum + write.plan.written.chunks.length, 0);
   const createdCount = mapping === undefined ? 0 : mapping.kind === 'single' ? 1 : mapping.createdSlots.length;
-  const layout = probeLayout(dataNftCount, eventShapes.length, createdCount, totalChunks);
+  const sideCars = constructorSideCars(constructorAbi, argumentPushes);
+  const layout = probeLayout(dataNftCount, eventShapes.length, createdCount, totalChunks, sideCars.ids.length);
   const chunkRecords = layOutConstructorChunks(options, constructorAbi, dynamic, layout);
 
   // The created mapping nodes start at the structural placeholder the batch planner produced, distinct from every
@@ -950,6 +1009,11 @@ function deriveConstructorFrame(
   const maximumCommitmentBytes = options.maximumNftCommitmentBytes
     ?? options.provider.consensusLimits?.maximumNftCommitmentBytes
     ?? stateLayout.commitmentLimit;
+  // A preimage may outgrow any commitment, so the reading takes the wider bound the machine itself holds a stack
+  // item to; a value wider than a commitment only ever settles a side-car, which is the only place it can appear.
+  const readingBound = Math.max(
+    maximumCommitmentBytes, options.provider.consensusLimits?.maximumStackItemBytes ?? maximumCommitmentBytes,
+  );
   // Every event starts at a placeholder the body's payload comparison fails against, and the loop replaces it with
   // what the body computed, so no event's payload is declared in advance.
   let eventOuts: readonly Uint8Array[] = eventShapes.map((_shape, index) =>
@@ -961,6 +1025,7 @@ function deriveConstructorFrame(
     outs: readonly Uint8Array[],
     events: readonly Uint8Array[],
     nodes: readonly Uint8Array[],
+    settled: Readonly<Record<string, DraftSettledInput>>,
   ): VirtualMachineProgram => buildProbeProgram({
     artifact,
     category: Uint8Array.from(options.category),
@@ -977,23 +1042,38 @@ function deriveConstructorFrame(
     })),
     ...(mapping === undefined ? {} : { mapping, nodeOuts: nodes }),
     chunks: chunkRecords,
+    sideCars,
+    settledSideCars: settled,
     layout,
   });
 
   const maximumIterations = options.maximumIterations
-    ?? layout.events.length + dataNftCount + layout.created.length + 2;
+    ?? layout.events.length + dataNftCount + layout.created.length + sideCars.ids.length + 2;
   let accepted = false;
+  // The side-car witnesses whose value the body computes start at the plan's placeholders and are rebuilt as the
+  // loop settles them, exactly as an unstated record write is.
+  let settledSideCars: Readonly<Record<string, DraftSettledInput>> = {};
 
   for (let iteration = 0; iteration < maximumIterations; iteration += 1) {
-    const program = build(viewOuts, eventOuts, nodeOuts);
+    const program = build(viewOuts, eventOuts, nodeOuts, settledSideCars);
     if (vm.stateSuccess(vm.evaluate(program)) === true) {
       accepted = true;
       break;
     }
-    const learned = learnDeclaration(vm, program, viewOuts, eventOuts, nodeOuts, maximumCommitmentBytes);
+    const learned = learnDeclaration({
+      vm,
+      program,
+      records: viewOuts,
+      events: eventOuts,
+      nodes: nodeOuts,
+      computedWitnesses: sideCars.computedWitnesses,
+      sideCars: settledSideCars,
+      readingBound,
+    });
     viewOuts = learned.records;
     eventOuts = learned.events;
     nodeOuts = learned.nodes;
+    settledSideCars = learned.sideCars;
   }
 
   if (!accepted) {
@@ -1031,7 +1111,7 @@ function deriveConstructorFrame(
       lockingBytecode: shape.lockingBytecode,
       commitment: eventOuts[index]!,
     })),
-    program: build(viewOuts, eventOuts, nodeOuts),
+    program: build(viewOuts, eventOuts, nodeOuts, settledSideCars),
   };
 }
 
@@ -1054,53 +1134,73 @@ function mappingEntries(
   ];
 }
 
-/** The declarations one learning iteration carries: the record views, the event payloads and the mapping nodes. */
+/** The declarations one learning iteration carries: the records, the events, the nodes and the side-car witnesses. */
 interface LearnedDeclarations {
   readonly records: readonly Uint8Array[];
   readonly events: readonly Uint8Array[];
   /** The created sorted-mapping nodes, whose commitments are the values the bodies computed. */
   readonly nodes: readonly Uint8Array[];
+  /** The side-car inputs the body's own bind settled, by id, over the ones the plan laid. */
+  readonly sideCars: Readonly<Record<string, DraftSettledInput>>;
+}
+
+/** Everything one learning iteration reads the program's close against. */
+interface LearningStep {
+  readonly vm: VirtualMachine;
+  readonly program: VirtualMachineProgram;
+  readonly records: readonly Uint8Array[];
+  readonly events: readonly Uint8Array[];
+  readonly nodes: readonly Uint8Array[];
+  /** The side-car witnesses the plan built around a placeholder, which the body's own bind settles. */
+  readonly computedWitnesses: readonly DraftComputedWitness[];
+  readonly sideCars: Readonly<Record<string, DraftSettledInput>>;
+  /** The largest value the reading accepts, which admits a preimage wider than a commitment. */
+  readonly readingBound: number;
 }
 
 /**
  * Reads one declaration back out of the program's trace.
  *
- * The body compares a value it computed with a declaration this module wrote — a segment's record view, or the
- * commitment an event output carries — and the failing `OP_EQUALVERIFY` leaves both operands on the stack: the
- * declaration is on top and the computed value below it. A declaration that matches a record view is that record's
- * new write; one that matches an event's commitment is that event's payload; a comparison against neither is a
- * shape the derivation did not build.
+ * The body compares a value it computed with a declaration this module wrote — a segment's record view, the
+ * commitment an event output carries, or the placeholder preimage or scalars a side-car's unlocking bytecode
+ * holds — and the failing `OP_EQUALVERIFY` leaves both operands on the stack: the declaration is on top and the
+ * computed value below it. A declaration that matches a record view is that record's new write, one that matches
+ * a computed witness is the value that rebuilds its side-cars, and a comparison against none of them is a shape
+ * the derivation did not build.
  */
-function learnDeclaration(
-  vm: VirtualMachine,
-  program: VirtualMachineProgram,
-  records: readonly Uint8Array[],
-  events: readonly Uint8Array[],
-  nodes: readonly Uint8Array[],
-  maximumCommitmentBytes: number,
-): LearnedDeclarations {
-  const reading = readComputedDeclaration({ vm, program, maximumCommitmentBytes });
+function learnDeclaration(step: LearningStep): LearnedDeclarations {
+  const { records, events, nodes, sideCars, computedWitnesses } = step;
+  const reading = readComputedDeclaration({
+    vm: step.vm, program: step.program, maximumCommitmentBytes: step.readingBound,
+  });
   if (!reading.ok) {
     throw new PerCallGenesisError(genesisReadingMessage(reading));
   }
   const { declared, computed } = reading;
+  const witness = computedWitnesses.find((candidate) => bytesEqual(candidate.placeholder, declared));
+  if (witness !== undefined) {
+    return {
+      records, events, nodes,
+      sideCars: { ...sideCars, ...witness.settle(Uint8Array.from(computed)) },
+    };
+  }
   const record = records.findIndex((view) => bytesEqual(view, declared));
   if (record >= 0) {
     const learned = [...records];
     learned[record] = Uint8Array.from(computed);
-    return { records: learned, events, nodes };
+    return { records: learned, events, nodes, sideCars };
   }
   const event = events.findIndex((commitment) => bytesEqual(commitment, declared));
   if (event >= 0) {
     const learned = [...events];
     learned[event] = Uint8Array.from(computed);
-    return { records, events: learned, nodes };
+    return { records, events: learned, nodes, sideCars };
   }
   const node = nodes.findIndex((commitment) => bytesEqual(commitment, declared));
   if (node >= 0) {
     const learned = [...nodes];
     learned[node] = Uint8Array.from(computed);
-    return { records, events, nodes: learned };
+    return { records, events, nodes: learned, sideCars };
   }
   throw new PerCallGenesisError(
     `the constructor probe closed against a declaration no derivation wrote: ${binToHex(declared)}`,
@@ -1146,6 +1246,10 @@ interface ProbeProgramOptions {
   readonly nodeOuts?: readonly Uint8Array[];
   /** The chunk records the constructor's dynamic writes create, in variable order. */
   readonly chunks: readonly ChunkRecordPlacement[];
+  /** The compute side-cars the constructor frame co-spends, in body order. */
+  readonly sideCars: RecoverySideCars;
+  /** The side-car inputs the loop has settled, by id, over the ones the plan laid. */
+  readonly settledSideCars: Readonly<Record<string, DraftSettledInput>>;
   readonly layout: ReturnType<typeof probeLayout>;
 }
 
@@ -1228,6 +1332,41 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
   };
   outputs[layout.master] = masterOutput;
   sourceOutputs[layout.master] = masterOutput;
+
+  // Each compute side-car follows the master's own input, which is where a per-call body locates it. The input's
+  // unlocking bytecode is what the body decodes its preimage from, and the output the shipped builder recreates
+  // carries the result the body reads back. A witness the loop settled replaces the placeholder the plan laid.
+  const sideCarInput = (id: string): DraftInput => {
+    const laid = options.sideCars.inputs[id];
+    if (laid === undefined) throw new PerCallGenesisError(`the frame's side-car "${id}" has no plan`);
+    return { ...laid, ...options.settledSideCars[id] };
+  };
+  /** A side-car's UTXO, which always carries the mutable NFT its covenant recreates. */
+  const sideCarOutput = (output: DraftSourceOutput): VmOutput => {
+    if (output.token?.nft === undefined) {
+      throw new PerCallGenesisError('a compute side-car carries no mutable NFT to recreate');
+    }
+    return {
+      lockingBytecode: output.lockingBytecode,
+      valueSatoshis: output.valueSatoshis,
+      token: {
+        category: output.token.category, amount: output.token.amount,
+        nft: { capability: output.token.nft.capability, commitment: output.token.nft.commitment },
+      },
+    };
+  };
+  layout.sideCars.forEach((index, ordinal) => {
+    const input = sideCarInput(options.sideCars.ids[ordinal]!);
+    if (input.unlockingBytecode === undefined) {
+      throw new PerCallGenesisError(`the frame's side-car "${options.sideCars.ids[ordinal]!}" has no unlocking`);
+    }
+    inputs[index] = {
+      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(0xb0 + ordinal),
+      sequenceNumber: 0xffffffff, unlockingBytecode: input.unlockingBytecode,
+    };
+    sourceOutputs[index] = sideCarOutput(input.source);
+    outputs[index] = sideCarOutput(input.output ?? input.source);
+  });
 
   // The data record sits at the data-NFT covenant, which the master pins on both sides (the deployment mints it
   // there too); a probe placing it at the sender's lock no longer runs the constructor past that pin.

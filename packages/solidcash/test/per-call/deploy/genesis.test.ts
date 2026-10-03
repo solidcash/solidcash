@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import {
   buildAnonymousEventNftCovenantScript, buildEntryNftCovenantScript, buildEventNftCovenantScript,
@@ -842,5 +843,176 @@ describe('a per-call genesis whose constructor the compiler refused', () => {
     })).rejects.toThrow('the constructor of "Runner" is refused by the compiler (Runner.__construct()): it runs '
       + '\'bad\', which the master cannot serve');
     expect(await provider.getUtxosByTokenCategory(fundingUtxo.txid)).toStrictEqual([]);
+  });
+});
+
+/**
+ * A constructor that hashes a runtime value.
+ *
+ * A body that calls keccak256 reads one compute side-car per call immediately after the frame's own input, so the
+ * genesis co-spends them the way a call site lays them for an entry: the frame's own arguments state each call's
+ * preimage where the artifact names one, and the side-car's own builder commits the hash the body reads back, so
+ * the state the deployment mints is the value the constructor stored. A preimage the artifact does not name is one
+ * the body computes: the plan lays that side-car around a placeholder and the loop settles the witness from the
+ * body's own bind, exactly as it learns an unstated write. The control is a hash inside a loop, whose side-car
+ * count the artifact cannot fix.
+ */
+const HASH_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Hasher {'
+  + '   bytes32 public h;'
+  + '   constructor(bytes32 seed) { this.h = keccak256(seed); }'
+  + '   function peek() returns (bytes32) { return this.h; }'
+  + ' }';
+
+const hashArtifact = compileString(HASH_SOURCE, { composition: 'per-call' });
+const hashLayout = hashArtifact.stateLayout!;
+const HASH_SEED = new Uint8Array(32).fill(0x5a);
+
+/** The commitment the constructor's own write produces for the hash of a preimage. */
+const hashCommitment = (preimage: Uint8Array, layout = hashLayout): string =>
+  buildPushdataCommitment(layout, { h: Uint8Array.from(keccak_256(preimage)) }, 0);
+
+const hashGenesis = (seed: Uint8Array = HASH_SEED): ReturnType<typeof derivePerCallGenesis> =>
+  derivePerCallGenesis({
+    artifact: hashArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+    provider: compositionProvider(), constructorArgs: [seed], senderLockingBytecode: OWNER_LOCK,
+  });
+
+describe('a per-call genesis whose constructor hashes a runtime value', () => {
+  it('serves the body, co-spends its compute side-car and carries the hash it read back', () => {
+    const constructorAbi = hashArtifact.abi.find((row) => row.name === '__construct')!;
+    expect(hashArtifact.composition?.refusedEntries ?? []).toStrictEqual([]);
+    expect(constructorAbi.keccakCompute).toBe(true);
+    expect(constructorAbi.keccakPreimageParams).toStrictEqual(['seed']);
+
+    const genesis = hashGenesis();
+    expect(accepted(genesis.program)).toBe(true);
+    expect(genesis.commitments).toStrictEqual([hashCommitment(HASH_SEED)]);
+  });
+
+  it('lays the side-car immediately after the frame\'s own input, carrying the hash as its commitment', () => {
+    const program = hashGenesis().program!;
+    const sideCar = program.transaction.inputs[program.inputIndex + 1]!;
+    expect(sideCar.unlockingBytecode.length).toBeGreaterThan(0);
+    expect(Array.from(program.transaction.outputs[program.inputIndex + 1]!.token!.nft!.commitment))
+      .toStrictEqual(Array.from(keccak_256(HASH_SEED)));
+  });
+
+  it('settles a preimage the artifact does not name, from the body\'s own bind', () => {
+    const computed = compileString('pragma solidcash ^0.13.0;'
+      + ' contract Hasher {'
+      + '   bytes32 public h;'
+      + '   constructor(bytes seed) { this.h = keccak256(bytes.concat(seed, hex"01")); }'
+      + '   function peek() returns (bytes32) { return this.h; }'
+      + ' }', { composition: 'per-call' });
+    const seed = new Uint8Array([3, 1, 4, 1, 5]);
+    const genesis = derivePerCallGenesis({
+      artifact: computed, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+      provider: compositionProvider(), constructorArgs: [seed], senderLockingBytecode: OWNER_LOCK,
+    });
+
+    expect(accepted(genesis.program)).toBe(true);
+    expect(genesis.commitments).toStrictEqual([
+      hashCommitment(new Uint8Array([...seed, 0x01]), computed.stateLayout!),
+    ]);
+  });
+
+  it('mints the hash in the deployment transaction the SDK builds', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = { txid: '27'.repeat(31) + 'd8', vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(funding.address, fundingUtxo);
+
+    const { tx } = await StatefulContract.deploy(hashArtifact, [HASH_SEED], {
+      provider,
+      fundingUtxo,
+      funder: funding.unlock.spend(alicePub, signature),
+      changeAddress: funding.address,
+    });
+    const outputs = (tx as unknown as DeployedTransaction).outputs;
+    expect(outputs.some((output) => output.token?.nft?.commitment !== undefined
+      && Buffer.from(output.token.nft.commitment).toString('hex') === hashCommitment(HASH_SEED))).toBe(true);
+  });
+
+  it('refuses a hash inside a loop, whose side-car count the artifact cannot fix, by name', () => {
+    const looping = compileString('pragma solidcash ^0.13.0;'
+      + ' contract Hasher {'
+      + '   bytes32 public h;'
+      + '   constructor(bytes32 seed, int turns) {'
+      + '     for (int i = 0; i < turns; i = i + 1) { this.h = keccak256(seed); }'
+      + '   }'
+      + '   function peek() returns (bytes32) { return this.h; }'
+      + ' }', { composition: 'per-call' });
+
+    expect(() => derivePerCallGenesis({
+      artifact: looping, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+      provider: compositionProvider(), constructorArgs: [HASH_SEED, 2n], senderLockingBytecode: OWNER_LOCK,
+    })).toThrow(/hashes inside a loop, so how many compute side-cars it co-spends is the loop's to decide/);
+  });
+});
+
+/**
+ * A constructor that hashes three runtime values, two named by the artifact and one the body computes.
+ *
+ * The frame reads one compute side-car per call, in the order the body makes them, so the genesis co-spends three
+ * after its own input: the two the artifact names take the corresponding argument as their preimage, and the third
+ * is one the body computes, learned from the body's own bind the way an unstated write is. The state the
+ * deployment mints carries all three hashes the constructor stored.
+ */
+const TRIO_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Trio {'
+  + '   bytes32 public first;'
+  + '   bytes32 public second;'
+  + '   bytes32 public third;'
+  + '   constructor(bytes32 a, bytes32 b) {'
+  + '     this.first = keccak256(a);'
+  + '     this.second = keccak256(b);'
+  + '     this.third = keccak256(bytes.concat(a, b));'
+  + '   }'
+  + '   function peek() returns (bytes32) { return this.first; }'
+  + ' }';
+
+const trioArtifact = compileString(TRIO_SOURCE, { composition: 'per-call' });
+const trioLayout = trioArtifact.stateLayout!;
+/** Two distinct 32-byte seeds, filled from different strides so neither repeats a pattern the project forbids. */
+const TRIO_SEED_A = new Uint8Array(32).map((_, index) => (index * 7 + 3) & 0xff);
+const TRIO_SEED_B = new Uint8Array(32).map((_, index) => (index * 11 + 5) & 0xff);
+
+const trioGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+  artifact: trioArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+  provider: compositionProvider(), constructorArgs: [TRIO_SEED_A, TRIO_SEED_B], senderLockingBytecode: OWNER_LOCK,
+});
+
+describe('a per-call genesis whose constructor hashes three runtime values', () => {
+  const hashes = (): readonly Uint8Array[] => [
+    Uint8Array.from(keccak_256(TRIO_SEED_A)),
+    Uint8Array.from(keccak_256(TRIO_SEED_B)),
+    Uint8Array.from(keccak_256(new Uint8Array([...TRIO_SEED_A, ...TRIO_SEED_B]))),
+  ];
+
+  it('serves the shape, naming the two parameter preimages and leaving the computed one unnamed', () => {
+    const constructorAbi = trioArtifact.abi.find((row) => row.name === '__construct')!;
+    expect(trioArtifact.composition?.refusedEntries ?? []).toStrictEqual([]);
+    expect(constructorAbi.keccakCompute).toBe(true);
+    expect(constructorAbi.keccakPreimageParams).toStrictEqual(['a', 'b', null]);
+  });
+
+  it('co-spends one side-car per call, in body order, carrying the hash each call read back', () => {
+    const genesis = trioGenesis();
+    expect(accepted(genesis.program)).toBe(true);
+    const program = genesis.program!;
+    const expected = hashes();
+    for (let i = 0; i < 3; i += 1) {
+      const output = program.transaction.outputs[program.inputIndex + 1 + i]!;
+      expect(Array.from(output.token!.nft!.commitment)).toStrictEqual(Array.from(expected[i]!));
+    }
+  });
+
+  it('mints the three hashes through the shipped encoder', () => {
+    const [first, second, third] = hashes();
+    expect(trioGenesis().commitments).toStrictEqual([
+      buildPushdataCommitment(trioLayout, { first, second, third }, 0),
+    ]);
   });
 });

@@ -1950,9 +1950,6 @@ function unsupportedConstructorShape(
   if (constructorDef.usesBlockhash) {
     return 'the constructor reads a blockhash, which needs a co-spent oracle input the master head does not locate';
   }
-  if (constructorDef.keccakCompute) {
-    return 'the constructor runs a keccak compute side-car, which needs co-spent inputs the master head does not locate';
-  }
   return undefined;
 }
 

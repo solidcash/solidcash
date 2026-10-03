@@ -121,28 +121,36 @@ describe('a keccak compute side-car', () => {
 describe('a constructor that runs a keccak compute side-car', () => {
   /**
    * The two spellings differ only in where the hashing body sits, and the master gives the constructor the same
-   * block it gives an entry: compiled with the constructor arm served, the artifact publishes the constructor's own
-   * `keccakCompute` and a `keccakSideCar` slot in its block beside the entries'. What stops the shape is where the
-   * frame runs: a genesis lays no input for the constructor's frame to read its side-car from, so the refusal names
-   * that rather than emitting a contract whose first transaction would fail.
+   * block it gives an entry: the artifact publishes the constructor's own `keccakCompute` and a `keccakSideCar`
+   * slot in its block beside the entries', and the genesis co-spends the side-car the frame reads the way a call
+   * site does for an entry. The settlements are machine cases in `deploy/genesis.test.ts`; what a constructor
+   * cannot do is hash inside a loop, whose side-car count the artifact does not fix.
    */
-  const sourceOf = (hashingBody: 'entry' | 'constructor'): string => 'pragma solidcash ^0.13.0;'
+  const sourceOf = (hashingBody: 'entry' | 'constructor' | 'loop'): string => 'pragma solidcash ^0.13.0;'
     + ' contract Hashes { bytes32 h;'
     + (hashingBody === 'constructor'
       ? '   constructor(bytes seed) { this.h = keccak256(seed); }'
         + '   function peek() returns (bytes32) { return this.h; }'
-      : '   function f(bytes seed) { this.h = keccak256(seed); require(true); }')
+      : hashingBody === 'loop'
+        ? '   constructor(bytes seed, int turns) {'
+          + '     for (int i = 0; i < turns; i = i + 1) { this.h = keccak256(seed); }'
+          + '   }'
+          + '   function peek() returns (bytes32) { return this.h; }'
+        : '   function f(bytes seed) { this.h = keccak256(seed); require(true); }')
     + ' }';
 
   it('is served when the hashing body is an entry, which a call lays the side-car for', () => {
     expect(refusal(sourceOf('entry'))).toBe('');
   });
 
-  it('is refused by name as a constructor, which no genesis lays the side-car for', () => {
-    const message = refusal(sourceOf('constructor'));
-    expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(message).toContain('the constructor runs a keccak compute side-car, which needs co-spent inputs the '
-      + 'master head does not locate');
+  it('is served as a constructor too, which the genesis lays the side-car for', () => {
+    expect(refusal(sourceOf('constructor'))).toBe('');
+  });
+
+  it('is emitted even inside a loop, whose count the deployment refuses rather than the compiler', () => {
+    // The loop's side-car count is the loop's to decide, which is a witness the genesis cannot lay: it is refused
+    // there, by name, rather than at admission.
+    expect(refusal(sourceOf('loop'))).toBe('');
   });
 });
 

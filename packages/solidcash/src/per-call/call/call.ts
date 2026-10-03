@@ -41,8 +41,10 @@
  * from the body's own bind.
  *
  * An entry that calls another contract runs each callee as a frame of the callee contract's own block, planned as
- * the proxy hop plans its delegate frame's calls (`callees.ts`): the callee's return is learned from its own close,
- * deepest first, before the entry that reads it. The shapes `callees.ts` does not settle yet are refused by name.
+ * the proxy hop plans its delegate frame's calls (`callees.ts`): the callee's return, its events' payloads and the
+ * views of the mapping nodes it writes are learned from its own close, deepest first, before the entry that reads
+ * it. Its event outputs follow the entry's own, and the nodes it creates follow the entry's. The shapes `callees.ts`
+ * does not settle yet are refused by name.
  *
  * What is not covered: a returning entry reached through a proxy hop whose forwarded call records no result. The
  * generated closure shape forwards with a bare `delegatecall(input)` and drops the result, so the hop cannot express
@@ -93,7 +95,8 @@ import {
 import { callEntryRecords, frameDataRecordIndices, orderLoopKeyArgs, type LaidCallEntryRecords } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
 import {
-  PerCallCalleeError, calleeFrames, calleeRetvalOwed, learnCalleeRetval, planEntryCallees, type PlannedCallees,
+  NO_CALLEE_VALUES, PerCallCalleeError, calleeFrames, calleeValuesOwed, learnCalleeValue, planEntryCallees,
+  type CalleeValues, type PlannedCallees,
 } from './callees.js';
 import { decodeReturnValues } from '../read/index.js';
 import {
@@ -746,11 +749,12 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   const sendCount = shape.listedSends ?? recipients.filter(listed).length;
   // The listed sends no branch decides, which every run makes.
   const unconditionalSends = recipients.filter((lock, position) => listed(lock) && !onBranch[position]).length;
-  // Every frame's events lead the trailing region, the entry's first and then each paid contract's, so the send run
-  // follows all of them.
-  const payeeEventBases = payees.map((_payee, index) => layout.participantCount + emits.length
+  // Every frame's events lead the trailing region, in master order: the entry's first, then each callee's and each
+  // paid contract's, so the send run follows all of them.
+  const calleeEvents = calleePlan?.eventCount ?? 0;
+  const payeeEventBases = payees.map((_payee, index) => layout.participantCount + emits.length + calleeEvents
     + payees.slice(0, index).reduce((count, earlier) => count + earlier.emits.length, 0));
-  const markerIndex = layout.participantCount + emits.length
+  const markerIndex = layout.participantCount + emits.length + calleeEvents
     + payees.reduce((count, payee) => count + payee.emits.length, 0);
   const sendIndices = Array.from({ length: sendCount }, (_unused, position) => markerIndex + 1 + position);
   const sendLockSentinels = sendIndices.map((_index, position) => encodeLockingBytecodeP2pkh(sha256(
@@ -887,12 +891,12 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   const payeeCreatedBases = payees.map((_payee, index) => createdBase + (probe?.trailingOutputs.length ?? 0)
     + payeeProbes.slice(0, index).reduce((count, earlier) => count + (earlier?.trailingOutputs.length ?? 0), 0));
   // One attempt per value the body computes (each mapping node, each event, each send's lock and amount and the
-  // frame's `retval`, each one a paid contract computes and each callee's return), plus the attempt that derives
-  // against every value. A paid contract's value learned before the amount it was paid is learned again once the
-  // amount is known.
+  // frame's `retval`, each one a paid contract computes and each callee's return, event and written node), plus the
+  // attempt that derives against every value. A paid contract's value learned before the amount it was paid is
+  // learned again once the amount is known.
   const maximumAttempts = learningCandidates.length + emits.length + 2 * sendCount + payees.length
     + 2 * (payeeEventSentinels.flat().length + payeeCandidates.flat().length + 2 * payeeSendIndices.flat().length)
-    + (calleePlan?.callees.filter((callee) => callee.returns).length ?? 0)
+    + (calleePlan?.learnable ?? 0)
     + (returnsValue ? 1 : 0) + 3;
 
   const buildPlan = (
@@ -902,7 +906,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     learnedSends: readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[],
     learnedCallAmounts: readonly (bigint | undefined)[],
     learnedPayees: readonly PayeeLearned[],
-    learnedCalleeRetvals: ReadonlyMap<string, Uint8Array>,
+    learnedCallees: CalleeValues,
   ): CompositionDraftPlan => {
     const paying = payFromContainers([...learnedSends.map((send) => send.amount), ...learnedCallAmounts]);
     const callValue = (index: number): bigint => learnedCallAmounts[index] ?? CALL_VALUE_SENTINEL + BigInt(index);
@@ -949,9 +953,12 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       }),
       ...(laid?.entries ?? []),
     ];
+    // The callees' events follow the entry's own, and the records their writes create follow the entry's.
     const callees = calleePlan === undefined ? undefined : calleeFrames({
       planned: calleePlan, layout, rootMaster: MASTER_ID, rootAddress: deployed.address, origin: CALLER_ID,
-      retvals: learnedCalleeRetvals,
+      values: learnedCallees, eventBase: layout.participantCount + emits.length,
+      createdBase: createdBase + (laid?.trailingOutputs.length ?? 0), recordAmount: validator.satoshis,
+      maximumCommitmentBytes,
     });
     // Each contract it pays: its events, listed right after the entry's, and the mapping nodes it creates.
     const payeeLaid = payees.map((payee, index) => ({
@@ -1127,9 +1134,10 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       inputs,
       ...(sideCars.computedWitnesses.length === 0 ? {} : { computedWitnesses: sideCars.computedWitnesses }),
       trailingOutputs: [
-        ...eventOutputs(learnedEvents), ...payeeLaid.flatMap((payeeLaidOut) => payeeLaidOut.eventOutputs),
+        ...eventOutputs(learnedEvents), ...(callees?.eventOutputs ?? []),
+        ...payeeLaid.flatMap((payeeLaidOut) => payeeLaidOut.eventOutputs),
         ...sendOutputs, ...payeeRuns,
-        ...(laid?.trailingOutputs ?? []),
+        ...(laid?.trailingOutputs ?? []), ...(callees?.createdOutputs ?? []),
         ...payeeLaid.flatMap((payeeLaidOut) => payeeLaidOut.mapping?.trailingOutputs ?? []),
         // The contract's own container, when no send precedes it: the change its calls leave, or the value it takes.
         ...(sendCount === 0 ? ownContainer : []),
@@ -1219,13 +1227,14 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     kind: FrameKind.CALL,
     master: receiveMasterId(index),
   }));
-  // What each returning callee's body returned, by master, which the frames that call it read as the call's result.
-  let calleeRetvals: ReadonlyMap<string, Uint8Array> = new Map();
+  // What each callee's body computed, by master: the return the frames that call it read as the call's result, and
+  // the payloads and node views its own frame declares.
+  let calleeValues: CalleeValues = NO_CALLEE_VALUES;
   const frameArtifacts = [artifact, ...(calleePlan?.artifacts ?? []), ...payees.map((payee) => payee.artifact)];
   let settled = false;
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
     const plan = buildPlan(
-      learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees, calleeRetvals,
+      learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees, calleeValues,
     );
     const { host, draft: candidate } = createComposedDerivationHost({ vm: machine, artifacts: frameArtifacts, plan });
     draft = candidate;
@@ -1239,18 +1248,18 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       if (!(error instanceof PerCallComposerError) || error.code !== 'PER_CALL_DERIVATION_STALLED') throw error;
       stalled = true;
     }
-    // A callee answers before the frame that reads its result: its own close hands back what it returned, deepest
-    // first. While one cannot, every frame above it computed from a candidate, so nothing is read from them and the
-    // machine's verdicts below name the frame that refused.
+    // A callee answers before the frame that reads its result: its own close hands back what it returned, each
+    // payload it emitted and each node view it wrote, deepest first. While one cannot, every frame above it computed
+    // from a candidate, so nothing is read from them and the machine's verdicts below name the frame that refused.
     if (calleePlan !== undefined) {
-      const answered = learnCalleeRetval({
-        planned: calleePlan, draft: candidate, vm: machine, maximumCommitmentBytes, retvals: calleeRetvals,
+      const answered = learnCalleeValue({
+        planned: calleePlan, draft: candidate, vm: machine, maximumCommitmentBytes, values: calleeValues,
       });
       if (answered !== undefined) {
-        calleeRetvals = new Map([...calleeRetvals, [answered.master, answered.retval]]);
+        calleeValues = answered;
         continue;
       }
-      if (calleeRetvalOwed(calleePlan, calleeRetvals)) {
+      if (calleeValuesOwed(calleePlan, calleeValues)) {
         settled = true;
         break;
       }

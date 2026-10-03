@@ -19,10 +19,10 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * nested frame. The compiler accepts the payload: five 32-byte fields encode to 160 bytes. The shipped call path
  * (`callPerCallEntry`) plans the callee frame an entry's call reaches, and the row's caller calls an emitter at an
  * address no deployment holds, so the transaction cannot even be assembled for the row, and the refusal it meets
- * is pinned by name (a deployed emitting callee is refused by name too: the path plans no callee events yet). The
- * control beside it drives the identical >128-byte event through the same path emitted by the root frame itself,
- * which settles, and reads it back through the shipped receipt (`compositionEventLogs`): the size is not what the
- * path refuses, the nested frame is.
+ * is pinned by name (a deployed emitting callee is served: `call/plain-callees.test.ts`). The control beside it
+ * drives the identical >128-byte event through the same path emitted by the root frame itself, which settles, and
+ * reads it back through the shipped receipt (`compositionEventLogs`): the size is not what the path refuses, the
+ * address is.
  */
 
 /** Five 32-byte fields, so the encoded event payload is 160 bytes, above the 128-byte direct commitment size. */

@@ -312,8 +312,7 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   per spec-section-23 row the ladder reaches later, each pinning the row's shape served with its observable or
   refused by name: `view-call-revert-rows.test.ts` (19), `string-mapping-rows.test.ts` (24),
   `paired-event-rows.test.ts` (14), `large-event-rows.test.ts` (13, refused: its emitter is at an address no
-  deployment holds, and the call path plans no callee events, with a root-frame control served beside it),
-  `time-window-rows.test.ts` (16),
+  deployment holds, with a root-frame control served beside it), `time-window-rows.test.ts` (16),
   `dynamic-argument-rows.test.ts` (12), `balance-rows.test.ts` (10), `low-level-return-rows.test.ts` (11),
   `custom-error-rows.test.ts` (6), `loop-call-rows.test.ts` (4, served but for a call guarded per turn, which the
   hop plans on every turn), `origin-nested-call-rows.test.ts` (7), `write-after-call-rows.test.ts` (15, served but

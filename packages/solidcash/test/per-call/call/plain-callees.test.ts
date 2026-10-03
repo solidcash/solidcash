@@ -8,6 +8,7 @@ import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -21,8 +22,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * segments the call splits its frame into. `A.chain` and `A.chainOrigin` are nested `STATIC` frames, A into B into
  * C: C answers its own `msg.sender`, the contract that called it, and the `tx.origin` the user's input carries.
  * `A.readTwice` enters B twice, on two masters of B's block, whose category the validator settles, and `A.sumThree`
- * enters it once per turn of a loop. A contract entered twice that a frame of it writes, two deployments of one
- * contract, and a callee that emits are refused by name before anything is built.
+ * enters it once per turn of a loop. `A.notify` makes a `CALL` into `B.note`, whose event output follows the
+ * root's. A contract entered twice that a frame of it writes, and two deployments of one contract, are refused by
+ * name before anything is built.
  */
 
 const SOURCE = 'pragma solidity ^0.8.0;'
@@ -197,10 +199,12 @@ describe('callee frames on the plain call path', () => {
     );
   });
 
-  it('refuses a callee that emits by name, before anything is built', async () => {
+  it('serves a callee that emits: its event output follows the root\'s, under its own category', async () => {
     const chain = await deployed();
-    await expect(enter(chain, 'notify')).rejects.toThrow(
-      'entry "notify" makes 1 external call(s): the callee "B.note()" emits, which this call path does not plan yet',
-    );
+    const result = await enter(chain, 'notify');
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(compositionEventLogs(result.draft, Object.values(chain.artifacts))
+      .map((log) => [log.contract, log.emitter, log.eventName, log.args, log.outputIndex]))
+      .toStrictEqual([['B', 'callee-master-1', 'Noted', { x: 1n }, result.draft.layout.participantCount]]);
   });
 });

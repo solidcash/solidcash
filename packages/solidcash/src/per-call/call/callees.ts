@@ -8,13 +8,21 @@
  * contract's own block, entered by the frame that calls it, and what its body returns is learned from its own close,
  * deepest first, before the caller that reads it.
  *
- * A callee may read and rewrite its own data records and call further contracts. A shape this path does not settle
- * yet is refused by name: a callee behind a proxy; one that emits, touches a mapping or a dynamic value's chunks,
- * sends value or co-spends a side-car; a contract entered twice that one of its frames writes, or reached at two of
- * its deployments; and a site that waits on an earlier call's result.
+ * A callee may read and rewrite its own data records, emit, read and write its mappings, and call further contracts.
+ * Its events and mapping nodes are planned as the hop plans its delegate frame's callees: one output per event it
+ * emits, after the root's own, at the covenant its category derives; and the node each key it reads or writes sits at,
+ * or the one a new key is spliced beside, declared in the segment its artifact publishes for the write, with the node
+ * an insert creates as a trailing output. Each event's payload and each written node's end view are its body's to
+ * compute, so they are learned from its own close, as its return is.
+ *
+ * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that touches a dynamic
+ * value's or a mapping value's chunks, sends value or co-spends a side-car; a contract entered twice that one of its
+ * frames writes, or reached at two of its deployments; and a site that waits on an earlier call's result.
  */
 
-import { bytesEqual, FrameKind, sha256, type Artifact, type PublishedWriteSegment } from '@solidcash/utils';
+import {
+  bytesEqual, FrameKind, INDEX_NONE, sha256, type Artifact, type PublishedWriteSegment, type RecordEntry,
+} from '@solidcash/utils';
 import type { FunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
@@ -27,10 +35,14 @@ import {
   type DraftInput,
   type DraftMaster,
   type DraftRecordEntry,
+  type DraftSourceOutput,
   type PlannedSettlement,
   type TransactionLayout,
 } from '../composer/index.js';
-import { readComputedDeclaration, stateRecordUnlockingBytecode, type PerCallDeploymentSet } from '../deploy/index.js';
+import {
+  entryRecordReadUnlock, eventLockingBytecode, eventSentinel, readComputedDeclaration, stateRecordUnlockingBytecode,
+  type PerCallDeploymentSet,
+} from '../deploy/index.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
 import {
   deploymentStateValues, planHopExternalCalls, type HopCallee, type HopCalleeRecord, type PerCallProxyExternal,
@@ -62,7 +74,23 @@ export interface PlannedCallees {
   readonly contracts: readonly string[];
   /** The artifacts the callee frames run, each once. */
   readonly artifacts: readonly Artifact[];
+  /** How many event outputs the callee frames list, which follow the root's own. */
+  readonly eventCount: number;
+  /** How many values the callee frames' bodies compute that the plan learns: returns, payloads and node views. */
+  readonly learnable: number;
 }
+
+/** What the callee frames' own bodies computed, by master, as far as the plan has learned it. */
+export interface CalleeValues {
+  readonly retvals: ReadonlyMap<string, Uint8Array>;
+  /** Each event's payload, in emit order; a position not learned yet carries its sentinel. */
+  readonly events: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>;
+  /** Each value-dependent node's end view, in its write's learning order; one not learned yet is its candidate. */
+  readonly views: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>;
+}
+
+/** No callee value learned yet. */
+export const NO_CALLEE_VALUES: CalleeValues = { retvals: new Map(), events: new Map(), views: new Map() };
 
 /** What an entry's callee frames are planned from: the root's own facts and the deployments it may reach. */
 export interface CalleePlanOptions {
@@ -83,6 +111,9 @@ export interface CalleePlanOptions {
 /** The keys the root and the caller's named deployments are handed to the planner under, which no interface can be. */
 const ROOT_EXTERNAL = '\u0000root';
 const EXTERNAL_KEY = '\u0000external\u0000';
+
+/** The satoshi value an event output carries, as the root's own event outputs do. */
+const EVENT_OUTPUT_SATOSHIS = 1_000n;
 
 /** The writes an entry's artifact publishes, or undefined when it does not fix the segment of every write. */
 function publishedWrites(artifact: Artifact, functionName: string): readonly PublishedWriteSegment[] | undefined {
@@ -109,11 +140,53 @@ function publishedRecordWrites(
   return records;
 }
 
+/**
+ * The segment a callee frame's mapping write lands in, or undefined when its artifact does not fix one.
+ *
+ * The artifact publishes the segment of each collection's write; a frame that makes no call has one segment, so its
+ * write can only land there. Writes the artifact places in several segments are not one landing, and are refused.
+ */
+function mappingWriteSegment(callee: HopCallee): number | undefined {
+  const segments = new Set((publishedWrites(callee.artifact, callee.entry) ?? [])
+    .filter((write) => write.collection !== undefined)
+    .map((write) => (write.segment === 'last' ? callee.calls.length : write.segment)));
+  if (segments.size === 0) return callee.calls.length === 0 ? 0 : undefined;
+  const [segment] = [...segments];
+  return segments.size === 1 && segment! <= callee.calls.length ? segment : undefined;
+}
+
 /** The records one callee frame declares, in the order its entry's block layout names them. */
 function declaredRecords(callee: HopCallee): readonly HopCalleeRecord[] {
   return frameDataRecordIndices(callee.artifact, callee.entry)
     .map((nftIndex) => callee.records[nftIndex])
     .filter((record): record is HopCalleeRecord => record !== undefined);
+}
+
+/** The events one callee frame's entry emits, in emit order. */
+function emitsOf(callee: HopCallee): readonly { readonly eventSignature: string }[] {
+  const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
+  return [...(abi?.emits ?? [])].sort((left, right) => left.emitIndex - right.emitIndex);
+}
+
+/** The payload each of a callee's event outputs carries until its own close hands back the one it computed. */
+function calleeEventSentinels(callee: HopCallee, maximumCommitmentBytes: number): readonly Uint8Array[] {
+  return emitsOf(callee).map((_emit, position) =>
+    eventSentinel(callee.category, callee.artifact.contractName, position, maximumCommitmentBytes));
+}
+
+/**
+ * True when a callee frame touches chunk records: a dynamic value's run, on its own or beside a mapping write, or a
+ * mapping whose values chunk. Its other mapping nodes are what this path plans.
+ */
+function touchesChunks(callee: HopCallee): boolean {
+  const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
+  const chunking = new Set((callee.artifact.stateLayout?.collections ?? [])
+    .filter((collection) => collection.chunkableValue === true).map((collection) => collection.name));
+  const dynamic = (abi?.dynamicReads ?? []).length + (abi?.dynamicWrites ?? []).length > 0;
+  const writes = callee.entryWrites;
+  return (writes !== undefined && (writes.collection === undefined || dynamic
+    || writes.reachWrites.some((write) => write.chunkable)))
+    || callee.readNodes.some((node) => chunking.has(node.collection));
 }
 
 /** The shape one callee frame takes that this path does not settle yet, or undefined for one it does. */
@@ -126,13 +199,13 @@ function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefine
     return `${label} sits behind a proxy, whose delegate frame this call path does not plan yet`;
   }
   const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
-  if ((abi?.emits ?? []).length > 0) return `${label} emits, which this call path does not plan yet`;
   if ((abi?.transferCount ?? 0) > 0) return `${label} sends value, which this call path does not plan yet`;
-  if (callee.entryWrites !== undefined || callee.readNodes.length > 0) {
-    return `${label} touches a mapping or a dynamic value's chunks, which this call path does not plan yet`;
+  if (touchesChunks(callee)) {
+    return `${label} touches a dynamic value's or a mapping value's chunks, which this call path does not plan yet`;
   }
   if (sideCars) return `${label} co-spends a side-car, which this call path does not plan yet`;
-  if (publishedWrites(callee.artifact, callee.entry) === undefined) {
+  if (publishedWrites(callee.artifact, callee.entry) === undefined
+    || (callee.entryWrites !== undefined && mappingWriteSegment(callee) === undefined)) {
     return `${label} writes in a segment its artifact does not fix, which this call path does not plan yet`;
   }
   return undefined;
@@ -196,23 +269,34 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       refuse(`it reaches two deployments of "${contract}", whose blocks and records this call path does not tell `
         + 'apart yet');
     }
-    const writes = (frame: HopCallee): boolean => publishedRecordWrites(frame.artifact, frame.entry, 0).size > 0;
+    const writes = (frame: HopCallee): boolean => publishedRecordWrites(frame.artifact, frame.entry, 0).size > 0
+      || frame.entryWrites !== undefined;
     if (frames.length > 1 && frames.some(writes)) {
       refuse(`it enters "${contract}" ${frames.length} times and a frame of it writes its records, whose views across `
         + 'the frames this call path does not chain yet');
     }
   }
+  // A contract's block holds the records its frames declare, then the nodes they only read, then the nodes their
+  // writes spend, each once: the order each frame's own body reads them in.
   const blocks = [...byContract].map(([contract, frames]): ContractBlock => {
     const state: string[] = [];
+    const place = (id: string): void => {
+      if (!state.includes(id)) state.push(id);
+    };
     for (const frame of frames) {
-      for (const record of declaredRecords(frame)) if (!state.includes(record.id)) state.push(record.id);
+      for (const record of declaredRecords(frame)) place(record.id);
+      for (const node of frame.readNodes) if (node.utxo !== undefined) place(node.id);
+      for (const id of frame.entryWrites?.participantIds ?? []) place(id);
     }
     return { contract, masters: frames.map((frame) => frame.master), state };
   });
   const artifacts = [...new Set(plan.callees.map((callee) => callee.artifact))];
+  const eventCount = plan.callees.reduce((total, callee) => total + emitsOf(callee).length, 0);
+  const learnable = eventCount + plan.callees.reduce((total, callee) => total + (callee.returns ? 1 : 0)
+    + (callee.entryWrites?.learningCandidates.length ?? 0), 0);
   return {
     calls: plan.calls, callBases: plan.callBases, callees: plan.callees, utxos: plan.utxos, blocks,
-    contracts: [...byContract.keys()], artifacts,
+    contracts: [...byContract.keys()], artifacts, eventCount, learnable,
   };
 }
 
@@ -227,15 +311,21 @@ export interface CalleeFrames {
   readonly inputs: Readonly<Record<string, DraftInput>>;
   /** The callee categories the validator settles: each one spent under two or more masters. */
   readonly settles: readonly PlannedSettlement[];
+  /** The frames' event outputs, in master order, from `eventBase` on. */
+  readonly eventOutputs: readonly DraftSourceOutput[];
+  /** The records the frames' writes create, in master order, from `createdBase` on. */
+  readonly createdOutputs: readonly DraftSourceOutput[];
 }
 
 /**
- * The callee frames as masters of a plan, with their inputs and the settlements they need.
+ * The callee frames as masters of a plan, with their inputs, outputs and the settlements they need.
  *
  * Each frame is entered by the frame that calls it, with that frame's address as its `msg.sender`, and runs on its
  * own contract's records: a record it keeps is declared at the commitment it was spent with, and a record its body
  * writes is declared kept up to the segment the artifact publishes for the write, unstated there for the derivation
- * to learn, and carried on after it. A frame that makes `k` calls closes `k + 1` segments.
+ * to learn, and carried on after it. A frame that makes `k` calls closes `k + 1` segments. The mapping nodes it only
+ * reads follow its records, kept, and the nodes its write touches follow them, declared where the write lands and
+ * kept on either side of it. Its event outputs and created nodes take the trailing indices the caller hands it.
  */
 export function calleeFrames(options: {
   readonly planned: PlannedCallees;
@@ -244,10 +334,17 @@ export function calleeFrames(options: {
   readonly rootMaster: string;
   readonly rootAddress: Uint8Array;
   readonly origin: string;
-  /** What each returning callee's body returned, by master, once learned. */
-  readonly retvals: ReadonlyMap<string, Uint8Array>;
+  /** What each callee's own body computed, once learned. */
+  readonly values: CalleeValues;
+  /** The output the first callee event sits at, past the root's own, and the first a callee's write creates. */
+  readonly eventBase: number;
+  readonly createdBase: number;
+  /** The satoshis a created node carries when its contract holds no record to take them from. */
+  readonly recordAmount: bigint;
+  /** The bound an event's sentinel payload is sized to. */
+  readonly maximumCommitmentBytes: number;
 }): CalleeFrames {
-  const { planned, layout } = options;
+  const { planned, layout, values } = options;
   const { callees } = planned;
   const callTo = new Map<string, DraftCall>();
   for (const call of [...planned.calls, ...callees.flatMap((callee) => callee.calls)]) {
@@ -258,27 +355,87 @@ export function calleeFrames(options: {
   const indexOf = (id: string): number => participant(layout, id).index;
   // The master that writes each record, which the record's covenant names as the spend's authority.
   const writerOf = new Map<string, string>();
+  const inputs: Record<string, DraftInput> = {};
+  const eventOutputs: DraftSourceOutput[] = [];
+  const createdOutputs: DraftSourceOutput[] = [];
   const masters = callees.map((callee): DraftMaster => {
     const caller = callee.enteredBy === null ? undefined : callees[callee.enteredBy];
     const positions = callee.calls.length + 1;
     const writes = publishedRecordWrites(callee.artifact, callee.entry, callee.calls.length);
     const declared = declaredRecords(callee);
-    const segments = Array.from({ length: positions }, (_unused, position) => declared.map((record): DraftRecordEntry => {
-      const index = indexOf(record.id);
-      const nftIndex = callee.records.indexOf(record);
-      const written = writes.get(nftIndex) ?? [];
-      const first = Math.min(...written);
-      if (written.length === 0 || position < first) {
-        return { in: index, out: index, viewIn: record.commitment, viewOut: record.commitment };
+    // One output per event the frame emits, each carrying the payload its body computed or, until that is learned,
+    // a sentinel its own comparison fails against.
+    const sentinels = calleeEventSentinels(callee, options.maximumCommitmentBytes);
+    const payloads = values.events.get(callee.master) ?? [];
+    const definitions = new Map((callee.artifact.events ?? []).map((definition) => [definition.signature, definition]));
+    const events = emitsOf(callee).map((emit, position): number => {
+      eventOutputs.push({
+        lockingBytecode: eventLockingBytecode(
+          callee.category, emit.eventSignature, definitions.get(emit.eventSignature)?.anonymous === true,
+        ),
+        valueSatoshis: EVENT_OUTPUT_SATOSHIS,
+        token: {
+          category: callee.category, amount: 0n,
+          nft: { capability: 'none', commitment: payloads[position] ?? sentinels[position]! },
+        },
+      });
+      return options.eventBase + eventOutputs.length - 1;
+    });
+    // The frame's mapping write, authorized by its own master, its created nodes past the frames laid before it.
+    const laid = callee.entryWrites?.lay({
+      indexOf,
+      proxyMasterIndex: indexOf(callee.master),
+      createdBase: options.createdBase + createdOutputs.length,
+      recordAmount: callee.records[0]?.satoshis ?? options.recordAmount,
+      category: callee.category,
+      learnedViews: values.views.get(callee.master) ?? [],
+    });
+    createdOutputs.push(...(laid?.trailingOutputs ?? []));
+    Object.assign(inputs, laid?.inputs ?? {});
+    const landing = mappingWriteSegment(callee) ?? 0;
+    // A node two groups declare, a target that is also another target's relinked predecessor, is written once in its
+    // final form: the later declaration continues from the view the first one leaves, which is learned with it.
+    const candidates = callee.entryWrites?.learningCandidates ?? [];
+    const learnedViews = values.views.get(callee.master) ?? [];
+    const writeEntries = (laid?.entries ?? []).map((entry): RecordEntry => {
+      const learned = learnedViews[candidates.findIndex((candidate) => bytesEqual(candidate, entry.viewIn))];
+      return learned === undefined ? entry : { ...entry, viewIn: learned };
+    });
+    // Each node the write spends is kept on either side of the segment it lands in: at the view it was spent with
+    // before, and at the view the write left after.
+    const writesAt = (position: number): DraftRecordEntry[] => {
+      if (position === landing) return [...writeEntries];
+      const kept = new Map<number, Uint8Array>();
+      for (const entry of writeEntries) {
+        if (entry.in === INDEX_NONE || (position < landing && kept.has(entry.in))) continue;
+        kept.set(entry.in, position < landing ? entry.viewIn : entry.viewOut);
       }
-      if (written.includes(position)) {
-        writerOf.set(record.id, callee.master);
-        return position === first
-          ? { in: index, out: index, viewIn: record.commitment }
-          : { in: index, out: index, viewIn: 'carried' };
-      }
-      return { in: index, out: index, viewIn: 'carried', viewOut: 'carried' };
-    }));
+      return [...kept].map(([index, view]) => ({ in: index, out: index, viewIn: view, viewOut: view }));
+    };
+    const readEntries = callee.readNodes.map((node): DraftRecordEntry => {
+      const index = indexOf(node.id);
+      return { in: index, out: index, viewIn: node.commitment, viewOut: node.commitment };
+    });
+    const segments = Array.from({ length: positions }, (_unused, position) => [
+      ...declared.map((record): DraftRecordEntry => {
+        const index = indexOf(record.id);
+        const nftIndex = callee.records.indexOf(record);
+        const written = writes.get(nftIndex) ?? [];
+        const first = Math.min(...written);
+        if (written.length === 0 || position < first) {
+          return { in: index, out: index, viewIn: record.commitment, viewOut: record.commitment };
+        }
+        if (written.includes(position)) {
+          writerOf.set(record.id, callee.master);
+          return position === first
+            ? { in: index, out: index, viewIn: record.commitment }
+            : { in: index, out: index, viewIn: 'carried' };
+        }
+        return { in: index, out: index, viewIn: 'carried', viewOut: 'carried' };
+      }),
+      ...readEntries,
+      ...writesAt(position),
+    ]);
     return {
       master: callee.master,
       contract: callee.contract,
@@ -295,17 +452,16 @@ export function calleeFrames(options: {
       calls: callee.calls,
       ...(callee.callBases.length === 0 ? {} : { callBaseBySite: callee.callBases }),
       retval: callee.returns
-        ? options.retvals.get(callee.master) ?? calleeRetvalPlaceholder(callee)
+        ? values.retvals.get(callee.master) ?? calleeRetvalPlaceholder(callee)
         : new Uint8Array(0),
       segments,
-      events: [],
+      events,
       sends: [],
       // The frame's call data is the pushes of the call that reaches it.
       argumentPushes: callTo.get(callee.master)?.argumentPushes ?? [],
       redeemScript: callee.deployed.script,
     };
   });
-  const inputs: Record<string, DraftInput> = {};
   for (const callee of callees) {
     inputs[callee.master] = {
       source: {
@@ -334,6 +490,19 @@ export function calleeFrames(options: {
         ),
       };
     }
+    // A node the frame only reads is spent on its entry covenant's read-only path and recreated as it was.
+    for (const node of callee.readNodes) {
+      if (inputs[node.id] !== undefined || node.utxo === undefined) continue;
+      const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(callee.categoryId, node.signature);
+      inputs[node.id] = {
+        source: {
+          lockingBytecode,
+          valueSatoshis: node.utxo.satoshis,
+          token: { category: callee.category, amount: 0n, nft: { capability: 'mutable', commitment: node.commitment } },
+        },
+        unlockingBytecode,
+      };
+    }
   }
   const settles = planned.blocks
     .filter((block) => (mastersOf.get(block.contract) ?? 0) > 1)
@@ -341,7 +510,7 @@ export function calleeFrames(options: {
       category: callees.find((callee) => callee.contract === block.contract)!.category,
       stateInputs: block.state,
     }));
-  return { masters, inputs, settles };
+  return { masters, inputs, settles, eventOutputs, createdOutputs };
 }
 
 /** How deep a callee sits below the root: `1` for a frame the root calls. */
@@ -351,53 +520,96 @@ function depthOf(callees: readonly HopCallee[], index: number): number {
   return depth;
 }
 
+/** True while a callee's body still owes the plan its return, an event's payload or a written node's view. */
+function owesValue(callee: HopCallee, values: CalleeValues): boolean {
+  const payloads = values.events.get(callee.master) ?? [];
+  const views = values.views.get(callee.master) ?? [];
+  return (callee.returns && !values.retvals.has(callee.master))
+    || emitsOf(callee).some((_emit, position) => payloads[position] === undefined)
+    || (callee.entryWrites?.learningCandidates ?? []).some((_candidate, position) => views[position] === undefined);
+}
+
 /**
- * The first callee return a draft's own closes hand back, deepest first, or undefined when none does.
+ * The callee values a draft's own closes hand back with the first one learned, deepest first, or undefined when no
+ * close does.
  *
- * A returning callee compares the blob its `return` built against its frame's `retval`, which holds the candidate
- * until learned, so the failing close leaves the candidate beside the value the body computed. A frame is read once
- * every frame below it has answered, so the value it returns is computed from its callees' real results.
+ * A callee compares what its body computed against what its frame declares: the blob its `return` built against its
+ * `retval`, a written node's end view against the view its segment declares, an event's payload against its output's
+ * commitment. Each starts from a candidate until learned, so the failing close leaves the candidate beside the value
+ * the body computed. A frame is read once every frame below it has answered its return, so what it computes is
+ * computed from its callees' real results.
  */
-export function learnCalleeRetval(options: {
+export function learnCalleeValue(options: {
   readonly planned: PlannedCallees;
   readonly draft: CompositionDraft;
   readonly vm: Parameters<typeof readComputedDeclaration>[0]['vm'];
   readonly maximumCommitmentBytes: number;
-  readonly retvals: ReadonlyMap<string, Uint8Array>;
-}): { readonly master: string; readonly retval: Uint8Array } | undefined {
+  readonly values: CalleeValues;
+}): CalleeValues | undefined {
   const { callees } = options.planned;
-  const owed = new Set(callees.map((_callee, index) => index)
-    .filter((index) => callees[index]!.returns && !options.retvals.has(callees[index]!.master)));
-  if (owed.size === 0) return undefined;
+  const { values } = options;
+  const owesReturn = (index: number): boolean =>
+    callees[index]!.returns && !values.retvals.has(callees[index]!.master);
   /** True when frame `inner` is entered, directly or not, by frame `outer`. */
   const below = (inner: number, outer: number): boolean => {
     for (let at = callees[inner]!.enteredBy; at !== null; at = callees[at]!.enteredBy) if (at === outer) return true;
     return false;
   };
   // A frame whose callee still owes its return computed from a candidate, so it is not read yet.
-  const ready = [...owed].filter((index) => ![...owed].some((other) => below(other, index)))
+  const ready = callees.map((_callee, index) => index)
+    .filter((index) => owesValue(callees[index]!, values)
+      && !callees.some((_other, other) => owesReturn(other) && below(other, index)))
     .sort((left, right) => depthOf(callees, right) - depthOf(callees, left));
+  if (ready.length === 0) return undefined;
   options.draft.learnUnstatedViews();
   for (const index of ready) {
     const callee = callees[index]!;
+    const { master } = callee;
     const reading = readComputedDeclaration({
-      vm: options.vm, program: options.draft.programFor(callee.master),
+      vm: options.vm, program: options.draft.programFor(master),
       maximumCommitmentBytes: options.maximumCommitmentBytes,
     });
     if (!reading.ok) continue;
     // Whichever operand holds the candidate, the other is what the body built.
     const placeholder = calleeRetvalPlaceholder(callee);
-    if (bytesEqual(reading.computed, placeholder)) {
-      return { master: callee.master, retval: Uint8Array.from(reading.declared) };
+    if (owesReturn(index) && bytesEqual(reading.computed, placeholder)) {
+      return { ...values, retvals: new Map([...values.retvals, [master, Uint8Array.from(reading.declared)]]) };
     }
-    if (bytesEqual(reading.declared, placeholder)) {
-      return { master: callee.master, retval: Uint8Array.from(reading.computed) };
+    if (owesReturn(index) && bytesEqual(reading.declared, placeholder)) {
+      return { ...values, retvals: new Map([...values.retvals, [master, Uint8Array.from(reading.computed)]]) };
+    }
+    // Two nodes whose values the body computes can start from one candidate, so the close is about the first match
+    // whose view is not learned yet, as the hop reads its callees' writes.
+    const candidates = callee.entryWrites?.learningCandidates ?? [];
+    const views = [...(values.views.get(master) ?? [])];
+    const viewAt = (operand: Uint8Array): number => {
+      const matches = candidates.flatMap((candidate, at) => (bytesEqual(operand, candidate) ? [at] : []));
+      return matches.find((at) => views[at] === undefined) ?? matches[0] ?? -1;
+    };
+    const declaredView = viewAt(reading.declared);
+    const view = declaredView >= 0 ? declaredView : viewAt(reading.computed);
+    if (view >= 0) {
+      while (views.length <= view) views.push(undefined);
+      views[view] = Uint8Array.from(declaredView >= 0 ? reading.computed : reading.declared);
+      return { ...values, views: new Map([...values.views, [master, views]]) };
+    }
+    // An event's payload is compared against the commitment its output carries: the sentinel, or a payload learned.
+    const known = values.events.get(master) ?? [];
+    const payloads = calleeEventSentinels(callee, options.maximumCommitmentBytes)
+      .map((sentinel, at) => known[at] ?? sentinel);
+    const declaredEvent = payloads.findIndex((payload) => bytesEqual(reading.declared, payload));
+    const event = declaredEvent >= 0
+      ? declaredEvent : payloads.findIndex((payload) => bytesEqual(reading.computed, payload));
+    if (event >= 0) {
+      const events = payloads.map((_payload, at) => known[at]);
+      events[event] = Uint8Array.from(declaredEvent >= 0 ? reading.computed : reading.declared);
+      return { ...values, events: new Map([...values.events, [master, events]]) };
     }
   }
   return undefined;
 }
 
-/** True while a returning callee's value is still unlearned, so a frame that reads its result cannot be trusted. */
-export function calleeRetvalOwed(planned: PlannedCallees, retvals: ReadonlyMap<string, Uint8Array>): boolean {
-  return planned.callees.some((callee) => callee.returns && !retvals.has(callee.master));
+/** True while a callee's body still owes a value, so a frame that reads its result or its writes cannot be trusted. */
+export function calleeValuesOwed(planned: PlannedCallees, values: CalleeValues): boolean {
+  return planned.callees.some((callee) => owesValue(callee, values));
 }

@@ -14,9 +14,6 @@
  *     the pre-existing state UTXOs the frames' views name (sections 16 and 20);
  *   - a container is a tokenless output at a contract's container lock, so the census allows mutable NFTs only at
  *     view-listed records and at validator recreations, and the value rule weighs containers by their lock.
- *
- * One rule follows the shipped validator rather than the spec text: V10 admits a delegate call below a read-only
- * frame (the proxied view, PW10), where the text still says a read-only subtree makes only `STATIC` calls.
  */
 
 import { encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';

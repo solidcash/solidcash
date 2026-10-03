@@ -749,6 +749,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   two-tuple title passes. The encoder reuses a reached tuple lane, aliases unused lanes to an authenticated
   tuple, and refuses a fourth distinct identity. Default two-tuple refusal wording remains unchanged. No
   comprehensive suite or size gate ran.
+- 2026-10-03 nested-tuple continuity/security follow-up: a fourth row reuses the first of three occupied
+  authenticated tuple lanes and persists the later value without creating another entry. A separate focused
+  BCH-2026 check replaces one row's tuple with a cross-lane combination while keeping the honest route
+  witnesses and physical inputs; the VM rejects it. Each new title and its immediately preceding title pass.
+  The rejection check establishes transaction failure, not attribution to one specific opcode. No broad suite ran.
 
 ## Gate before the next leap
 

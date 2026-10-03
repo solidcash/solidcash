@@ -762,7 +762,7 @@ export function batchRaw(
       if (!directAccess) return;
       const operations = fixedEntryAccessActive(directAccess, rowIndex)
         ? directAccess.operations
-        : directAccess.operations.filter((operation) => operation !== 'write');
+        : directAccess.operations.filter((operation) => operation !== 'write' && operation !== 'delete');
       if (operations.length === 0) return;
       const physicalAlternatives = handler.physicalEntrySlotAlternatives?.[directIndex]
         ?? [physicalSlot];
@@ -811,7 +811,7 @@ export function batchRaw(
           ?? capability.route.entryAccesses!.indexOf(selectedAccess);
         const directSlot = directAccess.slotIndex ?? directIndex;
         const selectedBatch = selected?.sortedBatchInfo?.find((batch) => batch.slotIndices.includes(directSlot));
-        if (operations.includes('write') && selectedBatch !== undefined) {
+        if ((operations.includes('write') || operations.includes('delete')) && selectedBatch !== undefined) {
           activeRouteSortedBatchSlots.add(selectedSlot);
           const publishedBatch = capability.route.sortedBatchInfo?.find((batch) =>
             batch.collection === selectedBatch.collection);
@@ -843,7 +843,8 @@ export function batchRaw(
         }
         if (directAccess.activation !== undefined && physicalAlternatives.length > 1) break;
       }
-      if (directAccess.activation !== undefined && operations.includes('write')
+      if (directAccess.activation !== undefined
+        && (operations.includes('write') || operations.includes('delete'))
         && physicalAlternatives.length > 1 && !matchedConditionalLane) {
         throw new Error('messageBus: conditional entry has no matching authenticated lane');
       }

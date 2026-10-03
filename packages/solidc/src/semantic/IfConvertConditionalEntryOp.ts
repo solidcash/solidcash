@@ -202,7 +202,7 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
     // node for an absent key even though the source never executed the write.
     if (this.preserveKernelArgumentConditionalWrites && this.isArgumentLiteralCondition(node.condition)
       && stmts.every((statement) => statement instanceof MappingAssignNode
-        || statement instanceof ArrayAssignNode)) return undefined;
+        || statement instanceof ArrayAssignNode || statement instanceof MappingDeleteNode)) return undefined;
 
     // A single op re-uses the condition once (always safe); multiple require a side-effect-free condition.
     if (ops.length > 1 && this.hasCall(node.condition)) return undefined;

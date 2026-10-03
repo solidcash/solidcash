@@ -4461,7 +4461,8 @@ function stampKernelArgumentConditionalEntryActivations(fn: FunctionDefinitionNo
       }) : undefined, supported);
       return;
     }
-    if (node instanceof MappingAssignNode && representable && activation !== undefined
+    if ((node instanceof MappingAssignNode || node instanceof MappingDeleteNode)
+      && representable && activation !== undefined
       && node.sourceEffectOrdinal !== undefined) byOrdinal.set(node.sourceEffectOrdinal, activation);
     for (const [field, value] of Object.entries(node)) {
       if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
@@ -8974,8 +8975,8 @@ function synthesizeMessageBusRoute(
       // kernel's bounded physical key pool for every reader and writer of that collection, rather than giving
       // readers a two-lane tuple while writers retain one scalar slot. Every selected row then names exactly
       // one authenticated journal cache, including rows that read an earlier write.
-      const poolableTuples = handlerTuples.filter(({ fn, bindings }) => bindings[0].source === 'argument'
-        && bindings[0].inputIndex >= 0 && fn.messageBusKeyWitnesses?.length === 1);
+      const poolableTuples = handlerTuples.filter(({ bindings }) => bindings[0].source === 'argument'
+        && bindings[0].inputIndex >= 0);
       const graphWriters = poolableTuples.filter(({ fn }) => [...analyseFunctionFootprint(
         fn, byName, footprintCache,
       ).writes].some((resource) => resource.startsWith(`collection:${collection}:`)));
@@ -9770,8 +9771,7 @@ function synthesizeMessageBusRoute(
         lane === 0 ? primary : `${primary}_pool${lane}`);
       for (const fn of eligible) {
         const binding = fn.messageBusKeyWitnesses?.find((candidate) => candidate.routeInput === primary);
-        if (binding?.source === 'argument' && binding.inputIndex >= 0
-          && fn.messageBusKeyWitnesses?.length === 1) binding.keyPool = keyPool;
+        if (binding?.source === 'argument' && binding.inputIndex >= 0) binding.keyPool = keyPool;
       }
       for (const name of keyPool) routeKeyWitnesses.set(name, [{ ...witness, name }]);
     }
@@ -10751,9 +10751,12 @@ function synthesizeMessageBusRoute(
         }
         return dispatch;
       };
-      const pooledKey = fn.messageBusKeyWitnesses?.find((binding) =>
-        binding.keyPool !== undefined && binding.entryTupleGroup === undefined);
-      const dispatchWithKeyPool = (baseArgs: string[]): string => {
+      // A handler may touch several independently pooled scalar collections beside complete tuple groups.
+      // Select each physical lane before invoking the handler, rather than silently using only the first pool.
+      const pooledKeys = fn.messageBusKeyWitnesses?.filter((binding) =>
+        binding.keyPool !== undefined && binding.entryTupleGroup === undefined) ?? [];
+      const dispatchWithKeyPools = (poolIndex: number, baseArgs: string[]): string => {
+        const pooledKey = pooledKeys[poolIndex];
         if (!pooledKey?.keyPool) return dispatchFor(baseArgs);
         const selectedKey = swappableShared && swappableVarying === pooledKey
           ? `(${decodedName(swappableShared.inputIndex)} == ${witnessName(swappableShared)} ? `
@@ -10762,13 +10765,14 @@ function synthesizeMessageBusRoute(
         let dispatch = 'require(false);';
         for (const lane of [...pooledKey.keyPool].reverse()) {
           const entryArgs = baseArgs.map((argument) => argument === pooledKey.routeInput ? lane : argument);
-          dispatch = `if (${selectedKey} == ${lane}) { ${dispatchFor(entryArgs)} } else { ${dispatch} }`;
+          dispatch = `if (${selectedKey} == ${lane}) { ${dispatchWithKeyPools(poolIndex + 1, entryArgs)} } `
+            + `else { ${dispatch} }`;
         }
         return dispatch;
       };
       const fixedTupleGroups = [...tupleGroups.values()];
       const dispatchTupleGroups = (groupIndex: number, entryArgs: string[]): string => {
-        if (groupIndex === fixedTupleGroups.length) return dispatchWithKeyPool(entryArgs);
+        if (groupIndex === fixedTupleGroups.length) return dispatchWithKeyPools(0, entryArgs);
         const bindings = fixedTupleGroups[groupIndex];
         const laneCount = bindings[0].keyPool?.length ?? 2;
         let selected = 'require(false);';

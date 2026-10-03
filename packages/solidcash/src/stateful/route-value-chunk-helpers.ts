@@ -465,11 +465,27 @@ export function deriveRouteValueChunks(
   let progressed = false;
   let discovered = false;
   const localWrites = group.valueChunkWrites ?? describeValueChunkWrites(group);
+  const localSelection = selectValueChunkWriteCategory(localWrites);
+  // In a multi-resource kernel row, the failing pin's redeem lock can identify one compiler-described
+  // write only when that write's complete value is visible in the VM trace. Require a unique exact-lock
+  // match; never infer a collection/key merely from the shape or output position of a chunk.
+  const pinBoundWrite = (() => {
+    if (convention !== 'kernel-row-loop' || localSelection.status !== 'multi') return undefined;
+    const stacks = trace.flatMap((state) => [
+      state.stack,
+      ...('alternateStack' in state
+        ? [(state as { alternateStack?: Uint8Array[] }).alternateStack ?? []] : []),
+    ]);
+    const matches = localSelection.writes.filter((write) => selectHashedValueForChunkPin(
+      stacks, pin.lockingBytecode, 0, [], undefined, false, write,
+    ) !== undefined);
+    return matches.length === 1 ? matches[0] : undefined;
+  })();
+  const writes = pinBoundWrite ? [pinBoundWrite] : localWrites;
   // Compiler-authored kernel descriptors are authoritative. A P2SH32 equality in a carrier with no chunkable
   // write describes an entry/resource lock, never permission to infer a value-chunk resource by output shape.
   /* eslint-disable @typescript-eslint/indent */
   if (permitsRouteValueChunkDerivation(convention, localWrites)) {
-  const writes = localWrites;
   const resourceSelection = selectValueChunkWriteCategory(writes);
   const valueChunkCategoryId = resourceSelection.status === 'exact'
     ? resourceSelection.write.categoryId

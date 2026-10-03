@@ -115,6 +115,52 @@ describe('kernel multi continuation resource lanes under composition', () => {
     expect(rightEntries.find((entry) => binToHex(entry.slot) === slot)?.value).toEqual(right);
   }, 300_000);
 
+  it('settles two cold chunkable collection inserts through typed graph discovery', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => bytes) left;
+        mapping(int => bytes) right;
+        function set(int key, bytes leftValue, bytes rightValue) public {
+          this.left[key] = leftValue;
+          this.right[key] = rightValue;
+          require(true);
+        }
+      }`, KERNEL);
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IStore { function set(int key, bytes leftValue, bytes rightValue) external; }
+      contract Caller() {
+        function poke(address store, int key, bytes leftValue, bytes rightValue) public {
+          IStore(store).set(key, leftValue, rightValue);
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+    const left = new Uint8Array(130).fill(0x71);
+    const right = new Uint8Array(190).fill(0x82);
+    const call = caller.call.poke(store.inner.lockingBytecode, 3n, left, right);
+    await expect(call.send()).resolves.toBeDefined();
+    const [leftEntries, rightEntries] = await Promise.all([
+      store.getEntries('left'), store.getEntries('right'),
+    ]);
+    expect(leftEntries.find((entry) => binToHex(entry.slot) === slotHex(3n))?.value).toEqual(left);
+    expect(rightEntries.find((entry) => binToHex(entry.slot) === slotHex(3n))?.value).toEqual(right);
+  }, 300_000);
+
   it('settles two keys in one chunkable collection as two resource bands under compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
 

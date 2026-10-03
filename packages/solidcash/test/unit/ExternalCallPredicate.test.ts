@@ -323,6 +323,20 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toEqual(Uint8Array.of(0x00, 0x02, 0xff, 0xfe));
   });
 
+  it('counts hex encoded bytes arguments by bytes while preserving string lengths', () => {
+    const length: ExternalCallExpression = {
+      kind: 'unary', operator: '.length', expression: source(0),
+    };
+    const hexArgument = `0x${'ab'.repeat(72)}`;
+
+    expect(evaluator._evaluateExternalExpression(
+      length, [hexArgument], artifact, undefined, [{ type: 'bytes' }],
+    )).toBe(72n);
+    expect(evaluator._evaluateExternalExpression(
+      length, [hexArgument], artifact, undefined, [{ type: 'string' }],
+    )).toBe(146n);
+  });
+
   it('evaluates compiler-published pure helper programs without helper-name knowledge', () => {
     const helperArtifact = compileString(`
       pragma solidity >=0.8.0;

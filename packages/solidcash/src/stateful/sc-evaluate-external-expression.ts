@@ -356,6 +356,13 @@ export function evaluateExternalExpression(
     if (value === undefined) return undefined;
     if (expression.operator === '.length') {
       if (typeof value === 'string' || Array.isArray(value) || value instanceof Uint8Array) {
+        // Ethers passes `bytes` arguments as 0x-prefixed hex strings. Their Solidity length is the decoded
+        // byte count, while a real `string` still counts its characters. Use the published operand type so
+        // a text value that happens to look like hex keeps its string semantics.
+        const byteLength = typeof value === 'string'
+          && inferredType(expression.expression).startsWith('bytes')
+          && /^0x(?:[0-9a-fA-F]{2})*$/.test(value)
+          ? (value.length - 2) / 2 : value.length;
         // Same-function dynamic writes (values.push then w[values.length-1]) must see the post-write
         // length. fixedKeySources already apply stateLengthDeltas via evalComputedKey; varyingKeyExpressions
         // must match or a later constructed key resolves to -1 against empty pre-state.
@@ -363,7 +370,7 @@ export function evaluateExternalExpression(
         const writeDelta = stateName ? stateLengthDeltas?.[stateName] ?? 0n : 0n;
         const legacyDelta = !stateIncludesPriorWrites && typeof expression.value === 'string'
           ? BigInt(expression.value) : 0n;
-        return BigInt(value.length) + writeDelta + legacyDelta;
+        return BigInt(byteLength) + writeDelta + legacyDelta;
       }
     }
     if (expression.operator === '!') return !value;

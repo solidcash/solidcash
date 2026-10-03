@@ -305,6 +305,20 @@ export interface HopLiveDeployment {
     readonly value?: Uint8Array;
   }[];
   /**
+   * The nodes an earlier frame of this hop rewrote in place, by collection and slot.
+   *
+   * The deployment holds the pre-write node and an input still spends it, so the transaction carries the pre-write
+   * commitment and the view a later frame's declaration starts from is the one the chain walk carries to it
+   * (`chainSharedNodeViews`). What this states is the bytes that frame left: a chunking value's are not the ones the
+   * input holds, and the run of chunk records a later write takes is sized from them.
+   */
+  readonly rewrittenNodes?: readonly {
+    readonly collection: string;
+    readonly slot: Uint8Array;
+    readonly commitment: Uint8Array;
+    readonly value?: Uint8Array;
+  }[];
+  /**
    * The deployment's own state, decoded through the layout the frame's declaration names.
    *
    * A key the artifact publishes as a state read — `state:<name>`, or an array's length — is the value the frame
@@ -1070,6 +1084,14 @@ function planHopCollectionBatch(
         if (continued.value !== undefined) valueWitnesses.set(access.slotIndex, continued.value);
         continue;
       }
+      // A node an earlier frame of this hop rewrote is one the deployment holds, but it holds the bytes from before
+      // that write: the value the read materializes is the one the earlier frame left.
+      const rewritten = (request.liveDeployment.rewrittenNodes ?? []).find((node) =>
+        node.collection === collection.name && bytesEqual(node.slot, slot));
+      if (rewritten !== undefined) {
+        if (rewritten.value !== undefined) valueWitnesses.set(access.slotIndex, rewritten.value);
+        continue;
+      }
       const node = liveNode(collection, slot, request.liveDeployment);
       const commitment = node?.token?.nft?.commitment;
       if (commitment === undefined) continue;
@@ -1103,9 +1125,10 @@ function planHopCollectionBatch(
         `the deployment holds a node of collection "${collection.name}" with no commitment`,
       );
     }
+    const slot = bytesToHex(decodeEntryCommitment(hexToBin(commitment)).slot);
     const bytes = new Uint8Array(hexToBin(commitment));
     inventory.push(bytes);
-    utxoBySlot.set(bytesToHex(decodeEntryCommitment(bytes).slot), node);
+    utxoBySlot.set(slot, node);
   }
   // A head is minted only at genesis and a call never creates one, so every insert splices through a node the
   // transaction spends. A live collection with no head was deployed without it, and is refused by name.
@@ -1372,6 +1395,11 @@ function liveNodeValue(
   const continued = (deployment.continuedNodes ?? []).find((candidate) =>
     candidate.collection === collection.name && bytesEqual(candidate.slot, slot));
   if (continued !== undefined) return continued.value;
+  // A node an earlier frame of this hop rewrote: the deployment holds the bytes from before that write, so the
+  // value the deployment's own node and chunks reassemble is not the one the frame before this one left.
+  const rewritten = (deployment.rewrittenNodes ?? []).find((candidate) =>
+    candidate.collection === collection.name && bytesEqual(candidate.slot, slot));
+  if (rewritten !== undefined) return rewritten.value;
   const node = liveNode(collection, slot, deployment);
   const commitment = node?.token?.nft?.commitment;
   if (node === undefined || commitment === undefined) return new Uint8Array(0);

@@ -9,7 +9,7 @@ guards, loops, side-cars, write segments), and the sources in `.marketplace/cont
 
 | Titles | Today's wall | Next walls predicted | Owner |
 | --- | --- | --- | --- |
-| #42 take job, #66 integration | the entry frame's `OP_SPLIT` is **served** (`0ad9ecf7f`: an argument's own call was read from the wrong stack slot, so the arbitrator fee became the record loop's count); it now stops at the hop's named refusal of a second `publishJobEvent` reach on one chunking `jobEvents` node (`requireSettledNodeChains`) | the token fan-in behind it is served (`bc67c1f7e`: MS3's `payStart` settles) | hop; in progress (R4) |
+| #42 take job, #66 integration | **served** (this round): `requireSettledNodeChains` no longer refuses a second reach of a chunking node, because the hop now records the nodes an earlier reach of the same hop rewrote and the value each left, orders the writers, and chains the node's one input view to view; the title passes (`1 passed \| 65 skipped`) | #66's own integration path, and the titles whose setup is `takeJob` (#46, #48, #49, #53-#58, #65) - they are being re-measured | - |
 | #45 pay start job | **served** (`0ad9ecf7f`): the title passes | - | - |
 | #46, #48, #49, #54-#58, #65 | their setup's `takeJob` ("expected not reverted") | none predicted: their own entries match settling shapes; sanity titles that expect an entry's own revert before a call need the row below (#52) | - |
 | #19 post two jobs, #30 whitelist worker | a mapping write inside a loop whose body calls `publishJobEvent` (`_updateJobWhitelist`, line 474): no per-turn write segment is published; #30 is refused by the hop, #19 fails the write's check | - | compiler + hop; in progress (R2) |

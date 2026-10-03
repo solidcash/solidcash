@@ -2786,7 +2786,18 @@ function chainSharedNodeViews(
         const end = entry.viewOut ?? unstatedViewPlaceholder(master.master, at, entryIndex);
         const view = continued.get(entry.in) ?? views.get(entry.in) ?? entry.viewIn;
         if (!writes.has(entry) || bytesEqual(entry.viewIn, end)) {
+          if (hopTraceOn()) {
+            hopTrace(`chain-kept-write ${master.master} in=${String(entry.in)} `
+              + `viewIn=${String(entry.viewIn.length)} viewOut=${String(entry.viewOut?.length ?? -1)} `
+              + `write=${String(writes.has(entry))} view=${String(view.length)}`);
+          }
           return { ...entry, viewIn: view, viewOut: view };
+        }
+        if (hopTraceOn()) {
+          const head = (bytes: Uint8Array): string => `${bytes.length}:${binToHex(bytes.slice(0, 12))}..${binToHex(bytes.slice(-6))}`;
+          hopTrace(`chain-write ${master.master} in=${String(entry.in)} out=${String(entry.out)} `
+            + `viewIn=${head(entry.viewIn)} viewOut=${head(end)} view=${head(view)} `
+            + `learned=${String(learned.get(master.master)?.has(entry.in) ?? false)}`);
         }
         if (entry.viewOut !== undefined) views.set(entry.in, entry.viewOut);
         continued.set(entry.in, end);
@@ -2835,6 +2846,17 @@ function withChainEnds(
     inputs[placed.id] = {
       ...input, output: { ...input.output, token: { ...token, nft: { ...token.nft, commitment: end } } },
     };
+  }
+  if (hopTraceOn()) {
+    for (const placed of participants) {
+      const input = inputs[placed.id];
+      const len = (source: { readonly token?: { readonly nft?: { readonly commitment?: Uint8Array } } } | undefined): number =>
+        source?.token?.nft?.commitment?.length ?? -1;
+      if (len(input?.source) === len(input?.output) && ends.get(placed.index) === undefined) continue;
+      hopTrace(`chain-end ${placed.index} ${placed.id.slice(0, 44)} `
+        + `src=${String(len(input?.source))} out=${String(len(input?.output))} `
+        + `end=${String(ends.get(placed.index)?.length ?? -1)}`);
+    }
   }
   return inputs;
 }
@@ -4024,6 +4046,8 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
     const outpoint = `${utxo.txid}:${utxo.vout}`;
     hopTrace(`participant ${placed.index} ${placed.id} ${placed.kind} ${outpoint}`);
     hopTrace(`source ${placed.index} ${describeSourceOutput(source, real)}`);
+    hopTrace(`source-len ${placed.index} plan=${String(source.token?.nft?.commitment?.length ?? -1)} `
+      + `live=${String(real.token?.nft?.commitment?.length ?? -1)}`);
     const shared = resolved.get(outpoint);
     // Two participants on one outpoint is what the builder refuses, and both ids are wider than one trace line, so
     // the pair gets a line each.

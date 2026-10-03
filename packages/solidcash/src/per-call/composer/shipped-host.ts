@@ -32,6 +32,8 @@
  */
 
 import { binToHex, createVirtualMachineBch2026 } from '@bitauth/libauth';
+import { stepProbeTrace } from '../../network/createVirtualMachine.js';
+import { createInstructionSetBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-instruction-set.js';
 import {
   FrameKind,
   validateStopSiteMetadata,
@@ -192,6 +194,20 @@ function enteredLater(before: ExecutionStop, after: ExecutionStop): boolean {
 function runOnce(vm: VirtualMachine, program: ShippedVmProgram): ExecutionStop {
   const state = vm.evaluate(program);
   if (vm.stateSuccess(state) === true) return { accepted: true };
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_HOST_STEPS !== undefined) {
+    const failed = state as unknown as {
+      readonly error?: unknown;
+      readonly ip?: number;
+      readonly instructions?: readonly unknown[];
+    };
+    console.error('host-steps', JSON.stringify({
+      error: failed.error === undefined ? undefined : String(failed.error).slice(0, 240),
+      ip: failed.ip,
+      of: failed.instructions?.length,
+      steps: stepProbeTrace().slice(-1200),
+    }));
+  }
   const typed = state as {
     readonly ip?: number;
     readonly error?: string;

@@ -15,8 +15,9 @@ import { sharedNodeId, type HopEntryWrites } from '../../../src/per-call/proxy/e
  *
  * A node several reaches touch is one participant whose views chain in the order the frames run, so reads and
  * updates of a key the list holds share one transaction. An insert does not chain on the master, so its chains are
- * refused by name at planning; a value that chunks is sized from the value the deployment holds, so its node is not
- * chained and a write followed by another touch is refused once the hop has settled.
+ * refused by name at planning. A value that chunks chains the same way, and the later reach continues from the bytes
+ * the reach before it wrote; a chunkable write that states no value leaves the later reach none, refused once the
+ * hop has settled.
  */
 
 const IMPL_CATEGORY = 'a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f708192a3b4c5d6e7f809';
@@ -145,7 +146,7 @@ describe('the cross-reach write check', () => {
     expect(sharedNodeWritersBefore(writeFirst)).toStrictEqual(new Map([[1, [0]]]));
   });
 
-  it('leaves two writes of one node of a value that chunks unchained, refused once the hop has settled', () => {
+  it('chains two writes of one node of a value that chunks, refused when the earlier states no value', () => {
     const writes = (): HopEntryWrites => write({
       collection: '_events', chunkable: true, slots: [KEY_SLOT], spentIds: [nodeOf('_events', KEY_SLOT)],
     });
@@ -153,12 +154,27 @@ describe('the cross-reach write check', () => {
       frame({ name: 'Store.publish()', categoryHex: IMPL_CATEGORY, writes: writes() }),
       frame({ name: 'Store.publish()', categoryHex: IMPL_CATEGORY, writes: writes() }),
     ];
-    // Planning lets the hop settle, so a frame that refuses first reports itself; nothing orders or chains the node.
+    // A chunking node chains like any other: the later reach is settled after the writer that leaves its view.
     expect(() => requireSatisfiableReachWrites(frames)).not.toThrow();
-    expect(chainedNodeIds(frames)).toStrictEqual(new Set());
-    expect(sharedNodeWritersBefore(frames)).toStrictEqual(new Map());
+    expect(chainedNodeIds(frames)).toStrictEqual(new Set([nodeOf('_events', KEY_SLOT)]));
+    expect(sharedNodeWritersBefore(frames)).toStrictEqual(new Map([[1, [0]]]));
+    // Neither reach states a value the later one continues from, so the run it takes cannot be sized: refuse.
     expect(() => requireSettledNodeChains(frames))
       .toThrow(/that an earlier reach "Store.publish\(\)" writes, and its values chunk/);
+  });
+
+  it('allows two reaches that update one key of a chunking value the earlier states a value for', () => {
+    const stating = (): HopEntryWrites => ({
+      ...write({
+        collection: '_events', chunkable: true, slots: [KEY_SLOT], spentIds: [nodeOf('_events', KEY_SLOT)],
+      }),
+      writtenNodes: [{ collection: '_events', slot: KEY_SLOT, commitment: KEY_SLOT, value: KEY_SLOT }],
+    } as unknown as HopEntryWrites);
+    const frames = [
+      frame({ name: 'Store.publish()', categoryHex: IMPL_CATEGORY, writes: stating() }),
+      frame({ name: 'Store.publish()', categoryHex: IMPL_CATEGORY, writes: stating() }),
+    ];
+    expect(() => requireSettledNodeChains(frames)).not.toThrow();
   });
 
   it('refuses two reaches that insert through one node', () => {

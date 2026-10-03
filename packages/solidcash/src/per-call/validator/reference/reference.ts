@@ -444,6 +444,21 @@ class ReferenceRun {
     for (const [slot, chain] of chains) {
       if (slot.startsWith('in:')) {
         const input = inputByIndex(this.transaction, Number(slot.slice(3)));
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_CHAINS !== undefined) {
+          console.error('chain', slot, `${chain.length} entries`,
+            chain.map((step) => `${step.master}:${step.entry.viewIn.length}/`
+              + `${Array.from(step.entry.viewIn.slice(-6)).map((b) => b.toString(16).padStart(2, '0')).join('')}`
+              + `->${step.entry.viewOut === undefined ? 'none'
+                : `${step.entry.viewOut.length}/${Array.from(step.entry.viewOut.slice(-6)).map((b) => b.toString(16).padStart(2, '0')).join('')}`}`
+              + `@${String(step.entry.out)}`).join(' '),
+            'input', input?.token?.nftCommitment === undefined ? 'none'
+              : `${input.token.nftCommitment.length}/${Array.from(input.token.nftCommitment.slice(-6)).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
+            'starts', input === undefined ? 'no-input'
+              : String(eq(chain[0]!.entry.viewIn, input.token.nftCommitment)),
+            'inputLock', input === undefined ? 'none'
+              : `${input.lockingBytecode.length}:${Array.from(input.lockingBytecode).map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 12)}`);
+        }
         if (input === undefined || !eq(chain[0]!.entry.viewIn, input.token.nftCommitment)) {
           this.reject('V7', 'A_CHAIN_DOES_NOT_START_AT_THE_INPUT_COMMITMENT', Number(slot.slice(3)));
         }

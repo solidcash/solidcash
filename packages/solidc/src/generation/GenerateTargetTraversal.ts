@@ -3664,6 +3664,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // fixed position, so the record is the one the number of calls already made names.
     const recordIndex = this.perCallOrdinal;
     const runtimeIndex = this.perCallCallsMadeActive;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_CALL_INDEX === '1') {
+      console.error('percall-site', JSON.stringify({
+        function: this.currentFunction?.name,
+        site: `${node.interfaceName}.${node.functionName}`,
+        slotIndex: index,
+        recordIndex,
+        runtimeIndex,
+        callsMadeActive: this.perCallCallsMadeActive,
+        slotOnStack: this.stack.includes(callCountSlotName()),
+        callsMadeTopIndex: this.stack.includes(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE)
+          ? this.getStackIndex(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE) : null,
+        modelLength: this.stack.length,
+        isDefine: this.isDefineSubTraversal,
+        siteCount: sites.length,
+      }));
+    }
     const returnTypes = node.callInfo?.returnTypes ?? [];
     const usesResult = returnTypes.length > 0;
     // A target the caller's own code computes is emitted first, so the digest (when it too is computed) is left

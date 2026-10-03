@@ -63,6 +63,49 @@ function decodeAuthenticationInstructionViews(bytecode: Uint8Array): DecodedInst
 // the provider lifetime and bound it so long-running mock/miner-direct processes cannot retain every script seen.
 const decodedP2shByProvider = new WeakMap<NetworkProvider, Map<string, DecodedInstructions>>();
 const MAX_CACHED_P2SH_SCRIPTS = 64;
+// A bounded invocation path, filled only while the split-failure probe is enabled. The path is what names the
+// emitter that built the offending body: each entry is the depth the body runs at and the key it was invoked by.
+const invokeTrace: string[] = [];
+let invokeTraceEnabled = false;
+// The last few `OP_PICK`s, so a mis-indexed slot read names the depth it used and the item it fetched.
+const pickTrace: string[] = [];
+// Steps taken while a witness block is live, so a stack the check leaves one item off names the step that did it.
+const stepTrace: string[] = [];
+let countLayoutDumped = false;
+
+/** The host-step probe, which records every step of a run that fails. */
+function stepProbeEnabled(): boolean {
+  return (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_SPLIT_FAILURE !== undefined;
+}
+
+/** The steps the step probe recorded, oldest first. */
+export function stepProbeTrace(): readonly string[] {
+  return stepTrace;
+}
+
+/**
+ * Wraps every operation in an instruction set with the step recorder.
+ *
+ * The recorder only observes: each wrapped operation is called unchanged, and the ring is what a failure reads.
+ */
+function installStepTrace(instructionSet: ReturnType<typeof createInstructionSetBch2026>): void {
+  type StepState = Parameters<(typeof instructionSet.operations)[number]>[0];
+  for (let opcode = 0; opcode < 256; opcode += 1) {
+    const operation = instructionSet.operations[opcode]!;
+    instructionSet.operations[opcode] = ((state: StepState) => {
+      // Only while a witness block is live: the walk that reads one is what a stack left one item off is read from,
+      // and recording every step of every run costs more than it tells.
+      if (state.stack.some((item) => item.length >= 4000)) {
+        stepTrace.push(`${state.instructions.length}@${state.ip}:${opcode}`
+          + ` d=${state.controlStack.length} len=${state.stack.length}`
+          + ` top=${state.stack.slice(-5).map((entry) => `${entry.length}:${binToHex(entry.slice(0, 4))}`).join('/')}`);
+        if (stepTrace.length > 6000) stepTrace.splice(0, stepTrace.length - 6000);
+      }
+      return (operation as (inner: StepState) => StepState)(state);
+    }) as typeof operation;
+  }
+}
 const observerlessVmByProvider = new WeakMap<
   NetworkProvider, Map<string, ReturnType<typeof createVirtualMachineBch2026>>
 >();
@@ -274,12 +317,17 @@ function installCachedInvokeEvaluator(
   const debugInvokeCallerId = debugEnv?.SOLIDC_DEBUG_INVOKE_CALLER_ID;
   const debugInvokeReturnId = debugEnv?.SOLIDC_DEBUG_INVOKE_RETURN_ID;
   const debugEqualVerifyInput = debugEnv?.SOLIDC_DEBUG_EQUALVERIFY_INPUT;
+  invokeTraceEnabled = debugEnv?.SOLIDC_DEBUG_SPLIT_FAILURE !== undefined;
   instructionSet.operations[OpcodesBch2026.OP_INVOKE] = conditionallyEvaluate((state: State) => {
     const functionIdentifier = state.stack.pop();
     if (functionIdentifier === undefined) {
       return applyError(state, AuthenticationErrorCommon.emptyStack);
     }
     const functionTableKey = functionTableKeyOf(functionIdentifier);
+    if (invokeTraceEnabled) {
+      invokeTrace.push(`${state.controlStack.length + 1}:${functionTableKey}`);
+      if (invokeTrace.length > 512) invokeTrace.splice(0, invokeTrace.length - 512);
+    }
     const functionBody = state.functionTable[functionTableKey];
     if (functionBody === undefined) {
       return applyError(
@@ -412,18 +460,84 @@ function installZeroCopyStackOperations(instructionSet: ReturnType<typeof create
     pushToStack(next, [b!, a!, b!], { pushedBytes: b!.length })));
   set(OpcodesBch2026.OP_PICK, (state) => useOneVmNumber(state, (next, [depth]) => {
     const item = next.stack[next.stack.length - 1 - Number(depth)];
+    if (invokeTraceEnabled) {
+      pickTrace.push(`d=${String(depth)} len=${next.stack.length}`
+        + ` got=${item === undefined ? '-' : `${item.length}:${binToHex(item.slice(0, 8))}`}`);
+      if (pickTrace.length > 24) pickTrace.splice(0, pickTrace.length - 24);
+      if (!countLayoutDumped && item?.length === 1 && item[0] === 0x64 && Number(depth) === 3) {
+        countLayoutDumped = true;
+        console.error('pick-count-layout', JSON.stringify({
+          depth: String(depth),
+          stackLength: next.stack.length,
+          values: next.stack.map((entry) => `${entry.length}:${binToHex(entry.slice(0, 10))}`),
+        }));
+      }
+    }
     return item === undefined
       ? applyError(state, AuthenticationErrorCommon.invalidStackIndex,
         `Current stack depth: ${next.stack.length}; requested depth: ${depth}.`)
       : pushToStack(next, [item]);
   }));
-  set(OpcodesBch2026.OP_SPLIT, (state) => useOneVmNumber(state, (next, value) => {
-    const index = Number(value);
-    return useOneStackItem(next, (final, [item]) => (index < 0 || index > item!.length
-      ? applyError(final, AuthenticationErrorCommon.invalidSplitIndex,
-        `stack item length: ${item!.length}; requested split index: ${index}.`)
-      : pushToStack(final, [item!.subarray(0, index), item!.subarray(index)])));
-  }));
+  set(OpcodesBch2026.OP_SPLIT, (state) => {
+    // useOneStackItem/useOneVmNumber pop this stack in place, so the operands are captured before the nested calls.
+    const operandIndex = state.stack[state.stack.length - 1];
+    const operandItem = state.stack[state.stack.length - 2];
+    return useOneVmNumber(state, (next, value) => {
+      const index = Number(value);
+      return useOneStackItem(next, (final, [item]) => {
+        if (index < 0 || index > item!.length) {
+          if (invokeTraceEnabled) {
+            const describe = (bytes: Uint8Array | undefined): string => (bytes === undefined
+              ? '-' : `${bytes.length}:${binToHex(bytes.slice(0, 96))}`);
+            const program = (state as unknown as {
+              program?: {
+                inputIndex?: number;
+                transaction?: { inputs?: Array<{ unlockingBytecode?: Uint8Array }> };
+              };
+            }).program;
+            const unlocking = program?.transaction?.inputs?.[program.inputIndex ?? 0]?.unlockingBytecode;
+            console.error('split-failure', JSON.stringify({
+              ip: state.ip,
+              of: state.instructions.length,
+              depth: state.controlStack.length,
+              lastCodeSeparator: state.lastCodeSeparator,
+              functionCount: state.functionCount,
+              opcodes: state.instructions.map((instruction) => instruction.opcode).join(','),
+              index: describe(operandIndex),
+              item: describe(operandItem),
+              inputIndex: program?.inputIndex,
+              inputCount: program?.transaction?.inputs?.length,
+              unlockingLength: unlocking?.length,
+              unlockingHead: unlocking === undefined ? '-' : binToHex(unlocking.slice(0, 80)),
+              stackLength: state.stack.length,
+              stackLengths: state.stack.map((entry) => entry.length),
+              stackValues: state.stack.map((entry) => binToHex(entry.slice(0, 12))),
+              frames: state.controlStack.flatMap((frame) => {
+                if (typeof frame !== 'object' || frame === null) return [];
+                const { instructions, ip } = frame as {
+                  instructions: Array<{ opcode: number; data?: Uint8Array }>; ip: number;
+                };
+                const around = instructions.slice(Math.max(0, ip - 24), ip + 2)
+                  .map((instruction) => (instruction.data === undefined
+                    ? String(instruction.opcode)
+                    : `${instruction.opcode}'${binToHex(instruction.data.slice(0, 8))}`)).join(',');
+                return [`${instructions.length}@${ip}[${around}]`];
+              }),
+              trace: invokeTrace.slice(-80),
+              picks: pickTrace.slice(),
+              steps: stepTrace.slice(),
+            }));
+            if (operandItem !== undefined) {
+              console.error(`split-item-hex ${binToHex(operandItem)}`);
+            }
+          }
+          return applyError(final, AuthenticationErrorCommon.invalidSplitIndex,
+            `stack item length: ${item!.length}; requested split index: ${index}.`);
+        }
+        return pushToStack(final, [item!.subarray(0, index), item!.subarray(index)]);
+      });
+    });
+  });
   // A view must not become an OP_DEFINE body: libauth's state clone deep-copies the function table, and a view
   // carries its whole underlying buffer into that copy. A defined body is stored compact instead.
   const define = instructionSet.operations[OpcodesBch2026.OP_DEFINE]!;
@@ -614,7 +728,14 @@ function buildVirtualMachineBch2026ForProvider(
   const limits = provider?.consensusLimits;
   // Nothing to customise. This is not a silent drop: with no limits AND no observer, libauth's own factory
   // builds precisely the instruction set the rest of this function would assemble.
-  if (limits === undefined && observer === undefined) return createVirtualMachineBch2026(standard);
+  if (limits === undefined && observer === undefined) {
+    if (!stepProbeEnabled()) return createVirtualMachineBch2026(standard);
+    // The step probe records this path too, building what libauth's factory would and wrapping it, so a run on a
+    // machine with no custom limits is observable without changing what it computes.
+    const observed = createInstructionSetBch2026(standard);
+    installStepTrace(observed);
+    return createVirtualMachine(observed);
+  }
   const consensus = limits === undefined ? ConsensusBch2026 : {
     ...ConsensusBch2026,
     maximumBytecodeLength: limits.maximumInputBytes,
@@ -853,6 +974,10 @@ function buildVirtualMachineBch2026ForProvider(
       };
     }
   }
+  // A step trace, installed only for the split probe and last of all so no other override sits outside it: every
+  // step taken while a witness block is live is recorded with the stack's size and its top lengths, so a walk that
+  // leaves the stack one item off names the step that did it rather than only the operation that later failed.
+  if (stepProbeEnabled()) installStepTrace(instructionSet);
   const machine = createVirtualMachine(instructionSet);
   if (runPhases !== undefined) {
     // The same phases as `evaluate`, stepped in place as `evaluate` steps them, returning each phase's stop state

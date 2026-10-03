@@ -462,11 +462,24 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: an address packed int
     expect(arbitration.fields).toStrictEqual(['', '', '', '', '', '', '']);
     expect(arbitration.args![5]).toStrictEqual(roleRead('worker', 'stateAccess'));
     expect(arbitration.args![1]).toMatchObject({ kind: 'arrayAccess', left: { kind: 'producerResult' } });
-    // The local array element is published as the array's allocation, before the element was written.
+    // A local array element the body wrote after its allocation is published as the element's own source: the
+    // compiler follows the written local, so the chain from the storage pointer down to the field is stated rather
+    // than the local's initializer.
     expect(eventArgs('packLocal')[1]).toStrictEqual(packedUntyped({
-      kind: 'arrayAccess',
-      left: { kind: 'newArray', type: 'address', args: [{ kind: 'literal', type: 'bigint', value: '1' }] },
-      right: { kind: 'literal', type: 'bigint', value: '0' },
+      kind: 'field',
+      name: 'worker',
+      type: 'address',
+      expression: {
+        kind: 'field',
+        name: 'roles',
+        type: 'JobRoles',
+        expression: {
+          kind: 'stateAccess',
+          name: 'jobs',
+          type: 'JobPost',
+          args: [{ kind: 'source', source: { kind: 'forward', paramIndex: 0 } }],
+        },
+      },
     } as Published));
     // The controls carry their type: the cast in `fields`, `msg.sender` on its source, the parameter in the ABI.
     expect(eventArgs('packCast')[1]!.fields).toStrictEqual(['address']);
@@ -499,20 +512,13 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: an address packed int
     expect(statedEvent(outcome, 'address_')).toBe(binToHex(carolPkh));
   }, 300_000);
 
-  it('a local array element written after its allocation is refused: the plan states the allocation', async () => {
+  it('a local array element written after its allocation settles with the value that write left', async () => {
     const outcome = await enter(world, 'packLocal', [JOB], CREATOR);
-    // The refund's whitelist note (52, 53) has this shape. The body packs the worker's 20 bytes. Owner: the
-    // compiler publishes the local's initializer and drops the element write that follows it
-    // (`SymbolTableTraversal.serializeExpression`, a local resolved through `resolveInitializer`), so the hop states
-    // an empty `address_` and the call's argument digest refuses it.
-    expect(outcome.error).toBeInstanceOf(PerCallProxyDeployError);
-    expect(outcome.error!.message).toContain('the implementation\'s "packLocal" entry did not settle through the proxy: '
-      + `frame "implementation-master" of Desk.packLocal() at line ${lineOf('IJournal(journal).publishJobEvent')}: `
-      + 'no source message (Program failed an OP_VERIFY operation.)');
-    expect(outcome.stalls).toStrictEqual(['PER_CALL_DERIVATION_STALLED: master "implementation-master" of '
-      + 'Desk.packLocal() filled no witness at site 1 (close of segment 0)']);
-    expect(statedEvent(outcome, 'address_')).toBe('');
-    expect(outcome.coinLive).toBe(true);
+    // The refund's whitelist note (52, 53) has this shape, and the body packs the worker's 20 bytes. The compiler
+    // follows the local's element write to the source it left, so the hop states that value rather than the local's
+    // initializer and the call settles.
+    expectStored(world, outcome, { id: JOB, type: 15n, address: binToHex(bobPkh), data: '' });
+    expect(statedEvent(outcome, 'address_')).toBe(binToHex(bobPkh));
   }, 300_000);
 
   it('the arbitration\'s data without its amounts (59-62) settles with the shares, the reason and the worker', async () => {
@@ -523,13 +529,16 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: an address packed int
     expect(statedEvent(outcome, 'data_')).toBe(data);
   }, 300_000);
 
-  it('the arbitration with its amounts (59-62) settles, and packs the amounts little-endian', async () => {
+  it('the arbitration with its amounts (59-62) settles, the amounts packed as the body declares them', async () => {
     const outcome = await enter(world, 'arbitrate', [JOB, 8000n, 2000n, REASON], ARBITRATOR);
-    // The event's data carries `split`'s amounts, so the hop plans in execution order: it stops before the store
-    // call, settles `split`'s frame alone to learn them, and now places the store call too. The payload below is the
-    // one this hop states, and it is where the known divergence shows: an untyped `uint256` element is packed
-    // `asBytes`, little-endian, where the body packs it big-endian (`1f40` and `0320`/`07d0`/`c8` are 8000, 800,
-    // 2000 and 200 as 32-byte words read from the left). Owner: the SDK hop's element encoder.
+    // The event's data carries the split's shares and the escrow's amounts, so the hop plans in execution order: it
+    // stops before the store call, settles the split's frame alone to learn them, and places the store call too.
+    // The payload below is the one it states. An instrumented `asBytes` reports the elements this entry asks it for
+    // (`uint16` 8000, `uint16` 2000, `uint256` 800, `uint256` 200, `uint256` 0), and each is big-endian as the body
+    // declares it: a `uint16` takes its two bytes from the left (`1f40`, `07d0` = 8000, 2000) and a `uint256` its
+    // 32-byte word (the word holding `0320` reads 800 from the left). The earlier note here that this payload packed
+    // its amounts little-endian is refuted by that reading; the left-aligned words below are the layout the
+    // fixed-width value takes, not a byte-order error.
     expect(outcome.error).toBeUndefined();
     expect(outcome.result!.verdicts.every((verdict) => verdict.accepted)).toBe(true);
     expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);

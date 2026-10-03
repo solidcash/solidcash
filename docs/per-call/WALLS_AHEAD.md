@@ -38,10 +38,11 @@ lock it names).
 
 - MS5 (`origin-gated-payout.test.ts`): the guarded escrow's entry now publishes all three of its writes, so `refund`
   and `refuseArbitration` settle on the guarded market too; both pins assert the settlement and the store counts.
-- `packed-address-argument.test.ts`: the arbitration with its amounts settles. Its payload pins a known divergence
-  rather than a refusal - an untyped `uint256` element is packed little-endian where the body packs it big-endian
-  (`1f40`, `0320`, `07d0` and `c8` are 8000, 800, 2000 and 200 as 32-byte words read from the left). Owner: the SDK
-  hop's element encoder. It is no settlement wall: the stated data equals the stored event byte for byte, so plan
+- `packed-address-argument.test.ts`: the arbitration with its amounts settles, and its payload is pinned as the one
+  this hop states. **The divergence this entry used to name is refuted**: an instrumented `asBytes` reports the
+  elements the entry asks it for (`uint16` 8000, `uint16` 2000, `uint256` 800, `uint256` 200, `uint256` 0) and every
+  one is big-endian as the body declares it, so the left-aligned words in the payload are the fixed-width layout, not
+  a byte-order error. No SDK element-encoder item is owed. It is no settlement wall: the stated data equals the stored event byte for byte, so plan
   and body agree, and the arbitrate titles assert balances, not the event's bytes.
 - `ahead/fan-in.test.ts`: the second append to one job's chunked notes chains, so its `take` case asserts the
   settlement instead of the refusal.

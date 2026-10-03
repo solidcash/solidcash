@@ -355,9 +355,10 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: an integer packed int
     }));
     expect(packedData('packState')).toStrictEqual(untyped({ kind: 'state', name: 'count' }));
     expect(packedData('packLiteralElement').args![0]).toMatchObject({ kind: 'arrayAccess', left: { kind: 'array' } });
-    // An array written element by element is published as the bare local, which names no value.
-    expect(packedData('packWrittenElement').args![0]).toMatchObject({
-      kind: 'arrayAccess', left: { kind: 'identifier', name: 'amounts' },
+    // An array written element by element is published as the source the element write left - the parameter that
+    // write copied - rather than the bare local identifier it was allocated as.
+    expect(packedData('packWrittenElement').args![0]).toStrictEqual({
+      kind: 'source', source: { kind: 'forward', paramIndex: 1 },
     });
   });
 
@@ -389,13 +390,10 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: an integer packed int
     expectPacked(world, await enter(world, 'packState', [JOB]), bigEndian(AMOUNT + 1n, 32));
   }, 600_000);
 
-  it('an element of a local array written element by element is refused by name: the plan has no value', async () => {
+  it('an element of a local array written element by element settles with the value that write left', async () => {
     const outcome = await enter(world, 'packWrittenElement', [JOB, 1234n]);
-    // Owner: the compiler publishes the local as a bare identifier with no binding and drops the element write
-    // (`SymbolTableTraversal.serializeExpression`), so the hop cannot resolve the argument (`resolveCallArguments`).
-    expect(outcome.error).toBeInstanceOf(PerCallProxyDeployError);
-    expect(outcome.error!.message).toBe('the call to "IJournal.publishJobEvent" passes argument 1 from a "expression" '
-      + 'expression of kind "call", which the hop cannot resolve from the caller\'s own arguments and state');
-    expect(outcome.coinLive).toBe(true);
+    // The compiler follows the local's element write to the source it left - the parameter the write copied - so the
+    // hop states that value and the body's own digest is what the argument closes against.
+    expectPacked(world, outcome, bigEndian(1234n, 32));
   }, 300_000);
 });

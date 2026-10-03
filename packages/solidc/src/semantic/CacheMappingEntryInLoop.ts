@@ -481,6 +481,15 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         ? { name: statement.name, key: statement.keys[0], value: statement.expression } : undefined;
     const knownWrites = new Map<string, { key: ExpressionNode; value: ExpressionNode }>();
     const knownCaptures = new Map<string, ExpressionNode>();
+    const sourceCaptures = new Map<string, ExpressionNode>();
+    let sourcePrefixSafe = true;
+    const expandSourceCaptures = (source: ExpressionNode): ExpressionNode => {
+      let value = cloneNode(source) as ExpressionNode;
+      for (const [name, capture] of sourceCaptures) {
+        value = new ProjectCapturedMappingRead(name, capture).visit(value) as ExpressionNode;
+      }
+      return value;
+    };
     const projectKnownValues = (source: ExpressionNode): { value: ExpressionNode; replaced: boolean } => {
       let value = cloneNode(source) as ExpressionNode;
       let replaced = false;
@@ -508,6 +517,11 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           knownWrites.set(precedingWrite.name, precedingWrite);
         } else if (preceding instanceof VariableDefinitionNode
           && (!preceding.expression || expressionCanon(preceding.expression) !== undefined)) {
+          if (preceding.expression) {
+            sourceCaptures.set(preceding.name, expandSourceCaptures(preceding.expression));
+          } else {
+            sourceCaptures.delete(preceding.name);
+          }
           const capture = preceding.expression && projectKnownValues(preceding.expression).value;
           if (capture && argumentOnlyMappingValue(capture, parameters)) {
             knownCaptures.set(preceding.name, capture);
@@ -518,6 +532,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           // Calls, branches, assertions, and unsupported writes end the straight-line proof.
           knownWrites.clear();
           knownCaptures.clear();
+          sourceCaptures.clear();
+          sourcePrefixSafe = false;
         }
       }
       const reader = statements[index];
@@ -537,24 +553,16 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           if (projector.replaced) reader.postWriteKeyExpressions = [projected];
         }
       }
-      const captured = writerIndex >= 0 ? statements[writerIndex] : undefined;
       const projected = projectKnownValues(reader.postWriteKeyExpressions?.[0] ?? readerKeys[0]);
       if (projected.replaced) reader.postWriteKeyExpressions = [projected.value];
-      // Before the first mutation, a key read sees the authenticated input state. A read-only local
-      // may have captured that value earlier; expand it only while no other effectful statement
-      // intervenes, so a later mapping write cannot retroactively change its key.
-      let preWriteKey = readerKeys[0];
-      if (writerIndex >= 0) {
-        if (!(captured instanceof VariableDefinitionNode) || !captured.expression
-          || previousEffectful[writerIndex] >= 0
-          || expressionCanon(captured.expression) === undefined) continue;
-        const alias = new ProjectCapturedMappingRead(captured.name, captured.expression);
-        preWriteKey = alias.visit(cloneNode(preWriteKey)) as ExpressionNode;
-      }
+      // A read still sees the authenticated input state if the straight-line prefix only wrote
+      // other collections. Expand captured locals at their declaration point, not after later writes.
+      if (!sourcePrefixSafe) continue;
+      const preWriteKey = expandSourceCaptures(readerKeys[0]);
       if (expressionCanon(preWriteKey) === undefined) continue;
       const laterIndex = nextEffectful[index];
       const laterWrite = laterIndex < statements.length ? scalarWrite(statements[laterIndex]) : undefined;
-      if (laterWrite) {
+      if (laterWrite && !knownWrites.has(laterWrite.name)) {
         const finder = new SourceMappingReadFinder(laterWrite.name);
         finder.visit(preWriteKey);
         if (finder.found) reader.preWriteMappingCollections = [laterWrite.name];

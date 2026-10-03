@@ -342,8 +342,8 @@ function refuseUnservedShape(
       `the constructor of "${artifact.contractName}" makes a value send, which this deployment has no plan for`,
     );
   }
-  // A computed call reads one side-car per turn, so the number the loop co-spends is the loop's to decide, not a
-  // count the artifact fixes and this deployment can lay.
+  // A call inside a loop reads one side-car per turn, so the number a frame co-spends is the loop's to decide and
+  // not a count the artifact fixes and this deployment can lay.
   if (constructorAbi.keccakInLoop === true) {
     throw new PerCallGenesisError(
       `the constructor of "${artifact.contractName}" hashes inside a loop, so how many compute side-cars it co-spends `

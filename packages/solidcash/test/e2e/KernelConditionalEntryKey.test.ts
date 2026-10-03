@@ -180,4 +180,30 @@ describe('kernel conditional state-derived entry keys', () => {
     await expect(probe.call.setThenStore(false, 7n, 11n, 17n).send()).resolves.toBeDefined();
     expect((await probe.getEntries('data')).map((entry) => entry.value).sort()).toEqual([13n, 17n]);
   }, 180_000);
+
+  it('keeps a mapping value captured before a later write in the pre-state', async () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Probe() {
+        mapping(uint256 => bool) flags;
+        mapping(uint256 => uint256) data;
+        function enable(uint256 flagKey) public { flags[flagKey] = true; require(true); }
+        function captureThenClear(uint256 flagKey, uint256 dataKey, uint256 value) public {
+          bool selected = flags[flagKey];
+          data[selected ? dataKey : 0] = value;
+          flags[flagKey] = false;
+          require(true);
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x69), provider);
+    for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const probe = await getContractFactory(artifact, signer).deploy();
+    await expect(probe.call.enable(7n).send()).resolves.toBeDefined();
+    await expect(probe.call.captureThenClear(7n, 11n, 13n).send()).resolves.toBeDefined();
+    expect((await probe.getEntries('data')).map((entry) => entry.value)).toEqual([13n]);
+  }, 180_000);
 });

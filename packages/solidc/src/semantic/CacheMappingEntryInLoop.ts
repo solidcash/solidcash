@@ -518,15 +518,23 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           }
         }
       }
-      // Before the first effectful statement, a pure key read still sees the authenticated input state.
-      // A later mapping write may appear after argument-only local declarations, but cannot retroactively
-      // change that read. Stop at any other statement so calls/branches never claim snapshot authority.
-      if (writerIndex >= 0 || expressionCanon(readerKeys[0]) === undefined) continue;
+      // Before the first mutation, a key read sees the authenticated input state. A read-only local
+      // may have captured that value earlier; expand it only while no other effectful statement
+      // intervenes, so a later mapping write cannot retroactively change its key.
+      let preWriteKey = readerKeys[0];
+      if (writerIndex >= 0) {
+        if (!(captured instanceof VariableDefinitionNode) || !captured.expression
+          || previousEffectful[writerIndex] >= 0
+          || expressionCanon(captured.expression) === undefined) continue;
+        const alias = new ProjectCapturedMappingRead(captured.name, captured.expression);
+        preWriteKey = alias.visit(cloneNode(preWriteKey)) as ExpressionNode;
+      }
+      if (expressionCanon(preWriteKey) === undefined) continue;
       const laterIndex = nextEffectful[index];
       const laterWrite = laterIndex < statements.length ? scalarWrite(statements[laterIndex]) : undefined;
       if (laterWrite) {
         const finder = new SourceMappingReadFinder(laterWrite.name);
-        finder.visit(readerKeys[0]);
+        finder.visit(preWriteKey);
         if (finder.found) reader.preWriteMappingCollections = [laterWrite.name];
       }
     }

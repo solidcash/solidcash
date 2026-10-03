@@ -321,6 +321,7 @@ describe('vmap fixed-write batch metadata', () => {
     const captured = compile('flags[flagKey] = true; bool selected = flags[flagKey]; data[selected ? dataKey : 0] = value;');
     const late = compile('data[flags[flagKey] ? dataKey : 0] = value; flags[flagKey] = true;');
     const lateWithLocal = compile('data[flags[flagKey] ? dataKey : 0] = value; uint256 tmp = value + 1; flags[flagKey] = true; require(tmp > value);');
+    const capturedBeforeWrite = compile('bool selected = flags[flagKey]; data[selected ? dataKey : 0] = value; flags[flagKey] = true;');
     const blocked = compile('flags[flagKey] = true; require(true); data[flags[flagKey] ? dataKey : 0] = value;');
     const key = (artifact: ReturnType<typeof compile>): KeySourceAbi | undefined => artifact.abi
       .find((fn) => fn.name === 'store')
@@ -335,6 +336,8 @@ describe('vmap fixed-write batch metadata', () => {
     expect(key(late)?.preWriteMappingCollections).toEqual(['flags']);
     expect(key(lateWithLocal)?.postWriteExpressionLabel).toBeUndefined();
     expect(key(lateWithLocal)?.preWriteMappingCollections).toEqual(['flags']);
+    expect(key(capturedBeforeWrite)?.postWriteExpressionLabel).toBeUndefined();
+    expect(key(capturedBeforeWrite)?.preWriteMappingCollections).toEqual(['flags']);
     expect(key(blocked)?.postWriteExpressionLabel).toBeUndefined();
   });
 

@@ -144,6 +144,8 @@ export interface ChunkRunMutation {
   readonly leaveRemoved?: boolean;
   /** Chunks only the spent value holds are recreated unchanged at their index rather than consumed. */
   readonly keepRemoved?: boolean;
+  /** Chunks only the spent value holds are declared consumed while their index carries them back unchanged. */
+  readonly recreateRemoved?: boolean;
   /** The lock every chunk of the run is spent from and written at, instead of the value's chunk address. */
   readonly runLock?: Uint8Array;
   /** The lock the first chunk is spent from, while it is still written at the value's chunk address. */
@@ -270,6 +272,8 @@ export function evaluateChunkRuns(
     if (kept !== undefined) {
       const outputLock = head && mutation.keptOutputLock !== undefined ? mutation.keptOutputLock : lock;
       runOutputs.push({ lockingBytecode: outputLock, valueSatoshis: CHUNK_VALUE, token: token('mutable', kept) });
+    } else if (spent !== undefined && subject && mutation.recreateRemoved === true) {
+      runOutputs.push({ lockingBytecode: lock, valueSatoshis: CHUNK_VALUE, token: token('mutable', spent) });
     } else {
       // A consumed chunk's satoshis are paid out; its index carries no record.
       runOutputs.push({ lockingBytecode: USER_LOCK, valueSatoshis: CHUNK_VALUE });

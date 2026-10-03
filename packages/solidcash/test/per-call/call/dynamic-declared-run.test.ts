@@ -27,7 +27,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * The record that carries the value's byte length is still written by the body and closed against the declaration
  * the plan states, so the hop takes the run's width from that declaration: the first attempt lays the run at the
  * width the deployment holds, the body's own close hands the length it wrote back, and the run is laid at the
- * chunks that length names. The chunks themselves stay what the body computed, learned from the same close.
+ * chunks that length names. The chunks themselves stay what the body computed, learned from the same close. A pop
+ * that leaves fewer chunks is laid the same way, the run declared at the width it spends and the chunk past the
+ * written value consumed with no successor.
  *
  * The expected commitments come from the shipped encoders (`encodePushdataValue`, `buildChunkCommitment`,
  * `chunkRecordLockingBytecode`), and the run is read back through the shipped chunk and pushdata decoders.
@@ -37,6 +39,7 @@ const IMPL_CATEGORY = '11'.repeat(32);
 const PROXY_CATEGORY = '22'.repeat(32);
 const CALLER_TXID = '33'.repeat(32);
 const SECOND_CALLER_TXID = '44'.repeat(32);
+const THIRD_CALLER_TXID = '55'.repeat(32);
 
 /** The seed element the deployment's own entry appends, which the artifact states outright. */
 const SEED: StateValue = { id: 1n, title: 'seed', at: 2n };
@@ -74,6 +77,7 @@ interface Funding {
   readonly proxyFunding: { txid: string; vout: number; satoshis: bigint };
   readonly callerUtxo: { txid: string; vout: number; satoshis: bigint };
   readonly callUtxo: { txid: string; vout: number; satoshis: bigint };
+  readonly dropUtxo: { txid: string; vout: number; satoshis: bigint };
   readonly deployerLock: Uint8Array;
   readonly changeAddress: string;
 }
@@ -86,15 +90,17 @@ async function funded(network: MockNetworkProvider): Promise<Funding> {
   const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
   const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 100_000n };
   const callUtxo = { txid: SECOND_CALLER_TXID, vout: 0, satoshis: 100_000n };
+  const dropUtxo = { txid: THIRD_CALLER_TXID, vout: 0, satoshis: 100_000n };
   await network.addUtxo(funder.address, implFunding);
   await network.addUtxo(funder.address, proxyFunding);
   await network.addUtxo(binToHex(deployerLock), callerUtxo);
   await network.addUtxo(binToHex(deployerLock), callUtxo);
+  await network.addUtxo(binToHex(deployerLock), dropUtxo);
   // The hops broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
   await fundShippedFacets(network);
   return {
     network, signature, funder: funder.unlock.spend(alicePub, signature),
-    implFunding, proxyFunding, callerUtxo, callUtxo, deployerLock, changeAddress: funder.address,
+    implFunding, proxyFunding, callerUtxo, callUtxo, dropUtxo, deployerLock, changeAddress: funder.address,
   };
 }
 
@@ -204,22 +210,28 @@ describe('a proxied call whose append publishes no element', () => {
       .toStrictEqual(chunkRecordLockingBytecode(deployment.proxy.categoryId, 'posts', 'Post[]'));
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
 
-    // An entry that pops: the record the pop writes declares a value of one chunk where the run is now two, and a
-    // run laid at the narrower width is not the run the body reads.
-    await expect(callPerCallProxyEntry({
+    // An entry that pops: the record the pop writes declares a value of one chunk where the run is now two. The run
+    // is declared at the two chunks it spends: the first is rewritten in place, and the second is consumed with no
+    // successor, its index paying its satoshis to the caller.
+    const dropped = await callPerCallProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
       implementationCategoryId: deployment.implementation.categoryId,
       functionName: 'drop',
       args: [],
-      callerUtxo: funding.callUtxo,
+      callerUtxo: funding.dropUtxo,
       callerLockingBytecode: funding.deployerLock,
       funder: funding.signature.unlockP2PKH(),
       changeAddress: funding.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow(
-      /writes dynamic "posts" \d+ byte\(s\), which is 1 chunk\(s\), fewer than the 2 chunk\(s\) the deployment holds/,
-    );
+    });
+    expect(dropped.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(dropped.broadcast).toBeDefined();
+    expect(dropped.draft.trailingOutputs).toHaveLength(0);
+    expect((await liveChunks(network, deployment.proxy.categoryId, layout)).map((chunk) => chunk.data))
+      .toStrictEqual([seedValue]);
+    const dropState = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    expect(dropState.byNft[0]!.posts$len).toBe(BigInt(seedValue.length));
   });
 });

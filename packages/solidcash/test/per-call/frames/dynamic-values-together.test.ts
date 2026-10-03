@@ -35,10 +35,10 @@ import {
  *
  * `layOutChunkRun` lays each value's run out on its own. The segment declares the runs in the order the values are
  * declared, each one record per chunk of the wider of its two versions, so the composition places every kept chunk
- * as a participant, every created chunk as a trailing output and every removed chunk as a spent input, and declares
- * each record at the index the transaction carries it. The master accepts the composition when the first value grows
- * or shrinks beside the second; the controls declare the later run where the first value's old or new count alone
- * ends, and forge a chunk output.
+ * as a participant, every created chunk as a trailing output and every removed chunk as a participant spent with a
+ * plain output at its index, and declares each record at the index the transaction carries it. The master accepts
+ * the composition when the first value grows or shrinks beside the second; the controls declare the later run where
+ * the first value's old or new count alone ends, and forge a chunk output.
  *
  * The hop that plans a call's writes still plans one run per entry, so an entry that writes two dynamic values is
  * refused there by name; that planner is another stream's.
@@ -104,16 +104,20 @@ function draftOf(shape: Shape, placement: Placement): {
   const created = all.filter((record) => record.role === 'created');
   const removed = all.filter((record) => record.role === 'removed');
 
+  // A kept chunk is a participant and a created one a trailing output. A removed one is a participant too, whose own
+  // index carries the plain output its satoshis are paid to: the run census leaves no record where a dropped chunk
+  // was spent, which a created output placed there would be.
+  const spentIds = [...kept, ...removed].map((record) => record.id);
   const opened = layoutTransaction([
-    { contract: 'Pair', masters: [MASTER_ID], state: [STATE_ID, ...kept.map((record) => record.id)] },
+    { contract: 'Pair', masters: [MASTER_ID], state: [STATE_ID, ...spentIds] },
   ]);
   const stateIndex = participant(opened, STATE_ID).index;
-  // A kept chunk is a participant, a created one a trailing output and a removed one a spent input past the blocks.
   const indexOf = (record: ChunkRecordPlacement): RecordEntry => {
-    const at = record.role === 'kept' ? participant(opened, record.id).index : undefined;
+    const at = record.role === 'created' ? undefined : participant(opened, record.id).index;
     return {
-      in: at ?? (record.role === 'removed' ? opened.funderInputBase + removed.indexOf(record) : INDEX_NONE),
-      out: at ?? (record.role === 'created' ? opened.participantCount + created.indexOf(record) : INDEX_NONE),
+      in: at ?? INDEX_NONE,
+      out: record.role === 'kept' ? at! : record.role === 'created'
+        ? opened.participantCount + created.indexOf(record) : INDEX_NONE,
       viewIn: record.viewIn,
       viewOut: record.viewOut,
     };
@@ -152,11 +156,8 @@ function draftOf(shape: Shape, placement: Placement): {
   };
 
   const plan: CompositionDraftPlan = {
-    blocks: [{ contract: 'Pair', masters: [MASTER_ID], state: [STATE_ID, ...kept.map((record) => record.id)] }],
-    userInputs: [
-      ...removed.map((record, at) => ({ id: record.id, index: opened.funderInputBase + at })),
-      { id: USER_ID, index: opened.funderInputBase + removed.length },
-    ],
+    blocks: [{ contract: 'Pair', masters: [MASTER_ID], state: [STATE_ID, ...spentIds] }],
+    userInputs: [{ id: USER_ID, index: opened.funderInputBase }],
     masters: [masterEntry],
     inputs: {
       [MASTER_ID]: {

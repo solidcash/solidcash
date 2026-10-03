@@ -33933,10 +33933,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * position from the run's first declared record: each of the `ceil(oldLen / 120)` chunks the value held when the
    * segment began is consumed (its declared input view is chunk `i`, spent from the value's own chunk address or,
    * under a validator, carried from the frame that created it), a position past them creates its record from
-   * nothing, and a position past the written value's chunks writes no record. `oldLen` is the length header the
-   * segment's own declaration of the data record starts from. With `closesSegment` the segment declares nothing
-   * past the run, so no chunk is minted that a later read could take for the value's own. The run's width, its
-   * record count, is left tracked as `(dyn_run_width)`.
+   * nothing, and a position past the written value's chunks writes no record, so a chunk a shorter value drops is
+   * consumed with no successor at its input's index either. `oldLen` is the length header the segment's own
+   * declaration of the data record starts from. With `closesSegment` the segment declares nothing past the run, so
+   * no chunk is minted that a later read could take for the value's own. The run's width, its record count, is left
+   * tracked as `(dyn_run_width)`.
    */
   private emitPerCallChunkRunCensus(options: {
     readonly sv: StateVariableNode;
@@ -33993,6 +33994,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     pick('(dyn_run_i)', 3);
     this.emit(Op.OP_EQUALVERIFY, loc); // [..., in, out]
     this.emit(Op.OP_SWAP, loc); // [..., out, in]
+    // A chunk past the written value's own is consumed with no successor: the output at its input carries none of
+    // the contract's records, so a segment that held it kept there cannot carry it on past the run.
+    pick('(dyn_run_i)', 2);
+    pick('(dyn_nnew)', 3);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emitNoRecordAtOutput(2, loc);
+    this.emit(Op.OP_ENDIF, loc);
     // An earlier frame's created chunk may be carried and rewritten, never consumed: its output stays.
     this.emitChunkRecordInputCheck('(dyn_run_addr)', 2, loc, (untracked) => {
       pick('(dyn_run_shared)', untracked);
@@ -34530,7 +34539,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * Entry `[..., out]` with `untracked` working items above the tracked stack, `out` among them; exit `[...]`. A record
    * spent through a record covenant's write path keeps only what the master pins, so a record the frame keeps would
-   * otherwise be free to leave the address with its token. A record with no output writes nothing.
+   * otherwise be free to leave the address with its token. A record with no output writes nothing, and an output
+   * with no token holds no record: a segment holds kept a chunk a later write consumes with no successor, and
+   * settlement requires the token wherever a record's last declaration keeps it.
    */
   private emitChunkRecordOutputCheck(addrName: string, untracked: number, loc: SingleLocationData): void {
     this.emit(Op.OP_DUP, loc);
@@ -34539,10 +34550,44 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_OUTPUTBYTECODE, loc);
     this.emit(encodeInt(BigInt(this.getStackIndex(addrName) + untracked)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
+   * Requires the output at an input index on top to carry none of the contract's records.
+   *
+   * Entry `[..., in]` with `untracked` working items above the tracked stack, `in` among them; exit the same. A
+   * record consumed with no successor leaves its index without one, and an index the outputs do not reach has none
+   * to carry.
+   */
+  private emitNoRecordAtOutput(untracked: number, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_WITHIN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emitRecordsCategoryBase(loc, untracked + 1);
+    this.emit(new Uint8Array([0x01]), loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_ENDIF, loc);
   }
 

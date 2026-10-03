@@ -346,6 +346,13 @@ export interface HopEntryWritesContext {
   readonly category: Uint8Array;
   /** The end commitment learned for each value-dependent node, in `learningCandidates` order. */
   readonly learnedViews: readonly (Uint8Array | undefined)[];
+  /**
+   * The lock a chunk is paid to when a write leaves its dynamic value narrower than the run the deployment holds.
+   *
+   * The chunks past the written value's width are consumed with no successor record, so their satoshis leave the
+   * run; absent, such a write is refused by name.
+   */
+  readonly releasedLock?: Uint8Array;
 }
 
 /** The records an entry's own writes contribute to a hop plan. */
@@ -1281,7 +1288,8 @@ interface HopDynamicRun {
    * The live chunk each spent record sits on, in run order, with the id the hop's block holds it under.
    *
    * A deployment's own first hop starts from the empty value its genesis minted, so it spends none; a call starts
-   * from the chunks the deployment holds, and each of them the frame spends and recreates in place.
+   * from the chunks the deployment holds, and the frame spends each of them: it recreates in place the ones the
+   * written value still holds and consumes the rest.
    */
   readonly spent: readonly { readonly id: string; readonly utxo: Utxo }[];
   /** The run's width, when the record's own declared length fixed it rather than a stated element. */
@@ -1556,9 +1564,9 @@ function resolveAppendedElement(
  *     from. Until the length is stated the run is laid at the live width; the record close precedes the run's pin
  *     in the body, which is what lets that first plan reach the close that sizes it.
  *
- * The run's spent side is the live chunks, which the frame spends and recreates; a write that would shorten the run
- * is refused by name, and so is every other shape — several dynamic variables, a live set that does not match the
- * record's own length.
+ * The run's spent side is the live chunks, which the frame spends: those the written value still holds are recreated
+ * in place, and a write that shortens the run consumes the rest with no successor. Every other shape is refused by
+ * name: several dynamic variables, or a live set that does not match the record's own length.
  */
 function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | undefined {
   const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
@@ -1618,7 +1626,7 @@ function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | unde
     ? dynamicGrowthFloorLength(request, fn, growth, declared, spent, structs) : undefined;
   if (recordLength !== undefined || growthFloor !== undefined) {
     const length = Math.max(recordLength ?? 0, growthFloor ?? 0);
-    return sizedDynamicRun(request, variable, declared.type, length, spentChunks, spentParticipants,
+    return sizedDynamicRun(variable, declared.type, length, spentChunks, spentParticipants,
       growthFloor !== undefined && (recordLength === undefined || growthFloor > recordLength)
         ? 'growth' : 'record');
   }
@@ -1642,10 +1650,10 @@ function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | unde
  * The width is all the hop can state: every chunk's bytes are what the body computed, so each declaration starts
  * from a candidate, and the derivation learns the body's own value from its close exactly as it does for a stated
  * element's run. `sizedFrom` names which fact fixed the width, so a refusal can say whether the record's own
- * declaration sized it or the growth the entry publishes.
+ * declaration sized it or the growth the entry publishes. A width below the live run's is a write that shortens the
+ * value: the chunks past it are the ones the frame consumes.
  */
 function sizedDynamicRun(
-  request: HopEntryWritesRequest,
   variable: string,
   type: string,
   length: number,
@@ -1654,12 +1662,6 @@ function sizedDynamicRun(
   sizedFrom: 'record' | 'growth',
 ): HopDynamicRun {
   const width = chunkCountForLength(length);
-  if (width < spentChunks.length) {
-    throw new PerCallProxyDeployError(
-      `the implementation's "${request.functionName}" entry writes dynamic "${variable}" ${length} byte(s), which `
-      + `is ${width} chunk(s), fewer than the ${spentChunks.length} chunk(s) the deployment holds`,
-    );
-  }
   const plan: ChunkRunPlan = {
     variable,
     type,
@@ -2022,11 +2024,14 @@ function layEntryWrites(
   // batch's records, then a dynamic value's chunks, then a chunkable mapping value's chunks. A created record's
   // declared index has to be the output the trailing region allocates it, so the families' indices are
   // allocated in that same order — every created node, then the chunks the dynamic run grows, then the value
-  // chunks. The chunks a dynamic run keeps are participants the frame spends and recreates in place.
+  // chunks. The chunks a dynamic run keeps are participants the frame spends and recreates in place, and the ones a
+  // shorter value leaves behind are participants it spends and does not recreate.
   const plan = batch?.plan;
   const created = plan === undefined ? [] : plan.written.filter((node) => !node.existed);
-  const keptCount = dynamic?.plan.spent.chunks.length ?? 0;
-  const dynamicCreatedCount = dynamic === undefined ? 0 : dynamic.plan.written.chunks.length - keptCount;
+  const spentCount = dynamic?.plan.spent.chunks.length ?? 0;
+  const writtenCount = dynamic?.plan.written.chunks.length ?? 0;
+  const keptCount = Math.min(spentCount, writtenCount);
+  const dynamicCreatedCount = Math.max(0, writtenCount - spentCount);
   const dynamicCreatedBase = context.createdBase + created.length;
   const chunkBase = dynamicCreatedBase + dynamicCreatedCount;
   const dynamicBase = batch?.learningCandidates.length ?? 0;
@@ -2034,15 +2039,33 @@ function layEntryWrites(
   const dynamicLaid = dynamic === undefined ? undefined : layOutChunkRun({
     plan: dynamic.plan,
     category: context.category,
-    base: keptCount === 0 ? chunkBase : context.indexOf(dynamic.spent[0]!.id),
+    base: spentCount === 0 ? chunkBase : context.indexOf(dynamic.spent[0]!.id),
     writer: context.proxyMasterIndex,
     valueSatoshis: context.recordAmount,
+    ...(context.releasedLock === undefined ? {} : { removedLock: context.releasedLock }),
   });
   const dynamicEntries: RecordEntry[] = [];
   const dynamicOutputs: DraftSourceOutput[] = [];
   const dynamicInputs: Record<string, DraftInput> = {};
   const learnedSlots: Uint8Array[] = [];
   (dynamicLaid?.records ?? []).forEach((record, offset) => {
+    if (record.role === 'removed') {
+      // A chunk past the written value's width is consumed with no successor: its input is spent on the write path
+      // and its index carries a plain output that takes its satoshis, which settlement reads as the record's value.
+      const spent = dynamic!.spent[offset]!;
+      dynamicEntries.push({
+        in: context.indexOf(spent.id), out: INDEX_NONE, viewIn: record.viewIn, viewOut: new Uint8Array(0),
+      });
+      dynamicInputs[spent.id] = {
+        source: {
+          lockingBytecode: record.input!.source.lockingBytecode, valueSatoshis: spent.utxo.satoshis,
+          token: nodeToken(context.category, record.viewIn),
+        },
+        output: { lockingBytecode: record.input!.output!.lockingBytecode, valueSatoshis: spent.utxo.satoshis },
+        unlockingBytecode: record.input!.unlockingBytecode,
+      };
+      return;
+    }
     const learned = context.learnedViews[dynamicBase + offset] ?? record.entry.viewOut;
     if (record.role !== 'kept') {
       // A created chunk declares no input: it is a trailing output at the index its family allocates.

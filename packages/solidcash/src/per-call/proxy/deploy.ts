@@ -607,6 +607,8 @@ function placeLaidWrites(
           segment.push(entry);
           continue;
         }
+        // A record the write consumes with no successor is gone once its first turn has run.
+        if (entry.out === INDEX_NONE) continue;
         const written = entry.viewOut ?? entry.viewIn;
         segment.push({ in: entry.in, out: entry.out, viewIn: written, viewOut: written });
         continue;
@@ -614,6 +616,8 @@ function placeLaidWrites(
       // A run read apart from its batch keeps nothing in its own segments and is kept in no other.
       if (inApartRun || (apartRun !== undefined && write.variable !== undefined)) continue;
       if (entry.in === INDEX_NONE || declared.has(entry.in)) continue;
+      // A record the write consumes is held kept before its segments and declared nowhere after them.
+      if (entry.out === INDEX_NONE && segmentIndex > span.most) continue;
       declared.add(entry.in);
       segment.push(segmentIndex < span.least
         ? { in: entry.in, out: entry.in, viewIn: entry.viewIn, viewOut: entry.viewIn }
@@ -3224,6 +3228,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // The records the entry's own body writes follow the state records its frame declares, which is the ordinal the
   // body's group walk reads them at. A created node is a trailing output past the events.
   const createdBase = trailingCursor;
+  // A chunk a shorter value leaves behind is paid to the caller whose coin enters the frame.
   const laidWrites = options.entryWrites?.lay({
     indexOf: (id) => participant(layout, id).index,
     proxyMasterIndex,
@@ -3231,6 +3236,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     recordAmount: options.validatorAmount,
     category: options.proxyCategory,
     learnedViews: options.entryWriteViews,
+    releasedLock: options.callerLockingBytecode,
   });
   if (laidWrites !== undefined && options.entryWrites !== undefined) {
     const dynamicVariable = dynamicWriteVariable(implementationArtifact, options.entry.functionName);
@@ -3389,6 +3395,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         category,
         learnedViews: options.calleeWriteViews?.get(callee.master) ?? [],
         continuedOutputOf: (slot) => createdElsewhere.get(bytesToHex(slot)),
+        releasedLock: options.callerLockingBytecode,
       });
       for (const node of laid.createdNodes) createdElsewhere.set(bytesToHex(node.slot), node.out);
       trailingCursor += laid.trailingOutputs.length;
@@ -4141,8 +4148,15 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
 
   const { TransactionBuilder } = await import('../../TransactionBuilder.js');
   // The hop's own shape is fixed - the composer assembled every contract input and there is no oracle or side-car
-  // to co-spend - so the builder must not append anything.
-  const builder = new TransactionBuilder({ provider, skipAutomaticCoSpends: true });
+  // to co-spend - so the builder must not append anything. A record a write consumes with no successor, a chunk a
+  // shorter value drops, leaves its index without its token, which the builder would take for an accidental burn;
+  // the check stays on for a caller's coin that carries a token, which no record's burn explains.
+  const consumesRecord = callerFunding.utxo.token === undefined && draft.layout.participants.some((placed) =>
+    program.sourceOutputs[placed.index]?.token?.nft !== undefined
+    && program.transaction.outputs[placed.index]?.token === undefined);
+  const builder = new TransactionBuilder({
+    provider, skipAutomaticCoSpends: true, ...(consumesRecord ? { allowImplicitNftBurn: true } : {}),
+  });
   // The builder defaults to locktime 0, which would serialize a different transaction than the one derived: the
   // hop's signature and every frame that reads `block.timestamp` were made over the derived locktime, so the
   // broadcast carries that same one.

@@ -2816,6 +2816,35 @@ function delegateOwnerIndices(callees: readonly HopCallee[]): readonly number[] 
   return owners;
 }
 
+/** The data records an entry's own block layout names, in that layout's order: the ones it reads at an offset. */
+function namedRecordIndices(artifact: Artifact, functionName: string): readonly number[] {
+  const slots = artifact.abi.find((candidate) => candidate.name === functionName)?.blockLayout?.slots;
+  if (slots === undefined) return frameDataRecordIndices(artifact, functionName);
+  return slots.filter((slot) => slot.kind === 'dataNft' && slot.nftIndex !== undefined)
+    .sort((left, right) => left.offset - right.offset)
+    .map((slot) => slot.nftIndex!);
+}
+
+/**
+ * Refuses a frame whose named data records the block's other frames split. The frame reads each one at its block's
+ * base plus the record's offset in its own layout, so the records it names must be adjacent in that order.
+ */
+function requireAdjacentNamedRecords(
+  callees: readonly HopCallee[],
+  callee: HopCallee,
+  blockRecords: ReadonlyMap<string, ReadonlyMap<number, string>>,
+): void {
+  const owner = callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!;
+  const placed = [...(blockRecords.get(owner.contract)?.keys() ?? [])].sort((left, right) => left - right);
+  const named = namedRecordIndices(callee.artifact, callee.entry).filter((nftIndex) => placed.includes(nftIndex));
+  const first = placed.indexOf(named[0] ?? -1);
+  if (named.every((nftIndex, at) => placed[first + at] === nftIndex)) return;
+  throw new PerCallProxyDeployError(
+    `the callee "${callee.functionName}" reads data records ${named.join(', ')} of "${owner.contract}" side by `
+    + `side, and the hop's other frames of that contract place records ${placed.join(', ')} between them`,
+  );
+}
+
 /** The records one callee frame's own entry declares, in the order its block layout names them. */
 function calleeDeclaredRecords(
   callee: HopCallee, owned: readonly HopCalleeRecord[],
@@ -3090,6 +3119,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const calleeBlocks = new Map<
     string, { readonly contract: string; masters: string[]; state: string[]; readonly recovery: Record<string, readonly string[]> }
   >();
+  // Each block's data records by data-record index, placed ahead of its nodes once every frame has named its own.
+  const blockRecords = new Map<string, Map<number, string>>();
   for (const callee of callees) {
     let block = calleeBlocks.get(callee.contract);
     if (block === undefined) {
@@ -3105,11 +3136,11 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     const target = owner === undefined ? block : calleeBlocks.get(owner.contract);
     if (target === undefined) continue;
     const owned = owner === undefined ? callee.records : owner.records;
-    // The records the entry's own block layout names, in that order; a record no body of the frame reads is not
-    // spent, so it is placed in no block and declared in no segment.
-    for (const record of calleeDeclaredRecords(callee, owned)) {
-      if (!target.state.includes(record.id)) target.state.push(record.id);
-    }
+    // The records the entry's own block layout names; a record no body of the frame reads is not spent, so it is
+    // placed in no block and declared in no segment.
+    const records = blockRecords.get(target.contract) ?? new Map<number, string>();
+    blockRecords.set(target.contract, records);
+    for (const record of calleeDeclaredRecords(callee, owned)) records.set(owned.indexOf(record), record.id);
     // The nodes the frame reads sit after the data records its own block layout names, ahead of any write.
     for (const node of callee.readNodes) {
       if (node.createdSlot !== undefined) continue;
@@ -3120,6 +3151,15 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       if (!target.state.includes(id)) target.state.push(id);
     }
   }
+  // A frame reads each data record it names at the base its block declares plus the record's offset in its own
+  // layout, so the records it names must sit side by side in layout order. Placed in the order frames first named
+  // them, a later frame naming a lower record found it past the ones an earlier frame had placed: records go first,
+  // in data-record order, which keeps every frame's run of named records contiguous.
+  for (const [contract, records] of blockRecords) {
+    const ordered = [...records.entries()].sort(([left], [right]) => left - right).map(([, id]) => id);
+    calleeBlocks.get(contract)!.state.unshift(...ordered);
+  }
+  for (const callee of callees) requireAdjacentNamedRecords(callees, callee, blockRecords);
   const blocks: ContractBlock[] = [
     {
       contract: proxyArtifact.contractName,

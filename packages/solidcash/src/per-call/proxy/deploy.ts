@@ -54,7 +54,7 @@ import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDeta
 import {
   PerCallComposerError, UNFILLED_CALLEE_REF, createComposedDerivationHost, deriveComposition, describeInnermost,
   facetId, findParticipant, layoutTransaction, participant, reportCompositionRefusal, requireLearnedViews,
-  validatorFacetsOf,
+  unstatedViewPlaceholder, validatorFacetsOf,
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftCall, type DraftInput,
   type DraftMaster, type DraftRecordEntry, type DraftSourceOutput, type FrameRequest, type RecoverySideCars,
   type ShippedVmProgram,
@@ -2662,18 +2662,28 @@ function chainSharedNodeViews(
   // A node this transaction spends no input for is named by the output it was created at, and a frame that writes
   // one declares it there: those declarations chain by that output, and the output carries the last of them.
   const createdViews = new Map<number, Uint8Array>();
+  /**
+   * The view each record's last declaration ended at, for the declaration that follows it.
+   *
+   * A declaration whose end the body computes states no view, and the composer declares a placeholder in its place
+   * and carries the value the body closed with to every declaration that names that placeholder. So a later
+   * declaration continues from the placeholder rather than from the view the plan could not know, and the same
+   * learning resolves both ends of the chain.
+   */
+  const continued = new Map<number, Uint8Array>();
   const visit = (id: string): void => {
     const master = byId.get(id);
     if (master === undefined || chained.has(id)) return;
     const segments: DraftRecordEntry[][] = [];
     chained.set(id, segments);
     master.segments.forEach((segment, at) => {
-      segments.push(segment.map((entry): DraftRecordEntry => {
-        // An entry that carries the view before it, or whose end the body computes, joins a chain the plan states
-        // itself and the composer's own walk resolves: this walk pairs the shared mapping nodes a frame touches.
+      segments.push(segment.map((entry, entryIndex): DraftRecordEntry => {
         if (entry.viewIn === 'carried') return entry;
-        if (entry.viewOut === undefined || entry.viewOut === 'carried') return entry;
+        if (entry.viewOut === 'carried') return entry;
         if (entry.in === INDEX_NONE && entry.out !== undefined) {
+          // A created record whose end the body computes is left as it is: the output the chain carries it to is
+          // the one the frame's own settlement states, not a declaration another frame names.
+          if (entry.viewOut === undefined) return entry;
           const view = createdViews.get(entry.out) ?? entry.viewIn;
           // A declaration that states a change is the write it says it is, and a frame the settle stated an end view
           // for is one that rewrote the node: both keep that view and the chain carries it on. A declaration that
@@ -2700,9 +2710,13 @@ function chainSharedNodeViews(
           return { ...entry, viewIn: view, viewOut: view };
         }
         if (!nodes.has(entry.in)) return entry;
-        const view = views.get(entry.in) ?? entry.viewIn;
-        if (!writes.has(entry) || bytesEqual(entry.viewIn, entry.viewOut)) return { ...entry, viewIn: view, viewOut: view };
-        views.set(entry.in, entry.viewOut);
+        const end = entry.viewOut ?? unstatedViewPlaceholder(master.master, at, entryIndex);
+        const view = continued.get(entry.in) ?? views.get(entry.in) ?? entry.viewIn;
+        if (!writes.has(entry) || bytesEqual(entry.viewIn, end)) {
+          return { ...entry, viewIn: view, viewOut: view };
+        }
+        if (entry.viewOut !== undefined) views.set(entry.in, entry.viewOut);
+        continued.set(entry.in, end);
         return { ...entry, viewIn: view };
       }));
       const call = master.calls[at];

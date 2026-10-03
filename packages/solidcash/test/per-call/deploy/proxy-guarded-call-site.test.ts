@@ -171,24 +171,22 @@ describe('a proxied entry whose callee guards one of its calls away', () => {
   }, 300_000);
 
   /**
-   * Known wall: the guard on the entry's own body, which this hop cannot settle yet.
+   * The guard on the entry's own body, which is also the frame whose own record is written in two segments.
    *
-   * The compiled body fixes one call site and one segment close per site the entry's source names, so its witness tail
-   * must hold one call record for each of them, whether or not that execution fills them. The plan states a record
-   * only for the sites it places a callee for, and the assembler writes the tail's call section as
-   * `master.calls.map(...)` (`composer/assemble.ts`), so a site the entry guards away leaves the tail one record
-   * short of the body's own count: the run stops where the missing record's site is read, the derivation fills no
-   * witness there and the hop refuses after its attempts. Owner: the per-call planner's statement of a frame's
-   * calls. Traced from the failing case: `PER_CALL_DERIVATION_STALLED ... filled no witness at site 2 (call 2)` and
-   * `... at site 3 (close of segment 0)` alternating, with two callee masters placed for three published sites.
+   * The compiled body fixes one call site and one segment close per site the entry's source names, so its witness
+   * tail must hold one call record for each of them, whether or not that execution fills them. The plan states a
+   * record only for the sites it places a callee for and writes the tail's call section as `master.calls.map(...)`,
+   * so a site the entry guards away leaves the tail one record short of the body's own count: the run stops where
+   * the missing record's site is read and the derivation fills no witness there.
    *
-   * The entry's own record is written in two segments here, which the plan now declares as two changes chained
-   * through the segment between them (`proxy/deploy.ts`), so the derivation learns both and completes - the hop
-   * trace ends `stop entry=implementation-master reason=derived`. The refusal has moved to the assembled
-   * transaction: the validator's chain check reads the views the frames declare against the records the transaction
-   * carries and refuses (`A_CHAIN_IS_NOT_CONTIGUOUS`), which is the next thing to settle.
+   * Two frames write one record here: the entry writes its own record in two segments, and the callee contract is
+   * reached twice, so its two masters write its one record as well. Both shapes need the plan to declare each
+   * change and chain the next declaration from the last change's end - the entry's own from the published write
+   * segments (`proxy/deploy.ts`) and the callee frames' across frames (`chainSharedNodeViews`), through the
+   * placeholder the composer declares for a change whose end the body computes. The derivation then learns both
+   * ends, completes, and the hop settles and broadcasts.
    */
-  it('refuses the proxied entry itself when one of its own sites is guarded away, pinned', async () => {
+  it('settles the proxied entry itself when one of its own sites is guarded away', async () => {
     const { network, artifacts, callerUtxos, deployerLock, changeAddress, signature, initialized } =
       await deploy(sourceOfGuardedEntry());
     expect(initialized).toBe(true);
@@ -196,7 +194,7 @@ describe('a proxied entry whose callee guards one of its calls away', () => {
     expect((entry.externalCalls ?? []).map((call) => call.functionName))
       .toStrictEqual(['run', 'run', 'run']);
 
-    const result = callPerCallProxyEntry({
+    const result = await callPerCallProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Ledger!,
       proxyArtifact: buildProxyArtifact(artifacts.Ledger!),
@@ -211,6 +209,7 @@ describe('a proxied entry whose callee guards one of its calls away', () => {
       changeAddress,
       vm: compositionMachine(),
     });
-    await expect(result).rejects.toThrow(/Program failed an OP_VERIFY operation/);
+    expect(result.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
   }, 300_000);
 });

@@ -163,6 +163,46 @@ describe('the cross-reach write check', () => {
       .toThrow(/that an earlier reach "Store.publish\(\)" writes, and its values chunk/);
   });
 
+  it('refuses a later reach when the reach before it states its chunking write without a value', () => {
+    // The write facts carry a value only for a write whose value the plan stated: a placeholder is not the bytes the
+    // node holds, so the later reach would size its own run from something the write never produced.
+    const stating = (value: Uint8Array | undefined): HopEntryWrites => ({
+      ...write({
+        collection: '_events', chunkable: true, slots: [KEY_SLOT], spentIds: [nodeOf('_events', KEY_SLOT)],
+      }),
+      writtenNodes: [{
+        collection: '_events', slot: KEY_SLOT, commitment: KEY_SLOT,
+        ...(value === undefined ? {} : { value }),
+      }],
+    } as unknown as HopEntryWrites);
+    const frames = (value: Uint8Array | undefined) => [
+      frame({ name: 'Store.publish()', categoryHex: IMPL_CATEGORY, writes: stating(value) }),
+      frame({ name: 'Store.publish()', categoryHex: IMPL_CATEGORY, writes: stating(value) }),
+    ];
+    expect(() => requireSettledNodeChains(frames(KEY_SLOT))).not.toThrow();
+    expect(() => requireSettledNodeChains(frames(undefined)))
+      .toThrow(/the reach before it states no value a later reach can continue from/);
+  });
+
+  it('checks every write of a chunking node a later reach continues from, not only the first', () => {
+    const stating = (value: Uint8Array | undefined): HopEntryWrites => ({
+      ...write({
+        collection: '_events', chunkable: true, slots: [KEY_SLOT], spentIds: [nodeOf('_events', KEY_SLOT)],
+      }),
+      writtenNodes: [{
+        collection: '_events', slot: KEY_SLOT, commitment: KEY_SLOT,
+        ...(value === undefined ? {} : { value }),
+      }],
+    } as unknown as HopEntryWrites);
+    const third = frame({ name: 'Store.publish()', categoryHex: IMPL_CATEGORY, writes: stating(KEY_SLOT) });
+    // The first reach states its value and the second does not, so the third has nothing to continue from.
+    expect(() => requireSettledNodeChains([
+      frame({ name: 'Store.publish()', categoryHex: IMPL_CATEGORY, writes: stating(KEY_SLOT) }),
+      frame({ name: 'Store.publish()', categoryHex: IMPL_CATEGORY, writes: stating(undefined) }),
+      third,
+    ])).toThrow(/the reach before it states no value a later reach can continue from/);
+  });
+
   it('allows two reaches that update one key of a chunking value the earlier states a value for', () => {
     const stating = (): HopEntryWrites => ({
       ...write({

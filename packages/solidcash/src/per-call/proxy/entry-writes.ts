@@ -1019,7 +1019,7 @@ function planHopCollectionBatch(
     // A loop's value is stated where the artifact publishes it, and is otherwise the body's to compute: one byte
     // fixes only the plan's structure. A loop over a chunkable collection is refused above, where the run of chunk
     // records its write takes can no longer be sized.
-    if (loop !== undefined) return { keys: [...keys], value: value ?? new Uint8Array(1) };
+    if (loop !== undefined) return { keys: [...keys], value: value ?? new Uint8Array(1), stated: true };
     const written = access.operations.filter((operation) => operation !== 'read');
     const isDelete = written.length === 1 && written[0] === 'delete';
     if (written.length !== 1 || (written[0] !== 'write' && !isDelete)) {
@@ -1033,7 +1033,7 @@ function planHopCollectionBatch(
     // the run the default takes has to be stated: an inline default is the empty value's own tail, which is one
     // record with no chunks.
     if (isDelete) {
-      return { keys: [...keys], value: new Uint8Array(0) };
+      return { keys: [...keys], value: new Uint8Array(0), stated: true };
     }
     // A chunkable collection's node tail states the value's byte length, so its run has to be sized from the value
     // itself. A value the source does determine is stated outright; a value the artifact's source does not
@@ -1046,24 +1046,26 @@ function planHopCollectionBatch(
       // runs. Anything else is the body's value, learned from its close.
       const raw = resolveWriteValue(resolution, access)
         ?? resolveAppendedMappingValue(request, resolution, collection, access, keys);
-      if (raw !== undefined) return { keys: [...keys], value: raw };
+      if (raw !== undefined) return { keys: [...keys], value: raw, stated: true };
       const learned = request.learnedValue;
       if (learned !== undefined) {
         // Fail closed: bytes the close exposed are only the value when they decode as the collection's own type.
         try {
           decodePushdataValue(learned, 0, collection.valueType, structs);
-          return { keys: [...keys], value: learned };
+          return { keys: [...keys], value: learned, stated: true };
         } catch {
           // Not this collection's value, so it is not the value this write computed; leave the run unstated.
         }
       }
       unstatedValue = true;
-      return { keys: [...keys], value: new Uint8Array(1) };
+      // A placeholder fixes only the plan's structure: it is not the value the node holds, so no later reach of the
+      // same node may continue from it, and the caller that consumes this write's facts refuses that shape by name.
+      return { keys: [...keys], value: new Uint8Array(1), stated: false };
     }
     // The value is the body's to compute, so a one-byte placeholder fixes only the plan's structure: the slots, the
     // successor links and which targets are inserts. Every commitment that depends on the value is left unstated
-    // and learned from the body's own close.
-    return { keys: [...keys], value: new Uint8Array(1) };
+    // and learned from the body's own close. Such a value is never a chunking value's, so it is always a placeholder.
+    return { keys: [...keys], value: new Uint8Array(1), stated: false };
   });
 
   // A body that reads a value the node's tail cannot hold takes the value itself from its frame's block, one slot
@@ -1154,7 +1156,12 @@ function planHopCollectionBatch(
   // the raw bytes are the write's own value, since the plan's value here is already that form.
   const rawValues = new Map<string, Uint8Array>();
   if (chunkable) {
-    for (const write of writes) rawValues.set(bytesToHex(keyToSlotMulti([...write.keys])), write.value);
+    // A write whose value the plan could not state carries a placeholder, which is not the bytes the node holds: a
+    // reach placed after this one is refused rather than told to continue from it.
+    for (const write of writes) {
+      if (!write.stated) continue;
+      rawValues.set(bytesToHex(keyToSlotMulti([...write.keys])), write.value);
+    }
   }
 
   // A node the batch creates, and a target it rewrites, carry the value the body computed; a node it only relinks

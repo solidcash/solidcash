@@ -2195,27 +2195,35 @@ function requireChainableNodes(callees: readonly HopCallee[]): void {
 export function requireSettledNodeChains(callees: readonly HopCallee[]): void {
   for (const [id, touches] of nodeTouches(callees).entries()) {
     if (touches.length < 2 || !chunkingNode(touches)) continue;
-    const written = touches.findIndex((touch) => touch.kind !== 'read');
-    const later = written < 0 ? undefined : touches[written + 1];
-    if (later === undefined) continue;
-    const earlier = touches[written]!;
-    const pair = `the hop's reach "${later.functionName}" touches a node of collection "${later.collection}" that an `
-      + `earlier reach "${earlier.functionName}"`;
-    // An insert's relink does not chain whatever the value, as `requireChainableNodes` names it.
-    if (earlier.kind === 'relink') throw new PerCallProxyDeployError(`${pair} ${AFTER_INSERT}`);
-    if (later.kind === 'relink') {
-      throw new PerCallProxyDeployError(`${pair} writes, and inserts through it; ${CHAINED_INSERT_NEED}`);
-    }
-    if (!leavesValueForLaterReach(callees, earlier, id)) {
-      throw new PerCallProxyDeployError(
-        `${pair} writes, and its values chunk: the reach before it states no value a later reach can continue `
-        + 'from, so the run of chunk records the later reach takes cannot be sized',
-      );
+    // Every touch of the node but the last is continued from by the one after it, so each write among them has to
+    // have stated the value it left; a read continues from the last write before it the same way.
+    for (let at = 0; at + 1 < touches.length; at += 1) {
+      const earlier = touches[at]!;
+      const later = touches[at + 1]!;
+      const pair = `the hop's reach "${later.functionName}" touches a node of collection "${later.collection}" that `
+        + `an earlier reach "${earlier.functionName}"`;
+      // An insert's relink does not chain whatever the value, as `requireChainableNodes` names it.
+      if (earlier.kind === 'relink') throw new PerCallProxyDeployError(`${pair} ${AFTER_INSERT}`);
+      if (later.kind === 'relink') {
+        throw new PerCallProxyDeployError(`${pair} writes, and inserts through it; ${CHAINED_INSERT_NEED}`);
+      }
+      if (earlier.kind === 'read') continue;
+      if (!leavesValueForLaterReach(callees, earlier, id)) {
+        throw new PerCallProxyDeployError(
+          `${pair} writes, and its values chunk: the reach before it states no value a later reach can continue `
+          + 'from, so the run of chunk records the later reach takes cannot be sized',
+        );
+      }
     }
   }
 }
 
-/** True when the given reach wrote the node with a value a later reach of it can continue from. */
+/**
+ * True when the given reach wrote the node with a value a later reach of it can continue from.
+ *
+ * A write whose value the plan could not state carries a placeholder that is not the bytes the node holds, and a
+ * reach placed after it would size its own run from those bytes: the write facts carry no value for such a write.
+ */
 function leavesValueForLaterReach(callees: readonly HopCallee[], earlier: NodeTouch, id: string): boolean {
   const callee = callees[earlier.frame]!;
   const owner = callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!;

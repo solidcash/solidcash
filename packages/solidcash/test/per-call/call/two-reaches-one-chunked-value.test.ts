@@ -20,10 +20,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * each appending one element to the same held key: both reaches are planned against the deployment alone and both
  * rewrite the one node in place.
  *
- * A node whose value chunks is not chained across frames: a later frame takes the run's width, and a long value it
- * reads, from the value the deployment holds, not the value the earlier frame wrote. The hop therefore refuses the
- * pair by name before broadcasting. The call below is the positive form of that: once the chain is settled, the
- * composed transaction's callee node holds both appended elements, read back through the shipped read path.
+ * A node whose value chunks is chained like any other shared node: the two reaches are settled in execution order,
+ * the node's one input carries a chain of declarations whose views link, and the second reach continues from the
+ * bytes the first left rather than from the deployment's. The composed transaction's callee node therefore holds both
+ * appended elements, read back through the shipped read path.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */

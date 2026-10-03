@@ -60,20 +60,7 @@ export async function stageUniqueDirectValueProductions(
     if (descriptor.valueChunkProductions?.length
       || writeCounts.get(ownerCollection(descriptor, collection.name)) !== 1
       || descriptor.producerPath?.status !== 'complete') continue;
-    const visibleInputs = handler.inputs.filter((input) => !input.name.startsWith('__internal__'));
-    const keys = (access.keyParams ?? []).map((name) => {
-      const index = visibleInputs.findIndex((input) => input.name === name);
-      const value = index < 0 ? undefined : descriptor.args[index];
-      return typeof value === 'number' && Number.isSafeInteger(value) ? BigInt(value) : value;
-    });
-    if (keys.length === 0 || keys.length !== (collection.keyTypes ?? [collection.keyType]).length
-      || keys.some((key) => typeof key !== 'bigint' && typeof key !== 'boolean'
-        && typeof key !== 'string' && !(key instanceof Uint8Array))) continue;
     const entries = await descriptor.contract.getEntries(collection.signature);
-    const entry = selectMappingEntryByKeys(entries,
-      keys as Array<bigint | boolean | string | Uint8Array>,
-      collection.keyTypes ?? [collection.keyType], collection);
-    if (!entry?.slot) continue; // Insertions need a separate authenticated predecessor plan.
     const incomingEntries = entries.flatMap((item) => {
       if (!item.slot) return [];
       const value = encodeFunctionArgument(
@@ -87,37 +74,57 @@ export async function stageUniqueDirectValueProductions(
     const expressionHost = {
       resolveExternalArgs: descriptor.contract._resolveExternalArgs.bind(descriptor.contract),
     };
-    const value = encodeStoredValueSource({
-      evaluateExternalExpression: (...args) => evaluateExternalExpression(expressionHost, ...args),
-    }, access, collection.valueType, [...descriptor.args], handler, descriptor.artifact,
-    await stateOf(descriptor.contract), undefined, incomingEntries);
-    if (!value || value.length <= VALUE_INLINE_LIMIT) continue;
-    const write: ValueChunkWriteDescriptor = {
-      categoryId: descriptor.contract.categoryId,
-      collection: collection.name,
-      collectionSignature: collection.signature,
-      collectionHash: binToHex(computeCollectionHash(collection.signature)),
-      keySlot: binToHex(entry.slot),
-      entryAccessSlot: access.slotIndex ?? accessIndex,
-      routeSlot: access.slotIndex ?? accessIndex,
-      operation: 'update',
-      outputBase: -1,
-      outputCount: 0,
-    };
+    const preState = await stateOf(descriptor.contract);
+    const visibleInputs = handler.inputs.filter((input) => !input.name.startsWith('__internal__'));
     const stateOwner = {
       categoryId: descriptor.contract.categoryId,
       lockingBytecode: descriptor.contract.inner.lockingBytecode,
     };
-    const claim = terminalValueChunkProducerClaim({
-      rows: [{ selector: handler.selector, handler, producerPath: descriptor.producerPath }],
-      collectionIdentities: [collection.name, collection.signature],
-      fixedChunkableWriteSelectors: descriptor.artifact.messageBus?.fixedChunkableWritePolicy?.selectors,
-      executionLockingBytecode: descriptor.contract.inner.lockingBytecode,
-      stateOwnerCategoryId: stateOwner.categoryId,
-      stateOwnerLockingBytecode: stateOwner.lockingBytecode,
-      resourceIdentity: valueChunkWriteResourceIdentity(write),
-    });
-    if (!claim) continue;
-    descriptor.valueChunkProductions = Object.freeze([{ write, claim, stateOwner, value }]);
+    const resolveValueProductions: NonNullable<CallDescriptor['resolveValueChunkProductionsFromArgs']> = (
+      nextArgs,
+    ) => {
+      const keys = (access.keyParams ?? []).map((name) => {
+        const index = visibleInputs.findIndex((input) => input.name === name);
+        const key = index < 0 ? undefined : nextArgs[index];
+        return typeof key === 'number' && Number.isSafeInteger(key) ? BigInt(key) : key;
+      });
+      if (keys.length === 0 || keys.length !== (collection.keyTypes ?? [collection.keyType]).length
+        || keys.some((key) => typeof key !== 'bigint' && typeof key !== 'boolean'
+          && typeof key !== 'string' && !(key instanceof Uint8Array))) return [];
+      const entry = selectMappingEntryByKeys(entries,
+        keys as Array<bigint | boolean | string | Uint8Array>,
+        collection.keyTypes ?? [collection.keyType], collection);
+      if (!entry?.slot) return []; // Insertions need a separate authenticated predecessor plan.
+      const value = encodeStoredValueSource({
+        evaluateExternalExpression: (...args) => evaluateExternalExpression(expressionHost, ...args),
+      }, access, collection.valueType, [...nextArgs], handler, descriptor.artifact,
+      preState, undefined, incomingEntries);
+      if (!value || value.length <= VALUE_INLINE_LIMIT) return [];
+      const write: ValueChunkWriteDescriptor = {
+        categoryId: descriptor.contract.categoryId,
+        collection: collection.name,
+        collectionSignature: collection.signature,
+        collectionHash: binToHex(computeCollectionHash(collection.signature)),
+        keySlot: binToHex(entry.slot),
+        entryAccessSlot: access.slotIndex ?? accessIndex,
+        routeSlot: access.slotIndex ?? accessIndex,
+        operation: 'update',
+        outputBase: -1,
+        outputCount: 0,
+      };
+      const claim = terminalValueChunkProducerClaim({
+        rows: [{ selector: handler.selector, handler, producerPath: descriptor.producerPath }],
+        collectionIdentities: [collection.name, collection.signature],
+        fixedChunkableWriteSelectors: descriptor.artifact.messageBus?.fixedChunkableWritePolicy?.selectors,
+        executionLockingBytecode: descriptor.contract.inner.lockingBytecode,
+        stateOwnerCategoryId: stateOwner.categoryId,
+        stateOwnerLockingBytecode: stateOwner.lockingBytecode,
+        resourceIdentity: valueChunkWriteResourceIdentity(write),
+      });
+      return claim ? Object.freeze([{ write, claim, stateOwner, value }]) : [];
+    };
+    descriptor.resolveValueChunkProductionsFromArgs = resolveValueProductions;
+    const initial = resolveValueProductions(descriptor.args);
+    if (initial.length) descriptor.valueChunkProductions = initial;
   }
 }

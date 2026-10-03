@@ -1,6 +1,7 @@
 import { bigIntToVmNumber } from '@bitauth/libauth';
 import { describe, expect, it, vi } from 'vitest';
 import { stageUniqueDirectValueProductions } from '../../src/message-bus/compose-direct-value-productions.js';
+import { rebuildPreparedInvocation } from '../../src/message-bus/compose-prepared-invocation.js';
 import { keyToSlotMulti } from '../../src/stateful/SortedList.js';
 import type { CallDescriptor } from '../../src/message-bus/compose-prepared-invocation.js';
 
@@ -73,5 +74,18 @@ describe('direct graph value productions', () => {
     expect(production.claim.producer.sourcePath).toEqual(
       calls[0].producerPath?.status === 'complete' ? calls[0].producerPath.context.sourcePath : [],
     );
+  });
+
+  it('retains and refreshes a direct value production when authenticated arguments propagate', async () => {
+    const calls = [descriptor()];
+    await stageUniqueDirectValueProductions(calls, async () => ({}));
+    const unchanged = rebuildPreparedInvocation(calls[0], calls[0].args, undefined, {
+      refreshValueProductions: true,
+    });
+    expect(unchanged.valueChunkProductions?.[0]?.value).toEqual(value);
+
+    const nextValue = new Uint8Array(120).fill(0x43);
+    const changed = rebuildPreparedInvocation(calls[0], [1n, nextValue]);
+    expect(changed.valueChunkProductions?.[0]?.value).toEqual(nextValue);
   });
 });

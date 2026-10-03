@@ -51,7 +51,7 @@ import {
   UnsupportedReturnError,
 } from '../Errors.js';
 import { holdsReturn } from './EarlyReturnTransformation.js';
-import { lowerReturns, stashReturnValues } from './ConfineReturns.js';
+import { REGION_FLAG, lowerReturns, stashReturnValues } from './ConfineReturns.js';
 
 function cloneNode<T extends Node>(node: T): T {
   const clone = Object.create(Object.getPrototypeOf(node));
@@ -339,12 +339,12 @@ function returnRegions(
       ? [located(new ReturnNode(results.map((name) => located(new IdentifierNode(name)))))] : [],
     // A bare `return;` keeps the named results as they are.
     confineBody: (stmts) => (stmts.some(holdsReturn)
-      ? confine(stmts, `__modifier_exit_${frameSuffix}`, repeated(definitions.length), (ret) => (
+      ? confine(stmts, `${REGION_FLAG}${frameSuffix}`, repeated(definitions.length), (ret) => (
         ret.expressions.length === 0 && (named || results.length === 0) ? []
           : stashReturnValues(ret, results, func.name, named)))
       : stmts),
     confineModifier: (index, stmts) => (stmts.some(holdsReturn)
-      ? confine(stmts, `__modifier_exit_${frameSuffix}_${index}`, repeated(index), (ret) => {
+      ? confine(stmts, `${REGION_FLAG}${frameSuffix}_${index}`, repeated(index), (ret) => {
         if (ret.expressions.length > 0) throw new UnsupportedReturnError(ret, 'a modifier cannot return a value');
         return [];
       })

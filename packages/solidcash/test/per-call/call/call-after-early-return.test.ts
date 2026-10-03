@@ -20,13 +20,22 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * publishes the call as conditional on `!skip`: the plan states one call when `skip` is clear and none when it is
  * set. A plan that states the call although the return is taken - the artifact as it was before the call's
  * condition was published - is refused by the body, which made no call to bind the record to.
+ *
+ * `A.runCounted` is `run` under a modifier that counts the entry after `_`. The body's return leaves the body alone,
+ * so the count is kept on either path, and the call runs in a gate on a flag of the compiler's that the return sets.
+ * The artifact publishes the call under the `!skip` that gate stands for, so the plan is the same as `run`'s.
  */
 
 const SOURCE = 'pragma solidity ^0.8.0;'
   + ' contract B { uint256 public marker;'
   + '   function peek(uint256 x) external view returns (uint256) { return x + 1; } }'
-  + ' contract A { B public b; uint256 public last; constructor(B b_) { b = b_; }'
+  + ' contract A { B public b; uint256 public last; uint256 public runs; constructor(B b_) { b = b_; }'
+  + '   modifier counted() { _; runs = runs + 1; }'
   + '   function run(uint256 x, bool skip) external {'
+  + '     if (skip) return;'
+  + '     last = b.peek(x);'
+  + '   }'
+  + '   function runCounted(uint256 x, bool skip) external counted {'
   + '     if (skip) return;'
   + '     last = b.peek(x);'
   + '   } }';
@@ -47,11 +56,13 @@ function withoutCondition(artifact: Artifact): Artifact {
   return copy;
 }
 
-/** Deploys B and then A over it once, and enters `A.run` with a fresh coin per call. */
+/** Deploys B and then A over it once, and enters `A.run` (or `entry`) with a fresh coin per call. */
 async function deployed(): Promise<{
   readonly artifact: Artifact;
-  readonly enter: (skip: boolean, coin: number, artifact?: Artifact) => Promise<CallResult>;
-  readonly last: () => Promise<unknown>;
+  readonly enter: (
+    skip: boolean, coin: number, options?: { readonly artifact?: Artifact; readonly entry?: string },
+  ) => Promise<CallResult>;
+  readonly field: (name: string) => Promise<unknown>;
 }> {
   const compiled = compileStringMulti(SOURCE, { composition: 'per-call', solidityImportCompat: true } as never);
   const artifacts: Readonly<Record<string, Artifact>> = { A: compiled.A!, B: compiled.B! };
@@ -77,43 +88,55 @@ async function deployed(): Promise<{
   const user = encodeLockingBytecodeP2pkh(alicePkh);
   return {
     artifact: artifacts.A!,
-    enter: async (skip, coin, artifact = artifacts.A!) => {
+    enter: async (skip, coin, { artifact = artifacts.A!, entry = 'run' } = {}) => {
       const callerUtxo = { txid: `${'76'.repeat(31)}${coin.toString(16).padStart(2, '0')}`, vout: 0, satoshis: 300_000n };
       await provider.addUtxo(binToHex(user), callerUtxo);
       return callPerCallEntry({
-        provider, artifact, categoryId: categories.get('A')!, functionName: 'run', args: [5n, skip],
+        provider, artifact, categoryId: categories.get('A')!, functionName: entry, args: [5n, skip],
         callerUtxo, callerLockingBytecode: user, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
         vm: compositionMachine(), externals,
       });
     },
-    last: async () => {
+    field: async (name) => {
       const layout = artifacts.A!.stateLayout!;
       const set = await readPerCallDeployment(provider, categories.get('A')!, layout);
-      return parsePushdataCommitment(set.records[0]!.token!.nft!.commitment, layout, 0).last;
+      return parsePushdataCommitment(set.records[0]!.token!.nft!.commitment, layout, 0)[name];
     },
   };
 }
 
 describe('an entry whose call an earlier return can skip, on the plain call path', () => {
   it('settles no call when the return is taken and one when it is not', async () => {
-    const { enter, last } = await deployed();
+    const { enter, field } = await deployed();
     const returned = await enter(true, 1);
     expect(returned.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(returned.draft.blockOf('master').calls).toHaveLength(0);
-    expect(await last()).toBe(0n);
+    expect(await field('last')).toBe(0n);
     const called = await enter(false, 2);
     expect(called.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(called.draft.blockOf('master').calls).toHaveLength(1);
-    expect(await last()).toBe(6n);
+    expect(await field('last')).toBe(6n);
   }, 120_000);
 
   it('refuses a block that states the call when the return was taken', async () => {
     // Without the published condition the plan states the call whatever `skip` is; the body returned before it,
     // made no call, and refuses the record the block declares.
     const { artifact, enter } = await deployed();
-    const stated = await enter(true, 3, withoutCondition(artifact));
+    const stated = await enter(true, 3, { artifact: withoutCondition(artifact) });
     expect(stated.draft.blockOf('master').calls).toHaveLength(1);
     expect(stated.accepted).toBe(false);
     expect(stated.broadcast).toBeUndefined();
+  }, 120_000);
+
+  it('settles a modifier-wrapped entry the same way, its modifier counting either path', async () => {
+    const { enter, field } = await deployed();
+    const returned = await enter(true, 4, { entry: 'runCounted' });
+    expect(returned.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(returned.draft.blockOf('master').calls).toHaveLength(0);
+    expect([await field('last'), await field('runs')]).toStrictEqual([0n, 1n]);
+    const called = await enter(false, 5, { entry: 'runCounted' });
+    expect(called.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(called.draft.blockOf('master').calls).toHaveLength(1);
+    expect([await field('last'), await field('runs')]).toStrictEqual([6n, 2n]);
   }, 120_000);
 });

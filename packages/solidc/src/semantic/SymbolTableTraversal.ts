@@ -132,7 +132,8 @@ import {
 } from './branchOps.js';
 import { describeFunctionLowLevelCallsites } from './LowLevelCallShapes.js';
 import { KERNEL_JOURNAL_ACCESS_STREAMS } from './LowerVMapCounterLoops.js';
-import { blockEndsWithReturn } from './EarlyReturnTransformation.js';
+import { blockEndsWithReturn, nestedStatementLists } from './EarlyReturnTransformation.js';
+import { isReturnFlag } from './ConfineReturns.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -624,15 +625,113 @@ function readsName(expression: Node, names: ReadonlySet<string>, seen = new Set<
  *
  * A guard is read where its branch starts, as the source's own predicates are, so one that reads a local or a
  * parameter the body writes - a return flag a loop sets, say - would be published from a value the run no longer
- * holds; such a call keeps the condition it had. A fallback's and a receive's returns are not nested, since the
- * transformation visits the constructor and the functions only.
+ * holds; such a call keeps the condition it had. The transformation nests a fallback's and a receive's returns as
+ * it does a function's.
  */
 function returnGuardsOf(fn: FunctionDefinitionNode, target: Node): PathGuard[] {
-  if (fn.isFallback || fn.isReceive || !bodyHolds(fn.body, (node) => node instanceof ReturnNode)) return [];
+  if (!bodyHolds(fn.body, (node) => node instanceof ReturnNode)) return [];
   const guards = earlyReturnGuards(fn.body.statements ?? [], target) ?? [];
   if (guards.length === 0) return guards;
   const assigned = assignedNames(fn.body);
   return guards.some((guard) => readsName(guard.expression, assigned)) ? [] : guards;
+}
+
+/** The conjunction of `conditions`, left to right, or undefined for none. */
+function allOf(conditions: readonly ExternalCallExpression[]): ExternalCallExpression | undefined {
+  return conditions.reduce<ExternalCallExpression | undefined>((combined, next) => (combined === undefined
+    ? next : { kind: 'binary', operator: '&&', left: combined, right: next }), undefined);
+}
+
+/** True when an expression reads a flag a lowered return sets (see ConfineReturns). */
+function readsReturnFlag(expression: Node): boolean {
+  return bodyHolds(expression, (node) => node instanceof IdentifierNode && isReturnFlag(node.name));
+}
+
+/** The flag a guard holds clear - `!flag` on the arm it opens, or `flag` on the other arm - when it is one. */
+function clearFlagRead({ expression, negated }: PathGuard): string | undefined {
+  const read = !negated && expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT
+    ? expression.expression : negated ? expression : undefined;
+  return read instanceof IdentifierNode && isReturnFlag(read.name) ? read.name : undefined;
+}
+
+/** True when `statement` writes `value` to `flag`: a lowered return sets it, and a region run again clears it. */
+function writesFlag(statement: Node, flag: string, value: boolean): boolean {
+  return statement instanceof AssignNode && statement.identifier.name === flag
+    && statement.expression instanceof BoolLiteralNode && statement.expression.value === value;
+}
+
+/**
+ * The predicates of the branches each `flag = true` in `statement` sits under, one list per write, or undefined
+ * when one is not reached through branches alone: a write in a loop or a switch, or a write of another value.
+ */
+function flagSetGuards(statement: StatementNode, flag: string, path: PathGuard[] = []): PathGuard[][] | undefined {
+  if (writesFlag(statement, flag, true)) return [path];
+  const lists: [StatementNode[], PathGuard[]][] = statement instanceof BranchNode ? [
+    [statement.ifBlock.statements ?? [], [...path, { expression: statement.condition, negated: false }]],
+    [statement.elseBlock?.statements ?? [], [...path, { expression: statement.condition, negated: true }]],
+  ] : statement instanceof BlockNode || statement instanceof UncheckedNode || statement instanceof TryCatchNode
+    ? nestedStatementLists(statement).map((statements) => [statements, path]) : [];
+  if (lists.length === 0) return assignedNames(statement).has(flag) ? undefined : [];
+  const sets: PathGuard[][] = [];
+  for (const [statements, guards] of lists) {
+    for (const child of statements) {
+      const found = flagSetGuards(child, flag, guards);
+      if (found === undefined) return undefined;
+      sets.push(...found);
+    }
+  }
+  return sets;
+}
+
+/** The statement lists from `statements` down to `target`, outermost first, each with the index the path takes. */
+function pathToStatement(
+  statements: StatementNode[], target: StatementNode,
+): { statements: StatementNode[]; index: number }[] | undefined {
+  for (const [index, statement] of statements.entries()) {
+    if (statement === target) return [{ statements, index }];
+    for (const nested of nestedStatementLists(statement)) {
+      const inner = pathToStatement(nested, target);
+      if (inner !== undefined) return [{ statements, index }, ...inner];
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The predicates under which each `flag = true` that can run before `gate` does is reached, one list per write.
+ *
+ * A return lowered to a flag sets it, and the statements after the return run in a gate that opens only while the
+ * flag is clear. So `gate` opens unless a write before it ran: one among the statements before it, back to the
+ * gate of the same flag it sits in, which opened with the flag clear, or to the write that clears the flag or its
+ * declaration. A write is named by the predicates between it and the list it shares with `gate`: those enclosing
+ * both enclose whatever `gate` holds as well. Undefined when a write is not reached through branches alone, or a
+ * loop `gate` sits in writes the flag, as an earlier turn may have.
+ */
+function flagSetsBefore(body: BlockNode, gate: BranchNode, flag: string): PathGuard[][] | undefined {
+  const frames = pathToStatement(body.statements ?? [], gate);
+  if (frames === undefined) return undefined;
+  const sets: PathGuard[][] = [];
+  for (let depth = frames.length - 1; depth >= 0; depth -= 1) {
+    const { statements, index } = frames[depth];
+    for (let at = index - 1; at >= 0; at -= 1) {
+      const statement = statements[at];
+      if (writesFlag(statement, flag, false)
+        || (statement instanceof VariableDefinitionNode && statement.name === flag)) return sets;
+      const found = flagSetGuards(statement, flag);
+      if (found === undefined) return undefined;
+      sets.unshift(...found);
+    }
+    if (depth === 0) break;
+    const owner = frames[depth - 1].statements[frames[depth - 1].index];
+    if (owner instanceof BranchNode) {
+      const negated = statements === owner.ifBlock.statements ? false
+        : statements === owner.elseBlock?.statements ? true : undefined;
+      if (negated !== undefined && clearFlagRead({ expression: owner.condition, negated }) === flag) return sets;
+    }
+    if ((owner instanceof WhileNode || owner instanceof DoWhileNode || owner instanceof CollectionIterationNode)
+      && assignedNames(owner).has(flag)) return undefined;
+  }
+  return sets;
 }
 
 interface FunctionBodySurvey {
@@ -9203,7 +9302,6 @@ export default class SymbolTableTraversal extends AstTraversal {
           ? { kind: 'unary', operator: '!', expression: serialized } as ExternalCallExpression
           : serialized;
       };
-      const serializedConditions = (sourceConditions ?? []).map(serializeGuard);
       const containsUnresolvedConditionNode = (expression: ExternalCallExpression): boolean => {
         if (expression.kind === 'unsupported' || expression.kind === 'missing'
           || expression.kind === 'identifier') return true;
@@ -9211,24 +9309,49 @@ export default class SymbolTableTraversal extends AstTraversal {
           expression.ifTrue, expression.ifFalse, ...(expression.args ?? [])]
           .some((child) => child !== undefined && containsUnresolvedConditionNode(child));
       };
+      const perCall = this.compilerOptions.composition === 'per-call';
+      // A return lowered to a flag (ConfineReturns, or a modifier region) runs what follows it in a gate on the flag
+      // being clear, which is the compiler's own local. Under the per-call composition the gate is published as what
+      // it stands for: no write of the flag before it ran, each write named by its own predicates (a nested gate's
+      // in turn). A gate whose writes cannot be named so is left out, as an early return's unpublishable guard is.
+      const serializeGate = (
+        guard: PathGuard, outer: ReadonlySet<Node> = new Set(),
+      ): ExternalCallExpression[] | undefined => {
+        const flag = clearFlagRead(guard);
+        const gate = flag === undefined ? undefined : branchOwning(guard.expression);
+        const body = this.currentFunction?.body;
+        if (flag === undefined || !(gate instanceof BranchNode) || !body || outer.has(gate)) return undefined;
+        const sets = flagSetsBefore(body, gate, flag);
+        if (sets === undefined) return undefined;
+        const written = assignedNames(body);
+        const unset: ExternalCallExpression[] = [];
+        for (const path of sets) {
+          const reached: ExternalCallExpression[] = [];
+          for (const step of path) {
+            const serialized = readsReturnFlag(step.expression) ? serializeGate(step, new Set(outer).add(gate))
+              : readsName(step.expression, written) ? undefined : [serializeGuard(step)];
+            if (serialized === undefined || serialized.some(containsUnresolvedConditionNode)) return undefined;
+            reached.push(...serialized);
+          }
+          // A write no branch guards leaves the gate shut.
+          unset.push(reached.length === 0 ? { kind: 'literal', type: 'bool', value: false }
+            : { kind: 'unary', operator: '!', expression: allOf(reached)! });
+        }
+        return unset;
+      };
+      const serializedConditions = (sourceConditions ?? []).flatMap((guard) => (perCall
+        && readsReturnFlag(guard.expression) ? serializeGate(guard) ?? [] : [serializeGuard(guard)]));
       // A per-call body binds its call records in execution order, so a call an earlier `return` skips makes no
       // record, and its site is published with the condition it runs under: no earlier return taken, then the
       // call's own predicates. Returns are nested only after this pass, so their guards are read from the source;
       // a guard that cannot be published as it is leaves the call's condition as it was.
-      const returnGuards = this.compilerOptions.composition === 'per-call' && this.currentFunction?.body
+      const returnGuards = perCall && this.currentFunction?.body
         ? returnGuardsOf(this.currentFunction, node).map(serializeGuard)
         : [];
       const activation = returnGuards.length > 0 && !returnGuards.some(containsUnresolvedConditionNode)
         ? [...returnGuards, ...serializedConditions]
         : serializedConditions;
-      const condition = activation.some(containsUnresolvedConditionNode)
-        ? undefined
-        : activation.reduce<ExternalCallExpression | undefined>(
-          (combined, next) => combined === undefined
-            ? next
-            : { kind: 'binary', operator: '&&', left: combined, right: next },
-          undefined,
-        );
+      const condition = activation.some(containsUnresolvedConditionNode) ? undefined : allOf(activation);
 
       if (node.callInfo.interfaceName === '__raw__' && !addressParam && addressLiteral === undefined
         && (globalThis as { process?: { env?: Record<string, string> } }).process?.env

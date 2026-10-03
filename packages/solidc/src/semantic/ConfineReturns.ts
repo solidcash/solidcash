@@ -50,6 +50,14 @@ import { fixedForMaximum } from './FixedForLoop.js';
 const FLAG = '__internal__exitflag';
 const VALUE = '__internal__exitval';
 
+/** The prefix of the flag a modifier region's returns set (ModifierExpansionTransformation names each region's). */
+export const REGION_FLAG = '__modifier_exit_';
+
+/** True when `name` is a flag lowerReturns sets for a return: a function's own, or a modifier region's. */
+export function isReturnFlag(name: string): boolean {
+  return name.startsWith(FLAG) || name.startsWith(REGION_FLAG);
+}
+
 /** What a lowered return does instead of leaving: where its values go, and the flag that gates what follows it. */
 export interface ReturnExit {
   /** The local a return sets; every statement after the return on its path is gated on it. */

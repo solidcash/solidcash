@@ -479,7 +479,21 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         && this.scalarMappings.has(statement.name)
         && !statement.arrayIndex && !statement.arrayPush && !statement.arrayPop
         ? { name: statement.name, key: statement.keys[0], value: statement.expression } : undefined;
+    const knownWrites = new Map<string, { key: ExpressionNode; value: ExpressionNode }>();
     for (let index = 0; index < statements.length; index += 1) {
+      if (index > 0) {
+        const preceding = statements[index - 1];
+        const precedingWrite = scalarWrite(preceding);
+        if (precedingWrite && argumentOnlyMappingValue(precedingWrite.key, parameters)
+          && argumentOnlyMappingValue(precedingWrite.value, parameters)) {
+          // A write to another collection cannot invalidate this collection's known value.
+          knownWrites.set(precedingWrite.name, precedingWrite);
+        } else if (!(preceding instanceof VariableDefinitionNode
+          && (!preceding.expression || expressionCanon(preceding.expression) !== undefined))) {
+          // Calls, branches, assertions, and unsupported writes end the straight-line proof.
+          knownWrites.clear();
+        }
+      }
       const reader = statements[index];
       if (!(reader instanceof ArrayAssignNode || reader instanceof MappingAssignNode)) continue;
       const readerKeys = reader instanceof ArrayAssignNode && this.scalarMappings.has(reader.name)
@@ -518,6 +532,16 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           }
         }
       }
+      let projectedKey = reader.postWriteKeyExpressions?.[0] ?? cloneNode(readerKeys[0]);
+      let projectedFromWindow = false;
+      for (const [name, source] of knownWrites) {
+        const keyLabel = expressionCanon(source.key);
+        if (!keyLabel) continue;
+        const projector = new ProjectWrittenMappingRead(name, keyLabel, source.value);
+        projectedKey = projector.visit(projectedKey) as ExpressionNode;
+        projectedFromWindow ||= projector.replaced;
+      }
+      if (projectedFromWindow) reader.postWriteKeyExpressions = [projectedKey];
       // Before the first mutation, a key read sees the authenticated input state. A read-only local
       // may have captured that value earlier; expand it only while no other effectful statement
       // intervenes, so a later mapping write cannot retroactively change its key.

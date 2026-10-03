@@ -306,6 +306,7 @@ describe('vmap fixed-write batch metadata', () => {
     const compile = (body: string): ReturnType<typeof compileString> => compileString(`pragma solidity ^0.8.0;
       contract Probe() {
         mapping(uint256 => bool) flags;
+        mapping(uint256 => uint256) other;
         mapping(uint256 => uint256) data;
         function store(uint256 flagKey, uint256 dataKey, uint256 value) public {
           ${body}
@@ -322,6 +323,8 @@ describe('vmap fixed-write batch metadata', () => {
     const late = compile('data[flags[flagKey] ? dataKey : 0] = value; flags[flagKey] = true;');
     const lateWithLocal = compile('data[flags[flagKey] ? dataKey : 0] = value; uint256 tmp = value + 1; flags[flagKey] = true; require(tmp > value);');
     const capturedBeforeWrite = compile('bool selected = flags[flagKey]; data[selected ? dataKey : 0] = value; flags[flagKey] = true;');
+    const unrelatedWrite = compile('flags[flagKey] = true; other[dataKey] = value + 1; data[flags[flagKey] ? dataKey : 0] = value;');
+    const aliasingWrite = compile('flags[flagKey] = true; flags[dataKey] = false; data[flags[flagKey] ? dataKey : 0] = value;');
     const blocked = compile('flags[flagKey] = true; require(true); data[flags[flagKey] ? dataKey : 0] = value;');
     const key = (artifact: ReturnType<typeof compile>): KeySourceAbi | undefined => artifact.abi
       .find((fn) => fn.name === 'store')
@@ -338,6 +341,8 @@ describe('vmap fixed-write batch metadata', () => {
     expect(key(lateWithLocal)?.preWriteMappingCollections).toEqual(['flags']);
     expect(key(capturedBeforeWrite)?.postWriteExpressionLabel).toBeUndefined();
     expect(key(capturedBeforeWrite)?.preWriteMappingCollections).toEqual(['flags']);
+    expect(key(unrelatedWrite)?.postWriteExpressionLabel).toBe('ternary(lit:true,id:dataKey,lit:0)');
+    expect(key(aliasingWrite)?.postWriteExpressionLabel).toBeUndefined();
     expect(key(blocked)?.postWriteExpressionLabel).toBeUndefined();
   });
 

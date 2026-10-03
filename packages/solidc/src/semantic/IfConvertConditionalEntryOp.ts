@@ -82,6 +82,8 @@ interface MergedTarget {
  * target is predicated `m[k] = cond ? ifValue : elseValue` (a missing arm preserves the current value), and the
  * local array ops stay in a slimmed `if(cond)` / `if(!cond)` block (a stack-neutral local op works in a branch).
  * Result: all entry writes are unconditional (stable output count).
+ * The kernel keeps replayable argument-guarded writes to distinct collections in their original arms, avoiding
+ * creation of an absent entry on the untaken path.
  */
 export default class IfConvertConditionalEntryOp extends AstTraversal {
   constructor(private readonly preserveKernelArgumentConditionalWrites = false) { super(); }
@@ -168,7 +170,19 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
       const op = this.entryOpInfo(s);
       return !!op && !!this.mappings.get(op.name)?.sorted;
     })) return undefined;
-    if (node.elseBlock) return this.tryConvertIfElse(node);
+    if (node.elseBlock) {
+      const ifStatements = node.ifBlock.statements ?? [];
+      const elseStatements = node.elseBlock.statements ?? [];
+      const ifWrite = ifStatements.length === 1 ? ifStatements[0] : undefined;
+      const elseWrite = elseStatements.length === 1 ? elseStatements[0] : undefined;
+      // Distinct collections have independent entry slots. Preserve both guarded writes when the kernel can
+      // replay the branch from its row arguments; predicating either arm would mint a zero-valued phantom node.
+      if (this.preserveKernelArgumentConditionalWrites && this.isArgumentLiteralCondition(node.condition)
+        && (ifWrite instanceof MappingAssignNode || ifWrite instanceof ArrayAssignNode)
+        && (elseWrite instanceof MappingAssignNode || elseWrite instanceof ArrayAssignNode)
+        && ifWrite.name !== elseWrite.name) return undefined;
+      return this.tryConvertIfElse(node);
+    }
     const stmts = node.ifBlock.statements ?? [];
     if (stmts.length === 0) return undefined;
 

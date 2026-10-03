@@ -13261,8 +13261,9 @@ function compileResolvedAst(
     // Route synthesis below snapshots collection-bearing handlers. Cache invariant entries before that snapshot
     // so a computed key (for example totals[sha256(owner)]) is represented identically in the source handler and
     // its row-loop clone: one authenticated read, local mutations, and one fixed-entry flush. The later pass is
-    // idempotent and still covers shapes exposed by intervening desugaring.
-    ast = ast.accept(new CacheMappingEntryInLoop(true)) as Ast;
+    // idempotent and still covers shapes exposed by intervening desugaring. A per-call body keeps each cache inside
+    // the segments its own accesses run in, as the later pass does.
+    ast = ast.accept(new CacheMappingEntryInLoop(true, mergedCompilerOptions.composition === 'per-call')) as Ast;
     injectCollectionIterationWitnesses(ast);
     injectChunkableEntryWitnesses(ast);
   }
@@ -13661,8 +13662,11 @@ function compileResolvedAst(
   }
   // A vmap (sorted) mapping ARRAY value written in a loop `for(..) m[k][j]=v` is cached the same way: read m[k] once,
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
-  // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache.
-  if (needsLoop || needsCollectionJournal) ast = ast.accept(new CacheMappingEntryInLoop()) as Ast;
+  // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache. A per-call body keeps the
+  // cache inside the segments its own accesses run in, so the upsert lands where the source writes the entry.
+  if (needsLoop || needsCollectionJournal) {
+    ast = ast.accept(new CacheMappingEntryInLoop(false, mergedCompilerOptions.composition === 'per-call')) as Ast;
+  }
 
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically
   // tell it ran). If-convert it to an unconditional predicated write `m[k] = cond ? default : m[k]`.
@@ -17292,7 +17296,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new LowerMappingStorageAlias()) as Ast;
     singleAst = singleAst.accept(new DesugarDynamicArrayCopyCast()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
-    singleAst = singleAst.accept(new CacheMappingEntryInLoop()) as Ast;
+    singleAst = singleAst.accept(new CacheMappingEntryInLoop(false, compilerOptions.composition === 'per-call')) as Ast;
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp()) as Ast;
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
     singleAst = singleAst.accept(new HoistBranchLocalExtcallTargets()) as Ast;

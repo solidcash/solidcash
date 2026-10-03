@@ -38,6 +38,17 @@ import {
   BinaryOpNode,
   TernaryOpNode,
   FunctionModifier,
+  MethodCallNode,
+  InstantiationNode,
+  IndirectCallNode,
+  ExternalFunctionCallNode,
+  LowLevelCallNode,
+  LowLevelCallStatementNode,
+  TransferStatementNode,
+  AddressTransferStatementNode,
+  AddressSendExpressionNode,
+  SelfdestructStatementNode,
+  AssemblyStatementNode,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
 import { MappingType, ArrayType, StructType, Type, PrimitiveType } from '@solidcash/utils';
@@ -48,6 +59,43 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
 const PREFIX = '__vmapcache_';
 /** Compiler-owned immutable locals which preserve a mapping key's value at a source-order boundary. */
 export const VMAP_KEY_SNAPSHOT_PREFIX = '__internal__vmapKeySnapshot_';
+
+/** Semantic back-references, which are not executable children of the node that holds them. */
+const BACK_REFERENCES = new Set(['location', 'resolvedFunction', 'functionReference', 'definition', 'collection',
+  'symbolTable', 'stateVariable']);
+
+/** True when a node or one of its executable children satisfies `test`. */
+function reaches(root: Node, test: (node: Node) => boolean): boolean {
+  if (test(root)) return true;
+  for (const key of Object.keys(root)) {
+    if (BACK_REFERENCES.has(key)) continue;
+    const child = (root as unknown as Record<string, unknown>)[key];
+    if (child instanceof Node && reaches(child, test)) return true;
+    if (Array.isArray(child) && child.some((item) => item instanceof Node && reaches(item, test))) return true;
+  }
+  return false;
+}
+
+/**
+ * True when a node may make a call another contract's code runs in: a method or namespaced call (an interface call,
+ * a low-level call, a library's), a call through a pointer (one of the `variables`, or of an expression), a
+ * creation, or a value send.
+ *
+ * Calls are resolved by the symbol pass, which runs after this one, so every node of those shapes counts: one that
+ * makes no call only has a cache placed as if it did, which keeps the same value. Any other plain-named call is a
+ * builtin, a conversion, a construction or an internal function, and none of those calls out of a per-call frame: a
+ * helper that does is inlined before this pass (`InlineExternalCallHelpers`), and a subroutine left making one is
+ * refused.
+ */
+function mayCall(node: Node, variables: ReadonlySet<string>): boolean {
+  return (node instanceof FunctionCallNode
+    && (node.identifier.name.includes('.') || variables.has(node.identifier.name)))
+    || node instanceof MethodCallNode || node instanceof InstantiationNode || node instanceof IndirectCallNode
+    || node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
+    || node instanceof LowLevelCallStatementNode || node instanceof TransferStatementNode
+    || node instanceof AddressTransferStatementNode || node instanceof AddressSendExpressionNode
+    || node instanceof SelfdestructStatementNode || node instanceof AssemblyStatementNode;
+}
 
 // A mapping key we can cache on. Only INVARIANT keys qualify: a simple identifier (invariance re-checked via
 // assignsName), or a nullary tx-derived address (msg.sender / tx.origin - inherently invariant; nothing reassigns
@@ -244,6 +292,12 @@ type ScalarMappingInfo = { valueType: Type; depth: number };
  * returns are already flag+break). Restricted to be SOUND: single-key array-valued mapping, key `k` a simple
  * identifier NOT reassigned in the function (else the entry differs - the per-iteration sorted-insert case, left to
  * fail closed), and no whole-entry assignment of that entry (only delete / element / push / pop writes + reads).
+ *
+ * Under the per-call composition a call closes the segment the code before it runs in, and the callee may read the
+ * entry back through the contract's getter. The cache then keeps to the segments the entry's own accesses run in: a
+ * call before the first access puts the read at that access, and a call after the last write puts the flush right
+ * after that write, so the one write lands in the segment the source makes it in rather than past the call. A call
+ * between the first access and the last write still runs inside the cache, before the one write it flushes.
  */
 export default class CacheMappingEntryInLoop extends AstTraversal {
   private arrayMappings: Map<string, Type> = new Map(); // single-key array-valued mapping name -> array value type
@@ -254,9 +308,11 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   // model has its own write-in-loop handling); depth 1 only.
   private scalarMappings: Map<string, ScalarMappingInfo> = new Map();
   private structMappings: Map<string, StructType> = new Map();
+  private stateVariableNames: ReadonlySet<string> = new Set();
   private counter = 0;
 
-  constructor(private routeSnapshotKeysOnly = false) { super(); }
+  /** `callsCloseSegments` holds under the per-call composition, whose calls each close a segment. */
+  constructor(private routeSnapshotKeysOnly = false, private callsCloseSegments = false) { super(); }
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -267,6 +323,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     this.arrayMappings = new Map();
     this.scalarMappings = new Map();
     this.structMappings = new Map();
+    this.stateVariableNames = new Set(node.stateVariables.map((variable) => variable.name));
     for (const col of node.collections) {
       if (col.type instanceof MappingType) {
         if (col.depth === 1 && col.innermostValueType instanceof ArrayType) {
@@ -319,6 +376,38 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       }
       anchors.set(item, anchor);
     }
+    // The statement holding the last write, for a cache flushed right after it rather than at the body's end.
+    const closings = new Map<(typeof prepared)[number], StatementNode>();
+    if (this.callsCloseSegments) {
+      const statements = fn.body.statements ?? [];
+      // A call of a variable is a call through a pointer, which may lower to one another contract runs.
+      const variables = new Set([...this.stateVariableNames, ...fn.parameters.map((parameter) => parameter.name)]);
+      reaches(fn.body, (node) => {
+        if (node instanceof VariableDefinitionNode) variables.add(node.name);
+        if (node instanceof TupleAssignmentNode) {
+          for (const element of node.elements) if (element.name !== undefined) variables.add(element.name);
+        }
+        return false;
+      });
+      const calls = (statement: StatementNode): boolean => reaches(statement, (node) => mayCall(node, variables));
+      for (const item of prepared) {
+        // The redirects name the cache at every access and mark the dirty flag at every write.
+        const firstUse = statements.findIndex((statement) => reaches(statement,
+          (node) => (node as { readonly name?: unknown }).name === item.local));
+        let lastWrite = -1;
+        statements.forEach((statement, index) => {
+          if (reaches(statement, (node) => node instanceof AssignNode && node.identifier.name === item.dirty)) {
+            lastWrite = index;
+          }
+        });
+        if (firstUse > 0 && !anchors.has(item) && statements.slice(0, firstUse).some(calls)) {
+          anchors.set(item, statements[firstUse]!);
+        }
+        if (lastWrite >= 0 && statements.slice(lastWrite + 1).some(calls)) closings.set(item, statements[lastWrite]!);
+      }
+    }
+    // Flushes that close after one statement keep the order the entries were prepared in.
+    const flushedAfter = new Map<StatementNode, StatementNode>();
     const anchoredDeclarations = new Map<StatementNode, StatementNode[]>();
     for (const item of prepared) {
       const { e, local, dirty } = item;
@@ -340,16 +429,28 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       // early `return;` ahead of the first `balanceOf[_feeTo]`). Returns before the anchor keep no flush.
       const body = fn.body.statements ?? [];
       const anchorAt = anchor === undefined ? 0 : Math.max(0, body.indexOf(anchor));
+      // A cache with a closing write is flushed right after it: a return past it leaves nothing unwritten, so only a
+      // return up to it needs a flush of its own.
+      const closing = closings.get(item);
+      const closeAt = closing === undefined ? body.length - 1 : body.indexOf(flushedAfter.get(closing) ?? closing);
+      if (closing !== undefined && closeAt < anchorAt) {
+        throw new Error(`CacheMappingEntryInLoop: the last write of '${e.mapping}' in '${fn.name}' is missing.`);
+      }
       let stmts = [
         ...body.slice(0, anchorAt),
-        ...this.insertFlushesBeforeReturns(body.slice(anchorAt), e.mapping, e.keys, local, dirty),
+        ...this.insertFlushesBeforeReturns(body.slice(anchorAt, closeAt + 1), e.mapping, e.keys, local, dirty),
       ];
-      if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
+      if (closing !== undefined) {
+        const flush = this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier);
+        flushedAfter.set(closing, flush);
+        stmts = [...stmts, flush, ...body.slice(closeAt + 1)];
+      } else if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
         stmts = [...stmts, this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier)];
       }
       if (anchor !== undefined) {
-        // The key is a body local, so the cache read cannot hoist above its declaration: reading the entry at the
-        // first use of this entry gives the value every later read must observe once the writes are redirected.
+        // The entry is read at its first use: a key that is a body local is only declared there, and a call before
+        // that use would run between the read and the access it serves. Every later read observes the cache, as the
+        // writes are redirected to it.
         anchoredDeclarations.set(anchor, [...(anchoredDeclarations.get(anchor) ?? []), cache, dirtyLocal]);
       } else {
         // Point-in-time key snapshots must execute before the cache read which consumes them. They are emitted as

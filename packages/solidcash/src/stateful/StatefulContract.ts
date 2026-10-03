@@ -2602,6 +2602,7 @@ export function evalComputedKey(
   label: string | undefined, args: FunctionArgument[], inputs: readonly { name: string; type?: string }[],
   state?: Readonly<Record<string, StateValue>>,
   stateLengthDeltas?: Readonly<Record<string, bigint>>,
+  mappingValue?: (collection: string, key: unknown) => StateValue | undefined,
 ): Uint8Array | undefined {
   if (!label) return undefined;
   const encode = (value: unknown): Uint8Array | undefined => {
@@ -2710,9 +2711,8 @@ export function evalComputedKey(
       const index = evalValue(m[2]);
       const n = typeof index === 'bigint' ? Number(index)
         : typeof index === 'number' ? index : NaN;
-      if (!Array.isArray(values) || !Number.isSafeInteger(n) || n < 0 || n >= values.length) {
-        return undefined;
-      }
+      if (!Array.isArray(values)) return mappingValue?.(m[1], index);
+      if (!Number.isSafeInteger(n) || n < 0 || n >= values.length) return undefined;
       // Keep decoded values through nested field/arithmetic expressions. Only the final key (or a hash
       // operand) is encoded; encoding here loses struct fields and changes numeric/boolean semantics.
       return values[n];
@@ -7473,6 +7473,41 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         return fetched;
       };
 
+      // A key expression can read another mapping before selecting this entry's slot, e.g.
+      // `data[enabled && flags[id] ? selected : 0]`. Sorted commitments authenticate slots rather than
+      // publishing source keys, so resolve only the keys the compiler expression actually asks for.
+      const keyMappingEntries = new Map<string, Awaited<ReturnType<typeof this.getEntries>>>();
+      const locallyWrittenCollections = new Set(entryAccesses.filter((access) =>
+        access.operations.includes('write') || access.operations.includes('delete'))
+        .map((access) => access.collection));
+      for (const access of entryAccesses) {
+        for (const source of access.keySources ?? []) {
+          if (source.kind !== 'expression' || !source.expressionLabel) continue;
+          for (const match of source.expressionLabel.matchAll(/map:([A-Za-z_]\w*)\(/g)) {
+            const name = match[1];
+            const mapped = stateLayout.collections.find((candidate) => candidate.name === name
+              && candidate.kind === 'mapping');
+            if (mapped && !locallyWrittenCollections.has(name) && !keyMappingEntries.has(name)) {
+              keyMappingEntries.set(name, await this.getEntries(mapped.signature));
+            }
+          }
+        }
+      }
+      const mappingKeyValue = (name: string, key: unknown): StateValue | undefined => {
+        const mapped = stateLayout.collections?.find((candidate) => candidate.name === name
+          && candidate.kind === 'mapping');
+        const entries = keyMappingEntries.get(name);
+        // A handler that also mutates this collection may read a newer in-script value. Never substitute
+        // the pre-transaction snapshot for that read; leave it unresolved for the VM-derived path.
+        if (!mapped || !entries || locallyWrittenCollections.has(name)
+          || (typeof key !== 'bigint' && typeof key !== 'boolean'
+          && typeof key !== 'string' && !(key instanceof Uint8Array))) return undefined;
+        const entry = selectMappingEntryByKeys(
+          entries, [key], mapped.keyTypes ?? [mapped.keyType], mapped,
+        );
+        return entry?.value ?? getDefaultStateValue(mapped.valueType, stateLayout.structs);
+      };
+
       // P5b value witnesses (__internal__valueWitness_N), collected in entryAccesses (slotIndex) order to match
       // the SymbolTable param injection; appended to finalArgs after this loop (between blockhash and iteration).
       // Each witness is recorded under its entry-slot ordinal, which is the physical route slot for an aggregate
@@ -7653,7 +7688,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 return addressToLockScript(senderSigner.getAddress());
               }
               // Auto-derive a direct computed key (hash160(pk), sha256(x), ...) from its canonical label.
-              const auto = evalComputedKey(source.expressionLabel, entryArgs, entryAbiFunction!.inputs);
+              const auto = evalComputedKey(source.expressionLabel, entryArgs, entryAbiFunction!.inputs,
+                onChainState.state, undefined, mappingKeyValue);
               if (auto) return auto;
               // `map:<stateArray>(...)` keys an entry by an element of a dynamic state array, which no ABI input can
               // express: the label indexes by a source-loop local. The entry access's own frame is the row that
@@ -7682,7 +7718,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // on-chain key bytes, so a placeholder key proves an absent entry at the wrong slot and mints a node the
               // covenant never accepts.
               if (source?.kind === 'expression') {
-                const described = evalComputedKey(paramName, entryArgs, entryAbiFunction!.inputs, describedState);
+                const described = evalComputedKey(paramName, entryArgs, entryAbiFunction!.inputs,
+                  describedState, undefined, mappingKeyValue);
                 if (described !== undefined) return described;
               }
               const ov = overrides?.entryKeyOverrides?.get(slotIndex);
@@ -7757,6 +7794,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   ? addressToLockScript((this._signer ?? this._logicalNonceSigner)!.getAddress())
                   : evalComputedKey(
                     access.keySources[0].expressionLabel, entryArgs, entryAbiFunction!.inputs, describedState,
+                    undefined, mappingKeyValue,
                   )
                   ?? overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))
                 : access.keySources?.[0]?.kind === 'stateArrayLast'

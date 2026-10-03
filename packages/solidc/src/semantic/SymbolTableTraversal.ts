@@ -6095,7 +6095,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           keyParams, keySources, operations: ['read'], slotIndex: -1,
         });
       }
-      return; // MappingAccessNode has no children to recurse into
+      // A mapping key can itself read another verified mapping (including through a
+      // ternary or short-circuit expression). Its witness needs a separate slot.
+      for (const key of node.keys) this.collectEntryAccesses(key, map);
+      return;
     }
 
     if (node instanceof MappingAssignNode && node.collection) {
@@ -6193,6 +6196,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           }),
         });
       }
+      for (const key of node.keys) this.collectEntryAccesses(key, map);
       // Recurse into the value expression (may contain nested mapping accesses)
       this.collectEntryAccesses(node.expression, map);
       return;
@@ -6219,6 +6223,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           }),
         });
       }
+      for (const key of node.keys) this.collectEntryAccesses(key, map);
       this.collectEntryAccesses(node.expression, map);
       return;
     }
@@ -6251,7 +6256,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           }),
         });
       }
-      return; // MappingDeleteNode has no children to recurse into
+      for (const key of node.keys) this.collectEntryAccesses(key, map);
+      return;
     }
 
     // Generic recursion into child nodes
@@ -6365,6 +6371,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const info = map.get(slotKey);
       if (info) node.entrySlotIndex = info.slotIndex;
+      for (const key of node.keys) this.assignEntrySlotIndices(key, map);
       return;
     }
 
@@ -6373,6 +6380,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const info = map.get(slotKey);
       if (info) node.entrySlotIndex = info.slotIndex;
+      for (const key of node.keys) this.assignEntrySlotIndices(key, map);
       this.assignEntrySlotIndices(node.expression, map);
       return;
     }
@@ -6382,6 +6390,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const info = map.get(slotKey);
       if (info) node.entrySlotIndex = info.slotIndex;
+      for (const key of node.keys) this.assignEntrySlotIndices(key, map);
       this.assignEntrySlotIndices(node.expression, map);
       return;
     }
@@ -6391,6 +6400,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const info = map.get(slotKey);
       if (info) node.entrySlotIndex = info.slotIndex;
+      for (const key of node.keys) this.assignEntrySlotIndices(key, map);
       return;
     }
 

@@ -282,6 +282,25 @@ describe('vmap fixed-write batch metadata', () => {
       .toBe('ternary(id:d,id:v,map:m(id:k))');
   });
 
+  it('allocates a sorted mapping read nested inside another mapping key', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Probe() {
+        mapping(uint256 => bool) flags;
+        mapping(uint256 => uint256) data;
+        function store(bool enabled, uint256 flagKey, uint256 dataKey, uint256 value) public {
+          data[enabled && flags[flagKey] ? dataKey : 0] = value;
+          require(true);
+        }
+      }`, {
+      forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true,
+    });
+    const accesses = artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses;
+    expect(accesses?.map((access) => [access.collection, access.operations])).toEqual([
+      ['data', ['write']], ['flags', ['read']],
+    ]);
+    expect(accesses?.[0]?.slotIndex).not.toBe(accesses?.[1]?.slotIndex);
+  });
+
   it('records a mapping rmw of a parameter delta as valueSource', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;

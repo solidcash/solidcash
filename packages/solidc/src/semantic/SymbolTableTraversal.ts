@@ -809,6 +809,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Local var name -> its initializer expression, for resolving a mapping key that is a local (e.g.
   // `address lastKey = keys[keys.length-1]; m[lastKey] = v`). Populated per function before the entry pre-scan.
   private localKeyDefs: Map<string, ExpressionNode> = new Map();
+  // Locals and parameters the body writes after their definition (`collectLocalKeyDefs`): their initializer, or the
+  // argument a parameter names, is not the value a later read observes.
+  private writtenLocals: Set<string> = new Set();
+  // The names each statement of the current function writes, with and without tuple assignments (`followLocal`).
+  private writtenNames = new WeakMap<Node, { readonly names: Set<string>; readonly tuples: Set<string> }>();
+  private writtenNamesOf?: FunctionDefinitionNode;
   private canonSeen: Set<string> = new Set(); // cycle guard for transitive local-key canonicalization
   // Each node's straight-line statement number in the function body, and each statement's state effects: a
   // canonical read of state the body already assigned names the assigned value, so the SDK evaluates it against
@@ -6499,8 +6505,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       const wholeValueWrite = !node.arrayIndex && !node.arrayPush && !node.arrayPop;
       const expressionType = this.getExpressionType(node.expression);
       const valueIdentifier = node.expression instanceof IdentifierNode ? node.expression : undefined;
+      // A parameter the body writes before this is not the argument it names, and neither is a local read through
+      // its declaration after the body wrote it (`readsWrittenLocal`): neither is published, so the SDK learns the
+      // value from the body's own close rather than stating a stale one.
       const directValueParam = valueIdentifier !== undefined
         && this.currentFunction?.parameters.some((parameter) => parameter.name === valueIdentifier.name)
+        && !this.writtenLocals.has(valueIdentifier.name)
         && expressionType?.toString() === vt.toString();
       const valueParam = wholeValueWrite && chunkableValue && directValueParam
         ? valueIdentifier.name : undefined;
@@ -6512,6 +6522,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const arrayElementSource = node.arrayIndex !== undefined && !node.arrayPush && !node.arrayPop
         && this.isOffChainEvaluableMappingValue(node.arrayIndex)
         && this.isOffChainEvaluableMappingValue(node.expression)
+        && !this.readsWrittenLocal(node.arrayIndex) && !this.readsWrittenLocal(node.expression)
         ? `arrset(${this.canonicalizeExpression(node.arrayIndex)},${this.canonicalizeExpression(node.expression)})`
         : undefined;
       const valueSource: string | undefined = arrayElementSource
@@ -6521,6 +6532,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             ?? (node.expression instanceof IdentifierNode ? this.mappingLocalNetSource(node.expression.name) : undefined)
             ?? this.literalWholeValueSource(node.expression)
             ?? (directValueParam ? `id:${valueIdentifier!.name}`
+              : this.readsWrittenLocal(node.expression) ? undefined
               : node.expression instanceof TernaryOpNode || node.expression instanceof InstantiationNode
                 || node.expression instanceof FunctionCallNode
                 ? this.canonicalizeExpression(node.expression)
@@ -8223,11 +8235,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       const userVisibleParams = this.currentFunction?.parameters.filter(
         (p) => !p.name.startsWith('__internal__'),
       ) ?? [];
+      // Whether the statements dominating the read write a local after its declaration; set once they are known
+      // (`followLocal`), so a local classified before then keeps its classification and is re-read below.
+      let writtenInPrefix: (identifier: IdentifierNode) => boolean = () => false;
       const classifyArg = (
         expression: ExpressionNode, seen = new Set<Node>(),
       ): ExternalCallArgSource | undefined => {
         if (seen.has(expression)) return undefined;
         seen.add(expression);
+        // A written local is not its declaration's source: `serializeExpression` follows its writes.
+        if (expression instanceof IdentifierNode && writtenInPrefix(expression)) return undefined;
         if (expression instanceof CastNode) return classifyArg(expression.expression, seen);
         if (expression instanceof IdentifierNode && expression.name === 'this') {
           return { kind: 'selfAddress' };
@@ -8303,13 +8320,22 @@ export default class SymbolTableTraversal extends AstTraversal {
                 indexParamIndex: indexSource.paramIndex,
               };
             }
-            if (expression.index instanceof IntLiteralNode) {
+            // A named integer constant is the literal it stands for, not an index this cannot describe.
+            let fixedIndex: ExpressionNode = expression.index;
+            while (fixedIndex instanceof CastNode) fixedIndex = fixedIndex.expression;
+            if (fixedIndex instanceof IdentifierNode) {
+              const definition = fixedIndex.definition?.definition;
+              const constant = definition instanceof ConstantDefinitionNode ? definition
+                : definition === undefined ? this.constantMap.get(fixedIndex.name) : undefined;
+              if (constant?.expression instanceof IntLiteralNode) fixedIndex = constant.expression;
+            }
+            if (fixedIndex instanceof IntLiteralNode) {
               // A literal index does not advance with the reached occurrence. Publishing the zero delta keeps
               // that explicit, so a consumer can never mistake a fixed element for a loop-local index.
               return {
                 kind: 'arrayElement',
                 paramIndex: arraySource.paramIndex,
-                indexValue: Number(expression.index.value),
+                indexValue: Number(fixedIndex.value),
                 indexStepValue: 0,
               };
             }
@@ -8446,6 +8472,164 @@ export default class SymbolTableTraversal extends AstTraversal {
       // predicate is resolved against what dominates its own branch rather than this call.
       let priorStatements = dominatingStatements();
       let unresolvedProducerAlias = false;
+      // A local the dominating statements write after its declaration is published from those writes, never from
+      // its initializer: a struct local rebuilt field by field (CoalesceStructFieldArrayWrites), an array local
+      // written element by element, either on one arm of a branch. Each write's value is read where the write runs,
+      // an element write rebuilds the array element by element, and a branch joins its arms on its own predicate. A
+      // write this cannot follow publishes nothing, which the hop refuses by name, rather than a stale value. Loop
+      // counters and the compiler's state caches keep the resolvers below.
+      const followedValues = new WeakSet<ExternalCallExpression>();
+      const followed = (value: ExternalCallExpression): ExternalCallExpression => {
+        followedValues.add(value);
+        return value;
+      };
+      const followable = (identifier: IdentifierNode): boolean => {
+        if (identifier.name.startsWith('__dlcache_') || identifier.name.startsWith('__vmapcache_')) return false;
+        const definition = identifier.definition?.definition;
+        return !(definition instanceof VariableDefinitionNode
+          && (definition.isLoopVariable || definition.loopInitialValue !== undefined));
+      };
+      if (this.writtenNamesOf !== this.currentFunction) {
+        this.writtenNames = new WeakMap();
+        this.writtenNamesOf = this.currentFunction;
+      }
+      const writesLocal = (root: Node, name: string, tuples = true): boolean => {
+        let written = this.writtenNames.get(root);
+        if (written === undefined) {
+          written = { names: new Set(), tuples: new Set() };
+          const { names, tuples: tupleNames } = written;
+          const seen = new Set<Node>();
+          const visit = (value: Node): void => {
+            if (seen.has(value)) return;
+            seen.add(value);
+            if (value instanceof AssignNode) names.add(value.identifier.name);
+            else if (value instanceof ArrayAssignNode || value instanceof ArrayDeleteNode
+              || value instanceof ArrayPushNode || value instanceof ArrayPopNode) names.add(value.name);
+            else if (value instanceof TupleAssignmentNode) {
+              for (const element of value.elements) if (element.name !== undefined) tupleNames.add(element.name);
+            }
+            for (const [key, child] of Object.entries(value)) {
+              if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+                'referencedContract', 'stateVariable', 'collection', 'sourceCallNode'].includes(key)) continue;
+              if (child instanceof Node) visit(child);
+              else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) visit(item);
+            }
+          };
+          visit(root);
+          this.writtenNames.set(root, written);
+        }
+        return written.names.has(name) || (tuples && written.tuples.has(name));
+      };
+      const literalIndexOf = (index: ExternalCallExpression): number | undefined => (
+        index.kind === 'literal' && /^\d+$/.test(String(index.value)) ? Number(index.value) : undefined);
+      // One element of a followed array, projected through the arms of a join.
+      const elementOf = (value: ExternalCallExpression, index: ExternalCallExpression): ExternalCallExpression => {
+        const at = literalIndexOf(index);
+        if (value.kind === 'array' && at !== undefined && value.args !== undefined && at < value.args.length) {
+          return value.args[at]!;
+        }
+        if (value.kind === 'ternary' && value.condition && value.ifTrue && value.ifFalse) {
+          return followed({
+            kind: 'ternary', condition: value.condition,
+            ifTrue: elementOf(value.ifTrue, index), ifFalse: elementOf(value.ifFalse, index),
+          });
+        }
+        return followed({ kind: 'arrayAccess', left: value, right: index });
+      };
+      // One field of a followed struct value: a rebuild's own argument for it, projected through the arms of a join.
+      const fieldOf = (value: ExternalCallExpression, name: string, type?: string): ExternalCallExpression => {
+        const struct = value.kind === 'call' && value.name !== undefined ? this.structMap.get(value.name) : undefined;
+        const position = struct?.fields.findIndex((field) => field.name === name) ?? -1;
+        if (struct !== undefined && position >= 0 && struct.fields.length === value.args?.length) {
+          return value.args[position]!;
+        }
+        if (value.kind === 'ternary' && value.condition && value.ifTrue && value.ifFalse) {
+          return followed({
+            kind: 'ternary', condition: value.condition,
+            ifTrue: fieldOf(value.ifTrue, name, type), ifFalse: fieldOf(value.ifFalse, name, type),
+          });
+        }
+        return followed({ kind: 'field', name, expression: value, ...(type && { type }) });
+      };
+      // What a local holds where it is read: `undefined` when the dominating statements never write it after its
+      // declaration (the resolvers below read it as before), `null` when a write cannot be followed.
+      const followLocal = (identifier: IdentifierNode): ExternalCallExpression | null | undefined => {
+        if (!followable(identifier)) return undefined;
+        const prior = priorStatements ?? [];
+        let last = prior.length - 1;
+        while (last >= 0 && !writesLocal(prior[last]!, identifier.name)) last -= 1;
+        if (last < 0) return undefined;
+        const before = prior.slice(0, last);
+        const write = prior[last]!;
+        // The value keeps the type the local is declared with, which a packed read of it encodes by: a join of an
+        // address parameter and a field is packed as the address both arms are.
+        const definition = identifier.definition?.definition;
+        const declaredType = definition instanceof VariableDefinitionNode || definition instanceof ParameterNode
+          ? definition.type?.toString() : undefined;
+        const typed = (value: ExternalCallExpression): ExternalCallExpression => followed(
+          value.type === undefined && declaredType !== undefined ? { ...value, type: declaredType } : value);
+        const at = (statements: StatementNode[], read: ExpressionNode): ExternalCallExpression | undefined => {
+          const reading = priorStatements;
+          priorStatements = statements;
+          try {
+            return serializeExpression(read, new Set());
+          } finally {
+            priorStatements = reading;
+          }
+        };
+        if (write instanceof AssignNode && write.identifier.name === identifier.name) {
+          const value = at(before, write.expression);
+          return value === undefined ? null : typed(value);
+        }
+        if (write instanceof ArrayAssignNode && write.name === identifier.name) {
+          const previous = at(before, identifier);
+          const index = at(before, write.index);
+          const value = at(before, write.value);
+          if (previous === undefined || index === undefined || value === undefined) return null;
+          const length = previous.kind === 'array' ? previous.args?.length
+            : previous.kind === 'newArray' && previous.args?.[0] !== undefined ? literalIndexOf(previous.args[0])
+              : definition instanceof VariableDefinitionNode && definition.type instanceof ArrayType
+                ? definition.type.bound : undefined;
+          const written = literalIndexOf(index);
+          if (length === undefined || (written !== undefined && written >= length)) return null;
+          // An address element keeps its type, which a packed read of it encodes by (its 20-byte identity).
+          const elementType = definition instanceof VariableDefinitionNode && definition.type instanceof ArrayType
+            && definition.type.elementType instanceof AddressType ? definition.type.elementType.toString() : undefined;
+          const stored = value.type === undefined && elementType !== undefined ? { ...value, type: elementType } : value;
+          return typed({
+            kind: 'array',
+            args: Array.from({ length }, (_unused, position): ExternalCallExpression => {
+              const element = elementOf(previous, { kind: 'literal', type: 'bigint', value: String(position) });
+              if (written !== undefined) return written === position ? stored : element;
+              return {
+                kind: 'ternary',
+                condition: {
+                  kind: 'binary', operator: '==', left: index,
+                  right: { kind: 'literal', type: 'bigint', value: String(position) },
+                },
+                ifTrue: stored,
+                ifFalse: element,
+              };
+            }),
+          });
+        }
+        if (write instanceof BlockNode || write instanceof UncheckedNode) {
+          const block = write instanceof BlockNode ? write : write.block;
+          return at([...before, ...block.statements ?? []], identifier) ?? null;
+        }
+        if (write instanceof BranchNode) {
+          const condition = at(before, write.condition);
+          const ifTrue = at([...before, ...write.ifBlock.statements ?? []], identifier);
+          const ifFalse = at([...before, ...write.elseBlock?.statements ?? []], identifier);
+          if (condition === undefined || ifTrue === undefined || ifFalse === undefined) return null;
+          return typed({ kind: 'ternary', condition, ifTrue, ifFalse });
+        }
+        // A tuple's own declaration or assignment is the resolvers' below (`findTupleInit`).
+        if (write instanceof TupleAssignmentNode) return undefined;
+        return null;
+      };
+      writtenInPrefix = (identifier) => followable(identifier)
+        && (priorStatements ?? []).some((statement) => writesLocal(statement, identifier.name, false));
       const definitionDependsOnProducer = (
         definition: VariableDefinitionNode, seenDefinitions = new Set<VariableDefinitionNode>(),
       ): boolean => {
@@ -8576,6 +8760,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         seen.add(expression);
         const preservedLocal = expression instanceof IdentifierNode
           && serializedProgramLocals?.has(expression.name) === true;
+        if (expression instanceof IdentifierNode && !preservedLocal) {
+          const value = followLocal(expression);
+          if (value !== undefined) return value ?? undefined;
+        }
         const source = preservedLocal ? undefined : classifyArg(expression);
         if (source && source.kind !== 'expression') return {
           kind: 'source',
@@ -8721,6 +8909,10 @@ export default class SymbolTableTraversal extends AstTraversal {
             ?? (expression.expression.type instanceof StructType
               ? expression.expression.type.fields.find((field) => field.name === expression.name)?.type
               : undefined);
+          // A local whose writes were followed already holds the value this field reads.
+          if (inner !== undefined && followedValues.has(inner)) {
+            return fieldOf(inner, expression.name, fieldType?.toString());
+          }
           // A typed call may consume a field immediately after the source assigns it through a local struct or
           // storage-pointer alias. Publish the dominating RHS directly so SDK planning does not have to guess the
           // value from application names. Conditional/repeated writes conservatively invalidate this shortcut.
@@ -8981,6 +9173,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (expression instanceof ArrayAccessNode) {
           const array = serializeExpression(expression.array, seen);
           const index = serializeExpression(expression.index, seen);
+          if (array !== undefined && index !== undefined && followedValues.has(array)) return elementOf(array, index);
           return array && index && { kind: 'arrayAccess', left: array, right: index };
         }
         if (expression instanceof TupleIndexOpNode) {
@@ -9014,11 +9207,9 @@ export default class SymbolTableTraversal extends AstTraversal {
             };
           }
           const tuple = serializeExpression(expression.tuple, seen);
-          return tuple && {
-            kind: 'arrayAccess',
-            left: tuple,
-            right: { kind: 'literal', type: 'bigint', value: expression.index.toString() },
-          };
+          const position: ExternalCallExpression = { kind: 'literal', type: 'bigint', value: expression.index.toString() };
+          if (tuple !== undefined && followedValues.has(tuple)) return elementOf(tuple, position);
+          return tuple && { kind: 'arrayAccess', left: tuple, right: position };
         }
         if (expression instanceof ArrayNode) {
           const elements = expression.elements.map((item) => serializeExpression(item, seen));
@@ -9195,6 +9386,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           ? { ...source, stepExpression }
           : { kind: 'expression', expression: { kind: 'missing', name: 'runtime loop step' } };
       }
+      // An argument naming a local written before this call was classified before the call's dominating statements
+      // were known, so it is read again from the writes.
+      node.parameters.forEach((parameter, i) => {
+        let named: ExpressionNode = parameter;
+        while (named instanceof CastNode) named = named.expression;
+        if (named instanceof IdentifierNode && writtenInPrefix(named)) argSources[i] = { kind: 'expression' };
+      });
       for (let i = 0; i < argSources.length; i++) {
         if (argSources[i].kind !== 'expression' || argSources[i].expression !== undefined) continue;
         const expression = serializeExpression(node.parameters[i]);
@@ -10272,7 +10470,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       return this.canonicalizeExpression(expression);
     }
     if (expression instanceof IdentifierNode) {
-      if (this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name) === true) {
+      if (this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name) === true
+        && !this.writtenLocals.has(expression.name)) {
         return `id:${expression.name}`;
       }
       return undefined;
@@ -10288,7 +10487,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (left === undefined || right === undefined) return undefined;
       return this.foldCanonicalBinop(expression.operator, left, right);
     }
-    return this.canonicalizeExpression(expression);
+    // Another local's field, after the body rewrote that local, is not what its declaration names.
+    return this.readsWrittenLocal(expression) ? undefined : this.canonicalizeExpression(expression);
   }
 
   private composeStructCtorNet(
@@ -10839,10 +11039,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.localKeyDefs = new Map();
     const assignmentCounts = new Map<string, number>();
     const adjacentInitializers = new Map<string, ExpressionNode>();
+    const initialized = new Set<string>();
+    const elementWritten = new Set<string>();
     const walk = (n: Node | undefined): void => {
       if (!n) return;
       if (n instanceof VariableDefinitionNode && n.expression && !n.isLoopVariable && !this.localKeyDefs.has(n.name)) {
         this.localKeyDefs.set(n.name, n.expression);
+      }
+      if (n instanceof VariableDefinitionNode && n.expression) initialized.add(n.name);
+      if (n instanceof ArrayAssignNode || n instanceof ArrayDeleteNode || n instanceof ArrayPushNode
+        || n instanceof ArrayPopNode) elementWritten.add(n.name);
+      if (n instanceof TupleAssignmentNode) {
+        for (const element of n.elements) if (element.existing && element.name) elementWritten.add(element.name);
       }
       if (n instanceof AssignNode) {
         assignmentCounts.set(n.identifier.name, (assignmentCounts.get(n.identifier.name) ?? 0) + 1);
@@ -10875,7 +11083,34 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.localKeyDefs.set(name, expression);
       }
     }
+    // Written after its definition: an assignment after an initializer, a second one after a bare declaration, any
+    // to a parameter, or an element write, push, pop or delete.
+    const parameters = new Set((this.currentFunction?.parameters ?? []).map((parameter) => parameter.name));
+    this.writtenLocals = elementWritten;
+    for (const [name, count] of assignmentCounts) {
+      if (count >= 2 || initialized.has(name) || parameters.has(name)) this.writtenLocals.add(name);
+    }
     this.indexCanonStatements(node);
+  }
+
+  /** True when an expression reads a written local (`writtenLocals`), directly or through a local's initializer. */
+  private readsWrittenLocal(expression: Node | undefined): boolean {
+    const visited = new WeakSet<Node>();
+    const visit = (value: Node): boolean => {
+      if (visited.has(value)) return false;
+      visited.add(value);
+      if (value instanceof IdentifierNode) {
+        if (this.writtenLocals.has(value.name)) return true;
+        const initializer = this.localKeyDefs.get(value.name);
+        return initializer !== undefined && visit(initializer);
+      }
+      return Object.entries(value).some(([key, child]) => !['location', 'type', 'definition', 'symbolTable',
+        'resolvedFunction', 'functionReference', 'referencedContract', 'stateVariable', 'collection',
+        'sourceCallNode'].includes(key)
+        && (child instanceof Node ? visit(child)
+          : Array.isArray(child) && child.some((item) => item instanceof Node && visit(item))));
+    };
+    return expression !== undefined && visit(expression);
   }
 
   /**

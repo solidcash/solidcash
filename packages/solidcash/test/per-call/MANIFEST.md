@@ -38,7 +38,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 170 |
-| `packages/solidcash/test/per-call/call/` | `solidcash` | 190 (186 by default, 4 skipped) |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 232 (228 by default, 4 skipped) |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 11 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 145 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 93 |
@@ -50,7 +50,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/ahead/` | `solidcash` | 143, under `PER_CALL_AHEAD=1` |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 11 |
 
-Total: 2411 checks (115 + 983 + 1302 + 11), with four more cases that run under
+Total: 2453 checks (115 + 983 + 1344 + 11), with four more cases that run under
 `PER_CALL_FULL=1`: three in `primitives/many-masters.test.ts` (the nine-entry composition and its refusal, which
 `shapes/deep-arbitration.test.ts` covers by default, and the twenty-four-master composition, which takes about
 twenty-eight seconds to derive), and the shipped data contract's clock-stamped append
@@ -58,7 +58,8 @@ twenty-eight seconds to derive), and the shipped data contract's clock-stamped a
 behind its proxy and takes about three and a half minutes; `pw7-measure.test.ts` runs only under `PER_CALL_FULL=1`
 too. The package totals are full-config runs of
 `vitest.per-call.config.ts`: `solidc` 983 is the four rows above it (109 files),
-`solidcash` 1302 is the rows above it from `validator/` down, `ahead/` excepted (223 files; refreshed 2026-10-02),
+`solidcash` 1344 is the rows above it from `validator/` down, `ahead/` excepted (223 files; the `call/` row
+re-measured 2026-10-03, the other rows carry their own last measurements),
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`. It was refreshed
 2026-10-03 (16 files / 143 cases, all green) after the chained-chunked-node landing moved its pins.

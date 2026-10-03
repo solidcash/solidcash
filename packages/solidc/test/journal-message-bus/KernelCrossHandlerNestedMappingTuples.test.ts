@@ -183,6 +183,9 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
     } as const;
     const ordinary = compileString(source, options);
     const graph = compileString(source, { ...options, messageBusGraphContext: true });
+    const expanded = compileString(source, {
+      ...options, messageBusGraphContext: true, messageBusEntryPoolCapacity: 9,
+    });
     const ordinaryWriter = ordinary.messageBus?.handlers.find((handler) => handler.name === 'set');
     const graphWriter = graph.messageBus?.handlers.find((handler) => handler.name === 'set');
     expect(ordinaryWriter).toMatchObject({ eligible: true, physicalEntrySlots: [0] });
@@ -199,5 +202,16 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
     });
     expect(graph.messageBus?.route.sortedBatchInfo)
       .toContainEqual({ collection: 'values', slotIndices: Array.from({ length: 8 }, (_unused, slot) => slot) });
+    expect(graph.compiler.options?.messageBusEntryPoolCapacity).toBeUndefined();
+    expect(expanded.compiler.options?.messageBusEntryPoolCapacity).toBe(9);
+    expect(expanded.messageBus?.handlers.find((handler) => handler.name === 'set')
+      ?.physicalEntrySlotAlternatives)
+      .toEqual([Array.from({ length: 9 }, (_unused, slot) => slot)]);
+    expect(expanded.messageBus?.route.entryAccesses).toHaveLength(9);
+    for (const capacity of [0, 1.5, 100]) {
+      expect(() => compileString(source, {
+        ...options, messageBusGraphContext: true, messageBusEntryPoolCapacity: capacity,
+      })).toThrow('messageBusEntryPoolCapacity must be an integer between 1 and 99');
+    }
   });
 });

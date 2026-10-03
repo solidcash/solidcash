@@ -142,6 +142,13 @@ export interface CompilerOptions {
   // still need per-row logical callers when one composed transaction reaches them from different parents.
   // Omitted preserves the compact local-caller route used by standalone batching.
   messageBusGraphContext?: boolean;
+  /**
+   * Number of authenticated physical entry lanes reserved for a kernel route's one-key collection pool.
+   * Defaults to 8. Raise this for a graph that can touch more distinct keys in one transaction; each extra
+   * lane adds a real entry proof and increases compilation/runtime cost. Must be an integer in [1, 99],
+   * the v1 journal's global record ceiling (other collections share this budget).
+   */
+  messageBusEntryPoolCapacity?: number;
   /** Opt in to the root-route envelope carrier; omitted preserves verifier-local V1–4 transport. */
   messageBusRootEnvelope?: boolean;
   /** Opt in to the root proxy's authenticated forward payload as the canonical envelope carrier. */

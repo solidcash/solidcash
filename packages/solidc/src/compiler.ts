@@ -33,7 +33,7 @@ import {
   AbiFunction, ChildDeploymentSiteAbi, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType, isFixedWidthType,
   isChunkableValueType,
-  KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
+  KERNEL_ENTRY_JOURNAL_MAX_RECORDS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
   hasUniqueKernelJournalDispositionCommitment, kernelJournalDispositionManifestDigest,
   KernelJournalDispositionsAbi,
   MessageBusVerifierCapacityError, messageBusVerifierLockingBytecode,
@@ -959,6 +959,12 @@ function markConstructorCapturedHelperGraphEffects(ast: Ast): void {
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
   if (options.messageBusRootEnvelope === true && options.messageBusProxyForwardEnvelope === true) {
     throw new Error('messageBusRootEnvelope and messageBusProxyForwardEnvelope are mutually exclusive');
+  }
+  if (options.messageBusEntryPoolCapacity !== undefined
+    && (!Number.isSafeInteger(options.messageBusEntryPoolCapacity)
+      || options.messageBusEntryPoolCapacity < 1
+      || options.messageBusEntryPoolCapacity > KERNEL_ENTRY_JOURNAL_MAX_RECORDS)) {
+    throw new Error(`messageBusEntryPoolCapacity must be an integer between 1 and ${KERNEL_ENTRY_JOURNAL_MAX_RECORDS}`);
   }
   const messageBusMode: MessageBusMode = options.__messageBusVerifierProgram
     ? 'required'
@@ -8949,6 +8955,7 @@ function synthesizeMessageBusRoute(
     throw new Error(`Invalid internal message-bus maximum rows: ${requestedRouteMaximumRows}`);
   }
   const routeMaximumRows = requestedRouteMaximumRows ?? defaultRouteMaximumRows;
+  const entryPoolCapacity = compilerOptions.messageBusEntryPoolCapacity ?? MAX_MESSAGE_BUS_ROWS;
   const kernelDeploymentFrameWidth = Math.max(0, ...eligible.map((fn) =>
     (kernelDeploymentSiteWidths.get(fn) ?? []).reduce((total, width) => total + width, 0)));
   const kernelDeploymentSelectorRegistration = eligible
@@ -9661,7 +9668,7 @@ function synthesizeMessageBusRoute(
       const primary = `__message_bus_key_${collection.replace(/[^A-Za-z0-9_]/g, '_')}_0`;
       const witness = routeKeyWitnesses.get(primary)?.[0];
       if (!witness) throw new Error(`Missing graph-context key-pool witness '${primary}'`);
-      const keyPool = Array.from({ length: MAX_MESSAGE_BUS_ROWS }, (_unused, lane) =>
+      const keyPool = Array.from({ length: entryPoolCapacity }, (_unused, lane) =>
         lane === 0 ? primary : `${primary}_pool${lane}`);
       for (const fn of eligible) {
         const binding = fn.messageBusKeyWitnesses?.find((candidate) => candidate.routeInput === primary);
@@ -9681,7 +9688,7 @@ function synthesizeMessageBusRoute(
         || collectionByName.get(coordinate.collection)?.allKeyTypes.length !== 1) continue;
       const witness = routeKeyWitnesses.get(binding.routeInput)?.[0];
       if (!witness) throw new Error('Missing kernel key-pool witness');
-      binding.keyPool = Array.from({ length: MAX_MESSAGE_BUS_ROWS }, (_unused, lane) =>
+      binding.keyPool = Array.from({ length: entryPoolCapacity }, (_unused, lane) =>
         lane === 0 ? binding.routeInput : `${binding.routeInput}_pool${lane}`);
       for (const name of binding.keyPool) routeKeyWitnesses.set(name, [{ ...witness, name }]);
     }

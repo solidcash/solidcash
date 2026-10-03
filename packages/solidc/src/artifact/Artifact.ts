@@ -3518,6 +3518,8 @@ export function generateArtifact(
         messageBus: compilerOptions.messageBus,
         ...(compilerOptions.messageBus && compilerOptions.messageBusKernel !== undefined
           && { messageBusKernel: compilerOptions.messageBusKernel }),
+        ...(compilerOptions.messageBusEntryPoolCapacity !== undefined
+          && { messageBusEntryPoolCapacity: compilerOptions.messageBusEntryPoolCapacity }),
         ...(compilerOptions.messageBusDirectParticipant === true && { messageBusDirectParticipant: true }),
         // Runtime external-call argument reconstruction must mirror Solidity-only encoding rules such as
         // abi.encodePacked(address) narrowing to the 20-byte account payload.

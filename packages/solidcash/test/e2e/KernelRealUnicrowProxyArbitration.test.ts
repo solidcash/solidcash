@@ -24,13 +24,18 @@ const OPTIONS = {
 } as const;
 
 const names = ['UnicrowArbitrator', 'UnicrowClaim', 'Unicrow'] as const;
-const artifacts = Object.fromEntries(names.map((name) => [
-  name,
-  compileFile(`../../examples/effectiveacceleration/contracts/unicrow/${name}.sol`, OPTIONS),
-])) as Record<(typeof names)[number], ReturnType<typeof compileFile>>;
+const compileArtifacts = (entryPoolCapacity?: number): Record<(typeof names)[number], ReturnType<typeof compileFile>> =>
+  Object.fromEntries(names.map((name) => [
+    name,
+    compileFile(`../../examples/effectiveacceleration/contracts/unicrow/${name}.sol`, {
+      ...OPTIONS,
+      ...(entryPoolCapacity === undefined ? {} : { messageBusEntryPoolCapacity: entryPoolCapacity }),
+    }),
+  ])) as Record<(typeof names)[number], ReturnType<typeof compileFile>>;
+const artifacts = compileArtifacts();
 
 describe('real Unicrow proxy kernel arbitration callback', () => {
-  const setup = async (...amounts: bigint[]): Promise<{
+  const setup = async (amounts: bigint[] = [], routeArtifacts = artifacts): Promise<{
     arbitrator: ProxyContract; claim: ProxyContract; unicrow: ProxyContract;
     sellerLock: Uint8Array;
   }> => {
@@ -48,17 +53,17 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
     ])) as Record<(typeof names)[number], string>;
     const identityLock = (name: (typeof names)[number]): Uint8Array => addressToLockScript(identities[name]);
     const common = { __block_timestamp: 100n, __blockOracleOwner: alicePub };
-    const arbitrator = await upgrades.deployProxy(getContractFactory(artifacts.UnicrowArbitrator, signer), {
+    const arbitrator = await upgrades.deployProxy(getContractFactory(routeArtifacts.UnicrowArbitrator, signer), {
       ...common, unicrow: identityLock('Unicrow'), unicrowClaim: identityLock('UnicrowClaim'),
     }, { initializer: false, implementationConstructorArgs: [
       identityLock('Unicrow'), identityLock('UnicrowClaim'),
     ] });
-    const claim = await upgrades.deployProxy(getContractFactory(artifacts.UnicrowClaim, signer), {
+    const claim = await upgrades.deployProxy(getContractFactory(routeArtifacts.UnicrowClaim, signer), {
       ...common, unicrow: identityLock('Unicrow'), unicrowArbitrator: identityLock('UnicrowArbitrator'),
     }, { initializer: false, implementationConstructorArgs: [
       identityLock('Unicrow'), identityLock('UnicrowArbitrator'), signer.getAddress(),
     ] });
-    const unicrow = await upgrades.deployProxy(getContractFactory(artifacts.Unicrow, signer), {
+    const unicrow = await upgrades.deployProxy(getContractFactory(routeArtifacts.Unicrow, signer), {
       ...common, unicrowArbitrator: identityLock('UnicrowArbitrator'),
       unicrowClaim: identityLock('UnicrowClaim'),
     }, { initializer: false, implementationConstructorArgs: [
@@ -72,7 +77,7 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
       owner: typeof arbitrator.proxy,
       values: readonly Record<string, StateValue>[],
     ): Promise<void> => {
-      const artifact = artifacts[name];
+      const artifact = routeArtifacts[name];
       const collection = artifact.stateLayout!.collections![0];
       const categoryId = owner.categoryId;
       const address = getEntryNftAddress(owner.inner, categoryId, collection.name);
@@ -163,14 +168,14 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
   }, 300_000);
 
   it('pays a funded real escrow through the nested proxy kernel route', async () => {
-    const { claim, sellerLock } = await setup(1_000n);
+    const { claim, sellerLock } = await setup([1_000n]);
     const receipt = await claim.forward('claimMultiple', [[1n]]).send();
     expect(receipt.outputs.some((output) => output.valueSatoshis === 1_000n
       && binToHex(output.lockingBytecode) === binToHex(sellerLock))).toBe(true);
   }, 300_000);
 
   it('pays two funded real escrows through repeated nested proxy kernel rows', async () => {
-    const { claim, unicrow, sellerLock } = await setup(1_000n, 2_000n);
+    const { claim, unicrow, sellerLock } = await setup([1_000n, 2_000n]);
     const receipt = await claim.forward('claimMultiple', [[1n, 2n]]).send();
     const outpoints = receipt.inputs.map((input) =>
       `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
@@ -186,7 +191,7 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
   }, 300_000);
 
   it('pays three funded real escrows through repeated nested proxy kernel rows', async () => {
-    const { claim, unicrow, sellerLock } = await setup(1_000n, 2_000n, 3_000n);
+    const { claim, unicrow, sellerLock } = await setup([1_000n, 2_000n, 3_000n]);
     const receipt = await claim.forward('claimMultiple', [[1n, 2n, 3n]]).send();
     const outpoints = receipt.inputs.map((input) =>
       `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
@@ -203,7 +208,7 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
 
   it('pays seven distinct real escrows past the legacy graph invocation ceiling', async () => {
     const escrowIds = Array.from({ length: 7 }, (_unused, index) => BigInt(index + 1));
-    const { claim, unicrow, sellerLock } = await setup(...escrowIds.map(() => 1_000n));
+    const { claim, unicrow, sellerLock } = await setup(escrowIds.map(() => 1_000n));
     const receipt = await claim.forward('claimMultiple', [escrowIds]).send();
     const outpoints = receipt.inputs.map((input) =>
       `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
@@ -215,4 +220,19 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
     expect(escrows).toHaveLength(escrowIds.length);
     expect(escrows.every((entry) => (entry.value as { claimed: bigint }).claimed === 1n)).toBe(true);
   }, 300_000);
+
+  it('pays nine distinct real escrows with nine authenticated entry lanes', async () => {
+    const escrowIds = Array.from({ length: 9 }, (_unused, index) => BigInt(index + 1));
+    const { claim, unicrow, sellerLock } = await setup(escrowIds.map(() => 1_000n), compileArtifacts(9));
+    const receipt = await claim.forward('claimMultiple', [escrowIds]).send();
+    const outpoints = receipt.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    expect(new Set(outpoints).size).toBe(outpoints.length);
+    expect(receipt.outputs.filter((output) =>
+      binToHex(output.lockingBytecode) === binToHex(sellerLock)
+      && output.valueSatoshis === 1_000n)).toHaveLength(escrowIds.length);
+    const escrows = await unicrow.proxy.getEntries('escrows');
+    expect(escrows).toHaveLength(escrowIds.length);
+    expect(escrows.every((entry) => (entry.value as { claimed: bigint }).claimed === 1n)).toBe(true);
+  }, 600_000);
 });

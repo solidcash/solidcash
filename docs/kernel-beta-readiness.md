@@ -735,6 +735,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   Sink row from the typed-empty result, then removes it after the authenticated later return is observed.
   The exact BCH-2026 title settles only the first Sink row (total one/count one), and its immediately preceding
   growth-direction title passes. This adds proof coverage without changing planner behavior or running a suite.
+- 2026-10-03 repeated-entry capacity follow-up: the real Unicrow proxy route now has an explicit compiler option
+  for its authenticated one-key entry pool; the default remains eight physical lanes. A nine-lane compile
+  publishes nine actual entry proofs, and the focused BCH-2026 title pays nine distinct real escrows in one
+  transaction with unique inputs, nine seller outputs, and nine claimed entries. The compiler title checks the
+  default, the explicit capacity, and invalid capacities; its immediately preceding title passes. The adjacent
+  seven-escrow BCH-2026 title also passes with the unchanged default eight-lane artifact. This does not bypass
+  SDK duplicate-input checks or alter the lean default. No comprehensive suite or 10 KB gate ran.
 
 ## Gate before the next leap
 

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { hash160 } from '@solidcash/utils';
-import type { ExternalCallAbi, ExternalCallExpression, FunctionArgument } from '@solidcash/utils';
+import type { ExternalCallAbi, ExternalCallExpression } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import type { FunctionArgument } from '../../../src/Argument.js';
 import {
   entryRowOf, makeCallResolver, resolveCallArguments,
 } from '../../../src/per-call/proxy/call-resolution.js';

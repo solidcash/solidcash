@@ -545,4 +545,34 @@ describe('kernel conditional state-derived entry keys', () => {
     expect(data.map((entry) => entry.value)).toEqual([13n]);
     expect(data[0]?.slot).toEqual(keyToSlotMulti([bigIntToVmNumber(11n)]));
   }, 180_000);
+
+  it('uses a returning helper mapping write before selecting another entry key', async () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Probe() {
+        mapping(uint256 => bool) flags;
+        mapping(uint256 => uint256) data;
+        function activate(uint256 flagKey) internal returns (bool) {
+          flags[flagKey] = true;
+          return true;
+        }
+        function store(uint256 flagKey, uint256 dataKey, uint256 value) public {
+          require(activate(flagKey));
+          data[flags[flagKey] ? dataKey : 0] = value;
+          require(true);
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x76), provider);
+    for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const probe = await getContractFactory(artifact, signer).deploy();
+    await expect(probe.call.store(7n, 11n, 13n).send()).resolves.toBeDefined();
+    expect((await probe.getEntries('flags')).map((entry) => entry.value)).toEqual([true]);
+    const data = await probe.getEntries('data');
+    expect(data.map((entry) => entry.value)).toEqual([13n]);
+    expect(data[0]?.slot).toEqual(keyToSlotMulti([bigIntToVmNumber(11n)]));
+  }, 180_000);
 });

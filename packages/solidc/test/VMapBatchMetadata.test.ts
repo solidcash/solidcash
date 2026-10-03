@@ -515,6 +515,27 @@ describe('vmap fixed-write batch metadata', () => {
     expect(source?.preWriteMappingCollections).toBeUndefined();
   });
 
+  it('compiles an effectful helper guard before a conditional mapping key', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Probe() {
+        mapping(uint256 => bool) flags;
+        mapping(uint256 => uint256) data;
+        function invalidate(uint256 flagKey) internal returns (bool) {
+          flags[flagKey] = false;
+          return true;
+        }
+        function store(uint256 flagKey, uint256 dataKey, uint256 value) public {
+          require(invalidate(flagKey));
+          data[flags[flagKey] ? dataKey : 0] = value;
+          flags[flagKey] = false;
+          require(true);
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true });
+    expect(artifact.abi.find((fn) => fn.name === 'store')).toBeDefined();
+  });
+
   it('records a mapping rmw of a parameter delta as valueSource', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;

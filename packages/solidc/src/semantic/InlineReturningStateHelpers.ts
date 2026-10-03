@@ -468,7 +468,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const fn of node.functions) {
       if (!fn.graphEmissionHandler && !fn.messageBusDetachedSignatureHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
-        && (this.readsEntry(fn) || this.touchesScalarState(fn)
+        && (this.touchesEntry(fn) || this.touchesScalarState(fn)
           || this.containsMsgSender(fn) || this.containsKeccak(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
           || this.transitivelyContainsEvent(fn))) {
@@ -510,7 +510,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // The fallback is internally callable via the self low-level-call lowering; a state-touching returning
     // fallback must inline at those call sites (its definition always stays - it is a dispatched entry point).
     if (node.fallbackDef && this.eligibleShape(node.fallbackDef)
-      && (this.readsEntry(node.fallbackDef) || this.touchesScalarState(node.fallbackDef))) {
+      && (this.touchesEntry(node.fallbackDef) || this.touchesScalarState(node.fallbackDef))) {
       this.funcByName.set(node.fallbackDef.name, node.fallbackDef);
       this.funcByKey.set(inlineKey(node.fallbackDef.name, node.fallbackDef.parameters.length), node.fallbackDef);
       this.inlinedFns.add(node.fallbackDef.name);
@@ -699,7 +699,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (fn.collectionJournal) return false;
     if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
     if (!this.eligibleShape(fn)) return false;
-    return this.readsEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn)
+    return this.touchesEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn)
       || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn)
       || this.transitivelyContainsEvent(fn);
   }
@@ -887,7 +887,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   ): boolean {
     const key = inlineKey(fn.name, fn.parameters.length);
     if (seen.has(key) || !this.transitivelyContainsEvent(fn)
-      || this.touchesScalarState(fn) || this.readsEntry(fn)
+      || this.touchesScalarState(fn) || this.touchesEntry(fn)
       || this.containsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)) return false;
     const next = new Set(seen).add(key);
     const pureGlobals = new Set<string>([
@@ -1067,13 +1067,16 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return returns === 1;
   }
 
-  // Reads a mapping/collection element (incl. the read half of a compound write) - the access that needs an
-  // entry-access input slot from the entry-point block layout.
-  private readsEntry(fn: FunctionDefinitionNode): boolean {
+  // A collection read OR write needs the entry point's physical block layout. In particular, a returning
+  // helper that only writes a mapping has no read node, but cannot execute as a standalone OP_INVOKE body.
+  private touchesEntry(fn: FunctionDefinitionNode): boolean {
     for (const n of this.nodesOf(fn)) {
       if (n instanceof MappingAccessNode && this.collectionNames.has(n.name)) return true;
       else if (n instanceof ArrayAccessNode && n.array instanceof IdentifierNode
         && this.collectionNames.has(n.array.name)) return true;
+      else if ((n instanceof MappingAssignNode || n instanceof MappingFieldAssignNode
+        || n instanceof MappingDeleteNode || n instanceof ArrayAssignNode || n instanceof ArrayDeleteNode
+        || n instanceof ArrayPushNode || n instanceof ArrayPopNode) && this.collectionNames.has(n.name)) return true;
     }
     return false;
   }

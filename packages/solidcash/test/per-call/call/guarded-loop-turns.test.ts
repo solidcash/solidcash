@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { parsePushdataCommitment } from '@solidcash/utils';
+import { parsePushdataCommitment, type Artifact } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
@@ -10,6 +10,7 @@ import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
 import { routingOf } from '../../../src/per-call/proxy/external-calls.js';
+import { compositionEventLogs } from '../../../src/per-call/receipt/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
@@ -21,7 +22,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * that skips the parties whose share is zero. The compiler publishes the call as a `loop` site with its iteration
  * domain and the guard as its `condition`; the hop plans the turns the guard admits once the shares are learned
  * (`callingTurnsOf`), so the frame's records are exactly the calls its body makes. The shares `[3, 0, 5, 0, 0]` call
- * on turns 0 and 2 only.
+ * on turns 0 and 2 only. `Root.payEach` pays each share above zero to `Sink.take`, which emits the turn and the
+ * amount it was paid: the shares `[0, 3, 0, 0, 5]` skip turn 0 and the two turns between the calls, and
+ * `[0, 0, 0, 0, 7]` skip four turns in a row, so only the last one calls.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -36,26 +39,45 @@ const ROOT_IMPL_CATEGORY = category('2c');
 const ROOT_PROXY_CATEGORY = category('3d');
 const ROOT_INIT_TXID = category('4e');
 const CALL_TXID = category('5f');
+const SINK_CATEGORY = category('60');
+
+/** A feed whose `shares()` answers the five shares it names, the rest zero, as `Feed` answers `[3, 0, 5, 0, 0]`. */
+function feedSource(name: string, shares: Readonly<Record<number, number>>): string {
+  const set = Object.entries(shares).map(([turn, share]) => ` r[${turn}] = ${share};`).join('');
+  return ` contract ${name} {`
+    + '   int public scale;'
+    + '   constructor() { this.scale = 1; }'
+    + `   function shares() view returns (uint16[5]) { uint16[5] r;${set} return r; }`
+    + ' }';
+}
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IFeed { function shares() view returns (uint16[5]); }'
   + ' interface IMath { function twice(int x) view returns (int); }'
-  + ' contract Feed {'
-  + '   int public scale;'
-  + '   constructor() { this.scale = 1; }'
-  + '   function shares() view returns (uint16[5]) { uint16[5] r; r[0] = 3; r[2] = 5; return r; }'
-  + ' }'
+  + ' interface ISink { function take(int turn, int amount) returns (int); }'
+  + feedSource('Feed', { 0: 3, 2: 5 })
+  + feedSource('FeedSkipFirst', { 1: 3, 4: 5 })
+  + feedSource('FeedLastOnly', { 4: 7 })
   + ' contract Math {'
   + '   int public scale;'
   + '   constructor() { this.scale = 1; }'
   + '   function twice(int x) view returns (int) { return x * 2 * this.scale; }'
   + ' }'
+  + ' contract Sink {'
+  + '   int public scale;'
+  + '   event Paid(int turn, int amount);'
+  + '   constructor() { this.scale = 1; }'
+  + '   function take(int turn, int amount) returns (int) { emit Paid(turn, amount); return amount * this.scale; }'
+  + ' }'
   + ' contract Root {'
   + '   address public implementation;'
   + '   address public feed;'
   + '   address public math;'
+  + '   address public sink;'
   + '   int public last;'
-  + '   function initialize(address f, address m) { this.feed = f; this.math = m; require(true); }'
+  + '   function initialize(address f, address m, address k) {'
+  + '     this.feed = f; this.math = m; this.sink = k; require(true);'
+  + '   }'
   + '   function pay() {'
   + '     uint16[5] s = IFeed(this.feed).shares();'
   + '     int total = 0;'
@@ -64,26 +86,37 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     }'
   + '     this.last = total;'
   + '   }'
+  + '   function payEach() {'
+  + '     uint16[5] s = IFeed(this.feed).shares();'
+  + '     int total = 0;'
+  + '     for (int i = 0; i < 5; i = i + 1) {'
+  + '       if (s[i] > 0) { total = total + ISink(this.sink).take(i, int(s[i])); }'
+  + '     }'
+  + '     this.last = total;'
+  + '   }'
   + ' }';
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
-const feed = artifacts.Feed!;
 const math = artifacts.Math!;
+const sink = artifacts.Sink!;
 const root = artifacts.Root!;
 
 function funding(txid: string): { txid: string; vout: number; satoshis: bigint } {
   return { txid, vout: 0, satoshis: 500_000n };
 }
 
-/** Deploys the feed and the math plain and the caller behind its own proxy, then enters `pay` through the proxy. */
-async function payThroughProxy(): Promise<PerCallProxyCallResult> {
+/**
+ * Deploys `feed`, the math and the sink plain and the caller behind its own proxy, then enters `functionName`
+ * through the proxy.
+ */
+async function payThroughProxy(feed: Artifact, functionName: string): Promise<PerCallProxyCallResult> {
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signature = new SignatureTemplate(alicePriv);
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
   const funder = source.unlock.spend(alicePub, signature);
   const callerFunder = signature.unlockP2PKH();
   const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
-  for (const [artifact, txid] of [[feed, FEED_CATEGORY], [math, MATH_CATEGORY]] as const) {
+  for (const [artifact, txid] of [[feed, FEED_CATEGORY], [math, MATH_CATEGORY], [sink, SINK_CATEGORY]] as const) {
     const coin = funding(txid);
     await network.addUtxo(source.address, coin);
     await deployStatefulContract(artifact, [], {
@@ -95,7 +128,7 @@ async function payThroughProxy(): Promise<PerCallProxyCallResult> {
   const callCoin = funding(CALL_TXID);
   for (const coin of [rootInitCoin, callCoin]) await network.addUtxo(binToHex(deployerLock), coin);
   await fundShippedFacets(network);
-  const addressOf = (artifact: typeof feed, txid: string): Uint8Array =>
+  const addressOf = (artifact: Artifact, txid: string): Uint8Array =>
     deployMaster(artifact, hexToBin(txid), VALIDATOR_PROGRAM).address;
   const deployment = await deployPerCallProxy({
     provider: network,
@@ -103,7 +136,10 @@ async function payThroughProxy(): Promise<PerCallProxyCallResult> {
     proxyArtifact: buildProxyArtifact(root),
     implementationDeploy: { fundingUtxo: funding(ROOT_IMPL_CATEGORY), funder, changeAddress: source.address },
     proxyDeploy: { fundingUtxo: funding(ROOT_PROXY_CATEGORY), funder, changeAddress: source.address },
-    initialize: { functionName: 'initialize', args: [addressOf(feed, FEED_CATEGORY), addressOf(math, MATH_CATEGORY)] },
+    initialize: {
+      functionName: 'initialize',
+      args: [addressOf(feed, FEED_CATEGORY), addressOf(math, MATH_CATEGORY), addressOf(sink, SINK_CATEGORY)],
+    },
     callerLockingBytecode: deployerLock,
     callerFunding: { utxo: rootInitCoin, funder: callerFunder, changeAddress: source.address },
     vm: compositionMachine(),
@@ -115,11 +151,12 @@ async function payThroughProxy(): Promise<PerCallProxyCallResult> {
     proxyArtifact: buildProxyArtifact(root),
     proxyCategoryId: deployment.proxy.categoryId,
     implementationCategoryId: deployment.implementation.categoryId,
-    functionName: 'pay',
+    functionName,
     args: [],
     externals: {
       IFeed: { artifact: feed, categoryId: FEED_CATEGORY },
       IMath: { artifact: math, categoryId: MATH_CATEGORY },
+      ISink: { artifact: sink, categoryId: SINK_CATEGORY },
     },
     callerUtxo: callCoin,
     callerLockingBytecode: deployerLock,
@@ -136,6 +173,12 @@ function lastOf(result: PerCallProxyCallResult): unknown {
   return parsePushdataCommitment(binToHex(result.writtenCommitments[field.nftIndex]!), layout, field.nftIndex).last;
 }
 
+/** The turn and amount of each payment the sink emitted, read back from the broadcast transaction in output order. */
+function paidEvents(result: PerCallProxyCallResult): readonly (readonly unknown[])[] {
+  return compositionEventLogs(result.draft, [sink], { outputs: result.broadcast!.outputs })
+    .map((log) => [log.contract, log.eventName, log.args.turn, log.args.amount]);
+}
+
 describe('a loop that calls only on the turns its own guard lets through', () => {
   it('publishes the guarded call as a loop site whose condition reads the earlier result per turn', () => {
     const twice = routingOf(root, 'pay').find((row) => row.functionName === 'twice')!;
@@ -146,11 +189,29 @@ describe('a loop that calls only on the turns its own guard lets through', () =>
   });
 
   it('plans the guarded turns alone and broadcasts them', async () => {
-    const result = await payThroughProxy();
+    const result = await payThroughProxy(artifacts.Feed!, 'pay');
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.broadcast).toBeDefined();
     // The shares, then one call for each of the two shares above zero.
     expect(result.draft.blockOf('implementation-master').calls).toHaveLength(3);
     expect(lastOf(result)).toBe(2n * 3n + 2n * 5n);
+  }, 300_000);
+
+  it('skips turn 0 and two turns in a row between the calls, and pays turns 1 and 4 in turn order', async () => {
+    const result = await payThroughProxy(artifacts.FeedSkipFirst!, 'payEach');
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.draft.blockOf('implementation-master').calls).toHaveLength(3);
+    expect(paidEvents(result)).toStrictEqual([['Sink', 'Paid', 1n, 3n], ['Sink', 'Paid', 4n, 5n]]);
+    expect(lastOf(result)).toBe(3n + 5n);
+  }, 300_000);
+
+  it('skips four turns in a row and pays the last turn alone', async () => {
+    const result = await payThroughProxy(artifacts.FeedLastOnly!, 'payEach');
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.draft.blockOf('implementation-master').calls).toHaveLength(2);
+    expect(paidEvents(result)).toStrictEqual([['Sink', 'Paid', 4n, 7n]]);
+    expect(lastOf(result)).toBe(7n);
   }, 300_000);
 });

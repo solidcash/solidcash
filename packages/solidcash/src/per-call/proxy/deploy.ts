@@ -60,7 +60,9 @@ import {
   type ShippedVmProgram,
 } from '../composer/index.js';
 import { readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
-import { frameDataRecordIndices, loopRecordSpans, orderLoopKeyArgs } from '../call/entry-records.js';
+import {
+  adjacentRecordOrder, frameDataRecordIndices, loopRecordSpans, namedDataRecordIndices, orderLoopKeyArgs,
+} from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import { eventLockingBytecode, eventSentinel } from '../deploy/genesis.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
@@ -2831,44 +2833,28 @@ function calleeDeclaredRecords(
  */
 function calleeNamedRecordIds(callees: readonly HopCallee[], callee: HopCallee): readonly string[] {
   const owned = callee.recordOwner === undefined ? callee.records : callees[callee.recordOwner]!.records;
-  const slots = callee.artifact.abi.find((entry) => entry.name === callee.entry)?.blockLayout?.slots;
-  const named = slots === undefined
-    ? frameDataRecordIndices(callee.artifact, callee.entry)
-    : slots.filter((slot) => slot.kind === 'dataNft' && slot.nftIndex !== undefined)
-      .sort((left, right) => left.offset - right.offset).map((slot) => slot.nftIndex!);
-  return named.map((nftIndex) => owned[nftIndex]?.id).filter((id): id is string => id !== undefined);
-}
-
-/** True when the records `callee` names sit side by side in `state`, in its own layout's order. */
-function namedRecordsAdjacent(callees: readonly HopCallee[], callee: HopCallee, state: readonly string[]): boolean {
-  const ids = calleeNamedRecordIds(callees, callee);
-  const first = ids.length === 0 ? -1 : state.indexOf(ids[0]!);
-  return ids.every((id, at) => state[first + at] === id);
+  return namedDataRecordIndices(callee.artifact, callee.entry)
+    .map((nftIndex) => owned[nftIndex]?.id).filter((id): id is string => id !== undefined);
 }
 
 /**
  * Places a block's data records side by side in data-record order, ahead of its nodes, when the order its frames
  * first named them leaves some frame's named records apart: a later frame naming a lower record finds it past the
  * records and nodes an earlier frame placed. A block every frame can address keeps its order, and one no order of
- * its records serves is refused by name.
+ * its records serves is refused by name (`adjacentRecordOrder`).
  */
 function adjacentRecordState(
   callees: readonly HopCallee[], contract: string, state: readonly string[], recordIndex: ReadonlyMap<string, number>,
 ): readonly string[] {
   const frames = callees.filter((callee) =>
     (callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!).contract === contract);
-  if (frames.every((callee) => namedRecordsAdjacent(callees, callee, state))) return state;
-  const records = state.filter((id) => recordIndex.has(id))
-    .sort((left, right) => recordIndex.get(left)! - recordIndex.get(right)!);
-  const ordered = [...records, ...state.filter((id) => !recordIndex.has(id))];
-  const split = frames.find((callee) => !namedRecordsAdjacent(callees, callee, ordered));
-  if (split !== undefined) {
-    throw new PerCallProxyDeployError(
-      `the callee "${split.functionName}" reads its data records of "${contract}" side by side, and no order of `
-      + 'the records the hop\'s other frames of that contract name keeps them so',
-    );
-  }
-  return ordered;
+  return adjacentRecordOrder(state, frames.map((callee) => calleeNamedRecordIds(callees, callee)), recordIndex,
+    (split) => {
+      throw new PerCallProxyDeployError(
+        `the callee "${frames[split]!.functionName}" reads its data records of "${contract}" side by side, and no `
+        + 'order of the records the hop\'s other frames of that contract name keeps them so',
+      );
+    });
 }
 
 /**

@@ -121,21 +121,60 @@ export interface CallEntryRecords {
 }
 
 /**
+ * The data-NFT indices of the records an entry's published block layout names, in that layout's order: its body
+ * reads each one at its frame's record base plus the record's layout offset. An entry that publishes no layout names
+ * every record.
+ */
+export function namedDataRecordIndices(artifact: Artifact, functionName: string): number[] {
+  const slots = artifact.abi.find((candidate) => candidate.name === functionName)?.blockLayout?.slots;
+  if (slots === undefined) {
+    return Array.from({ length: artifact.stateLayout?.dataNftCount ?? 0 }, (_unused, nftIndex) => nftIndex);
+  }
+  return slots.filter((slot) => slot.kind === 'dataNft' && slot.nftIndex !== undefined)
+    .sort((left, right) => left.offset - right.offset)
+    .map((slot) => slot.nftIndex!);
+}
+
+/**
  * The data-NFT indices of the records a frame running an entry declares, in the order its code reads them: the ones
  * its published block layout names. An entry that writes a verified mapping declares every other record after them,
  * because its batch's groups follow every data record. An entry that publishes no layout declares every record.
  */
 export function frameDataRecordIndices(artifact: Artifact, functionName: string): number[] {
   const entry = artifact.abi.find((candidate) => candidate.name === functionName);
+  const named = namedDataRecordIndices(artifact, functionName);
+  if (entry?.blockLayout?.slots === undefined || (entry.sortedBatchInfo ?? []).length === 0) return named;
   const all = Array.from({ length: artifact.stateLayout?.dataNftCount ?? 0 }, (_unused, nftIndex) => nftIndex);
-  const slots = entry?.blockLayout?.slots;
-  if (slots === undefined) return all;
-  const named = [...slots]
-    .filter((slot) => slot.kind === 'dataNft' && slot.nftIndex !== undefined)
-    .sort((left, right) => left.offset - right.offset)
-    .map((slot) => slot.nftIndex!);
-  if ((entry?.sortedBatchInfo ?? []).length === 0) return named;
   return [...named, ...all.filter((nftIndex) => !named.includes(nftIndex))];
+}
+
+/**
+ * A contract block's state with the data records each of its frames names side by side, in that frame's own order.
+ *
+ * A frame reads each record its block layout names at its record base, which the first record it declares sets, plus
+ * the record's layout offset, so the records it names must be adjacent inputs in that order. The order the frames
+ * placed them in is kept when it serves every frame, since a frame also addresses what follows its records from that
+ * base; otherwise the records lead the block in data-record order, ahead of its nodes. `named` holds each frame's
+ * named record ids in its layout's order and `recordIndex` the data record each record id is; a frame that neither
+ * order serves is handed to `refuse` by its position in `named`.
+ */
+export function adjacentRecordOrder(
+  state: readonly string[],
+  named: readonly (readonly string[])[],
+  recordIndex: ReadonlyMap<string, number>,
+  refuse: (frame: number) => never,
+): readonly string[] {
+  /** The first frame whose named records `order` leaves apart, or -1 when it serves every frame. */
+  const splitIn = (order: readonly string[]): number => named.findIndex((ids) => {
+    const first = ids.length === 0 ? -1 : order.indexOf(ids[0]!);
+    return ids.some((id, at) => order[first + at] !== id);
+  });
+  if (splitIn(state) < 0) return state;
+  const records = state.filter((id) => recordIndex.has(id))
+    .sort((left, right) => recordIndex.get(left)! - recordIndex.get(right)!);
+  const ordered = [...records, ...state.filter((id) => !recordIndex.has(id))];
+  const split = splitIn(ordered);
+  return split < 0 ? ordered : refuse(split);
 }
 
 /** The participant id a spent mapping node is placed under, keyed by its slot so the live UTXO is findable again. */

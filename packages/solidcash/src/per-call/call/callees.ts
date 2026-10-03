@@ -19,9 +19,10 @@
  *
  * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that touches a dynamic
  * value's or a mapping value's chunks, sends value or co-spends a side-car; a contract entered twice whose frames
- * write its mapping nodes, or reached at two of its deployments; and a site that waits on an earlier call's result. A
- * frame the plan runs beside the callees on one of their contracts, a value send's `receive()`, counts among the
- * contract's masters, and a callee that runs after it starts from the views it left.
+ * write its mapping nodes or name data records that no order of its block keeps side by side, or reached at two of
+ * its deployments; and a site that waits on an earlier call's result. A frame the plan runs beside the callees on
+ * one of their contracts, a value send's `receive()`, counts among the contract's masters, and a callee that runs
+ * after it starts from the views it left.
  */
 
 import { hexToBin } from '@bitauth/libauth';
@@ -54,7 +55,7 @@ import {
   deploymentStateValues, planHopExternalCalls, routingOf,
   type HopCallee, type HopCalleeRecord, type HopExternalPlan, type PerCallProxyExternal,
 } from '../proxy/external-calls.js';
-import { frameDataRecordIndices } from './entry-records.js';
+import { adjacentRecordOrder, frameDataRecordIndices, namedDataRecordIndices } from './entry-records.js';
 
 /** Raised when an entry's callee frames cannot be planned; `call.ts` rethrows it as the call's own error. */
 export class PerCallCalleeError extends Error {
@@ -167,6 +168,13 @@ function declaredRecords(callee: HopCallee): readonly HopCalleeRecord[] {
   return frameDataRecordIndices(callee.artifact, callee.entry)
     .map((nftIndex) => callee.records[nftIndex])
     .filter((record): record is HopCalleeRecord => record !== undefined);
+}
+
+/** The ids of the records one callee frame's block layout names, which its body reads from one base, in that order. */
+function namedRecordIds(callee: HopCallee): readonly string[] {
+  return namedDataRecordIndices(callee.artifact, callee.entry)
+    .map((nftIndex) => callee.records[nftIndex]?.id)
+    .filter((id): id is string => id !== undefined);
 }
 
 /** The events one callee frame's entry emits, in emit order. */
@@ -333,7 +341,8 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
     }
   }
   // A contract's block holds the records its frames declare, then the nodes they only read, then the nodes their
-  // writes spend, each once: the order each frame's own body reads them in.
+  // writes spend, each once: the order each frame's own body reads them in. A frame reads the records its layout
+  // names from one base, so they are placed side by side for every frame, or the call is refused by name.
   const blocks = [...byContract].map(([contract, frames]): ContractBlock => {
     const state: string[] = [];
     const place = (id: string): void => {
@@ -344,7 +353,12 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       for (const node of frame.readNodes) if (node.utxo !== undefined) place(node.id);
       for (const id of frame.entryWrites?.participantIds ?? []) place(id);
     }
-    return { contract, masters: frames.map((frame) => frame.master), state };
+    const recordIndex = new Map(frames[0]!.records.map((record, nftIndex) => [record.id, nftIndex]));
+    const ordered = adjacentRecordOrder(state, frames.map(namedRecordIds), recordIndex, (split) => refuse(
+      `the callee "${frames[split]!.functionName}" reads its data records of "${contract}" side by side, and no `
+      + 'order of the records the call\'s other frames of that contract name keeps them so',
+    ));
+    return { contract, masters: frames.map((frame) => frame.master), state: ordered };
   });
   const artifacts = [...new Set(plan.callees.map((callee) => callee.artifact))];
   const eventCount = plan.callees.reduce((total, callee) => total + emitsOf(callee).length, 0);

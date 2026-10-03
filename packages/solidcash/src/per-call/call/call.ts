@@ -95,8 +95,8 @@ import {
   stateRecordUnlockingBytecode,
 } from '../deploy/index.js';
 import {
-  callEntryRecords, frameDataRecordIndices, loopRecordSpans, orderLoopKeyArgs, placeRecordsBySpan,
-  type LaidCallEntryRecords, type LoopRecordSpan,
+  adjacentRecordOrder, callEntryRecords, frameDataRecordIndices, loopRecordSpans, namedDataRecordIndices,
+  orderLoopKeyArgs, placeRecordsBySpan, type LaidCallEntryRecords, type LoopRecordSpan,
 } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
 import {
@@ -767,16 +767,31 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       startViews.set(frame.master, views);
     }
   });
-  // The callee blocks with each paid body that shares one: its master beside the callees', its records once.
+  // The callee blocks with each paid body that shares one: its master beside the callees', its records once. The
+  // paid body reads the records its layout names from one base, as each callee does, so they are placed side by side
+  // for every frame on the block (`adjacentRecordOrder`), or the call is refused by name.
   const calleeBlocks = (calleePlan?.blocks ?? []).map((block): ContractBlock => {
     const index = payees.findIndex((payee) => payee.shared.length > 0
       && payee.artifact.contractName === block.contract);
     if (index < 0) return block;
-    return {
-      ...block,
-      masters: [...block.masters, receiveMasterId(index)],
-      state: [...block.state, ...payeeRecordIds[index]!.filter((id) => !block.state.includes(id))],
-    };
+    const payee = payees[index]!;
+    // The contract's records by data-record index, which the callees and the paid body share.
+    const contractRecords = payee.shared[0]!.records;
+    const frames = [...payee.shared, {
+      artifact: payee.artifact, entry: payee.entryName, functionName: `${block.contract}.${payee.entryName}()`,
+    }];
+    const state = adjacentRecordOrder(
+      [...block.state, ...payeeRecordIds[index]!.filter((id) => !block.state.includes(id))],
+      frames.map((frame) => namedDataRecordIndices(frame.artifact, frame.entry)
+        .map((nftIndex) => contractRecords[nftIndex]?.id).filter((id): id is string => id !== undefined)),
+      new Map(contractRecords.map((record, nftIndex) => [record.id, nftIndex])),
+      (split) => {
+        throw new PerCallCallError(`entry "${functionName}" pays "${block.contract}", which its calls also reach, and `
+          + `the frame "${frames[split]!.functionName}" reads its data records of it side by side, and no order of `
+          + 'the records the other frames of that contract name keeps them so');
+      },
+    );
+    return { ...block, masters: [...block.masters, receiveMasterId(index)], state };
   });
   const sharedPlan = calleePlan === undefined ? undefined : { ...calleePlan, blocks: calleeBlocks };
   const besideCallees = {

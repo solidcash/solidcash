@@ -29,8 +29,10 @@ Revision 14 records what landed after revision 13 (`3c0d52997`), and one place t
   T56).
 - **Upgrades** (section 20). The layout-compatibility rule (`d01cb5f6b`).
 - **Sends** (section 18). Handle sends take their turn in one queue per provider (`e786d49dd`).
-- **Still different: skipped calls** (section 4). The text holds one call record per call executed; the compiled
-  master still reads one per published site, so an execution that skips a guarded site stalls (DECISIONS D17).
+- **Self-settlement** (section 7, S). A master runs S whenever it is its category's only master, is not a `DELEGATE`
+  frame, and its block records no `DELEGATE` or `INTERNAL` call; before, a `DELEGATE` site anywhere in its code
+  skipped S for every entry (`2d517da79`, T57). Call records were already bound one per call executed (section 4);
+  the hop's plan for a skipped site is the open part (DECISIONS D17).
 
 ### Since revision 12 (2026-10-03)
 
@@ -1131,6 +1133,7 @@ by the code that produces it, by the validator program, or against real state.
 | T54 | Run a contract's constructor again on a live master: an owner rewritten, a supply minted twice | The constructor arm requires input 0 to spend `(category, 0)`, which only the genesis spends (`08d0bba27`, DECISIONS D18). Was open (VM-proven: an owner taken over; a supply minted from 1000 to 2000) | Yes |
 | T55 | Declare a record at an index the transaction does not have (a paged read's later turn at 0x8001), so a body reads a value no input carries | W2: the head's record walk requires the larger of an entry's two indices to name an input or an output (`52fe8aa95`). Was open (VM-proven) | Yes |
 | T56 | Mint immutable NFTs (forged events) or fungible amounts of a contract's category from a master that settles alone | S2 on the master path (`cd55e7a72`): the settlement walk holds the category's bare outputs to the events the frame lists, and the head's census refuses a fungible amount of the category at every index. Was open (VM-proven) | Yes |
+| T57 | Rewrite a record of a contract whose code has a `DELEGATE` site but whose frame made no delegate call (a sibling entry beside a dispatched forwarding fallback), so neither its master nor the validator settles it | S runs when the frame records no `DELEGATE` or `INTERNAL` call (`2d517da79`); V8 settles a delegate frame's records. Was open (VM-proven: a proxy record's `implementation` rewritten beside `touch`) | Yes |
 | T41 | Two frames claim the same event output, so one of two events disappears | S2 and V7: event outputs are pairwise distinct | Medium |
 | G0 | A `DELEGATE` frame's own category is settled by nobody. Its master runs on its caller's records and never settles its own (S), and V8 settles a contract only for a second master of it or for a `DELEGATE` or `INTERNAL` frame on its records. So when the frame's master is its contract's only one, nothing settles that contract: no census of its category, and no check on the records of it the transaction spends | Not stopped: a documented residual (DECISIONS D9), as the kernel's conservation rule (C3) skips delegate frames | Residual |
 

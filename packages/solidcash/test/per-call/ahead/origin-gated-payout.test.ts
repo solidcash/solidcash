@@ -333,20 +333,18 @@ function escrowWriteSegments(artifacts: Artifacts): unknown {
 }
 
 let guardedMarket: Promise<Market> | undefined;
-/** One deployment serves both pinned flows: each is refused before anything is broadcast. */
+/** One deployment serves both guarded flows: each settles now that the entry's three writes are all published. */
 function sharedGuardedMarket(): Promise<Market> {
   guardedMarket ??= deployMarket(artifactsFor(true), ESCROW_BELOW_BUYER);
   return guardedMarket;
 }
 
 /**
- * The guarded escrow's wall once the two store logs are admitted: its `refund` writes its own mapping record beside an
- * external call, and the guard writes its data record in two segments, so the compiler publishes no write segment for
- * that mapping write and the hop cannot place it. Owner: the SDK hop (`proxy/deploy.ts`, the write segment resolver).
+ * The guarded escrow's write segments: the entry's own `claims` write beside the guard's two data-record writes.
+ *
+ * The guard writes the escrow's data record before its first call and again after its last, and the compiler now
+ * publishes a segment for each write the entry makes, the mapping write included, so the hop can declare them all.
  */
-const ESCROW_REFUND_UNPLACED_WRITE = 'the callee\'s "Escrow.refund()" entry writes a mapping record beside an external '
-  + 'call, and the segment that write lands in is not fixed by the entry\'s own source, so the hop cannot declare it';
-
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS5): the origin-gated payout', () => {
   it('compiles the five contracts on the per-call path', () => {
     for (const artifacts of [artifactsFor(true), artifactsFor(false)]) {
@@ -356,25 +354,36 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS5): the origin-gate
     }
   });
 
-  it('refund now passes the two store logs and stops at the escrow\'s unplaceable mapping write', async () => {
+  it('refund passes the two store logs and the guard\'s two record writes, and settles', async () => {
     const market = await sharedGuardedMarket();
 
     // The two `Store.log` reaches write one count key and the later one continues the node the first created, so the
-    // cross-reach check admits them now. The guard writes the escrow's data record before its first call and again
-    // after its last, so the compiler publishes no write segment for the entry's `claims` write; the unguarded entry
-    // publishes it at segment 1.
-    expect(escrowWriteSegments(artifactsFor(true))).toBeUndefined();
+    // cross-reach check admits them. The guarded entry publishes three writes - its own `claims` mapping write at
+    // segment 1, the same segment the unguarded entry publishes it at, and the guard's data record at each side of
+    // the calls - so the hop places them and the flow settles.
+    expect(escrowWriteSegments(artifactsFor(true))).toStrictEqual([
+      { collection: 'claims', segment: 1 },
+      { record: 0, segment: 0, writtenVariables: ['locked'] },
+      { record: 0, segment: 2, writtenVariables: ['locked'] },
+    ]);
     expect(escrowWriteSegments(artifactsFor(false))).toStrictEqual([{ collection: 'claims', segment: 1 }]);
-    await expect(callFlow(market, 'refund')).rejects.toThrow(ESCROW_REFUND_UNPLACED_WRITE);
-    expect(await coinLive(market, 'refund')).toBe(true);
+    const result = await callFlow(market, 'refund');
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await coinLive(market, 'refund')).toBe(false);
+    expect(await storeCounts(market, JOB_ID)).toStrictEqual([bytesToHex(bigIntToVmNumber(2n))]);
   });
 
-  it('refuseArbitration stops at the same escrow wall', async () => {
+  it('refuseArbitration settles on the guarded market too', async () => {
     const market = await sharedGuardedMarket();
 
-    // Owner: as for `refund`.
-    await expect(callFlow(market, 'refuseArbitration')).rejects.toThrow(ESCROW_REFUND_UNPLACED_WRITE);
-    expect(await coinLive(market, 'refuseArbitration')).toBe(true);
+    // The guarded entry's write segments are the same three as `refund`'s; its own flow logs once more than the
+    // unguarded replica does, which is the count this deployment's store holds.
+    const result = await callFlow(market, 'refuseArbitration');
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await coinLive(market, 'refuseArbitration')).toBe(false);
+    expect(await storeCounts(market, JOB_ID)).toStrictEqual([bytesToHex(bigIntToVmNumber(3n))]);
   });
 });
 

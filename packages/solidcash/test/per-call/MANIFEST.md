@@ -47,7 +47,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 81 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | 125 (124 by default, 1 under `PER_CALL_FULL=1`) |
 | `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2, under `PER_CALL_FULL=1` |
-| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 140, under `PER_CALL_AHEAD=1` |
+| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 143, under `PER_CALL_AHEAD=1` |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 11 |
 
 Total: 2411 checks (115 + 983 + 1302 + 11), with four more cases that run under
@@ -60,7 +60,8 @@ too. The package totals are full-config runs of
 `vitest.per-call.config.ts`: `solidc` 983 is the four rows above it (109 files),
 `solidcash` 1302 is the rows above it from `validator/` down, `ahead/` excepted (223 files; refreshed 2026-10-02),
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
-The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`.
+The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`. It was refreshed
+2026-10-03 (16 files / 143 cases, all green) after the chained-chunked-node landing moved its pins.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.

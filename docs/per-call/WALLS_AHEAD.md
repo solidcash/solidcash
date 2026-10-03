@@ -25,13 +25,19 @@ set, and the walls below are the verdicts that run printed.
 | #30 whitelist worker | the entry's own check reports `no source message` | - | hop |
 | #31 update job | **served** (`5c4f232b7`) | - | - |
 
-## Replicas whose pins are stale at `055833fb4`
+## Replicas whose pins were stale (refreshed 2026-10-03)
 
-- MS5 (`origin-gated-payout.test.ts`): `refund` and `refuseArbitration` no longer stop at the escrow's mapping write;
-  `refuseArbitration` settles.
-- `packed-address-argument.test.ts`: the arbitration's split no longer refuses.
-- MS4 and MS7: moved as in the table. The `ahead/` files run only under `PER_CALL_AHEAD=1`, so a moved wall goes
-  unnoticed by the focused suites; a run per landing that touches the hop or the composer keeps them honest.
+- MS5 (`origin-gated-payout.test.ts`): the guarded escrow's entry now publishes all three of its writes, so `refund`
+  and `refuseArbitration` settle on the guarded market too; both pins assert the settlement and the store counts.
+- `packed-address-argument.test.ts`: the arbitration with its amounts settles. Its payload pins a known divergence
+  rather than a refusal - an untyped `uint256` element is packed little-endian where the body packs it big-endian
+  (`1f40`, `0320`, `07d0` and `c8` are 8000, 800, 2000 and 200 as 32-byte words read from the left). Owner: the SDK
+  hop's element encoder.
+- `ahead/fan-in.test.ts`: the second append to one job's chunked notes chains, so its `take` case asserts the
+  settlement instead of the refusal.
+- The whole directory is green again: 16 files / 143 cases. The `ahead/` files run only under `PER_CALL_AHEAD=1`, so a
+  moved wall goes unnoticed by the focused suites; a run per landing that touches the hop or the composer keeps them
+  honest.
 
 ## Also found while looking
 

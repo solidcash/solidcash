@@ -523,26 +523,24 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: an address packed int
     expect(statedEvent(outcome, 'data_')).toBe(data);
   }, 300_000);
 
-  it('the arbitration with its amounts (59-62) settles the split first, which refuses its own record write', async () => {
+  it('the arbitration with its amounts (59-62) settles, and packs the amounts little-endian', async () => {
     const outcome = await enter(world, 'arbitrate', [JOB, 8000n, 2000n, REASON], ARBITRATOR);
     // The event's data carries `split`'s amounts, so the hop plans in execution order: it stops before the store
-    // call, settles `split`'s frame alone to learn them, and that frame refuses: `split` writes its own record
-    // (`calls = calls + 1`), which the hop declares kept. The store call is never planned (`stated` holds `split`'s
-    // argument only). Owner: the SDK hop, a callee's own record write (`proxy/deploy.ts`, the callee frames
-    // `buildHopPlan` declares kept; DESIGN_REACHED_STATE_PLANNING.md, stage 3). Behind it, the evaluator packs an
-    // untyped `uint256` element little-endian (`asBytes`) where the body packs it big-endian.
-    expect(outcome.error).toBeInstanceOf(PerCallProxyDeployError);
-    expect(outcome.error!.message).toBe('the call\'s callee "Splitter.split()" did not settle through the proxy: '
-      + `frame "callee-master-1" of Splitter.split() at line ${lineOf('function split(uint256 amount_) public')}: `
-      + 'no source message (Program failed an OP_VERIFY operation.)');
-    // The stop's settle also derives the entry's own frame to see whether it names a reason of its own, so the
-    // refusal carries that stall; the split's unattributed refusal is still what the report names.
-    expect(outcome.stalls).toStrictEqual([
-      'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.arbitrate() filled no witness at '
-      + 'site 0 (call 0)',
-    ]);
-    expect(outcome.stated).toStrictEqual([[1000n]]);
-    expect(outcome.coinLive).toBe(true);
+    // call, settles `split`'s frame alone to learn them, and now places the store call too. The payload below is the
+    // one this hop states, and it is where the known divergence shows: an untyped `uint256` element is packed
+    // `asBytes`, little-endian, where the body packs it big-endian (`1f40` and `0320`/`07d0`/`c8` are 8000, 800,
+    // 2000 and 200 as 32-byte words read from the left). Owner: the SDK hop's element encoder.
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.result!.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(outcome.coinLive).toBe(false);
+    expect(storedEvents(world, outcome.result!)).toStrictEqual([{
+      id: JOB, type: 12n, address: '',
+      data: '1f40000000000000000000000000000000000000000000000000000000000000032007d000000000000000000000000000000000000000000000000000000000000000c8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58b40a2013337edb0dfe307f0a57d5dec5bfe60dd00000000000000000000000000000000000000000000000000000000000000000',
+    }]);
+    expect(statedEvent(outcome, 'data_')).toBe(
+      '1f40000000000000000000000000000000000000000000000000000000000000032007d000000000000000000000000000000000000000000000000000000000000000c8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58b40a2013337edb0dfe307f0a57d5dec5bfe60dd00000000000000000000000000000000000000000000000000000000000000000',
+    );
   }, 300_000);
 
   it('the refund\'s note (52, 53) settles with the worker\'s 20 bytes', async () => {

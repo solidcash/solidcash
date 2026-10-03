@@ -36,9 +36,13 @@ export function externalReturnsForCallsites(
     for (const lane of consumer.resultConsumers) {
       if (!Number.isInteger(lane.consumerCallsiteId) || lane.consumerCallsiteId < 0
         || ('argument' in lane && (!Number.isInteger(lane.argument) || lane.argument! < 0))
-        || (!('argument' in lane) && lane.condition !== true)
+        || (!('argument' in lane) && lane.condition !== true && lane.iterationDomain !== true)
         || !Number.isInteger(lane.producerCallsiteId) || lane.producerCallsiteId < 0) {
         throw new Error('Graph result-consumer metadata requires nonnegative integer callsite and argument lanes.');
+      }
+      if (Number(lane.condition === true) + Number('iterationDomain' in lane && lane.iterationDomain === true)
+        + Number('argument' in lane) !== 1) {
+        throw new Error('Graph result-consumer metadata requires one valid consumer lane.');
       }
       const producer = producerById.get(lane.producerCallsiteId);
       if (!producer) {
@@ -53,7 +57,8 @@ export function externalReturnsForCallsites(
           + `${lane.producerCallsiteId}.`,
         );
       }
-      const key = `${lane.consumerCallsiteId}:${lane.argument}:${lane.producerCallsiteId}`
+      const key = `${lane.consumerCallsiteId}:${lane.argument ?? ('iterationDomain' in lane ? 'domain' : 'condition')}`
+        + `:${lane.producerCallsiteId}`
         + `:${lane.resultIndex ?? '*'}`;
       if (lanes.has(key)) throw new Error(`Graph result-consumer metadata has duplicate lane ${key}.`);
       lanes.add(key);

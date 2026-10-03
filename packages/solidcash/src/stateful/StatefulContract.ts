@@ -498,8 +498,10 @@ import {
   projectCreateBuilderDelegateSlots as projectCreateBuilderDelegateSlotsImpl,
 } from './sc-project-create-builder-delegate-slots.js';
 import {
+  callerIdentityAnchorBand,
   fixCreateBuilderDelegateUnlockers as fixCreateBuilderDelegateUnlockersImpl,
 } from './sc-fix-create-builder-delegate-unlockers.js';
+export { callerIdentityAnchorBand };
 import {
   loadCreateBuilderTokenContainers as loadCreateBuilderTokenContainersImpl,
 } from './sc-load-create-builder-token-containers.js';
@@ -760,6 +762,10 @@ import {
 import {
   batchRaw as batchRawImpl,
 } from './sc-batch-raw.js';
+export {
+  assertAcyclicExternalCallPath,
+  visitExpandingExternalCallGroups,
+} from './external-call-graph-frontier.js';
 import {
   buildStatefulFunctionCall as buildStatefulFunctionCallImpl,
 } from './sc-build-stateful-function-call.js';
@@ -3093,9 +3099,13 @@ export function externalReturnsForCallsites(
     for (const lane of consumer.resultConsumers) {
       if (!Number.isInteger(lane.consumerCallsiteId) || lane.consumerCallsiteId < 0
         || ('argument' in lane && (!Number.isInteger(lane.argument) || lane.argument! < 0))
-        || (!('argument' in lane) && lane.condition !== true)
+        || (!('argument' in lane) && lane.condition !== true && lane.iterationDomain !== true)
         || !Number.isInteger(lane.producerCallsiteId) || lane.producerCallsiteId < 0) {
         throw new Error('Graph result-consumer metadata requires nonnegative integer callsite and argument lanes.');
+      }
+      if (Number(lane.condition === true) + Number('iterationDomain' in lane && lane.iterationDomain === true)
+        + Number('argument' in lane) !== 1) {
+        throw new Error('Graph result-consumer metadata requires one valid consumer lane.');
       }
       const producer = producerById.get(lane.producerCallsiteId);
       if (!producer) {
@@ -3110,7 +3120,8 @@ export function externalReturnsForCallsites(
           + `${lane.producerCallsiteId}.`,
         );
       }
-      const key = `${lane.consumerCallsiteId}:${lane.argument}:${lane.producerCallsiteId}`
+      const key = `${lane.consumerCallsiteId}:${lane.argument ?? ('iterationDomain' in lane ? 'domain' : 'condition')}`
+        + `:${lane.producerCallsiteId}`
         + `:${lane.resultIndex ?? '*'}`;
       if (lanes.has(key)) throw new Error(`Graph result-consumer metadata has duplicate lane ${key}.`);
       lanes.add(key);
@@ -4789,6 +4800,79 @@ export function evaluateExternalCallAffineIterationDomain<T extends object>(
     counter += step;
   }
   throw new Error('External call iteration domain did not terminate');
+}
+
+/** One producer result has no implicit copy for each later consumer-loop iteration. */
+export function producerResultOccurrenceIndex(call: { callsiteId?: number; occurrence?: string }): number {
+  if (call.occurrence === 'loop') {
+    throw new Error(`Producer callsite ${call.callsiteId ?? 'unknown'} has no per-occurrence identity`);
+  }
+  return 0;
+}
+
+export function repeatedExternalResultNeedsOccurrenceIdentity(
+  call: { callsiteId?: number; hasReturnValues?: boolean; occurrence?: string; resultArrayOutput?: number },
+  consumers: readonly { producerCallsiteId: number }[] | undefined,
+  rows: readonly { sourceIteration: number; occurrenceIndex: number }[],
+): boolean {
+  if (call.occurrence !== 'loop' || !call.hasReturnValues) return false;
+  return rows.some((row) => row.sourceIteration !== row.occurrenceIndex)
+    || (consumers?.some((consumer) => consumer.producerCallsiteId === call.callsiteId) ?? false);
+}
+
+/** Legacy callsites without published IDs are only identical by object identity. */
+export function externalCallMetadataIdentityMatches(
+  left: { callsiteId?: number }, right: { callsiteId?: number },
+): boolean {
+  return left === right || (left.callsiteId !== undefined && left.callsiteId === right.callsiteId);
+}
+
+function sameExternalPayloadValue(left: unknown, right: unknown): boolean {
+  if (left instanceof Uint8Array && right instanceof Uint8Array) return binsAreEqual(left, right);
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((item, index) => sameExternalPayloadValue(item, right[index]));
+  }
+  if (left && right && typeof left === 'object' && typeof right === 'object') {
+    const keys = Object.keys(left);
+    return keys.length === Object.keys(right).length && keys.every((key) =>
+      sameExternalPayloadValue((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]));
+  }
+  return left === right;
+}
+
+export function assertExternalCallRowPayload(
+  callsiteId: number, occurrenceIndex: number,
+  existing: { args: readonly unknown[]; targetLockingBytecode: string; sourceEffectOrdinal?: number },
+  reached: { args: readonly unknown[]; targetLockingBytecode: string; sourceEffectOrdinal?: number },
+): void {
+  if (!sameExternalPayloadValue(existing.args, reached.args)
+    || existing.targetLockingBytecode.toLowerCase() !== reached.targetLockingBytecode.toLowerCase()
+    || existing.sourceEffectOrdinal !== reached.sourceEffectOrdinal) {
+    throw new Error(`External callsite ${callsiteId} occurrence ${occurrenceIndex} reuses a row with different `
+      + 'target, arguments, or effect identity');
+  }
+}
+
+export function assertPreparedExternalCallRowReconciliation(
+  callsiteId: number, occurrenceIndex: number,
+  existing: {
+    parent?: number; sourceCallsiteId?: number; occurrenceIndex?: number; sourceLogicalIndex?: number;
+    producerPathKey?: string; args: readonly unknown[]; targetLockingBytecode: string;
+    sourceEffectOrdinal?: number; contract: object;
+  },
+  reached: { args: readonly unknown[]; targetLockingBytecode: string; sourceEffectOrdinal?: number },
+  expected: { parent: number; producerPathKey: string },
+  physical: { contract: object; lockingBytecode: string; hasMaster: boolean },
+): void {
+  if (existing.parent !== expected.parent || existing.sourceCallsiteId !== callsiteId
+    || existing.occurrenceIndex !== occurrenceIndex || existing.sourceLogicalIndex !== undefined
+    || existing.producerPathKey !== expected.producerPathKey || existing.contract !== physical.contract
+    || !physical.hasMaster
+    || existing.targetLockingBytecode.toLowerCase() !== physical.lockingBytecode.toLowerCase()) {
+    throw new Error(`External callsite ${callsiteId} occurrence ${occurrenceIndex} has a different stable `
+      + 'identity or physical owner');
+  }
+  assertExternalCallRowPayload(callsiteId, occurrenceIndex, existing, reached);
 }
 
 function routeRowCollectionKey(

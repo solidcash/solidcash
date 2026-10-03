@@ -290,7 +290,7 @@ import {
   recordInputIndexSlotName, recordOutputIndexSlotName, retvalSlotName, sendCountSlotName, sendOutputSlotName,
   valueWitnessSlotName,
 } from '../per-call/master/master-head.js';
-import { callSiteCheckScript } from '../per-call/master/call-site.js';
+import { callSiteCheckScript, sourceReadsCallResult } from '../per-call/master/call-site.js';
 import { dropFirstPushScript, dropLastPushScript, dropPrefix } from '../per-call/master/witness-reader.js';
 import {
   declaredRecordFirstViewByNameScript, declaredRecordOrdinalFieldsScript,
@@ -3698,8 +3698,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(calls_made)');
     }
+    const identityArguments = computesDigest ? this.perCallIdentityArguments(node, site, index) : [];
     if (computesTarget) this.emitPerCallComputedTarget(node);
-    if (computesDigest) this.emitPerCallArgumentDigest(node, site, locationData);
+    if (computesDigest) this.emitPerCallArgumentDigest(node, site, locationData, identityArguments);
     // The check parks both on the alternate stack and consumes them where their fields are, so they leave the
     // frame here even though the check itself is emitted as raw bytes.
     if (computesDigest) this.popFromStack();
@@ -3710,6 +3711,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(bytecodeToScript(callSiteCheckScript(site, recordIndex, usesResult, {
       digestFromStack: computesDigest, targetFromStack: computesTarget,
       ...(runtimeIndex ? { indexFromStack: true } : {}),
+      ...(identityArguments.length > 0 ? { identityArguments } : {}),
     })), locationData);
     if (runtimeIndex) {
       this.popFromStack(); // the check consumed the position it walked with
@@ -4102,6 +4104,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * The parameter positions of a per-call site's run-time `address` arguments the caller holds as a 20-byte
+   * identity: a value read back through a Solidity ABI call result, which decodes to the identity (DECISIONS D13).
+   *
+   * The callee's call data carries the lock the identity names there, so the site digests the identity and its check
+   * binds the call data to it by identity (`callSiteCheckScript`). A native result carries the lock itself, so a
+   * native body names none.
+   */
+  private perCallIdentityArguments(
+    node: ExternalFunctionCallNode, site: MasterCallSite, slotIndex: number,
+  ): readonly number[] {
+    if (!(this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)) return [];
+    const slots = this.currentFunction?.externalCalls ?? [];
+    const slot = slots.find((candidate) => candidate.sourceCallNode === node) ?? slots[slotIndex];
+    return (site.arguments ?? []).flatMap((argument, position) => (argument.kind === 'runtime'
+      && node.parameters[position]?.type instanceof AddressType
+      && sourceReadsCallResult(slot?.argSources?.[position]) ? [position] : []));
+  }
+
+  /**
    * Leaves the digest a call's record must carry, computed from the values the code holds where it calls.
    *
    * `SHA256(selector || argument pushes)`: the selector, then each argument's push in the order the call data
@@ -4114,6 +4135,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: ExternalFunctionCallNode,
     site: MasterCallSite,
     loc: SingleLocationData,
+    identityArguments: readonly number[] = [],
   ): void {
     this.emit(bytecodeToScript(encodeDataPush(site.selector)), loc);
     this.pushToStack('(value)');
@@ -4147,6 +4169,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // that site left rather than binding a second record.
           this.markArrayArgumentBlobEncoded(parameter);
           this.visit(parameter);
+          // An address the caller holds as its identity is digested as that identity, which the site's check binds
+          // to the lock the callee's call data carries (`perCallIdentityArguments`).
+          if (identityArguments.includes(index)) {
+            for (const operation of compileAddressToEvmIdentity()) this.emit(operation, loc);
+          }
           this.emit(bytecodeToScript(canonicalPushScript(argument.numeric)), loc);
         }
         this.emit(Op.OP_CAT, loc);

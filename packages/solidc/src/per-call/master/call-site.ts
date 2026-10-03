@@ -29,7 +29,9 @@
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
-import { argsHash, encodeCallDataArguments } from '@solidcash/utils';
+import { argsHash, encodeCallDataArguments, scriptToBytecode } from '@solidcash/utils';
+import type { ExternalCallArgSource, ExternalCallExpression, ExternalCallStatement } from '../../ast/AST.js';
+import { compileAddressToEvmIdentity } from '../../generation/utils.js';
 import type { MasterCallSite } from './frame-tail.js';
 import {
   dropFirstPushScript,
@@ -40,6 +42,7 @@ import {
   takeFixedWidthField,
   takeLengthPrefixedField,
   takeLengthPrefixedField32,
+  unsignedLength,
 } from './witness-reader.js';
 import { skipCallRecordsScript } from './frame-tail.js';
 
@@ -88,6 +91,15 @@ export function callSiteCheckScript(
      * name a validator, which binds the callee (N1, V5, V11).
      */
     readonly requiresValidator?: boolean;
+    /**
+     * The parameter positions of run-time `address` arguments the caller holds as a 20-byte identity, a value read
+     * back through a Solidity ABI call result (DECISIONS D13), whose digest the caller computed over that identity.
+     *
+     * The callee's call data carries the lock the identity names at each such position, so the check binds the call
+     * data to the caller's values with those pushes projected to their identity, and the record's hash to the call
+     * data byte for byte. Only a site whose digest the caller computes names any.
+     */
+    readonly identityArguments?: readonly number[];
   } = {},
 ): Uint8Array {
   const digestFromStack = options.digestFromStack === true;
@@ -95,6 +107,7 @@ export function callSiteCheckScript(
   const valueFromStack = options.valueFromStack === true;
   const indexFromStack = options.indexFromStack === true;
   const skipSelectorCheck = options.skipSelectorCheck === true;
+  const identityArguments = digestFromStack && !skipSelectorCheck ? options.identityArguments ?? [] : [];
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
   // The values the caller computed go where the walk can reach them: beneath the walk's own scratch, on the
@@ -130,7 +143,9 @@ export function callSiteCheckScript(
   } else {
     for (let earlier = 0; earlier < index; earlier += 1) emit(...skipCallRecord());
   }
-  emit(...bindCallRecord(site, usesResult, { digestFromStack, targetFromStack, valueFromStack, skipSelectorCheck }));
+  emit(...bindCallRecord(site, usesResult, {
+    digestFromStack, targetFromStack, valueFromStack, skipSelectorCheck, identityArguments,
+  }));
   return new Uint8Array(bytes);
 }
 
@@ -151,9 +166,10 @@ function bindCallRecord(
   site: MasterCallSite,
   usesResult: boolean,
   options: { readonly digestFromStack: boolean; readonly targetFromStack: boolean;
-    readonly valueFromStack: boolean; readonly skipSelectorCheck: boolean },
+    readonly valueFromStack: boolean; readonly skipSelectorCheck: boolean;
+    readonly identityArguments: readonly number[] },
 ): number[] {
-  const { digestFromStack, targetFromStack, valueFromStack, skipSelectorCheck } = options;
+  const { digestFromStack, targetFromStack, valueFromStack, skipSelectorCheck, identityArguments } = options;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
 
@@ -177,6 +193,11 @@ function bindCallRecord(
   // callee's own bytes.
   emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_DUP,
     Opcodes.OP_INPUTINDEX, Opcodes.OP_NUMNOTEQUAL, Opcodes.OP_VERIFY, Opcodes.OP_TOALTSTACK);
+  if (identityArguments.length > 0) {
+    emit(...bindIdentityArguments(site, identityArguments));
+    emit(...bindResult(usesResult));
+    return bytes;
+  }
   // argsHash: the record must carry the digest the source's own argument values produce.
   emit(...takeFixedWidthField(32), Opcodes.OP_SWAP, Opcodes.OP_DUP);
   if (digestFromStack) {
@@ -202,15 +223,111 @@ function bindCallRecord(
       Opcodes.OP_SWAP, Opcodes.OP_DUP, ...encodeDataPush(site.selector), Opcodes.OP_EQUALVERIFY,
       Opcodes.OP_SWAP, Opcodes.OP_CAT, Opcodes.OP_SHA256, Opcodes.OP_EQUALVERIFY);
   }
-  // result: what the body uses for the call's value, or an empty field for a call that returns nothing.
-  emit(...takeLengthPrefixedField32());
-  if (usesResult) {
-    emit(Opcodes.OP_SWAP, Opcodes.OP_NIP);
-  } else {
-    emit(Opcodes.OP_SWAP, Opcodes.OP_SIZE, Opcodes.OP_0, Opcodes.OP_NUMEQUALVERIFY,
-      Opcodes.OP_DROP, Opcodes.OP_DROP);
-  }
+  emit(...bindResult(usesResult));
   return bytes;
+}
+
+/** result: what the body uses for the call's value, or an empty field for a call that returns nothing. */
+function bindResult(usesResult: boolean): number[] {
+  return usesResult
+    ? [...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_NIP]
+    : [...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_SIZE, Opcodes.OP_0, Opcodes.OP_NUMEQUALVERIFY,
+      Opcodes.OP_DROP, Opcodes.OP_DROP];
+}
+
+/**
+ * The argument binding of a site whose caller holds some `address` arguments as their 20-byte identity.
+ *
+ * Entry `[..., tail]` with the record's `argsHash` next on the tail and, on the alternate stack, the caller's digest
+ * beneath the parked callee reference; exit `[..., tail]` past the hash. The record's hash is the callee's own call
+ * data byte for byte, and the caller's digest, which it computed over the identities, is the call data's with each
+ * of those pushes projected to the push of its identity: so every other argument is the caller's value exactly, and
+ * each projected one is a lock the identity names.
+ */
+function bindIdentityArguments(site: MasterCallSite, identityArguments: readonly number[]): number[] {
+  const count = site.arguments?.length ?? 0;
+  const bytes: number[] = [];
+  const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
+  // [tail] -> [tail, argsHash, digest, calleeRef]
+  emit(...takeFixedWidthField(32), Opcodes.OP_SWAP, Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_SWAP);
+  // The callee's call data, its selector checked: [tail, argsHash, digest, selector, argument pushes]
+  emit(Opcodes.OP_INPUTBYTECODE,
+    ...dropFirstPushScript(), ...dropLastPushScript(), ...splitFirstPushScript(),
+    Opcodes.OP_SWAP, Opcodes.OP_DUP, ...encodeDataPush(site.selector), Opcodes.OP_EQUALVERIFY, Opcodes.OP_SWAP);
+  // The record's hash is the call data's own: [tail, digest, selector, argument pushes]
+  emit(Opcodes.OP_2DUP, Opcodes.OP_CAT, Opcodes.OP_SHA256, ...encodeDataPush(scriptNumber(4)), Opcodes.OP_ROLL,
+    Opcodes.OP_EQUALVERIFY);
+  // The pushes in wire order, the last parameter's first, each appended to the selector as the caller's digest
+  // read it: [tail, digest, projected so far, pushes left]
+  for (let push = 0; push < count; push += 1) {
+    emit(...splitFirstRawPush());
+    if (identityArguments.includes(count - 1 - push)) emit(Opcodes.OP_SWAP, ...identityPush(), Opcodes.OP_SWAP);
+    emit(Opcodes.OP_TOALTSTACK, Opcodes.OP_CAT, Opcodes.OP_FROMALTSTACK);
+  }
+  // No push is left over, and the projection hashes to the caller's digest.
+  emit(Opcodes.OP_SIZE, Opcodes.OP_0, Opcodes.OP_NUMEQUALVERIFY, Opcodes.OP_DROP,
+    Opcodes.OP_SHA256, Opcodes.OP_EQUALVERIFY);
+  return bytes;
+}
+
+/**
+ * `[item]` to `[push, rest]`: the first push of a push-only script, opcode and payload together, split off.
+ *
+ * A direct push carries its length in its opcode, `PUSHDATA1`, `PUSHDATA2` and `PUSHDATA4` in one, two and four
+ * bytes after it, and `OP_0`, `OP_1NEGATE` and `OP_1`-`OP_16` occupy their opcode alone.
+ */
+function splitFirstRawPush(): number[] {
+  const bytes: number[] = [];
+  const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
+  const lengthField = (width: number, base: number): void => {
+    emit(Opcodes.OP_DROP, Opcodes.OP_DUP, Opcodes.OP_1, Opcodes.OP_SPLIT, Opcodes.OP_NIP,
+      ...encodeDataPush(scriptNumber(width)), Opcodes.OP_SPLIT, Opcodes.OP_DROP, ...unsignedLength(),
+      ...encodeDataPush(scriptNumber(base)), Opcodes.OP_ADD);
+  };
+  // [item, opcode]
+  emit(Opcodes.OP_DUP, Opcodes.OP_1, Opcodes.OP_SPLIT, Opcodes.OP_DROP, ...unsignedLength());
+  emit(Opcodes.OP_DUP, Opcodes.OP_0, Opcodes.OP_NUMEQUAL, Opcodes.OP_IF, Opcodes.OP_DROP, Opcodes.OP_1);
+  emit(Opcodes.OP_ELSE, Opcodes.OP_DUP, ...encodeDataPush(scriptNumber(0x4b)), Opcodes.OP_LESSTHANOREQUAL,
+    Opcodes.OP_IF, Opcodes.OP_1ADD);
+  emit(Opcodes.OP_ELSE, Opcodes.OP_DUP, ...encodeDataPush(scriptNumber(0x4c)), Opcodes.OP_NUMEQUAL, Opcodes.OP_IF);
+  lengthField(1, 2);
+  emit(Opcodes.OP_ELSE, Opcodes.OP_DUP, ...encodeDataPush(scriptNumber(0x4d)), Opcodes.OP_NUMEQUAL, Opcodes.OP_IF);
+  lengthField(2, 3);
+  emit(Opcodes.OP_ELSE, Opcodes.OP_DUP, ...encodeDataPush(scriptNumber(0x4e)), Opcodes.OP_NUMEQUAL, Opcodes.OP_IF);
+  lengthField(4, 5);
+  emit(Opcodes.OP_ELSE, Opcodes.OP_DROP, Opcodes.OP_1);
+  emit(Opcodes.OP_ENDIF, Opcodes.OP_ENDIF, Opcodes.OP_ENDIF, Opcodes.OP_ENDIF, Opcodes.OP_ENDIF);
+  // [item, size] -> [push, rest]
+  emit(Opcodes.OP_SPLIT);
+  return bytes;
+}
+
+/**
+ * `[push]` to `[push of its identity]`: an address argument's push, `OP_0` for address(0) or a direct push of a
+ * lock or an identity, replaced by the 20-byte push of the identity its payload projects to.
+ */
+function identityPush(): number[] {
+  return [
+    Opcodes.OP_1, Opcodes.OP_SPLIT, Opcodes.OP_NIP,
+    ...scriptToBytecode(compileAddressToEvmIdentity()),
+    ...encodeDataPush(new Uint8Array([0x14])), Opcodes.OP_SWAP, Opcodes.OP_CAT,
+  ];
+}
+
+/**
+ * True when a call argument's serialized source reads what an earlier call returned: a producer's result or a
+ * returning call itself, anywhere in the expression the argument is built from.
+ */
+export function sourceReadsCallResult(source: ExternalCallArgSource | undefined): boolean {
+  const statement = (node: ExternalCallStatement): boolean => [node.index, node.expression, node.condition]
+    .some(expression) || [...(node.statements ?? []), ...(node.elseStatements ?? [])].some(statement);
+  const expression = (node: ExternalCallExpression | undefined): boolean => node !== undefined
+    && (node.kind === 'producerResult' || node.kind === 'externalCall'
+      || [node.target, node.expression, node.left, node.right, node.condition, node.ifTrue, node.ifFalse,
+        ...(node.args ?? [])].some(expression)
+      || (node.source !== undefined && sourceReadsCallResult(node.source))
+      || (node.statements ?? []).some(statement));
+  return source !== undefined && (expression(source.expression) || expression(source.stepExpression));
 }
 
 /**

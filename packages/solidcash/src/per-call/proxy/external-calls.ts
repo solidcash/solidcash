@@ -70,7 +70,7 @@ import type { FunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import {
-  findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName,
+  findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName, listDeployments,
 } from '../../stateful/deployment-registry.js';
 import { externalReturnsForCallsites } from '../../stateful/external-returns-for-callsites.js';
 import { mappingKeySlotCandidates } from '../../stateful/mapping-key-lookup.js';
@@ -95,6 +95,7 @@ import type { RecoverySideCars } from '../composer/recovery.js';
 import { decodeEntryCommitment } from '../../stateful/SortedList.js';
 import { chainsEnclosedRead } from './enclosed-reads.js';
 import { PerCallProxyDeployError } from './errors.js';
+import { lockOfIdentity } from './address-identity.js';
 
 /** One contract the caller names for a call an implementation entry makes, keyed by the interface it calls. */
 export interface PerCallProxyExternal {
@@ -978,6 +979,17 @@ interface PlanContext {
   readonly stop: { blocked?: HopPlanBlock };
 }
 
+/** The addresses of the contracts a plan can reach: the caller's named externals, then the latest registrations. */
+function* reachableAddresses(ctx: PlanContext): Generator<Uint8Array> {
+  for (const external of Object.values(ctx.externals)) {
+    yield validatorAddress(hexToBin(external.categoryId), ctx.validatorProgram);
+  }
+  for (const registered of [...listDeployments(ctx.provider)].reverse()) {
+    const external = externalOfRegistered(registered);
+    if (external !== undefined) yield validatorAddress(hexToBin(external.categoryId), ctx.validatorProgram);
+  }
+}
+
 /** The deployment a call reaches: the caller's named externals first, then the provider's registrations. */
 function resolveExternal(ctx: PlanContext, row: ExternalCallAbi, target: Uint8Array): PerCallProxyExternal {
   const expected = (external: PerCallProxyExternal): string =>
@@ -1207,8 +1219,10 @@ async function planEntryCalls(
         + refusal,
       );
     }
+    // An address the caller holds as the identity a call result carried reaches the callee as the lock it names.
+    const lockOf = (identity: Uint8Array): Uint8Array => lockOfIdentity(identity, reachableAddresses(ctx));
     const resolved = turns.map((turn) => (
-      resolvePublishedCall(effective, external.artifact, caller, siteResolver, turn)
+      resolvePublishedCall(effective, external.artifact, caller, siteResolver, turn, lockOf)
     ));
     // A callee behind its own proxy is two contracts, and the hop's own implementation is one the composition
     // fixes; both are checked by name here, before any live record is read.

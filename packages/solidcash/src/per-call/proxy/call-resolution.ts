@@ -22,6 +22,7 @@ import {
   type Artifact,
   type ExternalCallAbi,
   type ExternalCallExpression,
+  type ExternalCallStatement,
   type FrameKindValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js';
@@ -312,6 +313,39 @@ export function resolveCallTarget(
   );
 }
 
+/** The lock a 20-byte `address` identity names (`address-identity.ts`), which a caller that can tell resolves. */
+export type IdentityLock = (identity: Uint8Array) => Uint8Array;
+
+/**
+ * True when a serialized expression reads what an earlier call returned, anywhere inside it: the compiler's own
+ * reading of which `address` arguments its body holds as an identity (`sourceReadsCallResult`).
+ */
+function readsCallResult(expression: ExternalCallExpression | undefined): boolean {
+  const statement = (node: ExternalCallStatement): boolean => [node.index, node.expression, node.condition]
+    .some(readsCallResult) || [...(node.statements ?? []), ...(node.elseStatements ?? [])].some(statement);
+  return expression !== undefined && (expression.kind === 'producerResult' || expression.kind === 'externalCall'
+    || [expression.target, expression.expression, expression.left, expression.right, expression.condition,
+      expression.ifTrue, expression.ifFalse, ...(expression.args ?? [])].some(readsCallResult)
+    || readsCallResult(expression.source?.expression) || readsCallResult(expression.source?.stepExpression)
+    || (expression.statements ?? []).some(statement));
+}
+
+/**
+ * An `address` argument as the lock the callee's call data carries, so a nested plan reads the bytes its frame does.
+ *
+ * A value built from an earlier call's Solidity ABI result is the 20-byte identity the caller's body holds, and the
+ * call data carries the lock it names (`lockOf`), which the caller's call site binds to the identity. Every other
+ * argument is stated as it was resolved.
+ */
+function addressArgument(
+  value: FunctionArgument, type: string, source: ArgSource, lockOf?: IdentityLock,
+): FunctionArgument {
+  if (lockOf === undefined || (type !== 'address' && type !== 'address payable')) return value;
+  if (!(value instanceof Uint8Array) || value.length !== 20) return value;
+  if (!readsCallResult(source.expression) && !readsCallResult(source.stepExpression)) return value;
+  return lockOf(value);
+}
+
 /**
  * The argument pushes one call carries: the selector, then each argument's canonical push, the last parameter's
  * first.
@@ -319,7 +353,7 @@ export function resolveCallTarget(
  * The pushes become the record's digest and the callee's call data alike, so each is encoded the way the callee's
  * own ABI decodes it: against the declared input type, with the artifact's structs. An argument no source resolves
  * from the caller's own facts, or from the earlier results the caller handed over, is refused, because the plan
- * would have no value to state.
+ * would have no value to state. An `address` argument is stated as the lock the callee receives (`addressArgument`).
  */
 export function resolveCallArguments(
   row: ExternalCallAbi,
@@ -327,6 +361,7 @@ export function resolveCallArguments(
   calleeEntry: AbiEntryRow,
   resolver: CallResolver,
   occurrence: number,
+  lockOf?: IdentityLock,
 ): { readonly pushes: readonly Uint8Array[]; readonly values: readonly FunctionArgument[] } {
   const where = `the call to "${row.interfaceName}.${row.functionName}"`;
   const visible = calleeEntry.inputs.filter((input) => !input.name.startsWith('__internal__'));
@@ -352,7 +387,7 @@ export function resolveCallArguments(
         + 'arguments and state',
       );
     }
-    return value;
+    return addressArgument(value, visible[index]!.type, source, lockOf);
   });
   const encoded = values.map((value, index): Uint8Array => {
     const push = encodeFunctionArgument(value, visible[index]!.type, calleeArtifact.structs);
@@ -379,9 +414,10 @@ export function resolvePublishedCall(
   inputs: HopCallInputs,
   resolver: CallResolver,
   occurrence: number,
+  lockOf?: IdentityLock,
 ): ResolvedCall {
   const calleeEntry = entryRowOf(calleeArtifact, row.functionName);
-  const { pushes, values } = resolveCallArguments(row, calleeArtifact, calleeEntry, resolver, occurrence);
+  const { pushes, values } = resolveCallArguments(row, calleeArtifact, calleeEntry, resolver, occurrence, lockOf);
   const target = resolveCallTarget(row, inputs, resolver, occurrence);
   if (target === undefined) {
     // A site whose target names the zero address is stated for nothing, so no caller reaches here for one.

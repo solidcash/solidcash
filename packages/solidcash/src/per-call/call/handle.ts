@@ -74,9 +74,17 @@ export class PerCallFunctionCall {
     return this;
   }
 
-  /** True when the ABI publishes the entry as one that changes nothing, so it is read rather than sent. */
+  /**
+   * True when the entry changes nothing, so it is read rather than sent.
+   *
+   * `writesState` answers read-only only in the negative: the compiler proves it false, never true, so an entry it
+   * could not prove read-only — one that reads another contract — still carries `true`. A `view` or `pure` entry is
+   * read-only by its own declaration, which is what a caller of one expects, so both answer as reads.
+   */
   private isRead(): boolean {
-    return this.contract.abiEntry.writesState === false;
+    const entry = this.contract.abiEntry;
+    return entry.writesState === false
+      || (entry.modifiers ?? []).some((modifier) => modifier === 'view' || modifier === 'pure');
   }
 
   /** Sends the call: composes the root frame, derives it, asks the machine, and broadcasts what it accepted. */
@@ -220,8 +228,13 @@ const STAND_IN_COIN: Utxo = { txid: '5a'.repeat(32), vout: 0, satoshis: 1_000_00
 /** Raised where a simulation's broadcast would be: the machine accepted the composition. */
 class SimulationAccepted extends Error {}
 
-/** The provider a simulation composes through: its reads are the provider's own, and a broadcast is refused. */
-function simulationProvider(provider: NetworkProvider): NetworkProvider {
+/**
+ * The provider a simulation composes through: its reads are the provider's own, and a broadcast is refused.
+ *
+ * Property reads are forwarded to the wrapped provider, so a lookup made through this wrapper - the deployment
+ * registry's address and interface resolution, for one - answers with the wrapped provider's own state.
+ */
+export function simulationProvider(provider: NetworkProvider): NetworkProvider {
   const refuse = async (): Promise<never> => {
     throw new SimulationAccepted('the simulated call was accepted');
   };

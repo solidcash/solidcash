@@ -38,6 +38,8 @@ function write(options: {
   readonly spentIds: readonly string[];
   /** The node each insert splices through; absent states every target as a key the list holds. */
   readonly predecessor?: Uint8Array;
+  /** True when the targets continue a node an earlier reach created rather than starting from the deployment. */
+  readonly continued?: boolean;
 }): HopEntryWrites {
   return {
     reachWrites: [{
@@ -46,6 +48,7 @@ function write(options: {
       targets: options.slots.map((slot) => ({
         collection: options.collection, slot,
         ...(options.predecessor === undefined ? {} : { predecessor: options.predecessor }),
+        ...(options.continued === true ? { continued: true } : {}),
       })),
       spentIds: options.spentIds,
     }],
@@ -79,6 +82,38 @@ describe('the cross-reach write check', () => {
       frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: writes() }),
       frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: writes() }),
     ])).toThrow(/write collection "_held" at the same key, which the list does not hold, so each reach inserts it/);
+  });
+
+  it('allows a later reach that rewrites the node an earlier reach inserted', () => {
+    // The first reach inserts the key and creates its node; the later reach writes the same key, so it continues
+    // that node: no predecessor, and its declaration names the creating reach's output.
+    const insert = write({
+      collection: '_held', chunkable: false, slots: [KEY_SLOT], predecessor: PREDECESSOR_SLOT,
+      spentIds: [nodeOf('_held', PREDECESSOR_SLOT)],
+    });
+    const rewrite = write({
+      collection: '_held', chunkable: false, slots: [KEY_SLOT], spentIds: [], continued: true,
+    });
+    expect(() => requireSatisfiableReachWrites([
+      frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: insert }),
+      frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: rewrite }),
+    ])).not.toThrow();
+  });
+
+  it('refuses a later reach that writes the inserted key without continuing the created node', () => {
+    // The later reach states the same key as an update of a node it does not name as a continuation, so the plan
+    // never chained it onto the node the insert created: fail closed as before.
+    const insert = write({
+      collection: '_held', chunkable: false, slots: [KEY_SLOT], predecessor: PREDECESSOR_SLOT,
+      spentIds: [nodeOf('_held', PREDECESSOR_SLOT)],
+    });
+    const plainRewrite = write({
+      collection: '_held', chunkable: false, slots: [KEY_SLOT], spentIds: [],
+    });
+    expect(() => requireSatisfiableReachWrites([
+      frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: insert }),
+      frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: plainRewrite }),
+    ])).toThrow(/write collection "_held" at the same key/);
   });
 
   it('allows two reaches that update one key of a fixed-width value, the second settled after the first', () => {
@@ -150,6 +185,22 @@ describe('the cross-reach write check', () => {
         reads: [{ id: nodeOf('_held', PREDECESSOR_SLOT), collection: '_held' }],
       }),
     ])).toThrow(/that an earlier reach "Ledger.move\(\)" relinks to insert a key/);
+  });
+
+  it('allows a read of the node an earlier reach created, planned as its own node', () => {
+    // The reach reads the key the insert added, so it resolves to the node the insert created rather than the
+    // bracketing predecessor it relinked: the read is one touch on the created node, and the relink stays alone.
+    const insert = write({
+      collection: '_held', chunkable: false, slots: [KEY_SLOT], predecessor: PREDECESSOR_SLOT,
+      spentIds: [nodeOf('_held', PREDECESSOR_SLOT)],
+    });
+    expect(() => requireSatisfiableReachWrites([
+      frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: insert }),
+      frame({
+        name: 'Ledger.held()', categoryHex: IMPL_CATEGORY,
+        reads: [{ id: nodeOf('_held', KEY_SLOT), collection: '_held' }],
+      }),
+    ])).not.toThrow();
   });
 
   it('allows reaches of two contracts, and reaches that write different keys', () => {

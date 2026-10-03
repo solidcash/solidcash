@@ -48,6 +48,7 @@ import {
   decodePushdataValue,
   dynamicLenKey,
   FrameKind,
+  getDefaultStateValue,
   isFixedWidthType,
   joinChunks,
   parseArrayTypeString,
@@ -72,6 +73,7 @@ import {
   findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName,
 } from '../../stateful/deployment-registry.js';
 import { externalReturnsForCallsites } from '../../stateful/external-returns-for-callsites.js';
+import { mappingKeySlotCandidates } from '../../stateful/mapping-key-lookup.js';
 import type { DraftCall } from '../composer/draft.js';
 import { readPublishedStopSites } from '../composer/index.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
@@ -81,13 +83,15 @@ import {
 } from '../deploy/records.js';
 import {
   entryRowOf, makeCallResolver, resolveCallTarget, resolvePublishedCall,
-  type AbiEntryRow, type CallResolver, type HopCallInputs, type ResolvedCall,
+  type AbiEntryRow, type CallResolver, type HopCallInputs, type MappingValueReader, type ResolvedCall,
 } from './call-resolution.js';
 import {
   hopEntryWrites, joinedNodeValue, sharedNodeId,
   type HopEntryWrites, type HopLiveDeployment, type ReachWrite, type ReachWriteTarget,
 } from './entry-writes.js';
 import { readEntryNode } from '../call/entry-records.js';
+import { entrySideCars } from '../call/side-cars.js';
+import type { RecoverySideCars } from '../composer/recovery.js';
 import { decodeEntryCommitment } from '../../stateful/SortedList.js';
 import { PerCallProxyDeployError } from './errors.js';
 
@@ -135,7 +139,13 @@ export interface HopCalleeReadNode {
    */
   readonly value?: Uint8Array;
   readonly commitment: Uint8Array;
-  readonly utxo: Utxo;
+  /**
+   * The slot of the node this read resolves to when a reach placed earlier in the hop created it by inserting
+   * the key. The created node carries no input, so the frame names it by the creating frame's output rather than
+   * by a UTXO, and `utxo` is absent.
+   */
+  readonly createdSlot?: Uint8Array;
+  readonly utxo?: Utxo;
 }
 
 /** One callee frame the hop runs: the master, the live records it reads, and the UTXO each participant sits on. */
@@ -178,6 +188,14 @@ export interface HopCallee {
    */
   readonly readNodes: readonly HopCalleeReadNode[];
   /**
+   * What this frame's own write plan is built from, so a value the body computes can re-plan it.
+   *
+   * A chunkable mapping write whose value the artifact does not publish has its run sized from the value, which
+   * only the frame's own close exposes; the reach is then planned again from that value. The inputs the write was
+   * planned from are kept here so the re-plan is the same plan, not a second one built another way.
+   */
+  readonly writeInputs?: HopCalleeWriteInputs;
+  /**
    * Index in `callees` of the frame whose live records this frame reads and whose block hosts them.
    *
    * A proxy's delegate frame reads the records the proxy's fallback frame runs on, so it declares them without
@@ -217,6 +235,18 @@ export interface HopCallee {
   readonly origin?: HopCallOrigin;
   /** True when the plan stopped inside this frame's own calls, so it states only the calls before that point. */
   readonly truncated?: boolean;
+}
+
+/** The live facts one callee frame's own write plan is built from, kept so the write can be planned again. */
+export interface HopCalleeWriteInputs {
+  /** The reach's own call data, which the write's keys and value are resolved from. */
+  readonly args: readonly FunctionArgument[];
+  /** The frame's `msg.sender`, which a key it writes can resolve to. */
+  readonly senderAddress: Uint8Array | undefined;
+  /** The deployment the frame runs on: its own records and nodes, or the proxy's for a delegate frame. */
+  readonly live: HopLiveDeployment;
+  /** The category the frame's nodes are placed under, which names a shared node. */
+  readonly categoryId: string;
 }
 
 /** The call site whose record names a callee frame: the calling frame, by its path, and the site's visit. */
@@ -275,6 +305,14 @@ export interface HopExternalPlan {
   /** The live UTXO of every callee participant, keyed by the id the plan places it under. */
   readonly utxos: ReadonlyMap<string, Utxo>;
   /**
+   * The compute side-cars each frame co-spends, keyed by the master whose body reads them.
+   *
+   * A body that hashes a runtime value or recovers a signer reads one side-car per call immediately after its own
+   * input, so a hop that runs such a frame spends live side-car UTXOs and recreates them at their own indices. The
+   * frames that read none contribute nothing, and the plan places the side-cars of every frame that does.
+   */
+  readonly sideCars: ReadonlyMap<string, RecoverySideCars>;
+  /**
    * The site this plan stops before, or absent for a plan that states every call the execution reaches.
    *
    * A plan that stops states the calls the execution makes before that site, the frames they reach and the calls of
@@ -282,10 +320,22 @@ export interface HopExternalPlan {
    * results the site reads, never enough to broadcast.
    */
   readonly blocked?: HopPlanBlock;
+  /**
+   * The end commitments learned for a callee frame's own data records, by record index, which the frame's own
+   * declaration carries where the entry publishes the write.
+   */
+  /**
+   * True for a plan whose held continuations take the view the chain carries.
+   *
+   * A frame that leaves a node an earlier frame created alone and one that rewrites it state the same declaration
+   * before either has settled, so the two can only be told apart from a settle's own outcome. A pass planned with
+   * this set states the held one the way the chain ends, and the caller keeps that pass only when it settles.
+   */
+  readonly heldContinuations?: boolean;
 }
 
 /** The entry's ABI routing, refusing an artifact that publishes none for it. */
-function routingOf(artifact: Artifact, functionName: string): readonly ExternalCallAbi[] {
+export function routingOf(artifact: Artifact, functionName: string): readonly ExternalCallAbi[] {
   const row = entryRowOf(artifact, functionName);
   return (row as { readonly externalCalls?: readonly ExternalCallAbi[] }).externalCalls ?? [];
 }
@@ -305,20 +355,31 @@ function refusedEntryReason(artifact: Artifact, functionName: string): string | 
   return listed.find((entry) => entry.functionName === identity)?.reason;
 }
 
+/** The segment one published write's records are declared in: a call count, or the run's own last segment. */
+type WriteSegment = number | 'last';
+
 /** The live state an entry's own body rewrites, as its published write segments name it. */
 interface HopWrittenState {
-  /** The data records the entry's body rewrites. */
-  readonly records: ReadonlySet<number>;
-  /** The dynamic variables the entry's body appends to. */
-  readonly variables: ReadonlySet<string>;
+  /** Per data record, per written variable name, the segments of the writes that rebuilt it. */
+  readonly records: ReadonlyMap<number, ReadonlyMap<string, readonly WriteSegment[]>>;
+  /**
+   * Per data record, the segments of writes whose written variables the artifact does not publish.
+   *
+   * An unnamed write's changed fields are not known, which is the conservative reading: any field of the record may
+   * have changed.
+   */
+  readonly unnamedRecords: ReadonlyMap<number, readonly WriteSegment[]>;
+  /** Per dynamic variable, the segments of the writes to it. */
+  readonly variables: ReadonlyMap<string, readonly WriteSegment[]>;
 }
 
 /**
  * The records and named variables an entry's own body rewrites, read from its published write segments.
  *
  * The segment a body's own write lands in is published per entry, as either the data record it rewrites or the
- * name of a dynamic variable it appends to. An entry that publishes no write rewrites nothing, and its incoming
- * state is what its body sees.
+ * name of a dynamic variable it appends to. A write to a data record names the state variable it rebuilt, so the
+ * segment is kept under that name; a write to a dynamic value is kept under the variable itself. An entry that
+ * publishes no write rewrites nothing, and its incoming state is what its body sees.
  */
 function entryWrittenState(artifact: Artifact, functionName: string): HopWrittenState {
   const entry = readPublishedStopSites(artifact).entries
@@ -326,48 +387,110 @@ function entryWrittenState(artifact: Artifact, functionName: string): HopWritten
   const writes = (entry as { readonly writeSegments?: readonly {
     readonly record?: number;
     readonly variable?: string;
+    readonly segment: WriteSegment;
+    readonly writtenVariables?: readonly string[];
   }[] } | undefined)?.writeSegments ?? [];
-  const records = new Set<number>();
-  const variables = new Set<string>();
-  for (const write of writes) {
-    if (write.record !== undefined) records.add(write.record);
-    if (write.variable !== undefined) variables.add(write.variable);
-  }
-  return { records, variables };
-}
-
-/** Every state variable a published condition reads, at any nesting depth. */
-function conditionStateNames(condition: ExternalCallExpression): readonly string[] {
-  const names: string[] = [];
-  const visit = (value: unknown): void => {
-    if (value === null || typeof value !== 'object') return;
-    const node = value as { readonly kind?: string; readonly name?: string };
-    if (node.kind === 'state' && typeof node.name === 'string') names.push(node.name);
-    for (const child of Object.values(value as Record<string, unknown>)) {
-      if (Array.isArray(child)) child.forEach(visit);
-      else visit(child);
-    }
+  const records = new Map<number, Map<string, WriteSegment[]>>();
+  const unnamedRecords = new Map<number, WriteSegment[]>();
+  const variables = new Map<string, WriteSegment[]>();
+  const push = <K>(map: Map<K, WriteSegment[]>, key: K, segment: WriteSegment): void => {
+    const list = map.get(key);
+    if (list === undefined) map.set(key, [segment]);
+    else list.push(segment);
   };
-  visit(condition);
-  return names;
+  for (const write of writes) {
+    if (write.record !== undefined) {
+      if (write.writtenVariables === undefined) {
+        push(unnamedRecords, write.record, write.segment);
+      } else {
+        const perVariable = records.get(write.record) ?? new Map<string, WriteSegment[]>();
+        records.set(write.record, perVariable);
+        for (const name of write.writtenVariables) push(perVariable, name, write.segment);
+      }
+    }
+    if (write.variable === undefined) continue;
+    push(variables, write.variable, write.segment);
+  }
+  return { records, unnamedRecords, variables };
 }
 
 /**
- * True when a condition reads state the entry's own body rewrites.
+ * True when a published write can run before a call site at `siteIndex`, so the incoming state may not fix it.
+ *
+ * A record write's segment is the count of calls the entry makes before it, or `'last'` for one every call
+ * precedes: a count no greater than the site's own position runs before the site, while a greater count or the
+ * run's last segment runs after it. A dynamic value's records are rebuilt in the run's last segment whatever the
+ * source order, so its segment cannot place the write and it keeps the conservative reading.
+ */
+function writeCanPrecedeSite(
+  segments: readonly WriteSegment[] | undefined, dynamic: boolean, siteIndex: number,
+): boolean {
+  if (segments === undefined || segments.length === 0) return false;
+  if (dynamic) return true;
+  return segments.some((segment) => typeof segment === 'number' && segment <= siteIndex);
+}
+
+/**
+ * Every state variable a published condition reads, with the field path each read goes through.
+ *
+ * The path is the field carried on the expression the read sits under: for `rows[k].stamp` the state `rows` is
+ * read through the field `stamp`, while a read of the variable itself or of a whole element is recorded as
+ * `null`, meaning the field is not fixed.
+ */
+function conditionStateReads(condition: ExternalCallExpression): ReadonlyMap<string, Array<string | null>> {
+  const reads = new Map<string, Array<string | null>>();
+  const visit = (value: unknown, inheritedField: string | null): void => {
+    if (value === null || typeof value !== 'object') return;
+    const node = value as { readonly kind?: string; readonly name?: string };
+    const field = node.kind === 'field' && typeof node.name === 'string' ? node.name : inheritedField;
+    if ((node.kind === 'state' || node.kind === 'stateAccess') && typeof node.name === 'string') {
+      const fields = reads.get(node.name) ?? [];
+      fields.push(field);
+      reads.set(node.name, fields);
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      if (Array.isArray(child)) child.forEach((entry) => visit(entry, field));
+      else visit(child, field);
+    }
+  };
+  visit(condition, null);
+  return reads;
+}
+
+/**
+ * True when a condition reads a whole state value the entry's own body rewrites.
  *
  * The planner evaluates a condition against the state the caller holds when its frame starts, but an earlier
- * statement in the same frame can rewrite that state before the guarded call is reached. A record the entry's
- * body rewrites carries the field the condition reads, so the incoming value does not fix the condition.
+ * statement in the same frame can rewrite that state before the guarded call is reached. A record or named
+ * dynamic value the entry's body rewrites carries the value the condition reads, so the incoming value does not
+ * fix the condition and the site is stated as one record.
+ *
+ * A read through a struct field is not such a read: the compiler publishes it where the condition itself stands,
+ * folding every dominating write to that field into the expression, so a field read the expression still carries
+ * is the value the frame starts with and the caller's incoming facts fix it. Only a read of a variable's own
+ * value — a bare state read, or a whole element — is published as the raw pre-transaction read an earlier
+ * statement can invalidate.
+ *
+ * `siteIndex` is the site's own position among the entry's calls. A write the artifact places after that position
+ * cannot make the incoming state stale, so it does not force the site; a write placed at or before it, or one
+ * whose segment cannot place it at all, keeps the conservative reading.
  */
 function conditionReadsWrittenState(
-  condition: ExternalCallExpression, artifact: Artifact, writtenState: HopWrittenState,
+  condition: ExternalCallExpression, artifact: Artifact, writtenState: HopWrittenState, siteIndex: number,
 ): boolean {
   const layout = artifact.stateLayout;
   if (layout === undefined) return false;
-  for (const name of conditionStateNames(condition)) {
-    if (writtenState.variables.has(name)) return true;
+  for (const [name, readFields] of conditionStateReads(condition)) {
+    if (readFields.every((field) => field !== null)) continue;
     const variable = layout.variables.find((candidate) => candidate.name === name);
-    if (variable !== undefined && writtenState.records.has(variable.nftIndex)) return true;
+    if (variable === undefined) continue;
+    const dynamic = variable.dynamic === true;
+    const recordSegments = writtenState.records.get(variable.nftIndex)?.get(name);
+    const unnamedSegments = writtenState.unnamedRecords.get(variable.nftIndex);
+    const variableSegments = writtenState.variables.get(name);
+    if (writeCanPrecedeSite(recordSegments, dynamic, siteIndex)
+      || writeCanPrecedeSite(unnamedSegments, dynamic, siteIndex)
+      || writeCanPrecedeSite(variableSegments, dynamic, siteIndex)) return true;
   }
   return false;
 }
@@ -437,8 +560,11 @@ function conditionExternalReturns(
  * own facts: the arm a condition the caller's facts fix does not take reaches no call, so the site places nothing.
  * A site the artifact publishes no condition for still fills one, and so does one whose condition the caller's own
  * facts do not fix: the plan states the record and the execution is what skips it. A condition whose state the
- * entry's own body rewrites is not fixed by the incoming facts either: an earlier statement in the same frame can
- * make it hold, so the plan states the record rather than dropping a call the body takes.
+ * entry's own body rewrites is not fixed by the incoming facts either: a write the artifact places at or before
+ * the site can make it hold, so the plan states the record rather than dropping a call the body takes. A write the
+ * artifact places after the site cannot make the incoming value stale, so such a condition is evaluated as it
+ * stands. A read that goes solely through struct fields is fixed by the incoming facts, since the compiler folds
+ * every dominating write to a field into the expression the condition carries.
  *
  * A condition over an earlier call's result is the exception: the caller's own facts do not fix it, but a later
  * planning pass does, because the result is learned when that call is settled. Such a site fills nothing in the
@@ -447,13 +573,13 @@ function conditionExternalReturns(
  */
 function occurrenceCountOf(
   row: ExternalCallAbi, args: readonly FunctionArgument[], resolver: CallResolver, where: string,
-  artifact: Artifact, writtenState: HopWrittenState,
+  artifact: Artifact, writtenState: HopWrittenState, siteIndex: number,
   routing: readonly ExternalCallAbi[],
   producerResults: ReadonlyMap<number, FunctionArgument> | undefined,
 ): number {
   if ((row.occurrence ?? 'once') !== 'loop') {
     if (row.condition === undefined || row.condition === null) return 1;
-    if (conditionReadsWrittenState(row.condition, artifact, writtenState)) return 1;
+    if (conditionReadsWrittenState(row.condition, artifact, writtenState, siteIndex)) return 1;
     const holds = resolver.evaluate(
       row.condition, 0, undefined, conditionExternalReturns(row.condition, routing, producerResults),
     );
@@ -580,6 +706,62 @@ export function deploymentStateValues(
   return values;
 }
 
+/**
+ * Builds the reader a frame resolves a mapping-backed state read with, from its own live deployment.
+ *
+ * A mapping's entries are separate nodes, so the caller's data-NFT state never carries the collection: the reader
+ * finds the node the key's slot names among the deployment's own nodes and decodes the value the node's tail (or
+ * its continuation chunks) holds. A node an earlier reach of the same hop created is not in the deployment - the
+ * transaction has no input carrying it - so the reader takes the commitment that reach left, which is what the body
+ * reads over. Only a slot neither holds is the language's default, exactly as the contract's own read yields, so a
+ * routing over an absent key states the same value the body would. A node value the deployment cannot reassemble is
+ * left unstated, which refuses the site by name rather than guessing.
+ */
+export function liveMappingValueReader(
+  artifact: Artifact,
+  live: HopLiveDeployment,
+  structs: Artifact['structs'],
+): MappingValueReader {
+  const collections = artifact.stateLayout?.collections ?? [];
+  return (name, keys) => {
+    const collection = collections.find((candidate) => candidate.name === name && candidate.kind === 'mapping');
+    if (collection === undefined) return undefined;
+    const scalarKeys = keys.filter((key): key is bigint | boolean | Uint8Array | string => (
+      typeof key === 'bigint' || typeof key === 'boolean' || typeof key === 'string' || key instanceof Uint8Array
+    ));
+    if (scalarKeys.length !== keys.length) return undefined;
+    const slots = mappingKeySlotCandidates(scalarKeys, collection.keyTypes ?? [collection.keyType]);
+    const nodes = live.nodesByCollection.get(collection.name) ?? [];
+    const nodeAt = (slot: Uint8Array): (typeof nodes)[number] | undefined => nodes.find((utxo) => {
+      const commitment = utxo.token?.nft?.commitment;
+      return commitment !== undefined && bytesEqual(decodeEntryCommitment(hexToBin(commitment)).slot, slot);
+    });
+    // Slot candidates are exact-first, so the exact key's node wins over a compatibility alias's.
+    let node: (typeof nodes)[number] | undefined;
+    for (const slot of slots) {
+      node = nodeAt(slot);
+      if (node !== undefined) break;
+    }
+    if (node === undefined) {
+      // A node an earlier reach of this hop created is not among the deployment's own: it carries no input there,
+      // and the value the body reads is the one that reach left, not the type default. The deployment's own nodes
+      // are read first, so a node the transaction spends wins over a continuation of the same slot. A slot both
+      // hold is a deployment that already carries the write, which is a plan the positions agree on.
+      const continued = (live.continuedNodes ?? []).find((candidate) =>
+        candidate.collection === collection.name && slots.some((slot) => bytesEqual(candidate.slot, slot)));
+      if (continued === undefined) return getDefaultStateValue(collection.valueType, structs) as FunctionArgument;
+      const continuedRaw = joinedNodeValue(collection, continued.commitment, live);
+      if (continuedRaw === undefined) return undefined;
+      return decodePushdataValue(continuedRaw, 0, collection.valueType, structs).value as FunctionArgument;
+    }
+    const commitment = node.token?.nft?.commitment;
+    if (commitment === undefined) return undefined;
+    const raw = joinedNodeValue(collection, hexToBin(commitment), live);
+    if (raw === undefined) return undefined;
+    return decodePushdataValue(raw, 0, collection.valueType, structs).value as FunctionArgument;
+  };
+}
+
 /** One dynamic field's value, joined from its chunk records and decoded as the field's own type declares. */
 function dynamicFieldValue(
   deployment: PerCallDeploymentSet, layout: StateLayout, categoryId: string,
@@ -665,6 +847,20 @@ function externalOfName(provider: NetworkProvider, interfaceName: string): PerCa
   return undefined;
 }
 
+/**
+ * The deployment a call reaches, from the provider's registrations: the address the site carries first, then the
+ * interface the call names.
+ *
+ * The hop and the off-chain read resolve a call the same way, so the walk lives here and both take it. An empty
+ * target names no address, so only the interface is tried.
+ */
+export function registeredExternalFor(
+  provider: NetworkProvider, target: Uint8Array, interfaceName: string,
+): PerCallProxyExternal | undefined {
+  return (target.length === 0 ? undefined : externalOfAddress(provider, target))
+    ?? externalOfName(provider, interfaceName);
+}
+
 /** The planner's running state: the live deployments it resolves against and the frames it has placed. */
 interface PlanContext {
   readonly provider: NetworkProvider;
@@ -678,9 +874,40 @@ interface PlanContext {
   readonly deployments: Map<string, PerCallDeploymentSet>;
   /** The records of each callee category, shared by every master the hop places for that contract. */
   readonly records: Map<string, readonly HopCalleeRecord[]>;
+  /**
+   * Every node the reaches placed so far wrote, keyed by the category its ids are built with.
+   *
+   * Each reach is planned against the deployment alone, so a reach that follows another's write over one node has
+   * to be told what that write left: this is that view, in placement order.
+   */
+  readonly writtenNodes: Map<string, {
+    collection: string;
+    slot: Uint8Array;
+    commitment: Uint8Array;
+    value?: Uint8Array;
+  }[]>;
+  /** The end views a previous settle learned, per frame master, in each frame's own learning order. */
+  readonly calleeWriteViews?: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>;
+  /**
+   * The whole value a previous settle learned for a frame's chunkable mapping write, per frame master.
+   *
+   * A write whose value the artifact does not publish states its run unstated, so the first plan lays no chunk
+   * records; the frame's own close exposes the value, and every pass after that one sizes the run from it.
+   */
+  readonly calleeWriteValues?: ReadonlyMap<string, Uint8Array>;
+  /**
+   * The end commitments a previous settle learned for a callee frame's own data records, by record index.
+   *
+   * A frame's records are the deployment's, and a body that writes one closes against the declaration the plan
+   * states at the segment the entry publishes: what a settle handed back is the view the record ends at.
+   */
+  /** The end views a previous settle learned for the entry itself, in the entry's own learning order. */
+  readonly entryWriteViews?: readonly (Uint8Array | undefined)[];
   /** Callee frames in placement order; a slot is reserved before the callee's own calls are planned. */
   readonly callees: HopCallee[];
   readonly utxos: Map<string, Utxo>;
+  /** The compute side-cars each frame co-spends, keyed by master, in the order its body reads them. */
+  readonly sideCars: Map<string, RecoverySideCars>;
   /**
    * The results an earlier planning pass learned, keyed by the publishing artifact and its callsite ids.
    *
@@ -696,13 +923,24 @@ interface PlanContext {
 
 /** The deployment a call reaches: the caller's named externals first, then the provider's registrations. */
 function resolveExternal(ctx: PlanContext, row: ExternalCallAbi, target: Uint8Array): PerCallProxyExternal {
+  const expected = (external: PerCallProxyExternal): string =>
+    binToHex(validatorAddress(hexToBin(external.categoryId), ctx.validatorProgram)).slice(-16);
   const named = ctx.externals[row.interfaceName];
+  if (hopTraceOn()) {
+    hopTrace(`resolve ${row.interfaceName}.${row.functionName} target=${binToHex(target).slice(-16)} `
+      + `named=${named === undefined ? 'none' : `${named.artifact.contractName}@${expected(named)}`}`);
+  }
   if (named !== undefined) return named;
   const atTarget = Object.values(ctx.externals).find((candidate) =>
     bytesEqual(validatorAddress(hexToBin(candidate.categoryId), ctx.validatorProgram), target));
-  if (atTarget !== undefined) return atTarget;
-  const external = externalOfAddress(ctx.provider, target)
-    ?? externalOfName(ctx.provider, row.interfaceName);
+  if (atTarget !== undefined) {
+    if (hopTraceOn()) hopTrace(`resolve matched-at-target ${atTarget.artifact.contractName}`);
+    return atTarget;
+  }
+  const external = registeredExternalFor(ctx.provider, target, row.interfaceName);
+  if (external !== undefined && hopTraceOn()) {
+    hopTrace(`resolve provider ${external.artifact.contractName}@${expected(external)}`);
+  }
   if (external === undefined) {
     throw new PerCallProxyDeployError(
       `the call to "${row.interfaceName}.${row.functionName}" targets ${binToHex(target)}, and none of the `
@@ -862,7 +1100,7 @@ async function planEntryCalls(
       break;
     }
     const count = occurrenceCountOf(
-      row, caller.args, resolver, where, caller.artifact, writtenState, routing, known,
+      row, caller.args, resolver, where, caller.artifact, writtenState, index, routing, known,
     );
     // A site the caller's own facts give no visits fills no record: it reaches no callee, so nothing is placed
     // for it and its target and arguments need not resolve.
@@ -965,8 +1203,17 @@ async function deploymentOf(
 /** The live deployment a frame's own writes are planned against, as `hopEntryWrites` states it. */
 function liveDeploymentOf(
   categoryId: string, deployment: PerCallDeploymentSet, layout: StateLayout,
+  written: readonly {
+    readonly collection: string;
+    readonly slot: Uint8Array;
+    readonly commitment: Uint8Array;
+    readonly value?: Uint8Array;
+  }[] = [],
 ): HopLiveDeployment {
   return {
+    // What the already-placed reaches of this hop wrote: a node one of them created is not in the deployment, and
+    // a later reach's write over it continues from the view that reach left.
+    ...(written.length === 0 ? {} : { continuedNodes: written }),
     category: hexToBin(categoryId),
     recordCommitments: deployment.records.map((record) => {
       const commitment = record.token?.nft?.commitment;
@@ -983,6 +1230,50 @@ function liveDeploymentOf(
     // records are decoded into the same view the frame's data slots carry.
     state: deploymentStateValues(layout, categoryId, deployment) as Readonly<Record<string, StateValue>>,
   };
+}
+
+/**
+ * Records the nodes one reach created for the reaches placed after it.
+ *
+ * A reach is planned against the deployment, which does not hold a node another reach of the same hop created in
+ * this transaction: the reach that writes over one has to continue from the view this reach left, so the node and
+ * that view are what this keeps. A node a reach spent is not recorded: the deployment holds it, and a reach that
+ * writes it chains through the shared participant the plan already places.
+ */
+function recordWrittenNodes(
+  ctx: PlanContext, categoryId: string, writes: HopEntryWrites | undefined,
+  learned: readonly (Uint8Array | undefined)[] | undefined,
+): void {
+  const created = (writes?.writtenNodes ?? []).filter((node) => !node.existed);
+  if (created.length === 0) return;
+  const order = writes?.learningSlotOrder ?? [];
+  const learningIndexOf = (node: { readonly slot: Uint8Array }): number =>
+    order.findIndex((slot) => bytesEqual(slot, node.slot));
+  if (hopTraceOn()) {
+    // What a reach leaves for the reaches after it: the slot head, the commitment's width and its last byte are
+    // enough to tell one written node from another for the same slot, and the learning index says whether the
+    // settle's own end view for the node is available to record instead of the plan's placeholder.
+    for (const node of created) {
+      const at = learningIndexOf(node);
+      hopTrace(`reach-written ${categoryId.slice(0, 8)} ${node.collection} `
+        + `slot=${binToHex(node.slot).slice(0, 16)} len=${String(node.commitment.length)} `
+        + `tail=${binToHex(node.commitment.slice(-4))} at=${String(at)} `
+        + `learned=${String(at < 0 ? -1 : learned?.[at]?.length ?? -1)}`);
+    }
+  }
+  const held = ctx.writtenNodes.get(categoryId) ?? [];
+  // A node whose end view the settle learned carries that view rather than the plan's placeholder: the reaches
+  // planned after this one read the value the frame's own record closes with, so a target whose value the body
+  // computes is not defaulted to the type's zero.
+  const commitmentOf = (node: { readonly slot: Uint8Array; readonly commitment: Uint8Array }): Uint8Array => {
+    const at = learningIndexOf(node);
+    return (at < 0 ? undefined : learned?.[at]) ?? node.commitment;
+  };
+  held.push(...created.map((node) => ({
+    collection: node.collection, slot: node.slot, commitment: commitmentOf(node),
+    ...(node.value === undefined ? {} : { value: node.value }),
+  })));
+  ctx.writtenNodes.set(categoryId, held);
 }
 
 /**
@@ -1007,6 +1298,7 @@ function calleeEntryWrites(
   live: HopLiveDeployment,
   readNodes: readonly HopCalleeReadNode[],
   categoryId: string,
+  learnedValue?: Uint8Array,
 ): HopEntryWrites | undefined {
   const callee = `${artifact.contractName}.${functionName}()`;
   let writes: HopEntryWrites | undefined;
@@ -1021,6 +1313,7 @@ function calleeEntryWrites(
       declaredReadSlots: readNodes.map((node) => node.slotIndex),
       // A node is the contract's, not the reach's: every reach that touches it names the same participant.
       nodeIdOf: (collection, slot) => sharedNodeId(categoryId, collection, slot),
+      ...(learnedValue === undefined ? {} : { learnedValue }),
     });
   } catch (error) {
     const fn = artifact.abi.find((candidate) => candidate.name === functionName);
@@ -1029,7 +1322,8 @@ function calleeEntryWrites(
       + `${error instanceof Error ? error.message : String(error)}`);
   }
   const spent = new Set([...writes?.spentUtxos.values() ?? []].map((utxo) => `${utxo.txid}:${utxo.vout}`));
-  const shared = readNodes.find((node) => spent.has(`${node.utxo.txid}:${node.utxo.vout}`));
+  const shared = readNodes.find((node) => node.utxo !== undefined
+    && spent.has(`${node.utxo.txid}:${node.utxo.vout}`));
   if (shared !== undefined) {
     throw new PerCallProxyDeployError(
       `the callee "${callee}" reads mapping "${shared.collection}" at a node its batch also spends, which one `
@@ -1037,6 +1331,53 @@ function calleeEntryWrites(
     );
   }
   return writes;
+}
+
+/**
+ * The compute side-cars one callee frame's own body reads, over the provider's live pool.
+ *
+ * A body that hashes a runtime value or recovers a signer reads one side-car per call immediately after its own
+ * input; the pushes the caller records for the call are what those calls' scalars are read from. A frame whose
+ * entry publishes neither reads none, and contributes nothing.
+ */
+async function calleeSideCars(
+  ctx: PlanContext,
+  master: string,
+  artifact: Artifact,
+  entryName: string,
+  argumentPushes: readonly Uint8Array[],
+): Promise<void> {
+  const abiFunction = artifact.abi.find((candidate) => candidate.name === entryName);
+  if (abiFunction === undefined) return;
+  // A recovery call is published either by its argument sources or, when the sources are absent, by its per-call
+  // flag, so both have to be absent for the frame to read no side-car.
+  const hashes = (abiFunction.keccakPreimageParams ?? []).length > 0;
+  const recovers = (abiFunction.ecrecoverArgParams ?? []).length > 0
+    || (abiFunction.ecrecoverEvmFlags ?? []).length > 0;
+  if (!hashes && !recovers) return;
+  const sideCars = await entrySideCars({
+    provider: ctx.provider, master, abiFunction, argumentPushes, leadingPushes: 1,
+  });
+  if (sideCars.ids.length === 0) return;
+  ctx.sideCars.set(master, sideCars);
+  for (const [id, utxo] of Object.entries(sideCars.utxos)) ctx.utxos.set(id, utxo);
+}
+
+/**
+ * A callee frame's own write plan as the value its body computed implies it, or absent when it writes none.
+ *
+ * A chunkable mapping write whose value the artifact does not publish is planned once with its run unstated, so
+ * the frame's own close exposes the whole value the body stored; the frame is then handed back to the planner with
+ * that value, which sizes the run of chunk records the write takes. A frame with nothing kept to plan against is
+ * left as it was planned.
+ */
+export function planCalleeWrites(callee: HopCallee, learnedValue?: Uint8Array): HopEntryWrites | undefined {
+  const inputs = callee.writeInputs;
+  if (inputs === undefined) return undefined;
+  return calleeEntryWrites(
+    callee.artifact, callee.entry, inputs.args, inputs.senderAddress, inputs.live, callee.readNodes,
+    inputs.categoryId, learnedValue,
+  );
 }
 
 /**
@@ -1058,6 +1399,19 @@ function calleeReadNodes(options: {
   readonly senderAddress: Uint8Array | undefined;
   readonly categoryId: string;
   readonly deployment: PerCallDeploymentSet;
+  /**
+   * The nodes reaches placed earlier in this hop created, keyed by collection and slot.
+   *
+   * The deployment does not hold a node an earlier reach of the same hop inserted, so a read of that key would
+   * otherwise resolve through the deployment to the bracketing predecessor the insert relinked. Planning the read
+   * against the node the insert created keeps the two reaches on distinct nodes.
+   */
+  readonly createdNodes?: readonly {
+    readonly collection: string;
+    readonly slot: Uint8Array;
+    readonly commitment: Uint8Array;
+    readonly value?: Uint8Array;
+  }[];
   /**
    * The layout the deployment's records were minted under, which is not always the artifact's own.
    *
@@ -1098,7 +1452,8 @@ function calleeReadNodes(options: {
   // itself from its frame's block: the joined value is that witness, assembled from the deployment's own chunks.
   const live = liveDeploymentOf(
     options.categoryId, options.deployment,
-    options.recordLayout ?? options.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 });
+    options.recordLayout ?? options.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 },
+    options.createdNodes);
   return slots.map((slot): HopCalleeReadNode => {
     let node: ReturnType<typeof readEntryNode>;
     try {
@@ -1117,32 +1472,47 @@ function calleeReadNodes(options: {
         + `cannot declare: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+    // A key the deployment does not hold may be one an earlier reach of this hop inserted: the list the insert
+    // left holds the node it created, so the read is planned against that node rather than resolving through the
+    // deployment to the bracketing predecessor the insert relinked. The created node carries the value the
+    // creating frame left, so its commitment is the read's own.
+    const created = node.present ? undefined : (options.createdNodes ?? []).find((candidate) =>
+      candidate.collection === node.collection && bytesEqual(candidate.slot, node.slot));
+    const commitment = created?.commitment ?? node.commitment;
     const collection = options.artifact.stateLayout?.collections
       ?.find((candidate) => candidate.name === node.collection);
-    const tail = node.commitment.slice(64);
-    const length = tail.length < 4 ? 0 : new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
     let value: Uint8Array | undefined;
-    if (node.present && collection?.chunkableValue === true && length > VALUE_INLINE_LIMIT) {
-      value = joinedNodeValue(collection, node.commitment, live);
-      if (value === undefined) {
-        throw new PerCallProxyDeployError(
-          `the callee "${options.artifact.contractName}.${options.functionName}()" reads a mapping node of `
-          + `collection "${node.collection}" whose ${length}-byte value this hop cannot reassemble from the `
-          + "deployment's chunk records, so it cannot witness the body's read",
-        );
+    if (created !== undefined) {
+      value = created.value;
+    } else {
+      const tail = node.commitment.slice(64);
+      const length = tail.length < 4 ? 0 : new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
+      if (node.present && collection?.chunkableValue === true && length > VALUE_INLINE_LIMIT) {
+        value = joinedNodeValue(collection, node.commitment, live);
+        if (value === undefined) {
+          throw new PerCallProxyDeployError(
+            `the callee "${options.artifact.contractName}.${options.functionName}()" reads a mapping node of `
+            + `collection "${node.collection}" whose ${length}-byte value this hop cannot reassemble from the `
+            + "deployment's chunk records, so it cannot witness the body's read",
+          );
+        }
       }
     }
     return {
       // A key the list does not hold is read against the node that brackets it, so a shared id names the node's own
-      // slot: two reads that resolve to one node are one input.
-      id: options.nodeIdOf?.(node.collection, decodeEntryCommitment(node.commitment).slot)
-        ?? `mapping-read-${node.collection}-${bytesToHex(node.slot)}`,
+      // slot: two reads that resolve to one node are one input. A node an earlier reach created is named by the
+      // slot the insert targeted, which is the node's own, so the read and the insert touch distinct nodes.
+      id: created === undefined
+        ? options.nodeIdOf?.(node.collection, decodeEntryCommitment(node.commitment).slot)
+          ?? `mapping-read-${node.collection}-${bytesToHex(node.slot)}`
+        : options.nodeIdOf?.(node.collection, created.slot)
+          ?? `mapping-read-${node.collection}-${bytesToHex(created.slot)}`,
       collection: node.collection,
       signature: node.signature,
       slotIndex: slot.slotIndex!,
       ...(value === undefined ? {} : { value }),
-      commitment: node.commitment,
-      utxo: node.utxo,
+      commitment,
+      ...(created === undefined ? { utxo: node.utxo } : { createdSlot: created.slot }),
     };
   });
 }
@@ -1233,7 +1603,8 @@ async function placeCalleeMasters(
   const records = calleeRecordSet(ctx, contract, categoryId, layout, deployment);
   const stateValues = deploymentStateValues(layout, categoryId, deployment);
   const category = hexToBin(categoryId);
-  const live = liveDeploymentOf(categoryId, deployment, layout);
+  const live = liveDeploymentOf(categoryId, deployment, layout, ctx.writtenNodes.get(categoryId) ?? []);
+  const readMappingValue = liveMappingValueReader(external.artifact, live, external.artifact.structs);
   const nodeIdOf = (collection: string, slot: Uint8Array): string => sharedNodeId(categoryId, collection, slot);
   for (const [occurrence, call] of resolved.entries()) {
     // A stop inside an earlier visit's own calls ends the plan there, so no later visit is placed.
@@ -1247,15 +1618,21 @@ async function placeCalleeMasters(
     const readNodes = calleeReadNodesOrNone({
       artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
       senderAddress: caller.selfAddress, categoryId, deployment, nodeIdOf,
+      createdNodes: ctx.writtenNodes.get(categoryId) ?? [],
     });
     // The frame's own write is planned from the reach's own call data, so two reaches that pass different values
     // write different nodes.
     const writes = calleeEntryWrites(
-      external.artifact, entry.name, call.argumentValues, caller.selfAddress, live, readNodes, categoryId);
-    for (const node of readNodes) ctx.utxos.set(node.id, node.utxo);
+      external.artifact, entry.name, call.argumentValues, caller.selfAddress, live, readNodes, categoryId,
+      ctx.calleeWriteValues?.get(master));
+    for (const node of readNodes) if (node.utxo !== undefined) ctx.utxos.set(node.id, node.utxo);
     // A mapping node the frame writes sits on a live UTXO the deployment's classification already placed, so the
     // hop hands the rebuild its outpoint rather than have it search the category again.
     for (const [id, utxo] of writes?.spentUtxos ?? []) ctx.utxos.set(id, utxo);
+    // A node this reach creates is one the reaches placed after it have to be told about: it is in no deployment,
+    // and only this frame's output carries it.
+    recordWrittenNodes(ctx, categoryId, writes, ctx.calleeWriteViews?.get(master));
+    await calleeSideCars(ctx, master, external.artifact, entry.name, call.argumentPushes);
     const frame: HopCallee = {
       master,
       contract,
@@ -1273,6 +1650,9 @@ async function placeCalleeMasters(
       readNodes,
       utxos: new Map<string, Utxo>([[master, masterUtxo]]),
       ...(writes === undefined ? {} : { entryWrites: writes }),
+      ...(writes === undefined ? {} : {
+        writeInputs: { args: call.argumentValues, senderAddress: caller.selfAddress, live, categoryId },
+      }),
       calls: [],
       callBases: [],
       enteredBy,
@@ -1288,6 +1668,7 @@ async function placeCalleeMasters(
       args: call.argumentValues,
       stateValues,
       selfAddress: deployed.address,
+      readMappingValue,
       ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
     }, calleeIndex, path);
     ctx.callees[calleeIndex] = {
@@ -1299,8 +1680,11 @@ async function placeCalleeMasters(
       argumentPushes: call.argumentPushes,
     });
     if (hopTraceOn()) {
+      const byTarget = findDeploymentByAddress(ctx.provider, binToHex(call.target))
+        ?? findDeploymentByLockingBytecode(ctx.provider, binToHex(call.target));
       hopTrace(`callee ${master} entry=${entry.name} self=${binToHex(deployed.address).slice(0, 12)} `
-        + `target=${binToHex(call.target).slice(0, 12)}`);
+        + `target=${binToHex(call.target).slice(0, 12)} cat=${categoryId.slice(-12)} `
+        + `byTarget=${byTarget?.contractName ?? 'none'}`);
     }
   }
 }
@@ -1375,7 +1759,9 @@ async function placeProxiedCallee(
   const stateValues = deploymentStateValues(proxyLayout, external.categoryId, proxyDeployment);
   // A delegate frame runs on the proxy's records, so a write its entry makes lands at the proxy's category and is
   // planned against the proxy's own live records and collection nodes.
-  const live = liveDeploymentOf(external.categoryId, proxyDeployment, proxyLayout);
+  const live = liveDeploymentOf(
+    external.categoryId, proxyDeployment, proxyLayout, ctx.writtenNodes.get(external.categoryId) ?? []);
+  const readMappingValue = liveMappingValueReader(external.artifact, live, external.artifact.structs);
   // Whether the entry the proxy forwards to returns a value, which the fallback frame records in its own `retval`.
   const returnsValue = (entry.outputs ?? []).length > 0;
   for (const [occurrence, call] of resolved.entries()) {
@@ -1427,13 +1813,17 @@ async function placeProxiedCallee(
       senderAddress: caller.selfAddress, categoryId: external.categoryId, deployment: proxyDeployment,
       recordLayout: proxyReadLayout,
       nodeIdOf: (collection, slot) => sharedNodeId(external.categoryId, collection, slot),
+      createdNodes: ctx.writtenNodes.get(external.categoryId) ?? [],
     });
     // The implementation entry's own write is planned from this reach's call data, against the proxy's deployment.
     const implementationWrites = calleeEntryWrites(
       external.artifact, entry.name, call.argumentValues, caller.selfAddress, live, implementationReads,
-      external.categoryId);
-    for (const node of implementationReads) ctx.utxos.set(node.id, node.utxo);
+      external.categoryId, ctx.calleeWriteValues?.get(implementationMaster));
+    for (const node of implementationReads) if (node.utxo !== undefined) ctx.utxos.set(node.id, node.utxo);
     for (const [id, utxo] of implementationWrites?.spentUtxos ?? []) ctx.utxos.set(id, utxo);
+    // A node this reach creates is one the reaches placed after it have to be told about, as a call frame's is.
+    recordWrittenNodes(ctx, external.categoryId, implementationWrites, ctx.entryWriteViews);
+    await calleeSideCars(ctx, implementationMaster, external.artifact, entry.name, call.argumentPushes);
     const implementationBaseFrame: HopCallee = {
       master: implementationMaster,
       contract: implementationContract,
@@ -1453,6 +1843,11 @@ async function placeProxiedCallee(
       readNodes: implementationReads,
       utxos: new Map<string, Utxo>([[implementationMaster, implementationMasterUtxo]]),
       ...(implementationWrites === undefined ? {} : { entryWrites: implementationWrites }),
+      ...(implementationWrites === undefined ? {} : {
+        writeInputs: {
+          args: call.argumentValues, senderAddress: caller.selfAddress, live, categoryId: external.categoryId,
+        },
+      }),
       calls: [],
       callBases: [],
       enteredBy: proxyIndex,
@@ -1468,6 +1863,7 @@ async function placeProxiedCallee(
       args: call.argumentValues,
       stateValues,
       selfAddress: proxyDeployed.address,
+      readMappingValue,
       ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
     }, implementationIndex, path);
     ctx.callees[implementationIndex] = {
@@ -1495,6 +1891,10 @@ interface CollectionReach {
   readonly spentIds: readonly string[];
   /** The spent nodes the reach rewrites in place as its own key's update, rather than relinks for an insert. */
   readonly updatedIds: ReadonlySet<string>;
+  /** The keys the reach inserts, i.e. the nodes it creates because the list did not hold them. */
+  readonly createdSlots: ReadonlySet<string>;
+  /** The keys the reach rewrites as a continuation of a node an earlier reach created, keyed by slot. */
+  readonly continuedSlots: ReadonlySet<string>;
 }
 
 /** Why a reach cannot follow an insert through the node it touches. */
@@ -1555,6 +1955,12 @@ export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): vo
         targets: write.targets,
         spentIds: write.spentIds,
         updatedIds: updatedNodeIds(bytesToHex(owner.category), write),
+        createdSlots: new Set(write.targets
+          .filter((target) => target.predecessor !== undefined)
+          .map((target) => bytesToHex(target.slot))),
+        continuedSlots: new Set(write.targets
+          .filter((target) => target.continued === true)
+          .map((target) => bytesToHex(target.slot))),
       });
       byCollection.set(key, group);
     }
@@ -1577,12 +1983,21 @@ export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): vo
           second.targets.some((other) => bytesEqual(other.slot, target.slot))
           && (inserted(first, target.slot) || inserted(second, target.slot)));
         if (sharedKey !== undefined) {
-          throw new PerCallProxyDeployError(
-            `${where}, and ${group.reaches.filter((reach) => reach.targets.some((target) =>
-              bytesEqual(target.slot, sharedKey.slot))).length} of them write collection `
-            + `"${group.collection}" at the same key, which the list does not hold, so each reach inserts it; `
-            + `${CHAINED_INSERT_NEED}, so the reaches must write distinct keys`,
-          );
+          // A later reach that rewrites the node an earlier reach created continues it: the created node carries no
+          // input, the earlier reach's own declaration names it at the output it made, and the later reach's
+          // declaration names that same output, so one transaction carries both. Every other shared key still needs
+          // the reaches to write distinct keys — each would insert it, relink one predecessor twice, or read a list
+          // the planner never saw.
+          const chained = first.createdSlots.has(bytesToHex(sharedKey.slot))
+            && second.continuedSlots.has(bytesToHex(sharedKey.slot));
+          if (!chained) {
+            throw new PerCallProxyDeployError(
+              `${where}, and ${group.reaches.filter((reach) => reach.targets.some((target) =>
+                bytesEqual(target.slot, sharedKey.slot))).length} of them write collection `
+              + `"${group.collection}" at the same key, which the list does not hold, so each reach inserts it; `
+              + `${CHAINED_INSERT_NEED}, so the reaches must write distinct keys`,
+            );
+          }
         }
         const sharedNode = first.spentIds.find((id) => second.spentIds.includes(id)
           && !(first.updatedIds.has(id) && second.updatedIds.has(id)));
@@ -1591,6 +2006,17 @@ export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): vo
             `${where}, and ${group.reaches.filter((reach) => reach.spentIds.includes(sharedNode)).length} of them `
             + `insert into collection "${group.collection}" through the same node, or write the node another `
             + `inserts through; ${CHAINED_INSERT_NEED}, so the reaches must splice through distinct nodes`,
+          );
+        }
+        // A node the reach before this one creates carries no input, so an insert that splices through it cannot
+        // prove its predecessor either: the master's insert proves that from the input it spends.
+        const throughCreated = second.targets.find((target) => target.predecessor !== undefined
+          && first.targets.some((earlier) => earlier.predecessor !== undefined
+            && bytesEqual(earlier.slot, target.predecessor!)));
+        if (throughCreated !== undefined) {
+          throw new PerCallProxyDeployError(
+            `${where}, and the reach this one follows creates the node of collection "${group.collection}" it `
+            + `splices through; ${CHAINED_INSERT_NEED}, so the reaches must splice through distinct nodes`,
           );
         }
       }
@@ -1717,7 +2143,7 @@ function requireChainableNodes(callees: readonly HopCallee[]): void {
  * or a frame that refuses before the chain is reached, is reported as itself.
  */
 export function requireSettledNodeChains(callees: readonly HopCallee[]): void {
-  for (const touches of nodeTouches(callees).values()) {
+  for (const [id, touches] of nodeTouches(callees).entries()) {
     if (touches.length < 2 || !chunkingNode(touches)) continue;
     const written = touches.findIndex((touch) => touch.kind !== 'read');
     const later = written < 0 ? undefined : touches[written + 1];
@@ -1769,6 +2195,31 @@ export function sharedNodeWritersBefore(callees: readonly HopCallee[]): Readonly
   return before;
 }
 
+/**
+ * For each callee frame, the frames that write a node it also writes before it does, created or spent.
+ *
+ * A node a frame's body creates is no deployment's, so the frames the plan places after it name it only by the
+ * slot they both write: the view one of them leaves is stated by its own settle, and the frame that writes the
+ * same node continues from it.
+ */
+export function writtenNodeWritersBefore(callees: readonly HopCallee[]): ReadonlyMap<number, readonly number[]> {
+  const before = new Map<number, number[]>();
+  const written = new Map<string, number[]>();
+  callees.forEach((callee, frame) => {
+    const owner = callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!;
+    for (const node of callee.entryWrites?.writtenNodes ?? []) {
+      const id = sharedNodeId(bytesToHex(owner.category), node.collection, node.slot);
+      const writers = written.get(id) ?? [];
+      const earlier = before.get(frame) ?? [];
+      for (const writer of writers) if (!earlier.includes(writer)) earlier.push(writer);
+      before.set(frame, earlier);
+      if (!writers.includes(frame)) writers.push(frame);
+      written.set(id, writers);
+    }
+  });
+  return before;
+}
+
 /** Everything the implementation frame's calls are planned from, and the live deployments they run against. */
 export interface HopExternalPlanOptions {
   readonly provider: NetworkProvider;
@@ -1801,6 +2252,40 @@ export interface HopExternalPlanOptions {
    * one, the plan stops before that site (`HopExternalPlan.blocked`).
    */
   readonly reachedResults?: ReadonlyMap<string, FunctionArgument>;
+  /**
+   * The end views a previous settle learned, per frame master for a callee and once for the entry, in each frame's
+   * own learning order.
+   *
+   * A node a reach creates carries a value the planner cannot know when the body computes it: the settle learns the
+   * commitment the frame's own record closes with, and a reach planned after it has to be told that commitment
+   * rather than the plan's placeholder. Absent leaves every created node at its planned view, which is the first
+   * pass.
+   */
+  readonly calleeWriteViews?: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>;
+  /**
+   * The whole value a previous settle learned for a frame's chunkable mapping write, per frame master.
+   *
+   * A write whose value the artifact does not publish states its run unstated; the frame's own close exposes the
+   * value, and a later pass sizes the run from it. Absent leaves every such run unstated, which is the first pass.
+   */
+  readonly calleeWriteValues?: ReadonlyMap<string, Uint8Array>;
+  /**
+   * The compute side-cars the caller already built for the implementation's own entry, keyed by its master.
+   *
+   * The caller holds that frame's argument pushes, so it builds the side-cars the entry's own hashing and recovery
+   * calls read; this planner builds the ones the callee frames it places read. Both are placed by the same plan.
+   */
+  readonly sideCars?: ReadonlyMap<string, RecoverySideCars>;
+  /** The end commitments a previous settle learned for a callee frame's own data records, by record index. */
+  readonly entryWriteViews?: readonly (Uint8Array | undefined)[];
+  /**
+   * True for the pass that states a held continuation the way the chain ends.
+   *
+   * A frame that leaves a node an earlier frame created alone states the same declaration as one that rewrites it,
+   * so the two are told apart only by what a settle learned: a pass planned without this keeps every continuation
+   * on the view it was given, and the caller re-plans with it once the settle has accepted.
+   */
+  readonly heldContinuations?: boolean;
 }
 
 /** The callsite ids an entry's own conditions read a result from, in published order. */
@@ -1834,13 +2319,21 @@ export async function planHopExternalCalls(
     masterSlots: new Map(),
     deployments: new Map(),
     records: new Map(),
+    writtenNodes: new Map(),
+    ...(options.calleeWriteViews === undefined ? {} : { calleeWriteViews: options.calleeWriteViews }),
+    ...(options.calleeWriteValues === undefined ? {} : { calleeWriteValues: options.calleeWriteValues }),
+    ...(options.entryWriteViews === undefined ? {} : { entryWriteViews: options.entryWriteViews }),
     callees: [],
     utxos: new Map(),
+    sideCars: new Map(options.sideCars ?? []),
     ...(options.externalReturns === undefined || options.externalReturns.size === 0
       ? {} : { producerResults: { artifact: options.artifact, values: options.externalReturns } }),
     reachedResults: options.reachedResults ?? new Map(),
     stop: {},
   };
+  for (const sideCars of ctx.sideCars.values()) {
+    for (const [id, utxo] of Object.entries(sideCars.utxos)) ctx.utxos.set(id, utxo);
+  }
   const root = await planEntryCalls(ctx, {
     artifact: options.artifact,
     functionName: options.functionName,
@@ -1857,6 +2350,8 @@ export async function planHopExternalCalls(
     conditionalProducers: conditionalProducerCallsites(options.artifact, options.functionName),
     callees: ctx.callees,
     utxos: ctx.utxos,
+    sideCars: ctx.sideCars,
+    ...(options.heldContinuations === true ? { heldContinuations: true } : {}),
     ...(ctx.stop.blocked === undefined ? {} : { blocked: ctx.stop.blocked }),
   };
 }

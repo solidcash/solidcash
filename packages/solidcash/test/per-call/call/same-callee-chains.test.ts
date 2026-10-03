@@ -25,8 +25,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * update one key the list holds share its node: it is one input, and each reach continues from the view the one
  * before it left, so they settle too.
  *
- * Three reaches inserting into one gap each relink the same spent predecessor to their own key, which the master's
- * insert does not chain, so that shape is refused by name rather than settled into a plan that cannot broadcast.
+ * Three reaches inserting into one gap land one behind the other: the second splices through the node the first
+ * creates, which the master's insert cannot prove, so that shape is refused by name rather than settled into a plan
+ * that cannot broadcast.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -301,7 +302,7 @@ describe('one entry reaching the same mapping-writing callee three times', () =>
     const { network, funded } = await deployedChains();
     const { sharedGap } = keySets();
     await expect(callRun(network, funded, sharedGap)).rejects.toThrow(
-      /entry "Ledger\.move\(\)" 3 times.*insert into collection "held" through the same node.*distinct nodes/,
+      /entry "Ledger\.move\(\)" 3 times.*creates the node of collection "held" it splices through.*distinct nodes/,
     );
   });
 

@@ -101,16 +101,23 @@ export const FACET_SATOSHIS = 10_000n;
  * write whose value the body itself computes is left unstated: the composer declares a placeholder for it and the
  * derivation replaces that placeholder with the value the body's own close hands back. A stated end commitment is
  * never a placeholder, so a plan that states one is authoritative.
+ *
+ * A record a frame's body writes in more than one segment declares a value between two of its writes that no plan
+ * knows, so an entry may name the declaration it carries on from instead of a value: `'carried'` is the view the
+ * entry before it in the same record ended at, which is the placeholder until the derivation learns the value.
  */
 export interface DraftRecordEntry {
   /** Input index holding the record, or `INDEX_NONE` when the segment creates it. */
   readonly in: number;
   /** Output index recreating the record, or `INDEX_NONE` when the segment deletes it. */
   readonly out: number;
-  /** The record's whole commitment at the segment's start. */
-  readonly viewIn: Uint8Array;
-  /** The record's end commitment, or omitted when the body computes it and the derivation learns it. */
-  readonly viewOut?: Uint8Array;
+  /** The record's whole commitment at the segment's start, or the view the entry before it ended at. */
+  readonly viewIn: Uint8Array | 'carried';
+  /**
+   * The record's end commitment, the view it starts with when the entry holds the record, or omitted when the body
+   * computes it and the derivation learns it.
+   */
+  readonly viewOut?: Uint8Array | 'carried';
 }
 
 /** A segment entry the plan leaves unstated, and the placeholder the composer declared in its place. */
@@ -126,8 +133,12 @@ export interface UnstatedView {
  * The body's own close compares the commitment it computed with this declaration, so the placeholder only has to
  * be a value the body never computes. It is domain-separated by the master, the segment and the entry, which keeps
  * every unstated write distinct and lets a run name the declaration it closed against.
+ *
+ * A plan that declares a later segment of the same record whose start view is the end view of an earlier one names
+ * this value: the derivation replaces every declaration that carries the placeholder with the value it learned, so
+ * the chain the plan states carries the learned value on from the segment that learned it.
  */
-function unstatedViewPlaceholder(master: string, segmentIndex: number, entryIndex: number): Uint8Array {
+export function unstatedViewPlaceholder(master: string, segmentIndex: number, entryIndex: number): Uint8Array {
   const tag = new TextEncoder().encode(`per-call unstated view\u0000${master}\u0000${segmentIndex}\u0000${entryIndex}`);
   return sha256(tag);
 }
@@ -326,6 +337,15 @@ export interface CompositionDraft {
   programFor(master: string): ShippedVmProgram;
   /** The declarations a plan left unstated that no run has learned yet, each still holding its placeholder. */
   unlearnedViews(): readonly UnstatedView[];
+  /**
+   * Learns every view the plan left unstated that the draft's own runs can compute, without resuming a run at a
+   * site.
+   *
+   * A caller that evaluates a master's program itself — to read a value the frame computes back off a close — never
+   * resumes the execution at its stop sites, so the draft learns those views for it here. A view no run of the
+   * draft can compute yet is left as it is, and a later call learns it once the value it depends on is stated.
+   */
+  learnUnstatedViews(): void;
 }
 
 /**
@@ -439,13 +459,27 @@ export function composeDraft(
   const normalizedSegments = new Map<string, RecordEntry[][]>();
   for (const master of plan.masters) {
     const byPlaceholder = new Map<string, UnstatedView>();
+    // The declarations of one record carry on from one another in segment order, so an entry that names the view
+    // before it is resolved as the walk reaches it and the value the walk leaves is the one it ends at.
+    const ends = new Map<number, Uint8Array>();
     const segments = master.segments.map((segment, segmentIndex) => segment.map((entry, entryIndex) => {
-      if (entry.viewOut !== undefined) {
-        return { in: entry.in, out: entry.out, viewIn: entry.viewIn, viewOut: entry.viewOut };
+      const record = entry.in === INDEX_NONE ? entry.out : entry.in;
+      const carried = entry.viewIn === 'carried' ? ends.get(record) : entry.viewIn;
+      if (carried === undefined) {
+        throw new CompositionDraftError(
+          `"${master.master}" declares record ${String(record)} in segment ${String(segmentIndex)} as carrying on `
+          + 'from a declaration it does not have',
+        );
       }
-      const placeholder = unstatedViewPlaceholder(master.master, segmentIndex, entryIndex);
-      byPlaceholder.set(bytesToHex(placeholder), { master: master.master, segmentIndex, entryIndex });
-      return { in: entry.in, out: entry.out, viewIn: entry.viewIn, viewOut: placeholder };
+      if (entry.viewOut === undefined) {
+        const placeholder = unstatedViewPlaceholder(master.master, segmentIndex, entryIndex);
+        byPlaceholder.set(bytesToHex(placeholder), { master: master.master, segmentIndex, entryIndex });
+        ends.set(record, placeholder);
+        return { in: entry.in, out: entry.out, viewIn: carried, viewOut: placeholder };
+      }
+      const viewOut = entry.viewOut === 'carried' ? carried : entry.viewOut;
+      ends.set(record, viewOut);
+      return { in: entry.in, out: entry.out, viewIn: carried, viewOut };
     }));
     normalizedSegments.set(master.master, segments);
     unstatedByMaster.set(master.master, byPlaceholder);
@@ -696,7 +730,19 @@ export function composeDraft(
         if (reading.computed.length > maximumCommitmentBytes) return;
         const entry = current.segments[view.segmentIndex]?.[view.entryIndex];
         if (entry === undefined) return;
+        const placeholder = key === declared ? reading.declared : reading.computed;
         entry.viewOut = learned;
+        // A later declaration of the same record that starts where this one ended names this placeholder as its
+        // start view — and a declaration that holds the record names it on both sides — so each carries the learned
+        // value on rather than the placeholder the plan could not resolve.
+        for (const block of blocks.values()) {
+          for (const segment of block.segments) {
+            for (const other of segment) {
+              if (bytesEqual(other.viewIn, placeholder)) other.viewIn = learned;
+              if (bytesEqual(other.viewOut, placeholder)) other.viewOut = learned;
+            }
+          }
+        }
         views.delete(key);
         continue;
       }
@@ -802,6 +848,14 @@ export function composeDraft(
     },
     // A learned placeholder leaves its master's map, so what remains is exactly what no run learned.
     unlearnedViews: () => [...unstatedByMaster.values()].flatMap((byPlaceholder) => [...byPlaceholder.values()]),
+    // A caller that evaluates a program itself never resumes it at a site, so nothing would read a plan's unstated
+    // views back: learning them here is what leaves every program the draft hands out with its declarations stated.
+    learnUnstatedViews: () => {
+      for (const master of plan.masters) {
+        const block = blocks.get(master.master);
+        if (block !== undefined) learnComputedValues(master.master, block);
+      }
+    },
   };
 }
 

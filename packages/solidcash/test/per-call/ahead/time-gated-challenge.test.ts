@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256, validatorAddress } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { Contract, SignatureTemplate } from '../../../src/index.js';
+import { Contract, SignatureTemplate, providerUnixLocktime } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
@@ -25,8 +25,10 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * `require(tx.time >= start + 1)`, calls the escrow's `challenge`, which gates on the judge's address and writes a
  * mapping, and emits one event above 128 bytes.
  *
- * The flow is pinned where it stands today; beside it, the same flow with the judge's guard dropped, and then with
- * the time gate dropped too, shows what stands behind each wall.
+ * The judge's guard writes its record on entry and on exit, so the hop declares that record in both segments and
+ * learns the value the body computed between them. The flow keeps its time gate: the hop states the chain's own
+ * time as its locktime, so a payment the chain has reached lets the dispute broadcast, while a payment beyond the
+ * stated time is refused with both numbers; dropping the gate too settles the same way.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -43,8 +45,10 @@ const ROOT_PROXY_CATEGORY = idOf('root proxy');
 
 const JOB_ID = 0n;
 const ESCROW_ID = 3n;
-/** The escrow's recorded payment block; the judge's gate holds only at a later one. */
-const PAID_AT = 1000n;
+/** The escrow's recorded payment time, a unix time below the mock chain's tip, so the gate can be satisfied. */
+const PAID_AT = 1_699_990_000n;
+/** A payment time beyond the mock chain's tip, so no chain time the hop can state reaches the gate. */
+const FUTURE_AT = 2_000_000_000n;
 /** Three 32-byte fields beside the id and the start: an event well above the 128-byte data-NFT size. */
 const BIG = 452312848583266388373324160190187140051835877600158453279131187530910662656n;
 
@@ -57,7 +61,7 @@ const ROOT_PROXY_ADDRESS = validatorAddress(hexToBin(ROOT_PROXY_CATEGORY), VALID
 type Variant = 'flow' | 'unguarded' | 'untimed';
 
 /** The four contracts; the variant decides what the judge keeps of its own guard and its time gate. */
-function sourceFor(variant: Variant): string {
+function sourceFor(variant: Variant, paidAt: bigint): string {
   const guarded = variant === 'flow';
   return 'pragma solidcash ^0.13.0;'
     + ' struct Terms { address buyer; address seller; int start; }'
@@ -72,7 +76,7 @@ function sourceFor(variant: Variant): string {
     + '   mapping(int => int) public starts;'
     + '   mapping(int => int) public marks;'
     + '   constructor(address j, address b, address s) {'
-    + `     this.judge = j; this.buyer = b; this.seller = s; this.starts[${ESCROW_ID}] = ${PAID_AT};`
+    + `     this.judge = j; this.buyer = b; this.seller = s; this.starts[${ESCROW_ID}] = ${paidAt};`
     + '   }'
     + '   function termsOf(int id) view returns (Terms) { return Terms(this.buyer, this.seller, this.starts[id]); }'
     + '   function challenge(int id, int mark) { require(msg.sender == this.judge); this.marks[id] = mark; }'
@@ -122,13 +126,14 @@ function sourceFor(variant: Variant): string {
 }
 
 type Artifacts = ReturnType<typeof compileStringMulti>;
-const compiled = new Map<Variant, Artifacts>();
-/** The four contracts compiled once per variant, on first use, so a run without the gate compiles nothing. */
-function artifactsFor(variant: Variant): Artifacts {
-  let artifacts = compiled.get(variant);
+const compiled = new Map<string, Artifacts>();
+/** The four contracts compiled once per variant and payment time, on first use. */
+function artifactsFor(variant: Variant, paidAt: bigint = PAID_AT): Artifacts {
+  const key = `${variant}:${paidAt}`;
+  let artifacts = compiled.get(key);
   if (artifacts === undefined) {
-    artifacts = compileStringMulti(sourceFor(variant), { composition: 'per-call' });
-    compiled.set(variant, artifacts);
+    artifacts = compileStringMulti(sourceFor(variant, paidAt), { composition: 'per-call' });
+    compiled.set(key, artifacts);
   }
   return artifacts;
 }
@@ -251,30 +256,6 @@ function dispute(deployed: Deployed): Promise<PerCallProxyCallResult> {
   });
 }
 
-/** Runs the dispute with the hop trace on, returning its trace lines and the refusal it ended in. */
-async function refusedWithTrace(
-  deployed: Deployed,
-): Promise<{ readonly lines: readonly string[]; readonly message: string }> {
-  const previous = process.env.PER_CALL_HOP_TRACE;
-  process.env.PER_CALL_HOP_TRACE = '1';
-  const lines: string[] = [];
-  const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array): boolean => {
-    lines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
-    return true;
-  }) as typeof process.stdout.write);
-  let message = '';
-  try {
-    await dispute(deployed);
-  } catch (error) {
-    message = (error as Error).message;
-  } finally {
-    spy.mockRestore();
-    if (previous === undefined) delete process.env.PER_CALL_HOP_TRACE;
-    else process.env.PER_CALL_HOP_TRACE = previous;
-  }
-  return { lines: lines.filter((line) => line.startsWith('HOPTRACE ')).map((line) => line.trimEnd()), message };
-}
-
 /** True while the creator's coin is unspent, i.e. nothing was broadcast for the hop. */
 async function coinLive(deployed: Deployed): Promise<boolean> {
   return (await deployed.network.getUtxosForLockingBytecode(CREATOR_LOCK))
@@ -290,28 +271,42 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS6): the time-gated 
     }
   });
 
-  it('dispute stops at its first wall: the judge\'s own guard write, which the hop declares kept', async () => {
+  it('settles the dispute whose judge writes its own record in two segments', async () => {
     const deployed = await deployAll(artifactsFor('flow'));
-    const { lines, message } = await refusedWithTrace(deployed);
+    const result = await dispute(deployed);
 
-    // Owner: the SDK hop (`proxy/deploy.ts`: a callee's own data-record write is never planned, so the judge's
-    // record is declared kept and the guard's first segment cannot close).
-    expect(message).toMatch(/the call's callee "Judge\.challenge\(\)" did not settle through the proxy/);
-    expect(lines.some((line) => new RegExp('reason=stall:PER_CALL_DERIVATION_STALLED: master "[^"]+" of '
-      + 'Judge\\.challenge\\(\\) filled no witness at site 0 \\(call 0\\)').test(line))).toBe(true);
-    expect(await coinLive(deployed)).toBe(true);
+    // The judge's guard writes its record on entry and on exit, so the hop declares it in both segments and learns
+    // the value the body computed between them before the frame's own close is compared.
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS6): behind the judge\'s guard', () => {
-  it('stops at the time gate: the hop evaluates every frame at locktime 0', async () => {
+  it('settles the dispute once the stated chain time reaches the gate', async () => {
     const deployed = await deployAll(artifactsFor('unguarded'));
+    // Read the tip before the hop: broadcasting it mines a block, which advances the mock chain's own time.
+    const locktime = providerUnixLocktime(deployed.network)!;
+    const result = await dispute(deployed);
 
-    // Owner: the SDK hop (`proxy/deploy.ts`): `callPerCallProxyEntry` takes no locktime and its plan states none,
-    // so every frame sees locktime 0 and final sequences, and no block time after the payment's can reach the gate.
+    // The hop states the chain's own time as its locktime, so the judge's `require(tx.time >= start + 1)` passes
+    // and the whole flow broadcasts, exactly as it does with the gate dropped.
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.transaction.locktime).toBe(locktime);
+  });
+
+  it('refuses a gate strictly after the stated locktime, naming it', async () => {
+    const deployed = await deployAll(artifactsFor('unguarded', FUTURE_AT));
+    const locktime = providerUnixLocktime(deployed.network)!;
+
+    // The escrow records a payment beyond the chain's tip, so the gate the judge reads is later than the time the
+    // hop states; the machine's own word names both numbers, and nothing is broadcast.
     await expect(dispute(deployed)).rejects.toThrow(new RegExp('the call\'s callee "Judge\\.challenge\\(\\)" did '
-      + 'not settle through the proxy: .*OP_CHECKLOCKTIMEVERIFY.*Transaction locktime: 0; '
-      + `required locktime: ${PAID_AT + 1n}`));
+      + 'not settle through the proxy: .*OP_CHECKLOCKTIMEVERIFY.*Transaction locktime: '
+      + `${locktime}; required locktime: ${FUTURE_AT + 1n}`));
     expect(await coinLive(deployed)).toBe(true);
   });
 

@@ -35,8 +35,9 @@
  * at its own collection covenant, and the hop declares that run exactly as the body addresses it. The run's width
  * has to be stated because a run laid out at another width is not the run the body reads; it is the value the write
  * starts from — the deployment's live chunks for a call, the empty value a genesis minted for a deployment's own
- * first hop — plus the element the frame appends. Every other shape is refused by name rather than sized by
- * guessing.
+ * first hop — plus the elements the frame appends. The elements are the artifact's stated element where it has one,
+ * and otherwise the growth its `dynamicWriteGrowth` fact states; a run that cannot be sized from either is refused
+ * by name rather than sized by guessing.
  *
  * A write to several collections is planned as one batch per collection, laid at its own place in the frame's
  * segment and in the created region. A shape this module still has no plan for — several batches beside a dynamic
@@ -58,7 +59,9 @@ import {
   dynamicLenKey,
   encodeChunkableValueTail,
   encodePushdataValue,
+  fixedWidthBytes,
   getDefaultStateValue,
+  isFixedWidthType,
   joinChunks,
   joinValueChunks,
   parseArrayTypeString,
@@ -70,6 +73,7 @@ import {
   type AbiFunction,
   type ArgSource,
   type Artifact,
+  type DynamicWriteGrowthAbi,
   type ExternalCallExpression,
   type RecordEntry,
   type StateValue,
@@ -91,6 +95,7 @@ import {
 } from '../composer/mapping-plan.js';
 import { planCallLoopWrites, type CallLoopWritePlan } from '../call/entry-records.js';
 import { PerCallProxyDeployError } from './errors.js';
+import { hopTrace, hopTraceOn } from './hop-trace.js';
 
 /** The participant id a hop's layout holds for a collection's empty head sentinel. */
 const MAPPING_HEAD_PREFIX = 'mapping-head-';
@@ -134,6 +139,14 @@ export interface ReachWriteTarget {
    * its own key, so a transaction one input recreates once cannot carry both relinks.
    */
   readonly predecessor?: Uint8Array;
+  /**
+   * True when this target's node is one an earlier reach of the same hop created, and this write continues it.
+   *
+   * An insert creates a node the transaction spends no input for, so a later reach that writes the same key
+   * rewrites that node at the output the creating reach made rather than inserting it again: the record carries
+   * no input index, and the two reaches' declarations chain through the one output.
+   */
+  readonly continued?: boolean;
 }
 
 /** One collection an entry's own write touches, as a cross-reach planner reads it. */
@@ -152,6 +165,11 @@ export interface ReachWrite {
   readonly targets: readonly ReachWriteTarget[];
   /** The participant id of every node this collection's write spends. */
   readonly spentIds: readonly string[];
+  /**
+   * True when this write continues a node an earlier reach of the same hop created, rather than starting from the
+   * deployment: the hop planned it against the view that reach left, so the two reaches' declarations chain.
+   */
+  readonly continued?: boolean;
 }
 
 /** One sorted batch an entry performs against the collection it starts from. */
@@ -171,10 +189,19 @@ interface HopMappingBatch {
   readonly spent: readonly { readonly slot: Uint8Array; readonly before: Uint8Array; readonly id: string }[];
   /** Every key the batch writes, with the node an insert splices through. */
   readonly targets: readonly ReachWriteTarget[];
+  /**
+   * True when the batch writes over a node an earlier reach of the same hop created, and was planned against the
+   * view that reach left: the two reaches' declarations of the one output chain rather than collide.
+   */
+  readonly continued?: boolean;
   /** The slot of each value-dependent node, in learning order, whose end view the body computes. */
   readonly learningSlots: readonly Uint8Array[];
+  /** True when a chunkable write's value is the body's to compute, so its run's width is not yet stated. */
+  readonly unstatedValue?: boolean;
   /** The placeholder each value-dependent node's declaration starts from, in learning order. */
   readonly learningCandidates: readonly Uint8Array[];
+  /** The whole value each written node carries, by slot, for a collection whose values chunk. */
+  readonly rawValues: ReadonlyMap<string, Uint8Array>;
   /** The live UTXO of each spent node, keyed by slot, where the deployment reads one. */
   readonly utxoBySlot: ReadonlyMap<string, Utxo>;
   /**
@@ -213,6 +240,15 @@ export interface HopEntryWritesRequest {
    */
   readonly writtenCommitments?: readonly Uint8Array[];
   /**
+   * The whole value an unstated chunkable write stores, learned from the body's own close.
+   *
+   * A collection whose values chunk needs the value's byte length to size its run, and a value the artifact's
+   * source does not determine is refused by name on the first plan. The body still computes that value and its
+   * digest, and both sit on the machine's stack at the close that stops the write, so the caller re-plans the write
+   * from the value the close exposed. Absent leaves the write's run at one record and the value learned.
+   */
+  readonly learnedValue?: Uint8Array;
+  /**
    * The entry-access slots of the keys the entry only reads whose nodes the caller declares, kept and ahead of the
    * batch's groups, as a callee frame's read nodes are. A read at one of them is the caller's; absent, a read beside
    * the batch is refused.
@@ -224,6 +260,14 @@ export interface HopEntryWritesRequest {
    * its collection's empty head by the collection.
    */
   readonly nodeIdOf?: (collection: string, slot: Uint8Array) => string;
+  /**
+   * The elements each of the entry's own dynamic writes appends, which a key the write then reads counts from.
+   *
+   * A body that appends to a dynamic value and keys a write by the written length (`m[this.items.length - 1]`) reads
+   * the value it wrote. `hopEntryWrites` states those counts from the artifact's own append facts, so a caller
+   * states them only when it knows something the artifact does not.
+   */
+  readonly stateLengthDeltas?: Readonly<Record<string, bigint>>;
 }
 
 /** The live deployment a call's hop reads its writes against, from the deployment's own classification. */
@@ -236,6 +280,25 @@ export interface HopLiveDeployment {
   readonly chunks: readonly Utxo[];
   /** Each sorted collection's own node UTXOs, keyed by collection name. */
   readonly nodesByCollection: ReadonlyMap<string, readonly Utxo[]>;
+  /**
+   * The nodes an earlier frame of this hop created in the transaction being planned, by collection and slot.
+   *
+   * The deployment does not hold a node another frame of the same hop created, and no input carries it: a write
+   * over one continues the view that frame left, and the record the frame declares names that frame's output
+   * rather than an input, so the two declarations chain through the one output the transaction carries.
+   */
+  readonly continuedNodes?: readonly {
+    readonly collection: string;
+    readonly slot: Uint8Array;
+    readonly commitment: Uint8Array;
+    /**
+     * The whole value that frame left the node with, for a collection whose values chunk.
+     *
+     * A chunking value's bytes live past the node's head in chunk records the creating frame's own outputs carry,
+     * so they are not in the deployment: a reach that appends to the value continues from these bytes.
+     */
+    readonly value?: Uint8Array;
+  }[];
   /**
    * The deployment's own state, decoded through the layout the frame's declaration names.
    *
@@ -252,6 +315,13 @@ export interface HopEntryWritesContext {
   readonly proxyMasterIndex: number;
   /** The first trailing output index past the events, where a created node sits. */
   readonly createdBase: number;
+  /**
+   * The output a continued node was created at by the frame before this one, by slot.
+   *
+   * A node this transaction spends no input for has only that output to name it by, so a frame that writes one
+   * declares it there and continues the view the creating frame left.
+   */
+  readonly continuedOutputOf?: (slot: Uint8Array) => number | undefined;
   readonly recordAmount: bigint;
   readonly category: Uint8Array;
   /** The end commitment learned for each value-dependent node, in `learningCandidates` order. */
@@ -264,6 +334,22 @@ export interface LaidHopEntryWrites {
   readonly inputs: Readonly<Record<string, DraftInput>>;
   readonly trailingOutputs: readonly DraftSourceOutput[];
   readonly createdOutputs: readonly number[];
+  /**
+   * The nodes this frame created, with the output each sits at, by slot.
+   *
+   * A frame placed after this one writes a node this frame created by naming that output: it spends no input for
+   * it, so the output is the only coordinate it can carry the declaration at.
+   */
+  readonly createdNodes: readonly { readonly slot: Uint8Array; readonly out: number }[];
+  /**
+   * The nodes whose end view this frame's own settlement stated, by slot.
+   *
+   * A frame's write whose value its body computes closes against the view the plan stated there, and the settle
+   * hands the value the body computed back; a frame that leaves such a node alone never closes it, so it never
+   * appears here. The two are otherwise indistinguishable in a plan - both state the same starting view - so this
+   * is what tells a frame that rewrote a node from one that only held it.
+   */
+  readonly learnedSlots: readonly Uint8Array[];
   /** The long value each value-witness slot reads, in slot order, where the body reads one from its frame. */
   readonly values?: readonly Uint8Array[];
 }
@@ -297,6 +383,27 @@ export interface HopEntryWrites {
   /** The placeholder each value-dependent record's declaration starts from, in learning order. */
   readonly learningCandidates: readonly Uint8Array[];
   /**
+   * The slot order the learned views are indexed by, one per `learningCandidates` entry.
+   *
+   * A settle learns an end commitment for each value-dependent node in the order the frame's records declare them,
+   * so a caller holding those views can find the one belonging to a node it has by that node's slot.
+   */
+  readonly learningSlotOrder: readonly Uint8Array[];
+  /**
+   * Every node this entry's writes produce, with the view the write leaves it at.
+   *
+   * A frame that runs later in the same hop plans against the deployment, which does not hold what this entry wrote:
+   * these are what it continues a write over the same node from, and what it names a node this entry created by.
+   */
+  readonly writtenNodes: readonly {
+    readonly collection: string;
+    readonly slot: Uint8Array;
+    readonly commitment: Uint8Array;
+    readonly existed: boolean;
+    /** The whole value the write left a chunking node with, which a later reach's append continues from. */
+    readonly value?: Uint8Array;
+  }[];
+  /**
    * The live UTXO each participant the entry spends sits on, keyed by its id.
    *
    * A node's id names its own slot or its collection's empty head, which the deployment's classification already
@@ -310,7 +417,14 @@ export interface HopEntryWrites {
    * It is what a refusal names: a run laid at a width the body's own pin does not close at is a run whose record
    * declared a length the body did not write.
    */
-  readonly sizedRun?: { readonly variable: string; readonly chunks: number };
+  readonly sizedRun?: { readonly variable: string; readonly chunks: number; readonly from: 'record' | 'growth' };
+  /**
+   * True when a chunkable write's value is the body's to compute, so its run's width is unknown until learned.
+   *
+   * The body's own value pin stops on the chunk count it computed, and the value and digest it holds sit on the
+   * stack there, so the caller learns the value from that close and re-plans this write from it.
+   */
+  readonly awaitsValue?: boolean;
   lay(context: HopEntryWritesContext): LaidHopEntryWrites;
 }
 
@@ -370,6 +484,28 @@ function coerceFieldValue(argument: FunctionArgument, fieldType: string): unknow
   return undefined;
 }
 
+/**
+ * A supplied argument, in the raw form the type the entry declares for it encodes.
+ *
+ * The hop's call data carries each argument as the caller supplied it — an ethers `bytesN` is a `0x`-prefixed hex
+ * string and an address is often a cashaddr — while a value the frame stores is the pushdata encoding of the
+ * field's own bytes. Every argument a source forwards is therefore read through its declared type, arrays element
+ * by element, exactly as the whole-value path reads a parameter.
+ */
+function declaredArgumentValue(
+  value: FunctionArgument | undefined,
+  declaredType: string | undefined,
+): FunctionArgument | undefined {
+  if (value === undefined || declaredType === undefined) return value;
+  if (Array.isArray(value)) {
+    const element = parseArrayTypeString(declaredType)?.elementType;
+    if (element === undefined) return value;
+    return value.map((item) => declaredArgumentValue(item as FunctionArgument, element) ?? item) as FunctionArgument;
+  }
+  if (typeof value !== 'string') return value;
+  return (coerceFieldValue(value, declaredType) as FunctionArgument | undefined) ?? value;
+}
+
 /** One literal label's value, in the raw form the field's declared type encodes. */
 function literalFieldValue(text: string, fieldType: string): unknown {
   if (text === 'true') return true;
@@ -406,6 +542,10 @@ function fieldValue(label: string, fieldType: string, context: ValueResolutionCo
     const visible = visibleInputs(context.fn);
     const index = visible.findIndex((input) => input.name === bound[1]);
     if (index < 0 || index >= context.args.length) return undefined;
+    // The argument is read through the type the entry declares for it, arrays element by element: a field the source
+    // forwards from an array parameter carries its elements' own form, which the field's type alone cannot give.
+    const declaredType = visible[index]!.type;
+    if (declaredType !== undefined) return declaredArgumentValue(context.args[index]!, declaredType);
     return coerceFieldValue(context.args[index]!, fieldType);
   }
   const literal = label.match(/^lit:(.+)$/);
@@ -435,7 +575,6 @@ function fieldValue(label: string, fieldType: string, context: ValueResolutionCo
     ? evalComputedKey(label, [...context.args], visibleInputs(context.fn), undefined, undefined)
     : undefined;
 }
-
 
 /** A field label read as a number, for the arithmetic a struct source states over its own fields. */
 function numericFieldValue(label: string, context: ValueResolutionContext): bigint | undefined {
@@ -739,7 +878,9 @@ function resolveHopKey(
   // A key that names the frame's own caller is that caller's lock, whichever way the artifact serialized it: an
   // imported interface publishes `msg.sender` as an expression label rather than as the `msgSender` kind.
   if (label !== undefined && CALLER_VALUE_LABELS.has(label)) return request.callerLockingBytecode;
-  const evaluated = evalComputedKey(label, args, visible, request.liveDeployment?.state, undefined);
+  const evaluated = evalComputedKey(
+    label, args, visible, request.liveDeployment?.state, request.stateLengthDeltas,
+  );
   if (evaluated !== undefined) return evaluated;
   const byName = encodedArgument(fn, args, label ?? '', structs);
   if (byName !== undefined) return byName;
@@ -779,6 +920,7 @@ function planHopLoopBatch(
       args: request.args ?? [],
       callerLockingBytecode: request.callerLockingBytecode,
       ...(request.liveDeployment?.state === undefined ? {} : { state: request.liveDeployment.state }),
+      ...(request.stateLengthDeltas === undefined ? {} : { stateLengthDeltas: request.stateLengthDeltas }),
     });
   } catch {
     // The call path refuses the shape by its own name; the hop's own refusal below names what this module plans.
@@ -837,6 +979,7 @@ function planHopCollectionBatch(
     ...(request.liveDeployment === undefined ? {} : { liveDeployment: request.liveDeployment }),
   };
 
+  let unstatedValue = false;
   const writes = targets.map(({ access, keys, value }) => {
     if (keyTypes.length !== access.keyParams.length) {
       throw new PerCallProxyDeployError(
@@ -864,22 +1007,29 @@ function planHopCollectionBatch(
       return { keys: [...keys], value: new Uint8Array(0) };
     }
     // A chunkable collection's node tail states the value's byte length, so its run has to be sized from the value
-    // itself: a value the artifact's source does not determine is refused by name rather than sized approximately.
-    // A value the source does determine is stated outright, and a value past the inline limit also takes the run of
-    // chunk records.
+    // itself. A value the source does determine is stated outright; a value the artifact's source does not
+    // determine is the body's to compute, so the first plan lays one record and the value is learned from the close
+    // the body's own chunk pin stops at, then the write is re-planned from it. A caller that states no learned value
+    // leaves the run unstated, which is what lets the first plan reach that close.
     if (chunkable) {
       // A whole value the artifact states is stated outright; a push that states only its element is joined with
       // the node's live value, because the run of chunk records its length names has to be planned before the body
-      // runs. Anything else is refused by name rather than sized by guessing.
+      // runs. Anything else is the body's value, learned from its close.
       const raw = resolveWriteValue(resolution, access)
         ?? resolveAppendedMappingValue(request, resolution, collection, access, keys);
-      if (raw === undefined) {
-        throw new PerCallProxyDeployError(
-          `the implementation's "${request.functionName}" entry writes mapping "${access.collection}" a value whose `
-          + 'source the artifact does not publish, so this hop cannot tell whether the write needs value chunks',
-        );
+      if (raw !== undefined) return { keys: [...keys], value: raw };
+      const learned = request.learnedValue;
+      if (learned !== undefined) {
+        // Fail closed: bytes the close exposed are only the value when they decode as the collection's own type.
+        try {
+          decodePushdataValue(learned, 0, collection.valueType, structs);
+          return { keys: [...keys], value: learned };
+        } catch {
+          // Not this collection's value, so it is not the value this write computed; leave the run unstated.
+        }
       }
-      return { keys: [...keys], value: raw };
+      unstatedValue = true;
+      return { keys: [...keys], value: new Uint8Array(1) };
     }
     // The value is the body's to compute, so a one-byte placeholder fixes only the plan's structure: the slots, the
     // successor links and which targets are inserts. Every commitment that depends on the value is left unstated
@@ -896,7 +1046,16 @@ function planHopCollectionBatch(
       .filter((access, index, all) => all.indexOf(access) === index)) {
       if (access.slotIndex === undefined || !access.operations.includes('read')) continue;
       const keys = access.keyParams.map((_param, index) => resolveHopKey(request, fn, access, index));
-      const node = liveNode(collection, keyToSlotMulti([...keys]), request.liveDeployment);
+      const slot = keyToSlotMulti([...keys]);
+      // A node an earlier frame of this hop created carries its value in the frame's own plan: the deployment holds
+      // neither its commitment nor its chunks, so the bytes the read materializes are the ones that frame left.
+      const continued = (request.liveDeployment.continuedNodes ?? []).find((node) =>
+        node.collection === collection.name && bytesEqual(node.slot, slot));
+      if (continued !== undefined) {
+        if (continued.value !== undefined) valueWitnesses.set(access.slotIndex, continued.value);
+        continue;
+      }
+      const node = liveNode(collection, slot, request.liveDeployment);
       const commitment = node?.token?.nft?.commitment;
       if (commitment === undefined) continue;
       const value = joinedNodeValue(collection, new Uint8Array(hexToBin(commitment)), request.liveDeployment);
@@ -911,6 +1070,12 @@ function planHopCollectionBatch(
   }
 
   const collectionNodes = request.liveDeployment?.nodesByCollection.get(collection.name) ?? [];
+  // A node an earlier frame of this hop created in this transaction: the list holds it, and only the frame that
+  // wrote it has an output to name it by, so it is held here rather than spent.
+  const continuedBySlot = new Map<string, Uint8Array>();
+  for (const node of request.liveDeployment?.continuedNodes ?? []) {
+    if (node.collection === collection.name) continuedBySlot.set(bytesToHex(node.slot), node.commitment);
+  }
   const inventory: Uint8Array[] = [];
   const utxoBySlot = new Map<string, Utxo>();
   // The empty list's head sentinel is what a first write splices through. A deployment's own first hop runs before
@@ -940,11 +1105,19 @@ function planHopCollectionBatch(
       + 'deployment was deployed without it',
     );
   }
+  for (const commitment of continuedBySlot.values()) inventory.push(commitment);
   const plan = planMappingBatch({
     writes, inventory,
     encodeValue: chunkable ? encodeChunkableValueTail : (encoded: Uint8Array) => encoded,
     ...(chunkable ? { chunkable: (value: Uint8Array) => value } : {}),
+    ...(continuedBySlot.size === 0 ? {} : { continuedSlots: new Set(continuedBySlot.keys()) }),
   });
+  // A chunking collection's nodes carry the whole value, which a reach that appends to one of them continues from:
+  // the raw bytes are the write's own value, since the plan's value here is already that form.
+  const rawValues = new Map<string, Uint8Array>();
+  if (chunkable) {
+    for (const write of writes) rawValues.set(bytesToHex(keyToSlotMulti([...write.keys])), write.value);
+  }
 
   // A node the batch creates, and a target it rewrites, carry the value the body computed; a node it only relinks
   // keeps its own value, so its end view is stated by the planner.
@@ -974,10 +1147,13 @@ function planHopCollectionBatch(
   const writeTargets = plan.groups.map((group): ReachWriteTarget => ({
     collection: collection.name,
     slot: group.slot,
-    ...(group.existed ? {} : { predecessor: group.records[0]!.slot }),
+    ...(group.existed
+      ? (group.records[0]?.continued === true ? { continued: true } : {})
+      : { predecessor: group.records[0]!.slot }),
   }));
   const headCommitment = headSentinelCommitment();
-  const spent = plan.written.filter((node) => node.existed).map((node) => ({
+  const spent = plan.written
+    .filter((node) => node.existed && !continuedBySlot.has(bytesToHex(node.slot))).map((node) => ({
     slot: node.slot,
     before: node.before,
     // The empty head sentinel is named by its collection; any other spent node is named by its own slot, unless the
@@ -993,8 +1169,12 @@ function planHopCollectionBatch(
     ...(loop === undefined ? {} : { loopWritten: true }),
     spent,
     targets: writeTargets,
+    ...(plan.written.some((node) => node.existed && continuedBySlot.has(bytesToHex(node.slot)))
+      ? { continued: true } : {}),
     learningSlots,
     learningCandidates,
+    ...(unstatedValue ? { unstatedValue: true } : {}),
+    rawValues,
     utxoBySlot,
     valueWitnesses,
   };
@@ -1047,6 +1227,8 @@ interface HopDynamicRun {
   readonly spent: readonly { readonly id: string; readonly utxo: Utxo }[];
   /** The run's width, when the record's own declared length fixed it rather than a stated element. */
   readonly declaredChunks?: number;
+  /** Which fact fixed `declaredChunks`: the record's own declaration, or the growth the entry publishes. */
+  readonly sizedFrom?: 'record' | 'growth';
 }
 
 /** The participant id a hop's block holds for one chunk of a dynamic value's run. */
@@ -1170,6 +1352,11 @@ function liveNodeValue(
 ): Uint8Array | undefined {
   const deployment = request.liveDeployment;
   if (deployment === undefined) return new Uint8Array(0);
+  // A node an earlier frame of this hop created: the deployment holds no chunks for it, and that frame's own plan
+  // is what carries the value it left, so an append continues from those bytes rather than the deployment's.
+  const continued = (deployment.continuedNodes ?? []).find((candidate) =>
+    candidate.collection === collection.name && bytesEqual(candidate.slot, slot));
+  if (continued !== undefined) return continued.value;
   const node = liveNode(collection, slot, deployment);
   const commitment = node?.token?.nft?.commitment;
   if (node === undefined || commitment === undefined) return new Uint8Array(0);
@@ -1220,8 +1407,14 @@ function resolveAppendedMappingValue(
 function appendedElement(resolved: FunctionArgument, elementType: string): StateValue | undefined {
   // A literal or forwarded string is the only resolved form whose encoding depends on the element type: a string
   // element stays the text, an address element is its locking bytecode, and a bytes element is its bytes.
-  if (typeof resolved !== 'string') return resolved as StateValue;
-  return coerceFieldValue(resolved, elementType) as StateValue | undefined;
+  if (typeof resolved === 'string') return coerceFieldValue(resolved, elementType) as StateValue | undefined;
+  if (Array.isArray(resolved)) {
+    const element = parseArrayTypeString(elementType)?.elementType;
+    if (element !== undefined) {
+      return resolved.map((item) => appendedElement(item as FunctionArgument, element) ?? item) as StateValue;
+    }
+  }
+  return resolved as StateValue;
 }
 
 /**
@@ -1248,11 +1441,12 @@ function resolveAppendedElement(
       sources?.map((entry): FunctionArgument | undefined => {
         if (entry.kind === 'msgSender') return request.callerLockingBytecode;
         if (entry.kind === 'forward') {
-          return entry.paramIndex === undefined ? undefined : args[entry.paramIndex];
+          if (entry.paramIndex === undefined) return undefined;
+          return declaredArgumentValue(args[entry.paramIndex], visible[entry.paramIndex]?.type);
         }
         if (entry.kind === 'constructorArg') {
           const index = visible.findIndex((input) => input.name === entry.paramName);
-          return index < 0 ? undefined : args[index];
+          return index < 0 ? undefined : declaredArgumentValue(args[index], visible[index]?.type);
         }
         if (entry.kind === 'literal') {
           if (entry.type === 'bool') return entry.value === 'true';
@@ -1268,6 +1462,7 @@ function resolveAppendedElement(
   };
   const resolved = evaluateExternalExpression(
     host, source, args, request.artifact, stateValues as Record<string, unknown> | undefined, visible,
+    undefined, 0, false, undefined, undefined, request.stateLengthDeltas,
   );
   return resolved === undefined ? undefined : appendedElement(resolved, elementType);
 }
@@ -1282,11 +1477,15 @@ function resolveAppendedElement(
  * body's own value from its close.
  *
  * What the hop must state is the run's width, because a run laid out at the wrong width is not one the body
- * addresses. Two facts can fix it, and the hop takes whichever the entry has:
+ * addresses. Three facts can fix it, and the hop takes whichever the entry has:
  *
  *   - the append's element, which the artifact publishes under the pushed variable's name when the body's own
  *     fields are all values its vocabulary can state, added to the value the deployment holds;
- *   - the record's own declaration, when the element is unstated: the body writes the value's byte length into the
+ *   - the growth the entry's own write publishes (`dynamicWriteGrowth`), when the element is unstated: the number
+ *     of elements the write appends - a bare `push()` grows the run by one, and a push inside a run-time loop by
+ *     the loop's own width - added to the live value. The elements' bytes are what the body computed, so each
+ *     created chunk's commitment is learned from the body's close exactly as a stated element's run is;
+ *   - the record's own declaration, when neither is stated: the body writes the value's byte length into the
  *     record and closes against the declaration the plan states, so the length that record is asked to carry names
  *     the run's chunks. The declaration is read from `writtenCommitments`, which the caller re-states from the
  *     body's own close, so the run is planned at the width the body wrote rather than at the empty one it started
@@ -1319,11 +1518,13 @@ function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | unde
   }
   const elementType = parseArrayTypeString(declared.type)?.elementType;
   const source = fn.dynamicWriteSources?.[variable];
+  const growth = fn.dynamicWriteGrowth?.[variable];
   const structs = request.artifact.structs ?? layout?.structs;
   // The element the append writes, when the artifact publishes one. The run's width is the live value's length
-  // plus that element, so a stated element sizes it without the body's help.
+  // plus that element, so a stated element sizes it without the body's help. A field the artifact publishes as a
+  // read of the deployment's own state - the machine's clock register - resolves against that state.
   const element = elementType === undefined || source === undefined
-    ? undefined : resolveAppendedElement(request, fn, source, elementType);
+    ? undefined : resolveAppendedElement(request, fn, source, elementType, liveStateValues(request));
   const live = request.liveDeployment === undefined ? undefined
     : liveDynamicValue(request.liveDeployment, layout!, variable, declared.type, declared.nftIndex);
   const spent = live?.value ?? new Uint8Array(0);
@@ -1344,28 +1545,18 @@ function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | unde
     return { variable, type: declared.type, plan, spent: spentParticipants };
   }
 
-  // The element is unstated, so the record's own declaration is what names the run's width. A caller that states
-  // the record's commitments is a call reconstructing the plan from what the body closed against; a caller that
-  // does not is the deployment path, which has no such close to read and refuses by name.
-  const length = declaredRunLength(request, declared.name, declared.nftIndex);
-  if (length !== undefined) {
-    const width = chunkCountForLength(length);
-    if (width < spentChunks.length) {
-      throw new PerCallProxyDeployError(
-        `the implementation's "${request.functionName}" entry writes dynamic "${variable}" ${length} byte(s), which `
-        + `is ${width} chunk(s), fewer than the ${spentChunks.length} chunk(s) the deployment holds`,
-      );
-    }
-    const plan: ChunkRunPlan = {
-      variable,
-      type: declared.type,
-      spent: { header: new Uint8Array(0), chunks: spentChunks },
-      written: {
-        header: new Uint8Array(0),
-        chunks: Array.from({ length: width }, (_unused, index) => runChunkCandidate(variable, index)),
-      },
-    };
-    return { variable, type: declared.type, plan, spent: spentParticipants, declaredChunks: width };
+  // The element is unstated, but the artifact states how many elements the write appends, so the run's width is
+  // at least the live value grown by those elements. When the element type packs at a fixed stride that bound is
+  // exact; otherwise the body's own close names the exact width, and the bound is what lets the first plan reach
+  // that close instead of laying a run the body's own coordinate cannot read.
+  const recordLength = declaredRunLength(request, declared.name, declared.nftIndex);
+  const growthFloor = source === undefined && growth !== undefined
+    ? dynamicGrowthFloorLength(request, fn, growth, declared, spent, structs) : undefined;
+  if (recordLength !== undefined || growthFloor !== undefined) {
+    const length = Math.max(recordLength ?? 0, growthFloor ?? 0);
+    return sizedDynamicRun(request, variable, declared.type, length, spentChunks, spentParticipants,
+      growthFloor !== undefined && (recordLength === undefined || growthFloor > recordLength)
+        ? 'growth' : 'record');
   }
   if (elementType === undefined || source === undefined) {
     throw new PerCallProxyDeployError(
@@ -1379,6 +1570,117 @@ function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | unde
     + 'element the artifact publishes a source for but the hop\'s call data does not determine, so the run of '
     + 'chunk records its write creates cannot be sized',
   );
+}
+
+/**
+ * Lays a dynamic run at the width a stated byte length fixes, learning no chunk's commitment here.
+ *
+ * The width is all the hop can state: every chunk's bytes are what the body computed, so each declaration starts
+ * from a candidate, and the derivation learns the body's own value from its close exactly as it does for a stated
+ * element's run. `sizedFrom` names which fact fixed the width, so a refusal can say whether the record's own
+ * declaration sized it or the growth the entry publishes.
+ */
+function sizedDynamicRun(
+  request: HopEntryWritesRequest,
+  variable: string,
+  type: string,
+  length: number,
+  spentChunks: readonly Uint8Array[],
+  spent: HopDynamicRun['spent'],
+  sizedFrom: 'record' | 'growth',
+): HopDynamicRun {
+  const width = chunkCountForLength(length);
+  if (width < spentChunks.length) {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${request.functionName}" entry writes dynamic "${variable}" ${length} byte(s), which `
+      + `is ${width} chunk(s), fewer than the ${spentChunks.length} chunk(s) the deployment holds`,
+    );
+  }
+  const plan: ChunkRunPlan = {
+    variable,
+    type,
+    spent: { header: new Uint8Array(0), chunks: [...spentChunks] },
+    written: {
+      header: new Uint8Array(0),
+      chunks: Array.from({ length: width }, (_unused, index) => runChunkCandidate(variable, index)),
+    },
+  };
+  return { variable, type, plan, spent, declaredChunks: width, sizedFrom };
+}
+
+/**
+ * A lower bound on the byte length a dynamic write leaves, from the growth the entry publishes, or `undefined` when
+ * nothing usable about the run's width follows.
+ *
+ * The elements the write appends grow the value by their own encoded length, and every appended element is framed
+ * in at least one byte, so the live value's length plus the number of appended elements is a bound the run cannot
+ * be narrower than. A packed element type - a built-in fixed-width element such as `uint` or `bytes32`, whose
+ * elements sit at a constant stride - makes the bound exact, so the run settles from it alone. A framed element
+ * type - a struct whose fields encode at their own length, a `string`, an unbounded `bytes` - leaves the exact
+ * width to the body's own close: a call re-takes its plan from that close, so the bound is what lets the first plan
+ * reach it rather than laying an empty run the body's own record coordinate cannot read, while a hop that states
+ * its run once (a deployment's own first hop) has no such close to read and gets nothing.
+ */
+function dynamicGrowthFloorLength(
+  request: HopEntryWritesRequest,
+  fn: AbiFunction,
+  growth: DynamicWriteGrowthAbi,
+  declared: NonNullable<Artifact['stateLayout']>['variables'][number],
+  spent: Uint8Array,
+  structs: Artifact['structs'],
+): number | undefined {
+  const elements = growthElementCount(request, fn, growth, declared.name);
+  const elementType = parseArrayTypeString(declared.type)?.elementType;
+  if (elementType === undefined || !isFixedWidthType(elementType)) {
+    return request.liveDeployment === undefined ? undefined : spent.length + elements;
+  }
+  const liveCount = spent.length === 0 ? 0
+    : arrayLengthOf(decodePushdataValue(spent, 0, declared.type, structs).value);
+  const count = liveCount + elements;
+  const stride = fixedWidthBytes(elementType);
+  return encodePushdataValue(BigInt(count), 'bigint').length + count * stride;
+}
+
+/** The element count of a decoded array value; a value that does not decode as one counts no elements. */
+function arrayLengthOf(value: StateValue): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+/**
+ * The number of elements a write appends, from the growth the entry publishes.
+ *
+ * A straight-line write appends the published count outright. A write inside a run-time loop appends the published
+ * count once per turn, and the turns are the length of the call's own array when the artifact pinned the loop to
+ * one; a loop the artifact could not pin, or a call whose data does not carry that array, is refused by name
+ * rather than guessed at.
+ */
+function growthElementCount(
+  request: HopEntryWritesRequest,
+  fn: AbiFunction,
+  growth: DynamicWriteGrowthAbi,
+  variable: string,
+): number {
+  if (growth.varyingArrayParam !== undefined) {
+    const visible = visibleInputs(fn);
+    const index = visible.findIndex((input) => input.name === growth.varyingArrayParam);
+    const array = index < 0 ? undefined : request.args?.[index];
+    if (!Array.isArray(array)) {
+      throw new PerCallProxyDeployError(
+        `the implementation's "${request.functionName}" entry appends to dynamic "${variable}" once per turn of a `
+        + `run-time loop over "${growth.varyingArrayParam}", whose length this hop's call data does not carry, so `
+        + 'the run of chunk records its write creates cannot be sized',
+      );
+    }
+    return array.length * growth.elements;
+  }
+  if (growth.looping === true) {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${request.functionName}" entry appends to dynamic "${variable}" inside a run-time `
+      + 'loop whose width the artifact does not pin to a call parameter, so the run of chunk records its write '
+      + 'creates cannot be sized',
+    );
+  }
+  return growth.elements;
 }
 
 /**
@@ -1490,8 +1792,56 @@ function layReadRuns(
   return { entries, inputs };
 }
 
+/**
+ * The elements each of the entry's own dynamic writes appends, from the artifact's own append facts.
+ *
+ * A body that appends to a dynamic value and keys a write by the written length reads the value it wrote, so the
+ * hop counts those keys from the live length plus the elements the append adds. The artifact states the elements: a
+ * push of a published element appends one, and a write that publishes only its growth appends that many per turn —
+ * once for a straight-line write, and once per element of the array a loop walks. A growth whose trip count the
+ * artifact does not pin to a call parameter states nothing, so such a key is left at the live length rather than
+ * counted from a guess.
+ */
+function appendDeltas(
+  request: HopEntryWritesRequest,
+  fn: AbiFunction,
+): Readonly<Record<string, bigint>> | undefined {
+  const variables = fn.dynamicWrites ?? [];
+  if (variables.length === 0) return undefined;
+  const args = [...(request.args ?? [])];
+  const visible = visibleInputs(fn);
+  const deltas: Record<string, bigint> = {};
+  for (const variable of variables) {
+    const growth = fn.dynamicWriteGrowth?.[variable];
+    if (growth === undefined) {
+      if (fn.dynamicWriteSources?.[variable] !== undefined) deltas[variable] = 1n;
+      continue;
+    }
+    if (growth.looping === true) continue;
+    const perTurn = BigInt(growth.elements);
+    if (growth.varyingArrayParam === undefined) {
+      deltas[variable] = perTurn;
+      continue;
+    }
+    const index = visible.findIndex((input) => input.name === growth.varyingArrayParam);
+    const array = index < 0 ? undefined : args[index];
+    if (Array.isArray(array)) deltas[variable] = perTurn * BigInt(array.length);
+  }
+  return Object.keys(deltas).length === 0 ? undefined : deltas;
+}
+
+/** The request with the elements its own dynamic writes append, unless the caller already stated them. */
+function withAppendDeltas(request: HopEntryWritesRequest): HopEntryWritesRequest {
+  if (request.stateLengthDeltas !== undefined) return request;
+  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
+  if (fn === undefined) return request;
+  const deltas = appendDeltas(request, fn);
+  return deltas === undefined ? request : { ...request, stateLengthDeltas: deltas };
+}
+
 /** Plans the entry's own writes, with the ids the plan places. */
-export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites | undefined {
+export function hopEntryWrites(rawRequest: HopEntryWritesRequest): HopEntryWrites | undefined {
+  const request = withAppendDeltas(rawRequest);
   const batches = planHopMappingBatches(request);
   const dynamic = planHopDynamicRun(request);
   // A read-only run is declared only beside no mapping write: a verified batch's body holds the records past its
@@ -1518,6 +1868,16 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
   for (const chunk of dynamic?.spent ?? []) spentUtxos.set(chunk.id, chunk.utxo);
   const readRunIds = reads.flatMap((run) => run.chunks.map((chunk) => chunk.id));
   for (const chunk of reads.flatMap((run) => run.chunks)) spentUtxos.set(chunk.id, chunk.utxo);
+  if (hopTraceOn() && (batches.length > 0 || dynamic !== undefined || reads.length > 0)) {
+    hopTrace(`writes ${request.functionName} batch=${batches.map((batch) => (
+      `${batch.collection}${batch.loopWritten === true ? '(loop)' : ''}:`
+      + `${batch.spent.length}spent/${batch.plan.written.length}written`)).join(',')} `
+      + `dyn=${dynamic === undefined ? 'none' : `${dynamic.variable}:${dynamic.plan.spent.chunks.length}spent/`
+        + `${dynamic.plan.written.chunks.length}written${dynamic.declaredChunks === undefined ? '' : 'sz'}`
+        + (dynamic.declaredChunks === undefined ? ''
+          : `(${dynamic.declaredChunks}${dynamic.sizedFrom === 'growth' ? 'g' : ''})`)} `
+      + `reads=${reads.map((run) => `${run.variable}:${run.chunks.length}`).join(',')}`);
+  }
   return {
     ...(batches[0] === undefined ? {} : { collection: batches[0].collection, signature: batches[0].signature }),
     participantIds: [
@@ -1532,14 +1892,32 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
         .find((candidate) => candidate.name === batch.collection)?.chunkableValue === true,
       targets: batch.targets,
       spentIds: batch.spent.map((node) => node.id),
+      ...(batch.continued === true ? { continued: true } : {}),
     })),
     learningCandidates: [
       ...batches.flatMap((batch) => batch.learningCandidates),
       ...(dynamic?.plan.written.chunks ?? []),
     ],
+    // The batch entries come first in the learned views, so a lookup by a batch node's slot is exact with only
+    // them; a dynamic run's chunks follow and are not looked up by slot.
+    learningSlotOrder: batches.flatMap((batch) => batch.learningSlots),
+    writtenNodes: batches.flatMap((batch) => batch.plan.written.map((node) => ({
+      collection: batch.collection, slot: node.slot, commitment: node.after, existed: node.existed,
+      // A chunking value's bytes are what a later append joins its element onto, and the plan's own value is the
+      // whole array it wrote: it is not reassemblable from the deployment once an earlier frame wrote it.
+      ...(batch.rawValues.has(bytesToHex(node.slot))
+        ? { value: batch.rawValues.get(bytesToHex(node.slot))! } : {}),
+    }))),
     spentUtxos,
+    ...(batches.some((batch) => batch.unstatedValue === true) ? { awaitsValue: true } : {}),
     ...(dynamic?.declaredChunks === undefined
-      ? {} : { sizedRun: { variable: dynamic.variable, chunks: dynamic.declaredChunks } }),
+      ? {} : {
+        sizedRun: {
+          variable: dynamic.variable,
+          chunks: dynamic.declaredChunks,
+          from: dynamic.sizedFrom ?? 'record',
+        },
+      }),
     // A body that writes one collection is laid out exactly as the shipped planner computes it, dynamic run beside
     // its batch. A body that writes several lays each batch's records at its own place in the created region.
     lay: (context: HopEntryWritesContext): LaidHopEntryWrites => (batches.length <= 1
@@ -1578,6 +1956,7 @@ function layEntryWrites(
   const dynamicEntries: RecordEntry[] = [];
   const dynamicOutputs: DraftSourceOutput[] = [];
   const dynamicInputs: Record<string, DraftInput> = {};
+  const learnedSlots: Uint8Array[] = [];
   (dynamicLaid?.records ?? []).forEach((record, offset) => {
     const learned = context.learnedViews[dynamicBase + offset] ?? record.entry.viewOut;
     if (record.role !== 'kept') {
@@ -1618,18 +1997,31 @@ function layEntryWrites(
       inputs: { ...read.inputs, ...dynamicInputs },
       trailingOutputs: dynamicOutputs,
       createdOutputs: dynamicEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
+      createdNodes: [],
+      learnedSlots,
     };
   }
   const afterBySlot = new Map(plan.written.map((node) => [bytesToHex(node.slot), node.after]));
   const learnedBySlot = new Map<string, Uint8Array>();
   batch.learningSlots.forEach((slot, index) => {
     const learned = context.learnedViews[index];
-    if (learned !== undefined) learnedBySlot.set(bytesToHex(slot), learned);
+    if (learned !== undefined) {
+      learnedBySlot.set(bytesToHex(slot), learned);
+      learnedSlots.push(slot);
+    }
   });
   const placements = new Map<string, MappingNodePlacement>();
   for (const node of batch.spent) {
     const index = context.indexOf(node.id);
     placements.set(bytesToHex(node.slot), { in: index, out: index });
+  }
+  // A node an earlier frame of this hop created is named by that frame's output: this frame spends no input for it.
+  for (const node of plan.written) {
+    const key = bytesToHex(node.slot);
+    if (!node.existed || placements.has(key)) continue;
+    const out = context.continuedOutputOf?.(node.slot);
+    if (out === undefined) continue;
+    placements.set(key, { out });
   }
   created.forEach((node, position) => {
     placements.set(bytesToHex(node.slot), { out: context.createdBase + position });
@@ -1693,6 +2085,13 @@ function layEntryWrites(
       { length: Math.max(...batch.valueWitnesses.keys()) + 1 },
       (_unused, slot) => batch.valueWitnesses.get(slot) ?? new Uint8Array(0),
     );
+  if (hopTraceOn()) {
+    const laid = [...groupEntries, ...read.entries, ...dynamicEntries, ...valueChunkEntries];
+    hopTrace(`laid entries=[${laid.map((entry) => `${entry.in}/${entry.out}`
+      + `:${bytesToHex(entry.viewIn).slice(0, 12)}>${bytesToHex(entry.viewOut ?? new Uint8Array(0)).slice(0, 12)}`
+      + `:${(entry.viewIn ?? new Uint8Array(0)).length}`).join(' ')}] `
+      + `dynamicOut=[${dynamicEntries.map((entry) => entry.out).join(' ')}]`);
+  }
   return {
     entries: [...groupEntries, ...read.entries, ...dynamicEntries, ...valueChunkEntries],
     inputs,
@@ -1704,6 +2103,9 @@ function layEntryWrites(
       ...dynamicEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
       ...valueChunkEntries.map((entry) => entry.out),
     ],
+    // A batch's created nodes sit at the created region's own indices, in the order the segment declares them.
+    createdNodes: created.map((node, position) => ({ slot: node.slot, out: context.createdBase + position })),
+    learnedSlots,
     ...(valueSlots === undefined ? {} : { values: valueSlots }),
   };
 }
@@ -1724,6 +2126,8 @@ function layEntryWriteBatches(
   const inputs: Record<string, DraftInput> = {};
   const trailingOutputs: DraftSourceOutput[] = [];
   const createdOutputs: number[] = [];
+  const createdNodes: { slot: Uint8Array; out: number }[] = [];
+  const learnedSlots: Uint8Array[] = [];
   const valueSlots = new Map<number, Uint8Array>();
   let createdBase = context.createdBase;
   let learnedBase = 0;
@@ -1737,6 +2141,8 @@ function layEntryWriteBatches(
     Object.assign(inputs, laid.inputs);
     trailingOutputs.push(...laid.trailingOutputs);
     createdOutputs.push(...laid.createdOutputs);
+    createdNodes.push(...laid.createdNodes);
+    learnedSlots.push(...laid.learnedSlots);
     (laid.values ?? []).forEach((value, slot) => valueSlots.set(slot, value));
     learnedBase += batch.learningCandidates.length;
     createdBase += laid.trailingOutputs.length;
@@ -1746,5 +2152,6 @@ function layEntryWriteBatches(
       { length: Math.max(...valueSlots.keys()) + 1 },
       (_unused, slot) => valueSlots.get(slot) ?? new Uint8Array(0),
     );
-  return { entries, inputs, trailingOutputs, createdOutputs, ...(values === undefined ? {} : { values }) };
+  return { entries, inputs, trailingOutputs, createdOutputs, createdNodes, learnedSlots,
+    ...(values === undefined ? {} : { values }) };
 }

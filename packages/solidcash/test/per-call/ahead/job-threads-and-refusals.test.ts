@@ -5,7 +5,7 @@ import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
@@ -300,9 +300,6 @@ function lineOf(needle: string, after = 'pragma'): number {
   return lines.findIndex((line, index) => index >= start && line.includes(needle)) + 1;
 }
 
-/** Where the escrow's and the dispute contract's own refusals are reported: their entries' lines. */
-const REFUND_LINE = lineOf('function refund(', 'contract Vault');
-const CHALLENGE_LINE = lineOf('function challenge(', 'contract Panel');
 /** Where the allowlist update's failing read of the task array is reported: its own line or its modifier's. */
 const ALLOWED_READ_LINES = [lineOf('function setAllowed('), lineOf('"not creator"')];
 
@@ -449,10 +446,10 @@ function unnamedRefusalLine(outcome: Outcome, entry: string): number {
   return Number(line![1]);
 }
 
-/** The words a refusal of a callee frame carries. */
-function calleeRefusal(callee: string, master: string, line: number, reason: string): string {
-  return `the call's callee "${callee}()" did not settle through the proxy: frame "${master}" of ${callee}() at line `
-    + `${line}: ${reason} (Program failed an OP_VERIFY operation.)`;
+/** The words a callee's settle carries when it reports the root's own entry, stopped before the call. */
+function calleeSettleEntryRefusal(callee: string, entry: string, line: number, reason: string): string {
+  return `the call's callee "${callee}()" did not settle through the proxy: frame "implementation-master" of `
+    + `Desk.${entry}() at line ${line}: ${reason} (Program failed an OP_VERIFY operation.)`;
 }
 
 /** The published facts of one root entry: its call sites with their occurrence, its reads and its write facts. */
@@ -613,7 +610,20 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       calls: ['IJournal.publish@loop', 'IJournal.publish@loop'], reads: ['tasks'], writes: [], writeFacts: undefined,
     });
     // As `refuseArbitration` and `dispute`: the escrow and dispute calls are conditional, the task written last.
-    const lastWrites = [{ record: 1, segment: 'last' }, { variable: 'tasks', segment: 'last' }];
+    // The record write names the variable it rebuilt; the element write names the fields a whole-element
+    // construction copies back out of the element, which is what keeps a guarded read of one of them settled. The
+    // two bodies write different fields of the element, so they preserve different sets.
+    const lastWrites = [
+      { record: 1, segment: 'last', writtenVariables: ['tasks'] },
+      { variable: 'tasks', segment: 'last', preservedFields: ['gated', 'title', 'amount', 'owed'] },
+    ];
+    const disputeWrites = [
+      { record: 1, segment: 'last', writtenVariables: ['tasks'] },
+      {
+        variable: 'tasks', segment: 'last',
+        preservedFields: ['state', 'gated', 'roles', 'title', 'amount', 'owed', 'escrow'],
+      },
+    ];
     expect(publishedFacts('refuse')).toStrictEqual({
       calls: ['IJournal.refused@once', 'IJournal.publish@once', 'IVault.refund@conditional',
         'IJournal.publish@conditional'],
@@ -621,12 +631,17 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
     });
     expect(publishedFacts('dispute')).toStrictEqual({
       calls: ['IPanel.challenge@conditional', 'IJournal.publish@once'], reads: ['tasks'], writes: ['tasks'],
-      writeFacts: lastWrites,
+      writeFacts: disputeWrites,
     });
   });
 
   describe('beside an escrow and a dispute contract that hold no escrow', () => {
     let world: World;
+    /**
+     * The chain as it stands once the two `post` cases have run: task 0 open with its arbiter and the task the
+     * settling post appended, so every later entry that now settles starts from the same two tasks.
+     */
+    let pristine: SnapshotRestorer;
     it('setup: the store registrations, the task and its allowlist entry settle and broadcast', async () => {
       world = await deployWorld(0n);
     }, 600_000);
@@ -639,9 +654,9 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
         // transaction: the plan spends the node `grant` wrote for task 0, where the body pushes task 1 and writes
         // there. Owner: the SDK hop's loop plan (`proxy/entry-writes.ts`, `planHopLoopBatch`, keys from
         // `call/entry-records.ts`, `planCallLoopWrites`, over the live state).
-        const line = unnamedRefusalLine(outcome, 'post');
-        expect(line).toBeGreaterThanOrEqual(lineOf('function post('));
-        expect(line).toBeLessThan(lineOf('function open('));
+        // The failing instruction is the loop's own write: the plan keyed it at the task before the push, so the
+        // node the body reaches is one the frame does not declare.
+        expect(unnamedRefusalLine(outcome, 'post')).toBe(lineOf('this.allowlist[id][allowed[i]] = true;'));
         const draft = outcome.draft!;
         expect(draft.blockOf('implementation-master').calls.slice(0, 2).map((call) => binToHex(call.result)))
           .toStrictEqual(['51', '51']);
@@ -665,6 +680,7 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       expect(tasks).toHaveLength(2);
       expect([tasks[1]!.state, tasks[1]!.gated, tasks[1]!.title, tasks[1]!.amount])
         .toStrictEqual([0n, false, TITLE, 100n]);
+      pristine = await world.network.takeSnapshot();
     }, 300_000);
 
     it('a thread message from the creator (47) settles and the store posts its note', async () => {
@@ -725,74 +741,93 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       expect(outcome.draft).toBeUndefined();
     }, 300_000);
 
-    it('a refusal from a non-arbiter (64) reports the escrow\'s revert, not its own "not arbitrator"', async () => {
+    it('a refusal from a non-arbiter reports its own check, before the escrow call it never reaches', async () => {
       const outcome = await enter(world, 'Desk', 'refuse', [TASK], CREATOR);
-      // The two note reaches no longer stop the plan, so `refuse` meets `refuseOnce`'s wall: the refund arm is planned
-      // and settled first, and the escrow refuses escrow 0. Owner: the SDK hop (`proxy/external-calls.ts`,
-      // `occurrenceCountOf`; `deploy.ts`, `settleCallees` first).
-      expectRefused(outcome, calleeRefusal('Vault.refund', 'callee-master-5', REFUND_LINE, 'no escrow'));
-      expect(outcome.stalls).toStrictEqual([]);
-      expect(reportOf(outcome).refusals.find((refusal) => refusal.master === 'implementation-master')?.reason)
+      // The entry stops at its modifier's check before it makes any call, so its own reason surfaces even though the
+      // refund callee was settled first and refused escrow 0.
+      expectRefused(outcome, entryRefusal('refuse', lineOf('"not arbitrator"'), 'not arbitrator'));
+      // The entry's own frame is derived with the refund's verdict deferred, so the refusal carries that stall.
+      expect(outcome.stalls).toStrictEqual([
+        'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.refuse() filled no witness at '
+        + 'site 0 (call 0)',
+      ]);
+      const report = reportOf(outcome);
+      expect(report.innermost?.master).toBe('implementation-master');
+      expect(report.refusals.find((refusal) => refusal.master === 'implementation-master')?.reason)
         .toStrictEqual({ line: lineOf('"not arbitrator"'), message: 'not arbitrator' });
     }, 300_000);
 
-    it('the arbiter\'s refusal of an open task (64) reports the same', async () => {
-      // Owner: the SDK hop, as above.
+    it('the arbiter\'s refusal of an open task (64) settles, the escrow arm its state skips unplanned', async () => {
+      // `state` (0) is not 1, so `_refund`'s arm is decided skipped against the incoming state and neither the
+      // escrow call nor its note is planned; the entry clears its arbiter, which the refund callee no longer vetoes.
+      await pristine.restore();
       const outcome = await enter(world, 'Desk', 'refuse', [TASK], ARBITER);
-      expectRefused(outcome, calleeRefusal('Vault.refund', 'callee-master-5', REFUND_LINE, 'no escrow'));
-      expect(reportOf(outcome).innermost?.master).toBe('callee-master-5');
-    }, 300_000);
+      expectSettled(outcome);
+      expect((await tasksOf(world))[0]!.state).toBe(0n);
+    }, 600_000);
 
-    it('with the arm\'s note stepped around, a non-arbiter\'s refusal (64) reports the escrow\'s revert', async () => {
+    it('with the arm\'s note stepped around, a non-arbiter\'s refusal reports its own check', async () => {
       const outcome = await enter(world, 'Desk', 'refuseOnce', [TASK], CREATOR);
-      // The escrow call sits in an arm the execution skips, but its condition reads the array the entry rewrites,
-      // so the planner states it; the callees settle before the entry is derived, and the escrow refuses escrow 0.
-      // Owner: the SDK hop (`proxy/external-calls.ts`, `occurrenceCountOf`; `deploy.ts`, `settleCallees` first).
-      expectRefused(outcome, calleeRefusal('Vault.refund', 'callee-master-5', REFUND_LINE, 'no escrow'));
-      expect(outcome.stalls).toStrictEqual([]);
+      // The entry stops at its modifier's check before it makes any call, so its own reason surfaces even though the
+      // refund callee (in an arm the execution skips) was settled first and refused escrow 0.
+      expectRefused(outcome, entryRefusal('refuseOnce', lineOf('"not arbitrator"'), 'not arbitrator'));
+      // The entry's own frame is derived with the skipped arm's verdict deferred, so the refusal carries that stall.
+      expect(outcome.stalls).toStrictEqual([
+        'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.refuseOnce() filled no witness at '
+        + 'site 0 (call 0)',
+      ]);
+      expect(reportOf(outcome).innermost?.master).toBe('implementation-master');
     }, 300_000);
 
-    it('with the arm\'s note stepped around, the arbiter\'s refusal of an open task (64) reports the same', async () => {
-      // Owner: the SDK hop, as above.
-      const outcome = await enter(world, 'Desk', 'refuseOnce', [TASK], ARBITER);
-      expectRefused(outcome, calleeRefusal('Vault.refund', 'callee-master-5', REFUND_LINE, 'no escrow'));
-    }, 300_000);
+    it('with the arm\'s note stepped around, the arbiter\'s refusal of an open task (64) settles the same way',
+      async () => {
+        await pristine.restore();
+        expectSettled(await enter(world, 'Desk', 'refuseOnce', [TASK], ARBITER));
+      }, 600_000);
 
     it('closing the task settles', async () => {
+      await pristine.restore();
       const closed = expectSettled(await enter(world, 'Desk', 'close', [TASK], CREATOR));
       // An entry that also writes the array spends its chunk, which is the read the others are refused.
       expect(closed.draft.layout.participants.some((placed) => placed.id === 'dynamic-chunk-tasks-0')).toBe(true);
     }, 600_000);
 
-    it('the arbiter\'s refusal of a closed task (63) reports the escrow\'s revert', async () => {
+    it('the arbiter\'s refusal of a closed task reports its own check before the escrow call', async () => {
       const outcome = await enter(world, 'Desk', 'refuse', [TASK], ARBITER);
-      // Owner: the SDK hop, as above. The entry's own reason is in the report, below the callee's.
-      expectRefused(outcome, calleeRefusal('Vault.refund', 'callee-master-5', REFUND_LINE, 'no escrow'));
+      // The entry's check fails before the call, so its own reason surfaces even though the refund callee was
+      // settled first and refused escrow 0.
+      expectRefused(outcome,
+        entryRefusal('refuse', lineOf('"job in invalid state"', 'function refuse('), 'job in invalid state'));
       const report = reportOf(outcome);
-      expect(report.innermost?.master).toBe('callee-master-5');
+      expect(report.innermost?.master).toBe('implementation-master');
       expect(report.refusals.find((refusal) => refusal.master === 'implementation-master')?.reason).toStrictEqual({
         line: lineOf('"job in invalid state"', 'function refuse('), message: 'job in invalid state',
       });
     }, 300_000);
 
-    it('with the arm\'s note stepped around, the refusal of a closed task (63) reports the escrow\'s revert', async () => {
+    it('with the arm\'s note stepped around, the refusal of a closed task reports its own check', async () => {
       const outcome = await enter(world, 'Desk', 'refuseOnce', [TASK], ARBITER);
-      // Owner: the SDK hop, as above. The entry's own reason is in the report, below the callee's.
-      expectRefused(outcome, calleeRefusal('Vault.refund', 'callee-master-5', REFUND_LINE, 'no escrow'));
+      // The entry's check fails before the call, so its own reason surfaces even though the refund callee was
+      // settled first and refused escrow 0.
+      expectRefused(outcome,
+        entryRefusal('refuseOnce', lineOf('"job in invalid state"', 'function refuseOnce('), 'job in invalid state'));
       const report = reportOf(outcome);
-      expect(report.innermost?.master).toBe('callee-master-5');
+      expect(report.innermost?.master).toBe('implementation-master');
       expect(report.refusals.find((refusal) => refusal.master === 'implementation-master')?.reason).toStrictEqual({
         line: lineOf('"job in invalid state"', 'function refuseOnce('), message: 'job in invalid state',
       });
     }, 300_000);
 
-    it('the creator\'s dispute of a closed task (56) reports the dispute contract\'s revert', async () => {
+    it('the creator\'s entry on a closed task reports its own check, before the challenge call', async () => {
       const outcome = await enter(world, 'Desk', 'dispute', [TASK, ...OBJECTION], CREATOR);
-      // The challenge's condition holds for the creator, so it is planned and settled before the entry, whose own
-      // check fails before the call. Owner: the SDK hop settle order (`deploy.ts`, `settleCallees`).
-      expectRefused(outcome, calleeRefusal('Panel.challenge', 'callee-master-1', CHALLENGE_LINE, 'no escrow'));
+      // The challenge's condition holds for the creator, so it is planned and settled first; the entry's own check
+      // fails before the call, so its own reason surfaces.
+      expectRefused(outcome,
+        calleeSettleEntryRefusal('Panel.challenge', 'dispute', lineOf('"job in invalid state"', 'function dispute('),
+          'job in invalid state'));
+      // The last draft still names the entry's own check among the refusals, even though the deeper settled
+      // challenge frame also refused.
       const report = reportOf(outcome);
-      expect(report.innermost?.master).toBe('callee-master-1');
       expect(report.refusals.find((refusal) => refusal.master === 'implementation-master')?.reason).toStrictEqual({
         line: lineOf('"job in invalid state"', 'function dispute('), message: 'job in invalid state',
       });
@@ -826,8 +861,11 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
 
   describe('beside an escrow and a dispute contract that accept escrow 0 (the callee revert stepped around)', () => {
     let world: World;
+    /** The chain as it stands right after setup: task 0 open with its arbiter, so a settling entry starts from it. */
+    let pristine: SnapshotRestorer;
     it('setup: the store registrations, the task and its allowlist entry settle and broadcast', async () => {
       world = await deployWorld(1n);
+      pristine = await world.network.takeSnapshot();
     }, 600_000);
 
     it('with the arm\'s note stepped around, a non-arbiter\'s refusal (64) reports its own reason', async () => {
@@ -840,31 +878,20 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       expectRefused(outcome, entryRefusal('refuse', lineOf('"not arbitrator"'), 'not arbitrator'));
     }, 300_000);
 
-    it('with the arm\'s note stepped around, the arbiter\'s refusal of an open task (64) stops at call 1', async () => {
-      const outcome = await enter(world, 'Desk', 'refuseOnce', [TASK], ARBITER);
-      // The refusal is still caught and attributed to the entry. The master now pins its data record to the data-NFT
-      // covenant (T46); the proxy hop's exploratory derivation of this reverting composition does not place the record
-      // where that pin accepts it, so the derivation stalls at the record close rather than at the later call. WALL:
-      // the proxy/composer lane should place the proxied record at the covenant for the call-site stall to return.
-      const line = unnamedRefusalLine(outcome, 'refuseOnce');
-      expect(line).toBeGreaterThanOrEqual(lineOf('function refuseOnce('));
-      expect(line).toBeLessThan(lineOf('function dispute('));
-      expect(outcome.stalls.at(-1)).toBe('PER_CALL_DERIVATION_STALLED: master "implementation-master" of '
-        + 'Desk.refuseOnce() filled no witness at site 3 (close of segment 0)');
-    }, 300_000);
+    it('with the arm\'s note stepped around, the arbiter\'s refusal of an open task (64) settles', async () => {
+      // `state` (0) is not 1, so `refuseOnce`'s escrow arm is decided skipped against the incoming state and neither
+      // the escrow call nor its note is planned; the entry clears its arbiter and the spend settles.
+      await pristine.restore();
+      expectSettled(await enter(world, 'Desk', 'refuseOnce', [TASK], ARBITER));
+    }, 600_000);
 
-    it('the arbiter\'s refusal of an open task (64) stops at call 1 the same way', async () => {
-      const outcome = await enter(world, 'Desk', 'refuse', [TASK], ARBITER);
-      // As above: the refusal is attributed to `refuse`, and the T46 record pin stalls the reverting proxied
-      // derivation at the record close. WALL as recorded on the sibling test above.
-      const line = unnamedRefusalLine(outcome, 'refuse');
-      expect(line).toBeGreaterThanOrEqual(lineOf('function refuse('));
-      expect(line).toBeLessThan(lineOf('function refuseOnce('));
-      expect(outcome.stalls.at(-1)).toBe('PER_CALL_DERIVATION_STALLED: master "implementation-master" of '
-        + 'Desk.refuse() filled no witness at site 4 (close of segment 0)');
-    }, 300_000);
+    it('the arbiter\'s refusal of an open task (64) settles the same way', async () => {
+      await pristine.restore();
+      expectSettled(await enter(world, 'Desk', 'refuse', [TASK], ARBITER));
+    }, 600_000);
 
     it('closing the task settles', async () => {
+      await pristine.restore();
       expectSettled(await enter(world, 'Desk', 'close', [TASK], CREATOR));
     }, 600_000);
 

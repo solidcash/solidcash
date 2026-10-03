@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   buildChunkCommitment, buildValueChunkCommitment, bytesToHex, decodePushdataValue, encodeChunkableValueTail,
-  encodePushdataValue, parseChunkCommitment, sha256, splitValueIntoValueChunks,
+  encodePushdataValue, parseChunkCommitment, sha256, splitValueIntoValueChunks, VALUE_INLINE_LIMIT,
 } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -14,7 +14,9 @@ import {
 import { mappingValueChunkLock } from '../../../src/per-call/composer/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
-import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import {
+  bytesToSlotValue, decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti,
+} from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -95,6 +97,30 @@ const CONSTRUCTED_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /**
+ * A body that builds its struct value from a local the artifact cannot state, then writes it into a chunking
+ * mapping.
+ *
+ * The local is reassigned under a branch the artifact's source vocabulary does not fold, so the artifact publishes
+ * no value source for the write and the hop cannot size the run of chunk records the value's byte length names.
+ * The body's own value pin stops on the count it computed, and the value and its digest are operands at that stop,
+ * so the hop learns the value there and re-plans the write's run from it.
+ */
+const UNSTATED_VALUE_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   struct Member { address who; string name; string bio; uint up; }'
+  + '   address public implementation;'
+  + '   mapping(address => Member) public members;'
+  + '   function initialize(address who, Member m) { this.members[who] = m; }'
+  + '   function register(address who, string name_, string bio_, bool flag) {'
+  + '     uint up_ = 1;'
+  + '     if (flag) { up_ = 2; }'
+  + '     Member memory m = Member(who, name_, bio_, up_);'
+  + '     require(m.up > 0);'
+  + '     this.members[who] = m;'
+  + '   }'
+  + ' }';
+
+/**
  * The append beside an update of a mapping node the live list holds, whose new value crosses the inline limit.
  *
  * The value a long entry writes lives in continuation chunks at the value's own covenant, so the hop declares a
@@ -139,6 +165,26 @@ const LOOP_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function bump(address[] who) {'
   + '     for (uint i = 0; i < who.length; i = i + 1) { this.counts[who[i]] = this.counts[who[i]] + 1; }'
   + '     this.items.push(msg.sender);'
+  + '   }'
+  + ' }';
+
+/**
+ * A loop write whose leading key is the length the same body's own append produces.
+ *
+ * The body pushes one element and then writes the mapping under the index that element took, so every turn's key is
+ * counted from the written value rather than from the one the segment started from.
+ */
+const LOOP_KEYED_BY_APPEND_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   address public implementation;'
+  + '   address[] public items;'
+  + '   mapping(int => mapping(address => bool)) public allow;'
+  + '   function initialize() { this.items.push(msg.sender); }'
+  + '   function grant(address[] who) {'
+  + '     this.items.push(msg.sender);'
+  + '     for (uint i = 0; i < who.length; i = i + 1) {'
+  + '       this.allow[this.items.length - 1][who[i]] = true;'
+  + '     }'
   + '   }'
   + ' }';
 
@@ -370,18 +416,16 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
-  it('stops the loop write beside the append at the entry\'s own check', async () => {
-    // The next wall of this shape, pinned where it stands: an entry whose run-time loop writes a mapping *and*
-    // which appends to a dynamic value in the same segment is refused at `bump`'s own unnamed check, so the hop
-    // plans neither the loop's nodes nor the run beside them. Measured identical with and without the compiler's
-    // declared-record width rule (`9d50942cf`), so the wall is the hop's plan and not the frame's arithmetic: the
-    // two settlings above (a straight-line write beside the run, and a loop write with no run) are what the rule
-    // was measured on.
-    const { deployment, network, artifacts, funding } = await deploy(LOOP_BESIDE_SOURCE, [], true);
+  it('settles the loop write beside the append, the loop\'s nodes and the run both written', async () => {
+    // The entry's own run-time loop writes `counts` and its append grows `items` in one segment, so the hop
+    // declares both families in one record list: the loop's per-turn nodes in mint order, then the run's chunk.
+    // The frame locates each record where its own declaration put it, so the loop's records and the run settle
+    // together and the transaction broadcasts.
+    const { deployment, network, artifacts, layout, funding } = await deploy(LOOP_BESIDE_SOURCE, [], true);
     expect(deployment.initialize.accepted).toBe(true);
 
     const workers = [FRESH_LOCK, encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x78))];
-    await expect(callPerCallProxyEntry({
+    const result = await callPerCallProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
@@ -393,7 +437,83 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
       funder: funding.signature.unlockP2PKH(),
       changeAddress: funding.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow(/frame "implementation-master" of Impl\.bump\(\) at line 1: no source message/);
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    // The loop mints one node per turn after the head it splices through: two created nodes lead the created
+    // region, each carrying its key's slot and the value the turn computed (`counts[who[i]] + 1` from an empty
+    // list, which is one).
+    const trailing = result.draft.trailingOutputs;
+    expect(trailing).toHaveLength(2);
+    const createdNodes = trailing.map((output) => decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[output.index]!.token!.nft!.commitment!)));
+    const expectedSlots = workers.map((key) => keyToSlotMulti([key])).sort(
+      (left, right) => (bytesToSlotValue(left) < bytesToSlotValue(right) ? -1 : 1),
+    );
+    expect(createdNodes.map((node) => bytesToHex(node.slot)).sort()).toStrictEqual(
+      expectedSlots.map((slot) => bytesToHex(slot)).sort(),
+    );
+    createdNodes.forEach((node) => expect(vmNumberToBigInt(node.value)).toBe(1n));
+
+    // The head the first turn spliced through is recreated in place, relinked to the lowest key the loop wrote.
+    const headIndex = result.draft.layout.participants
+      .find((placed) => placed.id === 'mapping-head-counts')!.index;
+    const head = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[headIndex]!.token!.nft!.commitment!));
+    expect(bytesToHex(head.slot)).toBe(bytesToHex(new Uint8Array(32)));
+    // The chain the loop built ascends in slot order: the head links to the lower key, which links to the higher.
+    expect(bytesToHex(head.nextKey)).toBe(bytesToHex(expectedSlots[0]!));
+    const bySlot = new Map(createdNodes.map((node) => [bytesToHex(node.slot), node]));
+    expect(bytesToHex(bySlot.get(bytesToHex(expectedSlots[0]!))!.nextKey)).toBe(bytesToHex(expectedSlots[1]!));
+
+    // The run the append grew is the live chunk recreated in place, carrying both elements in the shipped
+    // encoder's form, and the record holds the value's byte length.
+    const grown = encodePushdataValue(
+      [funding.deployerLock, funding.deployerLock], 'address[]', artifacts.Impl!.structs,
+    );
+    const chunkIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('dynamic-chunk-'));
+    expect(chunkIds).toHaveLength(1);
+    expect(result.transaction.outputs[chunkIds[0]!.index]!.token!.nft!.commitment)
+      .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, grown))));
+    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    expect(state.byNft[0]!['items$len']).toBe(BigInt(grown.length));
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it('keys the loop write by the length the same body appends, and broadcasts it', async () => {
+    // The body pushes one element and then keys the mapping by that element's index, so the node the turn writes
+    // sits under the index the *written* array ends at (one, after the initialize's own element). The hop plans the
+    // same key from the live value plus the elements the artifact's own growth fact states, and the frame addresses
+    // the node at the declared ordinal, so the loop's record and the run's chunk settle together.
+    const { deployment, network, artifacts, funding } = await deploy(LOOP_KEYED_BY_APPEND_SOURCE, [], true);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'grant',
+      args: [[FRESH_LOCK]],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    // The turn wrote the index the written array ends at, so the node's slot is the hash of that index and the
+    // caller's key rather than of the index the segment started from. One turn mints one node.
+    const expectedSlot = keyToSlotMulti([bigIntToVmNumber(1n), FRESH_LOCK]);
+    const created = result.draft.trailingOutputs.map((output) => decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[output.index]!.token!.nft!.commitment!)));
+    expect(created.map((node) => bytesToHex(node.slot))).toStrictEqual([bytesToHex(expectedSlot)]);
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
   it('settles a chunked mapping value the live list holds beside the append, and broadcasts it', async () => {
@@ -597,6 +717,61 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(result.transaction.outputs[trailing[1]!.index]!.token!.nft!.commitment)
       .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, grown))));
     trailing.slice(2).forEach((output, position) => {
+      expect(output.output.lockingBytecode).toStrictEqual(chunkLock);
+      expect(output.output.token!.nft!.commitment).toStrictEqual(valueChunks[position]!.commitment);
+    });
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it('settles a chunking mapping value built from a local the artifact does not state', async () => {
+    // The artifact publishes no value source for the write, so the hop cannot size the run its byte length names.
+    // The body's own value pin stops on the count it computed and leaves the value and its digest on the machine,
+    // so the hop learns the value from that close and re-plans the write's run. Before that learning the hop
+    // refused: `... writes mapping "members" a value whose source the artifact does not publish, so this hop
+    // cannot tell whether the write needs value chunks`.
+    const seeded = { who: encodeLockingBytecodeP2pkh(alicePkh), name: 'n', bio: 'b', up: 1n };
+    const { deployment, network, artifacts, funding }
+      = await deploy(UNSTATED_VALUE_SOURCE, [seeded.who, seeded], true);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    const name = 'n'.repeat(80);
+    const bio = 'b'.repeat(80);
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'register',
+      args: [FRESH_LOCK, name, bio, true],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    // The value is the one the body computed: `up_` is 2 because the call's branch was taken.
+    const value = encodePushdataValue({ who: FRESH_LOCK, name, bio, up: 2n }, 'Member', artifacts.Impl!.structs);
+    expect(value.length).toBeGreaterThan(VALUE_INLINE_LIMIT);
+    const slot = keyToSlotMulti([FRESH_LOCK]);
+    const chunkLock = mappingValueChunkLock(
+      hexToBin(deployment.proxy.categoryId), 'members', { slot, root: sha256(value) },
+    );
+    const valueChunks = splitValueIntoValueChunks(value).map(
+      (piece, index) => ({ index, commitment: hexToBin(buildValueChunkCommitment(index, piece)) }),
+    );
+
+    // The created node leads the trailing region, then the run of chunk records the value's length names.
+    const trailing = result.draft.trailingOutputs;
+    expect(trailing).toHaveLength(1 + valueChunks.length);
+    const created = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(created.slot)).toBe(bytesToHex(slot));
+    expect(bytesToHex(created.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
+    trailing.slice(1).forEach((output, position) => {
       expect(output.output.lockingBytecode).toStrictEqual(chunkLock);
       expect(output.output.token!.nft!.commitment).toStrictEqual(valueChunks[position]!.commitment);
     });

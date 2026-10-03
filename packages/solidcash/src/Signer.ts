@@ -15,6 +15,10 @@ export interface TransactionNonceReservation {
   release(): void;
 }
 
+// Reads of a signer's nonce precede the create addresses its deployments will land at: one getNonce() call is
+// followed by four getCreateAddress predictions, so one read reserves that window of genesis-eligible UTXOs.
+const CREATE_LOOKAHEAD_WINDOW = 4;
+
 /**
  * A signer encapsulates a private key and provides:
  * - P2PKH address derivation (for UTXO lookup)
@@ -39,6 +43,7 @@ export default class Signer {
   private _addresses: Map<string, string> = new Map();
   private _transactionNonce = 0n;
   private _reservedTransactionNonce = false;
+  private _createWindowReserved = false;
 
   constructor(privateKey: Uint8Array | string, provider: NetworkProvider) {
     if (typeof privateKey === 'string') {
@@ -100,7 +105,21 @@ export default class Signer {
   }
 
   /** EVM-compatibility nonce for user-visible transactions initiated by this signer. */
-  async getNonce(): Promise<number> { return Number(this._transactionNonce); }
+  async getNonce(): Promise<number> {
+    // Once per signer: a caller that reads a nonce is about to create contracts, and the first read reserves the
+    // genesis-eligible UTXOs its predictions need. The import is lazy so this module does not load the deployment
+    // graph (which reaches Signer back) at startup.
+    if (!this._createWindowReserved) {
+      this._createWindowReserved = true;
+      try {
+        const { topUpCreateLookahead } = await import('./per-call/deploy/create-lookahead-session.js');
+        await topUpCreateLookahead(this, CREATE_LOOKAHEAD_WINDOW);
+      } catch {
+        // Best-effort: a nonce read is not always followed by a create, and the pool may be short.
+      }
+    }
+    return Number(this._transactionNonce);
+  }
 
   /** Reserve one logical transaction nonce across any subordinate BCH transactions. */
   reserveTransactionNonce(): TransactionNonceReservation {

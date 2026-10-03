@@ -14,11 +14,11 @@
  */
 
 import { hexToBin } from '@bitauth/libauth';
-import type { Artifact } from '@solidcash/utils';
+import { validatorAddress, type Artifact } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import type { Utxo } from '../../interfaces.js';
 import type Signer from '../../Signer.js';
-import { selectGenesisFundingUtxo } from '../../stateful/ContractFactory.js';
+import { selectGenesisFundingUtxo, selectGenesisFundingUtxoForCost } from '../../stateful/ContractFactory.js';
 import {
   genesisOutpointKey, releaseGenesisOutpoint, reserveGenesisOutpoint,
 } from '../../stateful/genesis-reservations.js';
@@ -37,8 +37,12 @@ export class CreateAddressError extends Error {
 export interface CreateLookaheadOptions {
   /** The account whose UTXOs become the children's categories, and whose nonce orders them. */
   readonly signer: Signer;
-  /** The child master the addresses are derived for. It must be compiled per-call. */
-  readonly artifact: Artifact;
+  /**
+   * The child master the addresses are derived for, when one is known. A create address is `addrV(category)`, which
+   * hashes the category and the shipped validator program and reads nothing from the artifact, so a caller that only
+   * predicts addresses leaves this out; the look-ahead then selects the genesis-eligible UTXOs itself.
+   */
+  readonly artifact?: Artifact;
   /**
    * The validator program every address is derived under. Defaults to the shipped per-call validator, which is what
    * the deployment path fills a master with, so a prediction and a deployment cannot disagree.
@@ -49,6 +53,9 @@ export interface CreateLookaheadOptions {
 /** The user documentation a caller is pointed at when too few UTXOs are reserved. */
 const CREATION_DOC = 'packages/solidc/docs/contract-creation.md';
 
+/** The smallest coin a look-ahead without an artifact funds a create from: a genesis carries a whole pool. */
+const CREATE_FUNDING_FLOOR = 100_000n;
+
 /**
  * A reservation of genesis-eligible UTXOs, one per child a caller will create.
  *
@@ -58,7 +65,7 @@ const CREATION_DOC = 'packages/solidc/docs/contract-creation.md';
  */
 export class CreateLookahead {
   private readonly signer: Signer;
-  private readonly artifact: Artifact;
+  private readonly artifact?: Artifact;
   private readonly validatorProgram: Uint8Array;
   private readonly reserved: Utxo[] = [];
   private base?: number;
@@ -106,7 +113,7 @@ export class CreateLookahead {
     if (!Number.isInteger(count) || count < 1) {
       throw new CreateAddressError(`reserve a positive whole number of creates: got ${count}`);
     }
-    if (this.base === undefined) this.base = Number(await this.signer.getNonce());
+    if (this.base === undefined) this.base = Number(this.signer._getTransactionNonceState());
     while (this.reserved.length < count) {
       const utxo = await this.select();
       reserveGenesisOutpoint(genesisOutpointKey(utxo.txid, utxo.vout));
@@ -124,6 +131,7 @@ export class CreateLookahead {
   public getCreateAddress(nonce: bigint | number): Uint8Array {
     const index = this.indexFor(nonce);
     const category = new Uint8Array(hexToBin(this.reserved[index]!.txid));
+    if (this.artifact === undefined) return validatorAddress(category, this.validatorProgram);
     return deployMaster(this.artifact, category, this.validatorProgram).address;
   }
 
@@ -141,16 +149,27 @@ export class CreateLookahead {
 
   private async select(): Promise<Utxo> {
     const excluded = new Set(this.reserved.map((utxo) => genesisOutpointKey(utxo.txid, utxo.vout)));
+    if (this.artifact === undefined) {
+      // The coin a create is predicted from must be as fundable as any other genesis coin, so the selection — and
+      // its fan-out — is the shipped one, sized by the floor a caller without an artifact can state.
+      try {
+        return await selectGenesisFundingUtxoForCost(this.signer, CREATE_FUNDING_FLOOR, excluded);
+      } catch (cause) {
+        throw this.insufficientFundingError(cause);
+      }
+    }
     try {
       return await selectGenesisFundingUtxo(this.signer, this.artifact, excluded, 1);
     } catch (cause) {
-      throw new CreateAddressError(
-        `Cannot reserve a genesis-eligible UTXO for contract creation at ${this.signer.getAddress()}: a creator `
-        + 'needs one vout-0, token-free UTXO per child it will deploy. Fund the account with more such UTXOs, or '
-        + `deploy fewer children. See ${CREATION_DOC}.`,
-        { cause },
-      );
+      throw this.insufficientFundingError(cause);
     }
+  }
+
+  private insufficientFundingError(cause?: unknown): CreateAddressError {
+    const message = `Cannot reserve a genesis-eligible UTXO for contract creation at ${this.signer.getAddress()}: `
+      + 'a creator needs one vout-0, token-free UTXO per child it will deploy. Fund the account with more such '
+      + `UTXOs, or deploy fewer children. See ${CREATION_DOC}.`;
+    return cause === undefined ? new CreateAddressError(message) : new CreateAddressError(message, { cause });
   }
 
   private indexFor(nonce: bigint | number): number {

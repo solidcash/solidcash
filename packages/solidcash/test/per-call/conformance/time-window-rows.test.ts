@@ -15,6 +15,7 @@ import {
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import { providerUnixLocktime } from '../../../src/stateful/soft-state-overlays.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
 import { participant, type CompositionDraftPlan, type DraftMaster } from '../../../src/per-call/composer/index.js';
 import {
@@ -35,8 +36,8 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  *
  * The first suite drives the shipped composition path with a plan that states the clock, so every entry is
  * evaluated against a different block time. The second suite drives the same contract through the shipped call
- * entry point (`callPerCallEntry`), which states no locktime and leaves every input's sequence final, and pins the
- * refusal the compiler's own locktime guard raises there.
+ * entry point (`callPerCallEntry`), which states the chain's own time as the clock and a sequence that lets a
+ * locktime check run, so the entries there are decided by the contract's own window against that time.
  */
 
 const LABEL = 'time window board';
@@ -256,29 +257,34 @@ describe('spec section 23 row 16: the clock the shipped call path states', () =>
     };
   }
 
-  it('refuses the entry by name: the call path states no locktime and leaves the sequence final', async () => {
+  it('states the chain\'s own time, so the contract\'s window decides the review', async () => {
     const result = await callPerCallEntry(await enterOptions(await deployCallPath(), 'review'));
-    // The shipped call path states no locktime of its own and leaves every input's sequence final, so a body that
-    // reads the transaction clock at all is refused by the compiler's own locktime guard before the window is
-    // reached: `OP_CHECKLOCKTIMEVERIFY` refuses a final input. The refusal is reported with the artifact's own
-    // reason, so the path names the fact rather than reporting an unattributed opcode failure.
+    // The plan states the chain tip's time and a sequence that lets a locktime check run, so the body reads the
+    // clock and its own window refuses: this board's review window closed long before the tip. The refusal is the
+    // contract's require, not the compiler's guard against a final input, and every other participant accepts.
     expect(result.accepted).toBe(false);
-    const refused = result.verdicts.filter((verdict) => !verdict.accepted);
-    expect(refused.map((verdict) => verdict.objection ?? '')).toStrictEqual([
-      expect.stringContaining('Using tx.locktime requires a non-final sequence number on the spending input'),
-    ]);
-    // Every other participant accepts: the objection is the entry's own clock read, not the composition.
+    const refusals = result.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => verdict.objection ?? '');
+    expect(refusals.length).toBeGreaterThan(0);
+    expect(refusals.every((objection) => !objection.includes('non-final sequence'))).toBe(true);
     expect(result.verdicts.filter((verdict) => verdict.accepted).map((verdict) => verdict.id))
       .toStrictEqual(['validator', 'validator/1', 'record-0']);
     expect(result.values).toStrictEqual([]);
   }, 120_000);
 
-  it('refuses the challenge period the same way, since it reads the same clock', async () => {
-    const result = await callPerCallEntry(await enterOptions(await deployCallPath(), 'challenge'));
-    expect(result.accepted).toBe(false);
-    expect(result.verdicts.filter((verdict) => !verdict.accepted).map((verdict) => verdict.objection ?? ''))
-      .toStrictEqual([
-        expect.stringContaining('Using tx.locktime requires a non-final sequence number on the spending input'),
-      ]);
+  it('settles the challenge period at the stated time and records the count', async () => {
+    const board = await deployCallPath();
+    // The chain's time as the plan reads it, before the call itself advances the mock tip.
+    const stated = providerUnixLocktime(board.provider) ?? 0;
+    const result = await callPerCallEntry(await enterOptions(board, 'challenge'));
+    expect(result.accepted).toBe(true);
+    // The clock the plan stated is the one the transaction carries, one second behind the chain tip so a unix
+    // locktime stays readable.
+    expect(result.transaction.locktime).toBe(stated);
+    // The entry ran against that clock: its challenge period is open at it, so the count it writes moved.
+    const record = parsePushdataCommitment(
+      binToHex(result.writtenCommitments[0]!), artifact.stateLayout!, 0,
+    ) as { readonly challenges?: bigint };
+    expect(record.challenges).toBe(1n);
   }, 120_000);
 });

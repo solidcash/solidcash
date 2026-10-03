@@ -28,7 +28,9 @@ import {
   buildEntryNftCovenantScript,
   bytesEqual,
   bytesToHex,
+  collectionChunksValue,
   computeCollectionHash,
+  parseArrayTypeString,
   scriptToBytecode,
   type AbiFunction,
   type Artifact,
@@ -190,6 +192,14 @@ interface KeyResolutionContext {
    * on-chain value, so a caller that has read the deployment hands that view over and the key resolves against it.
    */
   readonly state?: Readonly<Record<string, StateValue>>;
+  /**
+   * The elements the frame's own writes append to a state array, by variable.
+   *
+   * A body that appends to a dynamic value and then keys a write by the value's length reads the length the append
+   * produces rather than the one the segment started from, so a key published as `state:<array>.length` is counted
+   * from the written value. The caller states the elements each write adds; absent leaves the key at the live length.
+   */
+  readonly stateLengthDeltas?: Readonly<Record<string, bigint>>;
 }
 
 /** Resolves one access's key(s) from the frame's own arguments, its sender, or a compile-time expression. */
@@ -208,7 +218,7 @@ function resolveKeys(
     // An artifact may publish the caller as an expression label rather than as a source kind. A root frame's
     // sender and its transaction origin are the same user, which is the coin the call spends.
     if (label !== undefined && CALLER_KEY_LABELS.has(label)) return request.callerLockingBytecode;
-    const evaluated = evalComputedKey(label, args, visible, undefined, undefined);
+    const evaluated = evalComputedKey(label, args, visible, request.state, request.stateLengthDeltas);
     if (evaluated !== undefined) return evaluated;
     const byName = encodedArgument(fn, args, label ?? '', structs);
     if (byName !== undefined) return byName;
@@ -312,15 +322,26 @@ export function planCallLoopWrites(
     const pattern = new RegExp(`id:${escaped}(?![\\w$])`, 'g');
     const labels = varying.access.keyParams.map((_param, index) => keyLabel(varying.access, index));
     const structs = request.artifact.structs ?? request.artifact.stateLayout?.structs;
+    // The frame receives its own argument array through the shipped encoder, so an element whose type is an address
+    // arrives as its locking bytecode. A label resolved against the caller's own spelling - a bare payload or a
+    // CashAddress - would name a different key than the frame's body reads and writes.
+    const elementType = parseArrayTypeString(visible[arrayIndex]?.type ?? '')?.elementType;
+    const frameArgs: FunctionArgument[] = elementType !== undefined
+      && /^address(\s+payable)?$/.test(elementType)
+      ? args.map((argument, index): FunctionArgument => (index !== arrayIndex || !Array.isArray(argument)
+        ? argument
+        : argument.map((element): FunctionArgument => encodeFunctionArgument(
+          element as FunctionArgument, elementType)) as unknown as ConstructorArgument))
+      : [...args];
     const derived = elements.map((_element, source): { source: number; keys: readonly Uint8Array[] } => ({
       source,
       keys: labels.map((label): Uint8Array => {
         const resolved = evalComputedKey(
-          label.replace(pattern, `lit:${source}`), args, visible, request.state, undefined);
+          label.replace(pattern, `lit:${source}`), frameArgs, visible, request.state, request.stateLengthDeltas);
         if (resolved !== undefined) return resolved;
         // A key the loop's own turn does not vary is published as the bare parameter it takes, which the frame's
         // arguments carry directly, exactly as a batch's target key is resolved by its declared name.
-        const byName = encodedArgument(fn, args, label, structs);
+        const byName = encodedArgument(fn, frameArgs, label, structs);
         if (byName !== undefined) return byName;
         throw new PerCallCallRecordError(
           `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${source} of "${arrayName}" `
@@ -661,9 +682,11 @@ function planReadNodes(
   return slots.map((slot) => {
     const node = readEntryNode({ ...request, slotIndex: slot.slotIndex! });
     // A value past the inline limit holds only its hash in the node, with the bytes in chunk records a call does not
-    // declare. A node read beside the key is never read for its value, so its width is free.
+    // declare. A node read beside the key is never read for its value, so its width is free. Only a collection whose
+    // values chunk writes a length ahead of the value, so those bytes are one only where one is written.
     const tail = node.commitment.slice(64);
-    const length = tail.length < 4 ? 0 : new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
+    const length = collectionChunksValue(request.artifact, node.collection) && tail.length >= 4
+      ? new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true) : 0;
     if (node.present && length > VALUE_INLINE_LIMIT) {
       throw new PerCallCallRecordError(
         `entry "${request.functionName}" reads a ${length}-byte value of mapping "${node.collection}" whose bytes sit `

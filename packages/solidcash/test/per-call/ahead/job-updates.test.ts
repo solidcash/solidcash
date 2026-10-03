@@ -5,15 +5,14 @@ import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
 import { readPerCallEntry } from '../../../src/per-call/read/index.js';
 import * as composer from '../../../src/per-call/composer/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
-  type PerCallProxyCallResult,
+  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy, type PerCallProxyCallResult,
 } from '../../../src/per-call/proxy/index.js';
 import { deploymentStateValues, type PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
@@ -33,11 +32,12 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * its pause check through an invoked helper, as the fixture's `whenNotPaused` does, so its block names both of the
  * root's records; `mark` is a job writer without it, as the fixture's `deliverResult` is.
  *
- * The clock is the root's own `block.timestamp` register, as in the fixture: 0 from a per-call proxy's genesis on,
- * until the mock chain's `evm_increaseTime` and `evm_mine` write the chain's clock into it (pinned). A job posted a
- * day before that clock is written by a plain setup entry, `seed`, with a stamp of minus one day; posting itself
- * settles (pinned). Each deployment holds one job, id 0, with its opening entry, and the creator approves the root on
- * the token first, as the fixture's setup does.
+ * The clock is the root's own `block.timestamp` register, as in the fixture: the mock provider syncs the chain's own
+ * time into it on every mine a send performs, so it carries that time from the per-call proxy's first block on, and
+ * the fixture's `evm_increaseTime` and `evm_mine` move it by the day they advance (pinned). A job posted a day before
+ * that clock is written by a plain setup entry, `seed`, with a stamp of minus one day; posting itself settles
+ * (pinned). Each deployment holds one job, id 0, with its opening entry, and the creator approves the root on the
+ * token first, as the fixture's setup does.
  *
  * Each entry is pinned where it stands today; one that settles moves its case to every verdict accepted and the
  * broadcast. A last deployment steps the token's allowance read around and pins what stands behind it. The whole
@@ -274,13 +274,6 @@ function source(pull: Pull): string {
   ].join('\n');
 }
 
-/** The 1-based line of the first source line containing `needle`, searching from the line containing `after`. */
-function lineOf(needle: string, after = 'pragma'): number {
-  const lines = source('allowance').split('\n');
-  const start = lines.findIndex((line) => line.includes(after));
-  return lines.findIndex((line, index) => index >= start && line.includes(needle)) + 1;
-}
-
 type ArtifactMap = ReturnType<typeof compileStringMulti>;
 /** The token's pull as the fixture's reads the allowance, or stepped around it. */
 type Pull = 'allowance' | 'unchecked';
@@ -388,14 +381,6 @@ function expectSettled(outcome: Outcome): PerCallProxyCallResult {
   expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
   expect(outcome.coinLive).toBe(false);
   return outcome.result!;
-}
-
-/** The hop was refused before anything was broadcast, with `message` in its words. */
-function expectRefused(outcome: Outcome, message: string): Error {
-  expect(outcome.error).toBeInstanceOf(PerCallProxyDeployError);
-  expect(outcome.error!.message).toContain(message);
-  expect(outcome.coinLive).toBe(true);
-  return outcome.error!;
 }
 
 /** The root proxy's live state, parsed with the shipped decoder, the jobs joined from their chunk records. */
@@ -513,34 +498,6 @@ async function seedJob(world: World, seeded: readonly FunctionArgument[]): Promi
   expectSettled(await enter(world, 'Desk', 'note', [JOB, 0n]));
 }
 
-/** Where the close and the reopen are reported. */
-const CLOSE_LINE = lineOf('function close(');
-const REOPEN_LINE = lineOf('function reopen(');
-
-/** The suffix a refusal carries when the entry's run of chunk records is sized from its record's declared length. */
-const SIZED_RUN = ', and the run it declares for dynamic "jobs" is 2 chunk(s), sized from the length the record\'s '
-  + 'own declaration states';
-
-/** Where the update is reported: the line its parameters open. */
-const UPDATE_LINE = lineOf('int id, string title, bytes32 digest, string[] tags');
-
-/**
- * An update's refusal with both token arms planned: they chain through the balance nodes they share and settle, and
- * the entry's own frame refuses where the execution skips them.
- */
-const UPDATE_SKIPS_ARMS = 'the implementation\'s "update" entry did not settle through the proxy: frame '
-  + `"implementation-master" of Desk.update() at line ${UPDATE_LINE}: no source message (Program failed an `
-  + `OP_VERIFY operation.)${SIZED_RUN}`;
-
-/** A refusal thrown while the hop plans an arm the execution does not take: its argument is not a `uint`. */
-function expectArmOutOfBounds(outcome: Outcome, value: bigint): void {
-  expect(outcome.error).toBeDefined();
-  expect(outcome.error).not.toBeInstanceOf(PerCallProxyDeployError);
-  expect(outcome.error!.message.startsWith(`value out-of-bounds: ${value} for type uint256 `)).toBe(true);
-  expect(outcome.draft).toBeUndefined();
-  expect(outcome.coinLive).toBe(true);
-}
-
 /** A token balance, read off chain through the shipped read path. */
 async function balanceOf(world: World, who: Uint8Array): Promise<unknown> {
   const read = await readPerCallEntry({
@@ -599,15 +556,17 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): a job updated, c
 
   describe('a job posted through the hop', () => {
     let world: World;
-    /** The clock the mock chain's day wrote into the root's register. */
+    /** The chain as it stands right after the job is posted, so each entry that settles is planned from it. */
+    let pristine: SnapshotRestorer;
+    /** The chain's own time the mock chain's day moved the root's register to. */
     let clock: bigint;
     it('setup: the approval, the store registrations and both proxies settle and broadcast', async () => {
       world = await deployWorld('allowance', undefined);
     }, 900_000);
 
-    it('the clock the root reads is 0 at genesis, and the mock chain\'s day writes the chain\'s clock into it', async () => {
-      expect((await deskState(world)).__block_timestamp).toBe(0n);
+    it('the clock the root reads is the chain\'s own time, and the mock chain\'s day moves it by that day', async () => {
       const before = world.network.getBlockTime();
+      expect((await deskState(world)).__block_timestamp).toBe(BigInt(before));
       await world.network.send('evm_increaseTime', [Number(DAY)]);
       await world.network.send('evm_mine', []);
       expect(world.network.getBlockTime()).toBe(before + Number(DAY));
@@ -623,69 +582,82 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): a job updated, c
       const posted = await job0(world);
       expect([posted.state, posted.title, posted.amount, posted.stamp]).toStrictEqual([0n, 'Job title', 100n, clock]);
       expect(await entries(world)).toBe(1n);
+      pristine = await world.network.takeSnapshot();
     }, 1_800_000);
 
-    it('an update with a registered judge and a second tag (31, 33) stops at the token arms the execution skips',
+    it('an update with a registered judge and a second tag (31, 33) settles, the unchanged amount skipping both arms',
       async () => {
+        // The amount argument (100) equals the held amount, so both token arms' `held != amount` condition is decided
+        // false against the entry's own facts and neither is planned; the entry's call and the plan's records agree.
+        await pristine.restore();
         const outcome = await enter(world, 'Desk', 'update', updateArgs(100n, ['LA', 'Bug'], JUDGE));
-        // Both token arms are planned, because their conditions read the job the entry rewrites, and the pull and the
-        // payout both write the creator's and the root's balances. The keys are ones the token holds, so the two reaches
-        // share each node and chain their views (the reach guard no longer stops them); the callees settle, and the
-        // entry's own frame refuses where it skips the arms the plan states, as closing before a day does. Owner: the
-        // SDK hop planner (`proxy/external-calls.ts`, `occurrenceCountOf`).
-        expectRefused(outcome, UPDATE_SKIPS_ARMS);
-        expect(outcome.draft).toBeDefined();
+        expectSettled(outcome);
+        const updated = await job0(world);
+        expect([updated.title, updated.tags, updated.amount]).toStrictEqual(['New title', ['LA', 'Bug'], 100n]);
       }, 900_000);
 
-    it('an update with no judge (32) stops the same way', async () => {
-      const outcome = await enter(world, 'Desk', 'update', updateArgs(100n, ['LA'], NO_JUDGE));
-      // Owner: the SDK hop planner, as above.
-      expectRefused(outcome, UPDATE_SKIPS_ARMS);
-      expect(outcome.draft).toBeDefined();
+    it('an update with no judge (32) settles the same way', async () => {
+      await pristine.restore();
+      expectSettled(await enter(world, 'Desk', 'update', updateArgs(100n, ['LA'], NO_JUDGE)));
     }, 900_000);
 
-    it('an update raising the amount (34) is refused while the hop plans the payout arm', async () => {
-      // The payout arm is planned too, and its amount, read before the entry's own write, is 100 - 200. Owner: the SDK
-      // hop planner (`proxy/call-resolution.ts`, `resolveCallArguments`, for a site `occurrenceCountOf` states).
-      expectArmOutOfBounds(await enter(world, 'Desk', 'update', updateArgs(200n, ['LA'], NO_JUDGE)), -100n);
+    it('an update raising the amount (34) settles through the taken pull arm', async () => {
+      // `amount_` (200) exceeds the held amount (100) read from the incoming state, so the pull arm is the one the
+      // plan states; the skipped payout's `100 - 200` is never resolved.
+      await pristine.restore();
+      const outcome = await enter(world, 'Desk', 'update', updateArgs(200n, ['LA'], NO_JUDGE));
+      expectSettled(outcome);
+      expect((await job0(world)).amount).toBe(200n);
+      expect([await balanceOf(world, CREATOR), await balanceOf(world, addressOf(DESK_PROXY_CATEGORY))])
+        .toStrictEqual([800n, 200n]);
     }, 900_000);
 
-    it('an update lowering the amount before a day (34) is refused while the hop plans the pull arm', async () => {
-      // Owner: the SDK hop planner, as above: the pull's amount is 50 - 100.
-      expectArmOutOfBounds(await enter(world, 'Desk', 'update', updateArgs(50n, ['LA'], NO_JUDGE)), -50n);
+    it('an update lowering the amount before a day (34) settles with the payout skipped', async () => {
+      await pristine.restore();
+      const outcome = await enter(world, 'Desk', 'update', updateArgs(50n, ['LA'], NO_JUDGE));
+      expectSettled(outcome);
+      const updated = await job0(world);
+      expect([updated.amount, updated.owed]).toStrictEqual([50n, 50n]);
     }, 900_000);
 
     it('a job writer whose block names only the first record settles', async () => {
       // The delegate frame declares the one record the entry names (`buildHopPlan`, `frameDataRecordIndices`).
+      await pristine.restore();
       expectSettled(await enter(world, 'Desk', 'mark', [JOB, DIGEST]));
     }, 900_000);
 
-    it('closing before a day (36) stops at the payout the execution skips', async () => {
+    it('closing before a day (36) settles and holds the collateral the skipped payout does not pay', async () => {
       const outcome = await enter(world, 'Desk', 'close', [JOB]);
-      // The payout's condition reads the job the entry rewrites, so it is planned and settled beside the entry call;
-      // the body skips it, so its one call and the plan's two records disagree. Owner: the SDK hop planner
-      // (`proxy/external-calls.ts`, `occurrenceCountOf`).
-      expectRefused(outcome, 'the implementation\'s "close" entry did not settle through the proxy: frame '
-        + `"implementation-master" of Desk.close() at line ${CLOSE_LINE}: no source message (Program failed an `
-        + `OP_VERIFY operation.)${SIZED_RUN}`);
-      expect(outcome.stalls).toStrictEqual(['PER_CALL_DERIVATION_STALLED: master "implementation-master" of '
-        + 'Desk.close() filled no witness at site 2 (close of segment 0)']);
-      expect(outcome.draft!.blockOf('implementation-master').calls).toHaveLength(2);
-    }, 900_000);
+      // The payout's condition reads the job's own stamp, a field the entry's element write copies back unchanged, so
+      // the arm the body skips is never planned: the entry's one call and the plan's records agree and the spend
+      // settles. Owner: the SDK hop planner (`proxy/external-calls.ts`, `occurrenceCountOf`).
+      expectSettled(outcome);
+      const closed = await job0(world);
+      expect([closed.state, closed.owed]).toStrictEqual([2n, 100n]);
+      // The collateral stays in the contract until it is withdrawn, so the creator's coin has only lost the amount.
+      expect([await balanceOf(world, CREATOR), await balanceOf(world, addressOf(DESK_PROXY_CATEGORY))])
+        .toStrictEqual([900n, 100n]);
+      // One history entry per event this shared world has appended for the job: its post, its mark and this close.
+      expect(await entries(world)).toBe(3n);
+    }, 1_800_000);
   });
 
   describe('a job posted a day before the clock', () => {
     let world: World;
+    /** The chain as it stands right after the job is seeded, so each entry that settles is planned from it. */
+    let pristine: SnapshotRestorer;
     it('setup: the job is seeded with its stamp and its opening entry', async () => {
       world = await deployWorld('allowance', job(0n, -DAY, 0n));
+      pristine = await world.network.takeSnapshot();
     }, 900_000);
 
-    it('an update lowering the amount a day later (34) is refused while the hop plans the pull arm', async () => {
-      // Owner: the SDK hop planner, as the update before a day.
-      expectArmOutOfBounds(await enter(world, 'Desk', 'update', updateArgs(50n, ['LA'], NO_JUDGE)), -50n);
+    it('an update lowering the amount a day later (34) settles through the taken payout arm', async () => {
+      await pristine.restore();
+      expectSettled(await enter(world, 'Desk', 'update', updateArgs(50n, ['LA'], NO_JUDGE)));
     }, 900_000);
 
     it('closing a day later (37) settles and pays the job back', async () => {
+      await pristine.restore();
       expectSettled(await enter(world, 'Desk', 'close', [JOB]));
       const closed = await job0(world);
       expect([closed.state, closed.owed]).toStrictEqual([2n, 0n]);
@@ -697,22 +669,25 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): a job updated, c
 
   describe('a job closed before its day, holding its collateral', () => {
     let world: World;
+    /** The chain as it stands right after the job is seeded closed, so each entry that settles is planned from it. */
+    let pristine: SnapshotRestorer;
     it('setup: the job is seeded closed and its opening entry appended', async () => {
       world = await deployWorld('allowance', job(2n, 0n, 100n));
+      pristine = await world.network.takeSnapshot();
     }, 900_000);
 
-    it('reopening (38) stops at the pull its collateral makes unneeded, which the execution skips', async () => {
-      const outcome = await enter(world, 'Desk', 'reopen', [JOB]);
-      // The pull's condition reads the job the entry rewrites, so it is planned and settled beside the entry call; the
-      // body skips it, so its one call and the plan's two records disagree. Owner: the SDK hop planner
-      // (`proxy/external-calls.ts`, `occurrenceCountOf`), as closing before a day.
-      expectRefused(outcome, 'the implementation\'s "reopen" entry did not settle through the proxy: frame '
-        + `"implementation-master" of Desk.reopen() at line ${REOPEN_LINE}: no source message (Program failed an `
-        + `OP_VERIFY operation.)${SIZED_RUN}`);
-      expect(outcome.draft!.blockOf('implementation-master').calls).toHaveLength(2);
-    }, 900_000);
+    it('reopening (38) settles, the pull its collateral makes unneeded decided skipped', async () => {
+      // `owed` (100) is not less than `amount` (100), so the pull's condition is decided false against the incoming
+      // state and the entry takes its own `owed -= amount` arm; its store call and the plan's records agree.
+      await pristine.restore();
+      expectSettled(await enter(world, 'Desk', 'reopen', [JOB]));
+      const reopened = await job0(world);
+      expect([reopened.state, reopened.owed]).toStrictEqual([0n, 0n]);
+      expect(await entries(world)).toBe(2n);
+    }, 1_800_000);
 
     it('withdrawing after the mock chain\'s day (40) settles and pays the collateral back', async () => {
+      await pristine.restore();
       await world.network.send('evm_increaseTime', [Number(DAY)]);
       await world.network.send('evm_mine', []);
       expectSettled(await enter(world, 'Desk', 'withdraw', [JOB]));
@@ -747,9 +722,13 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): a job updated, c
     it('reopening (39) settles and pulls the amount back in, its allowance read beside its balance batch', async () => {
       // The pull's frame declares its allowance node kept, ahead of its batch's groups (`proxy/external-calls.ts`,
       // `calleeEntryWrites`; `proxy/entry-writes.ts`, `declaredReadSlots`).
+      const chainTime = BigInt(world.network.getBlockTime());
       expectSettled(await enter(world, 'Desk', 'reopen', [JOB]));
       const reopened = await job0(world);
-      expect([reopened.state, reopened.owed, reopened.stamp]).toStrictEqual([0n, 0n, 0n]);
+      expect([reopened.state, reopened.owed]).toStrictEqual([0n, 0n]);
+      // The reopen stamps the job with the chain's own time, distinct from the minus-day the setup seeded it with.
+      expect(reopened.stamp).toBe(chainTime);
+      expect(reopened.stamp).not.toBe(-DAY);
       expect([await balanceOf(world, CREATOR), await balanceOf(world, addressOf(DESK_PROXY_CATEGORY))])
         .toStrictEqual([800n, 200n]);
       expect(await entries(world)).toBe(2n);
@@ -763,21 +742,22 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): a job updated, c
     }, 900_000);
 
     it('reopening (39) settles and pulls the amount back in', async () => {
+      const chainTime = BigInt(world.network.getBlockTime());
       expectSettled(await enter(world, 'Desk', 'reopen', [JOB]));
       const reopened = await job0(world);
-      expect([reopened.state, reopened.owed, reopened.stamp]).toStrictEqual([0n, 0n, 0n]);
+      expect([reopened.state, reopened.owed]).toStrictEqual([0n, 0n]);
+      expect(reopened.stamp).toBe(chainTime);
+      expect(reopened.stamp).not.toBe(-DAY);
       expect([await balanceOf(world, CREATOR), await balanceOf(world, addressOf(DESK_PROXY_CATEGORY))])
         .toStrictEqual([800n, 200n]);
       expect(await entries(world)).toBe(2n);
     }, 1_800_000);
 
-    it('an update beside it (31, 33) stops at the token arms the execution skips', async () => {
+    it('an update beside it (31, 33) settles, the unchanged amount skipping both token arms', async () => {
       const outcome = await enter(world, 'Desk', 'update', updateArgs(100n, ['LA', 'Bug'], JUDGE));
-      // Both token arms are still planned and chain through the creator's and the root's balance nodes, and the
-      // entry's own frame refuses where it skips them. Owner: the SDK hop planner (`proxy/external-calls.ts`,
-      // `occurrenceCountOf`).
-      expectRefused(outcome, UPDATE_SKIPS_ARMS);
-      expect(outcome.draft).toBeDefined();
+      expectSettled(outcome);
+      const updated = await job0(world);
+      expect([updated.title, updated.tags, updated.amount]).toStrictEqual(['New title', ['LA', 'Bug'], 100n]);
     }, 900_000);
   });
 });

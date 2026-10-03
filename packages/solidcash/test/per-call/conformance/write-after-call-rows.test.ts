@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import {
-  buildPushdataCommitment, bytesToHex, parsePushdataCommitment, sha256, type Artifact, type RecordEntry,
+  bytesToHex, parsePushdataCommitment, sha256, type Artifact, type RecordEntry,
 } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -13,7 +13,6 @@ import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deplo
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
-import { HOP_TRACE_ENV, HOP_TRACE_PREFIX } from '../../../src/per-call/proxy/hop-trace.js';
 import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -328,34 +327,41 @@ describe('spec section 23 row 15: writes after an external call', () => {
       /the call's callee "Coin\.pull\(\)" did not settle through the proxy: .*over the coin cap/);
   });
 
-  it('known wall: refuses the escrow advancing its own counter after its call, a callee data-record write', async () => {
+  it('settles the escrow advancing its own counter after its call, a callee data-record write', async () => {
     const run = await deployed();
-    // The escrow's record leads with the counter, so the hop trace's reading of the failing close shows it.
+    // The escrow's record leads with the counter, so the value the callee's own close computes is readable here.
     const live = await readPerCallDeployment(run.network, ESCROW_CATEGORY, escrow.stateLayout!);
-    const kept = live.records[0]!.token!.nft!.commitment;
-    const state = parsePushdataCommitment(kept, escrow.stateLayout!, 0) as Record<string, unknown>;
+    const state = parsePushdataCommitment(live.records[0]!.token!.nft!.commitment,
+      escrow.stateLayout!, 0) as Record<string, unknown>;
     expect(state.ids).toStrictEqual({ value: 0n });
-    const advanced = buildPushdataCommitment(escrow.stateLayout!, { ...state, ids: { value: 1n } } as never, 0);
 
-    const lines: string[] = [];
-    const write = process.stdout.write.bind(process.stdout);
-    process.env[HOP_TRACE_ENV] = '1';
-    process.stdout.write = ((chunk: string | Uint8Array): boolean => {
-      lines.push(String(chunk));
-      return true;
-    }) as typeof process.stdout.write;
-    try {
-      await expectRefused(run, 'openNext', [AMOUNT],
-        /the call's callee "Escrow\.fundNext\(\)" did not settle through the proxy: frame "callee-master-1" /);
-    } finally {
-      process.stdout.write = write;
-      delete process.env[HOP_TRACE_ENV];
-    }
-    // Owner: the SDK hop (`proxy/deploy.ts`, `buildHopPlan` and `settleHopCallees`). The frame closed its record
-    // against the view the hop declared, the record the chain holds, while its body computed the advanced counter.
-    const reading = lines.find((line) => line.startsWith(`${HOP_TRACE_PREFIX}reading callee=callee-master-1 ok`));
-    expect(reading).toContain(`declared=${kept.slice(0, 40)}`);
-    expect(reading).toContain(`computed=${advanced.slice(0, 40)}`);
+    const result = await (await enter(run, 'openNext', [AMOUNT])).call;
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual([
+      'Coin.pull()', 'Escrow.fundNext()', 'Broker.openNext()', 'BrokerProxy.__fallback()',
+    ]);
+
+    // The callee's own record is declared in both segments its call splits the frame into — kept before the call,
+    // written after it — and what the second declaration starts from is what the first one ended at.
+    const declared = result.draft.blockOf('callee-master-1').segments;
+    const escrowIndex = result.draft.layout.participants.find((placed) => placed.id === 'Escrow-record-0')!.index;
+    const segments = declared.map((segment) => segment.find((entry: RecordEntry) => entry.out === escrowIndex)!);
+    expect(segments).toHaveLength(2);
+    expect(bytesToHex(segments[0]!.viewOut)).toBe(bytesToHex(segments[0]!.viewIn));
+    expect(bytesToHex(segments[1]!.viewIn)).toBe(bytesToHex(segments[0]!.viewOut));
+    expect(bytesToHex(segments[1]!.viewOut)).not.toBe(bytesToHex(segments[1]!.viewIn));
+
+    // The entry's write is the value its body assigned, which the callee's own return supplied: the record the
+    // transaction carries is the one the body computed, and the counter advanced exactly once.
+    expect(await recordsOf(run.network, brokerProxy, run.proxyCategoryId))
+      .toMatchObject({ opened: 0n, owed: 0n, lastEscrow: ESCROW_BASE });
+    expect(await nodeValue(run.network, escrow, ESCROW_CATEGORY, 'held', 0n))
+      .toBe(bytesToHex(bigIntToVmNumber(AMOUNT)));
+    const after = await readPerCallDeployment(run.network, ESCROW_CATEGORY, escrow.stateLayout!);
+    expect(parsePushdataCommitment(after.records[0]!.token!.nft!.commitment, escrow.stateLayout!, 0))
+      .toMatchObject({ ids: { value: 1n } });
   });
 
   it('refuses the entry by name on the plain call path, which plans no callee frames', async () => {

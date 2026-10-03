@@ -340,6 +340,13 @@ export interface MappingBatchRequest<V> {
    * a value over 60 bytes keeps its root in the node and its bytes past the node's head in value chunks.
    */
   readonly chunkable?: (value: V) => Uint8Array;
+  /**
+   * The slots of nodes this transaction spends no input for because an earlier frame created them, keyed hex.
+   *
+   * The inventory still holds their commitments - what the writing frame left them as - so a write over one
+   * continues from that view; the record it declares names the creating frame's output instead of an input.
+   */
+  readonly continuedSlots?: ReadonlySet<string>;
 }
 
 /** One value chunk a long value takes: its node's slot, the value's root, its index and its commitment. */
@@ -355,6 +362,11 @@ export interface MappingBatchRecord {
   readonly slot: Uint8Array;
   /** Whether the inventory held the node, so the transaction spends it rather than creating it. */
   readonly existed: boolean;
+  /**
+   * True for a node the inventory holds that this transaction spends no input for, because a frame it ran after
+   * created it. Its declaration names that frame's output and continues the view the frame left.
+   */
+  readonly continued?: boolean;
   readonly viewIn: Uint8Array;
   readonly viewOut: Uint8Array;
 }
@@ -431,7 +443,8 @@ export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBat
       written.push({ slot, existed: held !== undefined, before: held?.commitment ?? CREATE_VIEW_IN, after });
     }
     const viewIn = held === undefined ? CREATE_VIEW_IN : first ? held.commitment : after;
-    return { slot, existed: held !== undefined, viewIn, viewOut: after };
+    const continued = held !== undefined && (request.continuedSlots?.has(key) ?? false);
+    return { slot, existed: held !== undefined, ...(continued ? { continued: true } : {}), viewIn, viewOut: after };
   };
   const groups = targets.map((target): MappingBatchGroup => {
     const held = findNode(nodes, target.slot);
@@ -500,9 +513,12 @@ export function layOutMappingWritten(plan: MappingBatchPlan, placements: Mapping
   ];
 }
 
-/** One node's record: a spent node names its input and the output it is recreated at, a created one its output. */
+/**
+ * One node's record: a spent node names its input and the output it is recreated at, a created one its output, and
+ * a node an earlier frame created names that frame's output and continues the view it left.
+ */
 function layOutNodeRecord(record: MappingBatchRecord, placements: MappingNodePlacements): RecordEntry {
-  if (!record.existed) {
+  if (!record.existed || record.continued === true) {
     return {
       in: INDEX_NONE,
       out: requireWrittenOutput(placements, record.slot, INDEX_NONE),

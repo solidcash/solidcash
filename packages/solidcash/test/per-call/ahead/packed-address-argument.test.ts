@@ -535,7 +535,12 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: an address packed int
     expect(outcome.error!.message).toBe('the call\'s callee "Splitter.split()" did not settle through the proxy: '
       + `frame "callee-master-1" of Splitter.split() at line ${lineOf('function split(uint256 amount_) public')}: `
       + 'no source message (Program failed an OP_VERIFY operation.)');
-    expect(outcome.stalls).toStrictEqual([]);
+    // The stop's settle also derives the entry's own frame to see whether it names a reason of its own, so the
+    // refusal carries that stall; the split's unattributed refusal is still what the report names.
+    expect(outcome.stalls).toStrictEqual([
+      'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.arbitrate() filled no witness at '
+      + 'site 0 (call 0)',
+    ]);
     expect(outcome.stated).toStrictEqual([[1000n]]);
     expect(outcome.coinLive).toBe(true);
   }, 300_000);

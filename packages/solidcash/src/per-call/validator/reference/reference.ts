@@ -760,13 +760,6 @@ function readBlock(payload: Uint8Array): WitnessBlock {
   reader.readCounted16((inner): Uint8Array => inner.readLp32());
   reader.assertEnd();
   if (segments.length !== calls.length + 1) throw new PerCallEncodingError('segment and call counts disagree');
-  for (const segment of segments) {
-    for (const entry of segment) {
-      if (entry.in === INDEX_NONE && segment === segments[0]) {
-        throw new PerCallEncodingError('a record cannot be created by the first segment');
-      }
-    }
-  }
   return { kind, callerRef, originRef, validatorRef, sender, self, value, retval, calls, segments, events, sends };
 }
 

@@ -10,10 +10,11 @@ import {
   type Artifact,
   type ExternalCallExpression,
   type ExternalCallStatement,
+  type StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
-import { decodeAuthenticatedProducerResultVector } from './external-return-encoding.js';
+import { decodeAuthenticatedProducerResultVector, encodeExternalReturnValues } from './external-return-encoding.js';
 import { p2pkhLockingBytecode } from './legacy-job-event-wire.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 
@@ -29,6 +30,19 @@ export interface EvaluateExternalExpressionHost {
     stateIncludesPriorWrites?: boolean,
     executionSelfAddress?: FunctionArgument,
   ): FunctionArgument[] | undefined;
+  /**
+   * The value a mapping collection's own node holds for a key, read from the frame's live deployment.
+   *
+   * A state variable backed by a mapping is not carried by the data-NFT fields the caller's own state holds: its
+   * entries are separate nodes, and only a keyed lookup finds one. The host offers that lookup so a compiler-
+   * serialized `stateAccess` on a mapping resolves the same way the contract's own body reads it. An absent key is
+   * the language default, exactly as the on-chain read yields it, and a value the deployment cannot reassemble is
+   * left unstated rather than guessed.
+   */
+  resolveMappingValue?(
+    collection: string,
+    keys: readonly FunctionArgument[],
+  ): FunctionArgument | undefined;
 }
 
 export function evaluateExternalExpression(
@@ -305,10 +319,20 @@ strictFieldAccess = false,
     return state?.[expression.name] as FunctionArgument | undefined;
   }
   if (expression.kind === 'stateAccess' && expression.name) {
-    let value = state?.[expression.name] as unknown;
+    const keys: FunctionArgument[] = [];
     for (const keyExpression of expression.args ?? []) {
       const key = evaluate(keyExpression);
       if (key === undefined) return undefined;
+      keys.push(key);
+    }
+    const direct = state?.[expression.name] as unknown;
+    // A mapping-backed state variable is not a data-NFT field, so the caller's own state never carries it: the
+    // host's keyed lookup is what reads the node the deployment holds for those keys.
+    if (direct === undefined && host.resolveMappingValue !== undefined) {
+      return host.resolveMappingValue(expression.name, keys);
+    }
+    let value: unknown = direct;
+    for (const key of keys) {
       if (Array.isArray(value)) value = value[Number(key)];
       else if (value && typeof value === 'object') value = (value as Record<string, unknown>)[String(key)];
       else return undefined;
@@ -380,6 +404,25 @@ strictFieldAccess = false,
     // Match graph codegen's authenticated contract-address predicate: P2SH20/P2SH32 are code-bearing,
     // while P2PKH and the zero address are not. Only zero/nonzero is observable from this recipe.
     return bytes.length === 23 || bytes.length === 35 ? 1n : 0n;
+  }
+  if (expression.kind === 'abiEncode' && expression.args !== undefined) {
+    const values = expression.args.map(evaluate);
+    // The compiler reads a producer result through `abiDecode(abiEncode(result, [type]), [type])`, so the encode
+    // half has to publish the same vector the decode half reads: the callee's declared ABI mode applies, and each
+    // element's type is the field label the node carries or the type its argument declares.
+    const types = expression.args.map((arg, index) => expression.fields?.[index] || arg.type || inferredType(arg));
+    if (values.some((value) => value === undefined) || types.some((type) => !type)) return undefined;
+    try {
+      return encodeExternalReturnValues(
+        values as StateValue[],
+        types as readonly string[],
+        artifact.structs ?? artifact.stateLayout?.structs,
+        artifactUsesSolidityAbi(artifact),
+        artifact.enums,
+      );
+    } catch {
+      return undefined;
+    }
   }
   if (expression.kind === 'abiDecode' && expression.expression && expression.fields?.length) {
     const value = evaluate(expression.expression);
@@ -515,6 +558,16 @@ strictFieldAccess = false,
         if (type === 'bool') return false;
         if (type === 'string') return '';
         if (type?.endsWith('[]')) return [];
+        // A fixed-size array local starts as its declared length of the element type's default, so an element
+        // assignment into it lands on a slot the array already holds rather than growing an unrelated value.
+        const fixed = type?.match(/^(.*)\[(\d+)\]$/);
+        if (fixed && fixed[1] !== undefined) {
+          const length = Number(fixed[2]);
+          if (Number.isSafeInteger(length) && length >= 0 && length <= 10_000) {
+            const element = defaultValue(fixed[1]);
+            return Array.from({ length }, () => element) as FunctionArgument;
+          }
+        }
         if (type?.startsWith('bytes') || type?.startsWith('address')) return new Uint8Array();
         return 0n;
       };
@@ -529,6 +582,23 @@ strictFieldAccess = false,
             const value = evaluateWith(statement.expression);
             if (value === undefined) { invalid = true; return { returned: false }; }
             bindings.set(statement.name, value);
+          } else if (statement.kind === 'arrayAssign' && statement.name && statement.expression) {
+            const target = bindings.get(statement.name);
+            const index = statement.index ? evaluateWith(statement.index) : undefined;
+            const position = typeof index === 'bigint' ? Number(index)
+              : typeof index === 'number' ? index : NaN;
+            if (!Array.isArray(target) || !Number.isSafeInteger(position)
+              || position < 0 || position >= target.length) {
+              invalid = true;
+              return { returned: false };
+            }
+            const value = evaluateWith(statement.expression);
+            if (value === undefined) { invalid = true; return { returned: false }; }
+            // Copy on write: a local array may alias a forward-bound argument, and the caller's own value is not
+            // the helper's to mutate.
+            const next = (target as FunctionArgument[]).slice();
+            next[position] = value;
+            bindings.set(statement.name, next as unknown as FunctionArgument);
           } else if (statement.kind === 'while' && statement.condition && statement.statements) {
             while (true) {
               const condition = evaluateWith(statement.condition);

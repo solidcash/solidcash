@@ -18,11 +18,9 @@ import {
  * its reason, and nothing is broadcast. `Reader` is the catalog's views calling views: deployed on its own, it reads
  * `Shelf.catalog` and answers through the shipped read path, with nothing broadcast.
  *
- * Known wall: a callee view that reads a dynamic state field, answered through the shipped read path. `listing`
- * reads the stored title, which the artifact publishes in the entry's `dynamicReads`; the read path declares no
- * chunk run for a whole dynamic field (it does for mapping values and indexed array reads), so the callee's frame
- * fails where the body reads the title. The hop serves the same view in `inspect`. Owner: the SDK read path
- * (`per-call/read/read.ts`).
+ * The read path answers a callee view that reads a dynamic state field: `listing` reads the stored title, which the
+ * artifact publishes in the entry's `dynamicReads`, and the read declares the run those bytes live in, so the
+ * callee's own frame reads the title its deployment holds and the value reaches the caller.
  */
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
@@ -153,14 +151,17 @@ describe('views calling views, through the shipped read path', () => {
     expect(run.network.indexer.getTip()?.height).toBe(tip);
   });
 
-  it('known wall: a callee view that reads a dynamic state field is not answered', async () => {
-    const run = await deployed();
-    const reader = await deployReader(run);
-    // Owner: the SDK read path (`per-call/read/read.ts`), which declares no chunk run for the field the entry
-    // publishes in `dynamicReads`.
-    expect(artifacts.Shelf!.abi.find((entry) => entry.name === 'listing')!.dynamicReads).toStrictEqual(['title']);
-    const headline = await reader.read('headline');
-    expect(headline.accepted).toBe(false);
-    expect(headline.objection).toMatch(/frame "read-1" of Shelf\.listing\(\)/);
-  });
+  it('answers a callee view that reads a dynamic state field, with the stored value and nothing broadcast',
+    async () => {
+      const run = await deployed();
+      const reader = await deployReader(run);
+      // The field is one the entry publishes in `dynamicReads`, so the read path has to declare the run its bytes
+      // live in before the callee's own frame can read it.
+      expect(artifacts.Shelf!.abi.find((entry) => entry.name === 'listing')!.dynamicReads).toStrictEqual(['title']);
+      const tip = run.network.indexer.getTip()?.height;
+      const headline = await reader.read('headline');
+      expect(headline.accepted, headline.objection).toBe(true);
+      expect(headline.values).toStrictEqual(['garden work']);
+      expect(run.network.indexer.getTip()?.height).toBe(tip);
+    });
 });

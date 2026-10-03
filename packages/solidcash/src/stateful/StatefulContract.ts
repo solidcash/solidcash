@@ -5467,6 +5467,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   _perCallProxyImplementationCategory?: string;
   /** The address a per-call proxy's handle presents: the proxy's own master pool, not the implementation's. */
   _perCallProxyAddress?: string;
+  /**
+   * The address a plain per-call handle presents: the contract's own address, `addrV(category)`, carried rather
+   * than recomputed from the artifact so it wins over a Solidity-facing logical CREATE address.
+   */
+  _perCallAddress?: string;
 
   /**
    * Maximum number of VM probe iterations for auto-derivation.
@@ -5908,6 +5913,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     (sc as StatefulContract)._logicalNonceSigner = signer;
     (sc as StatefulContract)._perCallProxyImplementationCategory = this._perCallProxyImplementationCategory;
     (sc as StatefulContract)._perCallProxyAddress = this._perCallProxyAddress;
+    (sc as StatefulContract)._perCallAddress = this._perCallAddress;
     // Connecting a signer changes only the runner. Preserve the externally visible logical identity used by
     // Solidity `address(this)`/cross-contract `msg.sender`; rebuilding from the category alone otherwise falls
     // back to the physical p2sh32 state covenant address.
@@ -6133,9 +6139,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   get address(): string {
     // For an address-constructed instance the address is known immediately (the category-less scaffold's own
-    // address would differ until resolution). A per-call contract behind a proxy is addressed by the proxy, whose
-    // master is not the implementation's, so its address is carried rather than recomputed from the artifact.
-    return this._perCallProxyAddress ?? this._pendingAddress ?? this.inner.address;
+    // address would differ until resolution). A per-call contract is addressed by its own `addrV(category)`, and a
+    // per-call contract behind a proxy by the proxy's, so both are carried rather than recomputed from the artifact.
+    return this._perCallAddress ?? this._perCallProxyAddress ?? this._pendingAddress ?? this.inner.address;
   }
 
   get tokenAddress(): string {
@@ -6163,7 +6169,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   /** The contract's on-chain identifier - its p2sh address (ethers.js `contract.target`). */
   get target(): string {
-    return this._logicalAddress ?? this.address;
+    return this._perCallAddress ?? this._logicalAddress ?? this.address;
   }
 
   /** The contract's p2sh address (async, ethers.js `contract.getAddress()`). */

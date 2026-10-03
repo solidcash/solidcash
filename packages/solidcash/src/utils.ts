@@ -470,6 +470,17 @@ export function lockingBytecodeToSolidityAddressPayload(
   return undefined;
 }
 
+/**
+ * The locking bytecode a 20-byte address payload names: the P2PKH lock of that hash.
+ *
+ * The inverse of `lockingBytecodeToSolidityAddressPayload`. The compiler's `address` is a locking bytecode, while an
+ * EVM ABI carries the 20-byte identity, so an argument that arrives in the payload form names the same address only
+ * once it is a lock: a value read back through one form has to key the same mapping as one written through the other.
+ */
+export function addressPayloadToLockingBytecode(payload: Uint8Array): Uint8Array {
+  return encodeLockingBytecodeP2pkh(payload);
+}
+
 export function getNetworkPrefix(network: string): 'bitcoincash' | 'bchtest' | 'bchreg' {
   switch (network) {
     case Network.MAINNET:

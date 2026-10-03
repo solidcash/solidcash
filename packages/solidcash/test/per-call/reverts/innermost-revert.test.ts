@@ -35,21 +35,31 @@ import { REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend }
 
 const CATEGORY_CALLER = seededCategory('refusal caller');
 const CATEGORY_CALLEE = seededCategory('refusal callee');
+const CATEGORY_INNER = seededCategory('refusal inner');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const ADDRESS_CALLER = validatorAddress(CATEGORY_CALLER, VALIDATOR_PROGRAM);
 const ADDRESS_CALLEE = validatorAddress(CATEGORY_CALLEE, VALIDATOR_PROGRAM);
+const ADDRESS_INNER = validatorAddress(CATEGORY_INNER, VALIDATOR_PROGRAM);
 const USER_LOCK = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x22), 0x88, 0xac]);
 
 const CALLER_ENTRY = 'Caller.callIt()';
 const CALLEE_ENTRY = 'Callee.ping()';
 const CALLER_MASTER = 'caller-1';
 const CALLEE_MASTER = 'callee-1';
+const INNER_ENTRY = 'Inner.deep()';
+const INNER_MASTER = 'inner-1';
 const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
+const INNER_SELECTOR = computeFunctionSelector(computeFunctionSignature('deep', []));
 
-/** The composition's source: a caller that calls a callee, with the bodies under test filling each entry. */
-function source(calleeBody: string, callerBody: string): string {
+/**
+ * The composition's source: a caller that calls a callee, with the bodies under test filling each entry.
+ *
+ * `callerBeforeCall` runs in the caller's body before the call, so a check there refuses before the callee is
+ * entered.
+ */
+function source(calleeBody: string, callerBody: string, callerBeforeCall = ''): string {
   return `pragma solidcash ^0.13.0;
 error InsufficientBalance(int requested, int available);
 interface ICallee { function ping(); }
@@ -60,6 +70,7 @@ contract Callee {
 }
 contract Caller {
   function callIt() {
+    ${callerBeforeCall}
     ICallee(0x${Buffer.from(ADDRESS_CALLEE).toString('hex')}).ping.call();
     ${callerBody}
   }
@@ -84,9 +95,11 @@ interface Composition {
  *
  * The derivation is attempted and its refusal is kept: a frame that reverts fills no witness, so the shipped
  * derivation stops before the machine is asked for a verdict. The draft it leaves is what the report is read from.
+ * `derive: false` keeps the assembled draft before any derivation, the state a settle reports on when it asks the
+ * machine about a frame whose callee has not been derived yet.
  */
-function build(calleeBody: string, callerBody: string): Composition {
-  const artifacts = compileStringMulti(source(calleeBody, callerBody), { composition: 'per-call' });
+function build(calleeBody: string, callerBody: string, callerBeforeCall = '', derive = true): Composition {
+  const artifacts = compileStringMulti(source(calleeBody, callerBody, callerBeforeCall), { composition: 'per-call' });
   const caller = deployMaster(artifacts.Caller!, CATEGORY_CALLER, VALIDATOR_PROGRAM);
   const callee = deployMaster(artifacts.Callee!, CATEGORY_CALLEE, VALIDATOR_PROGRAM);
   const validator = validatorSpend(CATEGORY_CALLER, { roots: [0], masters: [0, 2], settles: [] });
@@ -155,7 +168,7 @@ function build(calleeBody: string, callerBody: string): Composition {
     vm, artifacts: [artifacts.Caller!, artifacts.Callee!], plan,
   });
   let derivationError: Error | undefined;
-  try {
+  if (derive) try {
     deriveDepthFirst({ contract: 'Caller', functionName: CALLER_ENTRY, kind: FrameKind.ROOT, master: CALLER_MASTER }, host);
   } catch (error) {
     // A reverting frame fills no witness, so the shipped derivation stops here; the draft stands for the report.
@@ -167,6 +180,139 @@ function build(calleeBody: string, callerBody: string): Composition {
 /** The 1-based line of the first source line containing `needle`. */
 function lineOf(text: string, needle: string): number {
   return text.split('\n').findIndex((line) => line.includes(needle)) + 1;
+}
+
+/**
+ * The three-frame source for the reachability case.
+ *
+ * `Caller` fails its own check and never enters `Callee`; `Callee` fails before it enters `Inner`; `Inner` refuses
+ * on its own body. All three frames are laid, so the report has to tell the frame the execution reached from the
+ * two below it.
+ */
+function sourceThree(): string {
+  return `pragma solidcash ^0.13.0;
+interface IInner { function deep(); }
+interface ICallee { function ping(); }
+contract Inner {
+  function deep() { require(false, "inner failed"); }
+}
+contract Callee {
+  function ping() {
+    IInner(0x${Buffer.from(ADDRESS_INNER).toString('hex')}).deep();
+    require(false, "callee failed");
+  }
+}
+contract Caller {
+  function callIt() {
+    require(false, "caller failed");
+    ICallee(0x${Buffer.from(ADDRESS_CALLEE).toString('hex')}).ping();
+  }
+}`;
+}
+
+/**
+ * Assembles three frames without deriving them, then binds the caller's own call.
+ *
+ * The caller's call is bound by hand because the shipped derivation stops at the caller's failing check; the state
+ * the report reads is the one a settle hands it: the reached frame's call bound, the frames below it not.
+ */
+function buildThree(): {
+  readonly draft: ReturnType<typeof createComposedDerivationHost>['draft'];
+  readonly artifacts: ReturnType<typeof compileStringMulti>;
+  readonly vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
+} {
+  const artifacts = compileStringMulti(sourceThree(), { composition: 'per-call' });
+  const caller = deployMaster(artifacts.Caller!, CATEGORY_CALLER, VALIDATOR_PROGRAM);
+  const callee = deployMaster(artifacts.Callee!, CATEGORY_CALLEE, VALIDATOR_PROGRAM);
+  const inner = deployMaster(artifacts.Inner!, CATEGORY_INNER, VALIDATOR_PROGRAM);
+  const validator = validatorSpend(CATEGORY_CALLER, { roots: [0], masters: [0, 2], settles: [] });
+
+  const callerMaster: DraftMaster = {
+    master: CALLER_MASTER, contract: 'Caller', functionName: CALLER_ENTRY, program: caller.script,
+    facts: {
+      contract: 'Caller', functionName: 'callIt', kind: FrameKind.ROOT, callerIsUser: true,
+      originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 1,
+    },
+    frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: ADDRESS_CALLER, value: 0n },
+    enteredBy: USER_ID, origin: USER_ID,
+    calls: [{
+      kind: FrameKind.CALL, callee: CALLEE_MASTER, target: ADDRESS_CALLEE, value: 0n,
+      argumentPushes: [CALLEE_SELECTOR],
+    }],
+    retval: empty, segments: [[], []], events: [], sends: [], argumentPushes: [], redeemScript: caller.script,
+  };
+  const calleeMaster: DraftMaster = {
+    master: CALLEE_MASTER, contract: 'Callee', functionName: CALLEE_ENTRY, program: callee.script,
+    facts: {
+      contract: 'Callee', functionName: 'ping', kind: FrameKind.CALL, callerIsUser: false,
+      originEqualsCaller: false, makesExternalCall: true, mastersOfContract: 1,
+    },
+    frame: { kind: FrameKind.CALL, sender: ADDRESS_CALLER, self: ADDRESS_CALLEE, value: 0n },
+    enteredBy: CALLER_MASTER, origin: USER_ID,
+    calls: [{
+      kind: FrameKind.CALL, callee: INNER_MASTER, target: ADDRESS_INNER, value: 0n,
+      argumentPushes: [INNER_SELECTOR],
+    }],
+    retval: empty, segments: [[], []], events: [], sends: [], argumentPushes: [CALLEE_SELECTOR], redeemScript: callee.script,
+  };
+  const innerMaster: DraftMaster = {
+    master: INNER_MASTER, contract: 'Inner', functionName: INNER_ENTRY, program: inner.script,
+    facts: {
+      contract: 'Inner', functionName: 'deep', kind: FrameKind.CALL, callerIsUser: false,
+      originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 1,
+    },
+    frame: { kind: FrameKind.CALL, sender: ADDRESS_CALLEE, self: ADDRESS_INNER, value: 0n },
+    enteredBy: CALLEE_MASTER, origin: USER_ID, calls: [], retval: empty, segments: [[]],
+    events: [], sends: [], argumentPushes: [INNER_SELECTOR], redeemScript: inner.script,
+  };
+  const plan: CompositionDraftPlan = {
+    blocks: [
+      { contract: 'Caller', masters: [CALLER_MASTER], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
+      { contract: 'Callee', masters: [CALLEE_MASTER], state: [] },
+      { contract: 'Inner', masters: [INNER_MASTER], state: [] },
+    ],
+    userInputs: [{ id: USER_ID, index: 5 }],
+    masters: [callerMaster, calleeMaster, innerMaster],
+    inputs: {
+      [CALLER_MASTER]: {
+        source: {
+          lockingBytecode: caller.lockingBytecode, valueSatoshis: 20_000n,
+          token: token(CATEGORY_CALLER, 'minting'),
+        },
+      },
+      [CALLEE_MASTER]: {
+        source: {
+          lockingBytecode: callee.lockingBytecode, valueSatoshis: 20_000n,
+          token: token(CATEGORY_CALLEE, 'minting'),
+        },
+      },
+      [INNER_MASTER]: {
+        source: {
+          lockingBytecode: inner.lockingBytecode, valueSatoshis: 20_000n,
+          token: token(CATEGORY_INNER, 'minting'),
+        },
+      },
+      [VALIDATOR_ID]: {
+        source: {
+          lockingBytecode: validator.lock, valueSatoshis: 20_000n,
+          token: token(CATEGORY_CALLER, 'mutable'),
+        },
+      },
+      [USER_ID]: {
+        source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n }, unlockingBytecode: callerUnlockingBytecode(),
+      },
+    },
+    validator: { id: VALIDATOR_ID, covers: ['Callee', 'Inner'], settles: [], redeemScript: validator.redeem },
+  };
+
+  const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+  const vm = createVirtualMachineBch2026ForProvider(provider);
+  const { draft } = createComposedDerivationHost({
+    vm, artifacts: [artifacts.Caller!, artifacts.Callee!, artifacts.Inner!], plan,
+  });
+  draft.blockOf(CALLER_MASTER).calls[0]!.calleeRef =
+    draft.layout.participants.find((participant) => participant.id === CALLEE_MASTER)!.index;
+  return { draft, artifacts, vm };
 }
 
 describe('a refused composition reports its innermost frame reason', () => {
@@ -246,6 +392,29 @@ describe('a refused composition reports its innermost frame reason', () => {
     expect(report.innermost!.reason.message).not.toBe('caller failed');
   });
 
+  it('reports a caller\'s own check that fails before the call, not the callee frame it never enters', () => {
+    // The check runs before the call, so a real execution stops in the caller and never enters the callee. Both
+    // frames are laid (the plan is static), and the callee would refuse on its own revert, but its refusal is
+    // downstream of a call the caller never made. The report is read before a derivation fills the call reference,
+    // which is the state a settle reports on when it asks about a frame whose callee is not derived yet.
+    const before = 'require(false, "caller failed");';
+    const text = source('revert InsufficientBalance(100, 50);', 'require(true);', before);
+    const { draft, artifacts, vm } = build('revert InsufficientBalance(100, 50);', 'require(true);', before, false);
+
+    const report = reportCompositionRefusal({ draft, artifacts: [artifacts.Caller!, artifacts.Callee!], vm });
+
+    expect(report.accepted).toBe(false);
+    // Both frames refused, and each reason is attributed to its own frame.
+    const callerRefusal = report.refusals.find((refusal) => refusal.master === CALLER_MASTER)!;
+    expect(callerRefusal.reason.message).toBe('caller failed');
+    expect(callerRefusal.reason.line).toBe(lineOf(text, 'require(false, "caller failed")'));
+    const calleeRefusal = report.refusals.find((refusal) => refusal.master === CALLEE_MASTER)!;
+    expect(calleeRefusal.reason.error!.name).toBe('InsufficientBalance');
+    // The caller's check failed before it executed the call, so its reason is the one that surfaces.
+    expect(report.innermost!.master).toBe(CALLER_MASTER);
+    expect(report.innermost!.reason.message).toBe('caller failed');
+  });
+
   it('pins a frame that reverts with no message to the machine\'s own objection and its source line', () => {
     const text = source('require(false);', 'require(true);');
     const { draft, artifacts, vm } = build('require(false);', 'require(true);');
@@ -260,5 +429,27 @@ describe('a refused composition reports its innermost frame reason', () => {
     expect(innermost.reason.message).toBeUndefined();
     expect(innermost.reason.line).toBe(lineOf(text, 'require(false);'));
     expect(innermost.objection).toContain('OP_VERIFY');
+  });
+
+  it('names the reached caller, not a frame below a call the execution never entered', () => {
+    // `Caller` fails its own check; `Callee`'s call to `Inner` is never bound; `Inner` refuses on its own body.
+    // The three frames are laid and the caller's own call is bound, so the two frames below it are not on the
+    // executed path: the deepest reached frame is the caller, and its own reason is the one reported.
+    const text = sourceThree();
+    const { draft, artifacts, vm } = buildThree();
+    const report = reportCompositionRefusal({
+      draft, artifacts: [artifacts.Caller!, artifacts.Callee!, artifacts.Inner!], vm,
+    });
+
+    expect(report.accepted).toBe(false);
+    // Every frame refused on the machine, and each owns its reason.
+    const callerRefusal = report.refusals.find((refusal) => refusal.master === CALLER_MASTER)!;
+    expect(callerRefusal.reason.message).toBe('caller failed');
+    expect(callerRefusal.reason.line).toBe(lineOf(text, 'require(false, "caller failed")'));
+    const innerRefusal = report.refusals.find((refusal) => refusal.master === INNER_MASTER)!;
+    expect(innerRefusal.reason.message).toBe('inner failed');
+    // The caller's call is bound, but the callee never reached `Inner`, so `Inner` is not the innermost frame.
+    expect(report.innermost!.master).toBe(CALLER_MASTER);
+    expect(report.innermost!.reason.message).toBe('caller failed');
   });
 });

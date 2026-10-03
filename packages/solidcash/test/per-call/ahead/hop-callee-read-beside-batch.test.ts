@@ -59,6 +59,9 @@ const SOURCE = [
   '  function transferFrom(address from, address to, uint amount) returns (bool);',
   '  function transferVia(address from, address to, address witness, uint amount) returns (bool);',
   '  function transferPlain(address from, address to, uint amount) returns (bool);',
+  '  function approve(address spender, uint amount) returns (bool);',
+  '  function transferSkewed(address from, address to, uint amount) returns (bool);',
+  '  function transferCapped(address from, address to, uint amount) returns (bool);',
   '}',
   'contract Coin {',
   '  mapping(address => uint) balances;',
@@ -90,6 +93,26 @@ const SOURCE = [
   '    this.balances[to] = this.balances[to] + amount;',
   '    return true;',
   '  }',
+  // The allowance's access sits between the two balance accesses, so the artifact groups them into batches whose
+  // flattened slot order is not the source order: balances[to] (slot 0), the allowance (slot 1), balances[from].
+  '  function transferSkewed(address from, address to, uint amount) returns (bool) {',
+  '    this.balances[to] = this.balances[to] + amount;',
+  '    require(this.allowances[from][msg.sender] >= amount, "short allowance");',
+  '    this.allowances[from][msg.sender] = this.allowances[from][msg.sender] - amount;',
+  '    this.balances[from] = this.balances[from] - amount;',
+  '    return true;',
+  '  }',
+  // A granted cap is read but not written: the body takes the arm that spends nothing, so the node the granting
+  // frame created is only read by this one.
+  '  function transferCapped(address from, address to, uint amount) returns (bool) {',
+  '    this.balances[to] = this.balances[to] + amount;',
+  '    if (this.allowances[from][msg.sender] != type(uint256).max) {',
+  '      require(this.allowances[from][msg.sender] >= amount, "short allowance");',
+  '      this.allowances[from][msg.sender] = this.allowances[from][msg.sender] - amount;',
+  '    }',
+  '    this.balances[from] = this.balances[from] - amount;',
+  '    return true;',
+  '  }',
   '}',
   'contract Root {',
   '  address public implementation;',
@@ -105,6 +128,26 @@ const SOURCE = [
   '  }',
   '  function pullPlain(address coin, uint amount) {',
   '    ICoin(coin).transferPlain(msg.sender, address(this), amount);',
+  '    this.pulls = this.pulls + 1;',
+  '  }',
+  '  function pullSelf(address coin, address to, uint amount) {',
+  '    ICoin(coin).approve(address(this), amount);',
+  '    ICoin(coin).transferFrom(address(this), to, amount);',
+  '    this.pulls = this.pulls + 1;',
+  '  }',
+  '  function pullComputed(address coin, address to, uint amount) {',
+  '    ICoin(coin).approve(address(this), amount + 1);',
+  '    ICoin(coin).transferFrom(address(this), to, amount);',
+  '    this.pulls = this.pulls + 1;',
+  '  }',
+  '  function pullSkewed(address coin, address to, uint amount) {',
+  '    ICoin(coin).approve(address(this), amount);',
+  '    ICoin(coin).transferSkewed(address(this), to, amount);',
+  '    this.pulls = this.pulls + 1;',
+  '  }',
+  '  function pullCapped(address coin, address to, uint amount) {',
+  '    ICoin(coin).approve(address(this), type(uint256).max);',
+  '    ICoin(coin).transferCapped(address(this), to, amount);',
   '    this.pulls = this.pulls + 1;',
   '  }',
   '}',
@@ -269,5 +312,45 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a hop callee reads a 
 
   it('a pull that reads no mapping settles', async () => {
     expectMoved(await pullOnce(50n, 'pullPlain', [COIN, 40n]));
+  }, 900_000);
+
+  it('a pull that grants its own allowance and then spends it settles', async () => {
+    // The entry approves the allowance its own next call spends, so one reach of the hop creates the key's node and
+    // the reach after it reads and rewrites that node: the allowance the body reads is the one the earlier frame
+    // left, and the node carries no input for the reader to resolve it from.
+    const outcome = await pullOnce(0n, 'pullSelf', [COIN, THIRD, 40n]);
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.result!.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+  }, 900_000);
+
+  it('a pull whose allowance was granted at a value the plan cannot state settles', async () => {
+    // The granted value is computed in the granting frame, so the plan states a placeholder for the node that frame
+    // creates, and the frame after it reads a node whose value only the settle learns.
+    const outcome = await pullOnce(0n, 'pullComputed', [COIN, THIRD, 40n]);
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.result!.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+  }, 900_000);
+
+  it('a pull whose allowance read sits between two balance accesses settles', async () => {
+    // The artifact groups the three accesses into two batches, so the derivation reads them in the batches' order
+    // rather than the source order, and one of the groups is a node the granting frame created.
+    const outcome = await pullOnce(0n, 'pullSkewed', [COIN, THIRD, 40n]);
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.result!.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+  }, 900_000);
+
+  it('a pull that reads a granted cap the granting frame created settles', async () => {
+    // The granting frame creates the node at a value the plan cannot state, and this frame only reads it: the
+    // continuation changes nothing, so the chain of declarations for the node has to end at the commitment the
+    // output carries, and the frame states no end view of its own for it. The hop is planned once more with that
+    // reading once the settle has accepted, which is what tells this frame from one that rewrote the node - the
+    // sibling `call/shared-node-across-reaches.test.ts` states the end view of the node its second grant rewrites.
+    const outcome = await pullOnce(0n, 'pullCapped', [COIN, THIRD, 40n]);
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.result!.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
   }, 900_000);
 });

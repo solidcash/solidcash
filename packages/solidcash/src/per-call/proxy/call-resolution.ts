@@ -28,7 +28,9 @@ import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js
 import {
   evaluateExternalExpression, type EvaluateExternalExpressionHost,
 } from '../../stateful/sc-evaluate-external-expression.js';
-import { addressToLockScript } from '../../utils.js';
+import {
+  addressPayloadToLockingBytecode, addressToLockScript, lockingBytecodeToSolidityAddressPayload,
+} from '../../utils.js';
 import { PerCallProxyDeployError } from './errors.js';
 
 /** The ABI fields one entry is read from, on the caller or the callee side. */
@@ -52,6 +54,12 @@ export function entryRowOf(artifact: Artifact, functionName: string): AbiEntryRo
   return row as AbiEntryRow;
 }
 
+/** Reads one mapping collection's own node value for a key, from the deployment a frame runs on. */
+export type MappingValueReader = (
+  collection: string,
+  keys: readonly FunctionArgument[],
+) => FunctionArgument | undefined;
+
 /** The caller-side facts a published call site is resolved from. */
 export interface HopCallInputs {
   readonly artifact: Artifact;
@@ -66,6 +74,14 @@ export interface HopCallInputs {
   readonly senderAddress?: Uint8Array;
   /** The caller's constructor arguments, when a routing forwards one. */
   readonly constructorArgs?: readonly FunctionArgument[];
+  /**
+   * The value a mapping collection's own live node holds for a key, read from the deployment the frame runs on.
+   *
+   * A state variable backed by a mapping is not one of the caller's data-NFT fields, so a routing that computes a
+   * target or argument from a mapping read can only be resolved from the frame's nodes. Absent leaves every such
+   * read unresolved, and the site is refused by name as before.
+   */
+  readonly readMappingValue?: MappingValueReader;
   /**
    * The results the caller's earlier calls returned, keyed the way the expression evaluator reads them.
    *
@@ -114,10 +130,13 @@ function literalArgument(value: string, type: string): FunctionArgument {
   return BigInt(value);
 }
 
-/** An address value as its locking bytecode, or undefined when it is not one. */
-function addressBytes(value: FunctionArgument | undefined): Uint8Array | undefined {
-  if (value instanceof Uint8Array) return value.length === 0 ? undefined : value;
+/** The bytes an address value carries, in either wire form: a 20-byte payload, a lock, or a CashAddress string. */
+function addressRawBytes(value: FunctionArgument | undefined): Uint8Array | undefined {
+  if (value instanceof Uint8Array) return value;
   if (typeof value === 'string') {
+    const hex = value.replace(/^0x/i, '');
+    if (hex.length === 0) return new Uint8Array(0);
+    if (/^[0-9a-fA-F]{40}$/.test(hex)) return new Uint8Array(hexToBin(hex));
     try {
       return addressToLockScript(value);
     } catch {
@@ -128,14 +147,32 @@ function addressBytes(value: FunctionArgument | undefined): Uint8Array | undefin
 }
 
 /**
- * True when a resolved argument names the zero address: an empty or all-zero byte string.
+ * An address value as its locking bytecode, or undefined when it names nothing.
  *
- * Nothing can sit at the zero address, so it is never a deployment the hop could place a callee on. Unlike a value
+ * A 20-byte value is the address payload an EVM ABI carries rather than a locking bytecode, so it names the same
+ * address as the lock of that hash and is widened to it; every other byte string is already a lock and is taken as
+ * one, including a P2SH or P2SH32 lock. An empty byte string is no address at all: nothing can sit at it.
+ */
+function addressBytes(value: FunctionArgument | undefined): Uint8Array | undefined {
+  const bytes = addressRawBytes(value);
+  if (bytes === undefined || bytes.length === 0) return undefined;
+  return bytes.length === 20 ? addressPayloadToLockingBytecode(bytes) : bytes;
+}
+
+/**
+ * True when a resolved argument names no address: the empty byte string, or an identity that is all zero bytes.
+ *
+ * Nothing can sit at such an address, so it is never a deployment the hop could place a callee on. Unlike a value
  * the resolver cannot state at all, it is a value the caller's own facts do name, which is why the two are read
- * apart.
+ * apart. The identity is read in either wire form, so a caller that states the zero address as a 20-byte payload or
+ * as the lock that payload derives names the same address as one that states an all-zero byte string.
  */
 function isZeroAddress(value: FunctionArgument | undefined): boolean {
-  return value instanceof Uint8Array && value.every((byte) => byte === 0);
+  const bytes = addressRawBytes(value);
+  if (bytes === undefined) return false;
+  if (bytes.length === 0) return true;
+  const payload = bytes.length === 20 ? bytes : lockingBytecodeToSolidityAddressPayload(bytes);
+  return payload !== undefined && payload.every((byte) => byte === 0);
 }
 
 /**
@@ -209,6 +246,10 @@ export function makeCallResolver(inputs: HopCallInputs): CallResolver {
       }
       return resolved;
     },
+    ...(inputs.readMappingValue === undefined ? {} : {
+      resolveMappingValue: (collection: string, keys: readonly FunctionArgument[]) =>
+        inputs.readMappingValue!(collection, keys),
+    }),
   };
 
   const evaluate = (

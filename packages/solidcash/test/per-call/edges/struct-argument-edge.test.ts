@@ -23,12 +23,9 @@ import {
  *   value chunks from the value the deployment holds, so the second reach cannot continue from the first's; it
  *   refuses by name. Owner: the SDK hop (`proxy/external-calls.ts`, `requireSettledNodeChains`).
  * - The returned value written straight to a state field (`this.lastLength = IArchive(this.archive).append(id, n)`,
- *   the market's `job.escrowId = unicrow.pay(...)`). The compiler publishes that write in the segment before the call
- *   (`writeSegments` names segment 0) while the body writes it after the call returns, so the hop declares the record
- *   in the wrong segment and the entry never settles. The same write spelled through a local is published in
- *   segment 1 and settles above. Owner: the compiler's write-segment publication
- *   (`solidc/src/per-call/master/support.ts`, `perCallWriteSteps` places a write by the calls before its statement,
- *   not counting a call its own right-hand side makes).
+ *   the market's `job.escrowId = unicrow.pay(...)`). The write's own right-hand side makes the call, and the store
+ *   is emitted after it returns, so the compiler publishes that write in the segment the call opened — the same
+ *   segment the spelling through a local names — and the entry settles.
  */
 
 // `append` reads the length before its push: read after it in the same body, a per-call master answers the length
@@ -150,19 +147,21 @@ describe('known walls on the struct edge', () => {
     expect(await readCallee(run, 'countOf', [LOG_ID])).toStrictEqual([1n]);
   });
 
-  it('known wall: the returned value written straight to a state field never settles', async () => {
+  it('settles the returned value written straight to a state field, as its own record write', async () => {
     const run = await deployed();
-    // Owner: the compiler's write-segment publication (`solidc/src/per-call/master/support.ts`,
-    // `perCallWriteSteps`). The two spellings write the same record after the same call; only the local's is
-    // published in the segment the body writes it in.
+    // The two spellings write the same record after the same call, so both are published in the segment the body
+    // writes them in: the call the store's own right-hand side makes closes the segment the store lands past.
     const { entries } = artifacts.Desk!.composition!.stopSites!;
     const segmentsOf = (entry: string): readonly unknown[] => entries.find((each) => each.functionName === entry)
       ?.writeSegments ?? [];
     const record = artifacts.Desk!.stateLayout!.variables.find((variable) => variable.name === 'lastLength')!.nftIndex;
-    expect(segmentsOf('Desk.postDirect()')).toStrictEqual([{ record, segment: 0 }]);
-    expect(segmentsOf('Desk.post()')).toContainEqual({ record, segment: 1 });
-    await expectRefusedEdge(run, 'postDirect', [LOG_ID, FIRST],
-      /the implementation's "postDirect" entry did not settle through the proxy in \d+ attempts/);
-    expect(await callerFields(run)).toMatchObject({ posted: 0n, lastLength: 0n });
+    expect(segmentsOf('Desk.postDirect()')).toStrictEqual([{ record, segment: 1, writtenVariables: ['lastLength'] }]);
+    expect(segmentsOf('Desk.post()')).toContainEqual({ record, segment: 1, writtenVariables: ['lastLength'] });
+
+    const result = await settleEdge(run, 'postDirect', [LOG_ID, FIRST]);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    // The record the transaction carries is the value the callee's own return supplied.
+    expect(await callerFields(run)).toMatchObject({ posted: 0n, lastLength: 1n });
   });
 });

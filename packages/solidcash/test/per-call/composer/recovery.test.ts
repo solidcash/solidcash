@@ -435,3 +435,32 @@ describe('the EVM invalid-input rule through the composer', () => {
     for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
   });
 });
+
+describe('the recovery calls an entry publishes', () => {
+  const row = (flags: readonly boolean[], parameterCount = 1): never => ({
+    inputs: Array.from({ length: parameterCount }, (_unused, index) => ({ name: `p${index}`, type: 'bytes' })),
+    ...(flags.length === 0 ? {} : { ecrecoverEvmFlags: flags }),
+  }) as never;
+
+  it('names one call per published flag, computed, where the argument sources are not published', () => {
+    expect(recoveryCallsOf(row([false, true]), [new Uint8Array([0x11])])).toStrictEqual([
+      { computed: true, evm: false }, { computed: true, evm: true },
+    ]);
+  });
+
+  it('reads a fully named call from the pushes, in wire order, with the flag as its EVM marker', () => {
+    const named = {
+      inputs: [{ name: 'h' }, { name: 'v' }, { name: 'r' }, { name: 's' }],
+      ecrecoverArgParams: [['h', 'v', 'r', 's']], ecrecoverEvmFlags: [true],
+    } as never;
+    const h = new Uint8Array(32).fill(0x11);
+    const v = Uint8Array.from([27]);
+    const r = new Uint8Array(32).fill(0x33);
+    const s = new Uint8Array(32).fill(0x44);
+    expect(recoveryCallsOf(named, [s, r, v, h])).toStrictEqual([{ hash: h, v: 27, r, s, evm: true }]);
+  });
+
+  it('makes no call where neither the sources nor the flags publish one', () => {
+    expect(recoveryCallsOf(row([]), [new Uint8Array([0x11])])).toStrictEqual([]);
+  });
+});

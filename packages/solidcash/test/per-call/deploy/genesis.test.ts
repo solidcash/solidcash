@@ -8,7 +8,7 @@ import {
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { buildValidatorProgram } from '../../../../solidc/src/per-call/validator/index.js';
 import { COMPOSITION_LIMITS, compositionMachine, compositionProvider } from '../../../../solidc/test/per-call/machine.js';
-import { Contract, SignatureTemplate, StatefulContract } from '../../../src/index.js';
+import { Contract, SignatureTemplate, StatefulContract, encodeFunctionArgument } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   chunkRecordLockingBytecode, deployMaster, derivePerCallGenesis,
@@ -337,9 +337,10 @@ const mappingStateLayout = mappingArtifact.stateLayout!;
 const MAPPING_ADMIN = new Uint8Array(20).fill(7);
 const MAPPING_SEED = 5n;
 
-/** The nodes the shipped planner materializes for the constructor's write against the empty list. */
+/** The nodes the shipped planner materializes for the constructor's write against the empty list. The constructor
+ * argument reaches the frame through the shipped encoder, so the plan keys the same normalized form. */
 const mappingWritePlan = planMappingWrite({
-  keys: [MAPPING_ADMIN],
+  keys: [encodeFunctionArgument(MAPPING_ADMIN, 'address') as Uint8Array],
   value: encodeIntegerValue(MAPPING_SEED),
   inventory: [headSentinelCommitment()],
   encodeValue: (value) => value,
@@ -498,11 +499,12 @@ const BATCH_FIRST = new Uint8Array(20).fill(0x31);
 const BATCH_SECOND = new Uint8Array(20).fill(0x32);
 const BATCH_SEED = 8n;
 
-/** The batch the shipped planner materializes for the constructor's two writes against the empty list. */
+/** The batch the shipped planner materializes for the constructor's two writes against the empty list. The
+ * constructor arguments reach the frame through the shipped encoder, so the plan keys the same normalized form. */
 const batchPlan = planMappingBatch({
   writes: [
-    { keys: [BATCH_FIRST], value: BATCH_SEED },
-    { keys: [BATCH_SECOND], value: BATCH_SEED + 1n },
+    { keys: [encodeFunctionArgument(BATCH_FIRST, 'address') as Uint8Array], value: BATCH_SEED },
+    { keys: [encodeFunctionArgument(BATCH_SECOND, 'address') as Uint8Array], value: BATCH_SEED + 1n },
   ],
   inventory: [headSentinelCommitment()],
   encodeValue: encodeIntegerValue,

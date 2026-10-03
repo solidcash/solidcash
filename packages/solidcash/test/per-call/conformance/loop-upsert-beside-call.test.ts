@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexToBin } from '@bitauth/libauth';
 import {
-  buildPushdataCommitment, bytesToHex, hash256, validatorAddress, type Artifact, type StateLayout,
+  buildPushdataCommitment, bytesToHex, hash256, INDEX_NONE, validatorAddress, type Artifact, type StateLayout,
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -82,6 +82,33 @@ const MAPPING_WALL_SOURCE = `pragma solidcash ^0.13.0;${MAPPING_HEAD()}`
   + `     IOther(0x${hexOf(calleeAddress())}).ping.call();\n`
   + '     require(true);\n   }\n }';
 
+/**
+ * The wall: a loop whose own body reaches the call, and whose write the entry's own facts do not place.
+ *
+ * A loop that reaches a call makes it once per turn, so the write the loop carries lands where the loop's own calls
+ * have the run's calls sit. The artifact states a segment for a write whose path it can follow, and for this shape
+ * it states only the entry's own other writes: the mapped node the loop carries is left to the entry-wide
+ * statement, which names the run's last segment. The hop declares the write in the segments the loop's own calls
+ * name instead, which is what the machine's verdict below measures: the frame accepts the declaration it refused
+ * when the write sat in the entry-wide segment alone.
+ */
+const LOOP_CALLS_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IOther { function ping(address who); }'
+  + ' contract Other { int public touched; function ping(address who) { require(this.touched == 0); } }'
+  + ' contract Impl {'
+  + '   address public implementation;'
+  + '   uint public initialized;'
+  + '   uint[] public items;'
+  + '   mapping(address => uint) balances;'
+  + '   function initialize(address expected) { require(msg.sender == expected); this.initialized = 1; }'
+  + '   function move(address[] who, uint amount) {\n'
+  + '     this.items.push();\n'
+  + '     for (uint i = 0; i < who.length; i = i + 1) {\n'
+  + '       balances[who[i]] = amount;\n'
+  + `       IOther(0x${hexOf(calleeAddress())}).ping.call(who[i]);\n`
+  + '     }\n'
+  + '     require(true);\n   }\n }';
+
 /** The published write facts of one entry, as a builder reads them. */
 function publishedWrites(artifact: Artifact, entryName: string): { writeSegment?: unknown; writeSegments?: unknown } {
   const entry = artifact.composition?.stopSites?.entries
@@ -102,6 +129,7 @@ interface Deployed {
   readonly network: MockNetworkProvider;
   readonly impl: Artifact;
   readonly callee: Artifact;
+  readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
   readonly funded: {
     readonly proxyCategoryId: string;
     readonly implementationCategoryId: string;
@@ -112,8 +140,16 @@ interface Deployed {
   };
 }
 
-/** Deploys the callee the entry calls, then the implementation and the proxy in front of it. */
-async function deployed(source: string): Promise<Deployed> {
+/**
+ * Deploys the callee the entry calls, then the implementation and the proxy in front of it, and runs one entry of
+ * the implementation through the proxy: `initialize` by default, any entry when the caller names one, and only
+ * derived - not broadcast - when the caller asks for that.
+ */
+async function deployed(source: string, options: {
+  readonly entry?: string;
+  readonly args?: readonly unknown[];
+  readonly broadcast?: boolean;
+} = {}): Promise<Deployed> {
   const artifacts = compileStringMulti(source, { composition: 'per-call' });
   const impl = artifacts.Impl!;
   const callee = artifacts.Other!;
@@ -149,14 +185,20 @@ async function deployed(source: string): Promise<Deployed> {
     proxyArtifact: buildProxyArtifact(impl),
     implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress: funderContract.address },
     proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress: funderContract.address },
-    initialize: { functionName: 'initialize', args: [deployerLock] },
+    initialize: {
+      functionName: options.entry ?? 'initialize',
+      args: (options.args ?? [deployerLock]) as never,
+    },
+    externals: { IOther: { artifact: callee, categoryId: CALLEE_CATEGORY } },
     callerLockingBytecode: deployerLock,
-    callerFunding: { utxo: hopCoin, funder: callerFunder, changeAddress: funderContract.address },
+    ...(options.broadcast === false ? {} : {
+      callerFunding: { utxo: hopCoin, funder: callerFunder, changeAddress: funderContract.address },
+    }),
     vm: compositionMachine(),
   });
-  expect(deployment.initialize.broadcast).toBeDefined();
+  if (options.broadcast !== false) expect(deployment.initialize.broadcast).toBeDefined();
   return {
-    network, impl, callee,
+    network, impl, callee, deployment,
     funded: {
       proxyCategoryId: deployment.proxy.categoryId,
       implementationCategoryId: deployment.implementation.categoryId,
@@ -206,12 +248,16 @@ describe('a run-time loop upsert beside a call, through the shipped proxy path',
     // The call precedes the loop, so the write lands in the segment the call opened and every turn of the loop
     // runs there with it: the artifact says so rather than leaving the segment to a builder's guess.
     expect(publishedWrites(compileStringMulti(CALL_THEN_LOOP_SOURCE, { composition: 'per-call' }).Impl!, 'move'))
-      .toStrictEqual({ writeSegment: 1, writeSegments: [{ record: 0, segment: 1 }] });
+      .toStrictEqual({
+        writeSegment: 1, writeSegments: [{ record: 0, segment: 1, writtenVariables: ['total'] }],
+      });
     // A write the loop carries lands in the segment the code before the loop runs in, so the same body with the
     // loop first names the segment the frame opens with. That body is published here; the machine pair below is
     // taken on the call-then-loop body, which is the one the hop is driven for.
     expect(publishedWrites(compileStringMulti(LOOP_THEN_CALL_SOURCE, { composition: 'per-call' }).Impl!, 'move'))
-      .toStrictEqual({ writeSegment: 0, writeSegments: [{ record: 0, segment: 0 }] });
+      .toStrictEqual({
+        writeSegment: 0, writeSegments: [{ record: 0, segment: 0, writtenVariables: ['total'] }],
+      });
   });
 
   it('the machine accepts the well-formed spend, and the record holds the value its last turn computed', async () => {
@@ -296,5 +342,29 @@ describe('the mapping node of the same shape, through the same path', () => {
     expect(bytesToHex(relinked.slice(0, 32))).toBe(bytesToHex(new Uint8Array(32)));
     expect(bytesToHex(relinked.slice(32, 64))).toBe(bytesToHex(created[0]!.slice(0, 32)));
     expect(bytesToHex(created[0]!.slice(64))).toBe(bytesToHex(new Uint8Array([Number(AMOUNT)])));
+  }, 600_000);
+});
+
+describe('a mapping loop whose own body reaches a call, through the same path', () => {
+  it('declares the loop\'s write in the segments the loop\'s own calls name, and the frame accepts them', async () => {
+    // Derived rather than broadcast: the assertion is the machine's verdict on every frame of the hop.
+    const run = await deployed(LOOP_CALLS_SOURCE, {
+      entry: 'move', args: [[hexToBin(KEY)], AMOUNT], broadcast: false,
+    });
+    // The artifact states the entry's own writes and no segment for the node the loop carries, which is the fact the
+    // hop reads: the entry's own facts do not fix where that write lands, because the loop's turns are what move it.
+    expect((publishedWrites(run.impl, 'move').writeSegments ?? []) as readonly unknown[])
+      .not.toContainEqual(expect.objectContaining({ collection: 'balances' }));
+    // The write is declared in every segment the loop's own call site can land it in, not in the entry-wide last
+    // segment alone: each of the frame's segments declares a record the write creates.
+    const draft = run.deployment.initialize.draft;
+    const frame = draft.runs.find((execution) => execution.functionName.includes('Impl.move()'))!;
+    const segments = draft.blockOf(frame.master).segments;
+    const creating = segments.filter((segment) => segment.some((entry) => entry.in === INDEX_NONE));
+    expect(creating).toHaveLength(segments.length);
+    // Every participant the hop derived accepts, the validator facet included: the loop's write is declared where
+    // the turns can land it, and the records the write reaches are declared once each and kept at what it left.
+    expect(run.deployment.initialize.verdicts.filter((verdict) => !verdict.accepted).map((verdict) => verdict.id))
+      .toStrictEqual([]);
   }, 600_000);
 });

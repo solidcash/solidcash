@@ -624,6 +624,10 @@ export default class MockNetworkProvider implements NetworkProvider {
     // tracking, matching the old MockNetworkProvider's simple UTXO-array behavior.
     const mineStartedAt = debugTiming ? Date.now() : 0;
     this.indexer.mine();
+    // A contract that reads `block.timestamp` holds the value in a register a block oracle updates; a mined block
+    // is when that value moves, so the chain's time reaches the register before the next transaction is built.
+    const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
+    await syncMockBlockOracles(this);
     if (debugTiming) console.error('mock-provider-timing', {
       stage: 'mine', ms: Date.now() - mineStartedAt,
     });

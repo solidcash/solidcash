@@ -25,9 +25,13 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * of a key the token does not hold. Each reach is planned against the deployment alone; the node is placed once,
  * keyed by the token's category, the collection and the node's slot, and the hop chains the views the frames declare
  * of it in the order the validator walks them: a read keeps the view the last write before it left, and an update
- * continues from it to the one its own frame computed, so a read after a debit returns the debited balance. An insert
- * does not chain on the master (it proves its predecessor from the spent input), so two reaches that insert one key
- * are refused by name before anything is broadcast.
+ * continues from it to the one its own frame computed, so a read after a debit returns the debited balance.
+ *
+ * A key the list does not hold is inserted once and then rewritten: the first reach splices a node in at the
+ * predecessor's output, and a later reach that writes the same key continues that node — its declaration names the
+ * creating reach's output and carries the created view forward — so one transaction carries both. Only a key two
+ * reaches insert through the same predecessor, or a read of a node an earlier reach relinks, is refused by name
+ * before anything is broadcast.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -224,6 +228,12 @@ function holderOutput(result: PerCallProxyCallResult): string {
     .value);
 }
 
+/** The records one frame declares with no input index: the nodes it creates or continues at an output. */
+function outputDeclarations(result: PerCallProxyCallResult, master: string): readonly RecordEntry[] {
+  return result.draft.blockOf(master).segments.flatMap((segment: readonly RecordEntry[]) => segment)
+    .filter((entry) => entry.in === 0xffff);
+}
+
 /** Every participant placed for a node of the token's balances. */
 function balanceNodes(result: PerCallProxyCallResult): readonly string[] {
   return result.draft.layout.participants.map((placed) => placed.id)
@@ -287,28 +297,83 @@ describe('reaches of one hop that touch one mapping node of a callee', () => {
     expect(await liveBalance(world, HOLDER)).toBe(balanceValue(850n));
   });
 
-  it('two grants of a key the token does not hold are refused by name, broadcasting nothing', async () => {
+  it('two grants of a key the token does not hold settle, the later rewriting the node the first created',
+    async () => {
+      const world = await deployed();
+
+      const result = await callDesk(world, 'grantTwice', [NEWCOMER]);
+      expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+      expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+
+      // Only the first grant creates a node: the later grant continues it rather than minting a second one, so the
+      // collection's one balances participant is the predecessor the first grant relinks.
+      expect(result.draft.trailingOutputs).toHaveLength(1);
+      expect(balanceNodes(result)).toHaveLength(1);
+      const created = result.draft.trailingOutputs[0]!.index;
+
+      // The creating frame declares the relinked predecessor and the node it created; the continuing frame declares
+      // that same node alone, claiming no input for it.
+      expect(result.draft.blockOf('callee-master-1').segments.flatMap((s) => s)).toHaveLength(2);
+      expect(result.draft.blockOf('callee-master-2').segments.flatMap((s) => s)).toHaveLength(1);
+
+      const value = (commitment: Uint8Array): string => bytesToHex(decodeEntryCommitment(commitment).value);
+      const createdCommitment = Uint8Array.from(result.transaction.outputs[created]!.token!.nft!.commitment);
+      expect(bytesToHex(decodeEntryCommitment(createdCommitment).slot)).toBe(bytesToHex(keyToSlotMulti([NEWCOMER])));
+
+      const first = outputDeclarations(result, 'callee-master-1');
+      expect(first).toHaveLength(1);
+      expect(first[0]!.out).toBe(created);
+      expect(first[0]!.viewIn.length).toBe(0);
+      expect(value(first[0]!.viewOut)).toBe(balanceValue(1n));
+
+      // The later frame's declaration names the creating reach's output and carries the view `1 -> 2`: a continued
+      // rewrite of the created node, not a second insert through the bracketing predecessor.
+      const later = outputDeclarations(result, 'callee-master-2');
+      expect(later).toHaveLength(1);
+      expect(later[0]!.out).toBe(created);
+      expect([value(later[0]!.viewIn), value(later[0]!.viewOut)])
+        .toStrictEqual([balanceValue(1n), balanceValue(2n)]);
+
+      // The settled output and the live chain carry the later grant's value.
+      expect(value(createdCommitment)).toBe(balanceValue(2n));
+      expect(await liveBalance(world, NEWCOMER)).toBe(balanceValue(2n));
+    });
+
+  /**
+   * The read-after-insert shape: one reach inserts a key, a later reach reads the node it created.
+   *
+   * The read resolves to the node the grant created rather than the bracketing predecessor it relinked, so
+   * `requireSatisfiableReachWrites` does not refuse the pair, and the compiler's entry-category verification asks
+   * whether a declared record has an input at all (`emitReadOnlyEntryExistsCheck`) rather than reading a category at
+   * the no-index coordinate the created form declares. The read's own frame then holds the segment's created record:
+   * both views have to be the value the creating frame left, or the frame's own settlement equality on the
+   * declaration (`declaredRecordsKeptScript`) refuses it. The shared-node walk fills them from the view the grant's
+   * write left, so the read settles and the node it created carries the inserted value.
+   */
+  it('a read after a grant inserted its key settles, the read declaring the node the grant created', async () => {
     const world = await deployed();
 
-    // Each reach inserts the key through the node that brackets it, and an insert does not chain on the master.
-    await expect(callDesk(world, 'grantTwice', [NEWCOMER])).rejects.toThrow(
-      'the hop reaches the entry "Token.grant()" 2 times, and 2 of them write collection "balances" at the same key, '
-      + 'which the list does not hold, so each reach inserts it; an insert chained after another reach\'s write would '
-      + 'need the master\'s insert to prove its predecessor, and the relink it writes, against the views its own frame '
-      + 'declares',
-    );
-    expect(await callCoinLive(world)).toBe(true);
-    expect(await liveBalance(world, NEWCOMER)).toBeUndefined();
-  });
+    const result = await callDesk(world, 'grantThenRead', [NEWCOMER]);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
 
-  it('a read after a grant inserted its key is refused by name, broadcasting nothing', async () => {
-    const world = await deployed();
+    // Only the grant creates a node, and it is the one the read is planned against: the read frame declares that
+    // node at the creating frame's output with both views the value the grant wrote.
+    expect(result.draft.trailingOutputs).toHaveLength(1);
+    const created = result.draft.trailingOutputs[0]!.index;
 
-    // The read was planned against the node that brackets the absent key, which the grant relinks.
-    await expect(callDesk(world, 'grantThenRead', [NEWCOMER])).rejects.toThrow(
-      'the hop\'s reach "Token.balanceOf()" touches a node of collection "balances" that an earlier reach '
-      + '"Token.grant()" relinks to insert a key',
-    );
-    expect(await callCoinLive(world)).toBe(true);
+    const value = (commitment: Uint8Array): string => bytesToHex(decodeEntryCommitment(commitment).value);
+    const createdCommitment = Uint8Array.from(result.transaction.outputs[created]!.token!.nft!.commitment);
+    expect(bytesToHex(decodeEntryCommitment(createdCommitment).slot)).toBe(bytesToHex(keyToSlotMulti([NEWCOMER])));
+
+    const read = outputDeclarations(result, 'callee-master-2');
+    expect(read).toHaveLength(1);
+    expect(read[0]!.out).toBe(created);
+    expect([value(read[0]!.viewIn), value(read[0]!.viewOut)])
+      .toStrictEqual([balanceValue(1n), balanceValue(1n)]);
+
+    // The settled output and the live chain carry the grant's value, which the read returned.
+    expect(value(createdCommitment)).toBe(balanceValue(1n));
+    expect(await liveBalance(world, NEWCOMER)).toBe(balanceValue(1n));
   });
 });

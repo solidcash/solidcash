@@ -21,12 +21,15 @@
  * classifies a category's UTXOs to find the records again.
  */
 
-import { binToHex, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
+import {
+  binToHex, encodeLockingBytecodeP2sh32, hash256, hexToBin, lockingBytecodeToCashAddress,
+} from '@bitauth/libauth';
 import { perCallValidator } from 'solidc';
 import type { Artifact } from '@solidcash/utils';
 import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
+import { getNetworkPrefix } from '../../utils.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { derivePerCallGenesis } from './genesis.js';
 import { resolveMasterPoolSize } from './pool.js';
@@ -240,5 +243,17 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   });
   const { StatefulContract: SC } = await import('../../stateful/StatefulContract.js');
   const statefulContract = SC.withCategory(contract, categoryId);
+  // The handle presents the contract's own address, `addrV(category)` - the address the validator pins a callee to
+  // - carried rather than recomputed from the artifact. A caller resolving an address therefore lands on this
+  // deployment, not on a Solidity-facing logical CREATE address.
+  const ownAddress = lockingBytecodeToCashAddress({
+    bytecode: genesis.master.address,
+    prefix: getNetworkPrefix(options.provider.network),
+    tokenSupport: true,
+  });
+  if (typeof ownAddress === 'string') {
+    throw new PerCallDeployError(`The contract's own address is not encodable: ${ownAddress}`);
+  }
+  (statefulContract as unknown as { _perCallAddress?: string })._perCallAddress = ownAddress.address;
   return { contract: statefulContract, tx, categoryId };
 }

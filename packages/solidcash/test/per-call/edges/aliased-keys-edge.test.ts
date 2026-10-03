@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
+import {
+  VALUE_INLINE_LIMIT, buildValueChunkCommitment, bytesToHex, encodeChunkableValueTail, encodePushdataValue, sha256,
+  splitValueIntoValueChunks,
+} from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { mappingValueChunkLock } from '../../../src/per-call/composer/index.js';
+import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   callerFields, edgeDeployment, expectRefusedEdge, readCallee, settleEdge,
 } from './edge-harness.js';
@@ -63,9 +70,31 @@ describe('two spellings of one array key, and a loop over an array key, through 
     expect(await readCallee(run, 'count', [9n])).toStrictEqual([1n]);
   });
 
-  it('refuses by name a loop that pushes onto an invariant key the length it reads there', async () => {
-    await expectRefusedEdge(await relay(), 'grow', [7n, 2n],
-      /"grow" entry writes mapping "mine" a value whose source the artifact does not publish/);
+  it('settles a loop that pushes onto one key the length it reads there, from the value its body computed', async () => {
+    const run = await relay();
+    const result = await settleEdge(run, 'grow', [7n, 3n]);
+
+    // Each turn reads the length the turn before left and pushes it, so the key's array ends [0, 1, 2]: the value
+    // is the body's own, and its commitment and the run of chunk records it takes are the planners' to learn.
+    const value = encodePushdataValue([0n, 1n, 2n], 'int[]', artifacts.Relay!.structs);
+    expect(value.length).toBeGreaterThan(VALUE_INLINE_LIMIT);
+    const slot = keyToSlotMulti([bigIntToVmNumber(7n)]);
+    const chunkLock = mappingValueChunkLock(hexToBin(run.proxyCategoryId), 'mine', { slot, root: sha256(value) });
+    const chunks = splitValueIntoValueChunks(value).map(
+      (piece, index) => hexToBin(buildValueChunkCommitment(index, piece)),
+    );
+
+    // The created node leads the trailing region, then the run of chunk records the value's length names.
+    const trailing = result.draft.trailingOutputs;
+    expect(trailing).toHaveLength(1 + chunks.length);
+    const created = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(created.slot)).toBe(bytesToHex(slot));
+    expect(bytesToHex(created.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
+    trailing.slice(1).forEach((output, position) => {
+      expect(output.output.lockingBytecode).toStrictEqual(chunkLock);
+      expect(output.output.token!.nft!.commitment).toStrictEqual(chunks[position]);
+    });
   });
 
   it('names the compiler\'s refusal of a loop that reads an element key\'s array value each turn', async () => {

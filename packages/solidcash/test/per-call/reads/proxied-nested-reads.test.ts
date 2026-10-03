@@ -30,11 +30,11 @@ import {
  * one read-only frame at that category, which is the address the callee's source calls. A read is never broadcast,
  * which the provider's transaction count is asserted to show.
  *
- * One wall is pinned rather than worked around: a callee entry that takes a parameter is refused by the module,
- * because a read cannot resolve an argument from the caller's live records. Everything else the shape needs is
- * served: a view that returns a struct is one pushdata blob the shipped decoder reads back, a contract a caller
- * reaches more than once runs one frame per call with its own master each, and an entry that makes two calls
- * derives.
+ * A callee entry that takes a parameter is served when the caller's own code states the argument: the literal an
+ * entry passes is resolved by the shipped resolver, exactly as the hop resolves its own call data. Everything else
+ * the shape needs is served too: a view that returns a struct is one pushdata blob the shipped decoder reads back,
+ * a contract a caller reaches more than once runs one frame per call with its own master each, and an entry that
+ * makes two calls derives.
  */
 
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
@@ -245,13 +245,13 @@ describe('a read that reaches another contract\'s implementation at its proxy ad
     expect(result.value).toBe(21n);
   });
 
-  it('refuses a callee entry that takes a parameter, which a read cannot resolve', async () => {
-    // The `byId` entry calls the store's `entry(id)`, whose argument the read has no record to read it from.
+  it('serves a callee entry that takes a literal argument', async () => {
+    // The `byId` entry calls the store's `entry(id)` with the literal 2, so the read states the call data from the
+    // caller's own code: the store's `n` is 7 and the entry's own body returns `n + id`.
     const provider = await chain(7n);
-    await expect(read(provider, 'byId')).rejects.toThrow(
-      'entry "Store.entry()" takes 1 parameter(s), whose values a read cannot resolve from the caller\'s live '
-        + 'records',
-    );
+    const result = await read(provider, 'byId');
+    expect(result.accepted).toBe(true);
+    expect(result.value).toBe(9n);
   });
 
   it('reports the innermost refusal of a callee reached at its proxy, and builds nothing', async () => {

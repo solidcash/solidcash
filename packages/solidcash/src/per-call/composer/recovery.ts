@@ -352,7 +352,9 @@ export function buildRecoverySideCars(
  * `leadingPushes` skips the pushes that are not arguments (one when the call data leads with a dispatcher selector),
  * and the parameters then follow with the FIRST parameter's push LAST, which is where the compiled body reads it. A
  * call with any argument that is not a named parameter of the entry - a value the body computes - has no pushes to
- * read, so it is returned as computed, and `buildRecoverySideCars` leaves its scalars to the derivation.
+ * read, so it is returned as computed, and `buildRecoverySideCars` leaves its scalars to the derivation. An
+ * artifact that publishes no argument sources at all still names its calls through the per-call flags, so every
+ * such call is computed rather than the entry being read as making none.
  */
 export function recoveryCallsOf(
   abiFunction: RecoveryAbiFunction,
@@ -361,7 +363,10 @@ export function recoveryCallsOf(
 ): readonly (RecoveryCall | ComputedRecoveryCall)[] {
   const params = abiFunction.ecrecoverArgParams ?? [];
   const flags = abiFunction.ecrecoverEvmFlags ?? [];
-  if (params.length === 0) return [];
+  // The flags carry one entry per recovery call, so an artifact that publishes them but not the argument sources
+  // still fixes how many calls the entry makes; every call whose source is not published is the body's to compute.
+  const callCount = Math.max(params.length, flags.length);
+  if (callCount === 0) return [];
   const values = argumentPushes.slice(leadingPushes);
   const parameterCount = abiFunction.inputs.length;
   if (values.length !== parameterCount) {
@@ -376,8 +381,11 @@ export function recoveryCallsOf(
     if (index < 0) throw new PerCallEncodingError(`the entry has no parameter '${name}'`);
     return values[parameterCount - 1 - index]!;
   };
-  return params.map((names, call) => {
-    if (names.some((name) => name === null)) return { computed: true, evm: flags[call] === true };
+  return Array.from({ length: callCount }, (_unused, call): RecoveryCall | ComputedRecoveryCall => {
+    const names = params[call];
+    if (names === undefined || names.some((name) => name === null)) {
+      return { computed: true, evm: flags[call] === true };
+    }
     const [hashName, vName, rName, sName] = names as readonly string[];
     return {
       hash: valueOf(hashName!),

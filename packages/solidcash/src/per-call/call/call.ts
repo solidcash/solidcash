@@ -72,6 +72,7 @@ import {
 import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
+import { providerUnixLocktime } from '../../stateful/soft-state-overlays.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
 import {
   deployMaster,
@@ -1066,6 +1067,11 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
 
     return {
       blocks,
+      // The chain's own time, read from the provider: a body that reads the transaction's locktime sees it.
+      locktime: providerUnixLocktime(options.provider as { getBlockTime?: () => number }),
+      // A stated locktime means nothing to `OP_CHECKLOCKTIMEVERIFY` on a final input, and the builder's own
+      // default is non-final, so the call states the same rather than leaving the composer's final default.
+      sequenceNumber: 0xfffffffe,
       userInputs: [
         { id: CALLER_ID, index: layout.participantCount },
         ...paying.spent.map((_utxo, position) => ({

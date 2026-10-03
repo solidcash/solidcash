@@ -27,7 +27,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * callee refuses that callee's own settle; either way the refusal reporter is asked, and its innermost frame is a
  * store proxy leg no attempt reached, refusing because its delegate reference is still the unfilled sentinel. The
  * error names that leg and carries neither the draft nor the report; the draft is reached here by spying on the
- * composer. Its report holds the failing frame's own reason, unless a callee the entry never reaches refuses first.
+ * composer. Its report holds the failing frame's own reason, including when the entry stops at a check before a
+ * call and a callee settled first refuses: the entry never entered that callee, so its own reason is the one that
+ * surfaces.
  * With every check passing the entry settles and broadcasts: the token's `balanceOf` and `transferFrom` reaches touch
  * Alice's balance node, which the hop places once and whose views it chains across the two frames.
  *
@@ -421,8 +423,12 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('a revert after calls through
     // The settle loop still throws without `errorArgs`; the report carries them (the ladder stream's hook).
     const report = expectReported(refused, 'the call\'s callee "Coin.transferFrom()"', 'callee-master-7');
     expect(refused.error.message).toContain(': revert ShortBalance(address, int256, int256)');
-    // The callees are settled before the entry's frame is derived, so no derivation stalled.
-    expect(refused.stalls).toStrictEqual([]);
+    // The entry's own frame is derived with the callee's verdict deferred, so the refusal carries that stall; the
+    // deferred callee's own revert is still what the report names.
+    expect(refused.stalls).toStrictEqual([
+      'PER_CALL_DERIVATION_STALLED: master "callee-master-7" of Coin.transferFrom() filled no witness at site 0 '
+      + '(close of segment 0)',
+    ]);
     const reason = reasonOf(report, 'callee-master-7');
     expect(reason?.line).toBe(lineOf('revert ShortBalance'));
     expect(reason?.error?.name).toBe('ShortBalance');
@@ -430,26 +436,26 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('a revert after calls through
     expect(reason?.arguments).toStrictEqual([`0x${binToHex(ALICE_LOCK)}`, 1000n, 1500n]);
   });
 
-  it('a check before any call, beside a reverting callee it never reaches, still reports that callee', async () => {
+  it('a check before any call reports the entry\'s own reason, not the callee it never reaches', async () => {
     const refused = await refusedCall(deployed.alice, 'post', [0n, 1500n, 7n, BOB_LOCK, compiled.coinAddress]);
-    // The entry stops at its first check, so the EVM reports "name too short or long": the callees are settled first
-    // (the ladder stream's settle loop), so the callee's revert is thrown before the entry is derived.
-    const report = expectReported(refused, 'the call\'s callee "Coin.transferFrom()"', 'callee-master-7');
+    // The entry stops at its first check, before it makes any call, so the entry's own reason surfaces even though a
+    // callee was settled first and refused: the execution never entered that callee.
+    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
+    expect(refused.error.message).toContain(': name too short or long');
     expect(reasonOf(report, 'implementation-master'))
       .toStrictEqual({ line: lineOf('"name too short or long"'), message: 'name too short or long' });
+    // The callee's frame is still reported, with its own reason, in the same report.
     expect(reasonOf(report, 'callee-master-7')?.error?.name).toBe('ShortBalance');
   });
 
-  it('a check between calls, beside a reverting callee it never reaches, still reports that callee', async () => {
+  it('a check between calls, beside a reverting callee it never reaches, reports the entry\'s own check', async () => {
     const refused = await refusedCall(deployed.alice, 'post', [5n, 1500n, 0n, BOB_LOCK, compiled.coinAddress]);
-    // The EVM reports "method too short or long": the callees settle before the entry's frame is derived, so this
-    // draft holds only the unreached callee's revert, and the entry has to be derived before a callee is reported.
-    const report = expectReported(refused, 'the call\'s callee "Coin.transferFrom()"', 'callee-master-7');
-    expect(refused.stalls).toStrictEqual([]);
-    const entry = report.refusals.find((refusal) => refusal.master === 'implementation-master');
-    expect(entry?.reason.message).toBeUndefined();
-    expect(entry?.objection).toContain(`requested index: ${UNFILLED_INDEX}.`);
-    expect(reasonOf(report, 'callee-master-7')?.error?.name).toBe('ShortBalance');
+    // The entry fails its own "method too short or long" check, which is before the reverting transferFrom call it
+    // never reaches, so the entry's own reason is the one the report names rather than the callee's revert.
+    const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
+    expect(refused.error.message).toContain(': method too short or long (Program failed an OP_VERIFY operation.)');
+    expect(reasonOf(report, 'implementation-master'))
+      .toStrictEqual({ line: lineOf('"method too short or long"'), message: 'method too short or long' });
   });
 
   it('with every check passing, the hop settles and broadcasts, the balance read and then debited one input',

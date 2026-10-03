@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexToBin } from '@bitauth/libauth';
 import {
-  bytesToHex, hash256, validatorAddress, type Artifact,
+  bytesToHex, hash256, parsePushdataCommitment, validatorAddress, type Artifact,
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
+import { readPerCallEntry } from '../../../src/per-call/read/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
@@ -31,10 +32,16 @@ const PROXY_CATEGORY = '22'.repeat(32);
 const ORACLE_CATEGORY = '55'.repeat(32);
 const ESCROW_CATEGORY = '66'.repeat(32);
 const WRITER_CATEGORY = '77'.repeat(32);
+const GUARD_CATEGORY = '88'.repeat(32);
+const LEDGER_CATEGORY = '99'.repeat(32);
 const ORACLE_ADDRESS = validatorAddress(hexToBin(ORACLE_CATEGORY), VALIDATOR_PROGRAM);
 const ESCROW_ADDRESS = validatorAddress(hexToBin(ESCROW_CATEGORY), VALIDATOR_PROGRAM);
 const WRITER_ADDRESS = validatorAddress(hexToBin(WRITER_CATEGORY), VALIDATOR_PROGRAM);
+const GUARD_ADDRESS = validatorAddress(hexToBin(GUARD_CATEGORY), VALIDATOR_PROGRAM);
+const LEDGER_ADDRESS = validatorAddress(hexToBin(LEDGER_CATEGORY), VALIDATOR_PROGRAM);
 const hexOf = (bytes: Uint8Array): string => binToHex(bytes);
+/** The locked P2PKH the fixture's `address` arguments name. */
+const aliceLock = encodeLockingBytecodeP2pkh(alicePkh);
 /** What the composer's plan gives each facet input; a facet holds no token and pays its own fee share. */
 const FACET_SATOSHIS = 10_000n;
 
@@ -43,6 +50,9 @@ const FACET_SATOSHIS = 10_000n;
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IOracle { function amountOf() view returns (int); }'
   + ' interface IWriter { function bump(); }'
+  + ' interface IGuard { function bump(); }'
+  + ' interface ILedger { function record(int id, address author, address subject, bytes32 reference, string memo); function noteOf(int id) view returns (Note); }'
+  + ' struct Note { address author; address subject; bytes32 reference; string memo; int seen; }'
   + ' contract Oracle {'
   + '   int public answer;'
   + '   constructor() { this.answer = 5; }'
@@ -56,6 +66,24 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   int public count;'
   + '   function bump() { this.count = this.count + 1; require(this.count > 0); }'
   + ' }'
+  // A callee whose body writes its record on both sides of a call, so the frame's own record is closed once per
+  // segment it moved in and the value between the two closures is one only the body computes.
+  + ' contract Guard {'
+  + '   int public count;'
+  + `   function bump() { this.count = this.count + 1; require(IOracle(0x${hexOf(ORACLE_ADDRESS)}).amountOf() > 0); this.count = this.count + 1; require(this.count > 0); }`
+  + ' }'
+  // A callee whose body stores a mapping value it builds from its own arguments: the node's value is longer than
+  // its tail holds, so the write lays a run of chunk records whose width only the value's bytes decide.
+  + ' contract Ledger {'
+  + '   int public written;'
+  + '   mapping(int => Note) public notes;'
+  + '   function record(int id, address author, address subject, bytes32 reference, string memo) {'
+  + '     int seen = IOracle(0x' + hexOf(ORACLE_ADDRESS) + ').amountOf();'
+  + '     this.notes[id] = Note(author, subject, reference, memo, seen);'
+  + '     this.written = id + 1;'
+  + '   }'
+  + '   function noteOf(int id) view returns (Note) { return this.notes[id]; }'
+  + ' }'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   uint public initialized;'
@@ -63,6 +91,8 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function initialize(address expected) { require(msg.sender == expected); this.initialized = 1; }'
   + `   function probe() { require(IOracle(0x${hexOf(ORACLE_ADDRESS)}).amountOf() > this.total); require(true); }`
   + `   function write() { IWriter(0x${hexOf(WRITER_ADDRESS)}).bump(); require(this.total >= 0); }`
+  + `   function guard() { IGuard(0x${hexOf(GUARD_ADDRESS)}).bump(); require(this.total >= 0); }`
+  + `   function ledger(int id, address author, address subject, bytes32 reference, string memo) { ILedger(0x${hexOf(LEDGER_ADDRESS)}).record(id, author, subject, reference, memo); require(this.total >= 0); }`
   + ' }';
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
@@ -70,6 +100,8 @@ const impl = artifacts.Impl!;
 const oracle = artifacts.Oracle!;
 const escrow = artifacts.Escrow!;
 const writer = artifacts.Writer!;
+const guard = artifacts.Guard!;
+const ledger = artifacts.Ledger!;
 
 // Shapes the artifact compiles but the planner used to refuse by name: an occurrence the source leaves open, a
 // target the entry's own code computes, and an entry that mixes a guarded call with a loop.
@@ -112,6 +144,32 @@ async function recordState(network: MockNetworkProvider, categoryId: string): Pr
   return bytesToHex(new Uint8Array(hexToBin(deployment.records[0]!.token!.nft!.commitment)));
 }
 
+/** The `count` field the callee's own record carries, decoded with the shipped state decoder. */
+async function recordCount(
+  network: MockNetworkProvider, artifact: Artifact, categoryId: string,
+): Promise<bigint> {
+  const deployment = await readPerCallDeployment(network, categoryId, artifact.stateLayout!);
+  const commitment = bytesToHex(new Uint8Array(hexToBin(deployment.records[0]!.token!.nft!.commitment)));
+  return parsePushdataCommitment(commitment, artifact.stateLayout!, 0).count as bigint;
+}
+
+/** The `count` field the writer's own record carries. */
+function writerCount(network: MockNetworkProvider): Promise<bigint> {
+  return recordCount(network, writer, WRITER_CATEGORY);
+}
+
+/** The `count` field the guarded callee's own record carries. */
+function guardCount(network: MockNetworkProvider): Promise<bigint> {
+  return recordCount(network, guard, GUARD_CATEGORY);
+}
+
+/** The fields the ledger callee's own record carries, decoded with the shipped state decoder. */
+async function ledgerFields(network: MockNetworkProvider): Promise<Record<string, unknown>> {
+  const deployment = await readPerCallDeployment(network, LEDGER_CATEGORY, ledger.stateLayout!);
+  const commitment = bytesToHex(new Uint8Array(hexToBin(deployment.records[0]!.token!.nft!.commitment)));
+  return parsePushdataCommitment(commitment, ledger.stateLayout!, 0);
+}
+
 /** Deploys one callee at `categoryId`, so a hop's call has a live deployment to run against. */
 async function deployCallee(
   network: MockNetworkProvider, artifact: Artifact, categoryId: string, threadCount = 1,
@@ -132,6 +190,8 @@ function externals(): Readonly<Record<string, { artifact: Artifact; categoryId: 
     IOracle: { artifact: oracle, categoryId: ORACLE_CATEGORY },
     IEscrow: { artifact: escrow, categoryId: ESCROW_CATEGORY },
     IWriter: { artifact: writer, categoryId: WRITER_CATEGORY },
+    IGuard: { artifact: guard, categoryId: GUARD_CATEGORY },
+    ILedger: { artifact: ledger, categoryId: LEDGER_CATEGORY },
   };
 }
 
@@ -156,7 +216,8 @@ async function deployedWithCallees(network: MockNetworkProvider): Promise<{
   const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
 
   const callees: readonly [Artifact, string][] =
-    [[oracle, ORACLE_CATEGORY], [escrow, ESCROW_CATEGORY], [writer, WRITER_CATEGORY]];
+    [[oracle, ORACLE_CATEGORY], [escrow, ESCROW_CATEGORY], [writer, WRITER_CATEGORY], [guard, GUARD_CATEGORY],
+     [ledger, LEDGER_CATEGORY]];
   for (const [artifact, categoryId] of callees) {
     const funding = { txid: categoryId, vout: 0, satoshis: 500_000n };
     await network.addUtxo(source.address, funding);
@@ -278,10 +339,11 @@ describe('a proxied entry that calls another deployed contract', () => {
     expect(await recordState(network, funded.proxyCategoryId)).toBe(before);
   });
 
-  it('refuses a callee whose own body rewrites its record, naming that frame', async () => {
+  it('settles a callee whose own body rewrites its record, at the value that body computed', async () => {
     const { network, funded } = await sharedDeployment('44'.repeat(31) + 'c3');
+    expect(await writerCount(network)).toBe(0n);
 
-    await expect(callPerCallProxyEntry({
+    const outcome = await callPerCallProxyEntry({
       provider: network,
       implementationArtifact: impl,
       proxyArtifact: buildProxyArtifact(impl),
@@ -295,7 +357,78 @@ describe('a proxied entry that calls another deployed contract', () => {
       funder: funded.funder,
       changeAddress: funded.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow(/the call's callee "Writer\.bump\(\)" did not settle through the proxy/);
+    });
+
+    // The callee's own frame declares the record it spends and closes against the commitment its body built, so
+    // the record the transaction carries is the value the body computed rather than the one it was spent with.
+    expect(outcome.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(outcome.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await writerCount(network)).toBe(1n);
+  });
+
+  it('chains a callee record its body writes on both sides of a call, and carries the last value out', async () => {
+    const { network, funded } = await sharedDeployment('44'.repeat(31) + 'c4');
+    expect(await guardCount(network)).toBe(0n);
+
+    const outcome = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: impl,
+      proxyArtifact: buildProxyArtifact(impl),
+      proxyCategoryId: funded.proxyCategoryId,
+      implementationCategoryId: funded.implementationCategoryId,
+      functionName: 'guard',
+      args: [],
+      externals: externals(),
+      callerUtxo: funded.callCoin,
+      callerLockingBytecode: funded.deployerLock,
+      funder: funded.funder,
+      changeAddress: funded.changeAddress,
+      vm: compositionMachine(),
+    });
+
+    // The frame opens on the record, calls the oracle, and writes the record again, so its own close runs once per
+    // segment: the value between the two closures is the one the body computed there, and the record the
+    // transaction carries is the value the last closure left.
+    expect(outcome.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(outcome.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await guardCount(network)).toBe(2n);
+  });
+
+  it('settles a callee that stores a mapping value it builds, laying the run its own bytes size', async () => {
+    const { network, funded } = await sharedDeployment('44'.repeat(31) + 'c5');
+    const MEMO = 'a note long enough that the node cannot hold its value inline';
+    const NOTE_ID = 1n;
+
+    const outcome = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: impl,
+      proxyArtifact: buildProxyArtifact(impl),
+      proxyCategoryId: funded.proxyCategoryId,
+      implementationCategoryId: funded.implementationCategoryId,
+      functionName: 'ledger',
+      args: [NOTE_ID, aliceLock, aliceLock, new Uint8Array(32).fill(7), MEMO],
+      externals: externals(),
+      callerUtxo: funded.callCoin,
+      callerLockingBytecode: funded.deployerLock,
+      funder: funded.funder,
+      changeAddress: funded.changeAddress,
+      vm: compositionMachine(),
+    });
+
+    // The value is the callee's own to compute, so the hop lays the run of chunk records from the bytes the body's
+    // own pin close exposed: the node and its chunks are what the transaction carries, and the field beside them
+    // advanced with the write.
+    expect(outcome.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(outcome.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await ledgerFields(network)).toMatchObject({ written: NOTE_ID + 1n });
+    // The value the node holds is the whole struct, read back through the shipped read path.
+    const read = await readPerCallEntry({
+      provider: network, artifact: ledger, categoryId: LEDGER_CATEGORY, functionName: 'noteOf',
+      args: [NOTE_ID], externals: externals(), vm: compositionMachine(),
+    });
+    expect(read.accepted, read.objection).toBe(true);
+    expect(read.values).toStrictEqual([{ author: aliceLock, subject: aliceLock,
+      reference: new Uint8Array(32).fill(7), memo: MEMO, seen: 5n }]);
   });
 
   it("refuses a loop whose turns exceed the callee's own master pool, naming the pool", async () => {

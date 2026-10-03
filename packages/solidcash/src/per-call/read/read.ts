@@ -33,6 +33,7 @@ import {
   attachDecodedAccessors,
   bytesEqual,
   bytesToHex,
+  collectionChunksValue,
   decodePushdataValue,
   dynamicChunkSignature,
   dynamicLenKey,
@@ -48,13 +49,21 @@ import {
   type Artifact,
   type BlockLayoutSlot,
   type EntryAccessAbi,
+  type ExternalCallAbi,
   type ExternalResultEncoding,
+  type FrameKindValue,
   type StateLayout,
   type StateValue,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../../Argument.js';
 import { encodeFunctionArgument } from '../../Argument.js';
+import { hopTrace, hopTraceOn } from '../proxy/hop-trace.js';
+import { registeredExternalFor, routingOf, type PerCallProxyExternal } from '../proxy/external-calls.js';
+import {
+  makeCallResolver, resolveCallArguments, type CallResolver,
+} from '../proxy/call-resolution.js';
+import { PerCallProxyDeployError } from '../proxy/errors.js';
 import { decodeAuthenticatedProducerResultVector } from '../../stateful/external-return-encoding.js';
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
@@ -127,8 +136,12 @@ export interface PerCallReadOptions {
   /**
    * The other contracts the entry's published stop sites call, keyed by the interface name they name, or by the
    * contract name when the address the site carries resolves to that contract's own category.
+   *
+   * A contract supplied here need not be the one at the address: a callee behind its own proxy is named by the
+   * implementation's artifact beside the proxy's artifact and the implementation's own category, exactly as the
+   * provider's registrations carry it. A call the caller supplies nothing for falls back to those registrations.
    */
-  readonly externals?: Readonly<Record<string, { readonly artifact: Artifact; readonly categoryId: string }>>;
+  readonly externals?: Readonly<Record<string, PerCallProxyExternal>>;
 }
 
 /** What a read returned, and how it landed. */
@@ -182,7 +195,9 @@ interface ReadRecord {
 interface ReadCall {
   readonly callee: string;
   readonly target: Uint8Array;
-  readonly selector: Uint8Array;
+  readonly kind: FrameKindValue;
+  /** The call data the callee's own frame receives: the entry's selector then its arguments, in push order. */
+  readonly argumentPushes: readonly Uint8Array[];
 }
 
 /**
@@ -200,6 +215,20 @@ interface ReadFrame {
   readonly categoryId: string;
   readonly category: Uint8Array;
   readonly deployed: DeployedMaster;
+  /** How the frame was entered: a read frame is `STATIC`, a proxy's forwarded implementation is `DELEGATE`. */
+  readonly kind: FrameKindValue;
+  /** `address(this)`: the frame's own address, or the proxy's for a delegate frame. */
+  readonly self: Uint8Array;
+  /** The contract whose records the frame reads, which is the proxy's for a delegate frame. */
+  readonly recordContract?: string;
+  readonly recordCategory?: Uint8Array;
+  readonly recordCategoryId?: string;
+  /** The layout the frame's records are classified with, carrying the implementation's collections behind a proxy. */
+  readonly recordLayout?: StateLayout;
+  /** The master of the frame whose records and master pool this frame reads, when it is that frame's delegate. */
+  readonly recordOwner?: string;
+  /** The master of the frame whose recorded return this frame carries, when it only forwards it. */
+  readonly retvalFrom?: string;
   readonly parent: string | undefined;
   readonly sender: Uint8Array;
   /** The entry's arguments, which a mapping access's key(s) are resolved from. */
@@ -228,6 +257,29 @@ const VALIDATOR_ID = 'validator';
 
 /** The layout a contract that keeps no state variable is classified against: no records, none expected. */
 const NO_STATE_LAYOUT: StateLayout = { variables: [], dataNftCount: 0, commitmentLimit: 0 };
+
+/** The entry a proxy artifact publishes for the fallback that forwards the call data it received. */
+const FALLBACK_ENTRY = '__fallback';
+
+/** The contract whose records a frame names, which is the proxy's for a frame that runs on its records. */
+function recordContractOf(frame: ReadFrame): string {
+  return frame.recordContract ?? frame.contract;
+}
+
+/** The category whose records a frame reads. */
+function recordCategoryIdOf(frame: ReadFrame): string {
+  return frame.recordCategoryId ?? frame.categoryId;
+}
+
+/** The category bytes whose records a frame reads. */
+function recordCategoryOf(frame: ReadFrame): Uint8Array {
+  return frame.recordCategory ?? frame.category;
+}
+
+/** The layout a frame's records are classified with. */
+function recordLayoutOf(frame: ReadFrame): StateLayout {
+  return frame.recordLayout ?? frame.artifact.stateLayout ?? NO_STATE_LAYOUT;
+}
 
 /**
  * The struct definitions an artifact publishes.
@@ -288,31 +340,93 @@ function publishedEntryOf(artifact: Artifact, functionName: string): PublishedEn
     .find((candidate) => candidate.functionName === `${artifact.contractName}.${functionName}()`);
 }
 
-/** The external contract a published call reaches, or `undefined` when the caller supplied none for it. */
+/** The external contract a published call reaches, or `undefined` when nothing names one. */
 function externalOf(
   call: PublishedCallSite,
   externals: PerCallReadOptions['externals'],
+  provider: NetworkProvider,
   validatorProgram: Uint8Array,
-): { readonly artifact: Artifact; readonly categoryId: string } | undefined {
+): PerCallProxyExternal | undefined {
   // The published table names the interface the call goes through; a caller keyed by the contract name is reached
   // through the address the site carries instead, which the external's own category derives.
   const named = externals?.[call.interfaceName];
   if (named !== undefined) return named;
   const target = hexToBin(call.target);
-  if (target.length === 0) return undefined;
-  return Object.values(externals ?? {}).find((candidate) =>
-    bytesEqual(validatorAddress(hexToBin(candidate.categoryId), validatorProgram), target));
+  if (target.length > 0) {
+    const atTarget = Object.values(externals ?? {}).find((candidate) =>
+      bytesEqual(validatorAddress(hexToBin(candidate.categoryId), validatorProgram), target));
+    if (atTarget !== undefined) return atTarget;
+  }
+  // The hop resolves a call the same way: what the caller named first, then the provider's registrations by the
+  // address the site carries and by the interface it names.
+  return registeredExternalFor(provider, target, call.interfaceName);
+}
+
+/**
+ * The address a call reaches.
+ *
+ * A site whose target the caller pins in its own code publishes that address, and the frame the call reaches is at
+ * it. A site whose target the caller keeps in its own state — or computes — publishes none, because the address is
+ * a value the caller's own record carries. The call then reaches the callee's own address, which is where the
+ * validator pins the frame and the only address the caller's record can hold for the call to be the read's.
+ */
+function callTarget(call: PublishedCallSite, calleeAddress: Uint8Array): Uint8Array {
+  return call.target.length > 0 ? new Uint8Array(hexToBin(call.target)) : calleeAddress;
+}
+
+/**
+ * The call data one call carries: the callee's selector, then each argument's canonical push in call order.
+ *
+ * The caller's published routing states where each argument comes from, and the resolver the hop reads its own
+ * calls with reads those sources here from the calling frame's own arguments and addresses — never from a
+ * deployment. A source the frame's own facts do not state, such as a field of the caller's live state or an
+ * earlier call's result, is refused by the kind that names it rather than guessed at. The pushes themselves come
+ * from the shipped encoder the hop uses, so a read and a hop state one call data.
+ */
+function readCallArguments(
+  frame: ReadFrame,
+  row: ExternalCallAbi,
+  call: PublishedCallSite,
+  calleeArtifact: Artifact,
+  calleeEntry: ReadEntry,
+  resolver: CallResolver,
+): { readonly pushes: readonly Uint8Array[]; readonly values: readonly FunctionArgument[] } {
+  // The stop site's baked target is the address the compiler pinned into the caller's own code, which the ABI
+  // routing carries as `addressLiteral` for a literal and leaves empty for one the caller computes.
+  const effective: ExternalCallAbi = row.addressLiteral === undefined && call.target.length > 0
+    ? { ...row, addressLiteral: call.target }
+    : row;
+  const visible = calleeEntry.inputs.filter((input) => !input.name.startsWith('__internal__'));
+  for (const [index, source] of (effective.argSources ?? []).entries()) {
+    if (index >= visible.length) break;
+    if (resolver.resolveArgument(source, 0) !== undefined) continue;
+    const expression = source.expression === undefined ? '' : ` of kind "${source.expression.kind}"`;
+    throw new PerCallReadError(
+      `entry "${frame.contract}.${frame.entry.name}()" calls "${row.interfaceName}.${row.functionName}()", `
+      + `whose argument ${index} comes from a "${source.kind}"${expression}, which a read cannot state from the `
+      + "caller's own arguments and addresses",
+    );
+  }
+  try {
+    return resolveCallArguments(effective, calleeArtifact, calleeEntry, resolver, 0);
+  } catch (error) {
+    if (error instanceof PerCallProxyDeployError) throw new PerCallReadError(error.message);
+    throw error;
+  }
 }
 
 /**
  * Plans the read's frames: the root frame, then every callee frame the root's calls reach, transitively.
  *
- * A call is resolved from the entry's published stop site to an external the caller supplied, and a callee becomes
- * its own `STATIC` frame over its own deployment. Nothing is read from the provider here: a frame's deployment
- * coordinates are derived from its category and validator program, so an entry whose calls the caller did not
- * supply is refused before any chain state is read.
+ * A call is resolved from the entry's published stop site to an external the caller supplied, or one the provider's
+ * registrations name, and a callee becomes its own `STATIC` frame over its own deployment. A callee behind its own
+ * proxy is two frames: the proxy's `STATIC` fallback, which the caller reaches, and the implementation's `DELEGATE`
+ * frame, which runs the called entry on the proxy's records. Nothing is read from the provider here: a frame's
+ * deployment coordinates are derived from its category and validator program, so an entry whose calls nothing names
+ * is refused before any chain state is read.
  */
 function planReadFrames(options: {
+  readonly provider: NetworkProvider;
   readonly artifact: Artifact;
   readonly categoryId: string;
   readonly functionName: string;
@@ -330,6 +444,8 @@ function planReadFrames(options: {
     categoryId: options.categoryId,
     category,
     deployed: rootDeployed,
+    kind: FrameKind.STATIC,
+    self: rootDeployed.address,
     parent: undefined,
     sender: rootDeployed.address,
     args: options.args ?? [],
@@ -358,10 +474,33 @@ function planReadFrames(options: {
   let calleeCount = 0;
 
   for (const frame of frames) {
+    // A proxy's fallback publishes the delegate it forwards to, which the pair already placed: it is not a call
+    // the read resolves from the provider, so its own sites are not expanded again.
+    if (frame.retvalFrom !== undefined) continue;
     const published = publishedEntryOf(frame.artifact, frame.entry.name);
     const calls = published?.calls ?? [];
-    for (const call of calls) {
-      const external = externalOf(call, options.externals, options.validatorProgram);
+    if (calls.length === 0) continue;
+    const routing = routingOf(frame.artifact, frame.entry.name);
+    // The frame's own facts are what each call's arguments are stated from, exactly as the hop states its own
+    // calls. A read holds no live state, so a source that needs one is refused by name when its call is reached.
+    const resolver = makeCallResolver({
+      artifact: frame.artifact,
+      functionName: frame.entry.name,
+      args: frame.args,
+      stateValues: {},
+      selfAddress: frame.self,
+      senderAddress: frame.sender,
+    });
+    for (const [callIndex, call] of calls.entries()) {
+      const row = routing[callIndex];
+      if (row === undefined || row.interfaceName !== call.interfaceName
+        || row.functionName !== call.functionName) {
+        throw new PerCallReadError(
+          `entry "${frame.contract}.${frame.entry.name}()" publishes call ${callIndex} to `
+          + `"${call.interfaceName}.${call.functionName}()", which its ABI routing does not describe`,
+        );
+      }
+      const external = externalOf(call, options.externals, options.provider, options.validatorProgram);
       if (external === undefined) {
         throw new PerCallReadError(
           `entry "${frame.contract}.${frame.entry.name}()" makes ${calls.length} external call(s): `
@@ -369,23 +508,120 @@ function planReadFrames(options: {
         );
       }
       const contract = external.artifact.contractName;
+      const proxyArtifact = external.proxyArtifact;
+      const implementationCategoryId = external.implementationCategoryId;
+      const proxied = proxyArtifact !== undefined && implementationCategoryId !== undefined;
       // One call is one frame, so a contract two call sites reach is two frames over its own records. A contract
       // that reaches itself is not: the frames are ordered by their calls and the chain would never bottom out.
-      if (callerChain(frame).some((ancestor) => ancestor.contract === contract)) {
+      const placed = proxied ? [proxyArtifact.contractName, contract] : [contract];
+      const repeated = placed.find((name) => callerChain(frame).some((ancestor) => ancestor.contract === name));
+      if (repeated !== undefined) {
         throw new PerCallReadError(
-          `the read reaches "${contract}" again below itself, so its frames have no order`,
+          `the read reaches "${repeated}" again below itself, so its frames have no order`,
         );
       }
       const calleeEntry = requireEntry(external.artifact, call.functionName);
-      if (calleeEntry.inputs.length > 0) {
-        throw new PerCallReadError(
-          `entry "${contract}.${call.functionName}()" takes ${calleeEntry.inputs.length} parameter(s), whose `
-          + 'values a read cannot resolve from the caller\'s live records',
-        );
+      // The callee's call data is the same whether the callee is reached directly or through its own proxy, so it
+      // is stated once here: the proxy's fallback and the implementation's delegate frame share the pushes.
+      const { pushes: argumentPushes, values: calleeArgs } =
+        readCallArguments(frame, row, call, external.artifact, calleeEntry, resolver);
+      if (proxied) {
+        // The address the call reaches names the proxy, so the reach is the pair the hop places for one: the
+        // proxy's fallback frame, which the caller records, and the implementation's delegate frame it forwards to.
+        const proxyCategory = hexToBin(external.categoryId);
+        const implementationCategory = hexToBin(implementationCategoryId);
+        const proxyDeployed = deployMaster(proxyArtifact, proxyCategory, options.validatorProgram);
+        const implementationDeployed =
+          deployMaster(external.artifact, implementationCategory, options.validatorProgram);
+        // A delegate frame runs the implementation's code, so the mapping nodes at the proxy's category were minted
+        // by the implementation's own collection covenants: the proxy's deployment is classified with those beside
+        // its own records, the way the hop classifies it.
+        const implementationLayout = external.artifact.stateLayout ?? NO_STATE_LAYOUT;
+        const recordLayout: StateLayout = {
+          ...(proxyArtifact.stateLayout ?? NO_STATE_LAYOUT),
+          ...(implementationLayout.collections === undefined
+            ? {} : { collections: implementationLayout.collections }),
+        };
+        calleeCount += 1;
+        const proxyMaster = `read-${calleeCount}`;
+        calleeCount += 1;
+        const implementationMaster = `read-${calleeCount}`;
+        const proxy: ReadFrame = {
+          master: proxyMaster,
+          contract: proxyArtifact.contractName,
+          artifact: proxyArtifact,
+          entry: requireEntry(proxyArtifact, FALLBACK_ENTRY),
+          categoryId: external.categoryId,
+          category: proxyCategory,
+          deployed: proxyDeployed,
+          kind: FrameKind.STATIC,
+          self: proxyDeployed.address,
+          recordContract: proxyArtifact.contractName,
+          recordCategory: proxyCategory,
+          recordCategoryId: external.categoryId,
+          recordLayout,
+          parent: frame.master,
+          sender: frame.self,
+          args: [],
+          argumentPushes,
+          segmentCount: publishedEntryOf(proxyArtifact, FALLBACK_ENTRY)?.sites.sites
+            .filter((site) => site.kind === 'segmentClose').length ?? 1,
+          calls: [{
+            callee: implementationMaster,
+            target: implementationDeployed.address,
+            kind: FrameKind.DELEGATE,
+            argumentPushes,
+          }],
+          enteredBy: frame.master,
+          origin: '',
+          masterSatoshis: 0n,
+          validatorSatoshis: 0n,
+          records: [],
+          valueWitnesses: new Map(),
+          retvalFrom: implementationMaster,
+        };
+        const implementation: ReadFrame = {
+          master: implementationMaster,
+          contract,
+          artifact: external.artifact,
+          entry: calleeEntry,
+          categoryId: implementationCategoryId,
+          category: implementationCategory,
+          deployed: implementationDeployed,
+          kind: FrameKind.DELEGATE,
+          // A delegate frame runs as its caller's contract, so its `address(this)` is the proxy's.
+          self: proxyDeployed.address,
+          recordContract: proxyArtifact.contractName,
+          recordCategory: proxyCategory,
+          recordCategoryId: external.categoryId,
+          parent: proxyMaster,
+          sender: frame.self,
+          args: calleeArgs,
+          argumentPushes,
+          segmentCount: publishedEntryOf(external.artifact, calleeEntry.name)?.sites.sites
+            .filter((site) => site.kind === 'segmentClose').length ?? 1,
+          calls: [],
+          enteredBy: proxyMaster,
+          origin: '',
+          masterSatoshis: 0n,
+          validatorSatoshis: 0n,
+          records: [],
+          valueWitnesses: new Map(),
+          recordOwner: proxyMaster,
+        };
+        frames.push(proxy, implementation);
+        byMaster.set(proxyMaster, proxy);
+        byMaster.set(implementationMaster, implementation);
+        frame.calls.push({
+          callee: proxyMaster, target: callTarget(call, proxyDeployed.address),
+          kind: FrameKind.STATIC, argumentPushes,
+        });
+        continue;
       }
       calleeCount += 1;
       const calleeMaster = `read-${calleeCount}`;
       const calleeCategory = hexToBin(external.categoryId);
+      const calleeDeployed = deployMaster(external.artifact, calleeCategory, options.validatorProgram);
       const callee: ReadFrame = {
         master: calleeMaster,
         contract,
@@ -393,12 +629,13 @@ function planReadFrames(options: {
         entry: calleeEntry,
         categoryId: external.categoryId,
         category: calleeCategory,
-        deployed: deployMaster(external.artifact, calleeCategory, options.validatorProgram),
+        deployed: calleeDeployed,
+        kind: FrameKind.STATIC,
+        self: calleeDeployed.address,
         parent: frame.master,
-        sender: frame.deployed.address,
-        // A callee entry takes no parameter, which the caller above enforces, so its mapping keys are literals.
-        args: [],
-        argumentPushes: [new Uint8Array(hexToBin(call.selector))],
+        sender: frame.self,
+        args: calleeArgs,
+        argumentPushes,
         segmentCount: publishedEntryOf(external.artifact, calleeEntry.name)?.sites.sites
           .filter((site) => site.kind === 'segmentClose').length ?? 1,
         calls: [],
@@ -412,9 +649,8 @@ function planReadFrames(options: {
       frames.push(callee);
       byMaster.set(calleeMaster, callee);
       frame.calls.push({
-        callee: calleeMaster,
-        target: new Uint8Array(hexToBin(call.target)),
-        selector: new Uint8Array(hexToBin(call.selector)),
+        callee: calleeMaster, target: callTarget(call, calleeDeployed.address),
+        kind: FrameKind.STATIC, argumentPushes,
       });
     }
   }
@@ -436,15 +672,21 @@ async function readFrameDeployments(
 ): Promise<void> {
   const deployments = new Map<string, Awaited<ReturnType<typeof readPerCallDeployment>>>();
   const mastersTaken = new Map<string, number>();
+  const byMaster = new Map(frames.map((frame) => [frame.master, frame]));
+  const deploymentFor = async (
+    categoryId: string, layout: StateLayout,
+  ): Promise<Awaited<ReturnType<typeof readPerCallDeployment>>> => {
+    let deployment = deployments.get(categoryId);
+    if (deployment === undefined) {
+      deployment = await readPerCallDeployment(provider, categoryId, layout);
+      deployments.set(categoryId, deployment);
+    }
+    return deployment;
+  };
   for (const frame of frames) {
     // A contract that keeps no state variable publishes no layout and mints no record; it is classified against an
     // empty one, so its category still yields the master the frame runs on.
-    const stateLayout = frame.artifact.stateLayout ?? NO_STATE_LAYOUT;
-    let deployment = deployments.get(frame.categoryId);
-    if (deployment === undefined) {
-      deployment = await readPerCallDeployment(provider, frame.categoryId, stateLayout);
-      deployments.set(frame.categoryId, deployment);
-    }
+    const deployment = await deploymentFor(frame.categoryId, recordLayoutOf(frame));
     // Each frame runs on a master of its own, so a contract two calls reach takes the next master of its pool
     // rather than the one the frame before it already spends.
     const taken = mastersTaken.get(frame.categoryId) ?? 0;
@@ -466,7 +708,13 @@ async function readFrameDeployments(
       }
       frame.validatorSatoshis = validator.satoshis;
     }
-    frame.records = frameReadRecords(frame, deployment, stateLayout);
+    // A delegate frame reads the records of the proxy frame that entered it, at the proxy's category, so its own
+    // classification is not the one that locates them.
+    const owner = frame.recordOwner === undefined ? frame : byMaster.get(frame.recordOwner)!;
+    const records = owner === frame
+      ? deployment
+      : await deploymentFor(owner.categoryId, recordLayoutOf(owner));
+    frame.records = frameReadRecords(frame, records, recordLayoutOf(owner));
   }
 }
 
@@ -475,7 +723,7 @@ function dataNftReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, n
   const utxo = deployment.records[nftIndex];
   if (utxo === undefined) {
     throw new PerCallReadError(
-      `category ${frame.categoryId} holds no data-NFT record at index ${nftIndex}, which the entry reads`,
+      `category ${recordCategoryIdOf(frame)} holds no data-NFT record at index ${nftIndex}, which the entry reads`,
     );
   }
   const commitment = utxo.token?.nft?.commitment;
@@ -483,10 +731,10 @@ function dataNftReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, n
     throw new PerCallReadError(`the record at data-NFT index ${nftIndex} carries no commitment`);
   }
   return {
-    id: frame.master === READ_MASTER ? recordId(nftIndex) : calleeRecordId(frame.contract, nftIndex),
+    id: frame.master === READ_MASTER ? recordId(nftIndex) : calleeRecordId(recordContractOf(frame), nftIndex),
     commitment: new Uint8Array(hexToBin(commitment)),
     satoshis: utxo.satoshis,
-    lockingBytecode: stateRecordLockingBytecode(frame.categoryId),
+    lockingBytecode: stateRecordLockingBytecode(recordCategoryIdOf(frame)),
   };
 }
 
@@ -516,7 +764,7 @@ function joinedNodeValue(
   const length = new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
   const root = tail.slice(4, 4 + 32);
   const head = tail.slice(4 + 32, 4 + 32 + VALUE_HEAD_SIZE);
-  const lock = bytesToHex(mappingValueChunkLock(frame.category, node.collection, { slot, root }));
+  const lock = bytesToHex(mappingValueChunkLock(recordCategoryOf(frame), node.collection, { slot, root }));
   // A mapping value's chunks sit at their own root-salted covenant, so the classification files them with the
   // unfiled collection nodes rather than with a dynamic variable's chunks; both pools are searched for the lock.
   const chunks = [...deployment.chunks, ...deployment.collectionNodes]
@@ -541,7 +789,7 @@ function entryReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, slo
       functionName: frame.entry.name,
       args: frame.args,
       callerLockingBytecode: frame.sender,
-      categoryId: frame.categoryId,
+      categoryId: recordCategoryIdOf(frame),
       nodesByCollection: deployment.nodesByCollection,
       slotIndex,
     });
@@ -561,18 +809,23 @@ function readRecordOf(
   // A node the key names holds its value inline, or past the inline limit as a digest whose bytes sit in chunk
   // records the deployment holds. A node the key is read beside is never read for its value, so its width is free.
   const tail = node.commitment.slice(64);
-  const length = tail.length < 4 ? 0 : new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
+  // Only a collection whose values chunk writes the value's byte length ahead of it. Any other writes the encoded
+  // value where that length would sit, so its leading bytes are a length only where one is written: reading them
+  // otherwise invents a width from the value itself, and a value whose low bytes are large would be refused here.
+  const length = collectionChunksValue(frame.artifact, node.collection) && tail.length >= 4
+    ? new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true) : 0;
   let value: Uint8Array | undefined;
   if (node.present && length > VALUE_INLINE_LIMIT) {
     value = joinedNodeValue(frame, node, deployment);
     if (value === undefined) {
       throw new PerCallReadError(
         `the node of collection "${node.collection}" the entry reads holds a ${length}-byte value whose bytes sit `
-        + `in chunk records that category ${frame.categoryId} does not hold, so the read cannot state its witness`,
+        + `in chunk records that category ${recordCategoryIdOf(frame)} does not hold, so the read cannot state its `
+        + 'witness',
       );
     }
   }
-  const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(frame.categoryId, node.signature);
+  const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(recordCategoryIdOf(frame), node.signature);
   return {
     record: {
       id: `${frame.master}-entry-${bytesToHex(node.slot)}`,
@@ -715,7 +968,7 @@ function locatedNode(
     const commitment = utxo.token?.nft?.commitment;
     if (commitment === undefined) {
       throw new PerCallReadError(
-        `category ${frame.categoryId} holds a node of collection "${collection.name}" with no commitment`,
+        `category ${recordCategoryIdOf(frame)} holds a node of collection "${collection.name}" with no commitment`,
       );
     }
     return { utxo, commitment: new Uint8Array(hexToBin(commitment)) };
@@ -730,8 +983,8 @@ function locatedNode(
   }, undefined);
   if (node === undefined) {
     throw new PerCallReadError(
-      `category ${frame.categoryId} holds no node of collection "${collection.name}" whose slot is the key's or `
-      + 'the key\'s bracketing predecessor, so the read cannot locate what it reads',
+      `category ${recordCategoryIdOf(frame)} holds no node of collection "${collection.name}" whose slot is the `
+      + 'key\'s or the key\'s bracketing predecessor, so the read cannot locate what it reads',
     );
   }
   return {
@@ -874,8 +1127,8 @@ function liveArrayValue(
   const commitment = record?.token?.nft?.commitment;
   if (commitment === undefined) {
     throw new PerCallReadError(
-      `category ${frame.categoryId} holds no data-NFT record at index ${variable.nftIndex ?? 0}, which the entry `
-      + `reads "${array}" from`,
+      `category ${recordCategoryIdOf(frame)} holds no data-NFT record at index ${variable.nftIndex ?? 0}, which `
+      + `the entry reads "${array}" from`,
     );
   }
   let bytes: Uint8Array;
@@ -908,7 +1161,7 @@ function dynamicChunkBytes(
   deployment: PerCallDeploymentSet,
   variable: { readonly name: string; readonly type: string },
 ): Uint8Array[] {
-  const lock = bytesToHex(chunkRecordLockingBytecode(frame.categoryId, variable.name, variable.type));
+  const lock = bytesToHex(chunkRecordLockingBytecode(recordCategoryIdOf(frame), variable.name, variable.type));
   return deployment.chunks
     .filter((utxo) => utxo.lockingBytecode !== undefined && bytesToHex(utxo.lockingBytecode) === lock
       && utxo.token?.nft?.commitment !== undefined)
@@ -925,9 +1178,9 @@ function arrayChunkRecords(
 ): readonly ReadRecord[] {
   const variable = frame.artifact.stateLayout?.variables?.find((candidate) => candidate.name === array);
   if (variable === undefined || variable.dynamic !== true) return [];
-  const lock = bytesToHex(chunkRecordLockingBytecode(frame.categoryId, variable.name, variable.type));
+  const lock = bytesToHex(chunkRecordLockingBytecode(recordCategoryIdOf(frame), variable.name, variable.type));
   const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(
-    frame.categoryId, dynamicChunkSignature(variable.name, variable.type),
+    recordCategoryIdOf(frame), dynamicChunkSignature(variable.name, variable.type),
   );
   return deployment.chunks
     .filter((utxo) => utxo.lockingBytecode !== undefined && bytesToHex(utxo.lockingBytecode) === lock
@@ -965,6 +1218,9 @@ function arrayElementKeyAt(
   if (!Number.isSafeInteger(index) || index < 0) return undefined;
   const element = live[index];
   if (element === undefined) return undefined;
+  // An element the record holds is the bytes the body's key is built from, so it keys verbatim; any other form —
+  // a number the array decoded to, a CashAddress string a supplied value names — is encoded as the key type.
+  if (element instanceof Uint8Array) return element;
   return encodeFunctionArgument(element, keyType, structDefinitionsOf(frame.artifact)) as Uint8Array;
 }
 
@@ -982,8 +1238,11 @@ function frameReadRecords(
 ): readonly ReadRecord[] {
   const slots = frame.entry.slots;
   if (slots === undefined) {
-    return Array.from({ length: stateLayout.dataNftCount }, (_unused, nftIndex) =>
-      dataNftReadRecord(frame, deployment, nftIndex));
+    return [
+      ...Array.from({ length: stateLayout.dataNftCount }, (_unused, nftIndex) =>
+        dataNftReadRecord(frame, deployment, nftIndex)),
+      ...dynamicReadRecords(frame, deployment),
+    ];
   }
   const records: ReadRecord[] = [];
   for (const slot of [...slots].sort((left, right) => left.offset - right.offset)) {
@@ -998,6 +1257,54 @@ function frameReadRecords(
           frame.valueWitnesses.set(slot.slotIndex, read.value);
         }
       }
+    }
+  }
+  for (const record of dynamicReadRecords(frame, deployment)) {
+    if (!records.some((candidate) => candidate.id === record.id)) records.push(record);
+  }
+  return records;
+}
+
+/**
+ * The live chunk records a frame reads for each dynamic value its entry reads and does not write.
+ *
+ * A dynamic value's bytes do not sit in its data-NFT record, which carries only the value's byte length: they live
+ * in a run of chunk records at the value's own collection covenant, and the body joins that run before it reads an
+ * element or a byte range. The frame therefore declares the run the deployment holds, in chunk order and kept in
+ * place, exactly as the hop declares the run a callee frame reads. The records sit at the category whose records
+ * the frame reads, which is the record owner's for a delegate frame.
+ */
+function dynamicReadRecords(frame: ReadFrame, deployment: PerCallDeploymentSet): readonly ReadRecord[] {
+  const fn = frame.artifact.abi.find((candidate) => candidate.name === frame.entry.name);
+  const reads = fn?.dynamicReads ?? [];
+  if (reads.length === 0) return [];
+  const written = new Set(fn?.dynamicWrites ?? []);
+  const categoryId = recordCategoryIdOf(frame);
+  const records: ReadRecord[] = [];
+  for (const variable of reads) {
+    if (written.has(variable)) continue;
+    const declared = frame.artifact.stateLayout?.variables
+      .find((candidate) => candidate.name === variable);
+    if (declared === undefined || declared.dynamic !== true) continue;
+    const lock = bytesToHex(chunkRecordLockingBytecode(categoryId, variable, declared.type));
+    const live = deployment.chunks
+      .filter((utxo) => utxo.lockingBytecode !== undefined && bytesToHex(utxo.lockingBytecode) === lock
+        && utxo.token?.nft?.commitment !== undefined)
+      .map((utxo) => ({ utxo, chunk: parseChunkCommitment(utxo.token!.nft!.commitment!) }))
+      .sort((left, right) => left.chunk.chunkIndex - right.chunk.chunkIndex);
+    if (live.length === 0) continue;
+    const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(
+      categoryId, dynamicChunkSignature(variable, declared.type),
+    );
+    for (const { utxo, chunk } of live) {
+      const commitment = utxo.token!.nft!.commitment!;
+      records.push({
+        id: `${frame.master}-chunk-${variable}-${chunk.chunkIndex}`,
+        commitment: new Uint8Array(hexToBin(commitment)),
+        satoshis: utxo.satoshis,
+        lockingBytecode,
+        unlockingBytecode,
+      });
     }
   }
   return records;
@@ -1130,7 +1437,18 @@ function decodeEntryValues(entry: ReadEntry, artifact: Artifact, retval: Uint8Ar
     // array and, through it, to each record in the order the turns walk.
     return [attachDecodedAccessors(decoded[0]!)];
   }
-  return decoded;
+  // A getter returning a record, an array of records or a nested struct reads as one: every returned value carries
+  // the accessor boundary, so a caller sees the same shape whatever the getter's own return layout is.
+  if (hopTraceOn()) {
+    const shape = (value: unknown): string => (Array.isArray(value)
+      ? `[${value.length}]`
+      : value !== null && typeof value === 'object' && !(value instanceof Uint8Array)
+        ? `{${Object.keys(value as Record<string, unknown>).join('|')}}`
+        : typeof value);
+    hopTrace(`read ${entry.name} outputs=${entry.outputs.map((output) => output.type).join(',')} `
+      + `n=${decoded.length} shape=${decoded.map(shape).join(' ')}`);
+  }
+  return decoded.map((value) => attachDecodedAccessors(value));
 }
 
 /** The argument pushes a frame's unlocking bytecode carries, in the order a callee's body reads them. */
@@ -1176,6 +1494,7 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
   const machine = options.vm ?? createVirtualMachineBch2026ForProvider(provider);
 
   const { frames, root } = planReadFrames({
+    provider,
     artifact: options.artifact,
     categoryId,
     functionName,
@@ -1202,6 +1521,7 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
   // One block per contract, however many frames it runs: a contract two calls reach has two masters in its block.
   // A record is one input however many frames read it, so a block declares it once and a later frame of the same
   // contract resolves it through its own segments.
+  const frameByMaster = new Map(frames.map((frame) => [frame.master, frame]));
   const blockOrder: string[] = [];
   const mastersOfBlocks = new Map<string, string[]>();
   const stateOfBlocks = new Map<string, string[]>();
@@ -1212,8 +1532,11 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
       stateOfBlocks.set(frame.contract, []);
     }
     mastersOfBlocks.get(frame.contract)!.push(frame.master);
+    // A delegate frame's records sit at the proxy's category, so they are declared in the proxy's block, which the
+    // owner frame reaches first; the delegate contributes only the ones its own entry reads.
+    const owner = frame.recordOwner === undefined ? frame : frameByMaster.get(frame.recordOwner)!;
     for (const record of frame.records) {
-      const state = stateOfBlocks.get(frame.contract)!;
+      const state = stateOfBlocks.get(owner.contract)!;
       if (!state.includes(record.id)) state.push(record.id);
     }
   }
@@ -1243,18 +1566,18 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
     facts: {
       contract: frame.contract,
       functionName: frame.entry.name,
-      kind: FrameKind.STATIC,
+      kind: frame.kind,
       callerIsUser: false,
       originEqualsCaller: false,
       makesExternalCall: frame.calls.length > 0,
       mastersOfContract: mastersPerContract.get(frame.contract) ?? 1,
     },
-    frame: { kind: FrameKind.STATIC, sender: frame.sender, self: frame.deployed.address, value: 0n },
+    frame: { kind: frame.kind, sender: frame.sender, self: frame.self, value: 0n },
     enteredBy: frame.enteredBy,
     origin: frame.origin,
     calls: frame.calls.map((call) => ({
-      kind: FrameKind.STATIC, callee: call.callee, target: call.target, value: 0n,
-      argumentPushes: [call.selector],
+      kind: call.kind, callee: call.callee, target: call.target, value: 0n,
+      argumentPushes: call.argumentPushes,
     })),
     retval: retvalPlaceholder(frame.master),
     // A frame declares its records in every segment it closes, because a read changes none of them: a kept record
@@ -1300,6 +1623,8 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
       };
     }
     const masterIndex = participant(layout, frame.master).index;
+    // A delegate frame's records are the proxy's, spent at the proxy's category; only its own extra reads are new.
+    const recordOwner = frame.recordOwner === undefined ? frame : frameByMaster.get(frame.recordOwner)!;
     for (const record of frame.records) {
       // The record's spend is authorized by the first master of its category, whichever frame reads it.
       if (inputs[record.id] !== undefined) continue;
@@ -1307,12 +1632,12 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
         source: {
           lockingBytecode: record.lockingBytecode,
           valueSatoshis: record.satoshis,
-          token: mutable(frame.category, record.commitment),
+          token: mutable(recordOwner.category, record.commitment),
         },
         // A read leaves the record where it is, so it takes the covenant's read-only path: a data-NFT record's
         // read-only path still names the master index, a mapping node's needs no master at all.
         unlockingBytecode: record.unlockingBytecode
-          ?? stateRecordUnlockingBytecode(frame.categoryId, masterIndex, 0),
+          ?? stateRecordUnlockingBytecode(recordOwner.categoryId, masterIndex, 0),
       };
     }
   }
@@ -1370,6 +1695,14 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
       block.calls[callIndex]!.calleeRef = participant(draft.layout, call.callee).index;
       block.calls[callIndex]!.result = learned.get(call.callee)!;
     });
+    // A proxy's fallback computes no return of its own: it records the bytes its delegate frame recorded, so what
+    // it carries is exactly what the delegation learned, not a value its own close would hand back.
+    if (frame.retvalFrom !== undefined) {
+      const forwarded = learned.get(frame.retvalFrom) ?? new Uint8Array(0);
+      block.retval = forwarded;
+      learned.set(frame.master, forwarded);
+      continue;
+    }
     const reading = readComputedDeclaration({
       vm: machine,
       program: draft.programFor(frame.master),

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { Contract, SignatureTemplate } from '../../../src/index.js';
+import { Contract, SignatureTemplate, encodeFunctionArgument } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
@@ -47,8 +47,12 @@ const key = (seed: number): Uint8Array => {
   for (let index = 0; index < bytes.length; index += 1) bytes[index] = (seed * 17 + index * 3) & 0xff;
   return bytes;
 };
-// Ascending by slot: key(5) < key(3) < key(6) as little-endian slot values.
+// The caller hands raw 20-byte elements; the shipped encoder widens each to the locking bytecode the frame's body
+// keys by, and the covenant's slot is sha256 of that lock. Those slots ascend as key(3) < key(6) < key(5).
 const WORKERS = [key(5), key(3), key(6)];
+
+/** The locking bytecode an element names, as the shipped argument encoder hands it to the frame. */
+const element = (bytes: Uint8Array): Uint8Array => encodeFunctionArgument(bytes, 'address') as Uint8Array;
 
 function outpointHash(seed: number): string {
   const bytes = new Uint8Array(32);
@@ -112,13 +116,14 @@ describe('the turns of a run-time-loop mapping write', () => {
     }).toStrictEqual({
       collection: 'balances', op: 'set', varyingArrayParam: 'workers', valueScalarParam: 'amount',
     });
-    // One turn per element, in the array's own order: the derivation walks the array the caller passed.
+    // One turn per element, each naming the element it came from. `amount` is one value under every key, so the
+    // derivation hands the frame the array in the slot order the body's chain walks: key(3), key(6), key(5).
     expect(plan.turns.map((turn) => turn.turn)).toStrictEqual([0, 1, 2]);
-    expect(plan.turns.map((turn) => turn.source)).toStrictEqual([0, 1, 2]);
-    expect(plan.arrayOrder).toStrictEqual([0, 1, 2]);
-    plan.turns.forEach((turn, index) => {
+    expect(plan.turns.map((turn) => turn.source)).toStrictEqual([1, 2, 0]);
+    expect(plan.arrayOrder).toStrictEqual([1, 2, 0]);
+    plan.turns.forEach((turn) => {
       expect(turn.keys).toHaveLength(1);
-      expect(binToHex(turn.keys[0]!)).toBe(binToHex(WORKERS[index]!));
+      expect(binToHex(turn.keys[0]!)).toBe(binToHex(element(WORKERS[turn.source]!)));
     });
   });
 
@@ -126,7 +131,8 @@ describe('the turns of a run-time-loop mapping write', () => {
     const plans = planCallLoopWrites({
       artifact, functionName: 'move', args: [[WORKERS[2]!], 7n], callerLockingBytecode: new Uint8Array(0),
     });
-    expect(plans![0]!.turns.map((turn) => binToHex(turn.keys[0]!))).toStrictEqual([binToHex(WORKERS[2]!)]);
+    expect(plans![0]!.turns.map((turn) => binToHex(turn.keys[0]!)))
+      .toStrictEqual([binToHex(element(WORKERS[2]!))]);
   });
 
   it('refuses an array the frame does not carry, naming the collection and the loop', () => {
@@ -140,14 +146,14 @@ describe('the turns of a run-time-loop mapping write', () => {
     // keys ascend. One value is stored under every key here (`uint amount`), so the array is handed to the frame in
     // slot order: the turns ascend whatever order the caller passed, and each turn names the element it came from.
     const plans = planCallLoopWrites({
-      artifact, functionName: 'move', args: [[WORKERS[1]!, WORKERS[0]!], 42n], callerLockingBytecode: new Uint8Array(0),
+      artifact, functionName: 'move', args: [[WORKERS[0]!, WORKERS[1]!], 42n], callerLockingBytecode: new Uint8Array(0),
     });
     const plan = plans![0]!;
     expect(plan.turns.map((turn) => turn.turn)).toStrictEqual([0, 1]);
     expect(plan.turns.map((turn) => turn.source)).toStrictEqual([1, 0]);
     expect(plan.arrayOrder).toStrictEqual([1, 0]);
     expect(plan.turns.map((turn) => binToHex(turn.keys[0]!)))
-      .toStrictEqual([binToHex(WORKERS[0]!), binToHex(WORKERS[1]!)]);
+      .toStrictEqual([binToHex(element(WORKERS[1]!)), binToHex(element(WORKERS[0]!))]);
   });
 
   it('keeps the caller\'s order and refuses a descending array when the value comes per key', () => {
@@ -163,7 +169,7 @@ describe('the turns of a run-time-loop mapping write', () => {
       + '   function ping() { require(true); }'
       + ' }', { composition: 'per-call' }).Ledger!;
     expect(() => planCallLoopWrites({
-      artifact: perKey, functionName: 'move', args: [[WORKERS[1]!, WORKERS[0]!], [1n, 2n]],
+      artifact: perKey, functionName: 'move', args: [[WORKERS[0]!, WORKERS[1]!], [1n, 2n]],
       callerLockingBytecode: new Uint8Array(0),
     })).toThrow(/under a key that does not sit above the turn before it/);
   });

@@ -7,7 +7,7 @@ import {
 import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { Contract, SignatureTemplate } from '../../../src/index.js';
+import { Contract, SignatureTemplate, encodeFunctionArgument } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { stateRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
@@ -176,7 +176,9 @@ async function deployed(
 /** The mapping node's value the hop writes, found among the transaction's outputs by the slot the key names. */
 function writtenAward(transaction: { readonly outputs: readonly { readonly token?: { readonly nft?: {
   readonly commitment?: Uint8Array } } }[] }): Uint8Array | undefined {
-  const slot = bytesToHex(keyToSlotMulti([alicePkh]));
+  // The key the frame's body hashes is the locking bytecode the shipped encoder gives the argument, so the lookup
+  // keys the same way rather than by the caller's raw 20-byte spelling.
+  const slot = bytesToHex(keyToSlotMulti([encodeFunctionArgument(alicePkh, 'address') as Uint8Array]));
   for (const output of transaction.outputs) {
     const commitmentBytes = output.token?.nft?.commitment;
     if (commitmentBytes === undefined) continue;
@@ -193,7 +195,8 @@ describe('a proxied entry whose writes land in different segments', () => {
     // both, so none is published for the entry, and each write names its own.
     expect(publishedWrites(impl, 'record').single).toBeUndefined();
     expect(publishedWrites(impl, 'record').writes).toStrictEqual([
-      { collection: 'awarded', segment: 0 }, { record: 0, segment: 1 },
+      { collection: 'awarded', segment: 0 },
+      { record: 0, segment: 1, writtenVariables: ['total'] },
     ]);
   });
 
@@ -244,7 +247,9 @@ describe('a proxied entry whose writes land in different segments', () => {
     // The run a dynamic write grows is read past the records the body's own block declares, so a plan that declares
     // the batch's records in another segment has nowhere to put them: the hop refuses the entry by name instead.
     expect(publishedWrites(dynamicImpl, 'record').writes).toStrictEqual([
-      { collection: 'awarded', segment: 0 }, { record: 0, segment: 'last' }, { variable: 'names', segment: 'last' },
+      { collection: 'awarded', segment: 0 },
+      { record: 0, segment: 'last', writtenVariables: ['names'] },
+      { variable: 'names', segment: 'last' },
     ]);
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployed(network, dynamicImpl);

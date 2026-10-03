@@ -221,15 +221,27 @@ describe('a proxied initialize that writes a sorted mapping', () => {
       .not.toBe(bytesToHex(headSentinelCommitment()));
   });
 
-  it('refuses a write whose value the artifact publishes no source for', async () => {
+  it('settles a write whose value the artifact publishes no source for, from the value the entry computed', async () => {
     const computed = 'pragma solidcash ^0.13.0;'
       + ' contract Impl {'
       + '   mapping(string => string) tags;'
       + '   function initialize(string a, string b) { this.tags["DA"] = a + b; }'
       + ' }';
-    await expect(deploy(computed, ['x', 'y'])).rejects.toThrow(
-      /writes mapping "tags" a value whose source the artifact does not publish/,
-    );
+    const { deployment } = await deploy(computed, ['x', 'y']);
+    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    // The node's commitment is the one the entry's own body computed for the concatenation, which the frame
+    // closes against the declaration the plan learned it from rather than the plan stating it up front.
+    const expected = planMappingWrite({
+      keys: [new TextEncoder().encode('DA')],
+      value: new TextEncoder().encode('xy'),
+      inventory: [headSentinelCommitment()],
+      encodeValue: encodeChunkableValueTail,
+    }).written[1]!.after;
+    const trailing = deployment.initialize.draft.trailingOutputs;
+    expect(trailing).toHaveLength(1);
+    expect(bytesToHex(trailing[0]!.output.token!.nft!.commitment)).toBe(bytesToHex(expected));
   });
 
   it('broadcasts the eight-key initializer, spending the head the proxy genesis minted', async () => {

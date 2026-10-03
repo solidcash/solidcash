@@ -333,6 +333,33 @@ describe('the trailing outputs a plan declares', () => {
     expect(assembly.outputs.changeIndex).toBe(5);
   });
 
+  it('allocates the created records as a set, so a plan naming them in another order still lands each', () => {
+    // Two created records in one segment, named in descending output order: the region allocates 3 and 4, and a
+    // record's landing is the pair of the record and its output, which no consumer reads by position.
+    const higher = { in: INDEX_NONE, out: 4, viewIn: new Uint8Array(0), viewOut: new Uint8Array([0x01]) };
+    const lower = { in: INDEX_NONE, out: 3, viewIn: new Uint8Array(0), viewOut: new Uint8Array([0x02]) };
+    const assembly = assembleComposition({
+      ...planWithValidator(),
+      masters: [
+        callerMaster([callToVault()]),
+        calleeMaster([SELECTOR, ARG], { segments: [[higher, lower]] }),
+      ],
+    });
+    expect(assembly.outputs.createdIndices).toStrictEqual([3, 4]);
+    expect(assembly.outputs.changeIndex).toBe(5);
+  });
+
+  it('refuses a created record the trailing region does not hold, whatever order the plan names them', () => {
+    const stray = { in: INDEX_NONE, out: 6, viewIn: new Uint8Array(0), viewOut: new Uint8Array([0x01]) };
+    expect(() => assembleComposition({
+      ...planWithValidator(),
+      masters: [
+        callerMaster([callToVault()]),
+        calleeMaster([SELECTOR, ARG], { segments: [[stray]] }),
+      ],
+    })).toThrow(/creates records at \[6\].*puts them at \[3\]/s);
+  });
+
   it('reports empty regions for a plan that emits and sends nothing', () => {
     const assembly = assembleComposition(planWithValidator());
     expect(assembly.outputs.eventIndices).toStrictEqual([]);

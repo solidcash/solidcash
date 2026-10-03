@@ -541,12 +541,27 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
     expect([await read('isMember', creatorLock), await read('feeOf', judgeLock)]).toStrictEqual([true, FEE]);
   });
 
-  /** The refusal both flows meet once the escrow call is planned: `pay`'s own record write. */
-  const DEALS_WRITE = 'the callee "Vault.pay()" writes records this hop cannot declare: the implementation\'s "pay" '
-    + 'entry writes mapping "deals" a value whose source the artifact does not publish, so this hop cannot tell '
-    + 'whether the write needs value chunks';
+  /**
+   * The wall both flows meet now that the read side is planned against the node an earlier reach created.
+   *
+   * The root's `approve` inserts the allowance key and the escrow's `transferFrom` continues that node, so the two
+   * reaches of one allowance key settle. The hop-planner refusal is lifted as well: the `balanceOf` after the
+   * escrow's own `transferFrom` resolves to the node the insert created rather than the bracketing predecessor it
+   * relinked, so `requireChainableNodes` (`AFTER_INSERT`) no longer stops the plan. The created-form read record is
+   * also chained now, so a frame that only holds a node an earlier frame created declares both views the value the
+   * chain holds and the settlement equality holds. The wall that remains is the escrow's own explicit check: the
+   * `transferFrom` frame reads its allowance and refuses `require(allowances[from][msg.sender] >= amount)` before any
+   * settlement, so the hop stops there - before the `balanceOf` after it is reached - and nothing is broadcast.
+   * Captured from a run (`PER_CALL_HOP_TRACE=1`): the `transferFrom` frame (`callee-master-12` in `take`,
+   * `callee-master-8` in `payStart`), reading `opcode=105` (`OP_VERIFY`) at the allowance `require`. The created-read
+   * chaining feeds that read the view the `approve` write left; the value it carries is the write's own, which this
+   * lane does not state.
+   */
+  const TRANSFER_FROM_REFUSED = new RegExp('the call\'s callee "Coin\\.transferFrom\\(\\)" did not settle through '
+    + 'the proxy: frame "callee-master-\\d+" of Coin\\.transferFrom\\(\\) at line 1: no source message '
+    + '\\(Program failed an OP_VERIFY operation\\.\\)');
 
-  it('take: learns the count and the fee in execution order, and stops at the escrow\'s own record write', async () => {
+  it('take: learns the count and the fee in execution order, and stops where a read follows the insert of its key', async () => {
     const worker = splittableWorker();
     const deployed = await deployFanIn(worker);
     const coin = funding(id32('6a'));
@@ -557,16 +572,17 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
     // The post's note carries `noteCount`'s result and `pay` carries `feeOf`'s, so the hop plans in execution
     // order: it stops before each, settles the read's two frames alone and plans on from what it returned
     // (`PER_CALL_HOP_TRACE=1`: `stop-plan` twice, `learned=[|1:1]`, then `learned=[|4:250]`). Planning `pay`
-    // is then refused before anything else is settled: it stores a `Deal` holding the amount it computes from its
-    // own two `balanceOf` reads, a value only its close states.
-    // Owner: the SDK hop planner, `calleeEntryWrites` (proxy/external-calls.ts): a callee's record write at the
-    // reached state (DESIGN_REACHED_STATE_PLANNING.md, stage 3).
+    // is then planned from the value its close states: it stores a `Deal` holding the amount it computes from its
+    // own two `balanceOf` reads. The allowance key chains and the balance read now resolves to the node the
+    // escrow's `transferFrom` created, so the planner no longer refuses the pair; the wall is the escrow's own
+    // allowance `require`, which the frame refuses before it settles.
+    // Owner: the escrow's own `Coin.transferFrom()` frame (compiler-side), reached once the planner admits the read.
     await expect(entered).rejects.toThrow(PerCallProxyDeployError);
-    await expect(entered).rejects.toThrow(DEALS_WRITE);
+    await expect(entered).rejects.toThrow(TRANSFER_FROM_REFUSED);
     expect(await coinLive(deployed.network, worker.lock, coin)).toBe(true);
   });
 
-  it('pay start: learns the fee in execution order, and stops at the escrow\'s own record write', async () => {
+  it('pay start: learns the fee in execution order, and stops where a read follows the insert of its key', async () => {
     const worker = splittableWorker();
     const deployed = await deployFanIn(worker);
     const coin = funding(id32('6b'));
@@ -575,10 +591,11 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
     });
 
     // `pay` takes the fee `feeOf` returned, so the hop stops before it, settles the fee read's frames and plans on
-    // from the fee (`learned=[|2:250]`); planning `pay` is refused as in `take`.
-    // Owner: the SDK hop planner, `calleeEntryWrites` (proxy/external-calls.ts), stage 3.
+    // from the fee (`learned=[|2:250]`); the escrow's own write is planned from the value its close states, and
+    // the wall is the escrow's own allowance `require` in `transferFrom`, as in `take`.
+    // Owner: the escrow's own `Coin.transferFrom()` frame (compiler-side), reached once the planner admits the read.
     await expect(entered).rejects.toThrow(PerCallProxyDeployError);
-    await expect(entered).rejects.toThrow(DEALS_WRITE);
+    await expect(entered).rejects.toThrow(TRANSFER_FROM_REFUSED);
     expect(await coinLive(deployed.network, deployed.creatorLock, coin)).toBe(true);
   });
 });

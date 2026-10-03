@@ -29,10 +29,11 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * (`shapes/reentry-payout-loop.test.ts`), whose loop likewise turns as often as an earlier `STATIC` read returned;
  * the token keeps balances per holder, as the marketplace's does.
  *
- * Pinned as it stands: the flow, whose loop the hop plans from the count it learns in execution order, meets the
- * same wall as the variant with the loop's count moved into the claimer's own record (every turn credits one
- * holder); with one turn, the re-entered guard behind it. All three are the SDK hop's (`src/per-call/proxy/**`), so
- * the replica is a reproducer.
+ * Pinned as it stands: the flow, whose loop the hop plans from the count it learns in execution order, and the
+ * variant with the loop's count moved into the claimer's own record both plan every turn (every turn credits one
+ * holder, and each later transfer rewrites the node the one before it created), and both stop at the re-entered
+ * guard behind them; so does the flow with one turn. All three are the SDK hop's (`src/per-call/proxy/**`), so the
+ * replica is a reproducer.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -315,8 +316,15 @@ function depthOf(callees: readonly HopCallee[], index: number): number {
   return depth;
 }
 
+/**
+ * The re-entered guard's refusal once the turns' transfers are admitted: the hop declares every callee's record at
+ * its live commitment, so the guard `release` set above it reads as unset. Owner: the SDK hop (`proxy/deploy.ts`, the
+ * callee frames `buildHopPlan` declares kept).
+ */
+const SET_CLAIMED_GUARD = /the call's callee "Escrow\.setClaimed\(\)" did not settle through the proxy: .* at line \d+: guard unset/;
+
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS4): a rated release with a re-entrant payout', () => {
-  it('plans the payout loop from the count an earlier call returned, and meets the turns\' one-key wall', async () => {
+  it('plans the payout loop from the count an earlier call returned, and stops at the re-entered guard', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const flow = artifactsFor('count');
     const deployed = await deployAll(network, flow);
@@ -324,15 +332,14 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS4): a rated release
 
     // The loop's bound is the escrow's `readRecord` result, so the hop plans in execution order: it stops before the
     // loop, settles the read's frame alone, learns the count (`PER_CALL_HOP_TRACE=1`: `stop-plan ... reads=loop-bound`,
-    // `learned=[/0.0/0.0|0:4]`) and plans the four turns from it. The plan is then the second case's, refused by the
-    // reach check before the rest is settled. Owner: the SDK hop planner (`proxy/external-calls.ts`,
-    // `requireSatisfiableReachWrites`).
-    await expect(complete(network, deployed, flow)).rejects.toThrow('the hop reaches the entry "Token.transfer()" '
-      + `${TURNS} times, and ${TURNS} of them write collection "balances" at the same key`);
+    // `learned=[/0.0/0.0|0:4]`) and plans the four turns from it. The turns credit one holder and each later transfer
+    // continues the node the one before it created, so the reach check admits them; the settle then stops at the
+    // re-entered `setClaimed`. Owner: the SDK hop (`proxy/deploy.ts`, the kept callee records).
+    await expect(complete(network, deployed, flow)).rejects.toThrow(SET_CLAIMED_GUARD);
     expect(await rootRecords(network, deployed, flow)).toStrictEqual(before);
   });
 
-  it('with the turn count in the claimer\'s record, plans every frame and is refused: its turns write one key', async () => {
+  it('with the turn count in the claimer\'s record, plans every frame and stops at the re-entered guard', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const stepped = artifactsFor('this.turns');
     const deployed = await deployAll(network, stepped);
@@ -367,11 +374,10 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS4): a rated release
     const transfers = plan.callees.flatMap((callee, index) => (callee.contract === 'Token' ? [index] : []));
     expect(transfers.map((index) => depthOf(plan.callees, index))).toStrictEqual([4, 4, 4, 4]);
 
-    // All four transfers credit one holder, whose fixed-width node each reach would recreate, so the plan is refused
-    // before any frame is settled. Owner: the SDK hop planner (`proxy/external-calls.ts`,
-    // `requireSatisfiableReachWrites`, which `proxy/deploy.ts`, `planAndSettleHop`, runs before the settle).
-    await expect(complete(network, deployed, stepped)).rejects.toThrow('the hop reaches the entry "Token.transfer()" '
-      + `${TURNS} times, and ${TURNS} of them write collection "balances" at the same key`);
+    // All four transfers credit one holder, and each later reach rewrites the node the one before it created rather
+    // than recreating it, so the reach check admits the plan. The settle then stops at the re-entered `setClaimed`.
+    // Owner: the SDK hop (`proxy/deploy.ts`, the kept callee records).
+    await expect(complete(network, deployed, stepped)).rejects.toThrow(SET_CLAIMED_GUARD);
     expect(await rootRecords(network, deployed, stepped)).toStrictEqual(before);
   });
 
@@ -382,11 +388,8 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS4): a rated release
     const before = await rootRecords(network, deployed, stepped);
 
     // One transfer passes the reach check. The settle learns its write and each read, then stops at the re-entered
-    // `setClaimed`: the hop declares every callee's record at its live commitment, so the guard `release` set above
-    // it reads as unset. Owner: the SDK hop (`proxy/deploy.ts`, the callee frames `buildHopPlan` declares kept).
-    await expect(complete(network, deployed, stepped)).rejects.toThrow(
-      /the call's callee "Escrow\.setClaimed\(\)" did not settle through the proxy: .* at line \d+: guard unset/,
-    );
+    // `setClaimed`. Owner: as above.
+    await expect(complete(network, deployed, stepped)).rejects.toThrow(SET_CLAIMED_GUARD);
     expect(await rootRecords(network, deployed, stepped)).toStrictEqual(before);
   });
 });

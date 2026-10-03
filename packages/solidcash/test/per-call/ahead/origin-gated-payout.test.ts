@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256, validatorAddress } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { keyToSlotValue } from '../../../src/stateful/SortedList.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import { decodeEntryCommitment, keyToSlotMulti, keyToSlotValue } from '../../../src/stateful/SortedList.js';
+import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { readPublishedStopSites } from '../../../src/per-call/composer/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
@@ -30,11 +30,12 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * its last store call.
  *
  * Each flow is pinned where it stands today, and so are the same flows against an escrow whose one change is that it
- * keeps no guard of its own. All four meet the cross-reach check first: `Store.log` is reached twice and both reaches
- * write `counts[jobId]`, a fixed-width node. The unguarded flows settled before that check landed, and with it
- * bypassed they still broadcast, with two head sentinels and two `counts[0]` nodes of value 1 (measured): the check
- * is the fail-closed answer to a lost update. Behind it stand the guarded escrow's unpublished writes (measured with
- * a store that appends a dynamic value instead, which the check admits).
+ * keeps no guard of its own. `Store.log` is reached twice and both reaches write `counts[jobId]`, a fixed-width node;
+ * the cross-reach check admits them now, because the later reach rewrites the node the earlier reach created rather
+ * than inserting it again. The unguarded flows therefore settle, with one `counts[0]` node carrying 2 — the chain
+ * the pre-chaining hop lost, when it broadcast two head sentinels and two value-1 nodes. The guarded flows pass the
+ * logs and stop at the escrow's own wall: the guard writes its data record in two segments, so the compiler publishes
+ * no write segment for the entry's `claims` write and the hop cannot declare it.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -313,6 +314,17 @@ async function coinLive(market: Market, flow: Flow): Promise<boolean> {
     .some((utxo) => utxo.txid === coin.txid && utxo.vout === coin.vout);
 }
 
+/** The values the store's proxy holds under `counts[id]`, read back from the chain through the shipped decoder. */
+async function storeCounts(market: Market, id: bigint): Promise<readonly string[]> {
+  const layout = market.artifacts.Store!.stateLayout!;
+  const deployment = await readPerCallDeployment(market.network, market.externals.IStore!.categoryId, layout);
+  const slot = bytesToHex(keyToSlotMulti([bigIntToVmNumber(id)]));
+  return (deployment.nodesByCollection.get('counts') ?? [])
+    .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)))
+    .filter((decoded) => bytesToHex(decoded.slot) === slot)
+    .map((decoded) => bytesToHex(decoded.value));
+}
+
 /** The write segments the compiler publishes for the escrow's `refund`, or undefined when it publishes none. */
 function escrowWriteSegments(artifacts: Artifacts): unknown {
   const entry = readPublishedStopSites(artifacts.Escrow!).entries
@@ -328,11 +340,12 @@ function sharedGuardedMarket(): Promise<Market> {
 }
 
 /**
- * The cross-reach check's refusal, before any frame is settled. Owner: the SDK hop planner (`proxy/external-calls.ts`,
- * `requireSatisfiableReachWrites`, which `proxy/deploy.ts`, `planAndSettleHop`, runs ahead of the settle).
+ * The guarded escrow's wall once the two store logs are admitted: its `refund` writes its own mapping record beside an
+ * external call, and the guard writes its data record in two segments, so the compiler publishes no write segment for
+ * that mapping write and the hop cannot place it. Owner: the SDK hop (`proxy/deploy.ts`, the write segment resolver).
  */
-const TWO_LOGS_ONE_KEY = 'the hop reaches the entry "Store.log()" 2 times, and 2 of them write collection "counts" at '
-  + 'the same key';
+const ESCROW_REFUND_UNPLACED_WRITE = 'the callee\'s "Escrow.refund()" entry writes a mapping record beside an external '
+  + 'call, and the segment that write lands in is not fixed by the entry\'s own source, so the hop cannot declare it';
 
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS5): the origin-gated payout', () => {
   it('compiles the five contracts on the per-call path', () => {
@@ -343,64 +356,75 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS5): the origin-gate
     }
   });
 
-  it('refund stops at its first wall: two store logs write one count key, ahead of the escrow\'s writes', async () => {
+  it('refund now passes the two store logs and stops at the escrow\'s unplaceable mapping write', async () => {
     const market = await sharedGuardedMarket();
 
-    // The guard writes the escrow's data record before its first call and again after its last, so the compiler
-    // publishes no write segment for the entry at all; the unguarded entry publishes its mapping write at segment 1.
-    // That wall (owner: the compiler, `per-call/master/support.ts`, then the SDK hop, `proxy/deploy.ts`) now stands
-    // behind the cross-reach check.
+    // The two `Store.log` reaches write one count key and the later one continues the node the first created, so the
+    // cross-reach check admits them now. The guard writes the escrow's data record before its first call and again
+    // after its last, so the compiler publishes no write segment for the entry's `claims` write; the unguarded entry
+    // publishes it at segment 1.
     expect(escrowWriteSegments(artifactsFor(true))).toBeUndefined();
     expect(escrowWriteSegments(artifactsFor(false))).toStrictEqual([{ collection: 'claims', segment: 1 }]);
-    await expect(callFlow(market, 'refund')).rejects.toThrow(TWO_LOGS_ONE_KEY);
+    await expect(callFlow(market, 'refund')).rejects.toThrow(ESCROW_REFUND_UNPLACED_WRITE);
     expect(await coinLive(market, 'refund')).toBe(true);
   });
 
-  it('refuseArbitration stops at the same wall', async () => {
+  it('refuseArbitration stops at the same escrow wall', async () => {
     const market = await sharedGuardedMarket();
 
     // Owner: as for `refund`.
-    await expect(callFlow(market, 'refuseArbitration')).rejects.toThrow(TWO_LOGS_ONE_KEY);
+    await expect(callFlow(market, 'refuseArbitration')).rejects.toThrow(ESCROW_REFUND_UNPLACED_WRITE);
     expect(await coinLive(market, 'refuseArbitration')).toBe(true);
   });
 });
 
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS5): behind the escrow\'s guard', () => {
-  it('refund, the buyer\'s new balance sorting before the escrow\'s, is refused at the same two logs', async () => {
-    expect(keyToSlotValue(ROOT_PROXY_ADDRESS)).toBeLessThan(keyToSlotValue(
-      validatorAddress(hexToBin(ESCROW_ABOVE_BUYER), VALIDATOR_PROGRAM)));
-    const market = await deployMarket(artifactsFor(false), ESCROW_ABOVE_BUYER);
+  it('refund, the buyer\'s new balance sorting before the escrow\'s, settles with one count node of value 2',
+    async () => {
+      expect(keyToSlotValue(ROOT_PROXY_ADDRESS)).toBeLessThan(keyToSlotValue(
+        validatorAddress(hexToBin(ESCROW_ABOVE_BUYER), VALIDATOR_PROGRAM)));
+      const market = await deployMarket(artifactsFor(false), ESCROW_ABOVE_BUYER);
 
-    // It settled before the check landed; with the check bypassed it broadcasts two head sentinels and two
-    // `counts[0]` nodes of value 1. Owner: the SDK hop planner, as above.
-    await expect(callFlow(market, 'refund')).rejects.toThrow(TWO_LOGS_ONE_KEY);
-    expect(await coinLive(market, 'refund')).toBe(true);
-  });
+      // The two `Store.log` reaches write one count key and the later one continues the node the first created, so
+      // the chain carries 0 -> 1 -> 2 on one node rather than the two head sentinels and two value-1 nodes the
+      // pre-chaining hop broadcast.
+      const result = await callFlow(market, 'refund');
+      expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+      expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+      expect(await coinLive(market, 'refund')).toBe(false);
+      expect(await storeCounts(market, JOB_ID)).toStrictEqual([bytesToHex(bigIntToVmNumber(2n))]);
+    });
 
-  it('refund, the buyer\'s new balance sorting right after the escrow\'s, is refused at the same two logs', async () => {
-    expect(keyToSlotValue(ROOT_PROXY_ADDRESS)).toBeGreaterThan(keyToSlotValue(
-      validatorAddress(hexToBin(ESCROW_BELOW_BUYER), VALIDATOR_PROGRAM)));
-    const market = await deployMarket(artifactsFor(false), ESCROW_BELOW_BUYER);
+  it('refund, the buyer\'s new balance sorting right after the escrow\'s, settles with one count node of value 2',
+    async () => {
+      expect(keyToSlotValue(ROOT_PROXY_ADDRESS)).toBeGreaterThan(keyToSlotValue(
+        validatorAddress(hexToBin(ESCROW_BELOW_BUYER), VALIDATOR_PROGRAM)));
+      const market = await deployMarket(artifactsFor(false), ESCROW_BELOW_BUYER);
 
-    // The transfer debits the escrow's node and inserts the buyer's, whose predecessor is that same node, which the
-    // hop's callee batch did not settle (owner: the SDK hop, `proxy/entry-writes.ts`); the check now stops the flow
-    // before that. The escrow's label is chosen for the order at the current validator program's addresses.
-    await expect(callFlow(market, 'refund')).rejects.toThrow(TWO_LOGS_ONE_KEY);
-    expect(await coinLive(market, 'refund')).toBe(true);
-  });
+      // The label is chosen for the order at the current validator program's addresses: the transfer debits the
+      // escrow's node and inserts the buyer's, whose predecessor is that same node, in one callee batch.
+      const result = await callFlow(market, 'refund');
+      expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+      expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+      expect(await coinLive(market, 'refund')).toBe(false);
+      expect(await storeCounts(market, JOB_ID)).toStrictEqual([bytesToHex(bigIntToVmNumber(2n))]);
+    });
 
-  it('refuseArbitration is refused at the same two logs; its last store call keeps the arm\'s predicate', async () => {
+  it('refuseArbitration settles; its last store call keeps the arm\'s predicate', async () => {
     const market = await deployMarket(artifactsFor(false), ESCROW_ABOVE_BUYER);
 
     // The last store call sits inside `if (jobs[id].state == 1)`, whose arm sets `state = 0` before it. Its condition
     // is the predicate as it stands where the branch starts, the escrow call's own, not `0 == 1`, which dropped it
-    // from the plan (`call/branch-predicate-after-arm-write.test.ts`); so both logs are planned. It settled before
-    // the check landed. Owner: the SDK hop planner, as above.
+    // from the plan (`call/branch-predicate-after-arm-write.test.ts`); so both logs are planned and both write the
+    // one count node.
     const row = market.artifacts.Root!.abi.find((entry) => entry.name === 'refuseArbitration')!;
     expect((row.externalCalls ?? []).map((call) => call.condition?.kind ?? 'none'))
       .toStrictEqual(['none', 'none', 'binary', 'binary']);
     expect(row.externalCalls![3]!.condition).toStrictEqual(row.externalCalls![2]!.condition);
-    await expect(callFlow(market, 'refuseArbitration')).rejects.toThrow(TWO_LOGS_ONE_KEY);
-    expect(await coinLive(market, 'refuseArbitration')).toBe(true);
+    const result = await callFlow(market, 'refuseArbitration');
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await coinLive(market, 'refuseArbitration')).toBe(false);
+    expect(await storeCounts(market, JOB_ID)).toStrictEqual([bytesToHex(bigIntToVmNumber(2n))]);
   });
 });

@@ -19,7 +19,7 @@ import {
 } from '@solidcash/utils';
 import { TypeError } from './Errors.js';
 import SignatureTemplate from './SignatureTemplate.js';
-import { addressToLockScript } from './utils.js';
+import { addressPayloadToLockingBytecode, addressToLockScript } from './utils.js';
 
 // A struct argument (Solidity's struct = ABI tuple): an object keyed by field name, encoded in declaration
 // order. A struct may also be passed as a positional tuple (the array case below), matching Solidity/ethers.
@@ -117,7 +117,9 @@ function convertAddressArg(value: unknown, typeStr: string): unknown {
   // reach an inner address[]). Structs, ints, bytes, etc. are returned UNCHANGED - never remapped - so their
   // struct-tuple / packed encodings are untouched.
   if (t.elementType instanceof AddressType) {
-    return value.map((el) => (typeof el === 'string' && el.includes(':') ? addressToLockScript(el) : el));
+    // Every element takes the scalar path's own address normalization, so a CashAddress, a hex payload and an
+    // already-encoded lock all name the same locking bytecode the contract writes and reads back.
+    return value.map((el) => encodeFunctionArgument(el as FunctionArgument, 'address'));
   }
   if (t.elementType instanceof ArrayType) {
     return value.map((el) => convertAddressArg(el, t.elementType.toString()));
@@ -260,6 +262,13 @@ export function encodeFunctionArgument(
 
   if (!(argument instanceof Uint8Array)) {
     throw Error(`Value for type ${type} should be a Uint8Array or hex string`);
+  }
+
+  // An `address` given in the 20-byte payload form an EVM ABI carries names its locking bytecode: the compiler's
+  // `address` is a lock, so a value passed as the payload would otherwise reach the contract as an address no other
+  // form of the same address equals (a mapping keyed by one reads under a different key than the body wrote).
+  if (type instanceof AddressType && argument.byteLength === 20) {
+    argument = addressPayloadToLockingBytecode(argument);
   }
 
   // Redefine SIG as a bytes65 (Schnorr) or bytes71, bytes72, bytes73 (ECDSA) or bytes0 (for NULLFAIL)

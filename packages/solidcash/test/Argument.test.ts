@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { encodeInt } from '@solidcash/utils';
+import { encodeInt, bytesToHex } from '@solidcash/utils';
 import { encodeFunctionArgument, SignatureTemplate } from '../src/index.js';
 import { addressToLockScript } from '../src/utils.js';
 import { aliceAddress, alicePriv, bobPriv } from './fixture/vars.js';
@@ -159,6 +159,21 @@ describe('encodeFunctionArgument: struct field-name independence', () => {
       lockingBytecode,
       opaqueAddressText,
     ], 'RenamedAddress', structs));
+  });
+
+  it('normalizes a 20-byte address payload to the locking bytecode every other form names', () => {
+    const lockingBytecode = addressToLockScript(aliceAddress);
+    const payload = lockingBytecode.slice(3, 23);
+
+    expect(encodeFunctionArgument(payload, 'address')).toEqual(lockingBytecode);
+    expect(encodeFunctionArgument(`0x${bytesToHex(payload)}`, 'address')).toEqual(lockingBytecode);
+    expect(encodeFunctionArgument([payload], 'address[]'))
+      .toEqual(encodeFunctionArgument([lockingBytecode], 'address[]'));
+    // Anything that is not the payload form keeps the bytes it arrived as: a lock stays a lock, `address(0)` stays
+    // empty, and a `bytes` parameter is never reinterpreted because its value happens to be 20 bytes long.
+    expect(encodeFunctionArgument(lockingBytecode, 'address')).toEqual(lockingBytecode);
+    expect(encodeFunctionArgument(new Uint8Array(0), 'address')).toEqual(new Uint8Array(0));
+    expect(encodeFunctionArgument(payload, 'bytes')).toEqual(payload);
   });
 
   it('normalizes address leaves recursively through arrays of structs', () => {

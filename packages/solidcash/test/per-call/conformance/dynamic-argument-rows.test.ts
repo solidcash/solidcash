@@ -181,6 +181,13 @@ describe('spec section 23 row 12: struct and array arguments and returns with dy
     }, 120_000);
   }
 
+  it('a uint16[5] argument built from JS numbers packs the same elements as bigints', async () => {
+    const entered = await enter(contract('', 'function fixed16(uint16[5] xs) returns (uint16[5]) '
+      + '{ this.marker = this.marker + 1; return xs; }'), 'fixed16', [[1, 2, 3, 4, 5]]);
+    expect(entered.refusal).toBeUndefined();
+    expect(entered.answer).toStrictEqual([[1n, 2n, 3n, 4n, 5n]]);
+  }, 120_000);
+
   it('uint16[5] computed by the entry is carried back as its own return', async () => {
     const entered = await enter(contract('', 'function list() returns (uint16[5]) {'
       + ' this.marker = this.marker + 1; return [11, 22, 33, 44, 55]; }'), 'list', []);

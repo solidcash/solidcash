@@ -490,10 +490,18 @@ describe('spec section 23 row 5: a revert after state-changing calls', () => {
           ENTRY_FRAME, `Desk.${check.functionName}()`, check.needle, check.reason));
         expect(refused.stalls).toStrictEqual([stalledAt(check.functionName, check.stopsAt!)]);
       } else {
-        // The callee's own check: its frame is settled before the entry's, so the entry is never derived.
+        // The callee's own check: its frame refuses, and the entry's frame is derived too (so a check of the
+        // entry's own, before the callee, would name its reason), so the refusal carries those stalls.
         expect(refused.error.message).toBe(refusalOf(`the call's callee "${check.callee.functionName}"`,
           check.callee.master, check.callee.functionName, check.needle, check.reason));
-        expect(refused.stalls).toStrictEqual([]);
+        expect(refused.stalls).toStrictEqual([
+          'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.close() filled no witness at '
+          + 'site 1 (call 1)',
+          'PER_CALL_DERIVATION_STALLED: master "callee-master-2" of Ledger.rate() filled no witness at '
+          + 'site 0 (close of segment 0)',
+          'PER_CALL_DERIVATION_STALLED: master "callee-master-2" of Ledger.rate() filled no witness at '
+          + 'site 0 (close of segment 0)',
+        ]);
       }
     });
 
@@ -502,7 +510,17 @@ describe('spec section 23 row 5: a revert after state-changing calls', () => {
     const refused = await expectRefused(run, MEMBER, 'post', [7n, 1500n], 'short balance');
     expect(refused.error.message).toBe(refusalOf('the call\'s callee "Ledger.transferFrom()"', 'callee-master-3',
       'Ledger.transferFrom()', 'revert ShortBalance', 'revert ShortBalance(address, int256, int256)'));
-    expect(refused.stalls).toStrictEqual([]);
+    // Deriving the entry's own frame (to see whether it names a reason) stalls at the refusing callee each attempt.
+    expect(refused.stalls).toStrictEqual([
+      'PER_CALL_DERIVATION_STALLED: master "callee-master-3" of Ledger.transferFrom() filled no witness at '
+      + 'site 0 (close of segment 0)',
+      'PER_CALL_DERIVATION_STALLED: master "callee-master-3" of Ledger.transferFrom() filled no witness at '
+      + 'site 0 (close of segment 0)',
+      'PER_CALL_DERIVATION_STALLED: master "callee-master-3" of Ledger.transferFrom() filled no witness at '
+      + 'site 0 (close of segment 0)',
+      'PER_CALL_DERIVATION_STALLED: master "callee-master-3" of Ledger.transferFrom() filled no witness at '
+      + 'site 0 (close of segment 0)',
+    ]);
   });
 
   it('known wall: a desk not open reports the release it never reaches, not its own state check', async () => {
@@ -513,7 +531,10 @@ describe('spec section 23 row 5: a revert after state-changing calls', () => {
     const refused = await expectRefused(run, MEMBER, 'settle', [], 'desk not open');
     expect(refused.error.message).toBe(refusalOf('the call\'s callee "Ledger.release()"', 'callee-master-2',
       'Ledger.release()', '"no escrow"', 'no escrow'));
-    expect(refused.stalls).toStrictEqual([]);
+    expect(refused.stalls).toStrictEqual([
+      'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.settle() filled no witness at '
+      + 'site 1 (call 1)',
+    ]);
     expect(lineOf('"invalid state"')).toBeLessThan(lineOf('.release(this.escrow)'));
   });
 

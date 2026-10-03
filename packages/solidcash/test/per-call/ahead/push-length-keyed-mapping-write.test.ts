@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { bytesToHex, decodePushdataValue } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
@@ -7,6 +8,7 @@ import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
 } from '../../../src/per-call/proxy/index.js';
+import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -21,10 +23,14 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * record at the ordinal it computed lands past the segment's declared records and the read fails an `OP_VERIFY`
  * with no source line, which is how this wall reports.
  *
- * Pinned where HEAD stands: with the mapping write in place the hop refuses -
+ * Where the wall stood: with the mapping write in place the hop refused -
  * `frame "implementation-master" of Impl.append() at line 1: no source message (Program failed an OP_VERIFY
- * operation.)` - while the same entry with the mapping write removed settles and broadcasts. The two runs differ
- * in nothing else, so the mapping target it adds is what the hop lays short.
+ * operation.)` - while the same entry with the mapping write removed settled and broadcast. The two runs differ
+ * in nothing else, so the mapping target it adds was what the hop laid short. The key was the cause: the body
+ * counts the loop's key from the length its own push produced, and the plan counted it from the length the
+ * deployment held, so the declared node was the one the previous index names. The hop now states the elements the
+ * entry's own append adds (`stateLengthDeltas`), exactly as the direct path already did for its upsert loops, and
+ * both cases below settle and broadcast.
  *
  * Where it refuses, measured: the frame's program is the routed entry body (2325 instructions, `ip` indexes it),
  * and the failing instruction is the input pin the loop's per-turn step emits to close substitution:
@@ -44,14 +50,13 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * collection this deployment holds no node of, which the hop serves for a batch write by minting the empty head and
  * has no such arm for in a run-time loop.
  *
- * The same write over a collection the deployment already holds a node of passes that pin: the initializer writes
- * one key, the plan declares the node as a spent record right after the frame's own (`[[3, 3], [4, 4], ...]`), and
- * the body fails later, at instruction 1721 of its own routed body, which is the next wall on this path.
+ * The same write over a collection the deployment already holds a node of is the update arm: the initializer writes
+ * one key, and the call rewrites it in place rather than splicing through the empty head.
  *
- * Ruled out while narrowing it: the shared-span outliner (the refusal is identical under
+ * Ruled out while narrowing it: the shared-span outliner (the refusal was identical under
  * `SOLIDCASH_NO_OUTLINE=1`), a key the plan cannot resolve (resolving against the live state, and against the
- * length the frame's own write produces through the `stateLengthDeltas` the direct path passes, refuse the same
- * way), and an insert accounted as an update (seeding the key it writes changes nothing).
+ * length the frame's own write produces through the `stateLengthDeltas` the direct path passes, refused the same
+ * way) and an insert accounted as an update (seeding the key it writes changed nothing).
  *
  * The class this belongs to is the fixture's `publishJobPost`, which appends to its job array, reads the index it
  * produced, and writes its allowlist mapping from inside `_updateJobWhitelist`.
@@ -133,7 +138,15 @@ async function wired(seed: string): Promise<World> {
 /** Deploys `source` behind its own proxy and then calls `append` once through it. */
 async function appendThroughTheProxy(
   source: string, seed: string,
-): Promise<{ readonly accepted: boolean; readonly objection?: string }> {
+): Promise<{
+  readonly accepted: boolean;
+  readonly objection?: string;
+  /** The slot each record the entry's own write creates carries, in the settled transaction. */
+  readonly createdSlots: readonly string[];
+  /** Each node of the written collection the settled transaction outputs, by the slot it carries. */
+  readonly nodeValues: ReadonlyMap<string, Uint8Array>;
+  readonly broadcastTxid?: string;
+}> {
   const wire = await wired(seed);
   const funded = coins(seed);
   const artifacts = compileStringMulti(source, { composition: 'per-call' });
@@ -169,9 +182,24 @@ async function appendThroughTheProxy(
       changeAddress: wire.changeAddress,
       vm: compositionMachine(),
     });
-    return { accepted: result.accepted, ...(result.accepted ? {} : { objection: 'refused without an objection' }) };
+    return {
+      accepted: result.accepted,
+      createdSlots: result.draft.trailingOutputs.flatMap((output) => {
+        const commitment = result.transaction.outputs[output.index]?.token?.nft?.commitment;
+        return commitment === undefined ? [] : [bytesToHex(decodeEntryCommitment(commitment).slot)];
+      }),
+      nodeValues: new Map(result.draft.layout.participants
+        .filter((placed) => placed.id.startsWith('mapping-node-'))
+        .flatMap((placed) => {
+          const commitment = result.transaction.outputs[placed.index]?.token?.nft?.commitment;
+          if (commitment === undefined) return [];
+          const node = decodeEntryCommitment(commitment);
+          return [[bytesToHex(node.slot), node.value] as [string, Uint8Array]];
+        })),
+      ...(result.broadcast === undefined ? {} : { broadcastTxid: result.broadcast.txid }),
+    };
   } catch (error) {
-    return { accepted: false, objection: (error as Error).message };
+    return { accepted: false, objection: (error as Error).message, createdSlots: [], nodeValues: new Map() };
   }
 }
 
@@ -181,20 +209,27 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a mapping write keyed
     expect(outcome.accepted, outcome.objection).toBe(true);
   });
 
-  it('refuses the entry that keys the mapping write by the push', async () => {
+  it('settles the entry that keys the mapping write by the push', async () => {
     const outcome = await appendThroughTheProxy(KEYED_BY_THE_PUSH, '9');
-    expect(outcome.accepted).toBe(false);
-    // The plan declares no input holding a node of the collection, so the loop's own pin of its turn's node fails.
-    expect(outcome.objection).toMatch(/did not settle through the proxy: frame "implementation-master" of /);
-    expect(outcome.objection).toMatch(/no source message \(Program failed an OP_VERIFY operation\.\)/);
+    expect(outcome.accepted, outcome.objection).toBe(true);
+    expect(outcome.broadcastTxid).toBeDefined();
+    // The loop's key is the index the append produced (the first post, index 0), so the record the entry's write
+    // creates carries that key's slot beside the caller's own address.
+    const key = keyToSlotMulti([bigIntToVmNumber(0n), encodeLockingBytecodeP2pkh(alicePkh)]);
+    expect(outcome.createdSlots).toContain(bytesToHex(key));
   }, 300_000);
 
-  it('gets past that pin when the collection already holds a node, and refuses later', async () => {
+  it('rewrites the node in place when the collection already holds the key', async () => {
     const outcome = await appendThroughTheProxy(OVER_AN_EXISTING_NODE, '5');
-    // The plan declares the node where the loop reads it, and the refusal moves past the pin to the next check the
-    // body makes on this path.
-    expect(outcome.accepted).toBe(false);
-    expect(outcome.objection).toMatch(/did not settle through the proxy: frame "implementation-master" of /);
-    expect(outcome.objection).toMatch(/no source message \(Program failed an OP_VERIFY operation\.\)/);
+    expect(outcome.accepted, outcome.objection).toBe(true);
+    expect(outcome.broadcastTxid).toBeDefined();
+    // The initializer wrote this key, so the loop's turn splices through a node the transaction spends and
+    // recreates in place rather than creating one.
+    const key = bytesToHex(keyToSlotMulti([bigIntToVmNumber(0n), encodeLockingBytecodeP2pkh(alicePkh)]));
+    expect(outcome.createdSlots).not.toContain(key);
+    // The recreated node carries the value the loop's turn stored, read back through the shipped decoder.
+    const tail = outcome.nodeValues.get(key);
+    expect(tail).toBeDefined();
+    expect(decodePushdataValue(tail!, 0, 'bool').value).toBe(true);
   }, 300_000);
 });

@@ -22,7 +22,32 @@ export function registeredExecutionLockingBytecode(
     ?? deployment.lockingBytecode;
 }
 
-const deployments = new WeakMap<NetworkProvider, RegisteredDeployment[]>();
+/**
+ * The registrations a provider holds, kept on the provider itself under a process-wide symbol.
+ *
+ * A wrapper that forwards property reads - the call path's simulation provider - has to see the registrations of
+ * the provider it wraps, and a table keyed by object identity answers a wrapper with an empty list, so every
+ * address and interface lookup through it misses. A property does not have that problem; the shared symbol also
+ * makes the table one across two copies of this module.
+ */
+const REGISTRY = Symbol.for('@solidcash/deployment-registry');
+
+/** The provider property the list lives under, without creating one: an unregistering provider simply has none. */
+function deploymentsOf(provider: NetworkProvider): readonly RegisteredDeployment[] {
+  return (provider as unknown as Record<symbol, RegisteredDeployment[] | undefined>)[REGISTRY] ?? [];
+}
+
+/**
+ * Replace the provider's registration list.
+ *
+ * `defineProperty` lands on the wrapped provider for a proxy with no `defineProperty` trap, so a write through a
+ * forwarding wrapper is the wrapped provider's own, and its readers see it.
+ */
+function setDeployments(provider: NetworkProvider, list: RegisteredDeployment[]): void {
+  Object.defineProperty(provider, REGISTRY, {
+    value: list, writable: true, enumerable: false, configurable: true,
+  });
+}
 
 /** A repeatable snapshot of the Hardhat-compatible deployment registry. */
 export interface DeploymentRegistrySnapshot {
@@ -34,9 +59,9 @@ export interface DeploymentRegistrySnapshot {
  * also need this process-local lookup table rewound so address/interface resolution cannot leak across tests.
  */
 export function takeDeploymentRegistrySnapshot(provider: NetworkProvider): DeploymentRegistrySnapshot {
-  const snapshot = [...(deployments.get(provider) ?? [])];
+  const snapshot = [...deploymentsOf(provider)];
   return {
-    restore: () => deployments.set(provider, [...snapshot]),
+    restore: () => setDeployments(provider, [...snapshot]),
   };
 }
 
@@ -44,22 +69,22 @@ export function takeDeploymentRegistrySnapshot(provider: NetworkProvider): Deplo
 export function registerDeployment(
   provider: NetworkProvider, deployment: RegisteredDeployment,
 ): void {
-  const current = deployments.get(provider) ?? [];
+  const current = deploymentsOf(provider);
   const withoutOldAddress = current.filter((entry) => entry.address !== deployment.address);
   withoutOldAddress.push(deployment);
-  deployments.set(provider, withoutOldAddress);
+  setDeployments(provider, withoutOldAddress);
 }
 
 /** Drop all registrations for a provider (call after MockNetworkProvider.reset between tests). */
 export function clearDeployments(provider: NetworkProvider): void {
-  deployments.delete(provider);
+  delete (provider as unknown as Record<symbol, RegisteredDeployment[] | undefined>)[REGISTRY];
 }
 
 /** Resolve the most recently deployed instance compatible with an interface name. */
 export function findDeploymentByName(
   provider: NetworkProvider, contractName: string,
 ): RegisteredDeployment | undefined {
-  const current = deployments.get(provider) ?? [];
+  const current = deploymentsOf(provider);
   for (let index = current.length - 1; index >= 0; index--) {
     if (current[index].contractName === contractName) return current[index];
   }
@@ -70,7 +95,7 @@ export function findDeploymentByName(
 export function findDeploymentByCategory(
   provider: NetworkProvider, categoryId: string,
 ): RegisteredDeployment | undefined {
-  const current = deployments.get(provider) ?? [];
+  const current = deploymentsOf(provider);
   const wanted = categoryId.replace(/^0x/, '').toLowerCase();
   for (let index = current.length - 1; index >= 0; index--) {
     const registered = current[index].contract as {
@@ -86,7 +111,7 @@ export function findDeploymentByCategory(
 export function findDeploymentByAddress(
   provider: NetworkProvider, address: string,
 ): RegisteredDeployment | undefined {
-  const current = deployments.get(provider) ?? [];
+  const current = deploymentsOf(provider);
   const addr = String(address ?? '');
   for (let index = current.length - 1; index >= 0; index--) {
     if (current[index].address === addr) return current[index];
@@ -132,13 +157,13 @@ export function registeredPhysicalLockingBytecode(
 
 /** All deployments for a provider (most recent last). */
 export function listDeployments(provider: NetworkProvider): readonly RegisteredDeployment[] {
-  return deployments.get(provider) ?? [];
+  return deploymentsOf(provider);
 }
 
 export function findDeploymentByLockingBytecode(
   provider: NetworkProvider, lockingBytecode: string,
 ): RegisteredDeployment | undefined {
-  const current = deployments.get(provider) ?? [];
+  const current = deploymentsOf(provider);
   const wanted = lockingBytecode.replace(/^0x/, '').toLowerCase();
   for (let index = current.length - 1; index >= 0; index--) {
     if (registeredExecutionLockingBytecode(current[index])?.replace(/^0x/, '').toLowerCase() === wanted) {
@@ -168,7 +193,7 @@ export function findDeploymentBySolidityAddressPayload(
 ): RegisteredDeployment | undefined {
   if (payload.length !== 20) return undefined;
   const wanted = binToHex(payload);
-  const current = deployments.get(provider) ?? [];
+  const current = deploymentsOf(provider);
   const matches = current.filter((deployment) => {
     const candidates = new Set<string | undefined>([
       registeredExecutionLockingBytecode(deployment), deployment.lockingBytecode,
@@ -205,7 +230,7 @@ export function findDeploymentByAddressValue(
 export function findDeploymentImplementing(
   provider: NetworkProvider, functionName: string,
 ): RegisteredDeployment | undefined {
-  const current = deployments.get(provider) ?? [];
+  const current = deploymentsOf(provider);
   for (let index = current.length - 1; index >= 0; index--) {
     const entry = current[index];
     const artifact = (entry.contract as { inner?: { artifact?: { abi?: readonly { name?: string }[] } } })

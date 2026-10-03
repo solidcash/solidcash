@@ -166,10 +166,10 @@ async function deployed(): Promise<World> {
   return world;
 }
 
-/** The cross-reach check's words for `count` reaches of the callee's entry inserting through one node of `events`. */
+/** The cross-reach check's words for `count` reaches of the callee's entry whose inserts land one behind another. */
 function sameNodeRefusal(count: number): string {
-  return `the hop reaches the entry "${inner.contractName}.record()" ${count} times, and ${count} of them insert `
-    + 'into collection "events" through the same node';
+  return `the hop reaches the entry "${inner.contractName}.record()" ${count} times, and the reach this one follows `
+    + 'creates the node of collection "events" it splices through';
 }
 
 /** True while the caller's coin is unspent, i.e. nothing was broadcast for the hop. */

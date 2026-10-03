@@ -24,9 +24,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * its initialize writes neither, so no reach mints a head. Each reach of a callee is planned on its own against the
  * deployment, so two reaches into one empty collection both splice through that one head. Two inserts of different
  * keys into the fixed-width `counts` (`putTwo`) are refused by the hop's cross-reach check before anything settles.
- * Two appends to one key of the dynamic-valued `logs` (`logTwice`, the shape of a store's per-job event log) each
- * create the key's node; a dynamic value's reaches are not chained across frames, so the hop refuses the second
- * insert by name once every frame has settled, before the broadcast. One reach settles through the genesis head.
+ * Two appends to one key of the dynamic-valued `logs` (`logTwice`, the shape of a store's per-job event log) both
+ * splice through the one head: the first reach creates the key's node and the second continues the value the first
+ * left, so its declaration names the record at the output the first created it at and the transaction carries the
+ * chain end there. One reach settles through the genesis head.
  *
  * Before heads were minted only at genesis, a reach into an empty collection minted the head in its own transaction,
  * and both shapes broadcast two heads of one collection on the mock (measured and refused by name at 1ac66d296).
@@ -282,17 +283,40 @@ async function storeNodes(world: World, collection: string): Promise<readonly Ut
 }
 
 describe('reaches into a collection the store never wrote, through the head its genesis minted', () => {
-  it('refuses two appends to one key of an empty dynamic-valued collection, broadcasting nothing', async () => {
+  it('settles two appends to one key, chaining the node the first reach created', async () => {
     const world = await deployed();
 
-    // Both reaches splice key 7 in through the genesis head and each creates the key's node. A dynamic value's reaches
-    // are not chained, so once every frame has settled the hop refuses the second insert by name rather than handing
-    // the validator a chain it refuses (at input 1, before the check).
-    await expect(callRoot(world, 'logTwice', [7n])).rejects.toThrow(
-      'the hop\'s reach "Store.log()" touches a node of collection "logs" that an earlier reach "Store.log()" relinks '
-      + 'to insert a key',
-    );
-    expect(await callCoinLive(world)).toBe(true);
+    // Both reaches splice key 7 in through the genesis head: the first creates the key's node and the second appends
+    // to the node the first left, so the hop declares that one node at the output the first reach created it at and
+    // the transaction carries the chain end there.
+    const before = await storeNodes(world, 'logs');
+    expect(before.map((node) => node.token!.nft!.commitment))
+      .toStrictEqual([binToHex(headSentinelCommitment())]);
+
+    const result = await callRoot(world, 'logTwice', [7n]);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+
+    // The head the genesis minted is recreated linked to key 7, beside the one node key 7 holds.
+    const nodes = (await storeNodes(world, 'logs'))
+      .map((node) => ({ txid: node.txid, ...decodeEntryCommitment(hexToBin(node.token!.nft!.commitment)) }));
+    const headSlot = bytesToHex(new Uint8Array(32));
+    const keySlot = bytesToHex(keyToSlotMulti([bigIntToVmNumber(7n)]));
+    const heads = nodes.filter((node) => bytesToHex(node.slot) === headSlot);
+    expect(heads).toHaveLength(1);
+    expect(heads[0]!.txid).toBe(result.broadcast!.txid);
+    expect(bytesToHex(heads[0]!.nextKey)).toBe(keySlot);
+    const held = nodes.filter((node) => bytesToHex(node.slot) === keySlot);
+    expect(held).toHaveLength(1);
+
+    // The second reach appended to the value the first left, so the node holds more than one append's worth.
+    const single = await deployed();
+    await callRoot(single, 'logOnce', [7n, 5n]);
+    const oneAppend = (await storeNodes(single, 'logs'))
+      .map((node) => decodeEntryCommitment(hexToBin(node.token!.nft!.commitment)))
+      .filter((node) => bytesToHex(node.slot) === keySlot);
+    expect(oneAppend).toHaveLength(1);
+    expect(held[0]!.value.length).toBeGreaterThan(oneAppend[0]!.value.length);
   });
 
   it('refuses two inserts of different keys into an empty fixed-width collection, broadcasting nothing', async () => {

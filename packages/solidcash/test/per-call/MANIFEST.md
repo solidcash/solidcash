@@ -25,40 +25,40 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 921 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 929 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 22 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 92 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 169 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 78 |
-| `packages/solidcash/test/per-call/reads/` | `solidcash` | 40 |
-| `packages/solidcash/test/per-call/reverts/` | `solidcash` | 10 |
+| `packages/solidcash/test/per-call/reads/` | `solidcash` | 53 |
+| `packages/solidcash/test/per-call/reverts/` | `solidcash` | 12 |
 | `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 151 |
-| `packages/solidcash/test/per-call/call/` | `solidcash` | 170 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 170 |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 180 (176 by default, 4 skipped) |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 11 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 112 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 145 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 93 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 70 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 9 (6 by default, 3 under `PER_CALL_FULL=1`) |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 81 |
-| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 123 (122 by default, 1 under `PER_CALL_FULL=1`) |
+| `packages/solidcash/test/per-call/conformance/` | `solidcash` | 125 (124 by default, 1 under `PER_CALL_FULL=1`) |
 | `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2, under `PER_CALL_FULL=1` |
-| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 137, under `PER_CALL_AHEAD=1` |
-| `packages/testing/test/per-call/` | `@solidcash/testing` | 10 |
+| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 140, under `PER_CALL_AHEAD=1` |
+| `packages/testing/test/per-call/` | `@solidcash/testing` | 11 |
 
-Total: 2329 checks (115 + 975 + 1229 + 10), with four more cases that run under
+Total: 2411 checks (115 + 983 + 1302 + 11), with four more cases that run under
 `PER_CALL_FULL=1`: three in `primitives/many-masters.test.ts` (the nine-entry composition and its refusal, which
 `shapes/deep-arbitration.test.ts` covers by default, and the twenty-four-master composition, which takes about
 twenty-eight seconds to derive), and the shipped data contract's clock-stamped append
 (`call/proxy-proxied-callee-element-clock.test.ts`), which deploys the project's compiled `MarketplaceDataV1`
 behind its proxy and takes about three and a half minutes; `pw7-measure.test.ts` runs only under `PER_CALL_FULL=1`
 too. The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 975 is the four rows above it (106 files),
-`solidcash` 1229 is the rows above it from `validator/` down, `ahead/` excepted (211 files; refreshed 2026-10-01),
+`vitest.per-call.config.ts`: `solidc` 983 is the four rows above it (109 files),
+`solidcash` 1302 is the rows above it from `validator/` down, `ahead/` excepted (223 files; refreshed 2026-10-02),
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -80,6 +80,7 @@ says what is missing.
 | a low-level token call (`abi.encodeCall` / `abi.encodeWithSelector` + `address(t).call`) | low-level `CALL` | `edges/low-level-token-call-lowering.test.ts`: both spellings, bound or discarded, lower to the typed call and settle as it does, the `bool` decoded from the returned data; a spelling that names no method statically stays refused by name. The re-raise SafeERC20 writes in inline assembly is refused by name (`edges/refused-contract-shapes.test.ts`) |
 | a static `balanceOf` read of a token | `STATIC` | `shapes/fan-in-with-result.test.ts` ("settles the one-call pull"): the escrow reads the token's `balanceOf` before and after its `transferFrom` pull and requires the difference, every contract input accepted |
 | a payable call with value 0 carrying a struct and returning a value | `CALL` | `edges/struct-argument-edge.test.ts`: a payable entry entered with value 0 (its body checks `msg.value == 0`), a struct with a `string` argument, and the number it returns stored by the caller; value sends by `call/value-call.test.ts` and `hostile/contract-payment-plain-output.test.ts`, a returned value fed to a later call by `toys/result-into-later-call.test.ts`. Not carried: the market's spelling, the returned value written straight to storage (`job.escrowId = unicrow.pay(...)`), pinned as a known wall in `edges/struct-argument-edge.test.ts`: the compiler publishes that write in the segment before the call, so the entry never settles (owner `solidc/src/per-call/master/support.ts`, `perCallWriteSteps`); the same write through a local settles |
+| a call whose own argument is another call | `STATIC` beside `CALL` | `deploy/proxy-nested-argument-call.test.ts`: the inner call's value is fed straight into the outer call's argument list, the compiler publishes the two sites in source order (`[feeOf, apply]`) and the body binds each to its own record, with the sibling that holds the same value in a local first as the control; `deploy/proxy-callee-own-call.test.ts` carries the same reach one level down, a callee that calls a contract and then writes its own record |
 | a call before the caller stores its own record (a write after a call) | `CALL` | `edges/writes-after-call.test.ts`, and through the hop `conformance/write-after-call-rows.test.ts` (each write on its own side of the call, read back from the chain) |
 | a token call in the token's own low-level spelling | low-level `CALL` | as the low-level row above (the `encodeWithSelector` spelling) |
 | a callee that is re-entered while its caller runs | `CALL` | `toys/reentry.test.ts` |

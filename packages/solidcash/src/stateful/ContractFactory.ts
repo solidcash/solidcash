@@ -91,6 +91,18 @@ export async function selectGenesisFundingUtxo(
   const deployFee = BigInt(Math.max(5000, asmToBytecode(artifact.bytecode).length + 2000));
   const cost = 1200n + 1200n * dataNfts + 1200n * BigInt(identityNftCount) + deployFee + 2400n
     + additionalSatoshis;
+  return selectGenesisFundingUtxoForCost(signer, cost, excludedOutpoints);
+}
+
+/**
+ * The same selection for a caller that knows the coin's required size but not the artifact it funds.
+ *
+ * An address prediction derives `addrV(category)` for a coin without naming the contract that will spend it, so it
+ * selects — and fans out — through this entry point with a conservative floor rather than an artifact's own cost.
+ */
+export async function selectGenesisFundingUtxoForCost(
+  signer: Signer, cost: bigint, excludedOutpoints: ReadonlySet<string> = new Set(),
+): Promise<Utxo> {
   // A reserved outpoint is one a caller derived a create address from: spending it here would destroy a prediction.
   const excluded = (u: Utxo): boolean => excludedOutpoints.has(genesisOutpointKey(u.txid, u.vout))
     || isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout));
@@ -291,18 +303,25 @@ export class ContractFactory<T extends Artifact = Artifact> {
           + '{ fundingUtxo, funder, changeAddress } override with a NetworkProvider runner.',
         );
       }
-      const verifierCount = overrides.messageBusVerificationInputCount
-        ?? (deployArtifact.messageBus?.verifierProgram ? 1 : 0);
-      // A per-call genesis mints its whole master and validator pool, so the funding selection holds the pool's
-      // outputs (and the validator facets) as a satoshi floor on top of the records and anchors it already counts.
-      let poolSatoshis = 0n;
-      if (deployArtifact.composition?.convention === 'per-call') {
-        const pool = resolveMasterPoolSize({ masters: overrides.threadCount, validators: overrides.validatorCount });
-        poolSatoshis = poolGenesisSatoshis(pool);
+      // A create address is predicted from the genesis-eligible coin the deployment will spend: the coin's txid
+      // becomes the child's category, and the address is derived from that category. So a deployment whose address
+      // was predicted ahead spends the coin the prediction named, rather than selecting another one.
+      const { takeReservedGenesisFunding } = await import('../per-call/deploy/create-lookahead-session.js');
+      fundingUtxo = takeReservedGenesisFunding(signer);
+      if (!fundingUtxo) {
+        const verifierCount = overrides.messageBusVerificationInputCount
+          ?? (deployArtifact.messageBus?.verifierProgram ? 1 : 0);
+        // A per-call genesis mints its whole master and validator pool, so the funding selection holds the pool's
+        // outputs (and the validator facets) as a satoshi floor on top of the records and anchors it already counts.
+        let poolSatoshis = 0n;
+        if (deployArtifact.composition?.convention === 'per-call') {
+          const pool = resolveMasterPoolSize({ masters: overrides.threadCount, validators: overrides.validatorCount });
+          poolSatoshis = poolGenesisSatoshis(pool);
+        }
+        fundingUtxo = await selectGenesisFundingUtxo(
+          signer, deployArtifact, new Set(), 1 + verifierCount, poolSatoshis,
+        );
       }
-      fundingUtxo = await selectGenesisFundingUtxo(
-        signer, deployArtifact, new Set(), 1 + verifierCount, poolSatoshis,
-      );
       funder = funder ?? signer.unlockP2PKH();
       changeAddress = changeAddress ?? signer.getAddress();
     }

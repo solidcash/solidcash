@@ -277,6 +277,19 @@ function sameIndices(left: readonly number[], right: readonly number[]): boolean
 }
 
 /**
+ * True when two index lists hold the same numbers, once each, in any order.
+ *
+ * A region whose entries are independent of one another is a set, not a sequence: nothing reads the position of a
+ * created record in the list, only the pair of the record and the output it lands at, so a plan that names the
+ * outputs the region allocated in another order still declares every landing correctly.
+ */
+function sameIndexSet(left: readonly number[], right: readonly number[]): boolean {
+  if (left.length !== right.length || new Set(left).size !== left.length) return false;
+  const held = new Set(right);
+  return left.every((value) => held.has(value));
+}
+
+/**
  * Allocates the trailing outputs and requires the plan's declared indices to be the ones allocated.
  *
  * The plan names where its events, sends and created records sit; the assembly is the authority on where they
@@ -309,7 +322,9 @@ function resolveOutputRegions(
       + `[${regions.sendIndices.join(', ')}]`,
     );
   }
-  if (!sameIndices(created, regions.createdIndices)) {
+  // The created region is a set: a record's landing is the pair of the record and its output, and no consumer reads
+  // the list's order, so the plan may name the allocated outputs in the order its own walk reaches them.
+  if (!sameIndexSet(created, regions.createdIndices)) {
     throw new PerCallEncodingError(
       `the plan creates records at [${created.join(', ')}], and the trailing region puts them at `
       + `[${regions.createdIndices.join(', ')}]`,

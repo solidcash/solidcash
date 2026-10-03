@@ -26,6 +26,17 @@ import { decodeResultsByParent, type ResultPropagationContext } from './compose-
 type Prepared = PreparedAtomicMessageBusCall;
 type Child = { call: Prepared; previous?: number };
 
+/** Initial graph discovery has the owner's pre-transaction state, not the caller's ordered writes. A
+ * state-dependent require may turn true before this edge, so only frame-stable predicates can omit it. */
+function stateIndependentPredicate(value: unknown, seen = new Set<object>()): boolean {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return true;
+  seen.add(value);
+  if (Array.isArray(value)) return value.every((item) => stateIndependentPredicate(item, seen));
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'state' || record.kind === 'stateAccess') return false;
+  return Object.values(record).every((item) => stateIndependentPredicate(item, seen));
+}
+
 /** Resolve a forwarded low-level payload against the selected runtime callee, then require its exact
  * canonical BCH call encoding. The worklist and the participant VM independently authenticate this row. */
 function decodeCanonicalRawInvocation(
@@ -308,7 +319,8 @@ async function rebuildCallTopology(
           ) === sourceTemplate.sourceLogicalIndex);
           if (previous !== undefined && ctx !== undefined && !hasChangedDependency(
             [sourceTemplate.condition, sourceTemplate.iterationDomain, sourceTemplate.nestedIterationDomains,
-              sourceTemplate.argSources, sourceTemplate.rawArgSources, sourceTemplate.addressSource], childResults,
+              sourceTemplate.preCallRequires, sourceTemplate.argSources, sourceTemplate.rawArgSources,
+              sourceTemplate.addressSource], childResults,
             ctx.descriptors[previous].args, call.args,
           )) {
             // Argument propagation already refreshed existing rows. A result unrelated to this edge's
@@ -454,6 +466,18 @@ async function rebuildCallTopology(
           let unresolved = false;
           let occurrence = 0;
           for (const { iteration, edge: template, outerIndex } of occurrences) {
+            if (template.preCallRequires?.length) {
+              const predicates = template.preCallRequires.filter((predicate) => stateIndependentPredicate(predicate));
+              if (predicates.length > 0) {
+                const returns = returnsForOuter(predicates.map((expression) => ({
+                  kind: 'expression', expression,
+                })), undefined, outerIndex);
+                await hydrate(predicates, [iteration], returns);
+                // A compiler-published necessary predicate that is exactly false proves the source require
+                // reverted before this edge. True or unknown does not prove the require passed; the VM does.
+                if (predicates.some((predicate) => evaluate(predicate, iteration, returns) === false)) continue;
+              }
+            }
             if (template.condition) {
               const returns = returnsForOuter([{ kind: 'expression', expression: template.condition }],
                 template, outerIndex);

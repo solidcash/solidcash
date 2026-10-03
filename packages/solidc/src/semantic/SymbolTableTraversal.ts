@@ -9169,8 +9169,22 @@ export default class SymbolTableTraversal extends AstTraversal {
           const serialized = serializeExpression(statement.expression);
           // Lowered return-carrier checks can leave a literal `0 == 1` placeholder before their producer
           // call. A constant-only predicate cannot safely prove source reachability at this callsite.
-          return serialized && !containsUnresolvedPreCallRequireNode(serialized)
-            && dependsOnRuntimeValue(serialized) ? [serialized] : [];
+          if (serialized && !containsUnresolvedPreCallRequireNode(serialized)
+            && dependsOnRuntimeValue(serialized)) return [serialized];
+          // A conjunction may contain an external result that is not available during initial graph
+          // discovery. Each replayable conjunct is still a necessary condition for reaching a later call:
+          // a known false proves the require reverted, while true/unknown never proves it passed.
+          const replayableConjuncts = (expression: ExpressionNode): ExternalCallExpression[] => {
+            if (expression instanceof BinaryOpNode && expression.operator === BinaryOperator.AND) {
+              return [...replayableConjuncts(expression.left), ...replayableConjuncts(expression.right)];
+            }
+            const conjunct = serializeExpression(expression);
+            return conjunct && !containsUnresolvedPreCallRequireNode(conjunct)
+              && dependsOnRuntimeValue(conjunct) ? [conjunct] : [];
+          };
+          return statement.expression instanceof BinaryOpNode
+            && statement.expression.operator === BinaryOperator.AND
+            ? replayableConjuncts(statement.expression) : [];
         } finally {
           priorStatements = callPriorStatements;
           serializationProgramPoint = callProgramPoint;

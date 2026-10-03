@@ -12,7 +12,7 @@ import {
   type ExternalCallStatement,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { addressToLockScript } from '../utils.js';
+import { addressToLockScript, tryCashAddressToLockScript } from '../utils.js';
 import { decodeAuthenticatedProducerResultVector } from './external-return-encoding.js';
 import { p2pkhLockingBytecode } from './legacy-job-event-wire.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
@@ -378,7 +378,7 @@ export function evaluateExternalExpression(
     const value = evaluate(expression.expression);
     const bytes = value instanceof Uint8Array ? value
       : typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/iu.test(value)
-        ? hexToBin(value.replace(/^0x/iu, '')) : undefined;
+        ? hexToBin(value.replace(/^0x/iu, '')) : tryCashAddressToLockScript(value);
     if (!bytes) return undefined;
     // Match graph codegen's authenticated contract-address predicate: P2SH20/P2SH32 are code-bearing,
     // while P2PKH and the zero address are not. Only zero/nonzero is observable from this recipe.

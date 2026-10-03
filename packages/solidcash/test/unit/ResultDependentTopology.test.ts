@@ -11,7 +11,9 @@ import { resolveComposeParticipantIndexes } from '../../src/message-bus/compose-
 import {
   hasTransientConvergenceResultSeed, rebuildPreparedInvocation,
 } from '../../src/message-bus/compose-prepared-invocation.js';
-import { propagateResultDependentCallTopology } from '../../src/message-bus/compose-result-topology.js';
+import {
+  discoverInitialCallTopology, propagateResultDependentCallTopology,
+} from '../../src/message-bus/compose-result-topology.js';
 import { externalReturnsForCallsites } from '../../src/stateful/external-returns-for-callsites.js';
 import type { StatefulContract } from '../../src/stateful/StatefulContract.js';
 
@@ -73,6 +75,39 @@ function fixture(): ResultPropagationContext & {
 }
 
 describe('result-dependent topology propagation', () => {
+  it('omits an unresolved edge only when an earlier source require is provably false', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0];
+    const noCode: ExternalCallExpression = {
+      kind: 'binary', operator: '>',
+      left: {
+        kind: 'addressCodeLength', type: 'bigint',
+        expression: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      },
+      right: { kind: 'literal', type: 'bigint', value: '0' },
+    };
+    root.artifact.abi[0]!.inputs = [{ name: 'target', type: 'address' }];
+    root.artifact.abi[0]!.externalCalls = [{
+      callsiteId: 0, interfaceName: 'IUnregistered', functionName: 'run',
+      requiredDataNftIndices: [], preCallRequires: [noCode], argSources: [],
+    }];
+    (root.contract as unknown as { _resolveExternalArgs: unknown })._resolveExternalArgs = (
+      argSources: readonly { kind: string; paramIndex?: number }[], args: readonly unknown[],
+    ) => argSources.map((source) => source.kind === 'forward' ? args[source.paramIndex!] : undefined);
+    root.args = [`0x${'00'.repeat(20)}`];
+    expect(await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf)).toEqual([root]);
+    root.args = [`0xaa20${'01'.repeat(32)}87`];
+    await expect(discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf))
+      .rejects.toThrow(/cannot resolve newly reached callsite 0/);
+    root.artifact.abi[0]!.externalCalls![0]!.preCallRequires = [{
+      kind: 'binary', operator: '==',
+      left: { kind: 'state', name: 'flag' },
+      right: { kind: 'literal', type: 'bigint', value: '1' },
+    }];
+    await expect(discoverInitialCallTopology(root, new Uint8Array(), async () => ({ flag: 0n })))
+      .rejects.toThrow(/cannot resolve newly reached callsite 0/);
+  });
+
   it('replaces the selected subtree without moving a later producer seed to the new branch', async () => {
     const ctx = fixture();
     const results = { 1: '01'.padStart(64, '0'), 4: '4d'.padStart(64, '0') };

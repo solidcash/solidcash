@@ -28,8 +28,10 @@ import {
   LowLevelCallNode,
   LowLevelCallStatementNode,
   TernaryOpNode,
+  BinaryOpNode,
   ExpressionNode,
 } from '../ast/AST.js';
+import { BinaryOperator } from '../ast/Operator.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
 import { AddressType, Type } from '@solidcash/utils';
@@ -399,6 +401,14 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       ], seen);
       this.stampLowLevelCalls(value.ifFalse, [
         ...conditions, { expression: value.condition, negated: true },
+      ], seen);
+      return;
+    }
+    if (value instanceof BinaryOpNode
+      && (value.operator === BinaryOperator.AND || value.operator === BinaryOperator.OR)) {
+      this.stampLowLevelCalls(value.left, conditions, seen);
+      this.stampLowLevelCalls(value.right, [
+        ...conditions, { expression: value.left, negated: value.operator === BinaryOperator.OR },
       ], seen);
       return;
     }

@@ -159,6 +159,14 @@ const captureCallsiteActivationInNode = (
     ], seen);
     return;
   }
+  if (value instanceof BinaryOpNode
+    && (value.operator === BinaryOperator.AND || value.operator === BinaryOperator.OR)) {
+    captureCallsiteActivationInNode(value.left, conditions, seen);
+    captureCallsiteActivationInNode(value.right, [
+      ...conditions, { expression: value.left, negated: value.operator === BinaryOperator.OR },
+    ], seen);
+    return;
+  }
   for (const [key, child] of Object.entries(value)) {
     if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
       'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',

@@ -21,7 +21,7 @@ import {
   createGraphPlanningProducerResultContext,
 } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider } from '../test-util.js';
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {
   expandResolveCreateBuilderExternalCalls,
   type ExpandResolveCreateBuilderExternalCallsHost,
@@ -252,6 +252,25 @@ describe('compiler-published external-call predicate evaluation', () => {
 
     expect(evaluate(`0x${'00'.repeat(20)}`)).toBe(false);
     expect(evaluate(`0x${'01'.repeat(20)}`)).toBe(true);
+  });
+
+  it('evaluates address.code.length from a runtime CashAddress', () => {
+    const expression: ExternalCallExpression = {
+      kind: 'addressCodeLength', type: 'bigint', expression: source(0),
+    };
+    const codeAddress = lockingBytecodeToCashAddress({
+      bytecode: hexToBin(`aa20${'01'.repeat(32)}87`), prefix: 'bchtest',
+    });
+    const keyAddress = lockingBytecodeToCashAddress({
+      bytecode: hexToBin(`76a914${'02'.repeat(20)}88ac`), prefix: 'bchtest',
+    });
+    if (typeof codeAddress === 'string' || typeof keyAddress === 'string') throw new Error('invalid fixture');
+    expect(evaluator._evaluateExternalExpression(
+      expression, [codeAddress.address], artifact, undefined, [{ type: 'address' }],
+    )).toBe(1n);
+    expect(evaluator._evaluateExternalExpression(
+      expression, [keyAddress.address], artifact, undefined, [{ type: 'address' }],
+    )).toBe(0n);
   });
 
   it('compares separately allocated byte arrays by contents', () => {

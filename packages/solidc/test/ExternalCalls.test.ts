@@ -354,6 +354,16 @@ describe('address.code with an authenticated external-call slot', () => {
     );
     expect(artifact.abi.find((candidate) => candidate.name === 'f')?.externalCalls?.[0]?.addressParam)
       .toBe('token');
+    expect(artifact.abi.find((candidate) => candidate.name === 'f')?.externalCalls?.[0]?.condition)
+      .toEqual({
+        kind: 'binary', operator: '>',
+        left: {
+          kind: 'addressCodeLength',
+          expression: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+          type: 'bigint',
+        },
+        right: { kind: 'literal', type: 'bigint', value: '0' },
+      });
     // Preserve address(0) as empty `.code`; only a non-empty address may select the authenticated slot marker.
     expect(artifact.bytecode).toContain('OP_DUP OP_SIZE OP_0 OP_NUMEQUAL OP_IF OP_ELSE OP_DROP');
   });
@@ -994,6 +1004,30 @@ describe('pre-call require reachability metadata', () => {
     const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls ?? [];
     expect(calls.map((call) => call.functionName)).toEqual(['check', 'ping']);
     expect(calls[1]?.preCallRequires).toBeUndefined();
+  });
+
+  it('publishes a replayable necessary conjunct before a later call', () => {
+    const artifact = compileString(`pragma solidity ^0.8.19;
+      interface IToken { function balanceOf(address owner) external returns (uint256); }
+      interface ISink { function ping() external; }
+      contract C(ISink sink) {
+        function run(address token) public {
+          require(token.code.length > 0 && IToken(token).balanceOf(msg.sender) > 0);
+          sink.ping();
+          require(true);
+        }
+      }`, { solidityImportCompat: true, forceStateful: true, messageBus: true });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls ?? [];
+    expect(calls.map((call) => call.functionName)).toEqual(['balanceOf', 'ping']);
+    expect(calls[1]?.preCallRequires).toContainEqual({
+      kind: 'binary', operator: '>',
+      left: {
+        kind: 'addressCodeLength',
+        expression: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+        type: 'bigint',
+      },
+      right: { kind: 'literal', type: 'bigint', value: '0' },
+    });
   });
 });
 

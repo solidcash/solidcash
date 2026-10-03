@@ -1,4 +1,4 @@
-import { BytesLike, getBytes, hexlify, toBigInt, getAddress } from "ethers";
+import { BytesLike, getBytes, hexlify, toUtf8String, toBigInt, getAddress } from "ethers";
 import { decodeString, decodeBytes32, decodeBool, decodeStringArray, decodeAddress, decodeUint256, decodeUint32, decodeUint16, decodeBytes } from "./decodeData";
 import { decryptBinaryData, decryptUtf8Data } from "./encryption";
 import { JobCreatedEvent, JobUpdatedEvent, JobSignedEvent, JobRatedEvent, JobDisputedEvent, JobArbitratedEvent, JobMessageEvent, JobEventType, CustomJobEvent } from "../interfaces";

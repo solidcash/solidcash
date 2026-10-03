@@ -26,6 +26,7 @@ import {
   NullaryOpNode,
   VariableDefinitionNode,
   AssignNode,
+  RequireNode,
   FieldAccessNode,
   FunctionCallNode,
   LiteralNode,
@@ -508,14 +509,17 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private publishStraightLineMappingKeyValues(fn: FunctionDefinitionNode): void {
     const statements = fn.body.statements ?? [];
     const parameters = new Set(fn.parameters.map((parameter) => parameter.name));
+    const readOnlyGuard = (statement: StatementNode): boolean => statement instanceof RequireNode
+      && expressionCanon(statement.expression) !== undefined
+      && statement.args.every((arg) => expressionCanon(arg) !== undefined);
     const transparentStatements: boolean[] = [];
     const topLevelLocals = new Set<string>();
     for (const statement of statements) {
       transparentStatements.push(statement instanceof VariableDefinitionNode
         ? !statement.expression || argumentOnlyMappingValue(statement.expression, parameters)
-        : statement instanceof AssignNode && !statement.isReferenceDataWrite
+        : readOnlyGuard(statement) || (statement instanceof AssignNode && !statement.isReferenceDataWrite
           && topLevelLocals.has(statement.identifier.name)
-          && argumentOnlyMappingValue(statement.expression, parameters));
+          && argumentOnlyMappingValue(statement.expression, parameters)));
       if (statement instanceof VariableDefinitionNode) topLevelLocals.add(statement.name);
     }
     const previousEffectful: number[] = [];
@@ -620,8 +624,10 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           && expressionCanon(preceding.expression) !== undefined) {
           // A top-level local rebind is a point-in-time capture, just like its declaration.
           recordCapture(preceding.identifier.name, preceding.expression, true);
+        } else if (readOnlyGuard(preceding)) {
+          // Reaching the next statement proves the guard passed without changing collection state.
         } else {
-          // Calls, branches, assertions, and unsupported writes end the straight-line proof.
+          // Effectful calls, branches, unsupported guards, and writes end the straight-line proof.
           knownWrites.clear();
           priorWriteKeys.clear();
           knownCaptures.clear();

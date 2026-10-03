@@ -171,17 +171,16 @@ describe('a callee that writes mapping collections beside its own calls', () => 
     expect(txid).toMatch(/^[0-9a-f]{64}$/);
   }, 300_000);
 
-  it('known wall: refuses the two-collection frame at the value its write leaves unstated', async () => {
-    // The frame's write is chunkable and the artifact publishes no source for its value, so the settle has to read
-    // the value off the stack the body stopped on. The sibling above stops at the pin whose operands are that value
-    // and its digest, and the read succeeds. With the second collection declared the frame's own record comparison
-    // comes first, where the stack carries the two record commitments instead, so the read finds no value and the
-    // hop refuses by name rather than laying a run the body's own pin would not address.
+  it('settles two collections of its own records beside the calls, and broadcasts', async () => {
+    // Both collections' nodes start from the same placeholder - the value each holds is the body's to compute - so
+    // the frame's own close matches two candidates at once and each pass has to learn the next node in the order the
+    // body closes them, rather than restating the first. Once both are stated the frame reaches the pin that sizes
+    // its run, and the value is read there.
     const slots = (compileStringMulti(sourceOf('two'), { composition: 'per-call' }).Desk!.abi
       .find((candidate) => candidate.name === 'record')!.blockLayout?.slots ?? []).map((slot) => slot.kind);
     expect(slots).toStrictEqual(['master', 'dataNft', 'entry', 'entry', 'returnEvent']);
-    await expect(record('two')).rejects.toThrow(
-      /writes mapping "notes" a value whose source the artifact does not publish, so this hop cannot tell whether the write needs value chunks/,
-    );
+    const { accepted, txid } = await record('two');
+    expect(accepted).toBe(true);
+    expect(txid).toMatch(/^[0-9a-f]{64}$/);
   }, 300_000);
 });

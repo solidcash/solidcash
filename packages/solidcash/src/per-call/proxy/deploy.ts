@@ -1429,13 +1429,24 @@ async function settleCallees(options: {
       // value the body computed is read from the same close the return is: whichever operand is the candidate, the
       // other is what the body wrote, at the candidate's own slot.
       const candidates = callee.entryWrites?.learningCandidates ?? [];
+      const views: (Uint8Array | undefined)[] = [...(writeViews.get(callee.master) ?? [])];
       if (reading.ok && candidates.length > 0) {
-        const declaredAt = candidates.findIndex((entry) => bytesEqual(reading.declared, entry));
-        const computedAt = candidates.findIndex((entry) => bytesEqual(reading.computed, entry));
+        // Two nodes whose values the artifact leaves unstated start from the same placeholder, so the close's own
+        // operand can match several candidates at once. The candidates are in the order the body closes them in, and
+        // a candidate whose view is already learned is stated in the plan already: the node this close is about is
+        // the first match the plan has not caught up with, so each pass learns the next node in that order rather
+        // than restating the first one.
+        const learnedAt = (operand: Uint8Array): number => {
+          const matches: number[] = [];
+          for (const [at, entry] of candidates.entries()) if (bytesEqual(operand, entry)) matches.push(at);
+          const fresh = matches.find((at) => views[at] === undefined);
+          return fresh ?? (matches[0] ?? -1);
+        };
+        const declaredAt = learnedAt(reading.declared);
+        const computedAt = learnedAt(reading.computed);
         const at = declaredAt >= 0 ? declaredAt : computedAt;
         if (at >= 0) {
           if (trace) hopTrace(`stop callee=${callee.master} reason=learned-write at=${at}`);
-          const views: (Uint8Array | undefined)[] = [...(writeViews.get(callee.master) ?? [])];
           while (views.length <= at) views.push(undefined);
           views[at] = Uint8Array.from(declaredAt >= 0 ? reading.computed : reading.declared);
           writeViews.set(callee.master, views);

@@ -7,7 +7,8 @@ import {
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { lockingBytecodeToSolidityAddressPayload } from '../utils.js';
 import {
-  assertNoUnboundCallOptions, assertPlannedOccurrenceCount, planCompiledGraph, resolveGraphAbiFunction,
+  MAX_GRAPH_INVOCATIONS, assertNoUnboundCallOptions, assertPlannedOccurrenceCount,
+  planCompiledGraph, resolveGraphAbiFunction,
   type CompiledGraphInvocation, type CompiledGraphParticipant, type CompiledGraphPlan,
 } from './graph.js';
 import { MessageBusDiagnosticError, type MessageBusDiagnosticContext } from './diagnostics.js';
@@ -84,7 +85,7 @@ export interface DeriveCompiledGraphOptions {
     /** Source-template identity when this is one row of a collapsed repeated-call batch. */
     batchLogicalIndex?: number;
   }) => WorklistParticipant | WorklistTargetResolution | undefined;
-  /** Correctness bound for source recursion and runtime-sized shapes. The callManifest v1 ceiling is 24. */
+  /** Optional tighter correctness bound for source recursion and runtime-sized shapes. */
   maximumInvocations?: number;
   /**
    * Runtime occurrence supplied by the same derivation probe which evaluated the root call. It selects only
@@ -297,9 +298,9 @@ const resolveArguments = (
  * once after the physical owner set is complete.
  */
 export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): CompiledGraphPlan {
-  const maximum = options.maximumInvocations ?? 24;
-  if (!Number.isInteger(maximum) || maximum < 1 || maximum > 24) {
-    throw new Error('messageBus: symbolic worklist maximum must be between 1 and 24');
+  const maximum = options.maximumInvocations ?? MAX_GRAPH_INVOCATIONS;
+  if (!Number.isInteger(maximum) || maximum < 1 || maximum > MAX_GRAPH_INVOCATIONS) {
+    throw new Error(`messageBus: symbolic worklist maximum must be between 1 and ${MAX_GRAPH_INVOCATIONS}`);
   }
   const participants: WorklistParticipant[] = [];
   const invocations: CompiledGraphInvocation[] = [];

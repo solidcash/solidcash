@@ -200,4 +200,19 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
     expect(escrows).toHaveLength(3);
     expect(escrows.every((entry) => (entry.value as { claimed: bigint }).claimed === 1n)).toBe(true);
   }, 300_000);
+
+  it('pays seven distinct real escrows past the legacy graph invocation ceiling', async () => {
+    const escrowIds = Array.from({ length: 7 }, (_unused, index) => BigInt(index + 1));
+    const { claim, unicrow, sellerLock } = await setup(...escrowIds.map(() => 1_000n));
+    const receipt = await claim.forward('claimMultiple', [escrowIds]).send();
+    const outpoints = receipt.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    expect(new Set(outpoints).size).toBe(outpoints.length);
+    expect(receipt.outputs.filter((output) =>
+      binToHex(output.lockingBytecode) === binToHex(sellerLock)
+      && output.valueSatoshis === 1_000n)).toHaveLength(escrowIds.length);
+    const escrows = await unicrow.proxy.getEntries('escrows');
+    expect(escrows).toHaveLength(escrowIds.length);
+    expect(escrows.every((entry) => (entry.value as { claimed: bigint }).claimed === 1n)).toBe(true);
+  }, 300_000);
 });

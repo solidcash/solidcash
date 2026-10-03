@@ -1,4 +1,7 @@
-import { MAX_MESSAGE_BUS_BLOB_BYTES, occurrenceBoundOf, occurrenceCountViolation } from '@solidcash/utils';
+import {
+  ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
+  MAX_MESSAGE_BUS_BLOB_BYTES, occurrenceBoundOf, occurrenceCountViolation,
+} from '@solidcash/utils';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import type {
   AbiFunction, Artifact, CallsiteCallerIdentityAbi, ExternalCallAbi, ExternalResultEncoding, FunctionBlockLayout,
@@ -1241,8 +1244,13 @@ export function assertGraphTrailingCapacity(
   }
 }
 
-const MAX_GRAPH_PARTICIPANTS = 8;
-const MAX_GRAPH_INVOCATIONS = 24;
+const MAX_GRAPH_PARTICIPANTS = ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS;
+// Each of at most eight participants publishes a one-byte route row count. The manifest itself allows more
+// rows, but no representable graph can have more invocation rows than the sum of those participant capacities.
+// Keep this as the worklist's safety bound; individual route/blob limits are checked by their owners later.
+export const MAX_GRAPH_INVOCATIONS = Math.min(
+  ATOMIC_MESSAGE_BUS_MAX_ROWS, ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS * 0xff,
+);
 const MAX_GRAPH_DEPTH = 7;
 
 /**

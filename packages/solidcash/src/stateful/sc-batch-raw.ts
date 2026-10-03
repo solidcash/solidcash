@@ -777,7 +777,8 @@ export function batchRaw(
           && candidate.keyParams.length === selectedKeys.length
           && candidate.keyParams.every((key, keyIndex) => routeKeyName(key) === selectedKeys[keyIndex]));
         if (!selectedAccess) continue;
-        if (directAccess.activation !== undefined && rowArgs !== undefined) {
+        if (directAccess.activation !== undefined && physicalAlternatives.length > 1
+          && rowArgs !== undefined) {
           const keyMatches = selectedKeys.map((name) => {
             const binding = handler.batchKeyWitnesses?.find((candidate) => (
               candidate.source === 'argument'

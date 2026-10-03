@@ -6,7 +6,7 @@
  * `await`, ethers-style. A `chai` module alias lets ported files' `import { expect } from 'chai'` resolve here.
  */
 import 'solidcash/vitest';
-import { cashAddressToLockingBytecode, binToHex } from '@bitauth/libauth';
+import { cashAddressToLockingBytecode, binToHex, hash160 } from '@bitauth/libauth';
 import { getActiveProvider } from './network-helpers.js';
 
 // A BCH `address` value is a full locking bytecode (Uint8Array), returned verbatim (never a pubkey-hash or a
@@ -29,8 +29,12 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
   const isCashAddr = (x: any): x is string => typeof x === 'string' && /^(bitcoincash|bchtest|bchreg):[0-9a-z]+$/.test(x);
   const addressBytes = (x: any): Uint8Array | undefined => {
     if (x instanceof Uint8Array) return x;
-    if (typeof x !== 'string' || !/^0x(?:[0-9a-fA-F]{2})+$/.test(x)) return undefined;
-    const hex = x.slice(2);
+    if (typeof x !== 'string') return undefined;
+    // A bare hex string of an address length is the same value the ABI's own `0x` form names: a decoded state value
+    // is unprefixed where the ported ABI's is, and one identity reaches a test through both.
+    const hex = /^0x(?:[0-9a-fA-F]{2})+$/.test(x) ? x.slice(2)
+      : /^[0-9a-fA-F]+$/.test(x) && [40, 46, 50, 70].includes(x.length) ? x : undefined;
+    if (hex === undefined) return undefined;
     const bytes = new Uint8Array(hex.length / 2);
     for (let index = 0; index < bytes.length; index++) {
       bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
@@ -51,6 +55,13 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
       && lockingBytecode[0] === 0xa9 && lockingBytecode[1] === 0x14 && lockingBytecode[22] === 0x87) {
       return lockingBytecode.slice(2, 22);
     }
+    // A p2sh32 address carries two identities: the Solidity ABI narrows it to the 20-byte address payload its own
+    // `address` type has - the hash160 of the locking bytecode - while a raw 32-byte value is the script hash the
+    // lock commits to. Which one the other side names is what the packed length says.
+    if (packedLength === 20 && lockingBytecode.length === 35
+      && lockingBytecode[0] === 0xaa && lockingBytecode[1] === 0x20 && lockingBytecode[34] === 0x87) {
+      return hash160(lockingBytecode);
+    }
     if (packedLength === 32 && lockingBytecode.length === 35
       && lockingBytecode[0] === 0xaa && lockingBytecode[1] === 0x20 && lockingBytecode[34] === 0x87) {
       return lockingBytecode.slice(2, 34);
@@ -70,6 +81,12 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
     if (lockingBytecode) {
       return [binToHex(payload(lockingBytecode, expectedBytes.length) ?? lockingBytecode), binToHex(expectedBytes)];
     }
+  }
+  if (actualBytes && expectedBytes) {
+    // Two byte forms of one identity: a Solidity ABI address payload and the locking bytecode that carries it are
+    // equal when the payload is the lock's own, whichever spelling of hex each side arrived in.
+    const narrow = (lock: Uint8Array, length: number): Uint8Array => payload(lock, length) ?? lock;
+    return [binToHex(narrow(actualBytes, expectedBytes.length)), binToHex(narrow(expectedBytes, actualBytes.length))];
   }
   return [actual, expected];
 }

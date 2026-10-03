@@ -23,7 +23,7 @@ export * from 'ethers/wallet';
 export * from 'ethers/wordlists';
 
 import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
-import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress } from 'solidcash';
+import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress, perCallDeploy } from 'solidcash';
 // CashAddress-aware ABI coder (wins over ethers/utils re-export for defaultAbiCoder / AbiCoder).
 // Cycle-free: cash-abi-coder only imports ethers/abi + libauth.
 import { AbiCoder as CashAbiCoder, defaultAbiCoder as cashDefaultAbiCoder } from './cash-abi-coder.js';
@@ -220,8 +220,16 @@ function prefixOf(from: string): Prefix {
   return 'bitcoincash';
 }
 
-/** BCH redirect for ethers `getCreateAddress({ from, nonce })` (see file docs - identity is category, not nonce). */
+/**
+ * BCH redirect for ethers `getCreateAddress({ from, nonce })` (see file docs - identity is category, not nonce).
+ * When a per-call look-ahead is open for the deployer, the nonce maps to the reserved genesis UTXO and the answer is
+ * that UTXO's `addrV(category)` locking bytecode, which is where the deployment will actually land. Otherwise the
+ * logical CREATE address stands in.
+ */
 export function getCreateAddress(tx: { from: string; nonce: number | bigint }): string {
+  if (perCallDeploy.createLookaheadForAddress(tx.from) !== undefined) {
+    return binToHex(perCallDeploy.predictCreateAddress(tx.from, tx.nonce));
+  }
   return deriveLogicalCreateAddress(tx.from, tx.nonce);
 }
 

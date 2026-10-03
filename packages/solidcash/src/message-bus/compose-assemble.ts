@@ -1597,9 +1597,16 @@ export async function assembleAtomicComposition(
           participant: entry.participant,
           contractName: entry.artifact.contractName,
           blockLayout: entry.blockLayout === undefined ? undefined : {
-            blockSize: entry.lifecycle?.balancedSpan ?? entry.blockLayout.blockSize,
+            // The graph manifest, not the compiler's maximum block, defines this pass's physical bases.
+            // A repeated owner can compact before a later participant: packing its maximum here shifts
+            // every later absolute witness even though the aggregate already uses the compacted span.
+            blockSize: graph.callManifest.participants[entry.participant]!.actualSize,
             trailingBase: entry.blockLayout.trailingBase,
-            trailingCapacity: entry.blockLayout.trailingCapacity,
+            trailingCapacity: trailingCapacityExcludingFixedSuffix({
+              blockSize: graph.callManifest.participants[entry.participant]!.actualSize,
+              trailingBase: entry.blockLayout.trailingBase,
+              fixedSuffix: entry.blockLayout.fixedSuffix,
+            }),
             fixedSuffix: entry.blockLayout.fixedSuffix,
             slots: entry.blockLayout.slots ?? [],
           },

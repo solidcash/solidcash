@@ -768,6 +768,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   check registers one default Ledger but routes two calls to a different deployed Ledger bytecode selected
   by the caller's runtime address; only the selected Ledger changes.
   No broad suite ran.
+- 2026-10-03 mixed-owner compact-layout follow-up: a typed array loop targeting Ledger A, Ledger B, then
+  Ledger A reached the atomic composer with one repeated owner. After A's block compacted, the graph placed
+  B at input base 7, but the batch layout resolver still packed A at its compiler maximum and demanded base
+  12. Batch layout authority now packs each participant's manifest-published actual span and recomputes its
+  physical trailing capacity. The exact BCH-2026 title settles two nested keys on A and one on B; its
+  immediately preceding runtime-selected-bytecode title passes. No broad suite ran.
 
 ## Gate before the next leap
 

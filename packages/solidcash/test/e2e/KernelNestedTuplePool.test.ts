@@ -45,6 +45,10 @@ const GRAPH_SOURCE = `pragma solidity ^0.8.0;
       for (uint i = 0; i < count; i = i + 1) ILedger(target).set(2, i, i + 20);
       require(true);
     }
+    function runTargets(address[] targets) public {
+      for (uint i = 0; i < targets.length; i = i + 1) ILedger(targets[i]).set(3, i, i + 30);
+      require(true);
+    }
   }`;
 
 const GRAPH_OPTIONS = {
@@ -291,5 +295,49 @@ describe('kernel complete nested-mapping tuple pool', () => {
       const slot = keyToSlotMulti([bigIntToVmNumber(2n), bigIntToVmNumber(inner)]);
       expect(altEntries.find((entry) => binToHex(entry.slot) === binToHex(slot))?.value).toBe(inner + 120n);
     }
+  }, 180_000);
+
+  it('settles a mixed-owner typed loop with one repeated callee', async () => {
+    const artifacts = compileStringMulti(GRAPH_SOURCE, GRAPH_OPTIONS);
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x65), provider);
+    for (let index = 0; index < 18; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const createLedger = async (): Promise<StatefulContract> => {
+      const inner = new Contract(artifacts.Ledger, [], { provider });
+      const setup = await setupStatefulUtxos(
+        provider, inner, artifacts.Ledger.stateLayout!, {}, { saltContract: true },
+      );
+      return StatefulContract.withCategory(inner, setup.categoryId).connect(signer);
+    };
+    const first = await createLedger();
+    const second = await createLedger();
+    registerDeployment(provider, {
+      contractName: artifacts.Ledger.contractName,
+      address: second.target,
+      lockingBytecode: second.inner.lockingBytecode,
+      contract: second,
+    });
+    const driverInner = new Contract(artifacts.Driver, [first.inner.lockingBytecode], { provider });
+    const driverSetup = await setupStatefulUtxos(
+      provider, driverInner, artifacts.Driver.stateLayout!, {}, { saltContract: true },
+    );
+    const driver = StatefulContract.withCategory(driverInner, driverSetup.categoryId).connect(signer);
+    driver._registerResolvedExternal('ILedger', first);
+    await expect(driver.call.runTargets([
+      hexToBin(first.inner.lockingBytecode), hexToBin(second.inner.lockingBytecode),
+      hexToBin(first.inner.lockingBytecode),
+    ]).send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const firstEntries = await first.getEntries('values');
+    const secondEntries = await second.getEntries('values');
+    expect(firstEntries).toHaveLength(2);
+    expect(secondEntries).toHaveLength(1);
+    for (const inner of [0n, 2n]) {
+      const slot = keyToSlotMulti([bigIntToVmNumber(3n), bigIntToVmNumber(inner)]);
+      expect(firstEntries.find((entry) => binToHex(entry.slot) === binToHex(slot))?.value).toBe(inner + 30n);
+    }
+    const secondSlot = keyToSlotMulti([bigIntToVmNumber(3n), bigIntToVmNumber(1n)]);
+    expect(secondEntries.find((entry) => binToHex(entry.slot) === binToHex(secondSlot))?.value).toBe(31n);
   }, 180_000);
 });

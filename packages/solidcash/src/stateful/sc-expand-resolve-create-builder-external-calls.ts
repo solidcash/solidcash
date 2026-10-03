@@ -11,6 +11,7 @@ import type {
   StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { ExternalExpressionUnresolvedConditionError } from '../message-bus/result-evaluation-path.js';
 
 /** Structural ExternalCallInfo to avoid importing StatefulContract through lifecycle types. */
 export type CreateBuilderResolvedExternalCall = {
@@ -161,12 +162,18 @@ export async function expandResolveCreateBuilderExternalCalls(
       // A source require can stop before a later external call after an earlier producer returned false.
       // Resolve only the referenced producer results through the callee VM; if a predicate remains unknown,
       // retain its call so the final covenant remains the authority for a successful transaction.
-      const returns = await host.resolveExternalExpressionReturns(
-        returningGuards.map((expression) => ({ kind: 'expression', expression })),
-        args, callerStateSnapshot, abiFunction?.inputs, publicSelfAddress,
-        abiFunction?.externalCalls ?? [],
-      );
-      externalCalls = externalCalls.filter((call) => !guardVerdict(call, returns));
+      try {
+        const returns = await host.resolveExternalExpressionReturns(
+          returningGuards.map((expression) => ({ kind: 'expression', expression })),
+          args, callerStateSnapshot, abiFunction?.inputs, publicSelfAddress,
+          abiFunction?.externalCalls ?? [],
+        );
+        externalCalls = externalCalls.filter((call) => !guardVerdict(call, returns));
+      } catch (error) {
+        // This is only a negative reachability proof. An unresolved branch cannot prove a require false,
+        // so keep every call and let the authenticated transaction execute the original require.
+        if (!(error instanceof ExternalExpressionUnresolvedConditionError)) throw error;
+      }
     }
   }
 

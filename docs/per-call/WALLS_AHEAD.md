@@ -42,8 +42,10 @@ lock it names).
   this hop states. **The divergence this entry used to name is refuted**: an instrumented `asBytes` reports the
   elements the entry asks it for (`uint16` 8000, `uint16` 2000, `uint256` 800, `uint256` 200, `uint256` 0) and every
   one is big-endian as the body declares it, so the left-aligned words in the payload are the fixed-width layout, not
-  a byte-order error. No SDK element-encoder item is owed. It is no settlement wall: the stated data equals the stored event byte for byte, so plan
-  and body agree, and the arbitrate titles assert balances, not the event's bytes.
+  a byte-order error. No SDK element-encoder item is owed. It is no settlement wall: the stated data equals the
+  stored event byte for byte, so plan and body agree. The arbitrate titles and the integration test do decode that
+  payload (`decodeJobArbitratedEvent`, test lines 2883, 2961, 3040 and 3341); whether the harness decoder reads the
+  fixed-width layout as the test expects is being checked from the code.
 - `ahead/fan-in.test.ts`: the second append to one job's chunked notes chains, so its `take` case asserts the
   settlement instead of the refusal.
 - The whole directory is green again: 16 files / 143 cases. The `ahead/` files run only under `PER_CALL_AHEAD=1`, so a

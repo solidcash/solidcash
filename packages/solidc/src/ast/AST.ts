@@ -1331,6 +1331,9 @@ export class BranchNode extends StatementNode {
    */
   preserveConditionalEntryWrites?: boolean;
 
+  /** Replayable source guard for a compiler-owned dirty-bit flush whose condition is otherwise opaque to the ABI. */
+  kernelEntryActivation?: ExternalCallExpression;
+
   constructor(
     public condition: ExpressionNode,
     public ifBlock: BlockNode,
@@ -1657,6 +1660,8 @@ export class MappingAssignNode extends StatementNode implements Named {
   keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
   /** Function-local program point shared with external-call effects. */
   sourceEffectOrdinal?: number;
+  /** Exact argument-only value of a cached final write on its replayable dirty arm. */
+  kernelValueSource?: { expression: string; parameters: string[] };
   // A counter-loop general RMW (`m[i] = f(m[i], ...)`) replaces the same-entry read in `expression` with this
   // SDK-supplied value. The sorted-entry loop authenticates it against the co-spent entry (or the absent default)
   // before accepting the computed output commitment.

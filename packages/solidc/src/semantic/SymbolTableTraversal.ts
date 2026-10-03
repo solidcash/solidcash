@@ -6139,10 +6139,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         && this.isOffChainEvaluableMappingValue(node.expression)
         ? `arrset(${this.canonicalizeExpression(node.arrayIndex)},${this.canonicalizeExpression(node.expression)})`
         : undefined;
+      const cachedGuardValue = node.kernelValueSource?.parameters.every((name) =>
+        this.currentFunction?.parameters.some((parameter) => parameter.name === name))
+        ? node.kernelValueSource.expression : undefined;
       const valueSource: string | undefined = arrayElementSource
         ?? (!wholeValueWrite || rmw ? undefined
           : this.mappingLoopLastCounter(node)
             ?? this.mappingRmwLiteralDelta(node)
+            ?? cachedGuardValue
             ?? (node.expression instanceof IdentifierNode ? this.mappingLocalNetSource(node.expression.name) : undefined)
             ?? (node.expression instanceof IntLiteralNode || node.expression instanceof BoolLiteralNode
               ? this.canonicalizeExpression(node.expression)

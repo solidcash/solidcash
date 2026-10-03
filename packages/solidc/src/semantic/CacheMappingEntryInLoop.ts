@@ -6,6 +6,7 @@ import {
   StatementNode,
   BlockNode,
   BranchNode,
+  CollectionIterationNode,
   WhileNode,
   DoWhileNode,
   UncheckedNode,
@@ -38,12 +39,16 @@ import {
   BinaryOpNode,
   TernaryOpNode,
   FunctionModifier,
+  type ExternalCallExpression,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
 import { MappingType, ArrayType, StructType, Type, PrimitiveType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
+import {
+  kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
+} from './KernelEntryActivation.js';
 
 const PREFIX = '__vmapcache_';
 /** Compiler-owned immutable locals which preserve a mapping key's value at a source-order boundary. */
@@ -299,11 +304,14 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     // Every redirect runs before any declaration is inserted: a redirect replaces the node it rewrites (a write
     // becomes a dirty-marking block), so an anchored cache resolves its insertion point by statement position
     // afterwards instead of holding a node that is no longer in the body.
-    const prepared = selected.map((e) => {
+    // Capture source guards before any redirect rewrites a mutation site. Multiple cached entries may share a
+    // branch, and a later guard scan must still see the complete source body.
+    const selectedWithPlans = selected.map((e) => ({ e, guardPlan: this.replayableCacheActivation(fn, e) }));
+    const prepared = selectedWithPlans.map(({ e, guardPlan }) => {
       const local = `${PREFIX}${e.mapping}_${this.counter++}`;
       const dirty = `${local}_dirty`;
       new EntryRedirect(e.mapping, e.keys, local, dirty, e.valueType).visit(fn.body);
-      return { e, local, dirty };
+      return { e, local, dirty, guardPlan };
     });
     // Resolve every anchor before any flush statement is inserted: an insertion shifts the statement list, and the
     // anchor is a position in the body as it stands after the redirects.
@@ -321,7 +329,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     }
     const anchoredDeclarations = new Map<StatementNode, StatementNode[]>();
     for (const item of prepared) {
-      const { e, local, dirty } = item;
+      const { e, local, dirty, guardPlan } = item;
       const cacheRead = new MappingAccessNode(
         e.mapping,
         e.keys.map((key) => buildKeyNode(key, fn.body.location) as ExpressionNode),
@@ -334,9 +342,11 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       dirtyInit.location = fn.body.location;
       const dirtyLocal = new VariableDefinitionNode(PrimitiveType.BOOL, [], dirty, dirtyInit);
       dirtyLocal.location = fn.body.location;
-      let stmts = this.insertFlushesBeforeReturns(fn.body.statements ?? [], e.mapping, e.keys, local, dirty);
+      let stmts = this.insertFlushesBeforeReturns(fn.body.statements ?? [], e.mapping, e.keys, local, dirty,
+        guardPlan);
       if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
-        stmts = [...stmts, this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier)];
+        stmts = [...stmts, this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier,
+          guardPlan)];
       }
       const anchor = anchors.get(item);
       if (anchor !== undefined) {
@@ -369,13 +379,102 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     }
   }
 
+  /** Recover the exact source-argument condition for a scalar cache's final dirty-bit flush. */
+  private replayableCacheActivation(
+    fn: FunctionDefinitionNode,
+    entry: { mapping: string; keys: KeyKind[]; mutationCount: number; inLoop: boolean },
+  ): { activation: ExternalCallExpression; valueSource?: { expression: string; parameters: string[] } } | undefined {
+    if (entry.inLoop || entry.mutationCount === 0 || !this.scalarMappings.has(entry.mapping)) return undefined;
+    const argumentIndices = stableKernelArgumentIndices(fn);
+    const booleanArguments = kernelBooleanArgumentIndices(fn);
+    const mutations: Array<{ guard: ExternalCallExpression; value?: ExpressionNode }> = [];
+    let mutationCount = 0;
+    let unsupported = false;
+    const matches = (name: string, keys: readonly Node[]): boolean => name === entry.mapping
+      && keys.length === entry.keys.length
+      && keys.every((key, index) => keyNodeMatches(key, entry.keys[index]!));
+    const combine = (outer: ExternalCallExpression | undefined, inner: ExternalCallExpression): ExternalCallExpression =>
+      outer === undefined ? inner : { kind: 'binary', operator: '&&', left: outer, right: inner };
+    const scan = (node: Node, guard?: ExternalCallExpression, representable = true): void => {
+      if (node instanceof BranchNode) {
+        const condition = kernelArgumentConditionActivation(node.condition, argumentIndices, booleanArguments);
+        const supported = representable && condition !== undefined;
+        scan(node.ifBlock, supported ? combine(guard, condition!) : undefined, supported);
+        if (node.elseBlock) scan(node.elseBlock, supported ? combine(guard, {
+          kind: 'unary', operator: '!', expression: condition,
+        }) : undefined, supported);
+        return;
+      }
+      if (node instanceof ReturnNode) unsupported = true;
+      const mutation = node instanceof ArrayAssignNode || node instanceof StateArrayAssignNode
+        ? { name: node.name, keys: [node.index] }
+        : node instanceof MappingAssignNode || node instanceof MappingDeleteNode
+          ? { name: node.name, keys: node.keys } : undefined;
+      if (mutation && matches(mutation.name, mutation.keys)) {
+        mutationCount += 1;
+        if (!representable || guard === undefined) unsupported = true;
+        else mutations.push({ guard, value: node instanceof ArrayAssignNode
+          || node instanceof StateArrayAssignNode ? node.value
+          : node instanceof MappingAssignNode ? node.expression : undefined });
+      }
+      const childRepresentable = representable
+        && !(node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
+          || node instanceof SwitchNode || node instanceof TryCatchNode);
+      for (const [field, value] of Object.entries(node)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+          'stateVariable', 'type'].includes(field)) continue;
+        if (value instanceof Node) scan(value, childRepresentable ? guard : undefined, childRepresentable);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
+          scan(item, childRepresentable ? guard : undefined, childRepresentable);
+        }
+      }
+    };
+    scan(fn.body);
+    if (unsupported || mutationCount !== entry.mutationCount) return undefined;
+    let activation: ExternalCallExpression | undefined;
+    const seen = new Set<string>();
+    for (const { guard } of mutations) {
+      const key = JSON.stringify(guard);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      activation = activation === undefined ? guard
+        : { kind: 'binary', operator: '||', left: activation, right: guard };
+    }
+    if (activation === undefined) return undefined;
+    const final = mutations[mutations.length - 1];
+    const parameters = new Set<string>();
+    const serialize = (expression: ExpressionNode): string | undefined => {
+      if (expression instanceof IdentifierNode) {
+        const index = argumentIndices.get(expression.name);
+        if (index === undefined || fn.parameters[index]?.name !== expression.name) return undefined;
+        parameters.add(expression.name);
+        return `id:${expression.name}`;
+      }
+      if (expression instanceof IntLiteralNode) return `lit:${expression.value.toString()}`;
+      if (expression instanceof BinaryOpNode && ['+', '-', '*'].includes(expression.operator)) {
+        const left = serialize(expression.left);
+        const right = serialize(expression.right);
+        return left === undefined || right === undefined ? undefined
+          : `binop:${expression.operator}(${left},${right})`;
+      }
+      return undefined;
+    };
+    const valueExpression = final?.value && mutations.every((mutation) =>
+      JSON.stringify(mutation.guard) === JSON.stringify(final.guard))
+      ? serialize(final.value) : undefined;
+    return { activation, ...(valueExpression !== undefined && {
+      valueSource: { expression: valueExpression, parameters: [...parameters] },
+    }) };
+  }
+
   // Entries m[k] written via array ops (element/push/pop) more than once OR inside a loop, with an INVARIANT key
   // (identifier not reassigned, or msg.sender/tx.origin) and no whole-entry assign/delete. Those need
   // read-once/mutate-local/write-once.
   private collectCacheableEntries(
     body: Node,
   ): Array<{
-      mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; fromModifier?: string;
+      mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; mutationCount: number;
+      fromModifier?: string;
       anchorIndex?: number;
     }> {
     const info = new Map<string, EntryInfo>();
@@ -540,7 +639,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     };
     scan(body, false);
     const out: Array<{
-      mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; fromModifier?: string;
+      mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; mutationCount: number;
+      fromModifier?: string;
     }> = [];
     for (const e of info.values()) {
       // A struct entry needs the local rebuild path for even one field write, but a read-only struct access must
@@ -583,7 +683,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (mutatesExpressionDependency(body, dependencies)) continue;
       }
       out.push({
-        mapping: e.mapping, keys: e.keys, inLoop: e.inLoop,
+        mapping: e.mapping, keys: e.keys, inLoop: e.inLoop, mutationCount: e.count,
         valueType: (this.arrayMappings.get(e.mapping) ?? this.scalarMappings.get(e.mapping)?.valueType
           ?? this.structMappings.get(e.mapping))!,
         fromModifier: e.fromModifier,
@@ -746,6 +846,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 
   private makeFlush(
     mapping: string, keys: KeyKind[], local: string, dirty: string, loc: Node['location'], fromModifier?: string,
+    guardPlan?: { activation: ExternalCallExpression; valueSource?: { expression: string; parameters: string[] } },
   ): BranchNode {
     const rhs = new IdentifierNode(local);
     rhs.location = loc;
@@ -753,6 +854,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     const flush = new MappingAssignNode(mapping, keyNodes, rhs); // m[k1][k2] = local
     flush.fromModifier = fromModifier;
     flush.location = loc;
+    flush.kernelValueSource = guardPlan?.valueSource;
     const flushBlock = new BlockNode([flush]);
     flushBlock.location = loc;
     const condition = new IdentifierNode(dirty);
@@ -762,6 +864,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     // The not-dirty arm is a physical no-op. If-converting it to a preserve write would still consume and recreate
     // chunk-backed resources, defeating the dirty bit and forcing outputs for paths which never changed the entry.
     branch.preserveConditionalEntryWrites = true;
+    branch.kernelEntryActivation = guardPlan?.activation;
     return branch;
   }
 
@@ -769,13 +872,14 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   // returns were already rewritten to flag+break by DesugarReturnInLoop). Mirrors CacheDynamicArrayInLoop.
   private insertFlushesBeforeReturns(
     stmts: StatementNode[], mapping: string, keys: KeyKind[], local: string, dirty: string,
+    guardPlan?: { activation: ExternalCallExpression; valueSource?: { expression: string; parameters: string[] } },
   ): StatementNode[] {
     const rec = (s: StatementNode[]): StatementNode[] =>
-      this.insertFlushesBeforeReturns(s ?? [], mapping, keys, local, dirty);
+      this.insertFlushesBeforeReturns(s ?? [], mapping, keys, local, dirty, guardPlan);
     const out: StatementNode[] = [];
     for (const stmt of stmts) {
       if (stmt instanceof ReturnNode) {
-        out.push(this.makeFlush(mapping, keys, local, dirty, stmt.location));
+        out.push(this.makeFlush(mapping, keys, local, dirty, stmt.location, undefined, guardPlan));
         out.push(stmt);
         continue;
       }

@@ -500,11 +500,14 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         && other.keyParameters.length > access.keyParameters.length
         && access.keyParameters.every((key, index) => key === other.keyParameters[index]))) : [];
       const mutationActivations = this.journalMutationActivations(fn);
-      const mutationCounts = new Map<string, number>();
+      const mutationGuards = new Map<string, ExternalCallExpression[]>();
+      const unguardedMutations = new Set<string>();
       for (const access of leafAccesses) {
         if (access.node instanceof MappingAccessNode || access.node instanceof ArrayAccessNode) continue;
         const identity = `${access.name}[${access.keyParameters.join(',')}]`;
-        mutationCounts.set(identity, (mutationCounts.get(identity) ?? 0) + 1);
+        const guard = mutationActivations.get(access.node);
+        if (guard === undefined) unguardedMutations.add(identity);
+        else mutationGuards.set(identity, [...(mutationGuards.get(identity) ?? []), guard]);
       }
       const distinct = new Map<string, JournalEntry>();
       for (const access of leafAccesses) {
@@ -527,11 +530,21 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
             journalName: `__cj_${fn.name}_${distinct.size}`,
             valueType: collection.innermostValueType,
             mutates,
-            ...(mutates && mutationCounts.get(identity) === 1
-              && mutationActivations.get(access.node) !== undefined
-              && { activation: mutationActivations.get(access.node) }),
             sourceScope: fn.inheritedFrom,
           });
+        }
+      }
+      // A shared journal is dirty exactly when at least one of its guarded source mutation sites runs.
+      // Any unguarded or unsupported site makes that condition unconditional instead.
+      for (const [identity, entry] of distinct) {
+        if (!entry.mutates || unguardedMutations.has(identity)) continue;
+        const seen = new Set<string>();
+        for (const guard of mutationGuards.get(identity) ?? []) {
+          const key = JSON.stringify(guard);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          entry.activation = entry.activation === undefined ? guard
+            : { kind: 'binary', operator: '||', left: entry.activation, right: guard };
         }
       }
       // A rejected entry journal must not leave a partially built one behind: the dynamic-only admission threads

@@ -4456,7 +4456,7 @@ function stampKernelArgumentConditionalEntryActivations(fn: FunctionDefinitionNo
     outer === undefined ? inner : { kind: 'binary', operator: '&&', left: outer, right: inner };
   const scan = (node: Node, activation: ExternalCallExpression | undefined, representable: boolean): void => {
     if (node instanceof BranchNode) {
-      const branch = conditionRecipe(node.condition);
+      const branch = node.kernelEntryActivation ?? conditionRecipe(node.condition);
       const supported = representable && branch !== undefined;
       scan(node.ifBlock, supported ? combine(activation, branch!) : undefined, supported);
       if (node.elseBlock) scan(node.elseBlock, supported ? combine(activation, {

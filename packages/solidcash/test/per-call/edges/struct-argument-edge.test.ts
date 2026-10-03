@@ -18,14 +18,14 @@ import {
  * outputs at their covenant. A struct the callee's own check rejects is refused with its reason, and nothing is
  * broadcast.
  *
- * Known walls, each pinned with the refusal the shipped path raises today:
- * - Two appends to one id in one transaction (the job-event edge's loop). The hop plans each reach of a node whose
- *   value chunks from the value the deployment holds, so the second reach cannot continue from the first's; it
- *   refuses by name. Owner: the SDK hop (`proxy/external-calls.ts`, `requireSettledNodeChains`).
+ * Former walls, each settled now:
+ * - Two appends to one id in one transaction (the job-event edge's loop). The second reach is planned from the value
+ *   the first left, and its declaration of the node continues from the first's view (`proxy/external-calls.ts`,
+ *   `rewrittenNodes`).
  * - The returned value written straight to a state field (`this.lastLength = IArchive(this.archive).append(id, n)`,
  *   the market's `job.escrowId = unicrow.pay(...)`). The write's own right-hand side makes the call, and the store
- *   is emitted after it returns, so the compiler publishes that write in the segment the call opened — the same
- *   segment the spelling through a local names — and the entry settles.
+ *   is emitted after it returns, so the compiler publishes that write in the segment the call opened (the same
+ *   segment the spelling through a local names), and the entry settles.
  */
 
 // `append` reads the length before its push: read after it in the same body, a per-call master answers the length
@@ -132,17 +132,21 @@ describe('a struct argument with two bytes members and a string', () => {
   });
 });
 
-describe('known walls on the struct edge', () => {
-  it('known wall: two appends to one id in one transaction are refused by the hop by name', async () => {
-    const run = await deployed();
-    await settleEdge(run, 'post', [LOG_ID, FIRST]);
-    // Owner: the SDK hop (`proxy/external-calls.ts`, `requireSettledNodeChains`).
-    await expectRefusedEdge(run, 'postTwice', [LOG_ID, SECOND, FIRST], new RegExp(
-      'the hop\'s reach "Archive\\.append\\(\\)" touches a node of collection "logs" that an earlier reach '
-      + '"Archive\\.append\\(\\)" writes, and its values chunk',
-    ));
-    expect(await readCallee(run, 'countOf', [LOG_ID])).toStrictEqual([1n]);
-  });
+describe('the struct edge\'s former walls', () => {
+  it('settles two appends to one id in one transaction, the second continuing from the value the first left',
+    async () => {
+      const run = await deployed();
+      await settleEdge(run, 'post', [LOG_ID, FIRST]);
+      // Each append reads the length before its push, so the first returns 2 and the second 3: the second reach is
+      // planned from the value the first left, which also sizes the run of chunk records its own version takes.
+      const twice = await settleEdge(run, 'postTwice', [LOG_ID, SECOND, FIRST]);
+      expect(await callerFields(run)).toMatchObject({ posted: 3n, lastLength: 3n });
+      expect(await readCallee(run, 'countOf', [LOG_ID])).toStrictEqual([3n]);
+      expect(await readCallee(run, 'noteAt', [LOG_ID, 1n])).toStrictEqual([SECOND]);
+      expect(await readCallee(run, 'noteAt', [LOG_ID, 2n])).toStrictEqual([FIRST]);
+      expect((await eventsOnChain(run, run.callee, run.calleeCategoryId, twice.txid)).map(({ args }) => args))
+        .toStrictEqual([{ id: LOG_ID, ...SECOND }, { id: LOG_ID, ...FIRST }]);
+    });
 
   it('settles the returned value written straight to a state field, as its own record write', async () => {
     const run = await deployed();

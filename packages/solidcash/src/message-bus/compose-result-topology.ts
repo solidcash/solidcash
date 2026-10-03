@@ -298,13 +298,21 @@ async function rebuildCallTopology(
             const selected = new Map<number, FunctionArgument>();
             for (const producer of sources) {
               if (producer.callsiteId === undefined) continue;
+              const producerDomain = producer.iterationDomain ?? producer.nestedIterationDomains?.[0];
+              const sharesOuterDomain = outerDomainKey !== undefined && producerDomain !== undefined
+                && semanticJson(producerDomain) === outerDomainKey;
               const reached = reachedProducerOccurrences.get(producer.callsiteId);
               const mapped = conditionalProducerOccurrences.get(producer.callsiteId)
                 ?? (reached !== undefined && reached.domainKey === outerDomainKey
                   ? reached.bySourceIteration : undefined);
-              const occurrenceIndex = mapped ? mapped.get(outerIndex) : outerIndex;
-              if (occurrenceIndex === undefined) continue;
-              const result = available instanceof AuthenticatedProducerResults
+              // An outer loop coordinate selects an occurrence only for a producer in that SAME source loop.
+              // A scalar result produced before the loop has one authenticated lane for every consumer iteration;
+              // looking up occurrence 1, 2, ... on that one-shot producer makes the later guards unresolved and
+              // discards even the already-reached first child from this all-or-nothing topology rebuild.
+              const occurrenceIndex = sharesOuterDomain
+                ? mapped ? mapped.get(outerIndex) : outerIndex : undefined;
+              if (sharesOuterDomain && occurrenceIndex === undefined) continue;
+              const result = sharesOuterDomain && available instanceof AuthenticatedProducerResults
                 ? available.getOccurrence({ callsiteId: producer.callsiteId, occurrenceIndex })
                 : available.get(producer.callsiteId);
               if (result !== undefined) selected.set(producer.callsiteId, result);

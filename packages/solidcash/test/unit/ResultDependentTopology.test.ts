@@ -129,6 +129,56 @@ describe('result-dependent topology propagation', () => {
     expect(hasTransientConvergenceResultSeed(discovered[1]!)).toBe(true);
   });
 
+  it('reuses a one-shot producer result across every guarded loop iteration', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0];
+    const source = ctx.descriptors[1];
+    const literal = (value: number): ExternalCallExpression => ({
+      kind: 'literal', type: 'bigint', value: String(value),
+    });
+    const index: ExternalCallExpression = {
+      kind: 'source', source: { kind: 'loopIndex', initialValue: '0', stepValue: '1' },
+    };
+    const result: ExternalCallExpression = {
+      kind: 'producerResult', callsiteId: 0, resultIndex: 0, type: 'uint256',
+    };
+    root.artifact.abi[0]!.externalCalls = [
+      { ...sources[0]!, hasReturnValues: true, returnTypes: ['uint256'], sourceEffectOrdinal: 0 },
+      { callsiteId: 1, interfaceName: 'ISink', functionName: 'run', requiredDataNftIndices: [],
+        sourceEffectOrdinal: 1, occurrence: 'loop', maximumOccurrences: 5, argSources: [],
+        condition: { kind: 'binary', operator: '>', left: result, right: index },
+        iterationDomain: {
+          counterName: 'i', initialValue: literal(0), stepValue: literal(1), maximumIterations: 5,
+          continueCondition: { kind: 'binary', operator: '<',
+            left: { kind: 'identifier', name: 'i' }, right: literal(5) },
+        } },
+    ];
+    root.artifact.abi[0]!.resultConsumers = [{
+      consumerCallsiteId: 1, producerCallsiteId: 0, resultIndex: 0, condition: true,
+    }];
+    (root.contract as unknown as { _externalRegistry: Map<string, StatefulContract> })
+      ._externalRegistry.set('ISink', ctx.descriptors[2].contract);
+    (root.contract as unknown as { _resolveExternalArgs: unknown })._resolveExternalArgs = (
+      argSources: readonly { kind: string; initialValue?: string; stepValue?: string }[],
+      _args: readonly unknown[], _artifact: Artifact, _state: unknown, _inputs: unknown,
+      _returns: unknown, occurrenceIndex = 0,
+    ) => argSources.map((argSource) => argSource.kind === 'loopIndex'
+      ? BigInt(argSource.initialValue!) + BigInt(argSource.stepValue!) * BigInt(occurrenceIndex)
+      : undefined);
+    source.contract.inner.artifact.abi[0]!.outputs = [{ type: 'uint256' }];
+    ctx.plan.invocations = ctx.plan.invocations.slice(0, 2);
+    ctx.plan.invocations[1]!.resultTypes = ['uint256'];
+    ctx.returning = [ctx.plan.invocations[1]];
+    ctx.descriptors = [root, source];
+    const encoded = encodeExternalReturnValue(3n, 'uint256', undefined, true);
+    const changed = await propagateResultDependentCallTopology(
+      ctx, [root, source], { 1: binToHex(encoded) },
+    );
+    expect(changed.propagated).toBe(true);
+    expect(changed.calls.filter((call) => call.callsiteId === 1).map((call) => call.occurrenceIndex))
+      .toEqual([0, 1, 2]);
+  });
+
   it('does not seed a view after an earlier write to its participant', async () => {
     const ctx = fixture();
     const root = ctx.descriptors[0];

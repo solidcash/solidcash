@@ -209,5 +209,10 @@ describe('kernel nested dynamic return preimages', () => {
     expect(vm.stateSuccess(forgedState)).not.toBe(true);
     unlocker.params[emissionsIndex] = emissions;
     unlocker.syncEncodedArgsFromParams?.([emissionsIndex]);
+
+    // The same runtime target must also work through the ordinary SDK send path; explicit composition above
+    // proves the VM route independently of discovery and promotion.
+    await consumer.connect(signer).call.verify(producer.proxy.inner.lockingBytecode).send();
+    expect((await consumer.getState()).observed).toBe(7n);
   }, 180_000);
 });

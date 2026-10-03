@@ -35,7 +35,7 @@ export interface SendWithoutLogicalNonceHost {
   retireSignerUtxos(signer: Signer, utxos: readonly Utxo[]): void;
 }
 
-/** Close compiler-described typed edges before the legacy builder duplicates a callback owner's master. */
+/** Close compiler-described typed edges before the legacy builder duplicates an owner or meets a proxy route. */
 async function prepareTypedCallbackGraph(
   host: SendWithoutLogicalNonceHost,
 ): Promise<PreparedAtomicMessageBusCall[] | undefined> {
@@ -95,9 +95,19 @@ async function prepareTypedCallbackGraph(
     registeredOwners.add(key);
     return false;
   });
+  // The legacy direct-callee builder requires a concrete StatefulContract. A proxy registration is a wrapper:
+  // its physical state owner and implementation executor are distinct, so this edge must use the atomic graph
+  // route even when it is a single leaf call. Discovery still resolves the source-evaluated address at runtime;
+  // the registered wrapper is only an admission signal, not a bytecode pin.
+  const requiresProxyRoute = entry.externalCalls.some((edge) => {
+    const registered = registry.get(edge.interfaceName) as {
+      proxy?: { inner?: unknown }; implementation?: { inner?: unknown };
+    } | undefined;
+    return registered?.proxy?.inner !== undefined && registered.implementation?.inner !== undefined;
+  });
   const requiresAtomicLoop = entry.externalCalls.some((edge) => edge.occurrence === 'loop'
     && (edge.maximumOccurrences === undefined || edge.maximumOccurrences > 1));
-  if (!mayReachCallback && !mayRepeatOwner) return undefined;
+  if (!mayReachCallback && !mayRepeatOwner && !requiresProxyRoute) return undefined;
   const rootOwner = `${contract.categoryId.toLowerCase()}:${contract.inner.lockingBytecode.toLowerCase()}`;
   const registeredPathReturnsToRoot = (
     participant: StatefulContract,
@@ -149,7 +159,7 @@ async function prepareTypedCallbackGraph(
     // If a registered callback or repeated owner cannot be fully discovered, the legacy builder can
     // broadcast a prefix of its state effects. Keep these compiler-described shapes fail-closed; only
     // ordinary speculative graph discovery may fall back to the legacy planner.
-    if (registeredCallback || mayRepeatOwner) throw error;
+    if (registeredCallback || mayRepeatOwner || requiresProxyRoute) throw error;
     return undefined;
   }
   const ownerCounts = new Map<string, number>();
@@ -170,7 +180,8 @@ async function prepareTypedCallbackGraph(
   // A typed address can select a different deployed owner than the interface registry suggests. If the
   // registered path is a callback, compose the runtime-resolved finite graph even when that choice removes
   // the repeated owner; falling back to the legacy registry-only guard would pin the callee incorrectly.
-  return registeredCallback || deferredResultDomain || requiresAtomicLoop
+  return registeredCallback || deferredResultDomain || requiresAtomicLoop || requiresProxyRoute
+    || calls.some((call) => call.executor !== undefined)
     || [...ownerCounts.values()].some((count) => count > 1)
     ? calls : undefined;
 }

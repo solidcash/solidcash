@@ -3392,6 +3392,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // walks. It is the largest any entry makes on every path, which is the number a body pins its own to.
     const calls = [...this.perCallEntryCallSites.values()].flat();
     const callCount = this.perCallCallCount;
+    // Only a body whose every path makes a call on its context contract's records leaves its own records to the
+    // validator on every frame. The one such site the convention admits is a forwarding fallback's delegatecall, which
+    // its admission refuses unless every path makes it, so the head skips its walk only for a master whose bodies are
+    // all such fallbacks; any other master with such a site asks each frame's block which calls it made.
+    const contextCallsOnEveryPath = node.constructorDef === undefined && served.length > 0
+      && served.every((body) => (this.perCallEntryCallSites.get(body.name) ?? []).some((site) => site.forwarded));
     const reservesValidatorHashSlot = this.perCallReservesValidatorHash;
     // A master is entered by a user or by another master as a callee; the three frame kinds are what the head
     // branches on. A message callee and a read-only callee are both entered by another master; a user's frame is
@@ -3456,6 +3462,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(returnsValue ? { returnsValue: true } : {}),
       ...(acceptsValue ? { acceptsValue: true } : {}),
       ...(calls.length > 0 ? { calls } : {}),
+      ...(contextCallsOnEveryPath ? { contextCallsOnEveryPath: true } : {}),
       ...(reservesValidatorHashSlot ? { reservesValidatorHashSlot: true } : {}),
       ...(callDataSelectorUnconsumed ? { callDataSelectorUnconsumed: true } : {}),
       ...(soleEntrySelector === undefined ? {} : { soleEntrySelector }),
@@ -40548,17 +40555,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * True when a census settles the records of every frame this per-call master runs, so C3's count adds nothing.
    *
-   * A frame that is its category's only master runs the head's own walk, which admits an own-category mutable token
-   * only at a record its segments declare (S2, S3). Beside another master of the contract, or as a delegate frame of a
-   * caller that runs on its own records, the validator's census settles them (V7, V8). Below a delegate frame the
-   * count is that frame's category, whose forwarding master took this frame's code from records its own caller
-   * supplies, so the count binds nothing that caller cannot route around. A head that can forward a delegate call
-   * skips the walk for every frame, and the validator settles its contract only when the call is made, so a frame of
-   * it that runs alone under a validator is settled by neither and keeps the count.
+   * A frame that is its category's only master and made no delegate call runs the head's own walk, which admits an
+   * own-category mutable token only at a record its segments declare (S2, S3). Beside another master of the contract,
+   * or when the frame made a delegate call whose callee runs on its records, the validator's census settles them (V7,
+   * V8). Below a delegate frame the count is that frame's category, whose forwarding master took this frame's code
+   * from records its own caller supplies, so the count binds nothing that caller cannot route around. A head that can
+   * forward a delegate call asks the frame's block whether it made one, so every frame is settled by one of them.
    */
   private perCallCensusSettlesOwnRecords(): boolean {
-    return this.perCallMaster && [...this.perCallEntryCallSites.values()].flat()
-      .every((site) => site.kind === FrameKind.CALL || site.kind === FrameKind.STATIC);
+    return this.perCallMaster;
   }
 
   // C3: conserve the count of co-spent own-category MUTABLE (0x01) NFTs (data + entry NFTs) input->output. In

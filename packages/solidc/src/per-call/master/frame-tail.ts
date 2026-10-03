@@ -7,9 +7,9 @@
  * `witness-reader.ts` takes fields off the front of the tail; these builders walk it.
  *
  * A master with call sites walks past each call record without reading it: the record is bound to its site where
- * the call is made, in the caller's own body (`call-site.ts`). The head keeps the count check and the sections
- * after the calls, so the call section is still consumed and its length still fixed; only the per-record checks
- * move to the site, where a repeated or conditional call would verify per execution.
+ * the call is made, in the caller's own body (`call-site.ts`). The records are the calls the execution made, in the
+ * order it made them: a site the execution skips binds none, and the body pins how many the block declares to how
+ * many it made. The head parks the declared count for that and checks the sections after the calls.
  *
  * The arguments of a call are the pushes between its selector push and the redeem-script push that closes the
  * callee's unlocking bytecode. Both pushes are stripped, so the arguments are however many pushes the callee
@@ -195,11 +195,11 @@ export function assertP2pkhShapeScript(): Uint8Array {
  *
  * Entry `[..., tail]`, exit `[...]`. `retval` must be empty unless `returnsValue` says the entry returns one
  * value, in which case the recorded value is parked on the alt stack for the body to compare against what its
- * own code computed. The call count must equal `callCount` (a loop that varies it is not emitted), and each
- * record is walked past — the site that made the call binds it in the caller's own body. The segment count
- * must be the call count plus one, and every segment's records are walked. The block's declared event count must
- * be at most `maxEventCount`, that many listed outputs are checked and the region is padded with the no-index
- * sentinel to `maxEventCount` slots, and the send count must be at most the shape's, each listed output index
+ * own code computed. Each call record is walked past: the site that made the call binds it in the caller's own
+ * body, and the body pins the count. The segment count must be the call count plus one, and every segment's
+ * records are walked. The block's declared event count must be at most `maxEventCount`, that many listed outputs
+ * are checked and the region is padded with the no-index sentinel to `maxEventCount` slots, and the send count
+ * must be at most the shape's, each listed output index
  * parked with the sentinel past the declared count. The value list may hold at most
  * `valueWitnessCount` values, parked last, one slot each. The remaining tail must be empty, so nothing follows the
  * last field.
@@ -660,6 +660,44 @@ export function countMastersScript(): Uint8Array {
     Opcodes.OP_SWAP,
     Opcodes.OP_DROP, // pinned
   ]);
+}
+
+/** The frame kinds of the calls that run on the caller's records, `DELEGATE` and `INTERNAL`, as `[low, high)`. */
+const CONTEXT_CALL_KINDS = [3, 5] as const;
+
+/**
+ * Leaves whether the frame's own block records no `DELEGATE` or `INTERNAL` call.
+ *
+ * Entry `[...]`, exit `[..., flag]`. Such a call runs on the records of the caller's context contract, which the
+ * validator then settles (V8), so a master that made one does not settle its own. Each site binds the record of the
+ * call it made and the body pins how many the block declares, so the kinds the block records are the calls the
+ * execution made: a frame whose body skipped such a call records none. The block is read again rather than taken
+ * from the tail walk, which drops each record unread.
+ */
+export function blockRecordsNoContextCallScript(): Uint8Array {
+  const bytes: number[] = [];
+  const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
+  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
+  emit(...readOwnWitnessBlockScript(), ...dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
+  // `sender`, `self`, `value` and `retval`.
+  emit(...takeLengthPrefixedField(), Opcodes.OP_NIP, ...takeLengthPrefixedField(), Opcodes.OP_NIP);
+  emit(...dropPrefix(8), ...takeLengthPrefixedField32(), Opcodes.OP_NIP);
+  // `[count, flag, rest]`, the flag starting true.
+  emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_1, Opcodes.OP_ROT);
+  emit(num(2), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_GREATERTHAN, Opcodes.OP_IF, Opcodes.OP_BEGIN);
+  {
+    // The record's kind clears the flag when it is a context call.
+    emit(...takeFixedWidthField(1), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM);
+    emit(num(CONTEXT_CALL_KINDS[0]), num(CONTEXT_CALL_KINDS[1]), Opcodes.OP_WITHIN, Opcodes.OP_NOT);
+    emit(Opcodes.OP_ROT, Opcodes.OP_BOOLAND, Opcodes.OP_SWAP);
+    // `target`, then `value`, `calleeRef` and `argsHash`, then `result`.
+    emit(...takeLengthPrefixedField(), Opcodes.OP_NIP, ...dropPrefix(8 + 2 + 32));
+    emit(...takeLengthPrefixedField32(), Opcodes.OP_NIP);
+    emit(Opcodes.OP_ROT, Opcodes.OP_1SUB, Opcodes.OP_ROT, Opcodes.OP_ROT);
+    emit(num(2), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_LESSTHANOREQUAL);
+  }
+  emit(Opcodes.OP_UNTIL, Opcodes.OP_ENDIF, Opcodes.OP_DROP, Opcodes.OP_NIP);
+  return new Uint8Array(bytes);
 }
 
 /**

@@ -32,8 +32,8 @@ import {
  * then refuses it. A per-call master's records are settled by a census instead: its own walk when it is its
  * category's only master (S2, S3), the validator's when another master or a delegate frame shares them (V7, V8). Both
  * admit an own-category mutable token only where a frame declares it, so the count is dropped for every master whose
- * head runs that walk whenever it stands alone. A head that forwards a delegate call never runs it, and the
- * validator settles its contract only when the call is made, so such a master keeps the count.
+ * head runs that walk whenever it stands alone. A head that can forward a delegate call runs it for a frame whose
+ * block records no such call, and the validator settles its contract when the call is made, so it drops the count too.
  *
  * Every case drives the shipped compile and deployment and asks the BCH-2026 machine for the verdict of each
  * contract input of one hand-built transaction. A refusal is a minimal variation of an accepted composition, and it
@@ -385,31 +385,17 @@ function walkRanges(contract: Deployed): readonly (readonly [number, number])[] 
 /**
  * The refusal is the walk's census (S2, S3): the failing instruction is the `OP_BOOLOR OP_VERIFY` that weighs an
  * index's token against what the walk saw there, inside the walk, in the master's own program. The program carries
- * the walk twice, in the standalone arm and in the arm that settles alone under a validator, so `copy` names which.
+ * the walk twice, in the standalone arm and in the arm that settles alone under a validator, so `copy` names which;
+ * a master that can make a call has no standalone arm to settle in, so its one walk is the one under a validator.
  */
 function isWalkCensus(contract: Deployed, verdict: true | Site, copy: 'standalone' | 'under a validator'): boolean {
   if (verdict === true) return false;
-  const [range] = walkRanges(contract).slice(copy === 'standalone' ? 0 : 1);
+  const ranges = walkRanges(contract);
+  const range = copy === 'standalone' ? ranges[0] : ranges[ranges.length - 1];
   return range !== undefined
     && binToHex(verdict.code) === binToHex(contract.program)
     && verdict.opcodes[verdict.at] === Opcodes.OP_VERIFY && verdict.opcodes[verdict.at - 1] === Opcodes.OP_BOOLOR
     && verdict.offset > range[0] && verdict.offset < range[1];
-}
-
-/**
- * The refusal is C3's count: the loop that lowers a balance for each output carrying the owner's category with the
- * mutable capability, then `OP_0 OP_NUMEQUALVERIFY` on that balance, in whatever code the count was emitted into.
- */
-function isCount(verdict: true | Site): boolean {
-  if (verdict === true) return false;
-  const loop = [
-    Opcodes.OP_OUTPUTTOKENCATEGORY, Opcodes.OP_3, Opcodes.OP_PICK, Opcodes.OP_EQUAL, Opcodes.OP_IF,
-    Opcodes.OP_SWAP, Opcodes.OP_1SUB, Opcodes.OP_SWAP, Opcodes.OP_ENDIF,
-  ];
-  const before = verdict.opcodes.slice(0, verdict.at);
-  return verdict.opcodes[verdict.at] === Opcodes.OP_NUMEQUALVERIFY
-    && verdict.opcodes[verdict.at - 1] === Opcodes.OP_0 && verdict.opcodes[verdict.at - 2] === Opcodes.OP_UNTIL
-    && before.some((_, start) => loop.every((opcode, offset) => before[start + offset] === opcode));
 }
 
 const release: Frame = { entry: 'release', args: [new Uint8Array([7])], records: [] };
@@ -527,11 +513,13 @@ describe('a record destroyed or minted outside any declared write, under a maste
   });
 });
 
-describe('a master whose head forwards a delegate call keeps the count', () => {
+describe('a master whose head can forward a delegate call drops the count', () => {
   const STRAY_NODE: Token = { lock: FORWARDER.nodeLock, commitment: node(K2, 5) };
 
-  it('carries no walk, so alone under a validator only the count refuses a node spent and written nowhere', () => {
-    expect(walkRanges(FORWARDER)).toStrictEqual([]);
+  it('settles alone under a validator a frame that makes no delegate call, so its walk refuses a stray node', () => {
+    // The head asks the frame's block which calls it made: a frame that made no delegate call is its category's
+    // only master, which the validator leaves to its own walk (V8).
+    expect(walkRanges(FORWARDER)).toHaveLength(1);
     expect(verdicts({ contract: FORWARDER, frames: () => [release], validator: 'settles nothing' }))
       .toStrictEqual({ frames: [true], settlement: true });
     const refused = verdicts({
@@ -539,13 +527,12 @@ describe('a master whose head forwards a delegate call keeps the count', () => {
     });
     expect(refused.settlement).toBe(true);
     expect(refused.destroyed).toBe(true);
-    expect(isCount(refused.frames[0]!)).toBe(true);
+    expect(isWalkCensus(FORWARDER, refused.frames[0]!, 'under a validator')).toBe(true);
   });
 
-  it('known wall: refuses an entry with no mapping access beside a sibling insert, at the count', () => {
-    // Owner: the master head, which skips its walk for every frame of a master that can forward a delegate call.
-    // The count stays until a frame that makes no delegate call settles alone; the marking frame and the validator
-    // accept.
+  it('settles an entry with no mapping access beside a sibling insert: both frames and the validator accept', () => {
+    // The count refused this until the head ran its walk for a frame that makes no delegate call; with two masters
+    // the validator settles the contract, as it does for the ledger beside the same insert.
     const record = hexToBin(buildPushdataCommitment(
       FORWARDER.artifact.stateLayout!, { implementation: LEDGER.address }, 0,
     ));
@@ -559,9 +546,6 @@ describe('a master whose head forwards a delegate call keeps the count', () => {
       ],
       created: [{ lock: FORWARDER.nodeLock, commitment: node(K1, 11) }],
     };
-    const refused = verdicts(composition);
-    expect(refused.frames[0]).toBe(true);
-    expect(refused.settlement).toBe(true);
-    expect(isCount(refused.frames[1]!)).toBe(true);
+    expect(verdicts(composition)).toStrictEqual({ frames: [true, true], settlement: true });
   });
 });

@@ -6,9 +6,10 @@
  * emits that proof into the body: the code reads its block back from the transaction, walks to the record its
  * site names, and binds the record to what the source says.
  *
- * The record is addressed by the site's position `k`, so the walk is exact: the frame fields come first, then
- * `retval`, then the records before this one are stepped over by their own widths, and only the `k`-th is read.
- * The checks are:
+ * The record is the `k`-th the execution made, so the walk is exact: the frame fields come first, then `retval`, then
+ * the records before this one are stepped over by their own widths, and only the `k`-th is read. `k` is a constant
+ * where every path makes the same calls, and otherwise the number of calls the running body has made, so a site the
+ * execution skips takes no record. The checks are:
  *
  *   - the record's `kind` is the site's frame kind, and its `target` is the address the site calls — a
  *     compile-time address, or a value the caller's own code computed and left for the check;
@@ -118,7 +119,7 @@ export function callSiteCheckScript(
   emit(...takeFixedWidthField(8), Opcodes.OP_NIP);
   // `retval`.
   emit(...takeLengthPrefixedField32(), Opcodes.OP_NIP);
-  // `callCount`: the head fixes how many records the tail holds, so the site only walks them.
+  // `callCount`: the body pins how many records the tail holds, so the site only walks past it.
   emit(...takeFixedWidthField(2), Opcodes.OP_NIP);
   // The records before this site's, stepped over by their own widths: a fixed number when the source fixes the
   // position, and the number the execution has reached when it does not.

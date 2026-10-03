@@ -15,7 +15,8 @@
  *
  * The reader leaves `[kind, callerRef, originRef, validatorRef, sender, self, value, rest]`. The tail `rest` is
  * walked rather than dropped: a standalone master has to know it made no call and is its category's only master,
- * and a composed one walks past the call records, whose own checks the sites that made them emit into the body.
+ * and a composed one walks past the call records, which are the calls the execution made in the order it made
+ * them: each site that runs binds the next one in the body, and the body pins how many the block declares.
  * The walk consumes everything but
  * `[origin, sender, value, self]`, which the caller registers as tracked slots. `origin` is the locking bytecode
  * of `originRef`, i.e. `tx.origin`. Above those frame values the walk leaves the fixed-size event region: the
@@ -25,7 +26,7 @@
  *
  * A master admits the standalone shape by default. A master that reserves the validator hash slot admits the
  * composed shape: it recognises the validator its `validatorRef` names, admits the frame kinds a callee runs, and
- * fixes how many call records its tail holds.
+ * settles its own records when the transaction and the calls its block records leave them to it.
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
@@ -43,6 +44,7 @@ import {
 } from './witness-reader.js';
 import {
   assertP2pkhShapeScript,
+  blockRecordsNoContextCallScript,
   countMastersScript,
   recogniseValidatorScriptAgainstReservedHash,
   requireSingleMasterScript,
@@ -225,19 +227,26 @@ export interface MasterHeadOptions {
    */
   readonly callDataBandAsSingleItem?: boolean;
   /**
-   * The external calls the master's entries make, in execution order. The head fixes how many records the tail
-   * holds and walks past each of them; the site that made the call binds its record in the caller's own body, and
-   * the head keeps the checks on the sections after the calls. Only each site's kind is read here; the records
-   * themselves are bound at the sites, so two entries may name different calls.
+   * The external calls the master's entries can make. The head walks past however many records the block declares;
+   * each site that runs binds the next one in the caller's own body, checking its kind there, and a site the
+   * execution skips binds none. Only whether some site is a `DELEGATE` or `INTERNAL` call is read here, to decide
+   * whether the head has to ask the block which calls the execution made.
    */
   readonly calls?: readonly MasterCallSite[];
   /**
-   * How many call records the tail holds, when it is not one per element of `calls`.
+   * The most calls one execution of an entry makes on every path, when it is not one per element of `calls`.
    *
-   * With several entries the head admits, each entry makes its own calls, so `calls` may hold every entry's sites
-   * while the shared count is what one execution declares. When absent the count is `calls.length`.
+   * It says whether the master can make a call at all, which decides its shape; the number of records a block holds
+   * is what the block declares and the body pins. When absent it is `calls.length`.
    */
   readonly callCount?: number;
+  /**
+   * True when every body the master serves makes a `DELEGATE` or `INTERNAL` call on every path, as a proxy's sole
+   * forwarding fallback does. No frame of it then settles its own records, so the head carries no walk for them.
+   * Otherwise a master with such a site reads the calls the frame's block records, and settles alone when they
+   * hold none.
+   */
+  readonly contextCallsOnEveryPath?: boolean;
   /**
    * The event and send counts, and any per-segment record counts, the entry fixes. Without one the walk requires
    * no event, no send and no record in any segment.
@@ -318,6 +327,7 @@ class HeadEmitter {
   private validatorHashSlot = -1;
   private readonly callSites: readonly MasterCallSite[];
   private readonly callCount: number;
+  private readonly contextCallsOnEveryPath: boolean;
   private readonly tailShape: MasterTailShape;
   private readonly reservesValidatorHashSlot: boolean;
   private readonly admittedKinds: readonly number[];
@@ -334,6 +344,7 @@ class HeadEmitter {
   constructor(options: MasterHeadOptions) {
     this.callSites = options.calls ?? [];
     this.callCount = options.callCount ?? this.callSites.length;
+    this.contextCallsOnEveryPath = options.contextCallsOnEveryPath === true;
     this.tailShape = options.tail ?? zeroTailShape(this.callCount);
     this.reservesValidatorHashSlot = options.reservesValidatorHashSlot === true;
     this.admittedKinds = options.frameKinds ?? [FRAME_KIND_ROOT];
@@ -624,7 +635,7 @@ class HeadEmitter {
    *
    * A root frame's `msg.sender`, `tx.origin` and `msg.value` are the master's to check. In any other admitted
    * frame the validator binds them (V5), so the master only checks what its own code fixes: `address(this)` is its
-   * constant, and its tail holds as many call records as its sites number.
+   * constant, and its body binds one call record per call it makes.
    */
   private composedFrameChecks(): void {
     this.emitBytes(verifyTailScript(this.tailShape, {
@@ -861,14 +872,20 @@ class HeadEmitter {
    * is a fact about the transaction rather than about the contract, so the walk runs behind it: with more than one
    * master the validator settles the records instead.
    *
-   * A `DELEGATE` or `INTERNAL` call runs on the records of the caller's context contract, which is another
-   * contract's settlement, so a master that made one never settles its own. A message or read-only call runs on
-   * the callee's own records, which its own master or validator settles, so such a caller still settles its own.
+   * A `DELEGATE` or `INTERNAL` call runs on the records of the caller's context contract, which the validator then
+   * settles (V8), so a master that made one never settles its own. Whether it made one is a fact of the execution:
+   * a body may skip such a site, and another body of the same master may have none. So the frame's own block is
+   * asked, whose records are exactly the calls the execution made. Only a master all of whose bodies make one on
+   * every path skips the walk outright. A message or read-only call runs on the callee's own records, which its own
+   * master or validator settles, so such a caller still settles its own.
    *
    * A master that handles value leaves whether the frame settles alone, which its value checks read.
    */
   private assertSelfSettlementWhenAlone(): void {
-    if (this.callSites.some((site) => site.kind !== FRAME_KIND_CALL && site.kind !== FRAME_KIND_STATIC)) {
+    const contextCalls = this.callSites.some(
+      (site) => site.kind !== FRAME_KIND_CALL && site.kind !== FRAME_KIND_STATIC,
+    );
+    if (contextCalls && this.contextCallsOnEveryPath) {
       if (this.handlesValue) this.pushAlone(false);
       return;
     }
@@ -891,6 +908,14 @@ class HeadEmitter {
         this.emitOp(Opcodes.OP_BOOLAND);
         this.pop(2);
         this.push('bool');
+        if (contextCalls) {
+          // The frame settles alone only when it made no call that runs on its context contract's records.
+          this.emitBytes(blockRecordsNoContextCallScript());
+          this.push('bool');
+          this.emitOp(Opcodes.OP_BOOLAND);
+          this.pop(2);
+          this.push('bool');
+        }
         if (this.handlesValue) {
           this.replaceTop('alone');
           this.dup();

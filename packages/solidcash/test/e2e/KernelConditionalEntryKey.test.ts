@@ -130,4 +130,28 @@ describe('kernel conditional state-derived entry keys', () => {
     await expect(probe.call.readThenSet(7n, 11n, 13n).send()).resolves.toBeDefined();
     expect((await probe.getEntries('data')).map((entry) => entry.value)).toEqual([13n]);
   }, 180_000);
+
+  it('preserves a mapping-backed key across an intervening pure local statement', async () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Probe() {
+        mapping(uint256 => bool) flags;
+        mapping(uint256 => uint256) data;
+        function setThenStore(uint256 flagKey, uint256 dataKey, uint256 value) public {
+          flags[flagKey] = true;
+          uint256 intermediate = value + 1;
+          data[flags[flagKey] ? dataKey : 0] = value;
+          require(intermediate > value);
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x67), provider);
+    for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const probe = await getContractFactory(artifact, signer).deploy();
+    await expect(probe.call.setThenStore(7n, 11n, 13n).send()).resolves.toBeDefined();
+    expect((await probe.getEntries('data')).map((entry) => entry.value)).toEqual([13n]);
+  }, 180_000);
 });

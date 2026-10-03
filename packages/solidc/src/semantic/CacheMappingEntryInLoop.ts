@@ -354,7 +354,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   }
 
   private transformFunction(fn: FunctionDefinitionNode): void {
-    this.publishAdjacentMappingKeyValues(fn);
+    this.publishStraightLineMappingKeyValues(fn);
     const selected = this.collectCacheableEntries(fn.body).filter((e) => !(this.routeSnapshotKeysOnly
       && e.keys.length === 1
       && !e.keys.some((key) => key.kind === 'expression'
@@ -438,45 +438,61 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     }
   }
 
-  /** Preserve an exact source-order key recipe before the cache pass moves the writer to an epilogue flush. */
-  private publishAdjacentMappingKeyValues(fn: FunctionDefinitionNode): void {
+  /** Preserve source-order key recipes before the cache pass moves writers to epilogue flushes. */
+  private publishStraightLineMappingKeyValues(fn: FunctionDefinitionNode): void {
     const statements = fn.body.statements ?? [];
     const parameters = new Set(fn.parameters.map((parameter) => parameter.name));
-    const first = statements[0];
-    const second = statements[1];
-    const laterWrite = second instanceof ArrayAssignNode && this.scalarMappings.has(second.name)
-      ? second.name : second instanceof MappingAssignNode && this.scalarMappings.has(second.name)
-        ? second.name : undefined;
-    const firstKey = first instanceof ArrayAssignNode && this.scalarMappings.has(first.name)
-      ? first.index : first instanceof MappingAssignNode && this.scalarMappings.has(first.name)
-        && first.keys.length === 1 ? first.keys[0] : undefined;
-    if (laterWrite && firstKey && expressionCanon(firstKey) !== undefined) {
-      const finder = new SourceMappingReadFinder(laterWrite);
-      finder.visit(firstKey);
-      if (finder.found && (first instanceof ArrayAssignNode || first instanceof MappingAssignNode)) {
-        first.preWriteMappingCollections = [laterWrite];
-      }
+    const transparent = (statement: StatementNode): boolean => statement instanceof VariableDefinitionNode
+      && (!statement.expression || argumentOnlyMappingValue(statement.expression, parameters));
+    const transparentStatements = statements.map(transparent);
+    const previousEffectful: number[] = [];
+    let previous = -1;
+    for (let index = 0; index < statements.length; index += 1) {
+      previousEffectful[index] = previous;
+      if (!transparentStatements[index]) previous = index;
     }
-    for (let index = 1; index < statements.length; index += 1) {
-      const writer = statements[index - 1];
+    const nextEffectful: number[] = [];
+    let next = statements.length;
+    for (let index = statements.length - 1; index >= 0; index -= 1) {
+      nextEffectful[index] = next;
+      if (!transparentStatements[index]) next = index;
+    }
+    const scalarWrite = (statement: StatementNode): {
+      name: string; key: ExpressionNode; value: ExpressionNode;
+    } | undefined => statement instanceof ArrayAssignNode && this.scalarMappings.has(statement.name)
+      ? { name: statement.name, key: statement.index, value: statement.value }
+      : statement instanceof MappingAssignNode && statement.keys.length === 1
+        && this.scalarMappings.has(statement.name)
+        && !statement.arrayIndex && !statement.arrayPush && !statement.arrayPop
+        ? { name: statement.name, key: statement.keys[0], value: statement.expression } : undefined;
+    for (let index = 0; index < statements.length; index += 1) {
       const reader = statements[index];
-      const write = writer instanceof ArrayAssignNode && this.scalarMappings.has(writer.name)
-        ? { name: writer.name, key: writer.index, value: writer.value }
-        : writer instanceof MappingAssignNode && writer.keys.length === 1
-          && this.scalarMappings.has(writer.name) && !writer.arrayIndex && !writer.arrayPush && !writer.arrayPop
-          ? { name: writer.name, key: writer.keys[0], value: writer.expression } : undefined;
-      if (!write || !argumentOnlyMappingValue(write.value, parameters)) continue;
-      const keyLabel = expressionCanon(write.key);
-      if (!keyLabel) continue;
+      if (!(reader instanceof ArrayAssignNode || reader instanceof MappingAssignNode)) continue;
       const readerKeys = reader instanceof ArrayAssignNode && this.scalarMappings.has(reader.name)
         ? [reader.index]
         : reader instanceof MappingAssignNode && this.scalarMappings.has(reader.name)
           ? reader.keys : undefined;
       if (!readerKeys || readerKeys.length !== 1) continue;
-      const projector = new ProjectWrittenMappingRead(write.name, keyLabel, write.value);
-      const projected = projector.visit(cloneNode(readerKeys[0])) as ExpressionNode;
-      if (projector.replaced && (reader instanceof ArrayAssignNode || reader instanceof MappingAssignNode)) {
-        reader.postWriteKeyExpressions = [projected];
+      const writerIndex = previousEffectful[index];
+      const write = writerIndex >= 0 ? scalarWrite(statements[writerIndex]) : undefined;
+      if (write && argumentOnlyMappingValue(write.value, parameters)) {
+        const keyLabel = expressionCanon(write.key);
+        if (keyLabel) {
+          const projector = new ProjectWrittenMappingRead(write.name, keyLabel, write.value);
+          const projected = projector.visit(cloneNode(readerKeys[0])) as ExpressionNode;
+          if (projector.replaced) reader.postWriteKeyExpressions = [projected];
+        }
+      }
+      // Before the first effectful statement, a pure key read still sees the authenticated input state.
+      // A later mapping write may appear after argument-only local declarations, but cannot retroactively
+      // change that read. Stop at any other statement so calls/branches never claim snapshot authority.
+      if (writerIndex >= 0 || expressionCanon(readerKeys[0]) === undefined) continue;
+      const laterIndex = nextEffectful[index];
+      const laterWrite = laterIndex < statements.length ? scalarWrite(statements[laterIndex]) : undefined;
+      if (laterWrite) {
+        const finder = new SourceMappingReadFinder(laterWrite.name);
+        finder.visit(readerKeys[0]);
+        if (finder.found) reader.preWriteMappingCollections = [laterWrite.name];
       }
     }
   }

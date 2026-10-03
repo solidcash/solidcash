@@ -302,7 +302,7 @@ describe('vmap fixed-write batch metadata', () => {
     expect(accesses?.[0]?.slotIndex).not.toBe(accesses?.[1]?.slotIndex);
   });
 
-  it('publishes a post-write key only for an adjacent source-ordered mapping write', () => {
+  it('publishes source-ordered mapping keys across pure local statements', () => {
     const compile = (body: string): ReturnType<typeof compileString> => compileString(`pragma solidity ^0.8.0;
       contract Probe() {
         mapping(uint256 => bool) flags;
@@ -317,15 +317,23 @@ describe('vmap fixed-write batch metadata', () => {
       optimizeForCompilationSpeed: true,
     });
     const early = compile('flags[flagKey] = true; data[flags[flagKey] ? dataKey : 0] = value;');
+    const earlyWithLocal = compile('flags[flagKey] = true; uint256 tmp = value + 1; data[flags[flagKey] ? dataKey : 0] = value; require(tmp > value);');
     const late = compile('data[flags[flagKey] ? dataKey : 0] = value; flags[flagKey] = true;');
+    const lateWithLocal = compile('data[flags[flagKey] ? dataKey : 0] = value; uint256 tmp = value + 1; flags[flagKey] = true; require(tmp > value);');
+    const blocked = compile('flags[flagKey] = true; require(true); data[flags[flagKey] ? dataKey : 0] = value;');
     const key = (artifact: ReturnType<typeof compile>): KeySourceAbi | undefined => artifact.abi
       .find((fn) => fn.name === 'store')
       ?.entryAccesses?.find((access) => access.collection === 'data')?.keySources?.[0];
     expect(key(early)?.expressionLabel).toBe('ternary(map:flags(id:flagKey),id:dataKey,lit:0)');
     expect(key(early)?.postWriteExpressionLabel).toBe('ternary(lit:true,id:dataKey,lit:0)');
     expect(key(early)?.preWriteMappingCollections).toBeUndefined();
+    expect(key(earlyWithLocal)?.postWriteExpressionLabel).toBe('ternary(lit:true,id:dataKey,lit:0)');
+    expect(key(earlyWithLocal)?.preWriteMappingCollections).toBeUndefined();
     expect(key(late)?.postWriteExpressionLabel).toBeUndefined();
     expect(key(late)?.preWriteMappingCollections).toEqual(['flags']);
+    expect(key(lateWithLocal)?.postWriteExpressionLabel).toBeUndefined();
+    expect(key(lateWithLocal)?.preWriteMappingCollections).toEqual(['flags']);
+    expect(key(blocked)?.postWriteExpressionLabel).toBeUndefined();
   });
 
   it('records a mapping rmw of a parameter delta as valueSource', () => {

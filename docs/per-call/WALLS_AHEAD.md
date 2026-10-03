@@ -44,8 +44,9 @@ lock it names).
   one is big-endian as the body declares it, so the left-aligned words in the payload are the fixed-width layout, not
   a byte-order error. No SDK element-encoder item is owed. It is no settlement wall: the stated data equals the
   stored event byte for byte, so plan and body agree. The arbitrate titles and the integration test do decode that
-  payload (`decodeJobArbitratedEvent`, test lines 2883, 2961, 3040 and 3341); whether the harness decoder reads the
-  fixed-width layout as the test expects is being checked from the code.
+  payload (`decodeJobArbitratedEvent`, test lines 2883, 2961, 3040 and 3341), and the harness copy reads it at the
+  body's offsets (`uint16` at 0 and 34, `uint256` at 2, 36 and 120, the reason at 68, the worker's 20 bytes at 100):
+  the shares, amounts, reason and worker decode as the test expects, zero shares included. Not a wall.
 - `ahead/fan-in.test.ts`: the second append to one job's chunked notes chains, so its `take` case asserts the
   settlement instead of the refusal.
 - The whole directory is green again: 16 files / 143 cases. The `ahead/` files run only under `PER_CALL_AHEAD=1`, so a

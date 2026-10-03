@@ -5,6 +5,7 @@
 import { binToHex, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
 import { Op, parseChunkCommitment, type StateLayout } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import { addressToLockScript } from '../utils.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
 import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
@@ -67,11 +68,14 @@ export function deriveFullPhase2ApplyLoopEntries(
       if (existing.length > 0 && segmentedOutputIndices === undefined) {
         const loopBytecode = binToHex(lv.lockingBytecode);
         const matches = probeBuilder2.outputs.map((output, index) => ({ output, index }))
-          .filter(({ output }) => output.to instanceof Uint8Array
-            && binToHex(output.to) === loopBytecode);
+          .filter(({ output }) => binToHex(typeof output.to === 'string'
+            ? addressToLockScript(output.to) : output.to) === loopBytecode);
         const knownOrdinal = existing.findIndex((commitment) => commitment !== '00');
-        const anchored = knownOrdinal < 0 ? undefined : matches.find(({ output }) =>
-          output.token?.nft?.commitment === existing[knownOrdinal]);
+        // A sorted batch can publish the same seed at its fixed entry coordinate and its trailing
+        // coordinate. Anchor in the trailing region; the fixed copy is not this loop-entry run.
+        const minimumLoopIndex = loopOffset;
+        const anchored = knownOrdinal < 0 ? undefined : matches.find(({ index, output }) =>
+          index >= minimumLoopIndex && output.token?.nft?.commitment === existing[knownOrdinal]);
         const physicalLoopOffset = anchored
           ? anchored.index - knownOrdinal
           : (matches.at(-1)?.index ?? -1) - Math.max(0, existing.length - 1);

@@ -45,19 +45,22 @@ describe('kernel independently indexed dynamic scalar and mapping journals', () 
     builder: TransactionBuilder;
   };
 
-  const build = async (): Promise<Setup> => {
+  const build = async (
+    suffixes: readonly [Uint8Array, Uint8Array] = [first, second],
+  ): Promise<Setup> => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
       .toMatchObject({ eligible: true, physicalEntrySlots: [0] });
+    expect(artifact.messageBus?.route.dynamicWrites).toContain('payload');
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { payload: initial }, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
     const call = contract.batch([
-      { function: 'append', args: [7n, first] },
-      { function: 'append', args: [7n, second] },
+      { function: 'append', args: [7n, suffixes[0]] },
+      { function: 'append', args: [7n, suffixes[1]] },
     ]);
     const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
     call.addInput(fee.utxo, fee.unlocker);
@@ -84,6 +87,20 @@ describe('kernel independently indexed dynamic scalar and mapping journals', () 
       ...initial, ...first, ...second,
     ])));
     await setup.contract.checkLength(7n, 230n).send();
+  }, 180_000);
+
+  it.each([
+    { kind: 'empty', suffixes: [new Uint8Array(), new Uint8Array()] as const },
+    { kind: 'single-chunk', suffixes: [new Uint8Array(24), new Uint8Array(25)] as const },
+  ])('settles $kind dynamic state in a selected batch', async ({ suffixes }) => {
+    const setup = await build(suffixes);
+    expect(evaluate(setup).every((result) => result === true)).toBe(true);
+    await expect(setup.call.send()).resolves.toBeDefined();
+    const state = await setup.contract.getState();
+    expect(binToHex(state.payload as Uint8Array)).toBe(binToHex(Uint8Array.from([
+      ...suffixes[0], ...suffixes[1],
+    ])));
+    await setup.contract.checkLength(7n, BigInt(suffixes[0].length + suffixes[1].length)).send();
   }, 180_000);
 
   it('settles mixed bytes+mapping set via Caller→Store messageBus.compose', async () => {
@@ -195,10 +212,9 @@ describe('kernel independently indexed dynamic scalar and mapping journals', () 
   );
 });
 
-// token-container co-layout admits compile-time co-layout (tokenContainer slot + messageBus.tokenContainerCoLayout) for
-// bytes write + tokens[category] read. Full e2e settle (token UTXO co-spend + dyn chunks) remains a
-// follow-on; keep this suite skipped until SDK materialization for the co-layout proof is wired.
-describe.skip('kernel dynamic scalar and token-container resources (token-container co-layout e2e settle follow-on)', () => {
+// token-container co-layout admits compile-time co-layout (tokenContainer slot + messageBus.tokenContainerCoLayout)
+// for bytes write + tokens[category] read. The BCH-2026 VM proofs below exercise both resource families.
+describe('kernel dynamic scalar and token-container resources (token-container co-layout e2e settle follow-on)', () => {
   const source = `contract ParallelTokenJournal() {
     bytes payload;
     function append(bytes32 category, bytes suffix) public {

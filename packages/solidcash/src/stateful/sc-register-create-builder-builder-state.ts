@@ -188,8 +188,11 @@ export function registerCreateBuilderBuilderState(
     && dynamicChunkVars.some((variable: any) => variable.delegate === true
       && activeDynamicWrites.has(variable.name)
       && (oldDynamicChunkCounts.get(variable.name) ?? 0) === 0);
+  const selectedBatchEmptyDynamicMint = selectedDynamicRows.length > 0
+    && dynamicChunkVars.some((variable: any) => activeDynamicWrites.has(variable.name)
+      && (oldDynamicChunkCounts.get(variable.name) ?? 0) === 0);
   if (sortedInserts.length > 0 || usesComposedDelegateDynamicTail || computedValueChunkRuns.length > 0
-    || compilerRouteEmptyDynamicMint) {
+    || compilerRouteEmptyDynamicMint || selectedBatchEmptyDynamicMint) {
     for (const dv of builder.getDynamicChunkVars()) {
       // The route-wide layout can contain an inactive sibling's dynamic write. Its empty pre-state is already
       // the exact zero-width run; a speculative chunk could never be pinned because no authenticated row
@@ -200,7 +203,8 @@ export function registerCreateBuilderBuilderState(
         // '00' placeholder makes TXOUTPUTCOUNT-1-nNew miss the covenant's nNew=2 pin
         // (fat JobPost push is ~200 bytes → 2 chunks). Reverse-suffix delegates must
         // seed that floor up front — speculative growth cannot fix it.
-        const seedFloor = dv.delegateSuffix === true || usesComposedDelegateDynamicTail ? 2 : 1;
+        const seedFloor = dv.delegateSuffix === true || usesComposedDelegateDynamicTail
+          || selectedBatchEmptyDynamicMint ? 2 : 1;
         const seedCount = Math.max(oldDynamicChunkCounts.get(dv.name) ?? 0, seedFloor);
         // Empty first-writes of fixed-width T[] under a compiler-route proxy callee often never expose an
         // OTC pin for graph convergence (unlike bytes/string). When the pre-state is empty and the selected
@@ -264,7 +268,15 @@ export function registerCreateBuilderBuilderState(
   }
   for (const [collectionName, commitments] of batchPredCommitments) {
     builder.setLoopEntryCommitments(collectionName, commitments);
-    builder.pinLoopEntry(collectionName);
+    // A one-target sorted batch publishes its target in this trailing lane. Its slot/next seed is
+    // not a complete commitment when the handler computes the value (e.g. from newly written state).
+    // Keep the lane count fixed, but let the VM's own output-commitment check fill that value tail.
+    if (pendingEntryValueTails.some((pending: any) => pending.collection === collectionName
+      && commitments.includes(pending.seed))) {
+      builder.requireLoopEntryCount(collectionName, commitments.length);
+    } else {
+      builder.pinLoopEntry(collectionName);
+    }
   }
   // The sorted-batch planner has already examined the authenticated list. When it found no predecessor
   // rewrite, and no other path produces a node in this collection, the trailing family is exactly empty.

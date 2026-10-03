@@ -65,9 +65,11 @@ import {
   MappingAccessNode,
   MappingAssignNode,
   MappingDeleteNode,
+  MappingFieldAssignNode,
   Node,
   NullaryOpNode,
   ParameterNode,
+  ReturnNode,
   StateAccessNode,
   StateArrayAssignNode,
   StateArrayDeleteNode,
@@ -1090,14 +1092,18 @@ function writeStepSegment(step: PerCallWriteStep): PerCallWriteSegment | undefin
  * One write of an entry, and the segment its records are declared in.
  *
  * Exactly one identity is set, naming the write the segment belongs to: `record` is one of the entry's own data-NFT
- * records, `collection` is the verified mapping a batch write targets, and `variable` is the dynamic value whose
- * run of chunk records a write occupies. A builder declares each write's records in its own segment.
+ * records, `collection` is the verified mapping a batch write targets, `variable` is the dynamic value whose run of
+ * chunk records a write occupies, and `turns` is a mapping write a run-time loop makes once per turn. A builder
+ * declares each write's records in its own segment.
  */
 export interface PerCallWriteSegmentFact {
   readonly record?: number;
   readonly collection?: string;
   readonly variable?: string;
+  /** For a fact with `turns`, the calls a turn makes before its write. */
   readonly segment: PerCallWriteSegment;
+  /** A run-time loop's write, whose turns land where the loop's own calls move them (`perCallTurnWrites`). */
+  readonly turns?: PerCallWriteTurns;
   /**
    * For a write to a dynamic value's element, the fields the write provably copies back unchanged.
    *
@@ -1205,6 +1211,10 @@ export function perCallWriteSegments(
       ...(apart ? { apart: true } : {}),
     })) return undefined;
   }
+  // A run-time loop's write is not a step the walk places: its turns land where the loop's own calls move them.
+  for (const { offset, ...turns } of perCallTurnWrites(entry)) {
+    if (!admit(`turns:${turns.slot}`, { segment: offset, turns })) return undefined;
+  }
   return facts.length > 0 ? facts : (writesOwnRecord(entry) ? undefined : []);
 }
 
@@ -1212,7 +1222,198 @@ export function perCallWriteSegments(
 function identityOfWrite(fact: PerCallWriteSegmentFact): string {
   if (fact.record !== undefined) return `record:${fact.record}@${String(fact.segment)}`;
   if (fact.collection !== undefined) return `mapping:${fact.collection}`;
+  if (fact.turns !== undefined) return `turns:${fact.turns.slot}`;
   return `dynamic:${fact.variable}`;
+}
+
+/** Where the turns of a run-time loop that makes calls land its mapping write, as `PublishedWriteTurns` states it. */
+export interface PerCallWriteTurns {
+  readonly collection: string;
+  /** The entry slot the loop's write names. */
+  readonly slot: number;
+  /** The entry's call site whose call each turn makes first, an index of `entry.externalCalls`. */
+  readonly site: number;
+  /** The calls every turn makes. */
+  readonly stride: number;
+}
+
+/** One loop write `perCallTurnWrites` places, with the calls a turn makes before it. */
+interface PerCallTurnWrite extends PerCallWriteTurns {
+  readonly offset: number;
+}
+
+/** A loop statement of an entry's body that no other loop encloses, with the block whose statement it is. */
+interface OuterLoop {
+  readonly loop: WhileNode | DoWhileNode;
+  readonly parent: BlockNode;
+}
+
+/** The loops of a body no other loop encloses, in the order the walk reaches them. */
+function outerLoops(body: BlockNode | undefined): readonly OuterLoop[] {
+  const found: OuterLoop[] = [];
+  const walkBlock = (block: BlockNode | undefined): void => {
+    for (const statement of block?.statements ?? []) walkStatement(statement, block!);
+  };
+  const walkStatement = (statement: Node, parent: BlockNode): void => {
+    if (statement instanceof WhileNode || statement instanceof DoWhileNode) found.push({ loop: statement, parent });
+    else if (statement instanceof BlockNode) walkBlock(statement);
+    else if (statement instanceof BranchNode) {
+      walkBlock(statement.ifBlock);
+      walkBlock(statement.elseBlock);
+    } else if (statement instanceof SwitchNode) {
+      for (const arm of statement.cases) walkBlock(arm.body);
+      walkBlock(statement.defaultCase);
+    } else if (statement instanceof TryCatchNode) walkBlock(statement.tryBlock);
+  };
+  walkBlock(body);
+  return found;
+}
+
+/** True for a statement that writes a record of the frame's state other than through a mapping node. */
+function writesNonNodeRecord(node: Node): boolean {
+  return node instanceof StateAssignNode || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+    || node instanceof StateArrayAssignNode || node instanceof StateArrayDeleteNode
+    || node instanceof MappingFieldAssignNode;
+}
+
+/**
+ * The calls one turn of a loop makes before `write`, or undefined when no one count holds: a branch, switch or
+ * nested loop decides whether the write runs, or the calls before it vary with the path.
+ */
+function callsBeforeWriteInTurn(block: BlockNode, write: Node): number | undefined {
+  let found: number | undefined;
+  let open = false;
+  const contains = (value: unknown): boolean => {
+    let inside = false;
+    walkInvocationAst(value, (node) => { if (node === write) inside = true; });
+    return inside;
+  };
+  const walkBlock = (inner: BlockNode | undefined, calls: number): number | undefined => {
+    let running: number | undefined = calls;
+    for (const statement of inner?.statements ?? []) {
+      if (running === undefined || found !== undefined) return running;
+      if (statement === write) {
+        const own = callsInExpression(statement);
+        if (own === undefined) open = true;
+        else found = running + own;
+        return running;
+      }
+      if (statement instanceof BlockNode) {
+        running = walkBlock(statement, running);
+        continue;
+      }
+      if (contains(statement)) {
+        open = true;
+        return undefined;
+      }
+      const range = statementCallRange(statement);
+      running = range === undefined || range.least !== range.most ? undefined : running + range.least;
+    }
+    return running;
+  };
+  walkBlock(block, 0);
+  return open ? undefined : found;
+}
+
+/**
+ * The mapping writes run-time loops make once per turn while the loops' own bodies make calls, each with where its
+ * turns land; a loop whose turns the source does not fix contributes none, and its write stays unplaced.
+ *
+ * A call closes the segment the code before it runs in, so turn `t` of such a loop writes past every call the turns
+ * before it made. The facts hold exactly when every turn makes the same calls in the same order: the condition
+ * reaches no call, every call of the body runs on every path and binds an external call site of its own, the body
+ * sends no value, and its one mapping write runs on every path after a fixed number of the turn's calls. The turn's
+ * first call then sits at the frame position of that site's first call plus `t` strides, which a builder knows from
+ * the calls it plans. A loop body that writes anything else, or writes two collections, is left unplaced.
+ *
+ * A collection two loops write is one run only when the loops are statements of one block and no other loop writes
+ * it: each loop's teardown counts the transaction's nodes of the collection, which code generation chains across
+ * such loops (`perCallLoopChains`). A collection written any other way beside a loop is left unplaced.
+ */
+export function perCallTurnWrites(entry: FunctionDefinitionNode): readonly PerCallTurnWrite[] {
+  const accesses = entry.entryAccesses ?? [];
+  const sites = entry.externalCalls ?? [];
+  const inLoop = (slot: number): boolean => accesses.find((access) => access.slotIndex === slot)?.inLoop === true;
+  const placed: (PerCallTurnWrite & OuterLoop & { readonly index: number })[] = [];
+  const writers = new Map<string, number>();
+  for (const outer of outerLoops(entry.body)) {
+    const { loop } = outer;
+    const writes: (MappingAssignNode | MappingDeleteNode)[] = [];
+    let other = false;
+    walkInvocationAst(loop.block, (node) => {
+      if ((node instanceof MappingAssignNode || node instanceof MappingDeleteNode) && inLoop(node.entrySlotIndex)) {
+        writes.push(node);
+      } else if (writesNonNodeRecord(node) || node instanceof MappingAssignNode || node instanceof MappingDeleteNode) {
+        other = true;
+      }
+    });
+    for (const write of writes) {
+      const name = accesses.find((access) => access.slotIndex === write.entrySlotIndex)?.collection;
+      if (name !== undefined) writers.set(name, (writers.get(name) ?? 0) + 1);
+    }
+    if (!reachesCallRecord(loop.block) || writes.length !== 1 || other) continue;
+    if (reachesCallRecord(loop.condition) || sendsIn(loop) > 0 || reachesLazilyEvaluatedCall(loop.block)) continue;
+    const walk = callsOnEveryPath(loop.block);
+    if (!('pathCount' in walk) || walk.pathCount < 1 || walk.calls.length !== walk.pathCount) continue;
+    const calls: Node[] = [];
+    walkInvocationAst(loop.block, (node) => {
+      if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallStatementNode
+        || node instanceof LowLevelCallNode) calls.push(node);
+    });
+    // Each call is a site of its own, reached once per turn in the order the walk reaches it.
+    const nested = calls.some((call) => {
+      let inner = 0;
+      walkInvocationAst(call, (node) => { if (calls.includes(node)) inner += 1; });
+      return inner > 1;
+    });
+    const site = sites.findIndex((slot) => slot.sourceCallNode === calls[0]);
+    if (nested || calls.length !== walk.pathCount || site < 0) continue;
+    const write = writes[0]!;
+    const offset = callsBeforeWriteInTurn(loop.block, write);
+    const collection = accesses.find((access) => access.slotIndex === write.entrySlotIndex)?.collection;
+    if (offset === undefined || collection === undefined) continue;
+    placed.push({
+      collection, slot: write.entrySlotIndex, site, stride: walk.pathCount, offset, ...outer,
+      index: (outer.parent.statements ?? []).indexOf(loop),
+    });
+  }
+  const batched = new Set((entry.sortedBatchInfo ?? []).map((batch) => batch.collection));
+  const returnsBetween = (parent: BlockNode, from: number, to: number): boolean => {
+    let returns = false;
+    for (const statement of (parent.statements ?? []).slice(from + 1, to)) {
+      walkInvocationAst(statement, (node) => { if (node instanceof ReturnNode) returns = true; });
+    }
+    return returns;
+  };
+  return placed.filter((write, _position, all) => {
+    const run = all.filter((candidate) => candidate.collection === write.collection);
+    // Every loop that writes the collection is placed, in one block's statement order with no return between them,
+    // and no batch writes it.
+    return !batched.has(write.collection) && run.length === writers.get(write.collection)
+      && run.every((candidate, position) => candidate.parent === run[0]!.parent
+        && (position === 0 || (candidate.index > run[position - 1]!.index
+          && !returnsBetween(candidate.parent, run[position - 1]!.index, candidate.index))));
+  }).map(({ collection, slot, site, stride, offset }) => ({ collection, slot, site, stride, offset }));
+}
+
+/**
+ * The loop slots whose run of records continues the run an earlier loop of the same collection began, each with the
+ * slot of the run's first loop and whether it is the run's last.
+ *
+ * Code generation keeps such loops' counters across them and counts the collection's nodes once, at the last
+ * loop's teardown, and every loop of the run addresses its records from the first loop's position.
+ */
+export function perCallLoopChains(
+  entry: FunctionDefinitionNode,
+): ReadonlyMap<number, { readonly first: number; readonly last: boolean }> {
+  const chains = new Map<number, { readonly first: number; readonly last: boolean }>();
+  const turns = perCallTurnWrites(entry);
+  for (const write of turns) {
+    const run = turns.filter((candidate) => candidate.collection === write.collection);
+    if (run.length < 2) continue;
+    chains.set(write.slot, { first: run[0]!.slot, last: run.at(-1)!.slot === write.slot });
+  }
+  return chains;
 }
 
 /** The segments each written data record is declared in, and the dynamic values the entry's writes grow. */

@@ -60,7 +60,7 @@ import {
   type ShippedVmProgram,
 } from '../composer/index.js';
 import { readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
-import { frameDataRecordIndices, orderLoopKeyArgs } from '../call/entry-records.js';
+import { frameDataRecordIndices, loopRecordSpans, orderLoopKeyArgs } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import { eventLockingBytecode, eventSentinel } from '../deploy/genesis.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
@@ -586,12 +586,28 @@ function placeLaidWrites(
   placed: readonly PlacedLaidWrite[],
 ): void {
   const apartRun = runSpanApartFromBatch(placed);
+  // Every segment declares the records in the order the plan lays them, whichever of them its span holds: a body
+  // reads a record by its position, so a record kept outside its span keeps its place ahead of the ones after it.
   segments.forEach((segment, segmentIndex) => {
-    if (apartRun !== undefined && segmentIndex >= apartRun.least && segmentIndex <= apartRun.most) return;
+    const inApartRun = apartRun !== undefined && segmentIndex >= apartRun.least && segmentIndex <= apartRun.most;
     const declared = new Set<number>();
     for (const { span, entry, write } of placed) {
-      if (segmentIndex >= span.least && segmentIndex <= span.most) continue;
-      if (apartRun !== undefined && write.variable !== undefined) continue;
+      if (segmentIndex >= span.least && segmentIndex <= span.most) {
+        // A span's segments are the turns a write can land in, and a turn's own calls decide which one it takes,
+        // so every record the write states is declared in each of them. A record the transaction spends is written
+        // in the span's first turn and kept at what that write left after it: the declarations are read as one
+        // chain in the order the frames run, so a later turn naming the record's start again would break it. A
+        // record the transaction creates is declared unchanged in each turn and chained by the output afterwards.
+        if (segmentIndex === span.least || entry.in === INDEX_NONE) {
+          segment.push(entry);
+          continue;
+        }
+        const written = entry.viewOut ?? entry.viewIn;
+        segment.push({ in: entry.in, out: entry.out, viewIn: written, viewOut: written });
+        continue;
+      }
+      // A run read apart from its batch keeps nothing in its own segments and is kept in no other.
+      if (inApartRun || (apartRun !== undefined && write.variable !== undefined)) continue;
       if (entry.in === INDEX_NONE || declared.has(entry.in)) continue;
       declared.add(entry.in);
       segment.push(segmentIndex < span.least
@@ -599,21 +615,6 @@ function placeLaidWrites(
         : { in: entry.in, out: entry.in, viewIn: entry.viewOut, viewOut: entry.viewOut });
     }
   });
-  for (const { span, entry } of placed) {
-    // A span's segments are the turns a write can land in, and a turn's own calls decide which one it takes, so
-    // every record the write states is declared in each of them. A record the transaction spends is written in the
-    // span's first turn and kept at what that write left after it: the declarations are read as one chain in the
-    // order the frames run, so a later turn naming the record's start again would break it. A record the transaction
-    // creates is declared unchanged in each turn and chained by the output afterwards.
-    for (let at = span.least; at <= span.most; at += 1) {
-      if (at === span.least || entry.in === INDEX_NONE) {
-        segments[at]!.push(entry);
-        continue;
-      }
-      const written = entry.viewOut ?? entry.viewIn;
-      segments[at]!.push({ in: entry.in, out: entry.out, viewIn: written, viewOut: written });
-    }
-  }
 }
 
 /**
@@ -634,6 +635,8 @@ function resolveLaidWriteSegments(
   segmentOfWrite: (write: LaidWriteIdentity, what: string) => SegmentSpan,
   label: string,
   servesApart = false,
+  /** For a run of loops whose turns the artifact publishes, the span of each of its records, in laid order. */
+  loopSpans?: readonly SegmentSpan[],
 ): readonly PlacedLaidWrite[] {
   const spans = new Map<string, SegmentSpan>();
   const spanOf = ({ write, what }: LaidWriteRecord): SegmentSpan => {
@@ -645,10 +648,15 @@ function resolveLaidWriteSegments(
     }
     return span;
   };
-  const firstWrite = records.find(({ write }) => write.read !== true);
-  const readSpan = firstWrite === undefined ? { least: 0, most: 0 } : spanOf(firstWrite);
-  const placed = records.map((record) => ({
-    span: record.write.read === true ? readSpan : spanOf(record),
+  let loopRecord = 0;
+  const writeSpans = records.map((record) => {
+    if (record.write.read === true) return undefined;
+    if (loopSpans !== undefined && record.write.collection !== undefined) return loopSpans[loopRecord++]!;
+    return spanOf(record);
+  });
+  const readSpan = writeSpans.find((span) => span !== undefined) ?? { least: 0, most: 0 };
+  const placed = records.map((record, index) => ({
+    span: writeSpans[index] ?? readSpan,
     entry: record.entry,
     write: record.write,
   }));
@@ -685,6 +693,31 @@ function runSpanApartFromBatch(placed: readonly PlacedLaidWrite[]): SegmentSpan 
 function readsRunApart(artifact: Artifact, functionName: string): boolean {
   const variable = dynamicWriteVariable(artifact, functionName)?.variable;
   return variable !== undefined && publishedWriteFact(artifact, functionName, { variable })?.apart === true;
+}
+
+/**
+ * The span of each record a run of loops writes, from the turns the artifact publishes and the frame's own calls,
+ * or undefined for an entry no such run writes. A stopped plan that does not reach the loop's calls yet declares
+ * its records in the frame's last segment, as it does a write past the last call it states.
+ */
+function hopLoopSpans(options: {
+  readonly artifact: Artifact;
+  readonly functionName: string;
+  readonly writes: HopEntryWrites;
+  readonly calls: number;
+  readonly label: string;
+  readonly callBases?: readonly number[];
+  readonly truncated?: boolean;
+}): readonly SegmentSpan[] | undefined {
+  const { loopRun, loopMints } = options.writes;
+  if (loopRun === undefined || loopMints === undefined) return undefined;
+  const spans = loopRecordSpans({
+    artifact: options.artifact, functionName: options.functionName, run: loopRun, mints: loopMints,
+    callBases: options.callBases ?? [], calls: options.calls,
+  });
+  if (typeof spans !== 'string') return spans;
+  if (options.truncated === true) return loopMints.map(() => ({ least: options.calls, most: options.calls }));
+  throw new PerCallProxyDeployError(`${options.label} cannot declare its loop's records: ${spans}`);
 }
 
 /**
@@ -3063,6 +3096,15 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       }),
       entryWritesLabel,
       readsRunApart(implementationArtifact, options.entry.functionName),
+      hopLoopSpans({
+        artifact: implementationArtifact,
+        functionName: options.entry.functionName,
+        writes: options.entryWrites,
+        calls: calls.length,
+        label: entryWritesLabel,
+        ...(options.callBases === undefined ? {} : { callBases: options.callBases }),
+        ...(options.truncated === true ? { truncated: true } : {}),
+      }),
     );
     for (const { entry } of placedWrites) writeTransitions.add(entry);
     placeLaidWrites(implementationSegments, placedWrites);

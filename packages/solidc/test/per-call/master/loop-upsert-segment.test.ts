@@ -79,10 +79,8 @@ const PLAIN_SOURCE = `pragma solidcash ^0.13.0;${OTHER}`
  * The shape the fixture's own entry has: the loop body both upserts the mapping and makes its call, so one turn
  * writes and calls before the next turn writes again.
  *
- * This is the shape the handoff names for the entry whose writes the artifact states for no segment: the mapping is
- * not a verified batch here (the block layout reserves no entry slot for it), and the upsert is carried by the
- * run-time-loop machinery instead. The case below pins what the shipped compiler and the shipped machine do with
- * it, so the shape's wall is a recorded reproducer rather than a claim.
+ * The mapping is not a verified batch here, and the upsert is carried by the run-time-loop machinery: the artifact
+ * publishes where each turn writes (`turns`), and `loop-turn-segments.test.ts` asks the machine about two turns.
  */
 const LOOP_CALL_INSIDE_SOURCE = `pragma solidcash ^0.13.0;${OTHER}
  contract Ledger {
@@ -174,8 +172,8 @@ interface Built {
  * the same node at the same index - so the only variable between them is the body that runs.
  */
 function build(program: Uint8Array, lock: Uint8Array, workerOrKey: Uint8Array, records: RecordEntry[],
-  segment: 0 | 1, plainCoin = false): Built {
-  const segments: RecordEntry[][] = [[], []];
+  segment: 0 | 1, plainCoin = false, other: RecordEntry[] = []): Built {
+  const segments: RecordEntry[][] = [other, other];
   segments[segment] = records;
   const ledgerBlock: WitnessBlock = {
     kind: 0,
@@ -352,17 +350,19 @@ describe('a per-call master whose entry upserts a mapping in a run-time loop bes
  * the segment the machine reads for a mapping node record rather than leaving it to this suite.
  */
 describe('the fixture\'s own shape: the loop body both upserts the mapping and makes the call', () => {
-  it('serves the body, declares the collection its entry slot, and still states no segment for its records', () => {
+  it('serves the body, declares the collection its entry slot, and publishes the segment each turn writes in', () => {
     const composition = insideArtifacts.Ledger!.composition;
     expect(composition?.refusedEntries).toBeUndefined();
     const entry = composition!.stopSites!.entries.find(
       (candidate) => candidate.functionName === 'Ledger.move()',
     )!;
-    // A varying key is not one write the walk places, so no segment states where its records are declared: the
-    // entry publishes nothing rather than a guessed segment. The collection's slot is declared all the same, which
-    // is the coordinate a per-call frame's per-turn nodes are placed from.
+    // A varying key is not one write the walk places, so no single segment is published; each turn writes where its
+    // own call closes, which the write's turns state. The collection's slot is the coordinate a per-call frame's
+    // per-turn nodes are placed from.
     expect(entry.writeSegment).toBeUndefined();
-    expect(entry.writeSegments).toBeUndefined();
+    expect(entry.writeSegments).toStrictEqual([
+      { segment: 0, turns: { collection: 'balances', slot: 0, site: 0, stride: 1 } },
+    ]);
     expect(insideArtifacts.Ledger!.abi.find((candidate) => candidate.name === 'move')!.blockLayout)
       .toStrictEqual({
         blockSize: 2,
@@ -370,12 +370,9 @@ describe('the fixture\'s own shape: the loop body both upserts the mapping and m
       });
   });
 
-  it('refuses the well-formed spend wherever the node record is declared', () => {
-    // The same head with the loop removed is accepted above, and the same head with a parameter key settles under
-    // the machine's own segment control below. The node's coordinate is the one its running segment declares at the
-    // node's position, so the segment the declaration sits in decides what that coordinate lands on: a segment that
-    // declares a different record there names its coordinate (the body fails its comparison), and one whose list
-    // holds no such position leaves the sentinel, which no index opcode accepts.
+  it('refuses the node declared in one segment alone, and accepts it from the turn\'s to the teardown\'s', () => {
+    // The turn co-spends the node in the segment it writes in and defers its mint to the loop's teardown, past the
+    // call: a node declared in one of the two segments alone leaves the other's read or mint without its record.
     const objections = ([0, 1] as const).map((segment) => ({
       segment, ...verdict(build(insideProgram, insideLock, WORKERS, [NODE_RECORD], segment)),
     }));
@@ -383,6 +380,10 @@ describe('the fixture\'s own shape: the loop body both upserts the mapping and m
       { segment: 0, accepted: false, objection: 'Program failed an OP_VERIFY operation.' },
       { segment: 1, accepted: false, objection: 'Program failed an OP_VERIFY operation.' },
     ]);
+    // Kept where the turn co-spends it and written where the teardown mints it, as the published turns place it.
+    const kept: RecordEntry = { ...NODE_RECORD, viewOut: NODE_RECORD.viewIn };
+    expect(verdict(build(insideProgram, insideLock, WORKERS, [NODE_RECORD], 1, false, [kept])))
+      .toStrictEqual({ accepted: true });
   });
 });
 

@@ -301,7 +301,7 @@ import {
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
   derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, perCallBatchWriteFollowsEveryCall,
-  perCallBatchWriteSegment, perCallRunApartFromBatch,
+  perCallBatchWriteSegment, perCallLoopChains, perCallRunApartFromBatch,
   callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER, hasForwardingFallback, isOwnAddress,
   isProxyFallbackContract,
   ORIGIN_FRAME_SLOT, SENDER_FRAME_SLOT,
@@ -2049,6 +2049,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // True while such a loop is emitted, carrying its entry slot; false for every other loop and convention.
   private perCallDeclaredLoopOut: boolean = false;
   private perCallDeclaredLoopSlot: number = -1;
+  // Loops of one collection whose records form one run (`perCallLoopChains`), by slot, for the function emitted;
+  // the running loop's place in such a run, while it is emitted.
+  private perCallLoopChain: ReadonlyMap<number, { readonly first: number; readonly last: boolean }> | undefined;
+  private perCallChainedLoop: { readonly first: boolean; readonly last: boolean } | undefined;
   // READ ABSENCE CACHE: once a read authenticates and reproduces a real entry, its [slot,nextKey) interval can
   // prove any immediately following missing keys in that same gap without co-spending the entry again.
   private sortedUpsertReadProofSlotName: string = '(read_proof_slot)';
@@ -7554,6 +7558,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallReadsRunSegment = false;
     this.perCallDeclaredLoopOut = false;
     this.perCallDeclaredLoopSlot = -1;
+    // Taken from the body as the function's visit begins, before any statement of it is rewritten.
+    this.perCallLoopChain = this.perCallMaster ? perCallLoopChains(node) : undefined;
+    this.perCallChainedLoop = undefined;
     this.perCallStaleWrites = new Set();
     this.perCallValueCallsAtSource = new Set();
     this.sortedWrittenCollections = new Set();
@@ -29838,6 +29845,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallDeclaredLoopOut = this.readsRecordsFromFrame && this.batchTargetSlots().length === 0
       && this.entrySlots[slotIndex]?.inLoop === true;
     this.perCallDeclaredLoopSlot = slotIndex;
+    const chain = this.perCallDeclaredLoopOut ? this.perCallLoopChainOf(slotIndex) : undefined;
+    this.perCallChainedLoop = chain === undefined ? undefined : { first: chain.first === slotIndex, last: chain.last };
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
 
     // SDK metadata: leading FIXED key params + the VARYING key array + the per-key VALUE array + the op.
@@ -30249,10 +30258,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitSortedEntryAddress(collectionHash, loc);
     this.stack[0] = this.sortedUpsertLoopAddrName;
 
-    this.emit(encodeInt(0n), loc);
-    this.pushToStack(this.sortedUpsertLoopCounterName);
-    this.emit(encodeInt(0n), loc);
-    this.pushToStack(this.sortedUpsertLoopOutCounterName);
+    const chained = this.perCallChainedLoop;
+    if (chained !== undefined && (this.sortedUpsertLoopInputCountParam || this.sortedUpsertLoopOutputCountParam)) {
+      throw new Error(`a per-call run of loops over '${collection.name}' cannot carry a counted loop's cardinality`);
+    }
+    if (chained !== undefined && !chained.first) {
+      // A loop that continues a run counts on from the counters the run's earlier loop left.
+      for (const [carry, counter] of [
+        [this.perCallLoopCarryName(collection.name, 'in'), this.sortedUpsertLoopCounterName],
+        [this.perCallLoopCarryName(collection.name, 'out'), this.sortedUpsertLoopOutCounterName],
+      ] as const) {
+        const depth = this.getStackIndex(carry);
+        this.emit(encodeInt(BigInt(depth)), loc);
+        this.emit(Op.OP_ROLL, loc);
+        this.removeFromStack(depth);
+        this.pushToStack(counter);
+      }
+    } else {
+      this.emit(encodeInt(0n), loc);
+      this.pushToStack(this.sortedUpsertLoopCounterName);
+      this.emit(encodeInt(0n), loc);
+      this.pushToStack(this.sortedUpsertLoopOutCounterName);
+    }
 
     // Materialize this operation stream's tuple payload as an independent cursor. Entry-input and output counters
     // are physical resource counters: deferred updates intentionally make them diverge from source operation order.
@@ -32528,7 +32555,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.sortedUpsertPendActive) this.emitSortedFlushPendingNormal(loc);
     const collection = this.sortedUpsertLoopCollection;
     if (collection === null) throw new Error('Missing runtime-loop collection while settling cardinality');
-    for (const [counterName, exactName] of [
+    // A loop a later loop of its run continues counts nothing yet: the run's last loop counts the collection's nodes
+    // once, with the counters every loop of the run carried on.
+    const carries = this.perCallChainedLoop !== undefined && !this.perCallChainedLoop.last;
+    this.perCallChainedLoop = undefined;
+    if (carries) {
+      this.stack[this.getStackIndex(this.sortedUpsertLoopCounterName)] = this.perCallLoopCarryName(collection, 'in');
+      this.stack[this.getStackIndex(this.sortedUpsertLoopOutCounterName)] = this.perCallLoopCarryName(collection, 'out');
+    }
+    for (const [counterName, exactName] of carries ? [] : [
       [this.sortedUpsertLoopCounterName, this.sortedUpsertLoopInputCountParam],
       [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopOutputCountParam],
     ] as const) {
@@ -32540,7 +32575,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const hasThreadedCardinality = this.getStackIndex(vmapRuntimeInputCountName(collection), true) >= 0
       && this.getStackIndex(vmapRuntimeOutputCountName(collection), true) >= 0;
     let localScanAddress = false;
-    if (hasThreadedCardinality) {
+    if (carries && hasThreadedCardinality) {
+      throw new Error(`a per-call run of loops over '${collection}' cannot consume a threaded cardinality`);
+    }
+    if (carries) {
+      // Counted at the run's last loop.
+    } else if (hasThreadedCardinality) {
       this.emitConsumeVMapRuntimeCardinality(this.sortedUpsertLoopCounterName, false, loc);
       this.emitConsumeVMapRuntimeCardinality(this.sortedUpsertLoopOutCounterName, true, loc);
     } else if (!this.currentFunctionIsDelegate) {
@@ -32567,7 +32607,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       localScanAddress = true;
     }
-    if (accumulate) {
+    if (accumulate && !carries) {
       const finalJournalSettlementOwnsCursors = this.kernelJournalFinalOutputCursorReconciliationActive();
       // Final settlement advances the physical cursor at each authenticated access. These local/group counters
       // remain cardinality proofs; accumulating them here would count every physical input twice.
@@ -32590,7 +32630,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
-    const dropNames = [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopCounterName,
+    const dropNames = [...(carries ? [] : [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopCounterName]),
       ...(localScanAddress ? ['(ul_scan_addr)'] : []), this.sortedUpsertLoopAddrName];
     if (this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) >= 0) {
       dropNames.unshift(this.sortedUpsertLoopJournalCursorName);
@@ -34556,12 +34596,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * or every one beside a batch, then the node of each entry slot no batch writes, in the order the block layout
    * lists them.
    */
-  private perCallEntryOffset(slotIndex: number): number {
+  private perCallEntryOffset(entrySlot: number): number {
+    // A loop that continues another loop's run of records addresses them from that run's first loop.
+    const slotIndex = this.perCallLoopChainOf(entrySlot)?.first ?? entrySlot;
     const offset = this.getBlockSlotOffset('entry', slotIndex);
     const batched = new Set(this.batchTargetSlots());
     const earlier = this.currentFunction.blockLayout!.slots.filter((slot) => slot.kind === 'entry'
       && slot.offset < offset && !batched.has(slot.slotIndex!)).length;
     return (batched.size > 0 ? this.dataNftCount : this.compactOffsetMap.size) + 1 + earlier;
+  }
+
+  /**
+   * The run of records a per-call frame's loop at `slot` continues, when two loops of its collection share one.
+   *
+   * Each loop's teardown counts the transaction's nodes of its collection, so two loops that write one collection
+   * keep their counters across each other and count once, at the run's last loop; the artifact publishes their turns
+   * as one run (`PublishedWriteSegment.turns`). Any other frame, and any other loop, has none.
+   */
+  private perCallLoopChainOf(slot: number): { readonly first: number; readonly last: boolean } | undefined {
+    if (!this.perCallMaster || this.currentFunction === undefined) return undefined;
+    this.perCallLoopChain ??= perCallLoopChains(this.currentFunction);
+    return this.perCallLoopChain.get(slot);
+  }
+
+  /** The tracked name a loop's counter takes between the loops of one run of records over `collection`. */
+  private perCallLoopCarryName(collection: string, side: 'in' | 'out'): string {
+    return `(sorted_upsert_carry_${side}_${collection})`;
   }
 
   /**

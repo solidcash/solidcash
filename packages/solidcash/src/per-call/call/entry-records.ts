@@ -34,6 +34,7 @@ import {
   scriptToBytecode,
   type AbiFunction,
   type Artifact,
+  type PublishedWriteTurns,
   type StateValue,
 } from '@solidcash/utils';
 import {
@@ -102,6 +103,8 @@ export interface LaidCallEntryRecords {
   readonly createdOutputs: readonly number[];
   /** The structural candidate each value-dependent node's declaration starts from, in learning order. */
   readonly learningCandidates: readonly Uint8Array[];
+  /** For a run of loops, the turn that mints each of `entries`, or undefined for a node the entry only reads. */
+  readonly entryMints?: readonly (LoopRecordMint | undefined)[];
 }
 
 /** The mapping records one entry reads or writes, with the ids its plan places. */
@@ -112,6 +115,8 @@ export interface CallEntryRecords {
   readonly participantIds: readonly string[];
   /** The live UTXO of each spent node, keyed by the participant id the frame places it under. */
   readonly spentUtxos: ReadonlyMap<string, Utxo>;
+  /** The run-time loops that write the collection, in the order the body runs them, when loops write it. */
+  readonly loopRun?: readonly CallLoopWritePlan[];
   lay(context: CallEntryRecordsContext): LaidCallEntryRecords;
 }
 
@@ -175,6 +180,8 @@ interface CallMappingBatch {
    * target (`groups`), a target's predecessor standing again for every insert in its gap.
    */
   readonly loopWritten?: boolean;
+  /** For a loop's turns, the turn that mints each record of `written`, in its order. */
+  readonly loopMints?: readonly LoopRecordMint[];
 }
 
 /** The expression labels an artifact publishes for the frame's own caller. */
@@ -356,10 +363,12 @@ export function planCallLoopWrites(
     // One value stored under every key makes the write order unobservable, so the array is put in the slot order the
     // body's chain walks and the turns follow it (`orderLoopKeyArgs` hands the frame that exact array). A loop whose
     // value comes per key keeps the caller's order - its array is not this lane's to permute - and a key below the
-    // turn before it is refused by name, because the body cannot walk that array.
+    // turn before it is refused by name, because the body cannot walk that array. So does a loop whose turns make
+    // calls: they run in the array's order, which reordering the array would change.
     const invariantValue = info.valueBool !== undefined || info.valueConst !== undefined
       || (info.valueScalarParam ?? '') !== '';
-    const ordered = invariantValue
+    const calling = turnsOfLoop(request.artifact, request.functionName, info.collection, arrayName) !== undefined;
+    const ordered = invariantValue && !calling
       ? [...derived].sort((left, right) => {
         const leftSlot = bytesToSlotValue(keyToSlotMulti([...left.keys]));
         const rightSlot = bytesToSlotValue(keyToSlotMulti([...right.keys]));
@@ -373,7 +382,8 @@ export function planCallLoopWrites(
         throw new PerCallCallRecordError(
           `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${entry.source} of `
           + `"${arrayName}" under a key that does not sit above the turn before it, and a loop whose value comes `
-          + 'per key keeps the caller\'s order, which the run-time loop can insert through only when it ascends',
+          + `per key${calling ? ' or whose turns make calls' : ''} keeps the caller's order, which the run-time loop `
+          + 'can insert through only when it ascends',
         );
       }
       previous = value;
@@ -450,6 +460,170 @@ function reorderedArguments(
     ? reordered
     // Not every element is a signature template, so the array is the constructor-value family the builder gave.
     : (reordered as ConstructorArgument[]);
+}
+
+/** One loop write the artifact publishes per turn (`PublishedWriteSegment.turns`), with the calls before it. */
+export interface PublishedLoopTurns extends PublishedWriteTurns {
+  /** The calls a turn makes before its write. */
+  readonly offset: number;
+}
+
+/** The loop writes an entry's artifact publishes per turn, in the order it lists them. */
+export function publishedLoopTurns(artifact: Artifact, functionName: string): readonly PublishedLoopTurns[] {
+  const identity = `${artifact.contractName}.${functionName}()`;
+  const entry = artifact.composition?.stopSites?.entries.find((candidate) => candidate.functionName === identity);
+  return (entry?.writeSegments ?? []).flatMap((write) => (write.turns === undefined || write.segment === 'last'
+    ? [] : [{ ...write.turns, offset: write.segment }]));
+}
+
+/** The published turns of the loop that walks `array` writing `collection`, matched by the array its key names. */
+function turnsOfLoop(
+  artifact: Artifact, functionName: string, collection: string, array: string,
+): PublishedLoopTurns | undefined {
+  const accesses = artifact.abi.find((candidate) => candidate.name === functionName)?.entryAccesses ?? [];
+  return publishedLoopTurns(artifact, functionName).find((turns) => turns.collection === collection
+    && accesses.find((access) => access.slotIndex === turns.slot)?.keyParams
+      .some((label) => label.includes(`arridx(id:${array},`)) === true);
+}
+
+/** Where one record of a run of loops is minted: a loop of the run, and a turn of it or its teardown. */
+export interface LoopRecordMint {
+  /** The loop's position in the run. */
+  readonly loop: number;
+  /** The turn whose write mints the record, or the loop's turn count for the record its teardown flushes. */
+  readonly turn: number;
+}
+
+/**
+ * The turn that mints each record a run of run-time loops writes, in the order the plan's `written` list holds them.
+ *
+ * The body defers each turn's node: an update is held until the next turn's write or the loop's teardown mints it,
+ * and an insert mints its relinked predecessor at once and holds the new node. A turn whose key falls in the gap
+ * the held node leaves re-points it instead of co-spending a predecessor. Every record of the run is minted once,
+ * in the order of `written`, at the turn this names. Each loop of a run starts with nothing held, so a run whose
+ * loops touch one node twice mints differently from the plan, and is refused by name.
+ */
+export function loopRecordMints(
+  functionName: string,
+  run: readonly CallLoopWritePlan[],
+  written: readonly { readonly slot: Uint8Array; readonly existed: boolean; readonly before: Uint8Array }[],
+): readonly LoopRecordMint[] {
+  // Every node a turn co-spends - its target, or the predecessor its insert splices through - is one the plan writes.
+  const nodes = written.filter((node) => node.existed).map((node) => decodeEntryCommitment(node.before));
+  const value = (slot: Uint8Array): bigint => bytesToSlotValue(slot);
+  const mints: (LoopRecordMint & { readonly slot: Uint8Array })[] = [];
+  run.forEach((loop, index) => {
+    let held: { slot: Uint8Array; next: Uint8Array } | undefined;
+    loop.turns.forEach((turn, at) => {
+      const slot = keyToSlotMulti([...turn.keys]);
+      if (held !== undefined) {
+        const next = value(held.next);
+        const inGap = value(held.slot) < value(slot) && (next === 0n || value(slot) < next);
+        mints.push({ loop: index, turn: at, slot: held.slot });
+        if (inGap) {
+          held = { slot, next: held.next };
+          return;
+        }
+        held = undefined;
+      }
+      const node = nodes.find((candidate) => bytesEqual(candidate.slot, slot));
+      if (node !== undefined) {
+        held = { slot, next: node.nextKey };
+        return;
+      }
+      const predecessor = nodes.filter((candidate) => value(candidate.slot) < value(slot))
+        .sort((left, right) => (value(left.slot) < value(right.slot) ? 1 : -1))[0];
+      if (predecessor === undefined) return;
+      mints.push({ loop: index, turn: at, slot: predecessor.slot });
+      held = { slot, next: predecessor.nextKey };
+    });
+    if (held !== undefined) mints.push({ loop: index, turn: loop.turns.length, slot: held.slot });
+  });
+  if (mints.length !== written.length || mints.some((mint, at) => !bytesEqual(mint.slot, written[at]!.slot))) {
+    throw new PerCallCallRecordError(
+      `entry "${functionName}" writes mapping "${run[0]?.collection ?? ''}" in ${run.length} run-time loop(s) whose `
+      + 'turns touch one node twice, which one run of their records cannot declare',
+    );
+  }
+  return mints.map(({ loop, turn }) => ({ loop, turn }));
+}
+
+/** The segments a frame declares one record of a loop run in: from the one its turn mints it in, to the run's last. */
+export interface LoopRecordSpan {
+  readonly least: number;
+  readonly most: number;
+}
+
+/**
+ * The segments each record of a run of loops is declared in, from the frame's own calls and the turns the artifact
+ * publishes for each loop, or a refusal naming what the frame does not place.
+ *
+ * Turn `t` of a loop writes in the segment `t` strides past the frame position of its site's first call, plus the
+ * calls a turn makes before the write, and its teardown runs `turns` strides past that position. A record is
+ * declared from the segment that mints it to the run's last mint, so every turn's write finds the records before it
+ * at the positions its own counters name, and a record's view changes in the one segment that wrote it.
+ */
+export function loopRecordSpans(options: {
+  readonly artifact: Artifact;
+  readonly functionName: string;
+  readonly run: readonly CallLoopWritePlan[];
+  readonly mints: readonly LoopRecordMint[];
+  /** For each published call site of the entry, the frame position of its first call, or -1 for none. */
+  readonly callBases: readonly number[];
+  readonly calls: number;
+}): readonly LoopRecordSpan[] | string {
+  const at: number[][] = [];
+  for (const [index, loop] of options.run.entries()) {
+    const turns = turnsOfLoop(options.artifact, options.functionName, loop.collection, loop.varyingArrayParam);
+    at[index] = [];
+    if (loop.turns.length === 0) continue;
+    if (turns === undefined) {
+      return `the run-time loop over "${loop.varyingArrayParam}" writes mapping "${loop.collection}" in a frame `
+        + 'that makes calls, and the artifact publishes no segment for its turns';
+    }
+    const base = options.callBases[turns.site];
+    if (base === undefined || base < 0) {
+      return `the run-time loop over "${loop.varyingArrayParam}" makes no call at its site ${turns.site}`;
+    }
+    const segments = Array.from({ length: loop.turns.length + 1 }, (_unused, turn) => base + turn * turns.stride
+      + (turn < loop.turns.length ? turns.offset : 0));
+    if (segments.at(-1)! > options.calls) {
+      return `the run-time loop over "${loop.varyingArrayParam}" ends in segment ${segments.at(-1)!}, which the `
+        + `frame's ${options.calls + 1} segment(s) do not hold`;
+    }
+    at[index] = segments;
+  }
+  const least = options.mints.map((mint) => at[mint.loop]![mint.turn]!);
+  const most = Math.max(0, ...least);
+  return least.map((segment) => ({ least: segment, most }));
+}
+
+/**
+ * Declares an entry's records across a frame's segments: each record in its laid order, as its span places it.
+ *
+ * Inside its span a record is declared as laid in the span's first segment and kept at the view it was written to
+ * afterwards: a record the transaction creates is created once, and a later segment reads it at the output it was
+ * created at. Outside its span a spent record is kept at the view before or after it, and a created one is left
+ * out. A record without a span is declared as laid in every segment.
+ */
+export function placeRecordsBySpan(
+  entries: readonly DraftRecordEntry[],
+  spans: readonly (LoopRecordSpan | undefined)[],
+  segmentCount: number,
+): DraftRecordEntry[][] {
+  return Array.from({ length: segmentCount }, (_unused, segment) => entries.flatMap((entry, index) => {
+    const span = spans[index];
+    if (span === undefined) return [entry];
+    const viewIn = entry.viewIn;
+    const viewOut = entry.viewOut ?? entry.viewIn;
+    if (segment >= span.least && segment <= span.most) {
+      const at = entry.in === INDEX_NONE ? entry.out : entry.in;
+      return segment === span.least ? [entry] : [{ in: at, out: at, viewIn: viewOut, viewOut }];
+    }
+    if (entry.in === INDEX_NONE) return [];
+    const view = segment < span.least ? viewIn : viewOut;
+    return [{ in: entry.in, out: entry.in, viewIn: view, viewOut: view }];
+  }));
 }
 
 /** The live mapping node one access names: the collection it belongs to and the UTXO carrying it. */
@@ -535,8 +709,10 @@ export function readEntryNode(request: KeyResolutionContext & {
 /** The writes one entry performs to its one sorted collection, in the batch's target order. */
 function planCallMappingBatch(
   request: CallEntryRecordsRequest,
-  loop?: CallLoopWritePlan,
+  run?: readonly CallLoopWritePlan[],
 ): CallMappingBatch | undefined {
+  // The loops that write one collection are one run of records, in the order the body runs them.
+  const loop = run?.[0];
   const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
   if (fn === undefined) return undefined;
   const accesses = fn.entryAccesses ?? [];
@@ -588,10 +764,10 @@ function planCallMappingBatch(
     utxoBySlot.set(bytesToHex(decodeEntryCommitment(bytes).slot), node);
   }
   // A literal value is stated rather than learned, so the loop's declarations carry their end views directly.
-  const stated = loop !== undefined && (loop.valueBool !== undefined || loop.valueConst !== undefined);
-  const storedValue = (): Uint8Array => {
-    if (loop?.valueBool !== undefined) return loop.valueBool ? new Uint8Array([1]) : new Uint8Array(0);
-    if (loop?.valueConst !== undefined) return bigIntToVmNumber(BigInt(loop.valueConst));
+  const stated = run !== undefined && run.every((each) => each.valueBool !== undefined || each.valueConst !== undefined);
+  const storedValue = (each: CallLoopWritePlan): Uint8Array => {
+    if (each.valueBool !== undefined) return each.valueBool ? new Uint8Array([1]) : new Uint8Array(0);
+    if (each.valueConst !== undefined) return bigIntToVmNumber(BigInt(each.valueConst));
     return new Uint8Array(1);
   };
   // One target's write, the value a batch plans with a one-byte placeholder: only the plan's structure depends on it.
@@ -607,19 +783,24 @@ function planCallMappingBatch(
     }
     return { keys: [...resolveKeys(request, fn, access, structs)], value: new Uint8Array(1) };
   };
-  const writes = loop !== undefined
-    ? loop.turns.map((turn) => ({ keys: [...turn.keys], value: storedValue() }))
+  const writes = run !== undefined
+    ? run.flatMap((each) => each.turns.map((turn) => ({ keys: [...turn.keys], value: storedValue(each) })))
     : batch!.slotIndices.map((slotIndex) => targetWrite(slotIndex));
   // The value is the body's to compute, so a one-byte placeholder fixes only the plan's structure: the slots, the
   // successor links and which targets are inserts. Every commitment that depends on the value is left unstated and
   // learned from the body's own close.
+  const plan = planMappingBatch({ writes, inventory, encodeValue: (encoded: Uint8Array) => encoded });
+  // Loops whose turns the artifact publishes are placed segment by segment, by the turn that mints each record.
+  const turned = run !== undefined && publishedLoopTurns(request.artifact, request.functionName)
+    .some((turns) => turns.collection === collection.name);
   return {
     collection: collection.name,
     signature: collection.signature,
-    plan: planMappingBatch({ writes, inventory, encodeValue: (encoded: Uint8Array) => encoded }),
+    plan,
     utxoBySlot,
     ...(stated ? { statedValue: true } : {}),
-    ...(loop === undefined ? {} : { loopWritten: true }),
+    ...(run === undefined ? {} : { loopWritten: true }),
+    ...(turned ? { loopMints: loopRecordMints(request.functionName, run, plan.written) } : {}),
   };
 }
 
@@ -742,8 +923,13 @@ export function callEntryRecords(request: CallEntryRecordsRequest): CallEntryRec
   const loop = loops.find((candidate) => (fn.entryAccesses ?? []).some((access) => access.collection
     === candidate.collection && access.operations.some((operation) => operation !== 'read')));
   const reads = planReadNodes(request, fn, loop?.collection);
-  const batch = (fn.sortedBatchInfo ?? []).length > 0 || loop !== undefined
-    ? planCallMappingBatch(request, loop)
+  // Loops whose turns the artifact publishes write one run of records, every loop of the collection in turn.
+  const turned = loop !== undefined && publishedLoopTurns(request.artifact, request.functionName)
+    .some((turns) => turns.collection === loop.collection);
+  const run = loop === undefined ? undefined
+    : turned ? loops.filter((candidate) => candidate.collection === loop.collection) : [loop];
+  const batch = (fn.sortedBatchInfo ?? []).length > 0 || run !== undefined
+    ? planCallMappingBatch(request, run)
     : undefined;
   if (batch === undefined) {
     if (reads.length === 0) return undefined;
@@ -776,6 +962,7 @@ export function callEntryRecords(request: CallEntryRecordsRequest): CallEntryRec
     // The nodes it only reads come first, so they sit past the frame's data records where its code reads them.
     participantIds: [...reads.map((node) => node.id), ...spent.map((node) => mappingNodeParticipantId(node.slot))],
     spentUtxos: new Map([...reads.map((node) => [node.id, node.utxo] as const), ...spentUtxos]),
+    ...(turned ? { loopRun: run } : {}),
     lay: (context: CallEntryRecordsContext): LaidCallEntryRecords => {
       const read = layReadNodes(request, reads, context);
       const placements = new Map<string, MappingNodePlacement>();
@@ -861,6 +1048,9 @@ export function callEntryRecords(request: CallEntryRecordsRequest): CallEntryRec
         trailingOutputs,
         createdOutputs: created.map((_node, position) => context.createdBase + position),
         learningCandidates,
+        ...(batch.loopMints === undefined ? {} : {
+          entryMints: [...read.entries.map(() => undefined), ...batch.loopMints],
+        }),
       };
     },
   };

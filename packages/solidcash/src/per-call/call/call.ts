@@ -94,7 +94,10 @@ import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
 } from '../deploy/index.js';
-import { callEntryRecords, frameDataRecordIndices, orderLoopKeyArgs, type LaidCallEntryRecords } from './entry-records.js';
+import {
+  callEntryRecords, frameDataRecordIndices, loopRecordSpans, orderLoopKeyArgs, placeRecordsBySpan,
+  type LaidCallEntryRecords, type LoopRecordSpan,
+} from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
 import {
   NO_CALLEE_VALUES, PerCallCalleeError, calleeFrames, calleeValuesOwed, calleeWrites, learnCalleeValue,
@@ -576,7 +579,8 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     if (error instanceof PerCallCalleeError) throw new PerCallCallError(error.message);
     throw error;
   }
-  if (calleePlan !== undefined && mappingRecords !== undefined) {
+  // A run of loops whose own turns make the calls places its records by the turns the artifact publishes.
+  if (calleePlan !== undefined && mappingRecords !== undefined && mappingRecords.loopRun === undefined) {
     throw new PerCallCallError(
       `entry "${functionName}" writes mapping "${mappingRecords.collection}" and makes ${calleePlan.calls.length} `
       + 'external call(s), whose segments this call path does not place its writes in yet',
@@ -956,6 +960,23 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     indexOf: indexOfParticipant,
   });
   const learningCandidates = probe?.learningCandidates ?? [];
+  // A run of loops whose own turns make the frame's calls declares each record from the segment that mints it on,
+  // as the artifact publishes the turns' segments; the records the entry only reads are declared in every segment.
+  const mappingSpans = ((): readonly (LoopRecordSpan | undefined)[] | undefined => {
+    const mints = probe?.entryMints;
+    if (mints === undefined || mappingRecords?.loopRun === undefined || segmentCount === 1) return undefined;
+    const spans = loopRecordSpans({
+      artifact,
+      functionName,
+      run: mappingRecords.loopRun,
+      mints: mints.filter((mint) => mint !== undefined),
+      callBases: (calleePlan?.callBases ?? []).map((base) => (base < 0 ? base : typedCallPosition(base))),
+      calls: segmentCount - 1,
+    });
+    if (typeof spans === 'string') throw new PerCallCallError(`entry "${functionName}": ${spans}`);
+    let next = 0;
+    return mints.map((mint) => (mint === undefined ? undefined : spans[next++]));
+  })();
   // What each contract it pays computes, learned as the entry's own values are, from its own program's close.
   const payeeEventSentinels = payees.map((payee) => payee.emits.map((_emit, position) => eventSentinel(
     payee.category, payee.artifact.contractName, position, maximumCommitmentBytes,
@@ -1034,12 +1055,14 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     });
     // A record's first segment starts from the commitment it was spent with, and each later one from the view the
     // segment before it ended at: a body that calls closes one segment per call, and the views chain across them.
+    const mappingSegments = laid === undefined || mappingSpans === undefined
+      ? undefined : placeRecordsBySpan(laid.entries, mappingSpans, segmentCount);
     const segment = (_unused: unknown, position: number): DraftRecordEntry[] => [
       ...declared.map((record): DraftRecordEntry => {
         const index = recordIndex(record.id);
         return { in: index, out: index, viewIn: position === 0 ? record.commitment : 'carried' };
       }),
-      ...(laid?.entries ?? []),
+      ...(mappingSegments?.[position] ?? laid?.entries ?? []),
     ];
     // The callees' events follow the entry's own, and the records their writes create follow the entry's.
     const callees = sharedPlan === undefined ? undefined : calleeFrames({

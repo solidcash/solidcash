@@ -66,7 +66,7 @@ const RECORD_AND_MAPPING_SOURCE = LEDGER(`this.count = 1; balances[to] = amount;
 // run is pinned, so the fixed write is declared there too.
 const FIXED_AND_SIZED_SOURCE = LEDGER(`this.count = 1; this.names.push("hi"); ${CALL}`);
 // The batch's write sits in a loop over the caller's own array beside the call, so its target varies per turn and
-// no segment index names where it lands: the entry publishes nothing and a builder keeps its refusal.
+// no one segment index names where it lands: the entry publishes where each turn writes instead.
 const VARYING_LOOP_SOURCE = `pragma solidcash ^0.13.0;${PING}`
   + ' contract Ledger {'
   + '   uint public count;'
@@ -175,19 +175,14 @@ describe('the segment each write of a per-call entry lands in, as an artifact pu
     expect(segmentOf(fixedAndSized, { variable: 'names' })).toBe('last');
   });
 
-  it('publishes nothing for a batch write whose target varies per turn of a loop that calls', () => {
+  it('publishes each turn\'s segment for a write whose target varies per turn of a loop that calls', () => {
     // The loop body makes the call as well as the write (the fixture's own shape,
     // `.marketplace/contracts/MarketplaceV1.sol:474-497`: `whitelistWorkers[...] = true;` then
-    // `publishJobEvent(...)` in one iteration), so the write's segment is decided at run time and no compile-time
-    // walk can place it - `callFreeNestedBlocks` returns undefined for any loop whose body reaches a call
-    // (`packages/solidc/src/per-call/master/support.ts:722`). The shape stays unstated by design, and that is a fact
-    // about this body, not about the loop protocol: the same loop over a caller's array with NO call in its body is
-    // planned by the per-call lane's call path - one node per element, each declared where the emitted per-turn
-    // coordinate reads it - and it settles end to end, which
-    // `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` drives (machine accept beside a refused
-    // mutation) and `solidcash/test/per-call/call/loop-turns.test.ts` pins for three elements. The variant here
-    // additionally needs the hop's callee-frame planning, because a call inside the loop opens a segment per turn.
-    expect(publishedWrites(varyingLoop, 'Ledger', 'move')).toStrictEqual({});
+    // `publishJobEvent(...)` in one iteration), so a turn writes in the segment its own call closes: turn `t` in the
+    // one `site`'s `t`-th call closes, which a builder knows from the calls it plans (`loop-turn-segments.test.ts`).
+    expect(publishedWrites(varyingLoop, 'Ledger', 'move')).toStrictEqual({
+      writes: [{ segment: 0, turns: { collection: 'balances', slot: 0, site: 0, stride: 1 } }],
+    });
   });
 
   it('names both segments of a record its body writes at both ends, and the run\'s last for the batch', () => {

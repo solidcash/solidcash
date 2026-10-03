@@ -83,14 +83,11 @@ const MAPPING_WALL_SOURCE = `pragma solidcash ^0.13.0;${MAPPING_HEAD()}`
   + '     require(true);\n   }\n }';
 
 /**
- * The wall: a loop whose own body reaches the call, and whose write the entry's own facts do not place.
+ * A loop whose own body reaches the call, so the write the loop carries lands where the loop's own calls put it.
  *
- * A loop that reaches a call makes it once per turn, so the write the loop carries lands where the loop's own calls
- * have the run's calls sit. The artifact states a segment for a write whose path it can follow, and for this shape
- * it states only the entry's own other writes: the mapped node the loop carries is left to the entry-wide
- * statement, which names the run's last segment. The hop declares the write in the segments the loop's own calls
- * name instead, which is what the machine's verdict below measures: the frame accepts the declaration it refused
- * when the write sat in the entry-wide segment alone.
+ * A loop that reaches a call makes it once per turn, and each call closes the segment the turn's write ran in. The
+ * artifact publishes where each turn writes (`turns`), and the hop declares each record from the segment that mints
+ * it on, which is what the machine's verdict below measures.
  */
 const LOOP_CALLS_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IOther { function ping(address who); }'
@@ -346,22 +343,20 @@ describe('the mapping node of the same shape, through the same path', () => {
 });
 
 describe('a mapping loop whose own body reaches a call, through the same path', () => {
-  it('declares the loop\'s write in the segments the loop\'s own calls name, and the frame accepts them', async () => {
+  it('declares the loop\'s write in the segments its turns publish, and the frame accepts them', async () => {
     // Derived rather than broadcast: the assertion is the machine's verdict on every frame of the hop.
     const run = await deployed(LOOP_CALLS_SOURCE, {
       entry: 'move', args: [[hexToBin(KEY)], AMOUNT], broadcast: false,
     });
-    // The artifact states the entry's own writes and no segment for the node the loop carries, which is the fact the
-    // hop reads: the entry's own facts do not fix where that write lands, because the loop's turns are what move it.
+    // The artifact states where each turn writes: the segment the loop's site's call closes, and no entry-wide one.
     expect((publishedWrites(run.impl, 'move').writeSegments ?? []) as readonly unknown[])
-      .not.toContainEqual(expect.objectContaining({ collection: 'balances' }));
-    // The write is declared in every segment the loop's own call site can land it in, not in the entry-wide last
-    // segment alone: each of the frame's segments declares a record the write creates.
+      .toContainEqual({ segment: 0, turns: { collection: 'balances', slot: 0, site: 0, stride: 1 } });
+    // The turn relinks the head where it writes and defers the node it inserts to the loop's teardown, past the
+    // call: the node is created in the last segment, not in the first.
     const draft = run.deployment.initialize.draft;
     const frame = draft.runs.find((execution) => execution.functionName.includes('Impl.move()'))!;
     const segments = draft.blockOf(frame.master).segments;
-    const creating = segments.filter((segment) => segment.some((entry) => entry.in === INDEX_NONE));
-    expect(creating).toHaveLength(segments.length);
+    expect(segments.map((segment) => segment.some((entry) => entry.in === INDEX_NONE))).toStrictEqual([false, true]);
     // Every participant the hop derived accepts, the validator facet included: the loop's write is declared where
     // the turns can land it, and the records the write reaches are declared once each and kept at what it left.
     expect(run.deployment.initialize.verdicts.filter((verdict) => !verdict.accepted).map((verdict) => verdict.id))

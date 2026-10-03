@@ -93,7 +93,9 @@ import {
   layOutMappingBatch, layOutMappingWritten, mappingValueChunkLock, planMappingBatch,
   type MappingBatchPlan, type MappingNodePlacement, type MappingNodePlacements,
 } from '../composer/mapping-plan.js';
-import { planCallLoopWrites, type CallLoopWritePlan } from '../call/entry-records.js';
+import {
+  loopRecordMints, planCallLoopWrites, publishedLoopTurns, type CallLoopWritePlan, type LoopRecordMint,
+} from '../call/entry-records.js';
 import { PerCallProxyDeployError } from './errors.js';
 import { hopTrace, hopTraceOn } from './hop-trace.js';
 
@@ -185,6 +187,9 @@ interface HopMappingBatch {
    * instead declares a record per target group, a target's predecessor standing again for every insert in its gap.
    */
   readonly loopWritten?: boolean;
+  /** For loops whose turns the artifact publishes, the loops of the run and the turn that mints each record. */
+  readonly loopRun?: readonly CallLoopWritePlan[];
+  readonly loopMints?: readonly LoopRecordMint[];
   /** The nodes the batch spends, in write order, each with the id the hop's block holds it under. */
   readonly spent: readonly { readonly slot: Uint8Array; readonly before: Uint8Array; readonly id: string }[];
   /** Every key the batch writes, with the node an insert splices through. */
@@ -425,6 +430,9 @@ export interface HopEntryWrites {
    * stack there, so the caller learns the value from that close and re-plans this write from it.
    */
   readonly awaitsValue?: boolean;
+  /** For loops whose turns the artifact publishes, the loops of the run and the turn that mints each record. */
+  readonly loopRun?: readonly CallLoopWritePlan[];
+  readonly loopMints?: readonly LoopRecordMint[];
   lay(context: HopEntryWritesContext): LaidHopEntryWrites;
 }
 
@@ -928,6 +936,10 @@ function planHopLoopBatch(
   }
   const loop = (loops ?? []).find((candidate) => candidate.collection === written.collection);
   if (loop === undefined) return undefined;
+  // Loops whose turns the artifact publishes write one run of records, every loop of the collection in turn.
+  const turned = publishedLoopTurns(request.artifact, request.functionName)
+    .some((turns) => turns.collection === loop.collection);
+  const run = turned ? (loops ?? []).filter((candidate) => candidate.collection === loop.collection) : [loop];
   const collection = requireHopCollection(request, loop.collection);
   // A chunkable value's node tail states the value's byte length, so the run of chunk records its write takes has
   // to be sized from the value itself. A loop stores its value per turn, which the hop does not compute.
@@ -938,11 +950,14 @@ function planHopLoopBatch(
       + 'from the call',
     );
   }
-  return planHopCollectionBatch(request, fn, collection, loop.turns.map((turn) => ({
+  const batch = planHopCollectionBatch(request, fn, collection, run.flatMap((each) => each.turns.map((turn) => ({
     access: written,
     keys: turn.keys,
-    value: loopStoredValue(loop),
-  })), loop);
+    value: loopStoredValue(each),
+  }))), loop);
+  return turned
+    ? { ...batch, loopRun: run, loopMints: loopRecordMints(request.functionName, run, batch.plan.written) }
+    : batch;
 }
 
 /**
@@ -1910,6 +1925,7 @@ export function hopEntryWrites(rawRequest: HopEntryWritesRequest): HopEntryWrite
     }))),
     spentUtxos,
     ...(batches.some((batch) => batch.unstatedValue === true) ? { awaitsValue: true } : {}),
+    ...(batches[0]?.loopMints === undefined ? {} : { loopRun: batches[0].loopRun, loopMints: batches[0].loopMints }),
     ...(dynamic?.declaredChunks === undefined
       ? {} : {
         sizedRun: {

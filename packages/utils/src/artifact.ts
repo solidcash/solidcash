@@ -1733,14 +1733,26 @@ export interface PublishedCallSite {
  * One write of a per-call entry, and the segment its records are declared in.
  *
  * Exactly one identity field is set: `record` names one of the entry's own data-NFT records by its record index,
- * `collection` names the verified mapping a batch write targets, and `variable` names the dynamic value whose run
- * of chunk records the write occupies.
+ * `collection` names the verified mapping a batch write targets, `variable` names the dynamic value whose run
+ * of chunk records the write occupies, and `turns` names a mapping write a run-time loop makes once per turn.
  */
 export interface PublishedWriteSegment {
   readonly record?: number;
   readonly collection?: string;
   readonly variable?: string;
+  /** For a fact with `turns`, the calls a turn makes before its write, counted from the turn's first call. */
   readonly segment: number | 'last';
+  /**
+   * A mapping write a run-time loop makes once per turn while the loop's own body makes calls.
+   *
+   * Every turn makes the same `stride` calls, the first of them at the entry's call site `site`, so turn `t`'s
+   * write lands in the segment `segment` past the one `site`'s `t`-th call closes: the frame position of `site`'s
+   * first call, plus `t * stride + segment`. The loop's records are one run, minted in the order the turns write
+   * them and the loop's teardown flushes the last, in the segment `turns * stride` past `site`'s first call; a
+   * builder declares each record from the segment that mints it on, chained turn to turn. Two loops that write one
+   * collection continue one run, the second's records past the first's.
+   */
+  readonly turns?: PublishedWriteTurns;
   /**
    * The fields of the written dynamic value's element whose prior value the write provably copies back unchanged.
    *
@@ -1765,6 +1777,18 @@ export interface PublishedWriteSegment {
    * batch and the run have to share a segment.
    */
   readonly apart?: true;
+}
+
+/** Where the turns of a run-time loop that makes calls land its mapping write: see `PublishedWriteSegment.turns`. */
+export interface PublishedWriteTurns {
+  /** The collection the loop writes. */
+  readonly collection: string;
+  /** The entry slot of the loop's write, `entryAccesses[].slotIndex`. */
+  readonly slot: number;
+  /** The call site each turn makes its first call at, an index of the entry's published calls. */
+  readonly site: number;
+  /** The calls every turn makes. */
+  readonly stride: number;
 }
 
 /** One per-call entry's stop sites, plus the call facts a driver resolves a callee through. */

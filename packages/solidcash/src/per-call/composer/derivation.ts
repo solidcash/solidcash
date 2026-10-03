@@ -107,8 +107,9 @@ function deriveExecution(
         // A site whose call the source does not fix may have nothing to fill on this path: the arm that ran names
         // another call at the same position, and this site's own record is one the execution never made. The program
         // is what answered that — the step ran it and it did not advance — so the site is stepped over rather than
-        // read as a stall. Every other unfilled site is still a stall.
-        if (site.kind === 'call' && site.conditional === true) break;
+        // read as a stall. A loop's site is one such: a loop that runs no turn makes none of its calls. Every other
+        // unfilled site is still a stall.
+        if (site.kind === 'call' && (site.conditional === true || site.repeated === true)) break;
         throw derivationStalled(request, site);
       }
 

@@ -30,9 +30,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * open and a closed task (64, 63) and the dispute of a closed task (56), with the fixture's reasons, call sites,
  * occurrences, reads and write facts (pinned first).
  *
- * Posting does not settle (pinned), so the task is written by two setup entries the replica adds: `open` (the
- * post's own writes and its first note, without the store reads and the allowlist loop) and `grant` (the allowlist
- * entry, with no call). Both settle and broadcast, and so does `close`, the close without its timeout arm.
+ * The task is written by two setup entries the replica adds: `open` (the post's own writes and its first note,
+ * without the store reads and the allowlist loop) and `grant` (the allowlist entry, with no call). Both settle and
+ * broadcast, and so does `close`, the close without its timeout arm; a post with an allowlist settles too (pinned).
  *
  * Each entry is pinned where it stands today. Beside them, `greet` and `setAllowedOnly` drop the task read,
  * `refuseOnce` the refund arm's note and `postUnlisted` the allowlist loop, each a wall its entry met; a second
@@ -302,16 +302,6 @@ function lineOf(needle: string, after = 'pragma'): number {
 
 /** Where the allowlist update's failing read of the task array is reported: its own line or its modifier's. */
 const ALLOWED_READ_LINES = [lineOf('function setAllowed('), lineOf('"not creator"')];
-
-/**
- * The hop's refusal of an allowlist loop whose body also makes the store call: the hop plans the loop's write, and
- * the artifact publishes no segment for it (no write fact, pinned first), so it cannot be placed beside the calls.
- * Owner: the SDK hop (`proxy/deploy.ts`, `resolvedWriteSegment`), the call-in-loop shape handed to the ladder stream.
- */
-function unplacedLoopWrite(entry: string): string {
-  return `the implementation's "${entry}" entry writes a mapping record beside an external call, and the segment `
-    + 'that write lands in is not fixed by the entry\'s own source, so the hop cannot declare it';
-}
 
 type ArtifactMap = ReturnType<typeof compileStringMulti>;
 let compiledRun: ArtifactMap | undefined;
@@ -605,9 +595,12 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       calls: ['IJournal.isMember@conditional', 'IJournal.isMember@conditional', 'IJournal.publish@once'],
       reads: ['tasks'], writes: [], writeFacts: [],
     });
-    // As `updateJobWhitelist`: reads the task array, and its loop upsert publishes no write fact.
+    // As `updateJobWhitelist`: reads the task array, and each loop upsert publishes where its turns write.
     expect(publishedFacts('setAllowed')).toStrictEqual({
-      calls: ['IJournal.publish@loop', 'IJournal.publish@loop'], reads: ['tasks'], writes: [], writeFacts: undefined,
+      calls: ['IJournal.publish@loop', 'IJournal.publish@loop'], reads: ['tasks'], writes: [], writeFacts: [
+        { segment: 0, turns: { collection: 'allowlist', slot: 0, site: 0, stride: 1 } },
+        { segment: 0, turns: { collection: 'allowlist', slot: 1, site: 1, stride: 1 } },
+      ],
     });
     // As `refuseArbitration` and `dispute`: the escrow and dispute calls are conditional, the task written last.
     // The record write names the variable it rebuilt; the element write names the fields a whole-element
@@ -646,24 +639,18 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       world = await deployWorld(0n);
     }, 600_000);
 
-    it('posting with an allowlist (20) stops in its frame: the loop\'s key is planned at the task before the push',
-      async () => {
-        const outcome = await enter(world, 'Desk', 'post', [TITLE, 100n, CAROL_LOCK, [BOB_LOCK]], CREATOR);
-        // The store reads' `true` reaches the root (PW8), the two notes no longer stop the plan (547db26d7), and the
-        // loop's write is planned (225b23731), its fixed key `tasks.length - 1` read from the records before the
-        // transaction: the plan spends the node `grant` wrote for task 0, where the body pushes task 1 and writes
-        // there. Owner: the SDK hop's loop plan (`proxy/entry-writes.ts`, `planHopLoopBatch`, keys from
-        // `call/entry-records.ts`, `planCallLoopWrites`, over the live state).
-        // The failing instruction is the loop's own write: the plan keyed it at the task before the push, so the
-        // node the body reaches is one the frame does not declare.
-        expect(unnamedRefusalLine(outcome, 'post')).toBe(lineOf('this.allowlist[id][allowed[i]] = true;'));
-        const draft = outcome.draft!;
-        expect(draft.blockOf('implementation-master').calls.slice(0, 2).map((call) => binToHex(call.result)))
-          .toStrictEqual(['51', '51']);
-        const planned = (id: Uint8Array): boolean => draft.layout.participants
-          .some((placed) => placed.id === `mapping-node-${binToHex(keyToSlotMulti([id, BOB_LOCK]))}`);
-        expect([planned(new Uint8Array(0)), planned(Uint8Array.of(1))]).toStrictEqual([true, false]);
-      }, 300_000);
+    it('posting with an allowlist (20) settles, its loop writing the task the push appended', async () => {
+      // The second task's post spends the first task's chunks, which the hop now keeps after the loop's records in
+      // the segment the turn writes in (ladder #19's wall). The chain is rewound after it, so the cases below start
+      // from the one task the setup opened.
+      const before = await world.network.takeSnapshot();
+      const settled = expectSettled(await enter(world, 'Desk', 'post', [TITLE, 100n, CAROL_LOCK, [BOB_LOCK]], CREATOR));
+      // The loop's key is the task the push appended, whose node the transaction creates.
+      const slot = binToHex(keyToSlotMulti([Uint8Array.of(1), BOB_LOCK]));
+      expect(settled.transaction.outputs.some((output) =>
+        binToHex(output.token?.nft?.commitment ?? new Uint8Array(0)).startsWith(slot))).toBe(true);
+      await before.restore();
+    }, 300_000);
 
     it('posting without an allowlist (18) settles, its loop running no turn', async () => {
       const settled = expectSettled(await enter(world, 'Desk', 'post', [TITLE, 100n, CAROL_LOCK, []], CREATOR));
@@ -718,27 +705,25 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       ]);
     }, 300_000);
 
-    it('an allowlist update from a non-creator (30) is refused for its loop write, before "not creator"', async () => {
+    it('an allowlist update from a non-creator (30) stops at the task read, before "not creator"', async () => {
       const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [BOB_LOCK], []], WORKER);
-      // Refused before anything is derived, so the task read it stopped at before is not reached. Owner: the SDK hop,
-      // as `unplacedLoopWrite` names.
-      expectRefused(outcome, unplacedLoopWrite('setAllowed'));
-      expect(outcome.draft).toBeUndefined();
+      // The loop's write is placed by its published turns now, so the frame runs to its modifier's read of the task
+      // array, which the hop declares no run for beside a loop's records. Owner: the SDK hop (`proxy/entry-writes.ts`,
+      // `hopEntryWrites`, which plans no read run beside a batch) and the body's read position beside the loop's.
+      expect(ALLOWED_READ_LINES).toContain(unnamedRefusalLine(outcome, 'setAllowed'));
     }, 300_000);
 
-    it('an allowlist update adding a worker (20, 30) is refused the same way', async () => {
+    it('an allowlist update adding a worker (20, 30) stops at the same read', async () => {
       const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [ALICE_LOCK], []], CREATOR);
-      // Owner: the SDK hop, as above. The loop's call site is no longer reached.
-      expectRefused(outcome, unplacedLoopWrite('setAllowed'));
-      expect(outcome.stalls).toStrictEqual([]);
+      // Owner: as above.
+      expect(ALLOWED_READ_LINES).toContain(unnamedRefusalLine(outcome, 'setAllowed'));
     }, 300_000);
 
-    it('with the task read stepped around, the allowlist loop is refused the same way', async () => {
-      const outcome = await enter(world, 'Desk', 'setAllowedOnly', [TASK, [ALICE_LOCK], []], CREATOR);
-      // The upsert the body's own code refused (PW3's wall) is planned by the hop now, and refused where it lands
-      // beside the loop's store calls. Owner: the SDK hop, as above.
-      expectRefused(outcome, unplacedLoopWrite('setAllowedOnly'));
-      expect(outcome.draft).toBeUndefined();
+    it('with the task read stepped around, the allowlist loop settles and the store posts its note', async () => {
+      const before = await world.network.takeSnapshot();
+      const settled = expectSettled(await enter(world, 'Desk', 'setAllowedOnly', [TASK, [ALICE_LOCK], []], CREATOR));
+      expect(postedNotes(world, settled).map((note) => note.kind)).toStrictEqual([14n]);
+      await before.restore();
     }, 300_000);
 
     it('a refusal from a non-arbiter reports its own check, before the escrow call it never reaches', async () => {

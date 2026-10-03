@@ -115,7 +115,7 @@ describe('kernel multi continuation resource lanes under composition', () => {
     expect(rightEntries.find((entry) => binToHex(entry.slot) === slot)?.value).toEqual(right);
   }, 300_000);
 
-  it('settles two cold chunkable collection inserts through typed graph discovery', async () => {
+  it('builds and sends two cold chunkable collection inserts through typed graph discovery', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const storeArtifact = compileString(`pragma solidcash >=0.8.0;
       contract Store() {
@@ -153,6 +153,7 @@ describe('kernel multi continuation resource lanes under composition', () => {
     const left = new Uint8Array(130).fill(0x71);
     const right = new Uint8Array(190).fill(0x82);
     const call = caller.call.poke(store.inner.lockingBytecode, 3n, left, right);
+    expect(vmAccepts(await call.build())).toBe(true);
     await expect(call.send()).resolves.toBeDefined();
     const [leftEntries, rightEntries] = await Promise.all([
       store.getEntries('left'), store.getEntries('right'),

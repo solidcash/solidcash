@@ -20,7 +20,10 @@ import {
   type ValueChunkWriteDescriptor,
 } from './value-chunk-persist.js';
 import { describeValueChunkWrites } from './writer-group-selection.js';
-import { resolveValueChunkWriteGeometry } from './value-chunk-write-geometry.js';
+import {
+  resolveValueChunkWriteGeometry,
+  retainCompleteObservedValueChunkWriteGeometry,
+} from './value-chunk-write-geometry.js';
 
 export interface BuildStatefulFunctionCallHost {
   compilerRoute?: {
@@ -46,13 +49,21 @@ export async function buildStatefulFunctionCall(
   const stb = await host.applyOverrides();
   const buildFinalized = (): TransactionBuilder => {
     const valueChunkVariables = stb.getValueChunkVars();
+    const observedChunks = [...stb.getDerivedChunkOutputs()].map(([offset, chunk]) => ({
+      offset,
+      resourceIdentity: chunk.resourceIdentity,
+      resourcePart: chunk.resourcePart,
+    }));
     for (const group of [...stb.getExternalCallUtxoGroups(), ...stb.getLowLevelCallUtxoGroups()]) {
       // A delegate's continuation resources belong to its authenticated state owner (the proxy), not to the
       // implementation whose code executes the write. Finalization may refresh output coordinates, but it must
       // not silently change the category component of the stable resource identity established by derivation.
       const described = describeValueChunkWrites(group, group.valueChunkStateOwner?.categoryId);
       if (described.length > 0 || group.valueChunkWrites === undefined) {
-        group.valueChunkWrites = preserveTransportedValueChunkWriteGeometry(group, described);
+        const published = preserveTransportedValueChunkWriteGeometry(group, described);
+        group.valueChunkWrites = retainCompleteObservedValueChunkWriteGeometry(
+          published, group.valueChunkWrites ?? [], observedChunks,
+        );
       }
     }
     const built = stb.build();

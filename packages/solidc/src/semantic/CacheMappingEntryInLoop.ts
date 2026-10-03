@@ -180,17 +180,31 @@ class ProjectCapturedMappingRead extends AstTraversal {
 class SourceMappingReadFinder extends AstTraversal {
   found = false;
 
+  keys: ExpressionNode[] = [];
+
   constructor(private readonly mapping: string) { super(); }
+
+  visitTupleIndexOp(node: TupleIndexOpNode): Node {
+    if (node.tuple instanceof IdentifierNode && node.tuple.name === this.mapping) {
+      this.found = true;
+      this.keys.push(new IntLiteralNode(BigInt(node.index)));
+    }
+    return super.visitTupleIndexOp(node);
+  }
 
   visitArrayAccess(node: ArrayAccessNode): Node {
     if (node.array instanceof IdentifierNode && node.array.name === this.mapping
-      && expressionCanon(node.index) !== undefined) this.found = true;
+      && expressionCanon(node.index) !== undefined) {
+      this.found = true;
+      this.keys.push(node.index);
+    }
     return super.visitArrayAccess(node);
   }
 
   visitMappingAccess(node: MappingAccessNode): Node {
     if (node.name === this.mapping && node.keys.every((key) => expressionCanon(key) !== undefined)) {
       this.found = true;
+      if (node.keys.length === 1) this.keys.push(node.keys[0]!);
     }
     return super.visitMappingAccess(node);
   }
@@ -474,6 +488,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         && !statement.arrayIndex && !statement.arrayPush && !statement.arrayPop
         ? { name: statement.name, key: statement.keys[0], value: statement.expression } : undefined;
     const knownWrites = new Map<string, { key: ExpressionNode; value: ExpressionNode }>();
+    const priorWriteKeys = new Map<string, ExpressionNode[]>();
     const knownCaptures = new Map<string, ExpressionNode>();
     const sourceCaptures = new Map<string, ExpressionNode>();
     const capturePreWriteCollections = new Map<string, Set<string>>();
@@ -517,6 +532,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
             }
           }
           knownWrites.set(precedingWrite.name, precedingWrite);
+          priorWriteKeys.set(precedingWrite.name, [
+            ...(priorWriteKeys.get(precedingWrite.name) ?? []), precedingWrite.key,
+          ]);
         } else if (preceding instanceof VariableDefinitionNode
           && (!preceding.expression || expressionCanon(preceding.expression) !== undefined)) {
           if (preceding.expression) {
@@ -541,6 +559,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         } else {
           // Calls, branches, assertions, and unsupported writes end the straight-line proof.
           knownWrites.clear();
+          priorWriteKeys.clear();
           knownCaptures.clear();
           sourceCaptures.clear();
           capturePreWriteCollections.clear();
@@ -570,8 +589,16 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       // other collections. Expand captured locals at their declaration point, not after later writes.
       if (!sourcePrefixSafe) continue;
       const preWriteKey = expandSourceCaptures(readerKeys[0]);
-      if (expressionCanon(preWriteKey) === undefined) continue;
       const preWriteCollections: string[] = [];
+      // A prior write to a distinct literal key cannot change this source read. Keep every
+      // earlier key, not only the last write, so a same-key mutation cannot be hidden by a later one.
+      for (const [name, writtenKeys] of priorWriteKeys) {
+        const finder = new SourceMappingReadFinder(name);
+        finder.visit(preWriteKey);
+        if (finder.keys.length > 0 && finder.keys.every((readKey) => writtenKeys.every((writtenKey) =>
+          readKey instanceof IntLiteralNode && writtenKey instanceof IntLiteralNode
+          && readKey.value !== writtenKey.value))) preWriteCollections.push(name);
+      }
       for (const [local, collections] of capturePreWriteCollections) {
         const projector = new ProjectCapturedMappingRead(local, sourceCaptures.get(local)!);
         projector.visit(cloneNode(readerKeys[0]));
@@ -579,15 +606,17 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           if (!preWriteCollections.includes(name)) preWriteCollections.push(name);
         });
       }
-      for (let laterIndex = index + 1; laterIndex < statements.length; laterIndex += 1) {
-        if (transparentStatements[laterIndex]) continue;
-        const laterWrite = scalarWrite(statements[laterIndex]);
-        if (!laterWrite || !argumentOnlyMappingValue(laterWrite.key, parameters)
-          || !argumentOnlyMappingValue(laterWrite.value, parameters)) break;
-        if (knownWrites.has(laterWrite.name) || preWriteCollections.includes(laterWrite.name)) continue;
-        const finder = new SourceMappingReadFinder(laterWrite.name);
-        finder.visit(preWriteKey);
-        if (finder.found) preWriteCollections.push(laterWrite.name);
+      if (expressionCanon(preWriteKey) !== undefined) {
+        for (let laterIndex = index + 1; laterIndex < statements.length; laterIndex += 1) {
+          if (transparentStatements[laterIndex]) continue;
+          const laterWrite = scalarWrite(statements[laterIndex]);
+          if (!laterWrite || !argumentOnlyMappingValue(laterWrite.key, parameters)
+            || !argumentOnlyMappingValue(laterWrite.value, parameters)) break;
+          if (knownWrites.has(laterWrite.name) || preWriteCollections.includes(laterWrite.name)) continue;
+          const finder = new SourceMappingReadFinder(laterWrite.name);
+          finder.visit(preWriteKey);
+          if (finder.found) preWriteCollections.push(laterWrite.name);
+        }
       }
       if (preWriteCollections.length > 0) reader.preWriteMappingCollections = preWriteCollections;
     }

@@ -1516,12 +1516,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID,
   ];
 
-  /** The captured ids this compile reserves: only the direct convention can define the sorted scalar read. */
+  /**
+   * Every id this compile reserves against the helper allocator.
+   *
+   * The sorted scalar read is captured by the outcome pass in either convention: the capture decides on its own
+   * profitability, so the reservation cannot depend on which convention is compiling. Leaving it out of the
+   * per-call half let the allocator hand id -18 to a helper while the captured read was also defined under it, and
+   * a program that defines one identifier twice cannot be evaluated at all - measured on the example project's
+   * `EACCToken`, whose master defined -18 twice and stopped its genesis probe at `OP_DEFINE a previously-defined
+   * function identifier`.
+   */
   private get capturedSubroutineIds(): readonly bigint[] {
-    return this.directConvention
-      ? [...GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS,
-        GenerateTargetTraversalWithLocation.SORTED_INT_READ_SUBROUTINE_ID]
-      : GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS;
+    return [...GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS,
+      GenerateTargetTraversalWithLocation.SORTED_INT_READ_SUBROUTINE_ID];
   }
 
   private allocateCompactHelperId(): bigint {

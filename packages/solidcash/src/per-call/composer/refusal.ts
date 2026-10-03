@@ -1,5 +1,5 @@
 /**
- * The reason a refused composition was refused, attributed to the innermost frame that refused.
+ * The reason a refused composition was refused, attributed to the refusing frame the execution meets first.
  *
  * The machine runs one program per frame, so a composition that is refused reports a per-input objection. That
  * objection is a bare operation failure — `Program failed an OP_VERIFY operation.` — and names neither the frame
@@ -28,6 +28,7 @@ import {
   type RevertArgumentSource,
 } from '@solidcash/utils';
 import { UNFILLED_CALLEE_REF, type CompositionDraft } from './draft.js';
+import { callTreeOf, executionRanks, frameMadeCall, frameStopOf, type FrameStop } from './execution-order.js';
 
 type VirtualMachine = ReturnType<typeof createVirtualMachineBch2026>;
 
@@ -81,7 +82,10 @@ export interface CompositionRefusal {
   readonly accepted: boolean;
   /** Every frame whose program the machine refused, in input order. */
   readonly refusals: readonly RefusedFrame[];
-  /** The deepest refusing frame: a callee's reason is what bubbles up through its callers. */
+  /**
+   * The refusing frame the execution meets first (spec V6): a callee below a call its caller made, whose reason
+   * bubbles up through its callers, or the caller itself when it stopped before making that call.
+   */
   readonly innermost?: RefusedFrame;
 }
 
@@ -291,7 +295,7 @@ function frameDepths(draft: CompositionDraft): ReadonlyMap<string, number> {
  * Whether a frame refused only on a call reference the derivation never filled: a frame the execution did not reach
  * fails reading it as an input index, not on a reason of its own source.
  */
-function readsUnfilledReference(draft: CompositionDraft, refusal: RefusedFrame): boolean {
+export function readsUnfilledReference(draft: CompositionDraft, refusal: RefusedFrame): boolean {
   return refusal.objection.includes('invalid transaction input index')
     && holdsUnfilledReference(draft, refusal.master);
 }
@@ -373,7 +377,8 @@ export interface CompositionRefusalOptions {
 }
 
 /**
- * Asks the machine for a verdict on every frame of a draft and reports the refusals, innermost first.
+ * Asks the machine for a verdict on every frame of a draft and reports the refusals, naming the one the execution
+ * meets first.
  *
  * Only frames are reported: a validator or a record input is not a frame and does not carry a source reason, so a
  * refusal there is left to the caller. The frames are evaluated on the draft as it stands, so a composition whose
@@ -389,11 +394,13 @@ export function reportCompositionRefusal(options: CompositionRefusalOptions): Co
   const shared = draft.programFor(masters[0]!.id);
   const depths = frameDepths(draft);
   const refusals: RefusedFrame[] = [];
+  const stops = new Map<string, FrameStop>();
   for (const placed of masters) {
     const state = vm.evaluate({
       inputIndex: placed.index, sourceOutputs: shared.sourceOutputs, transaction: shared.transaction,
     });
     if (vm.stateSuccess(state) === true) continue;
+    stops.set(placed.id, frameStopOf(state));
     const typed = state as { readonly ip?: number; readonly error?: unknown; readonly stack?: readonly Uint8Array[] };
     const run = draft.runs.find((candidate) => candidate.master === placed.id);
     const artifact = artifacts.find((candidate) => candidate.contractName === placed.contract);
@@ -413,40 +420,69 @@ export function reportCompositionRefusal(options: CompositionRefusalOptions): Co
 
   const callers = frameCallers(draft);
   const seeded = new Set(options.reached ?? []);
-  // The entry's own check the execution fails before it reaches a call is a reason of its own, and it outranks a
-  // callee the caller probed: the caller stopped on its own check, so it never entered the callee the settle ran.
-  // A frame whose path is not bound is therefore a candidate only when a reached ancestor did not refuse at a
-  // source reason; when none did, the caller simply was not derived (the stopped-plan case the seed exists for),
-  // and the frame stands.
-  const refusedSourceAncestor = (master: string): boolean => {
-    let caller = callers.get(master);
-    while (caller !== undefined) {
-      const refusal = refusals.find((candidate) => candidate.master === caller);
-      if (refusal !== undefined && namesSourceReason(refusal.reason)) return true;
-      caller = callers.get(caller);
+  // A frame that refused before making one of its calls stopped the execution there, so nothing below that call ran
+  // (spec V6), whatever its own reason says: the entry's own check outranks a callee the caller probed, which it
+  // never entered. A stop on an unfilled reference of its own is where the derivation stopped binding rather than
+  // where the execution stopped, and a frame above one the caller evaluated directly is not derived in that draft,
+  // so there only a source reason of its own says where it stopped (the stopped-plan case the seed exists for). A
+  // filled reference does not show the call was made (a stalled step leaves it filled), so that is read off the
+  // machine.
+  const tree = callTreeOf(draft);
+  const byMaster = new Map(refusals.map((refusal) => [refusal.master, refusal]));
+  const aboveSeeded = new Set<string>();
+  for (const master of seeded) {
+    for (let parent = tree.parentOf.get(master); parent !== undefined; parent = tree.parentOf.get(parent.caller)) {
+      aboveSeeded.add(parent.caller);
+    }
+  }
+  const made = new Map<string, boolean>();
+  const stoppedAbove = (master: string): boolean => {
+    let child = master;
+    let parent = tree.parentOf.get(child);
+    while (parent !== undefined) {
+      const { caller, call } = parent;
+      const refusal = byMaster.get(caller);
+      // A delegate is entered by its proxy's forwarding, an edge the derivation does not bind, so an unfilled
+      // reference into it says nothing about where the proxy stopped.
+      const structural = draft.blockOf(child).kind === FrameKind.DELEGATE
+        && draft.blockOf(caller).calls[call]?.calleeRef === UNFILLED_CALLEE_REF;
+      if (refusal !== undefined && !structural && !readsUnfilledReference(draft, refusal)
+        && (namesSourceReason(refusal.reason) || !aboveSeeded.has(caller))) {
+        const key = `${caller}|${call}`;
+        if (!made.has(key)) made.set(key, frameMadeCall(draft, vm, caller, call, stops.get(caller)!));
+        if (made.get(key) === false) return true;
+      }
+      child = caller;
+      parent = tree.parentOf.get(child);
     }
     return false;
   };
   // A frame is reached when every call on its path from a root was bound, when it did not merely stop reading an
   // unfilled reference of its own, or when the caller evaluated it directly. A frame the execution never entered can
   // still refuse - its own inputs are not the execution's - so it is not a candidate for the innermost reason. A
-  // frame the settle probed can name that reason even when its path is not yet bound, unless the frame its caller
-  // stopped at refused at a source reason first. The deepest reached frame is the one whose refusal the execution
-  // actually met; only when no frame was reached is a refusal read without that check.
+  // frame the settle probed, or one naming a source reason, stands even when its path is not yet bound, unless a frame
+  // above it stopped before the call that leads to it. Only when no frame was reached is a refusal read without the
+  // binding check.
   const reached = refusals.filter((refusal) => {
     if (readsUnfilledReference(draft, refusal)) return false;
+    if (stoppedAbove(refusal.master)) return false;
     if (reachedThroughCalls(draft, callers, refusal.master)) return true;
-    return (seeded.has(refusal.master) || namesSourceReason(refusal.reason))
-      && !refusedSourceAncestor(refusal.master);
+    return seeded.has(refusal.master) || namesSourceReason(refusal.reason);
   });
   const pool = (() => {
     const named = reached.filter((refusal) => namesSourceReason(refusal.reason));
     if (named.length > 0) return named;
-    return reached.length > 0 ? reached : refusals;
+    if (reached.length > 0) return reached;
+    const open = refusals.filter((refusal) => !stoppedAbove(refusal.master));
+    return open.length > 0 ? open : refusals;
   })();
+  // Of the frames left, the execution meets first the one it finishes first: a callee before its caller, and the
+  // frames below an earlier call before those below a later one.
+  const ranks = executionRanks(tree);
+  const rankOf = (refusal: RefusedFrame): number => ranks.get(refusal.master) ?? Number.MAX_SAFE_INTEGER;
   let innermost: RefusedFrame | undefined;
   for (const refusal of pool) {
-    if (innermost === undefined || refusal.depth > innermost.depth) innermost = refusal;
+    if (innermost === undefined || rankOf(refusal) < rankOf(innermost)) innermost = refusal;
   }
   return { accepted: refusals.length === 0, refusals, ...(innermost === undefined ? {} : { innermost }) };
 }

@@ -34,12 +34,13 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * control settles the same entry and shows the changes those calls make. A custom error raised inside the pull after
  * the approve is reported by the pull's own frame.
  *
- * Known walls. Both are in the hop's settle loop (`proxy/deploy.ts`), which settles every callee before it derives the
- * entry: a check whose entry would next call a callee that refuses in the same state is reported as that callee's
- * revert, which the EVM never reaches (the desk not open: the release of escrow 0), so six of the seven checks report
- * their own reason; and the thrown refusal does not carry a callee's custom error arguments (`errorArgs`), which the
- * shipped reporter reads from the refused draft. A first mark, which inserts a node beside the release, settles. The
- * plain call path on the implementation's own deployment, whose records hold no ledger, refuses the entry by name.
+ * The hop settles every callee before it derives the entry, so a check whose entry would next call a callee that
+ * refuses in the same state meets that callee's refusal first (the desk not open: the release of escrow 0). The
+ * failure reported is the one the execution meets first (spec V6): the entry stopped before that call, so all seven
+ * checks report their own reason. Known wall, in the hop's settle loop (`proxy/deploy.ts`): the thrown refusal does
+ * not carry a callee's custom error arguments (`errorArgs`), which the shipped reporter reads from the refused draft.
+ * A first mark, which inserts a node beside the release, settles. The plain call path on the implementation's own
+ * deployment, whose records hold no ledger, refuses the entry by name.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */
@@ -406,7 +407,7 @@ interface Check {
   readonly stopsAt?: string;
 }
 
-/** Six of the row's seven checks; the seventh, the desk not open, is the first known wall below. */
+/** The row's seven checks. */
 const CHECKS: readonly Check[] = [
   {
     title: 'an empty method after the approve', caller: MEMBER, functionName: 'post', args: [0n, AMOUNT],
@@ -419,6 +420,10 @@ const CHECKS: readonly Check[] = [
   {
     title: 'a non-member, read after the approve', caller: OUTSIDER, functionName: 'post', args: [7n, AMOUNT],
     needle: '"not a member"', reason: 'not a member', stopsAt: 'site 2 (call 2)',
+  },
+  {
+    title: 'a desk not open, after the mark', caller: MEMBER, functionName: 'settle', args: [],
+    needle: '"invalid state"', reason: 'invalid state', stopsAt: 'site 1 (call 1)',
   },
   {
     title: 'a desk not flagged, after the mark', caller: MEMBER, functionName: 'settle', args: [], before: ['open'],
@@ -523,18 +528,20 @@ describe('spec section 23 row 5: a revert after state-changing calls', () => {
     ]);
   });
 
-  it('known wall: a desk not open reports the release it never reaches, not its own state check', async () => {
+  it('a desk not open reports its own state check, not the release it never makes', async () => {
     const run = await deployed();
-    // The EVM stops at the desk's "invalid state" right after the mark, before the release. Owner: the hop's settle
-    // loop (`proxy/deploy.ts`), which settles every callee before it derives the entry, so the release of the escrow
-    // the unopened desk does not hold (0) refuses first and its reason is the one thrown. Nothing moves either way.
+    // The EVM stops at the desk's "invalid state" right after the mark, before the release. The release of the escrow
+    // the unopened desk does not hold (0) is settled first and refuses, and the stalled step at the release's site
+    // leaves its reference filled; the entry's frame stops at the same place with that reference unfilled, so it
+    // never made the call and its own check is the refusal the execution meets first.
     const refused = await expectRefused(run, MEMBER, 'settle', [], 'desk not open');
-    expect(refused.error.message).toBe(refusalOf('the call\'s callee "Ledger.release()"', 'callee-master-2',
-      'Ledger.release()', '"no escrow"', 'no escrow'));
-    expect(refused.stalls).toStrictEqual([
-      'PER_CALL_DERIVATION_STALLED: master "implementation-master" of Desk.settle() filled no witness at '
-      + 'site 1 (call 1)',
-    ]);
+    expect(refused.error.message).toBe(refusalOf('the implementation\'s "settle" entry', ENTRY_FRAME,
+      'Desk.settle()', '"invalid state"', 'invalid state'));
+    const report = composer.reportCompositionRefusal({
+      draft: refused.draft, artifacts: [deskProxy, desk, ledger], vm: compositionMachine(),
+    });
+    expect(report.innermost?.master).toBe(ENTRY_FRAME);
+    expect(report.refusals.find((refusal) => refusal.master === 'callee-master-2')?.reason.message).toBe('no escrow');
     expect(lineOf('"invalid state"')).toBeLessThan(lineOf('.release(this.escrow)'));
   });
 

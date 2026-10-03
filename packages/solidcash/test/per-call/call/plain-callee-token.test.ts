@@ -36,6 +36,8 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + ' contract Payer { IERC20 public token;'
   + '   constructor(IERC20 token_) { token = token_; }'
   + '   function pay(address to, uint256 amount) external { token.transfer(to, amount); }'
+  + '   function payUpTo(address to, uint256 amount, uint256 cap) external {'
+  + '     require(amount <= cap, "over the cap"); token.transfer(to, amount); }'
   + '   function held() external view returns (uint256) { return token.balanceOf(address(this)); } }';
 
 /** A user the payer pays, whose key the token's list does not hold. */
@@ -185,4 +187,19 @@ describe('an ERC-20-like callee on the plain call path', () => {
     expect(await balanceOf(chain, chain.locks.get('Payer')!)).toBe(1000n);
     expect(await balanceOf(chain, RECIPIENT)).toBe(0n);
   });
+
+  it('refuses at the payer\'s own cap, before the transfer it never makes, though that transfer refuses too',
+    async () => {
+      const chain = await deployed();
+      const result = await enter(chain, 'payUpTo', [RECIPIENT, 5000n, 100n]);
+      expect(result.accepted).toBe(false);
+      expect(result.broadcast).toBeUndefined();
+      // The derivation's stalled step at the call site leaves the transfer's reference filled, and the transfer's own
+      // frame refuses the balance; the payer stops at its cap with that reference unfilled too, so it never made the
+      // call and its own check is the refusal the execution meets first (spec V6).
+      expect(result.refusal?.refusals.map((refusal) => refusal.master)).toStrictEqual(['master', 'callee-master-1']);
+      expect(result.refusal?.innermost?.master).toBe('master');
+      expect(result.refusal?.innermost?.reason.message).toBe('over the cap');
+      expect(await balanceOf(chain, chain.locks.get('Payer')!)).toBe(1000n);
+    });
 });

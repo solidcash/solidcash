@@ -95,6 +95,7 @@ import {
 } from './external-calls.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
 import { carriedFromChain, deriveReentryWriters, reentrySettleBefore, withReentryFrames } from './reentry.js';
+import { deferredRefusalMetFirst, dropDeferredBelow, firstDeferredRefusal } from './refusal-order.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
 export type PerCallProxyDeployHalf = Omit<DeployOptions, 'provider' | 'initialState'>;
@@ -1310,6 +1311,8 @@ interface CalleeSettlement {
    * the execution never reaches. The deferred verdict is thrown only when the entry does not refuse that way.
    */
   readonly deferred?: Error;
+  /** Every deferred refusal, by the index of the callee whose settle refused, so the first one met is reported. */
+  readonly deferredFrames?: ReadonlyMap<number, Error>;
 }
 
 /**
@@ -1386,6 +1389,7 @@ async function settleCallees(options: {
   const trace = hopTraceOn();
   const deferFailures = options.deferFailures === true;
   let deferred: Error | undefined;
+  const deferredFrames = new Map<number, Error>();
   const learned = new Map<string, Uint8Array>(options.seed?.retvals ?? []);
   const writeViews = new Map<string, readonly (Uint8Array | undefined)[]>(options.seed?.writeViews ?? []);
   const writeValues = new Map<string, Uint8Array>(options.seed?.writeValues ?? []);
@@ -1467,6 +1471,7 @@ async function settleCallees(options: {
           if (!learnable) {
             if (deferFailures) {
               deferred ??= error as Error;
+              deferredFrames.set(calleeIndex, error as Error);
               break;
             }
             throw error;
@@ -1612,6 +1617,9 @@ async function settleCallees(options: {
       );
       if (deferFailures) {
         deferred ??= failure;
+        deferredFrames.set(calleeIndex, failure);
+        // A frame whose own stop its report names first never made the calls below it that refused (spec V6).
+        if (refusal.innermost?.master === callee.master) dropDeferredBelow(options.callees, deferredFrames, calleeIndex);
         break;
       }
       throw failure;
@@ -1619,7 +1627,7 @@ async function settleCallees(options: {
   }
   return {
     retvals: learned, writeViews, writeValues, events: calleeEvents,
-    ...(deferred === undefined ? {} : { deferred }),
+    ...(deferred === undefined ? {} : { deferred, deferredFrames }),
   };
 }
 
@@ -1970,18 +1978,21 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       const refusal = reportCompositionRefusal({
         draft: candidate.draft, artifacts, vm, reached: [IMPLEMENTATION_MASTER_ID],
       });
-      // A callee's refusal is deferred below so an entry that fails a check before its later call reports its own
-      // reason instead. That only overrides the callee when the entry itself refuses at a published source reason;
-      // a stall the entry merely stopped on (an unfilled reference, an unstated declaration) is not a reason of its
-      // own, and the callee that refused through the proxy hop is reported as it always was.
-      const entryReason = refusal.innermost?.master === IMPLEMENTATION_MASTER_ID
-        && (refusal.innermost.reason.message !== undefined || refusal.innermost.reason.error !== undefined);
-      if (deferredCalleeFailure !== undefined && !entryReason) throw deferredCalleeFailure;
+      // A callee's deferred refusal is met before the entry's own stop only below a call the entry made (spec V6): a
+      // check the entry fails before that call is its own stop, whatever reason it names. A stop on an unfilled
+      // reference of the entry's own is where the derivation stopped binding, and the deferred refusal stands.
+      if (deferredCalleeFailure !== undefined) {
+        const metFirst = deferredRefusalMetFirst({
+          draft: candidate.draft, vm, entry: IMPLEMENTATION_MASTER_ID, report: refusal,
+          callees: options.callees ?? [], deferred: calleeSettlement.deferredFrames,
+        });
+        if (metFirst !== undefined) throw metFirst;
+      }
       const attributed = refusal.innermost === undefined
         ? describeReading(reading, writtenCommitments[0] ?? new Uint8Array(0))
         : describeInnermost(refusal.innermost);
-      // The reporter names the deepest refused frame, which a frame below the implementation can be; the frame this
-      // settle evaluated is named beside it so the failing frame is not read off the reporter alone.
+      // The reporter names the refusal the execution meets first, which a frame below the implementation can be; the
+      // frame this settle evaluated is named beside it so the failing frame is not read off the reporter alone.
       const failing = trace && refusal.innermost !== undefined
         && refusal.innermost.master !== IMPLEMENTATION_MASTER_ID
         ? `frame "${IMPLEMENTATION_MASTER_ID}" of `
@@ -2017,7 +2028,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   }
   if (composed === undefined) {
     if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=exhausted attempts=${maximumAttempts}`);
-    if (deferredCalleeFailure !== undefined) throw deferredCalleeFailure;
+    if (deferredCalleeFailure !== undefined) {
+      throw firstDeferredRefusal(options.callees ?? [], calleeSettlement.deferredFrames) ?? deferredCalleeFailure;
+    }
     throw new PerCallProxyDeployError(
       `the implementation's ${options.entryLabel} did not settle through the proxy in `
       + `${maximumAttempts} attempts${sizedRunClause(entryWrites)}`,
@@ -2025,7 +2038,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   }
   // A callee that refused can only be one the entry's own body reaches and fails at, which the loop above reports
   // itself; an entry that accepted with a deferred callee would broadcast a frame that refused, so it is refused.
-  if (deferredCalleeFailure !== undefined) throw deferredCalleeFailure;
+  if (deferredCalleeFailure !== undefined) {
+    throw firstDeferredRefusal(options.callees ?? [], calleeSettlement.deferredFrames) ?? deferredCalleeFailure;
+  }
   const { host, draft } = composed;
   // The entry's frame accepted against every value the plan learned, so a stall here is the hop's own shape: the
   // proxy's forwarded call records no result of its own, so it binds the call record's result to empty while the

@@ -436,12 +436,6 @@ function unnamedRefusalLine(outcome: Outcome, entry: string): number {
   return Number(line![1]);
 }
 
-/** The words a callee's settle carries when it reports the root's own entry, stopped before the call. */
-function calleeSettleEntryRefusal(callee: string, entry: string, line: number, reason: string): string {
-  return `the call's callee "${callee}()" did not settle through the proxy: frame "implementation-master" of `
-    + `Desk.${entry}() at line ${line}: ${reason} (Program failed an OP_VERIFY operation.)`;
-}
-
 /** The published facts of one root entry: its call sites with their occurrence, its reads and its write facts. */
 function publishedFacts(functionName: string): Record<string, unknown> {
   const desk = compiled().Desk!;
@@ -805,14 +799,14 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
 
     it('the creator\'s entry on a closed task reports its own check, before the challenge call', async () => {
       const outcome = await enter(world, 'Desk', 'dispute', [TASK, ...OBJECTION], CREATOR);
-      // The challenge's condition holds for the creator, so it is planned and settled first; the entry's own check
-      // fails before the call, so its own reason surfaces.
+      // The challenge's condition holds for the creator, so it is planned and settled first, and it refuses; the
+      // entry's own check fails before the call, so the entry's refusal is the one the execution meets first.
       expectRefused(outcome,
-        calleeSettleEntryRefusal('Panel.challenge', 'dispute', lineOf('"job in invalid state"', 'function dispute('),
-          'job in invalid state'));
+        entryRefusal('dispute', lineOf('"job in invalid state"', 'function dispute('), 'job in invalid state'));
       // The last draft still names the entry's own check among the refusals, even though the deeper settled
       // challenge frame also refused.
       const report = reportOf(outcome);
+      expect(report.innermost?.master).toBe('implementation-master');
       expect(report.refusals.find((refusal) => refusal.master === 'implementation-master')?.reason).toStrictEqual({
         line: lineOf('"job in invalid state"', 'function dispute('), message: 'job in invalid state',
       });

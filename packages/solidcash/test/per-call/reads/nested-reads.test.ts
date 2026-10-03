@@ -217,6 +217,50 @@ describe('reading a view that reads another contract\'s view off chain', () => {
     expect(transactionCount(provider)).toBe(before);
   });
 
+  it('reports the root\'s own guard between two reads, not the later read it never makes', async () => {
+    // A paging getter: the root reads a count, refuses an index past it, and only then reads the element. The element
+    // read is planned too and refuses its own index, but the root stops before making that call, so its guard is the
+    // refusal the execution meets first (spec V6).
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' interface IB { function count() view returns (int); function at(int i) view returns (int); }'
+      + ' contract B {'
+      + '   int public n;'
+      + '   function count() view returns (int) { return this.n; }'
+      + '   function at(int i) view returns (int) { require(i < this.n, "no such element"); return i * 10; }'
+      + ' }'
+      + ' contract A {'
+      + '   function page(int index) view returns (int) {'
+      + `     int total = IB(0x${hex(ADDRESS_B)}).count();`
+      + '     require(index < total, "index out of bounds");'
+      + `     return IB(0x${hex(ADDRESS_B)}).at(index);`
+      + '   }'
+      + ' }';
+    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const bArtifact = artifacts.B!;
+    const two = new Uint8Array(Buffer.from(buildPushdataCommitment(bArtifact.stateLayout!, { n: 2n }, 0), 'hex'));
+
+    const provider = new MockNetworkProvider();
+    await fund(provider, { artifact: artifacts.A!, category: A, categoryHex: A_HEX, seed: 'a', withValidator: true });
+    await fund(provider, { artifact: bArtifact, category: B, categoryHex: B_HEX, seed: 'b', records: [two] });
+    // The read runs one frame per call, so the chain holds a master of B for each.
+    await provider.addUtxo(bytesToHex(deployMaster(bArtifact, B, VALIDATOR_PROGRAM).lockingBytecode),
+      utxo('b211'.padEnd(64, 'd'), 20_000n, B_HEX, 'minting', empty));
+
+    const read = (index: bigint): ReturnType<typeof readPerCallEntry> => readPerCallEntry({
+      provider, artifact: artifacts.A!, categoryId: A_HEX, functionName: 'page', args: [index],
+      externals: { IB: { artifact: bArtifact, categoryId: B_HEX } }, vm: compositionMachine(),
+    });
+    expect((await read(1n)).value).toBe(10n);
+
+    const result = await read(2n);
+    expect(result.accepted).toBe(false);
+    expect(result.refusal?.innermost?.functionName).toBe('A.page()');
+    expect(result.refusal?.innermost?.reason.message).toBe('index out of bounds');
+    expect(result.objection).toContain('index out of bounds');
+    expect(result.refusal?.refusals.map((refusal) => refusal.reason.message))
+      .toEqual(expect.arrayContaining(['index out of bounds', 'no such element']));
+  });
+
   it('refuses by name an entry calling a contract the caller did not supply', async () => {
     const source = 'pragma solidcash ^0.13.0;'
       + ' interface IB { function mid() view returns (int); }'

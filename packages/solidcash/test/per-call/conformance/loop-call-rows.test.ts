@@ -47,10 +47,11 @@ import {
  * Known wall: `Board.split` pays only the non-zero shares (`if (amounts[i] > 0)`), so the number of calls is the
  * number of turns a per-turn condition admits. The artifact publishes that condition on the loop site, and the hop's
  * planner (`proxy/external-calls.ts`, `occurrenceCountOf`) counts every turn of the loop's domain without it: it
- * plans a call for the zero share the body skips, and the payout refuses that call. The control beside it composes
- * the same loop on a plain splitter from a plan stating the two calls the body makes: the shipped composer settles
- * it and the machine accepts every input, and a plan naming the skipped turn's index stalls the splitter's own
- * frame, so the gap is the hop's plan alone. The plain call path on the implementation's own deployment, whose
+ * plans a call for the zero share the body skips. The payout refuses that call in its own settle, but the entry's
+ * frame stops before the call record the body never reads, which is the refusal reported. The control beside it
+ * composes the same loop on a plain splitter from a plan stating the two calls the body makes: the shipped composer
+ * settles it and the machine accepts every input, and a plan naming the skipped turn's index stalls the splitter's
+ * own frame, so the gap is the hop's plan alone. The plain call path on the implementation's own deployment, whose
  * records hold no catalog, refuses the loop entry by name.
  */
 
@@ -340,10 +341,11 @@ describe('spec section 23 row 4: calls inside data-dependent loops', () => {
     });
     // Owner: the SDK hop planner (`proxy/external-calls.ts`, `occurrenceCountOf`), which counts every turn of a loop
     // site's domain and does not apply its condition, so the second turn's call is planned with the zero share the
-    // body never sends, and the payout's frame refuses it.
+    // body never sends. The payout's frame refuses it in its own settle, but the entry's frame stops after its first
+    // call, before the record of the call it never makes, so that stop is the refusal the execution meets first.
     const run = await deployed();
     await expectRefused(run, 'split', [4n, 0n, 6n],
-      /the call's callee "Payout\.send\(\)" did not settle through the proxy: frame "callee-master-2" .*zero share/);
+      /the implementation's "split" entry did not settle through the proxy: frame "implementation-master" .*no source/);
   });
 
   it('refuses the loop entry by name on the plain call path, whose implementation records hold no catalog', async () => {

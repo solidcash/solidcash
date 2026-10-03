@@ -29,7 +29,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * error names that leg and carries neither the draft nor the report; the draft is reached here by spying on the
  * composer. Its report holds the failing frame's own reason, including when the entry stops at a check before a
  * call and a callee settled first refuses: the entry never entered that callee, so its own reason is the one that
- * surfaces.
+ * surfaces (spec V6), also when the stalled step at that very call's site left the call's reference filled.
  * With every check passing the entry settles and broadcasts: the token's `balanceOf` and `transferFrom` reaches touch
  * Alice's balance node, which the hop places once and whose views it chains across the two frames.
  *
@@ -447,6 +447,18 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('a revert after calls through
     // The callee's frame is still reported, with its own reason, in the same report.
     expect(reasonOf(report, 'callee-master-7')?.error?.name).toBe('ShortBalance');
   });
+
+  it('a check right before the reverting token call reports the entry\'s own reason, not the call it never makes',
+    async () => {
+      const refused = await refusedCall(deployed.bob, 'post', [5n, 1500n, 7n, ALICE_LOCK, compiled.coinAddress]);
+      // Bob is no member, so the entry stops at its own check right before `transferFrom`, which refuses his short
+      // balance in its own settle. The stalled step at that call's site leaves its reference filled, but the entry's
+      // frame stops at the same place with it unfilled: the call is never made, so the entry's reason is reported.
+      const report = expectReported(refused, 'the implementation\'s "post" entry', 'implementation-master');
+      expect(refused.error.message).toContain(': not a member (Program failed an OP_VERIFY operation.)');
+      expect(refused.stalls).toStrictEqual([stalledAt(5)]);
+      expect(reasonOf(report, 'callee-master-7')?.error?.name).toBe('ShortBalance');
+    });
 
   it('a check between calls, beside a reverting callee it never reaches, reports the entry\'s own check', async () => {
     const refused = await refusedCall(deployed.alice, 'post', [5n, 1500n, 0n, BOB_LOCK, compiled.coinAddress]);

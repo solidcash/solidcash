@@ -318,8 +318,8 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   `custom-error-rows.test.ts` (6), `loop-call-rows.test.ts` (4, served but for a call guarded per turn, which the
   hop plans on every turn), `origin-nested-call-rows.test.ts` (7), `write-after-call-rows.test.ts` (15, served but
   for a callee's own data-record write, the walls-ahead MS5 row), `record-growth-rows.test.ts` (23),
-  `revert-after-calls-rows.test.ts` (5, six of its seven checks served; the seventh meets the hop's callee-first
-  settle order) and `deep-chain-rows.test.ts` (25, its twenty-four-master case under `PER_CALL_FULL=1`).
+  `revert-after-calls-rows.test.ts` (5, all seven checks served: the failure reported is the one the execution
+  meets first) and `deep-chain-rows.test.ts` (25, its twenty-four-master case under `PER_CALL_FULL=1`).
   Beside them `loop-upsert-settlement.test.ts` pins the wall a run-time-loop
   mapping upsert meets on the shipped call path (the machine refuses the frame the path planned itself, while the
   same mapping written once from a parameter settles). The twelve cross-contract rows are

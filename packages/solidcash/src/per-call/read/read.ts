@@ -79,6 +79,7 @@ import {
   satoshiContainerUnlockingBytecode,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
+  type DeclarationReading,
   type DeployedMaster,
   type PerCallDeploymentSet,
 } from '../deploy/index.js';
@@ -1687,13 +1688,16 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
 
   // Each frame's own computation is its answer, learned from the close its body makes against the frame's
   // `retval`. A callee is learned first so that its caller's call record already carries the callee's bytes when
-  // the caller's own close is read. A run that did not reach the comparison refused before returning.
+  // the caller's own close is read. A run that did not reach the comparison refused before returning. Its callers are
+  // still run on what the frames below them answered, so a caller that stops before the call reaching it stops where
+  // the execution does, and the refusal reported is the one met first (spec V6) rather than the first one learned.
   const learned = new Map<string, Uint8Array>();
+  let stopped: { readonly master: string; readonly reading: DeclarationReading & { readonly ok: false } } | undefined;
   for (const frame of framesInDependencyOrder(frames)) {
     const block = draft.blockOf(frame.master);
     frame.calls.forEach((call, callIndex) => {
       block.calls[callIndex]!.calleeRef = participant(draft.layout, call.callee).index;
-      block.calls[callIndex]!.result = learned.get(call.callee)!;
+      block.calls[callIndex]!.result = learned.get(call.callee) ?? new Uint8Array(0);
     });
     // A proxy's fallback computes no return of its own: it records the bytes its delegate frame recorded, so what
     // it carries is exactly what the delegation learned, not a value its own close would hand back.
@@ -1709,25 +1713,30 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
       maximumCommitmentBytes,
     });
     if (!reading.ok) {
-      // A frame refused before it could return: report it the way a refused composition is reported, so the
-      // caller reads the innermost frame's own source reason rather than the machine's bare operation failure.
-      const refusal = reportCompositionRefusal({ draft, artifacts, vm: machine });
-      return {
-        values: [],
-        value: 0n,
-        retval: new Uint8Array(0),
-        accepted: false,
-        objection: refusal.innermost === undefined
-          ? reading.error ?? `the frame "${frame.master}" did not reach its return comparison (${reading.reason})`
-          : describeInnermost(refusal.innermost),
-        refusal,
-        draft,
-      };
+      stopped ??= { master: frame.master, reading };
+      continue;
     }
     const placeholder = block.retval;
     const retval = bytesEqual(reading.declared, placeholder) ? reading.computed : reading.declared;
     block.retval = retval;
     learned.set(frame.master, retval);
+  }
+  if (stopped !== undefined) {
+    // A frame refused before it could return: report it the way a refused composition is reported, so the caller
+    // reads the frame's own source reason rather than the machine's bare operation failure.
+    const { master, reading } = stopped;
+    const refusal = reportCompositionRefusal({ draft, artifacts, vm: machine });
+    return {
+      values: [],
+      value: 0n,
+      retval: new Uint8Array(0),
+      accepted: false,
+      objection: refusal.innermost === undefined
+        ? reading.error ?? `the frame "${master}" did not reach its return comparison (${reading.reason})`
+        : describeInnermost(refusal.innermost),
+      refusal,
+      draft,
+    };
   }
 
   // The driver proves a call step by the program moving, so each call site's callee reference has to be the

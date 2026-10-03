@@ -14,6 +14,7 @@
  */
 
 import type { createVirtualMachineBch2026 } from '@bitauth/libauth';
+import { FrameKind } from '@solidcash/utils';
 import { UNFILLED_CALLEE_REF, type CompositionDraft } from './draft.js';
 
 type VirtualMachine = ReturnType<typeof createVirtualMachineBch2026>;
@@ -115,4 +116,32 @@ export function frameMadeCall(
   };
   const state = vm.evaluate(run.programFor(probe));
   return vm.stateSuccess(state) === true || !sameStop(frameStopOf(state), stop);
+}
+
+/** The kinds a call record can carry, under each of which a record no callee stands behind is tried. */
+const CALL_KINDS = [FrameKind.CALL, FrameKind.STATIC, FrameKind.DELEGATE, FrameKind.INTERNAL, FrameKind.CREATE];
+
+/**
+ * Whether a frame that refused at `stop` read the record of its call `call`, one no callee stands behind.
+ *
+ * Such a record carries no target or digest the site's own checks accept, so a frame that reaches the site stops on
+ * the record before it reads the reference. The frame is run again once per call kind in the record: the site's kind
+ * check passes under one of them and fails under the rest, so a frame that read the record stops differently under
+ * one of them at least, and one that stopped before the site stops exactly where it stopped.
+ */
+export function frameReadsCallRecord(
+  draft: CompositionDraft,
+  vm: VirtualMachine,
+  master: string,
+  call: number,
+  stop: FrameStop,
+): boolean {
+  const block = draft.blockOf(master);
+  const run = draft.runs.find((candidate) => candidate.master === master);
+  if (run === undefined || block.calls[call] === undefined) return true;
+  return CALL_KINDS.some((kind) => {
+    const probe = { ...block, calls: block.calls.map((entry, at) => (at === call ? { ...entry, kind } : entry)) };
+    const state = vm.evaluate(run.programFor(probe));
+    return vm.stateSuccess(state) === true || !sameStop(frameStopOf(state), stop);
+  });
 }

@@ -97,6 +97,9 @@ import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from '.
 import { carriedFromChain, deriveReentryWriters, reentrySettleBefore, withReentryFrames } from './reentry.js';
 import { EnclosingValueLearned, learnEnclosingValues } from './enclosed-values.js';
 import { deferredRefusalMetFirst, dropDeferredBelow, firstDeferredRefusal } from './refusal-order.js';
+import {
+  declareUnstatedCalls, entryMeetsRefusedSite, entrySiteOf, planBeforeRefusedSite, planBeforeSite,
+} from './planning-refusal.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
 export type PerCallProxyDeployHalf = Omit<DeployOptions, 'provider' | 'initialState'>;
@@ -1068,6 +1071,7 @@ export async function deployPerCallProxy(
     ),
     ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.initialize.functionName),
+    ...(externalPlan.blocked?.refusal === undefined ? {} : { refusedSite: externalPlan.blocked.refusal }),
     planFor: (
       writtenCommitments, attemptWrites, entryWriteViews, eventCommitments, implementationRetval, calleeRetvals,
       calleeWriteViews, calleeWriteValues, calleeEventCommitments,
@@ -1106,7 +1110,7 @@ export async function deployPerCallProxy(
     provider, implementationArtifact, options.initialize.functionName, initializeArgs,
   );
   const { externalPlan, settled } = await planAndSettleHop({
-    plan: (externalReturns, reachedResults, calleeWriteViews, calleeWriteValues, heldContinuations) =>
+    plan: (externalReturns, reachedResults, calleeWriteViews, calleeWriteValues, heldContinuations, stopBefore) =>
       planHopExternalCalls({
       provider, artifact: implementationArtifact, functionName: options.initialize.functionName,
       args: initializeArgs, externals: options.externals ?? {}, validatorProgram,
@@ -1119,6 +1123,7 @@ export async function deployPerCallProxy(
       ...(calleeWriteValues.size === 0 ? {} : { calleeWriteValues }),
       ...(implementationSideCars.size === 0 ? {} : { sideCars: implementationSideCars }),
       ...(heldContinuations === true ? { heldContinuations: true } : {}),
+      ...(stopBefore === undefined ? {} : { stopBefore }),
     }),
     settle: (stated, seed, defer) => settleHop(defer === true
       ? { ...settleOptionsFor(stated, seed), deferCalleeFailures: true }
@@ -1289,6 +1294,12 @@ interface SettleHopOptions {
    * before the entry is derived, exactly as before.
    */
   readonly deferCalleeFailures?: boolean;
+  /**
+   * The failure met at the site the plan stops before (`HopPlanBlock.refusal`): it stands when the entry reaches that
+   * site, whose call the plan states no record for, or settles past it, and the entry's own stop is reported when it
+   * stops first (`planning-refusal.ts`).
+   */
+  readonly refusedSite?: Error;
 }
 
 /** What callee frames' own bodies computed, keyed by master: each return, unstated write view and event payload. */
@@ -1879,6 +1890,11 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       writtenCommitments, entryWrites, writtenExtras, writtenEvents, learnedRetval ?? new Uint8Array(0),
       calleeRetvals, calleeWriteViews, calleeWriteValues, calleeEvents);
     const candidate = createComposedDerivationHost({ vm, artifacts, plan });
+    // A plan stopped before the site its failure is met at states only the calls before it, so the entry's calls
+    // from that site on are declared unbound: a body that holds its call count runs to its own stop.
+    if (options.refusedSite !== undefined) {
+      declareUnstatedCalls(candidate.draft, implementationArtifact, IMPLEMENTATION_MASTER_ID);
+    }
     if (trace) {
       hopTrace(`attempt entry=${IMPLEMENTATION_MASTER_ID} `
         + `${traceFrameFacts(IMPLEMENTATION_MASTER_ID, traceRunFunctionName(candidate.draft, IMPLEMENTATION_MASTER_ID),
@@ -1998,6 +2014,11 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
         });
         if (metFirst !== undefined) throw metFirst;
       }
+      // A plan stopped before the site its failure is met at states no record for that site's call: an entry that
+      // reaches it meets the failure there, and one that stops first is reported by its own stop below.
+      if (options.refusedSite !== undefined && entryMeetsRefusedSite({
+        draft: candidate.draft, vm, entry: IMPLEMENTATION_MASTER_ID, report: refusal,
+      })) throw options.refusedSite;
       const attributed = refusal.innermost === undefined
         ? describeReading(reading, writtenCommitments[0] ?? new Uint8Array(0))
         : describeInnermost(refusal.innermost);
@@ -2041,6 +2062,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     if (deferredCalleeFailure !== undefined) {
       throw firstDeferredRefusal(options.callees ?? [], calleeSettlement.deferredFrames) ?? deferredCalleeFailure;
     }
+    if (options.refusedSite !== undefined) throw options.refusedSite;
     throw new PerCallProxyDeployError(
       `the implementation's ${options.entryLabel} did not settle through the proxy in `
       + `${maximumAttempts} attempts${sizedRunClause(entryWrites)}`,
@@ -2051,6 +2073,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   if (deferredCalleeFailure !== undefined) {
     throw firstDeferredRefusal(options.callees ?? [], calleeSettlement.deferredFrames) ?? deferredCalleeFailure;
   }
+  // A plan stopped before the site its failure is met at is never broadcast: an entry that settled on it did not
+  // stop before that site, so the failure stands.
+  if (options.refusedSite !== undefined) throw options.refusedSite;
   const { host, draft } = composed;
   // The entry's frame accepted against every value the plan learned, so a stall here is the hop's own shape: the
   // proxy's forwarded call records no result of its own, so it binds the call record's result to empty while the
@@ -2308,6 +2333,10 @@ function traceResultValue(value: unknown): string {
  * results. The loop stops when a pass's results leave the plan's sites unchanged, so the plan that is settled is the
  * one the execution's own arms imply; a plan that never stops changing is refused by name rather than settled. A hop
  * whose conditions, arguments and loop bounds read no earlier result is planned and settled exactly once.
+ *
+ * A refusal the planner raises or the cross-reach checks raise over its frames, and a failure of the frames a stop
+ * settles, are reported as the execution meets them: the entry is settled up to the site the failure is met at, and
+ * its own stop is reported when it stops before that site (`planning-refusal.ts`).
  */
 async function planAndSettleHop(options: {
   readonly plan: (
@@ -2315,6 +2344,7 @@ async function planAndSettleHop(options: {
     calleeWriteViews: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>,
     calleeWriteValues: ReadonlyMap<string, Uint8Array>,
     heldContinuations?: boolean,
+    stopBefore?: number,
   ) => Promise<HopExternalPlan>;
   readonly settle: (
     externalPlan: HopExternalPlan, seed?: CalleeSettlement, deferCalleeFailures?: boolean,
@@ -2338,8 +2368,61 @@ async function planAndSettleHop(options: {
     retvals: new Map(), writeViews: new Map(), writeValues: new Map(), events: new Map(),
   };
   let externalReturns: ReadonlyMap<number, FunctionArgument> = new Map();
-  let externalPlan = await options.plan(
-    externalReturns, reached, learning.writeViews, learning.writeValues, undefined);
+  /** The hop planned from what the settles so far learned, stopped before the entry's own site `stopBefore`. */
+  const planStopped = (heldContinuations: boolean | undefined) => (stopBefore: number): Promise<HopExternalPlan> =>
+    options.plan(externalReturns, reached, learning.writeViews, learning.writeValues, heldContinuations, stopBefore);
+  /**
+   * What a failure of the frames past a plan's stop leaves to report (spec V6): the entry's own stop, or a refusal
+   * below a call it made, when it stops before the site that leads to them, and the failure itself otherwise.
+   */
+  const settledBefore = async (failure: unknown, stopped: HopExternalPlan | undefined): Promise<unknown> => {
+    if (stopped === undefined) return failure;
+    try {
+      await options.settle(stopped, seedOf(learning, stopped.callees), true);
+    } catch (error) {
+      return error;
+    }
+    return failure;
+  };
+  /** What a planning refusal leaves to report, settled before the first site whose frames the planner refuses. */
+  const refusalMetFirst = async (refusal: unknown, heldContinuations?: boolean): Promise<unknown> => {
+    if (!(refusal instanceof PerCallProxyDeployError)) return refusal;
+    return settledBefore(refusal, await planBeforeRefusedSite(planStopped(heldContinuations), refusal));
+  };
+  /**
+   * What a failure of the frames a stop settles leaves to report, or undefined when the entry cannot be settled
+   * before the site the failure is met at: a site of the entry's own meets it there, past the earlier calls it reads,
+   * and a site of a frame below meets it inside the entry's site that leads to that frame.
+   */
+  const stopFailureMetFirst = async (
+    failure: unknown, plan: HopExternalPlan, block: HopPlanBlock, frames: ReadonlySet<number>,
+  ): Promise<Error | undefined> => {
+    // An entry's own stop places every site before the one that waits, which is the next one.
+    const site = block.path === '' ? plan.callBases.length : entrySiteOf(plan, frames);
+    if (!(failure instanceof Error) || site === undefined) return undefined;
+    const stopped = await planBeforeSite(planStopped(plan.heldContinuations), site, failure);
+    if (stopped === undefined) return undefined;
+    const verdict = await settledBefore(failure, stopped);
+    return verdict instanceof Error ? verdict : failure;
+  };
+  /** The hop planned from what the settles so far learned, a planning refusal reported as the execution meets it. */
+  const planHop = async (heldContinuations: boolean | undefined): Promise<HopExternalPlan> => {
+    try {
+      return await options.plan(
+        externalReturns, reached, learning.writeViews, learning.writeValues, heldContinuations);
+    } catch (error) {
+      throw await refusalMetFirst(error, heldContinuations);
+    }
+  };
+  /** The cross-reach checks over a plan's frames, a refusal reported as the execution meets it. */
+  const requireReachWrites = async (plan: HopExternalPlan): Promise<void> => {
+    try {
+      requireSatisfiableReachWrites(plan.callees);
+    } catch (error) {
+      throw await refusalMetFirst(error, plan.heldContinuations);
+    }
+  };
+  let externalPlan = await planHop(undefined);
   /**
    * The hop planned once more for a frame that held a node an earlier frame created, or nothing when that plan does
    * not settle.
@@ -2406,7 +2489,7 @@ async function planAndSettleHop(options: {
       const { callees } = externalPlan;
       // The calls before the waiting site are planned from values the execution computes, so a pair of reaches the
       // transaction cannot carry is refused here, before anything is settled for it.
-      requireSatisfiableReachWrites(callees);
+      await requireReachWrites(externalPlan);
       // The frames whose views a producer starts from are settled with it (`reentrySettleBefore`).
       const frames = withReentryFrames(producerFramesOf(externalPlan, block), callees);
       const seed = seedOf(learning, callees);
@@ -2445,13 +2528,22 @@ async function planAndSettleHop(options: {
           // same plan, with the callee verdicts deferred, so a check the entry fails before the stopped site names
           // the entry's reason. That evaluation throws the entry's own reason when it has one and the deferred
           // producer refusal otherwise, so the producer's verdict stands when the entry names no source reason of
-          // its own.
+          // its own. A body that holds its call count stops at that count on a plan stopped short of its calls, so
+          // the entry is settled before the site the refusal is met at, with its calls from there declared.
+          const metFirst = await stopFailureMetFirst(error, externalPlan, block, frames);
+          if (metFirst !== undefined) throw metFirst;
           await options.settle(externalPlan, seed, true);
           throw error;
         }
       }
       keepFrameLearning(learning, planned.callees, frames, settlement);
-      const results = reachedCallResults(planned, block, settlement.retvals);
+      let results: Map<string, FunctionArgument>;
+      try {
+        results = reachedCallResults(planned, block, settlement.retvals);
+      } catch (error) {
+        // A result the hop cannot decode is met only where the execution reaches the site that reads it.
+        throw await stopFailureMetFirst(error, planned, block, frames) ?? error;
+      }
       const before = reached.size;
       for (const [key, value] of results) reached.set(key, value);
       if (trace) {
@@ -2459,20 +2551,20 @@ async function planAndSettleHop(options: {
           .map(([key, value]) => `${key}:${traceResultValue(value)}`).join(' ')}]`);
       }
       if (reached.size === before) {
-        throw new PerCallProxyDeployError(
+        const failure = new PerCallProxyDeployError(
           `${block.where} reads the result of the earlier call(s) ${block.producers.join(', ')}, and settling them `
           + 'returned nothing the hop could decode, so the call cannot be planned from it',
         );
+        throw await stopFailureMetFirst(failure, planned, block, frames) ?? failure;
       }
       stops += 1;
-      externalPlan = await options.plan(
-        externalReturns, reached, learning.writeViews, learning.writeValues, planned.heldContinuations);
+      externalPlan = await planHop(planned.heldContinuations);
       continue;
     }
     // Every reach's own write was planned on its own; the reaches are checked together here, before any frame of
     // this plan is settled, so a shape whose reaches cannot share one transaction is refused by name rather than
     // derived into a transaction the network rejects.
-    requireSatisfiableReachWrites(externalPlan.callees);
+    await requireReachWrites(externalPlan);
     // The callee verdicts are deferred: the entry's own frame is derived and evaluated even when a callee refused,
     // so a check the entry fails before it reaches that callee names the entry's reason. A settle that finds no
     // such reason throws the deferred callee refusal, which is the execution's verdict then.
@@ -2501,8 +2593,7 @@ async function planAndSettleHop(options: {
       return settledHop(final.externalPlan, final.settled);
     }
     externalReturns = producedCallResults(externalPlan, settled);
-    const next = await options.plan(
-      externalReturns, reached, learning.writeViews, learning.writeValues, false);
+    const next = await planHop(false);
     if (next.blocked === undefined && samePlannedSites(next, externalPlan)) {
       const final = await settleHeld(externalPlan, settled);
       return settledHop(final.externalPlan, final.settled);
@@ -4359,6 +4450,7 @@ export async function callPerCallProxyEntry(
     ),
     ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.functionName),
+    ...(externalPlan.blocked?.refusal === undefined ? {} : { refusedSite: externalPlan.blocked.refusal }),
     planFor: (
       writtenCommitments, attemptWrites, entryWriteViews, eventCommitments, implementationRetval, calleeRetvals,
       calleeWriteViews, calleeWriteValues, calleeEventCommitments,
@@ -4397,7 +4489,7 @@ export async function callPerCallProxyEntry(
     provider, implementationArtifact, options.functionName, args,
   );
   const { externalPlan, settled } = await planAndSettleHop({
-    plan: (externalReturns, reachedResults, calleeWriteViews, calleeWriteValues, heldContinuations) =>
+    plan: (externalReturns, reachedResults, calleeWriteViews, calleeWriteValues, heldContinuations, stopBefore) =>
       planHopExternalCalls({
       provider, artifact: implementationArtifact, functionName: options.functionName,
       args, externals: options.externals ?? {}, validatorProgram,
@@ -4410,6 +4502,7 @@ export async function callPerCallProxyEntry(
       ...(calleeWriteValues.size === 0 ? {} : { calleeWriteValues }),
       ...(implementationSideCars.size === 0 ? {} : { sideCars: implementationSideCars }),
       ...(heldContinuations === true ? { heldContinuations: true } : {}),
+      ...(stopBefore === undefined ? {} : { stopBefore }),
     }),
     settle: (stated, seed, defer) => settleHop(defer === true
       ? { ...settleOptionsFor(stated, seed), deferCalleeFailures: true }

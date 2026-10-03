@@ -266,17 +266,20 @@ export interface HopCallOrigin {
  *
  * The site's own frame computes the value from what the earlier call returned, so the hop settles the frames of
  * those earlier calls first and plans again from their results: the site is planned once the code before it has
- * settled, in the order the execution reaches it.
+ * settled, in the order the execution reaches it. A plan also stops before an entry's own site where a failure of
+ * planning is met (`refusal`), so the entry is settled up to it (`planning-refusal.ts`).
  */
 export interface HopPlanBlock {
   /** The path of the frame whose site waits, `''` for the hop's own entry. */
   readonly path: string;
   /** The waiting call, as a refusal names it. */
   readonly where: string;
-  /** What the site reads the results for. */
-  readonly reads: 'argument' | 'loop-bound';
+  /** What the site reads the results for, or `refusal` for a stop before a site whose frames are refused. */
+  readonly reads: 'argument' | 'loop-bound' | 'refusal';
   /** The earlier call sites of the same frame whose results the site reads, by callsite id. */
   readonly producers: readonly number[];
+  /** On a `refusal` stop, the failure met at the site: the planner's refusal of its frames, or a stop's failure. */
+  readonly refusal?: Error;
 }
 
 /** The path a site's visit gives the frame it reaches, below the path of the frame that makes the call. */
@@ -978,6 +981,8 @@ interface PlanContext {
   readonly reachedResults: ReadonlyMap<string, FunctionArgument>;
   /** The site the plan stops before, once one is found: nothing after it in execution order is placed. */
   readonly stop: { blocked?: HopPlanBlock };
+  /** The entry's own site the plan is asked to stop before (`HopExternalPlanOptions.stopBefore`). */
+  readonly stopBefore?: number;
 }
 
 /** The addresses of the contracts a plan can reach: the caller's named externals, then the latest registrations. */
@@ -1157,6 +1162,13 @@ async function planEntryCalls(
   const sites: (ResolvedSite | undefined)[] = [];
   let ownStop: HopPlanBlock | undefined;
   for (const [index, call] of published.calls.entries()) {
+    // A plan asked to stop before one of the entry's own sites places the calls before it and nothing after.
+    if (path === '' && index === ctx.stopBefore) {
+      ownStop = {
+        path, where: `the call to "${call.interfaceName}.${call.functionName}"`, reads: 'refusal', producers: [],
+      };
+      break;
+    }
     const row = routing[index];
     if (row === undefined || row.interfaceName !== call.interfaceName
       || row.functionName !== call.functionName) {
@@ -2439,6 +2451,11 @@ export interface HopExternalPlanOptions {
    * on the view it was given, and the caller re-plans with it once the settle has accepted.
    */
   readonly heldContinuations?: boolean;
+  /**
+   * One of the entry's own sites, by its published position, that the plan stops before (`reads: 'refusal'`): the
+   * calls before it are placed and nothing the execution reaches from it on. Absent plans every site.
+   */
+  readonly stopBefore?: number;
 }
 
 /** The callsite ids an entry's own conditions read a result from, in published order. */
@@ -2484,6 +2501,7 @@ export async function planHopExternalCalls(
       ? {} : { producerResults: { artifact: options.artifact, values: options.externalReturns } }),
     reachedResults: options.reachedResults ?? new Map(),
     stop: {},
+    ...(options.stopBefore === undefined ? {} : { stopBefore: options.stopBefore }),
   };
   for (const sideCars of ctx.sideCars.values()) {
     for (const [id, utxo] of Object.entries(sideCars.utxos)) ctx.utxos.set(id, utxo);

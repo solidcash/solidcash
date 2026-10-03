@@ -64,7 +64,7 @@ const LOOP = '     for (int i = 0; i < turns; i = i + 1) { this.total = amount +
 const CALL_THEN_LOOP_SOURCE = `pragma solidcash ^0.13.0;${HEAD()}`
   + OPEN + CALL + LOOP + '     require(turns > 0);\n   }\n }';
 
-/** The same body with the loop before the call, which the lowering still settles in the segment the call opens. */
+/** The same body with the loop before the call, whose write lands in the segment the frame opens with. */
 const LOOP_THEN_CALL_SOURCE = `pragma solidcash ^0.13.0;${HEAD()}`
   + OPEN + LOOP + CALL + '     require(true);\n   }\n }';
 
@@ -319,9 +319,10 @@ describe('a run-time loop upsert beside a call, through the shipped proxy path',
 describe('the mapping node of the same shape, through the same path', () => {
   it('publishes the segment its batch lands in, and settles the turns through the head the genesis minted', async () => {
     const run = await deployed(MAPPING_WALL_SOURCE);
-    // The compiler states the fact a builder needs: the mapped node's write lands in the segment the call opened.
+    // The compiler states the fact a builder needs: the loop runs before the call, so the mapped node's write lands
+    // in the segment the frame opens with, where a callee of the call already sees it.
     expect(publishedWrites(run.impl, 'move')).toStrictEqual({
-      writeSegment: 1, writeSegments: [{ collection: 'balances', segment: 1 }],
+      writeSegment: 0, writeSegments: [{ collection: 'balances', segment: 0 }],
     });
     expect(run.impl.composition?.refusedEntries).toBeUndefined();
     // `balances` is one the initialize never writes. While the hop minted such a head in the call, the frame was

@@ -69,12 +69,11 @@ const READER_ONLY_SOURCE = LEDGER('', 'require(this.count >= 0);');
 // rebuilt where the run is: three writes, three facts, no single segment that states the entry.
 const MAPPING_WITH_RUN_SOURCE = LEDGER('', `balances[to] = amount; ${CALL} this.names.push("hi");`);
 
-// A mapping write inside a loop whose own body makes no call, with the entry's call beside the loop. The lowering
-// settles a runtime loop's write at the body's end, so the write lands in the segment the last call opened rather
-// than in the one the loop's first turn ran in - which is the fact a builder declares the batch's records in.
-// The machine's verdict on this shape is `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts`: the
-// same shape's fixed record settles there (accepted, and refused once a byte of it is changed) while this chain node
-// is still refused inside the upsert body, which is the wall that file pins beside the accept.
+// A mapping write inside a loop whose own body makes no call, with the entry's call after the loop. The write runs
+// before the call, so it lands in the segment the frame opens with and a callee of the call sees it - which is the
+// fact a builder declares the batch's records in. The machine's verdict on this shape is
+// `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts`, which settles it through the head the
+// genesis minted.
 const LOOP_UPSERT_BESIDE_CALL_SOURCE = `pragma solidcash ^0.13.0;${PING}`
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
@@ -84,8 +83,8 @@ const LOOP_UPSERT_BESIDE_CALL_SOURCE = `pragma solidcash ^0.13.0;${PING}`
   + '     require(true);'
   + '   }'
   + ' }';
-// The same body with a second call between the loop and the end: the segment the write lands in follows the calls,
-// which is what tells a segment the write's own path reached from the segment the frame opens with.
+// The same body with a second call between the loop and the end: the write runs before both calls, so it lands in
+// the segment the frame opens with however many calls follow it.
 const LOOP_UPSERT_BETWEEN_CALLS_SOURCE = `pragma solidcash ^0.13.0;${PING}`
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
@@ -130,18 +129,18 @@ describe('the write facts an entry publishes', () => {
   });
 
   it('publishes the segment a runtime-loop upsert beside a call lands in', () => {
-    // The loop's own body makes no call, so the batch is placed by the calls the write's path reached rather than
-    // left unstated: the entry's one call opens the segment the write lands in.
+    // The loop's own body makes no call and the loop runs before the entry's one call, so the write lands in the
+    // segment the frame opens with: a callee of that call sees it, as on the EVM.
     expect(publishedWrites(loopUpsertBesideCall, 'Ledger', 'move')).toStrictEqual({
-      single: 1,
-      writes: [{ collection: 'balances', segment: 1 }],
+      single: 0,
+      writes: [{ collection: 'balances', segment: 0 }],
       refused: [],
     });
-    // The same body with a call between the loop and the end: the write's segment follows the calls, so the fact
-    // is not the segment the frame opens with.
+    // The same body with a second call after the loop: the write still runs before every call, so it still lands
+    // in the segment the frame opens with rather than one the calls open.
     expect(publishedWrites(loopUpsertBetweenCalls, 'Ledger', 'move')).toStrictEqual({
-      single: 2,
-      writes: [{ collection: 'balances', segment: 2 }],
+      single: 0,
+      writes: [{ collection: 'balances', segment: 0 }],
       refused: [],
     });
   });

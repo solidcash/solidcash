@@ -337,8 +337,10 @@ resultSchema?: {
   const allCompactResults = resultSchema?.resultEncodings.every(
     (encoding) => encoding === 'compact-pushdata-v1',
   ) === true;
+  const structs = host.inner.artifact.structs ?? host.inner.artifact.stateLayout?.structs;
+  const enums = host.inner.artifact.enums;
   if (commitment !== undefined && allEvmResults
-    && !isCanonicalEvmReturnBlob(hexToBin(commitment), resultSchema.resultTypeGroups)) {
+    && !isCanonicalEvmReturnBlob(hexToBin(commitment), resultSchema.resultTypeGroups, structs, enums)) {
     commitment = undefined;
   }
   const materializedReturn = transaction.outputs[returnOutputIndex]?.token?.nft?.commitment;
@@ -356,6 +358,7 @@ resultSchema?: {
       const inner = extractEvmReturnCommitment(
         candidateTrace, resultSchema.resultTypeGroups,
         isConstrainedEvmResultVector(resultSchema.resultTypeGroups),
+        structs, enums,
       );
       return inner === undefined ? undefined : binToHex(scriptToBytecode([hexToBin(inner)]));
     }

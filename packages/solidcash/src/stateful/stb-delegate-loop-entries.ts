@@ -10,6 +10,7 @@ import type { UnlockableUtxo } from '../interfaces.js';
 import { addressToLockScript, calculateDust } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { commitmentHexOf } from './stb-output-utils.js';
+import { shouldReassertLegacyDelegateLoopEntries } from './stb-materialize-trailing-frame-and-pending.js';
 
 export type DelegateLoopEntryVar = {
   collection: string;
@@ -106,6 +107,7 @@ export function reassertDelegateLoopEntries(
   host: DelegateLoopEntriesHost,
   builder: TransactionBuilder,
 ): void {
+  if (!shouldReassertLegacyDelegateLoopEntries(host.compilerRouteDelegateBlock)) return;
   const delegateLoopVars = delegateLoopEntryVars(host);
   if (delegateLoopVars.length === 0) return;
   const delegateFunction = (group: ExternalCallUtxoGroup): AbiFunction | undefined => (

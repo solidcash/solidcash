@@ -952,6 +952,11 @@ import {
   materializeTrailingFrameAndPending,
   type MaterializeTrailingFrameAndPendingHost,
 } from './stb-materialize-trailing-frame-and-pending.js';
+export {
+  physicalBalancedTrailingOutputCount,
+  shouldReassertLegacyDelegateLoopEntries,
+  shouldAppendUnsegmentedLoopEntries,
+} from './stb-materialize-trailing-frame-and-pending.js';
 import {
   createBuildDebugStages,
   type CreateBuildDebugStagesHost,
@@ -1245,6 +1250,9 @@ export {
   selectCompilerWriterEvent,
   externalCallEventDestinations,
   lowLevelCallImmutableEventDestinations,
+  selectBuilderValueChunkOutputBase,
+  transportedContinuationLocalBase,
+  rebaseValueChunkWriteDescriptors,
   type ProtectedLoopEntryCollectionSelection,
   type CompilerWriterEventCandidate,
   type CompilerWriterEventSelection,
@@ -1260,6 +1268,7 @@ import {
   selectCompilerWriterEvent,
   externalCallEventDestinations,
   lowLevelCallImmutableEventDestinations,
+  selectBuilderValueChunkOutputBase,
   type ProtectedLoopEntryCollectionSelection,
   type CompilerWriterEventCandidate,
   type CompilerWriterEventSelection,
@@ -1398,7 +1407,10 @@ export class StatefulTransactionBuilder {
   private externalCallEntryOutputsByIndex: Map<number, { categoryId: string; commitment: string }> = new Map();
   // Trailing NEW entry nodes minted for a cross-contract callee INSERT (per group: address lbc + commitment hex),
   // placed right after the group's block (B's covenant mints the NEW at masterInputIndex + blockSize).
-  private externalCallEntryInserts: Array<{ categoryId: string; to: Uint8Array; commitment: string }> = [];
+  private externalCallEntryInserts: Array<{
+    categoryId: string; to: Uint8Array; commitment: string;
+    ownerGroupIndex?: number; targetSlot?: string; active?: boolean;
+  }> = [];
 
   private pendingReturnEventOutputs: Array<{
     categoryId: string; commitment: Uint8Array; identity: string; provisional?: boolean;
@@ -2431,6 +2443,7 @@ export class StatefulTransactionBuilder {
 
   private _materializeTrailingFrameAndPendingHost(): MaterializeTrailingFrameAndPendingHost {
     return {
+      runtimeLoopTrailingSegments: this.runtimeLoopTrailingSegments,
       loopEntriesBeforeDynamicChunks: this.loopEntriesBeforeDynamicChunks,
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
       loopEntryCommitments: this.loopEntryCommitments,
@@ -4497,7 +4510,44 @@ export class StatefulTransactionBuilder {
 
   /** A trailing NEW entry node for a cross-contract callee INSERT (minted after B's block). Returns its handle. */
   addExternalCallEntryInsert(categoryId: string, to: Uint8Array, commitmentHex: string): number {
-    return this.externalCallEntryInserts.push({ categoryId, to, commitment: commitmentHex }) - 1;
+    return this.externalCallEntryInserts.push({ categoryId, to, commitment: commitmentHex, active: true }) - 1;
+  }
+
+  /** Give one physical sorted-entry insertion a stable handle across derivation passes. */
+  ensureExternalCallEntryInsert(
+    ownerGroupIndex: number,
+    categoryId: string,
+    to: Uint8Array,
+    targetSlot: string,
+    commitmentHex: string,
+  ): number {
+    const owner = this.externalCallUtxoGroups[ownerGroupIndex];
+    if (!Number.isSafeInteger(ownerGroupIndex) || ownerGroupIndex < 0
+      || owner?.sharedGroupIndex !== undefined || owner?.categoryId !== categoryId) {
+      throw new Error('External entry insert has an invalid physical owner');
+    }
+    if (!/^[0-9a-f]{64}$/i.test(targetSlot)) {
+      throw new Error('External entry insert requires an exact target slot');
+    }
+    const canonicalSlot = targetSlot.toLowerCase();
+    const existingHandle = this.externalCallEntryInserts.findIndex((insert) => (
+      insert.ownerGroupIndex === ownerGroupIndex
+      && insert.categoryId === categoryId
+      && insert.targetSlot === canonicalSlot
+      && binsAreEqual(insert.to, to)
+    ));
+    if (existingHandle >= 0) {
+      const insert = this.externalCallEntryInserts[existingHandle];
+      if (!insert.active) {
+        insert.commitment = commitmentHex;
+        insert.active = true;
+      }
+      return existingHandle;
+    }
+    return this.externalCallEntryInserts.push({
+      ownerGroupIndex, categoryId, to: to.slice(), targetSlot: canonicalSlot,
+      commitment: commitmentHex, active: true,
+    }) - 1;
   }
 
   /** Replace a trailing NEW node's commitment (the placeholder set for the 2nd-pass probe). */
@@ -4508,7 +4558,10 @@ export class StatefulTransactionBuilder {
 
   /** Drop a trailing NEW node placeholder (the write turned out to be an UPDATE, not an INSERT). */
   removeExternalCallEntryInsert(handle: number): this {
-    if (this.externalCallEntryInserts[handle]) this.externalCallEntryInserts[handle] = { categoryId: '', to: new Uint8Array(), commitment: '' };
+    if (this.externalCallEntryInserts[handle]) {
+      this.externalCallEntryInserts[handle].commitment = '';
+      this.externalCallEntryInserts[handle].active = false;
+    }
     return this;
   }
 
@@ -5563,7 +5616,8 @@ export class StatefulTransactionBuilder {
     return writes.map(({ write, blockSize }) => {
       const localOutputBase = blockBase > 0 && blockSize !== undefined
         && write.outputBase >= blockBase && write.outputBase < blockBase + blockSize
-        ? write.outputBase - blockBase : write.outputBase;
+        ? selectBuilderValueChunkOutputBase(write.outputBase, write.outputBase, blockBase)
+        : write.outputBase;
       return {
         ...write,
         outputBase: absoluteComposedValueChunkOutputBase(localOutputBase, blockBase),

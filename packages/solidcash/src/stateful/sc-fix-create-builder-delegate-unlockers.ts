@@ -53,6 +53,11 @@ export function callerIdentityAnchorBand(
   return matches[0]!.band;
 }
 
+/** Compiler-owned bytes witnesses used to fold chunkable array pushes across selected route rows. */
+export function isRoutePushValueWitnessName(name: string): boolean {
+  return /^__internal__(?:leading|complete)PushValue_\d+$/.test(name);
+}
+
 export type FixCreateBuilderDelegateUnlockersHost = {
   readonly categoryId: string;
   readonly selfContract: any;

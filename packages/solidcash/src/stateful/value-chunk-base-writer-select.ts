@@ -33,7 +33,50 @@ import {
 import {
   LEGACY_JOB_EVENTS_COLLECTION_ALIASES,
 } from './legacy-planning-heuristics.js';
-import type { ValueChunkWriteStagingSession } from './value-chunk-persist.js';
+import type { ValueChunkWriteDescriptor, ValueChunkWriteStagingSession } from './value-chunk-persist.js';
+
+/** Keep participant builders local until their continuation descriptors are exported. */
+export function selectBuilderValueChunkOutputBase(
+  localOutputBase: number,
+  publishedOutputBase: number | undefined,
+  composedBlockBase: number,
+): number {
+  if (composedBlockBase > 0) {
+    if (publishedOutputBase === undefined) return localOutputBase;
+    return publishedOutputBase < composedBlockBase
+      ? publishedOutputBase : publishedOutputBase - composedBlockBase;
+  }
+  return publishedOutputBase ?? localOutputBase;
+}
+
+/** A transported claim is usable only for one resource at the observed physical width. */
+export function transportedContinuationLocalBase(
+  claims: readonly {
+    bandOffset: number;
+    chunkCount: number;
+    producerClaim: { resourceIdentity: string };
+  }[],
+  resourceIdentity: string,
+  observedWidth: number,
+): number | undefined {
+  const matches = claims.filter((claim) => claim.producerClaim.resourceIdentity === resourceIdentity
+    && claim.chunkCount === observedWidth);
+  return matches.length === 1 ? matches[0]!.bandOffset : undefined;
+}
+
+/** Shift every resolved lane with its carrier while preserving relative spacing. */
+export function rebaseValueChunkWriteDescriptors(
+  writes: readonly ValueChunkWriteDescriptor[] | undefined,
+  previousBase: number | undefined,
+  nextBase: number,
+): ValueChunkWriteDescriptor[] | undefined {
+  if (writes === undefined || previousBase === undefined || previousBase === nextBase) {
+    return writes === undefined ? undefined : [...writes];
+  }
+  const delta = nextBase - previousBase;
+  return writes.map((write) => write.outputBase < 0
+    ? write : { ...write, outputBase: write.outputBase + delta });
+}
 
 /** Rebind a continuation coordinate only on the concrete unlocker ABI which captured that hidden argument. */
 export function ownsCapturedValueChunkOutputBase(group: ExternalCallUtxoGroup): boolean {

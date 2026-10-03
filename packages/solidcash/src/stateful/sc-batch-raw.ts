@@ -53,6 +53,25 @@ import {
   type RouteExpressionKeyRow,
 } from './route-expression-key.js';
 
+/** Apply route-published dynamic metadata to one callable row without aliasing selectorless handlers. */
+export function mergePublishedMessageBusHandlerMetadata(
+  callable: AbiFunction,
+  publishedHandlers: readonly AbiFunction[],
+): AbiFunction {
+  const published = callable.selector !== undefined
+    ? publishedHandlers.find((handler) => handler.selector?.toLowerCase() === callable.selector?.toLowerCase())
+    : publishedHandlers.find((handler) => handler.name === callable.name);
+  // Keep the artifact ABI object itself when there is no published metadata to add. Carrier-route
+  // authentication deliberately checks this identity before trusting runtime row metadata.
+  if (published === undefined || (published.dynamicReads === undefined
+    && published.dynamicWrites === undefined)) return callable;
+  return {
+    ...callable,
+    ...(published.dynamicReads !== undefined && { dynamicReads: published.dynamicReads }),
+    ...(published.dynamicWrites !== undefined && { dynamicWrites: published.dynamicWrites }),
+  };
+}
+
 export interface VmapCounterPermutationSpec {
   countName: string;
   boundOffset: bigint;

@@ -500,8 +500,9 @@ import {
 import {
   callerIdentityAnchorBand,
   fixCreateBuilderDelegateUnlockers as fixCreateBuilderDelegateUnlockersImpl,
+  isRoutePushValueWitnessName,
 } from './sc-fix-create-builder-delegate-unlockers.js';
-export { callerIdentityAnchorBand };
+export { callerIdentityAnchorBand, isRoutePushValueWitnessName };
 import {
   loadCreateBuilderTokenContainers as loadCreateBuilderTokenContainersImpl,
 } from './sc-load-create-builder-token-containers.js';
@@ -761,7 +762,9 @@ import {
 } from './sc-apply-overrides.js';
 import {
   batchRaw as batchRawImpl,
+  mergePublishedMessageBusHandlerMetadata,
 } from './sc-batch-raw.js';
+export { mergePublishedMessageBusHandlerMetadata };
 export {
   assertAcyclicExternalCallPath,
   visitExpandingExternalCallGroups,
@@ -1747,18 +1750,7 @@ export class AutoDerivationError extends Error {
   }
 }
 
-/**
- * Convert a participant-local dynamic-storage chunk coordinate to the physical transaction coordinate expected
- * by the covenant. A participant builder remains block-local after materialization; its enclosing block base is
- * therefore always part of the aggregate coordinate.
- */
-export function resolveDynamicChunkInputBase(
-  inputIndex: number,
-  blockBase: number,
-): bigint {
-  if (inputIndex < 0) return -1n;
-  return BigInt(blockBase + inputIndex);
-}
+export { resolveDynamicChunkInputBase } from './return-abi-plan.js';
 
 export type ReturnAbiCandidate<T> = {
   logicalFunction: AbiFunction;
@@ -2912,116 +2904,13 @@ export function isConstrainedEvmResultVector(
   });
 }
 
-const decodeEvmReturnWord = (value: Uint8Array, offset: number): number | undefined => {
-  if (offset < 0 || offset + 32 > value.length) return undefined;
-  let decoded = 0n;
-  for (let index = offset; index < offset + 32; index += 1) {
-    decoded = (decoded << 8n) | BigInt(value[index]);
-  }
-  return decoded <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(decoded) : undefined;
-};
-
-/** Length of one canonical Solidity ABI result tuple within a concatenated return vector. */
-export function canonicalEvmReturnVectorLength(
-  value: Uint8Array, cursor: number, expectedTypes: readonly string[],
-): number | undefined {
-  if (!Number.isSafeInteger(cursor) || cursor < 0 || expectedTypes.length === 0) return undefined;
-  const headLength = expectedTypes.length * 32;
-  if (cursor + headLength > value.length) return undefined;
-  let expectedTailOffset = headLength;
-  for (let index = 0; index < expectedTypes.length; index += 1) {
-    const type = expectedTypes[index];
-    const wordOffset = cursor + index * 32;
-    if (!EVM_DYNAMIC_RETURN_TYPES.has(type)) {
-      if (!isCanonicalEvmScalarReturnVector(value.slice(wordOffset, wordOffset + 32), [type])) {
-        return undefined;
-      }
-      continue;
-    }
-    const relativeOffset = decodeEvmReturnWord(value, wordOffset);
-    // Solidity ABI tuples lay dynamic tails out contiguously in declaration order. Requiring that canonical
-    // form rejects framed state blobs which merely contain plausible offset/length words.
-    if (relativeOffset !== expectedTailOffset || relativeOffset % 32 !== 0) return undefined;
-    const length = decodeEvmReturnWord(value, cursor + relativeOffset);
-    if (length === undefined) return undefined;
-    const paddedLength = Math.ceil(length / 32) * 32;
-    const tailEnd = cursor + relativeOffset + 32 + paddedLength;
-    if (tailEnd > value.length) return undefined;
-    const paddingStart = cursor + relativeOffset + 32 + length;
-    if (!value.slice(paddingStart, tailEnd).every((byte) => byte === 0)) return undefined;
-    expectedTailOffset = relativeOffset + 32 + paddedLength;
-  }
-  return expectedTailOffset;
-}
-
-/** Validate one complete mixed static/dynamic Solidity ABI invocation result. */
-export function isCanonicalEvmReturnVector(
-  value: Uint8Array, expectedTypes: readonly string[],
-): boolean {
-  return canonicalEvmReturnVectorLength(value, 0, expectedTypes) === value.length;
-}
-
-/** Validate concatenated Solidity ABI invocation results without flattening their independent tuple offsets. */
-export function isCanonicalEvmReturnSequence(
-  value: Uint8Array, expectedTypeGroups: readonly (readonly string[])[],
-): boolean {
-  let cursor = 0;
-  for (const expectedTypes of expectedTypeGroups) {
-    const length = canonicalEvmReturnVectorLength(value, cursor, expectedTypes);
-    if (length === undefined) return false;
-    cursor += length;
-  }
-  return cursor === value.length;
-}
-
-/** Validate the compiler-authored one-push wrapper around concatenated Solidity ABI invocation results. */
-export function isCanonicalEvmReturnBlob(
-  candidate: Uint8Array, expectedTypeGroups: readonly (readonly string[])[],
-): boolean {
-  try {
-    const outer = decodePushdataValue(candidate, 0, 'bytes');
-    return outer.value instanceof Uint8Array
-      && outer.bytesConsumed === candidate.length
-      && isCanonicalEvmReturnSequence(outer.value, expectedTypeGroups);
-  } catch {
-    return false;
-  }
-}
-
-/** Select a compiler-framed mixed Solidity return, falling back to raw words only for all-static schemas. */
-export function selectEvmReturnCommitment(
-  candidates: readonly Uint8Array[], expectedTypeGroups: readonly (readonly string[])[], allowRaw = true,
-): string | undefined {
-  for (const candidate of candidates) {
-    if (peekPushdataEncodedLength(candidate) !== candidate.length) continue;
-    try {
-      const outer = decodePushdataValue(candidate, 0, 'bytes');
-      if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== candidate.length) continue;
-      if (isCanonicalEvmReturnSequence(outer.value, expectedTypeGroups)) return binToHex(outer.value);
-    } catch {
-      // Ordinary route-frame items are not canonical outer bytes fields.
-    }
-  }
-  const expectedTypes = expectedTypeGroups.flat();
-  if (!expectedTypes.every((type) => !EVM_DYNAMIC_RETURN_TYPES.has(type))) return undefined;
-  return selectEvmScalarReturnCommitment(candidates, expectedTypes, allowRaw);
-}
-
-/** Recover a canonical Solidity ABI return which remains live in the route frame. */
-function extractEvmReturnCommitment(
-  fullTrace: AuthenticationProgramStateCommon[],
-  expectedTypeGroups: readonly (readonly string[])[], allowRaw = true,
-): string | undefined {
-  if (expectedTypeGroups.length === 0) return undefined;
-  const candidates: Uint8Array[] = [];
-  for (let traceIndex = fullTrace.length - 1; traceIndex >= Math.max(0, fullTrace.length - 96); traceIndex--) {
-    const stack = fullTrace[traceIndex].stack;
-    for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex--) {
-      candidates.push(stack[stackIndex]);
-    }
-  }
-  return selectEvmReturnCommitment(candidates, expectedTypeGroups, allowRaw);
-}
+export {
+  canonicalEvmReturnVectorLength,
+  isCanonicalEvmReturnVector,
+  isCanonicalEvmReturnSequence,
+  isCanonicalEvmReturnBlob,
+  selectEvmReturnCommitment,
+} from './external-return-encoding.js';
 
 /** Recover a Solidity ABI value which is live immediately before a return-output comparison. */
 function extractEvmScalarReturnCommitment(
@@ -4906,6 +4795,7 @@ import {
   buildChunkablePushFoldPlan,
   createFoldRowActivationEnvResolver,
   foldActivationEnvironmentFromRouteRow,
+  foldCompleteRouteArrayPushes,
   foldLeadingRouteArrayPushes,
 } from './resource-fold-route.js';
 export {
@@ -4929,6 +4819,16 @@ export function encodeLeadingRouteArrayPushes(params: {
   ) => Uint8Array | undefined;
 }): Uint8Array | undefined {
   return foldLeadingRouteArrayPushes(params)?.leading;
+}
+
+/** Apply every selected-route push to an authenticated pre-state array, including the terminal row. */
+export function encodeCompleteRouteArrayPushes(
+  params: Parameters<typeof foldLeadingRouteArrayPushes>[0] & { initialValue?: Uint8Array },
+): Uint8Array | undefined {
+  const folded = foldCompleteRouteArrayPushes(params);
+  if (!folded) return undefined;
+  return params.initialValue === undefined
+    ? folded.complete : concatenateEncodedArrays(params.initialValue, folded.complete);
 }
 
 /** `AbiDecodeAtNode{data=id:rowArgs,index=N,schema=[...]}` → argument index and handler arity. */

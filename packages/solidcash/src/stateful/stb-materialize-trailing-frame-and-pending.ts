@@ -8,6 +8,28 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { calculateDust } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 
+/** Count outputs actually occupying a compiler-declared balanced trailing frame. */
+export function physicalBalancedTrailingOutputCount(
+  currentOutputCount: number, blockSize: number, trailingCapacity: number,
+): number {
+  if (![currentOutputCount, blockSize, trailingCapacity].every(Number.isSafeInteger)
+    || currentOutputCount < 0 || blockSize < 0 || trailingCapacity < 0
+    || trailingCapacity > blockSize) {
+    throw new Error('Invalid balanced trailing-frame geometry');
+  }
+  return Math.max(0, currentOutputCount - (blockSize - trailingCapacity));
+}
+
+/** Compiler-routed delegates own their entry recreations inside the balanced block. */
+export const shouldReassertLegacyDelegateLoopEntries = (compilerRouteDelegateBlock: boolean): boolean => (
+  !compilerRouteDelegateBlock
+);
+
+/** Source-ordered segment materialization owns its loop entries; do not emit a second unsegmented run. */
+export const shouldAppendUnsegmentedLoopEntries = (
+  runtimeSegmentCount: number, loopEntriesBeforeDynamicChunks: boolean, delegateEntriesAfterLowLevel: boolean,
+): boolean => runtimeSegmentCount === 0 && !loopEntriesBeforeDynamicChunks && !delegateEntriesAfterLowLevel;
+
 export type LoopEntryVarLike = {
   collection: string;
   lockingBytecode: Uint8Array;
@@ -21,6 +43,7 @@ export type ValueChunkVarLike = {
 };
 
 export interface MaterializeTrailingFrameAndPendingHost {
+  readonly runtimeLoopTrailingSegments: readonly unknown[];
   readonly loopEntriesBeforeDynamicChunks: boolean;
   readonly delegateEntriesAfterLowLevel: boolean;
   readonly loopEntryCommitments: ReadonlyMap<string, readonly string[]>;
@@ -66,8 +89,11 @@ if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     commitments: host.loopEntryCommitments.get(value.collection),
   })));
 }
-for (const lv of (host.loopEntriesBeforeDynamicChunks || host.delegateEntriesAfterLowLevel
-  ? [] : host.trailingLoopEntryVars())) {
+for (const lv of (shouldAppendUnsegmentedLoopEntries(
+  host.runtimeLoopTrailingSegments.length,
+  host.loopEntriesBeforeDynamicChunks,
+  host.delegateEntriesAfterLowLevel,
+) ? host.trailingLoopEntryVars() : [])) {
   const commitments = host.loopEntryCommitments.get(lv.collection) ?? [];
   for (const commitment of commitments) {
     const entryOutput = {
@@ -105,13 +131,23 @@ if (trailingCapacity > 0) {
       0,
     ),
   };
-  const trailingOutputCount = Object.values(trailingOutputCounts).reduce((sum, count) => sum + count, 0);
+  const declaredTrailingOutputCount = Object.values(trailingOutputCounts).reduce((sum, count) => sum + count, 0);
+  const blockSize = host.blockLayout?.blockSize ?? trailingCapacity;
+  const trailingBase = blockSize - trailingCapacity;
+  while (builder.outputs.length < trailingBase) {
+    builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+  }
+  const trailingOutputCount = physicalBalancedTrailingOutputCount(
+    builder.outputs.length, blockSize, trailingCapacity,
+  );
   if (trailingOutputCount > trailingCapacity) {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_TRAILING_CAPACITY === '1') {
       console.error('balanced-trailing-capacity', JSON.stringify({
         capacity: trailingCapacity,
         counts: trailingOutputCounts,
+        declaredCount: declaredTrailingOutputCount,
+        physicalCount: trailingOutputCount,
         loopEntries: host.loopEntryVars.map((value) => ({
           collection: value.collection,
           delegate: value.delegate,

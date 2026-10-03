@@ -7393,10 +7393,31 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ?.messageBusActiveEntryRecipes;
     const entryAccessForSlot = (slotIndex: number): EntryAccessAbi | undefined =>
       entryAccessAt(entryAbiFunction, slotIndex);
+    const inactiveDirectEntryWrites = new Set<number>();
+    if (activeMessageBusEntryOperations === undefined && selectedRouteRows.length === 0) {
+      for (const [index, access] of (entryAccesses ?? []).entries()) {
+        if (access.activation === undefined) continue;
+        const active = evaluateFixedEffectPredicate(
+          access.activation, entryArgs, onChainState.state as Readonly<Record<string, FunctionArgument>>,
+        );
+        if (typeof active !== 'boolean') {
+          throw new Error(`Could not resolve fixed entry activation in '${entryAbiFunction?.name ?? functionName}'.`);
+        }
+        if (active) continue;
+        const slotIndex = access.slotIndex ?? index;
+        inactiveDirectEntryWrites.add(slotIndex);
+      }
+    }
     const entryOperations = (slotIndex: number): readonly string[] =>
       activeMessageBusEntryOperations !== undefined
         ? activeMessageBusEntryOperations.get(slotIndex) ?? []
-        : entryAccessForSlot(slotIndex)?.operations ?? [];
+        : inactiveDirectEntryWrites.has(slotIndex)
+          ? [...new Set([
+            ...(entryAccessForSlot(slotIndex)?.operations ?? []).filter((operation) =>
+              operation !== 'write' && operation !== 'delete'),
+            'read',
+          ])]
+          : entryAccessForSlot(slotIndex)?.operations ?? [];
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
       nextBuildId();

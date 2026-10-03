@@ -773,4 +773,38 @@ describe('kernel complete nested-mapping tuple pool', () => {
     expect(audits).toHaveLength(1);
     expect(audits[0]?.value).toBe(232n);
   }, 180_000);
+
+  it('keeps an untaken conditional mapping entry absent on a direct call', async () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract AuditedLedger {
+        mapping(uint => uint) audit;
+        mapping(uint => mapping(uint => uint)) values;
+        function set(uint outer, uint inner, uint value) public {
+          uint selected = inner;
+          if (selected > 1) { audit[inner] = value + 200; }
+          values[outer][inner] = value + 100;
+          require(true);
+        }
+      }`, GRAPH_OPTIONS);
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x6e), provider);
+    for (let index = 0; index < 8; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const inner = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const ledger = StatefulContract.withCategory(inner, setup.categoryId).connect(signer);
+    await expect(ledger.call.set(3n, 1n, 31n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(await ledger.getEntries('values')).toHaveLength(1);
+    expect(await ledger.getEntries('audit')).toHaveLength(0);
+    await expect(ledger.call.set(3n, 2n, 32n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(await ledger.getEntries('values')).toHaveLength(2);
+    const audits = await ledger.getEntries('audit');
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.value).toBe(232n);
+  }, 180_000);
 });

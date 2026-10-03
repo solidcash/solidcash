@@ -1480,8 +1480,16 @@ export async function assembleAtomicComposition(
             );
           // A route INSERT can retain -1 until its P' output exists in this physical frame. Other negative
           // sentinels remain inactive; non-negative witnesses must still address the participant-local frame.
+        // The provisional witness can already be transaction-absolute after a preceding compose pass. Validate
+        // both coordinate conventions against this participant's output span; content matching below remains the
+        // authority for the final physical output, so an in-range hint never chooses its own destination.
+        const localCoordinate = layoutWitnessIsActiveCoordinate(value)
+          && value < BigInt(candidate.limit);
+        const absoluteCoordinate = layoutWitnessIsActiveCoordinate(value)
+          && value >= BigInt(publishedBase)
+          && value < BigInt(publishedBase + candidate.limit);
         if ((!layoutWitnessIsActiveCoordinate(value) && !pendingInsert)
-            || (layoutWitnessIsActiveCoordinate(value) && value >= BigInt(candidate.limit))) continue;
+          || (layoutWitnessIsActiveCoordinate(value) && !localCoordinate && !absoluteCoordinate)) continue;
         let physicalLocalOffset: number | undefined;
         if (targetSlot !== undefined && predecessorCommitment.length >= 128) {
           const plannedPredecessor = `${predecessorCommitment.slice(0, 64)}${targetSlot}`

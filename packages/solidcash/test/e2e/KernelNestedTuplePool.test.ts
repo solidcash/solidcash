@@ -396,4 +396,57 @@ describe('kernel complete nested-mapping tuple pool', () => {
     expect(secondValues.find((entry) => binToHex(entry.slot) === binToHex(valueSlot))?.value).toBe(131n);
     expect(secondAudit[0]?.value).toBe(231n);
   }, 180_000);
+
+  it('settles a mixed-owner loop with two distinct singleton insert lanes', async () => {
+    const artifacts = compileStringMulti(GRAPH_SOURCE, GRAPH_OPTIONS);
+    const altArtifact = compileString(`pragma solidity ^0.8.0;
+      contract AuditedLedger {
+        mapping(uint => mapping(uint => uint)) values;
+        mapping(uint => uint) audit;
+        mapping(uint => uint) metrics;
+        function set(uint outer, uint inner, uint value) public {
+          values[outer][inner] = value + 100;
+          audit[inner] = value + 200;
+          metrics[inner] = value + 300;
+          require(true);
+        }
+      }`, GRAPH_OPTIONS);
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x67), provider);
+    for (let index = 0; index < 20; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const firstInner = new Contract(artifacts.Ledger, [], { provider });
+    const firstSetup = await setupStatefulUtxos(
+      provider, firstInner, artifacts.Ledger.stateLayout!, {}, { saltContract: true },
+    );
+    const first = StatefulContract.withCategory(firstInner, firstSetup.categoryId).connect(signer);
+    const secondInner = new Contract(altArtifact, [], { provider });
+    const secondSetup = await setupStatefulUtxos(
+      provider, secondInner, altArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const second = StatefulContract.withCategory(secondInner, secondSetup.categoryId).connect(signer);
+    registerDeployment(provider, {
+      contractName: altArtifact.contractName,
+      address: second.target,
+      lockingBytecode: second.inner.lockingBytecode,
+      contract: second,
+    });
+    const driverInner = new Contract(artifacts.Driver, [first.inner.lockingBytecode], { provider });
+    const driverSetup = await setupStatefulUtxos(
+      provider, driverInner, artifacts.Driver.stateLayout!, {}, { saltContract: true },
+    );
+    const driver = StatefulContract.withCategory(driverInner, driverSetup.categoryId).connect(signer);
+    driver._registerResolvedExternal('ILedger', first);
+    await expect(driver.call.runTargets([
+      hexToBin(first.inner.lockingBytecode), hexToBin(second.inner.lockingBytecode),
+      hexToBin(first.inner.lockingBytecode),
+    ]).send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const secondValues = await second.getEntries('values');
+    expect(secondValues).toHaveLength(1);
+    const valueSlot = keyToSlotMulti([bigIntToVmNumber(3n), bigIntToVmNumber(1n)]);
+    expect(secondValues.find((entry) => binToHex(entry.slot) === binToHex(valueSlot))?.value).toBe(131n);
+    expect((await second.getEntries('audit'))[0]?.value).toBe(231n);
+    expect((await second.getEntries('metrics'))[0]?.value).toBe(331n);
+  }, 180_000);
 });

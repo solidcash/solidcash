@@ -22367,24 +22367,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && (preferAbsoluteDynBase || !this.usesDelegateTransactionSuffix())) {
         this.emitAddDynamicOutputsBeforeEntries(loc, 5);
       }
-      // A scalar route lane skips the general dynamic-output prefix above. When it is the sole singleton
-      // after the route's complete batches, the batch count includes this lane's own NEW node; subtract it
-      // to locate the prefix of earlier batch outputs. Other orderings cannot use the total as a prefix.
+      // A scalar route lane skips the general dynamic-output prefix above. The batch count covers every
+      // fixed-batch predecessor plus every inserted singleton NEW. Subtract the active singleton lanes to
+      // recover the complete-batch prefix; the scalar insert cursor below then adds only earlier singletons.
       const scalarRouteSlots = this.entrySlots.filter((entry) => !entry.inLoop
         && entry.operations.includes('write')
         && this.collectionDefinitions.some((candidate) => candidate.name === entry.collection && candidate.sorted)
         && !this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(entry.slotIndex)));
       const completeBatchesPrecedeScalar = this.currentFunction.sortedBatchInfo?.every((batch) =>
         Math.min(...batch.slotIndices) < slotIndex) ?? false;
-      if (routeScalarWitness && scalarRouteSlots.length === 1 && completeBatchesPrecedeScalar) {
+      const singletonInsertWitnessesPresent = scalarRouteSlots.every((entry) => this.getStackIndex(
+        this.vmapWitnessName(`__internal__vmapBatchPredOut_${entry.slotIndex}`), true,
+      ) >= 0);
+      if (routeScalarWitness && completeBatchesPrecedeScalar && singletonInsertWitnessesPresent) {
         const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
         if (batchCountIdx >= 0) {
           this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 6);
+          for (const entry of scalarRouteSlots) {
+            this.emitPickVMapWitness(`__internal__vmapBatchPredOut_${entry.slotIndex}`, loc, 1);
+            this.emit(Op.OP_0, loc);
+            this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+            this.emit(Op.OP_SUB, loc);
+          }
           this.emit(Op.OP_DUP, loc);
           this.emit(Op.OP_0, loc);
-          this.emit(Op.OP_GREATERTHAN, loc);
+          this.emit(Op.OP_GREATERTHANOREQUAL, loc);
           this.emit(Op.OP_VERIFY, loc);
-          this.emit(Op.OP_1SUB, loc);
           this.emit(Op.OP_ADD, loc);
         }
       }

@@ -340,8 +340,8 @@ function reportOf(draft: composer.CompositionDraft): composer.CompositionRefusal
 
 /**
  * The refusal names `frame`, the innermost frame the execution reached: a store proxy leg no attempt reached, which
- * refuses reading the input its unfilled delegate reference names, is passed over. The error still carries no draft,
- * no report and no error arguments.
+ * refuses reading the input its unfilled delegate reference names, is passed over. The error carries the values that
+ * frame's custom error was raised with, when it raised one, and still no draft and no report.
  */
 function expectReported(refused: Refused, prefix: string, frame: string): composer.CompositionRefusal {
   const { error } = refused;
@@ -349,7 +349,6 @@ function expectReported(refused: Refused, prefix: string, frame: string): compos
   expect(error.message.startsWith(`${prefix} did not settle through the proxy: `)).toBe(true);
   expect(error.message).toContain(`frame "${frame}" of `);
   expect(error.message).not.toContain(`requested index: ${UNFILLED_INDEX}`);
-  expect(error.errorArgs).toBeUndefined();
   expect('draft' in error || 'report' in error).toBe(false);
   expect(refused.broadcasts).toBe(0);
 
@@ -357,6 +356,7 @@ function expectReported(refused: Refused, prefix: string, frame: string): compos
   const report = reportOf(refused.draft);
   expect(report.innermost?.master).toBe(frame);
   expect(error.message).toContain(composer.describeInnermost(report.innermost));
+  expect(error.errorArgs).toStrictEqual(report.innermost?.reason.arguments);
   const unreached = report.refusals.filter((refusal) => refusal.objection.includes(`requested index: ${UNFILLED_INDEX}`));
   expect(unreached.every((refusal) => refusal.master !== frame)).toBe(true);
   return report;
@@ -418,11 +418,12 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('a revert after calls through
       .toStrictEqual({ line: lineOf('"not a member"'), message: 'not a member' });
   });
 
-  it('a revert inside the third token call reports the callee\'s custom error, without its arguments', async () => {
+  it('a revert inside the third token call reports the callee\'s custom error and its arguments', async () => {
     const refused = await refusedCall(deployed.alice, 'post', [5n, 1500n, 7n, BOB_LOCK, compiled.coinAddress]);
-    // The settle loop still throws without `errorArgs`; the report carries them (the ladder stream's hook).
     const report = expectReported(refused, 'the call\'s callee "Coin.transferFrom()"', 'callee-master-7');
     expect(refused.error.message).toContain(': revert ShortBalance(address, int256, int256)');
+    // The refusal carries the values the callee's error was raised with: the holder, its balance, the amount asked.
+    expect(refused.error.errorArgs).toStrictEqual([`0x${binToHex(ALICE_LOCK)}`, 1000n, 1500n]);
     // The entry's own frame is derived with the callee's verdict deferred, so the refusal carries that stall; the
     // deferred callee's own revert is still what the report names.
     expect(refused.stalls).toStrictEqual([

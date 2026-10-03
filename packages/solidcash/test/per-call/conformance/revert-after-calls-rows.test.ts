@@ -32,15 +32,14 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * its line and its reason, the entry's derivation stops only past the calls the source makes before its check,
  * nothing is broadcast, and no record, mapping node, event output or balance moves on chain. Each shape's accepted
  * control settles the same entry and shows the changes those calls make. A custom error raised inside the pull after
- * the approve is reported by the pull's own frame.
+ * the approve is reported by the pull's own frame, and the refusal carries the values it was raised with
+ * (`errorArgs`), as the shipped reporter reads them from the refused draft.
  *
  * The hop settles every callee before it derives the entry, so a check whose entry would next call a callee that
  * refuses in the same state meets that callee's refusal first (the desk not open: the release of escrow 0). The
  * failure reported is the one the execution meets first (spec V6): the entry stopped before that call, so all seven
- * checks report their own reason. Known wall, in the hop's settle loop (`proxy/deploy.ts`): the thrown refusal does
- * not carry a callee's custom error arguments (`errorArgs`), which the shipped reporter reads from the refused draft.
- * A first mark, which inserts a node beside the release, settles. The plain call path on the implementation's own
- * deployment, whose records hold no ledger, refuses the entry by name.
+ * checks report their own reason. A first mark, which inserts a node beside the release, settles. The plain call path
+ * on the implementation's own deployment, whose records hold no ledger, refuses the entry by name.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */
@@ -545,20 +544,19 @@ describe('spec section 23 row 5: a revert after state-changing calls', () => {
     expect(lineOf('"invalid state"')).toBeLessThan(lineOf('.release(this.escrow)'));
   });
 
-  it('known wall: the refusal does not carry the custom error\'s arguments, which the refused draft holds',
-    async () => {
-      const run = await deployed();
-      const refused = await expectRefused(run, MEMBER, 'post', [7n, 1500n], 'short balance arguments');
-      // Owner: the hop's settle loop (`proxy/deploy.ts`), which throws a callee's refusal without the `errorArgs` it
-      // hands an entry's. The shipped reporter reads them from the draft the refusal was read from.
-      expect(refused.error.errorArgs).toBeUndefined();
-      const report = composer.reportCompositionRefusal({
-        draft: refused.draft, artifacts: [deskProxy, desk, ledger], vm: compositionMachine(),
-      });
-      const pull = report.refusals.find((refusal) => refusal.master === 'callee-master-3');
-      expect(pull?.reason.error?.name).toBe('ShortBalance');
-      expect(pull?.reason.arguments).toStrictEqual([`0x${binToHex(MEMBER_LOCK)}`, MEMBER_BALANCE, 1500n]);
+  it('the refusal carries the custom error\'s arguments, which the refused draft holds', async () => {
+    const run = await deployed();
+    const refused = await expectRefused(run, MEMBER, 'post', [7n, 1500n], 'short balance arguments');
+    // The pull's `revert ShortBalance(holder, held, amount)`: the member, the balance the ledger holds for it, and the
+    // amount the pull asked for. The shipped reporter reads the same values from the draft the refusal was read from.
+    expect(refused.error.errorArgs).toStrictEqual([`0x${binToHex(MEMBER_LOCK)}`, MEMBER_BALANCE, 1500n]);
+    const report = composer.reportCompositionRefusal({
+      draft: refused.draft, artifacts: [deskProxy, desk, ledger], vm: compositionMachine(),
     });
+    const pull = report.refusals.find((refusal) => refusal.master === 'callee-master-3');
+    expect(pull?.reason.error?.name).toBe('ShortBalance');
+    expect(pull?.reason.arguments).toStrictEqual(refused.error.errorArgs);
+  });
 
   it('settles a first mark beside the release: the inserted node, the release and their events are on chain',
     async () => {

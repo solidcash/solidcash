@@ -109,8 +109,9 @@ export function deferredRefusalMetFirst(options: {
  *
  * A void frame with nothing to learn is refused by its own derivation stalling, and the stall names only the site the
  * derivation stopped at. The frame that refused and its own `require` or `revert` are read off the stalled draft, as
- * any frame's refusal is read off the draft it was evaluated on. A refusal that names no source reason leaves the
- * stall standing: a frame can stop on what a refusal below it left rather than on a check of its own.
+ * any frame's refusal is read off the draft it was evaluated on, with the values a custom error was raised with. A
+ * refusal that names no source reason leaves the stall standing: a frame can stop on what a refusal below it left
+ * rather than on a check of its own.
  */
 export function stalledCalleeRefusal(options: {
   readonly draft: CompositionDraft;
@@ -126,6 +127,7 @@ export function stalledCalleeRefusal(options: {
   if (innermost === undefined || describeFrameReason(innermost.reason) === undefined) return undefined;
   const failure = new PerCallProxyDeployError(
     `the call's callee "${callee.functionName}" did not settle through the proxy: ${describeInnermost(innermost)}`,
+    innermost.reason.arguments,
   );
   return { failure, innermost };
 }

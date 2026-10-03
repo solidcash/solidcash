@@ -33,7 +33,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 169 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 78 |
 | `packages/solidcash/test/per-call/reads/` | `solidcash` | 53 |
-| `packages/solidcash/test/per-call/reverts/` | `solidcash` | 16 |
+| `packages/solidcash/test/per-call/reverts/` | `solidcash` | 21 |
 | `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
@@ -78,7 +78,7 @@ says what is missing.
 | a static scalar read of another contract | `STATIC` | `reads/reads.test.ts`, `reads/nested.test.ts`, and the composed static call in `validator/script.test.ts`. The state-variable form (`ICounter(c).counter`) is refused by name in `edges/reads-and-loops.test.ts` |
 | a static read once per tag in a loop, with a `string` | `STATIC` | `edges/string-argument-edge.test.ts`: one static call per key the caller passed, a `string` in and a `string` out, the answers joined and emitted by the caller, and an empty key refused on the second turn with the callee's reason, nothing broadcast. The loop's other forms by `edges/reads-and-loops.test.ts` (a run-time trip count with one call site settles one iteration; a branch over the call is refused by name) |
 | a call appending to one array entry, once per change, in a loop | `CALL` | `edges/struct-argument-edge.test.ts`: a struct with two `bytes` members and a `string`, passed as it came, built at the site from the caller's arguments, or built from a local the call also passes, appended to one id's array and emitted, one append per transaction; `toys/same-entry-appends.test.ts` (several appends to one entry in one transaction on the composer path, one record across the frames, one event per append) and `edges/records-growing.test.ts`. Not carried through the hop: two appends to one entry in one transaction, pinned as a known wall in `edges/struct-argument-edge.test.ts` (the hop plans each reach of a node whose value chunks from the deployment's value; owner `proxy/external-calls.ts`, `requireSettledNodeChains`) |
-| a call the callee itself refuses on a bad value, with a `string` | `CALL` | `edges/string-argument-edge.test.ts`: a `string` argument the callee stores (inline, and past 60 bytes as a chunk run) and emits, the score it returns stored by the caller, and a score the callee's own check rejects refused with its reason, nothing broadcast; `reverts/innermost-revert.test.ts` reports the innermost refusing frame and its custom error; `reverts/proxied-callee-reason.test.ts` reports a score a callee behind its own proxy rejects by its delegate frame's reason |
+| a call the callee itself refuses on a bad value, with a `string` | `CALL` | `edges/string-argument-edge.test.ts`: a `string` argument the callee stores (inline, and past 60 bytes as a chunk run) and emits, the score it returns stored by the caller, and a score the callee's own check rejects refused with its reason, nothing broadcast; `reverts/innermost-revert.test.ts` reports the innermost refusing frame and its custom error; `reverts/proxied-callee-reason.test.ts` reports a score a callee behind its own proxy rejects by its delegate frame's reason, and `reverts/proxied-callee-error-arguments.test.ts` carries the arguments of a custom error such a callee raises |
 | a low-level token call (`abi.encodeCall` / `abi.encodeWithSelector` + `address(t).call`) | low-level `CALL` | `edges/low-level-token-call-lowering.test.ts`: both spellings, bound or discarded, lower to the typed call and settle as it does, the `bool` decoded from the returned data; a spelling that names no method statically stays refused by name. The re-raise SafeERC20 writes in inline assembly is refused by name (`edges/refused-contract-shapes.test.ts`) |
 | a static `balanceOf` read of a token | `STATIC` | `shapes/fan-in-with-result.test.ts` ("settles the one-call pull"): the escrow reads the token's `balanceOf` before and after its `transferFrom` pull and requires the difference, every contract input accepted |
 | a payable call with value 0 carrying a struct and returning a value | `CALL` | `edges/struct-argument-edge.test.ts`: a payable entry entered with value 0 (its body checks `msg.value == 0`), a struct with a `string` argument, and the number it returns stored by the caller; value sends by `call/value-call.test.ts` and `hostile/contract-payment-plain-output.test.ts`, a returned value fed to a later call by `toys/result-into-later-call.test.ts`. Not carried: the market's spelling, the returned value written straight to storage (`job.escrowId = unicrow.pay(...)`), pinned as a known wall in `edges/struct-argument-edge.test.ts`: the compiler publishes that write in the segment before the call, so the entry never settles (owner `solidc/src/per-call/master/support.ts`, `perCallWriteSteps`); the same write through a local settles |
@@ -213,6 +213,9 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   `proxied-callee-reason.test.ts` drives a `require` inside a callee behind its own proxy through the hop: the
   refusal ends with the delegate frame's own description, whether the frame refuses before its write, before a call
   of its own (its derivation's stall is not the reason) or before a later call the planner refuses.
+  `proxied-callee-error-arguments.test.ts` raises a custom error with an address and a uint in such a callee: the
+  refusal carries the values it was raised with (`errorArgs`) in each of those ways and when a plan stops to learn the
+  refusing call's result, and the testing layer's `revertedWithCustomError(...).withArgs(...)` compares them.
 - **`solidcash/test/per-call/receipt/`** — the logs a composition's events make: each listed event output is matched to
   the event its covenant declares and reported with the emitting contract's `addrV(category)`, the fields keyed by
   parameter name and in declared order, including an event a nested frame emitted (reported with the callee's address)
@@ -324,7 +327,8 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   on the turns its guard admits), `origin-nested-call-rows.test.ts` (7), `write-after-call-rows.test.ts` (15, served but
   for a callee's own data-record write, the walls-ahead MS5 row), `record-growth-rows.test.ts` (23),
   `revert-after-calls-rows.test.ts` (5, all seven checks served: the failure reported is the one the execution
-  meets first) and `deep-chain-rows.test.ts` (25, its twenty-four-master case under `PER_CALL_FULL=1`).
+  meets first, and a callee's custom error carries its arguments) and `deep-chain-rows.test.ts` (25, its
+  twenty-four-master case under `PER_CALL_FULL=1`).
   Beside them `loop-upsert-settlement.test.ts` pins the wall a run-time-loop
   mapping upsert meets on the shipped call path (the machine refuses the frame the path planned itself, while the
   same mapping written once from a parameter settles). The twelve cross-contract rows are

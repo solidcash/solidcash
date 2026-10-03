@@ -1649,8 +1649,10 @@ async function settleCallees(options: {
             .map((entry) => `${entry.length}:${binToHex(entry.slice(-4))}`).join(',')}]`);
         hopTrace(`callee-stop ${callee.master} ${traceStopInstructions(options.vm, program)}`);
       }
+      // The refusal carries the values the reported frame's custom error was raised with, as the entry's own does.
       const failure = new PerCallProxyDeployError(
         `the call's callee "${callee.functionName}" did not settle through the proxy: ${failing}`,
+        refusal.innermost?.reason.arguments,
       );
       if (deferFailures) {
         deferred ??= failure;

@@ -213,7 +213,7 @@ describe('kernel independently indexed dynamic scalar and mapping journals', () 
 });
 
 // token-container co-layout admits compile-time co-layout (tokenContainer slot + messageBus.tokenContainerCoLayout)
-// for bytes write + tokens[category] read. The BCH-2026 VM proofs below exercise both resource families.
+// for bytes write + tokens[category] read. The BCH-2026 proofs and settled batch below exercise both families.
 describe('kernel dynamic scalar and token-container resources (token-container co-layout e2e settle follow-on)', () => {
   const source = `contract ParallelTokenJournal() {
     bytes payload;
@@ -230,6 +230,8 @@ describe('kernel dynamic scalar and token-container resources (token-container c
     inner: Contract<any, any>;
     categoryId: string;
     tokenCategory: string;
+    contract: StatefulContract<any>;
+    call: ReturnType<StatefulContract<any>['batch']>;
     builder: TransactionBuilder;
   }> => {
     const provider = createTestProvider();
@@ -249,7 +251,7 @@ describe('kernel dynamic scalar and token-container resources (token-container c
     const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
     call.addInput(fee.utxo, fee.unlocker);
     const builder = await call.build();
-    return { provider, inner, categoryId, tokenCategory: token.category, builder };
+    return { provider, inner, categoryId, tokenCategory: token.category, contract, call, builder };
   };
 
   const evaluate = (
@@ -265,6 +267,20 @@ describe('kernel dynamic scalar and token-container resources (token-container c
   it('authenticates the independent continuation and token-container slots on BCH-2026', async () => {
     const setup = await build();
     expect(evaluate(setup.provider, setup.builder).every((result) => result === true)).toBe(true);
+  }, 180_000);
+
+  it('settles bytes growth beside a token-container read', async () => {
+    const setup = await build();
+    expect(evaluate(setup.provider, setup.builder).every((result) => result === true)).toBe(true);
+    await expect(setup.call.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const state = await setup.contract.getState();
+    expect(binToHex(state.payload as Uint8Array)).toBe(binToHex(Uint8Array.from([...first, ...second])));
+    const containerAddress = getTokenContainerAddress(setup.inner, setup.categoryId, setup.tokenCategory);
+    const containers = await setup.provider.getUtxos(containerAddress);
+    expect(containers.some((utxo) => utxo.token?.category === setup.tokenCategory
+      && utxo.token.amount === 500n)).toBe(true);
   }, 180_000);
 
   it.each(['dynamic chunk', 'token container'] as const)(

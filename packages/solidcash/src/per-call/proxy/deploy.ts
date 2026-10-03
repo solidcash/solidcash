@@ -3603,8 +3603,14 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     const writtenRecords = new Set<number>();
     const recordWriteEntries: DraftRecordEntry[] = [];
     const recordChains = new Map<number, DraftRecordEntry[]>();
+    // A published write names its data record by data-record index, which is the frame's position in its own list
+    // only when that list starts at record 0 and skips none.
+    const declaredRecordAt = (nftIndex: number): HopCalleeRecord | undefined => {
+      const record = owned[nftIndex];
+      return record !== undefined && declaredRecords.includes(record) ? record : undefined;
+    };
     for (const [nftIndex, published] of recordWriteSegments) {
-      const record = declaredRecords[nftIndex];
+      const record = declaredRecordAt(nftIndex);
       if (record === undefined) continue;
       const index = participant(layout, record.id).index;
       const transitions = new Set(published.map((segment) => (segment === 'last' ? positionCount - 1 : segment)));
@@ -3629,8 +3635,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       recordChains.set(nftIndex, chain);
       writtenRecords.add(index);
     }
-    const recordsAt = (position: number): DraftRecordEntry[] => declaredRecords.map((record, nftIndex) =>
-      recordChains.get(nftIndex)?.[position]
+    const recordsAt = (position: number): DraftRecordEntry[] => declaredRecords.map((record) =>
+      recordChains.get(owned.indexOf(record))?.[position]
       ?? { in: participant(layout, record.id).index, out: participant(layout, record.id).index,
         viewIn: record.commitment, viewOut: record.commitment });
     const segments: DraftRecordEntry[][] = Array.from(
@@ -3641,7 +3647,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     }
     for (const entry of recordWriteEntries) writeTransitions.add(entry);
     for (const [nftIndex, published] of recordWriteSegments) {
-      const record = declaredRecords[nftIndex];
+      const record = declaredRecordAt(nftIndex);
       if (record === undefined) continue;
       // A delegate frame writes its owner's record, which only a master of the owner's category authorizes.
       const authority = callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!;

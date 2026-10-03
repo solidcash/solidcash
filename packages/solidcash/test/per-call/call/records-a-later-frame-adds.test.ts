@@ -27,7 +27,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * them, record 1 for the earlier frame and record 0 behind it for the later one, so the later frame read its record 1
  * one input past record 0 and refused at its caller check. When that order leaves a frame's records apart, they are
  * now placed in data-record order ahead of the nodes; a block whose frames name records no order keeps side by side
- * (`Vault.audit` names records 0 and 2, `claimOnce` 0 and 1) is refused by name.
+ * (`Vault.audit` names records 0 and 2, `claimOnce` 0 and 1) is refused by name. `Vault.retune` names record 1 alone
+ * and writes it: the hop looked its published write up by the frame's own position in its list rather than by data
+ * record, so the write went undeclared and the frame refused at its own close.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -48,6 +50,7 @@ const SOURCE = [
   '  function settle(uint16 mark) external view returns (uint16);',
   '  function claimOnce() external;',
   '  function audit() external;',
+  '  function retune(uint16 fee_) external;',
   '}',
   'contract Vault {',
   '  uint256 private status;',
@@ -78,6 +81,10 @@ const SOURCE = [
   '    require(msg.sender == auditor, "not the auditor");',
   '    rounds = rounds + cap;',
   '  }',
+  '  function retune(uint16 fee_) external {',
+  '    require(msg.sender == claimer, "not the claimer");',
+  '    fee = fee_;',
+  '  }',
   '}',
   'contract Root {',
   '  address public implementation;',
@@ -97,6 +104,7 @@ const SOURCE = [
   '    IVault(vault).claimOnce();',
   '    IVault(vault).audit();',
   '  }',
+  '  function runRetune(uint16 mark) public { IVault(vault).retune(mark); }',
   '}',
 ].join('\n');
 
@@ -206,6 +214,7 @@ describe('a contract whose later frame in a hop declares a record its earlier fr
     expect(namedRecords(vault, 'settle')).toStrictEqual([1]);
     expect(namedRecords(vault, 'claimOnce')).toStrictEqual([0, 1]);
     expect(namedRecords(vault, 'audit')).toStrictEqual([0, 2]);
+    expect(namedRecords(vault, 'retune')).toStrictEqual([1]);
   });
 
   it('settles the read of record 1 and then the guarded write that names both records', async () => {
@@ -225,6 +234,16 @@ describe('a contract whose later frame in a hop declares a record its earlier fr
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
     expect(await settledValues(network, result)).toStrictEqual({ rounds: 1n, status: 1n, seen: MARK + FEE });
+  }, 300_000);
+
+  it('settles a frame that names record 1 alone and writes it', async () => {
+    const { network, enter } = await deployed();
+    const result = await enter('runRetune');
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    const layout = vault.stateLayout!;
+    const deployment = await readPerCallDeployment(network, VAULT_CATEGORY, layout);
+    expect(deploymentStateValues(layout, VAULT_CATEGORY, deployment).fee).toBe(MARK);
   }, 300_000);
 
   it('refuses by name a hop whose frames name records no order keeps side by side', async () => {

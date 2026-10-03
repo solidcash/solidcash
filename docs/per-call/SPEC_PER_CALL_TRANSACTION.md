@@ -12,9 +12,10 @@ Revision 14, 2026-10-03. Security assessment behind revisions 6-9: [`AUDIT_MSG_S
 
 Revision 14 records what landed after revision 13 (`3c0d52997`), and one place the implementation still differs.
 - **Plain-path callees** (sections 10, 18). `callPerCallEntry` plans the callee frames an entry reaches, each a frame
-  of its contract's own block whose return is learned from its own close (`200a2079d`). A callee that emits, touches
-  a mapping or chunks, sends value, co-spends a side-car or sits behind a proxy, and a write in a contract entered
-  twice, are refused by name.
+  of its contract's own block whose return is learned from its own close (`200a2079d`). A callee that emits or reads
+  and writes a mapping entry is planned too (`7086239dc`): its events follow the root's, and its nodes are declared
+  in the segments its artifact publishes. Chunks, value sends, side-cars, proxied callees and a write in a contract
+  entered twice are refused by name.
 - **Record indices** (section 20, W2). Every declared record index must name an input or an output, the
   created-record sentinel aside (`52fe8aa95`), which extends T52's rule from read-only entries to every record the
   head walks (T55).
@@ -23,6 +24,9 @@ Revision 14 records what landed after revision 13 (`3c0d52997`), and one place t
   `1cdb0094b`). The validator pool is not resized.
 - **Constructors** (section 12). A master runs its constructor arm only when input 0 spends `(category, 0)`, which
   only the genesis does (`08d0bba27`, T54, DECISIONS D18).
+- **Own-category census on the master path** (S2). A master that settles alone holds its category's immutable NFTs
+  to the events its frame lists, and every input and output of the category to a fungible amount of 0 (`cd55e7a72`,
+  T56).
 - **Upgrades** (section 20). The layout-compatibility rule (`d01cb5f6b`).
 - **Sends** (section 18). Handle sends take their turn in one queue per provider (`e786d49dd`).
 - **Still different: skipped calls** (section 4). The text holds one call record per call executed; the compiled
@@ -1126,6 +1130,7 @@ by the code that produces it, by the validator program, or against real state.
 | T53 | Mint a contract's minting NFT at an output its index does not recreate (an extra master at the master lock, or one at a caller's own lock), so its holder forges the contract's masters and records | R2b and S2: every master's head requires each index's output to carry the category's minting NFT exactly when its input does (`27bc49b12`); only the admin's `split(n)`/`merge(n)` arm changes N. Was open (VM-proven, standalone and composed) | Yes |
 | T54 | Run a contract's constructor again on a live master: an owner rewritten, a supply minted twice | The constructor arm requires input 0 to spend `(category, 0)`, which only the genesis spends (`08d0bba27`, DECISIONS D18). Was open (VM-proven: an owner taken over; a supply minted from 1000 to 2000) | Yes |
 | T55 | Declare a record at an index the transaction does not have (a paged read's later turn at 0x8001), so a body reads a value no input carries | W2: the head's record walk requires the larger of an entry's two indices to name an input or an output (`52fe8aa95`). Was open (VM-proven) | Yes |
+| T56 | Mint immutable NFTs (forged events) or fungible amounts of a contract's category from a master that settles alone | S2 on the master path (`cd55e7a72`): the settlement walk holds the category's bare outputs to the events the frame lists, and the head's census refuses a fungible amount of the category at every index. Was open (VM-proven) | Yes |
 | T41 | Two frames claim the same event output, so one of two events disappears | S2 and V7: event outputs are pairwise distinct | Medium |
 | G0 | A `DELEGATE` frame's own category is settled by nobody. Its master runs on its caller's records and never settles its own (S), and V8 settles a contract only for a second master of it or for a `DELEGATE` or `INTERNAL` frame on its records. So when the frame's master is its contract's only one, nothing settles that contract: no census of its category, and no check on the records of it the transaction spends | Not stopped: a documented residual (DECISIONS D9), as the kernel's conservation rule (C3) skips delegate frames | Residual |
 

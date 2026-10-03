@@ -459,9 +459,47 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       }
       return undefined;
     };
-    const valueExpression = final?.value && mutations.every((mutation) =>
-      JSON.stringify(mutation.guard) === JSON.stringify(final.guard))
-      ? serialize(final.value) : undefined;
+    const serializeGuard = (guard: ExternalCallExpression): string | undefined => {
+      if (guard.kind === 'source' && guard.source?.kind === 'forward'
+        && guard.source.paramIndex !== undefined) {
+        const parameter = fn.parameters[guard.source.paramIndex];
+        if (parameter === undefined || parameter.name.startsWith('__internal__')) return undefined;
+        parameters.add(parameter.name);
+        return `id:${parameter.name}`;
+      }
+      if (guard.kind === 'literal' && (guard.value === true || guard.value === false
+        || (typeof guard.value === 'string' && /^-?[0-9]+$/.test(guard.value)))) {
+        return `lit:${String(guard.value)}`;
+      }
+      if (guard.kind === 'unary' && guard.operator === '!' && guard.expression !== undefined) {
+        const inner = serializeGuard(guard.expression);
+        return inner === undefined ? undefined : `unop:!(${inner})`;
+      }
+      if (guard.kind === 'binary' && ['&&', '||', '==', '!=', '<', '<=', '>', '>='].includes(guard.operator ?? '')
+        && guard.left !== undefined && guard.right !== undefined) {
+        const left = serializeGuard(guard.left);
+        const right = serializeGuard(guard.right);
+        return left === undefined || right === undefined ? undefined
+          : `binop:${guard.operator}(${left},${right})`;
+      }
+      return undefined;
+    };
+    let valueExpression: string | undefined;
+    if (final?.value && mutations.every((mutation) =>
+      JSON.stringify(mutation.guard) === JSON.stringify(final.guard))) {
+      valueExpression = serialize(final.value);
+    } else {
+      // The cache's final value is the last executed source write. Replay the pure argument guards in source
+      // order; the inactive fallback is immaterial because the separate activation leaves that arm unwritten.
+      let folded: string | undefined = 'lit:0';
+      for (const mutation of mutations) {
+        const guard = serializeGuard(mutation.guard);
+        const value = mutation.value === undefined ? undefined : serialize(mutation.value);
+        if (guard === undefined || value === undefined) { folded = undefined; break; }
+        folded = `ternary(${guard},${value},${folded})`;
+      }
+      valueExpression = folded;
+    }
     return { activation, ...(valueExpression !== undefined && {
       valueSource: { expression: valueExpression, parameters: [...parameters] },
     }) };

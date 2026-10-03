@@ -1193,4 +1193,42 @@ describe('kernel complete nested-mapping tuple pool', () => {
     expect(binToHex(entries[0]!.slot)).toBe(binToHex(keyToSlotMulti([bigIntToVmNumber(2n)])));
     expect(entries[0]!.value).toBe(23n);
   }, 180_000);
+
+  it('settles separately guarded writes to one cached mapping entry', async () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract GuardedLedger {
+        mapping(uint => uint) values;
+        mapping(uint => uint) trace;
+        function set(uint key, uint value, bool enabled, bool bumped) public {
+          if (enabled && value > 20) { values[key] = value; }
+          if (bumped && value > 30) { values[key] = value + 1; }
+          trace[key] = value + 100;
+          require(true);
+        }
+      }`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'set')?.entryAccesses?.[0]?.valueSource)
+      .toMatch(/^ternary\(/);
+    const provider = createMessageBusCapstoneTestProvider();
+    const inner = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, setup.categoryId);
+    await expect(contract.batch([
+      { function: 'set', args: [1n, 11n, false, false] },
+      { function: 'set', args: [1n, 12n, false, false] },
+    ]).send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(await contract.getEntries('values')).toHaveLength(0);
+    for (const [key, value, enabled, bumped, expected] of [
+      [2n, 22n, true, false, 22n],
+      [3n, 33n, false, true, 34n],
+      [4n, 44n, true, true, 45n],
+    ] as const) {
+      await expect(contract.batch([{ function: 'set', args: [key, value, enabled, bumped] }]).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+      const entries = await contract.getEntries('values');
+      expect(entries.find((entry) => binToHex(entry.slot)
+        === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value).toBe(expected);
+    }
+  }, 180_000);
 });

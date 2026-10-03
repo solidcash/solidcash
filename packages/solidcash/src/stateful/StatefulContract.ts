@@ -2678,6 +2678,14 @@ export function evalComputedKey(
     }
     m = s.match(/^cast:[a-z0-9]+\((.*)\)$/i);
     if (m) return evalValue(m[1]); // a bytes/bytesN cast is identity on the underlying value
+    m = s.match(/^unop:!\((.*)\)$/);
+    if (m) {
+      const value = evalValue(m[1]);
+      if (typeof value === 'boolean') return !value;
+      if (typeof value === 'bigint') return value === 0n;
+      if (typeof value === 'number') return value === 0;
+      return undefined;
+    }
     m = s.match(/^arridx\((.*)\)$/);
     if (m) {
       const pair = splitTopLevel(m[1]);
@@ -2722,6 +2730,15 @@ export function evalComputedKey(
           : typeof left === typeof right && ['bigint', 'number', 'boolean', 'string'].includes(typeof left)
             ? left === right : undefined;
         return equal === undefined ? undefined : m[1] === '==' ? equal : !equal;
+      }
+      if (m[1] === '&&' || m[1] === '||') {
+        const asBoolean = (value: unknown): boolean | undefined => typeof value === 'boolean' ? value
+          : typeof value === 'bigint' ? value !== 0n
+            : typeof value === 'number' ? value !== 0 : undefined;
+        const leftValue = asBoolean(left);
+        const rightValue = asBoolean(right);
+        return leftValue === undefined || rightValue === undefined ? undefined
+          : m[1] === '&&' ? leftValue && rightValue : leftValue || rightValue;
       }
       if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
       if (m[1] === '+') return left + right;
@@ -7877,6 +7894,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (/^(?:nullop|nullary):(?:msg\.sender|tx\.origin)$/.test(label)) return publicSelfAddress;
             match = label.match(/^(?:cast:[a-zA-Z0-9]+)\((.*)\)$/);
             if (match) return evalLabel(match[1]);
+            match = label.match(/^unop:!\((.*)\)$/);
+            if (match) {
+              const value = toBig(evalLabel(match[1]));
+              return value === undefined ? undefined : value === 0n;
+            }
             match = label.match(/^(?:binop|binary):([^()]+)\((.*)\)$/);
             if (match) {
               const parts = splitTopLevel(match[2]);
@@ -7896,6 +7918,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 case '<=': return left <= right;
                 case '==': return left === right;
                 case '!=': return left !== right;
+                case '&&': return left !== 0n && right !== 0n;
+                case '||': return left !== 0n || right !== 0n;
                 default: return undefined;
               }
             }

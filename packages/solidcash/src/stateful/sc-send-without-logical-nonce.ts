@@ -7,12 +7,15 @@ import type { StateValue } from '@solidcash/utils';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import { discoverInitialCallTopology } from '../message-bus/compose-result-topology.js';
+import { rebuildPreparedInvocation } from '../message-bus/compose-prepared-invocation.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type Signer from '../Signer.js';
 import {
   legacyStatefulSimulationEnabled,
   softOracleRate,
 } from './soft-state-overlays.js';
+import { encodeExternalReturnValue } from './external-return-encoding.js';
+import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { StatefulContract } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 
@@ -155,8 +158,53 @@ async function prepareTypedCallbackGraph(
   // A typed address can select a different deployed owner than the interface registry suggests. If the
   // registered path is a callback, compose the runtime-resolved finite graph even when that choice removes
   // the repeated owner; falling back to the legacy registry-only guard would pin the callee incorrectly.
-  return registeredCallback || [...ownerCounts.values()].some((count) => count > 1)
-    ? calls : undefined;
+  if (!registeredCallback && ![...ownerCounts.values()].some((count) => count > 1)) return undefined;
+
+  // A later write on a repeated participant can abort its aggregate route before an earlier getter publishes
+  // its result. Seed that earlier read from the exact on-chain getter, then let the completed graph VM either
+  // confirm the result or reject the transaction. A seed is never a prepared, caller-supplied commitment.
+  const writtenOwners = new Set<string>();
+  const seededCalls: PreparedAtomicMessageBusCall[] = [];
+  for (const call of calls) {
+    const owner = `${call.contract.categoryId.toLowerCase()}:${call.contract.inner.lockingBytecode.toLowerCase()}`;
+    const callee = call.executor ?? call.contract;
+    const calleeArtifact = call.executionArtifact ?? callee.inner.artifact;
+    const matches = calleeArtifact.abi.filter((candidate) => call.selector !== undefined
+      ? candidate.selector?.toLowerCase() === call.selector.toLowerCase()
+      : candidate.name === call.functionName);
+    const fn = matches.length === 1 ? matches[0] : undefined;
+    const collection = calleeArtifact.stateLayout?.collections?.find((candidate) =>
+      candidate.name === fn?.directMappingReturn?.collection);
+    const access = fn?.entryAccesses?.[0];
+    const directGetter = call.executor === undefined && fn?.writesState === false
+      && fn.outputs?.length === 1 && fn.directMappingReturn !== undefined
+      && !fn.externalCalls?.length
+      && fn.entryAccesses?.length === 1 && access?.collection === collection?.name
+      && access?.operations.length === 1 && access.operations[0] === 'read'
+      && access.keyParams.length === fn.directMappingReturn.keyParams.length
+      && access.keyParams.every((name, index) => name === fn.directMappingReturn?.keyParams[index])
+      && collection?.kind === 'mapping' && collection.valueType === fn.outputs[0]?.type;
+    let seeded = call;
+    if (directGetter && !writtenOwners.has(owner)) {
+      try {
+        const value = await callee._deriveReturnValue(call.functionName, [...call.args], undefined, fn);
+        const encoding = resolveExternalResultEncoding(
+          fn.resultEncoding, calleeArtifact, [fn.outputs![0]!.type], `function '${fn.name}' result`,
+        );
+        const result = encodeExternalReturnValue(
+          value, fn.outputs![0]!.type,
+          calleeArtifact.structs ?? calleeArtifact.stateLayout?.structs,
+          encoding === 'evm-abi-v1', calleeArtifact.enums,
+        );
+        seeded = rebuildPreparedInvocation(call, call.args, binToHex(result));
+      } catch {
+        // An unavailable pre-state read is unknown. The aggregate VM remains the only authority.
+      }
+    }
+    seededCalls.push(seeded);
+    if (fn?.writesState !== false) writtenOwners.add(owner);
+  }
+  return seededCalls;
 }
 
 export async function sendWithoutLogicalNonce(

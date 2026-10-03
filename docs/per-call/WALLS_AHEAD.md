@@ -1,4 +1,4 @@
-# Walls past 50/66: predicted from the code (2026-10-03)
+# Walls past 55/66: measured from the focused slice (2026-10-03)
 
 Measured at `055833fb4`: a full 66-title run (44 passed, the set unchanged since 04:48), the walls-ahead replicas under
 `PER_CALL_AHEAD=1` (9 of 142 cases off their pins), a census of the compiled marketplace's entries (calls, kinds,
@@ -7,32 +7,43 @@ guards, loops, side-cars, write segments), and the sources in `.marketplace/cont
 66-title run of 2026-10-03 reads **50 passed | 16 failed (66)**, the scoreboard's ticked set is exactly that passing
 set. Updated again at `384859f30` from targeted title runs (no full run): **56 expected** - the 50 plus #30
 (`499e1d178`), #58 (`69283cde1`), #55 and #57 (`b366f1bdf` on `69283cde1`), #19 (`db78982a0`) and #46
-(`384859f30`), each confirmed green by its own run.
-**Measured 2026-10-03 by a full 66-title run at `db78982a0`: `55 passed | 11 failed (66)`** - the 54 above
-plus #19 (`db78982a0`, the read path's per-turn frames for a loop's calls), with the ticked set exactly that
-passing set. The 11 still failing are #46, #50-#53, #59-#62, #65 and #66; each one's own verdict is in the
-plan's Log row for `db78982a0`.
+(`384859f30`), each confirmed green by its own run. A full run at `db78982a0` then read `55 passed | 11 failed (66)`
+and one at `37d864925` read `56 passed | 10 failed (66)`, each with the ticked set equal to its passing set.
+**Measured 2026-10-03 on the focused slice of the then-failing titles at `9b271b622`: `8 failed | 4 passed | 54
+skipped (66)`, after a cold fixture recompile (`tsc -b` clean, 9 sources -> 7 artifacts, 0 cache hits). Two titles
+moved with the shrinking-run landing `bfa670351`: #53 `refund > refund` and #65 `refuse arbitration > job taken`. The
+ladder is 58/66 and the ticked set is exactly the passing set. The eight still failing stop on ONE wall, measured to
+be the frame's own program rather than a planning stall: `the call's callee "UnicrowClaim.claim()" did not settle
+through the proxy: frame "callee-master-2"/"callee-master-6" of UnicrowClaim.claim() at line 137: no source message
+(Program failed an OP_VERIFY operation.)`. Line 137 is that body's first statement - a STATIC call whose return is a
+13-field struct whose last member is a dynamic `string`. A temporary probe in the derivation host's `step`
+(`composer/shipped-host.ts`, plus `draft.ts`'s `run.fill`, both reverted) printed `callee-master-6 site=0 no-progress
+before=717:Program failed an OP_VERIFY operation. after=717:...` on every attempt, so the compiled body already fails
+at ip 717 before any record is filled and the driver's "filled no witness at site 0" stall is a symptom, not the
+cause. #50 is the attribution sibling (`expected revert reason Review text too long, but the contract's own reason was
+"no source message"`). The hop's own trace adds the strongest lead: `reading callee=callee-master-6 ok
+declaredLen=107 computedLen=107 declared=005123aa201162... computed=005223aa201162...` - the frame's declared view of
+its 107-byte record differs from the computed one at byte 2 only (`0x51` vs `0x52`). Log:
+`{SCRATCH}/ladder-slice-r4.log`, `{SCRATCH}/trace-claim.log`, `{SCRATCH}/trace-step.log`.
 
-## The order the titles meet them (HEAD `384859f30`)
+## The order the titles meet them (HEAD `9b271b622`)
 
 | Titles | Wall at HEAD | Next walls predicted from the code | Owner |
 | --- | --- | --- | --- |
-| #50 approve sanity, #59 arbitrate sanity | their first steps expect the entry's own revert (`job in invalid state`, `not creator`, `not arbitrator`, `not disputed`), which fires before any call; a refusal the planner raises for the call the entry never makes is thrown first (V6 is applied to settle-time refusals only) | each title's success step, below | hop; in progress (R9) |
-| #50, #51 approve, #52 (its approve step) | `release` writes the escrow record and the claim it calls updates the same node (`setClaimed`): `enclosed-reads.ts` chains an inner READ only, so the inner UPDATE is refused ("one of them enters the other") | the enclosing write is body-computed since `b366f1bdf`, so its value must be learned from the writer's close; the long value is written twice in one hop (below); token balance inserts beside the node every payout turn debits (`requireSatisfiableReachWrites`, `requireChainableNodes`; the compiler's sorted insert proves its predecessor against the spent input, not the declared view) | hop + compiler; in progress (D1: enclosed update and learned value; P5: the inserts) |
-| #50-#52, #59-#62, #66 | a chunked mapping value written twice in one hop (`settle` then the claim's `setClaimed`; `release` then `setClaimed`): the hop planned the second writer's value from the deployment's node (`nodeFieldValue` reads the live node, not the value the earlier reach left), so its run sat at a stale digest's address; not a compiler protocol change - each writer creates its own run | - | hop; in progress (D1, with the enclosed update) |
-| #59-#62 arbitrate, #66 | the dispute step passes now (`69283cde1`, `b366f1bdf`); the arbitration then meets the double write above, re-reads its own flag through the claim (chains, `4900bb9b9`), and pays out only the turns its guard lets through (`4900bb9b9`) | the token balance inserts above | in progress (P5 for the inserts) |
-| #52, #53 refund, #65 refuse arbitration (job taken) | a write that shrinks the job record across a chunk boundary (3 to 2 chunks): `refuseArbitration` is refused by name (`sizedDynamicRun`); `refund` sizes its run from the record's declared length and fails in the frame (attributed to line 488) | #52's approve step (above); #53's `reopenJob` shrinks the record again | compiler + hop; in progress (S1) |
+| #51 approve result, #52 refund sanity, #59 arbitrate sanity, #60 80-20, #61 0-100, #62 100-0, #66 integration test | one wall: the composed execution's frame for the claim entry refuses at its body's first statement, a STATIC call whose return is a struct holding a dynamic member, with an unattributed `OP_VERIFY` (ip 717, before any record is filled) | the frame's own declared view of its 107-byte record against the computed one at byte 2 (`0x51` vs `0x52`) is the closest lead; nothing past it is measured | hop + compiler; in progress (a neutral reproducer is being built beside the existing replicas) |
+| #50 approve sanity | the entry's own revert reason is not attributed where the transaction reverts (`expected revert reason Review text too long, but the contract's own reason was "no source message"`) | the claim wall above, once its own reasons are reported | attribution (`composer/refusal.ts`) |
 
-Served on 2026-10-03, each confirmed by its own title run: #42 take job, #48, #49 deliver result and #54 dispute
+Served on 2026-10-03, each confirmed by its own title run: #53 refund and #65 refuse arbitration job taken
+(`bfa670351`: a write that leaves a chunked dynamic value shorter than the run the deployment holds plans the run at
+the width it spends); #42 take job, #48, #49 deliver result and #54 dispute
 sanity (`ed5ccadad` slice); #45 pay start job (`0ad9ecf7f`); #31 update job (`5c4f232b7`); #30 whitelist worker
 (`499e1d178`: a run a loop frame only reads is found from the declaration's end); #58 dispute worker (`69283cde1`:
 compat address equality by identity, forwarded `bytes` read as bytes); #55 dispute with arbitrator and #57 dispute
 creator (`b366f1bdf`: a published local follows the writes before its read); #19 post two jobs (`db78982a0`: a read
 plans one frame per calling loop turn); #46 post thread message sanity (`384859f30`: a signer or contract passed for an
-`address` argument resolves through `getAddress()`, as ethers does). Moved, not yet green: #52 and #53 past
-the early read of their own record (`c46cdeb23`), #65 past `Unicrow.refund` (`69283cde1`, `b366f1bdf`), #50 and #51
-past the token transfer's target (`12897d9b3`: an address read back through a call result reaches a callee as the
-lock it names).
+`address` argument resolves through `getAddress()`, as ethers does); #60's and #51's reach checks are served
+(`ba2625ef0`: each insert is planned against the list the earlier reaches left).
+
 
 ## Replicas whose pins were stale (refreshed 2026-10-03)
 

@@ -223,6 +223,31 @@ class SourceMappingReadFinder extends AstTraversal {
   }
 }
 
+/** Metadata projections run before semantic lowering turns source `m[k]` into a MappingAccessNode. */
+class NormalizeSourceMappingReads extends AstTraversal {
+  constructor(private readonly mappings: ReadonlySet<string>) { super(); }
+
+  visitTupleIndexOp(node: TupleIndexOpNode): Node {
+    if (node.tuple instanceof IdentifierNode && this.mappings.has(node.tuple.name)) {
+      const key = new IntLiteralNode(BigInt(node.index));
+      key.location = node.location;
+      const access = new MappingAccessNode(node.tuple.name, [key]);
+      access.location = node.location;
+      return access;
+    }
+    return super.visitTupleIndexOp(node);
+  }
+
+  visitArrayAccess(node: ArrayAccessNode): Node {
+    if (node.array instanceof IdentifierNode && this.mappings.has(node.array.name)) {
+      const access = new MappingAccessNode(node.array.name, [this.visit(node.index) as ExpressionNode]);
+      access.location = node.location;
+      return access;
+    }
+    return super.visitArrayAccess(node);
+  }
+}
+
 function canonKeyOf(k: Node, allowExpression = false): { canon: string; key: KeyKind } | null {
   if (k instanceof IdentifierNode) return { canon: `id:${k.name}`, key: { kind: 'id', name: k.name } };
   if (k instanceof NullaryOpNode
@@ -505,6 +530,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     const knownCaptures = new Map<string, ExpressionNode>();
     const sourceCaptures = new Map<string, ExpressionNode>();
     const capturePreWriteCollections = new Map<string, Set<string>>();
+    const declaredLocals = new Set<string>();
     let sourcePrefixSafe = true;
     const expandSourceCaptures = (source: ExpressionNode): ExpressionNode => {
       let value = cloneNode(source) as ExpressionNode;
@@ -530,6 +556,30 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       }
       return { value, replaced };
     };
+    const recordCapture = (name: string, expression: ExpressionNode, allowMappingRead: boolean): void => {
+      const inheritedPreWrites = new Set<string>();
+      for (const [local, collections] of capturePreWriteCollections) {
+        const projector = new ProjectCapturedMappingRead(local, sourceCaptures.get(local)!);
+        projector.visit(cloneNode(expression));
+        if (projector.replaced) collections.forEach((collection) => inheritedPreWrites.add(collection));
+      }
+      const source = expandSourceCaptures(expression);
+      const capture = projectKnownValues(expression).value;
+      const readableMappingCapture = allowMappingRead && [...this.scalarMappings.keys()].some((mapping) => {
+        const finder = new SourceMappingReadFinder(mapping);
+        finder.visit(capture);
+        return finder.keys.length > 0 && finder.keys.every((key) => argumentOnlyMappingValue(key, parameters));
+      });
+      capturePreWriteCollections.set(name, inheritedPreWrites);
+      sourceCaptures.set(name, source);
+      if (argumentOnlyMappingValue(capture, parameters) || readableMappingCapture) {
+        knownCaptures.set(name, readableMappingCapture
+          ? new NormalizeSourceMappingReads(new Set(this.scalarMappings.keys()))
+            .visit(cloneNode(capture)) as ExpressionNode : capture);
+      } else {
+        knownCaptures.delete(name);
+      }
+    };
     for (let index = 0; index < statements.length; index += 1) {
       if (index > 0) {
         const preceding = statements[index - 1];
@@ -550,25 +600,19 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           ]);
         } else if (preceding instanceof VariableDefinitionNode
           && (!preceding.expression || expressionCanon(preceding.expression) !== undefined)) {
+          declaredLocals.add(preceding.name);
           if (preceding.expression) {
-            const inheritedPreWrites = new Set<string>();
-            for (const [local, collections] of capturePreWriteCollections) {
-              const projector = new ProjectCapturedMappingRead(local, sourceCaptures.get(local)!);
-              projector.visit(cloneNode(preceding.expression));
-              if (projector.replaced) collections.forEach((name) => inheritedPreWrites.add(name));
-            }
-            capturePreWriteCollections.set(preceding.name, inheritedPreWrites);
-            sourceCaptures.set(preceding.name, expandSourceCaptures(preceding.expression));
+            recordCapture(preceding.name, preceding.expression, false);
           } else {
             sourceCaptures.delete(preceding.name);
             capturePreWriteCollections.delete(preceding.name);
-          }
-          const capture = preceding.expression && projectKnownValues(preceding.expression).value;
-          if (capture && argumentOnlyMappingValue(capture, parameters)) {
-            knownCaptures.set(preceding.name, capture);
-          } else {
             knownCaptures.delete(preceding.name);
           }
+        } else if (preceding instanceof AssignNode && !preceding.isReferenceDataWrite
+          && declaredLocals.has(preceding.identifier.name)
+          && expressionCanon(preceding.expression) !== undefined) {
+          // A top-level local rebind is a point-in-time capture, just like its declaration.
+          recordCapture(preceding.identifier.name, preceding.expression, true);
         } else {
           // Calls, branches, assertions, and unsupported writes end the straight-line proof.
           knownWrites.clear();
@@ -576,6 +620,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           knownCaptures.clear();
           sourceCaptures.clear();
           capturePreWriteCollections.clear();
+          declaredLocals.clear();
           sourcePrefixSafe = false;
         }
       }

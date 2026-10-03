@@ -425,6 +425,33 @@ describe('vmap fixed-write batch metadata', () => {
     expect(after?.postWriteExpressionLabel).toBe('ternary(lit:true,lit:11,lit:0)');
   });
 
+  it('publishes point-in-time mapping captures assigned to mutable locals', () => {
+    const compile = (body: string): KeySourceAbi | undefined => {
+      const artifact = compileString(`pragma solidity ^0.8.0;
+        contract Probe() {
+          mapping(uint256 => bool) flags;
+          mapping(uint256 => uint256) data;
+          function store(uint256 flagKey, uint256 dataKey, uint256 value) public {
+            ${body}
+            require(true);
+          }
+        }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+        messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+        suppressWarnings: true, optimizeForCompilationSpeed: true });
+      return artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses
+        ?.find((access) => access.collection === 'data')?.keySources?.[0];
+    };
+    const before = compile('bool selected = false; selected = flags[flagKey]; data[selected ? dataKey : 0] = value; flags[flagKey] = false;');
+    const after = compile('flags[flagKey] = true; bool selected = false; selected = flags[flagKey]; data[selected ? dataKey : 0] = value;');
+    const rebound = compile('bool selected = false; selected = flags[flagKey]; selected = false; data[selected ? dataKey : 0] = value; flags[flagKey] = false;');
+    expect(before?.preWriteMappingCollections).toEqual(['flags']);
+    expect(before?.postWriteExpressionLabel).toBe('ternary(map:flags(id:flagKey),id:dataKey,lit:0)');
+    expect(after?.preWriteMappingCollections).toBeUndefined();
+    expect(after?.postWriteExpressionLabel).toBe('ternary(lit:true,id:dataKey,lit:0)');
+    expect(rebound?.preWriteMappingCollections).toBeUndefined();
+    expect(rebound?.postWriteExpressionLabel).toBe('ternary(lit:false,id:dataKey,lit:0)');
+  });
+
   it('records a mapping rmw of a parameter delta as valueSource', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;

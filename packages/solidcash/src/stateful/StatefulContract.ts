@@ -7482,8 +7482,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         .map((access) => access.collection));
       for (const access of entryAccesses) {
         for (const source of access.keySources ?? []) {
-          if (source.kind !== 'expression' || !source.expressionLabel) continue;
-          for (const match of source.expressionLabel.matchAll(/map:([A-Za-z_]\w*)\(/g)) {
+          const effectiveLabel = source.postWriteExpressionLabel ?? source.expressionLabel;
+          if (source.kind !== 'expression' || !effectiveLabel) continue;
+          for (const match of effectiveLabel.matchAll(/map:([A-Za-z_]\w*)\(/g)) {
             const name = match[1];
             const mapped = stateLayout.collections.find((candidate) => candidate.name === name
               && candidate.kind === 'mapping');

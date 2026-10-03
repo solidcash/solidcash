@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { FrameKind, encodePushdataValue, validatorAddress } from '@solidcash/utils';
+import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import { FrameKind, bytesToHex, encodePushdataValue, validatorAddress, type Artifact } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
@@ -29,11 +30,12 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * (`shapes/reentry-payout-loop.test.ts`), whose loop likewise turns as often as an earlier `STATIC` read returned;
  * the token keeps balances per holder, as the marketplace's does.
  *
- * Pinned as it stands: the flow, whose loop the hop plans from the count it learns in execution order, and the
- * variant with the loop's count moved into the claimer's own record both plan every turn (every turn credits one
- * holder, and each later transfer rewrites the node the one before it created), and both stop at the re-entered
- * guard behind them; so does the flow with one turn. All three are the SDK hop's (`src/per-call/proxy/**`), so the
- * replica is a reproducer.
+ * Pinned as it stands: the flow, whose loop the hop plans from the count it learns in execution order, the variant
+ * with the loop's count moved into the claimer's own record and the flow with one turn all settle: every verdict is
+ * accepted and the transaction broadcasts. The re-entered escrow frames start from the guard `release` wrote before
+ * its call into the claimer, which the hop learns by deriving `release` up to that call (`proxy/reentry.ts`); each
+ * turn's transfer continues the node the one before it created; `release`'s segment after the call carries on from
+ * the claim `setClaimed` wrote; and the store's own record writes are authorized by its proxy's master.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -316,15 +318,45 @@ function depthOf(callees: readonly HopCallee[], index: number): number {
   return depth;
 }
 
+/** A contract's fields as the chain holds them, parsed with the shipped decoder; a proxy's are read at its layout. */
+async function fieldsOf(
+  network: MockNetworkProvider, artifact: Artifact, categoryId: string, proxied = false,
+): Promise<Record<string, unknown>> {
+  const layout = (proxied ? buildProxyArtifact(artifact) : artifact).stateLayout!;
+  return deploymentStateValues(layout, categoryId, await readPerCallDeployment(network, categoryId, layout));
+}
+
+/** The values the token's live nodes hold for the user: one node, however many turns credited it. */
+async function userBalances(network: MockNetworkProvider, artifacts: ArtifactMap): Promise<readonly string[]> {
+  const deployment = await readPerCallDeployment(network, TOKEN_CATEGORY, artifacts.Token!.stateLayout!);
+  const slot = bytesToHex(keyToSlotMulti([hexToBin(USER)]));
+  return (deployment.nodesByCollection.get('balances') ?? [])
+    .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)))
+    .filter((decoded) => bytesToHex(decoded.slot) === slot)
+    .map((decoded) => bytesToHex(decoded.value));
+}
+
 /**
- * The re-entered guard's refusal once the turns' transfers are admitted: the hop declares every callee's record at
- * its live commitment, so the guard `release` set above it reads as unset. Owner: the SDK hop (`proxy/deploy.ts`, the
- * callee frames `buildHopPlan` declares kept).
+ * A settled release, read back from the chain: every verdict accepted and the broadcast, one token node crediting the
+ * user once per turn, the escrow's guard `release` set and the claim the re-entered `setClaimed` wrote under it, the
+ * root's stage and the store's ratings, review and delivery.
  */
-const SET_CLAIMED_GUARD = /the call's callee "Escrow\.setClaimed\(\)" did not settle through the proxy: .* at line \d+: guard unset/;
+async function expectSettled(
+  network: MockNetworkProvider, deployed: Deployed, artifacts: ArtifactMap, result: PerCallProxyCallResult,
+  turns: number,
+): Promise<void> {
+  expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+  expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+  expect(await userBalances(network, artifacts)).toStrictEqual([bytesToHex(bigIntToVmNumber(BigInt(turns)))]);
+  const escrow = await fieldsOf(network, artifacts.Escrow!, ESCROW_CATEGORY);
+  expect([escrow.claiming, escrow.claimed]).toStrictEqual([1n, 1n]);
+  expect((await fieldsOf(network, artifacts.Root!, deployed.rootProxyCategoryId, true)).stage).toBe(2n);
+  const store = await fieldsOf(network, artifacts.Store!, deployed.externals.IStore!.categoryId, true);
+  expect([store.ratings, store.reviews, store.delivered]).toStrictEqual([RATING, RATING, 1n]);
+}
 
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS4): a rated release with a re-entrant payout', () => {
-  it('plans the payout loop from the count an earlier call returned, and stops at the re-entered guard', async () => {
+  it('plans the payout loop from the count an earlier call returned, and settles', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const flow = artifactsFor('count');
     const deployed = await deployAll(network, flow);
@@ -333,13 +365,14 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS4): a rated release
     // The loop's bound is the escrow's `readRecord` result, so the hop plans in execution order: it stops before the
     // loop, settles the read's frame alone, learns the count (`PER_CALL_HOP_TRACE=1`: `stop-plan ... reads=loop-bound`,
     // `learned=[/0.0/0.0|0:4]`) and plans the four turns from it. The turns credit one holder and each later transfer
-    // continues the node the one before it created, so the reach check admits them; the settle then stops at the
-    // re-entered `setClaimed`. Owner: the SDK hop (`proxy/deploy.ts`, the kept callee records).
-    await expect(complete(network, deployed, flow)).rejects.toThrow(SET_CLAIMED_GUARD);
-    expect(await rootRecords(network, deployed, flow)).toStrictEqual(before);
+    // continues the node the one before it created; the re-entered frames start from the view `release` left, and
+    // its own segment after the call carries on from the claim `setClaimed` wrote, so the hop settles.
+    const result = await complete(network, deployed, flow);
+    await expectSettled(network, deployed, flow, result, TURNS);
+    expect(await rootRecords(network, deployed, flow)).not.toStrictEqual(before);
   });
 
-  it('with the turn count in the claimer\'s record, plans every frame and stops at the re-entered guard', async () => {
+  it('with the turn count in the claimer\'s record, plans every frame and settles', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const stepped = artifactsFor('this.turns');
     const deployed = await deployAll(network, stepped);
@@ -375,21 +408,21 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (MS4): a rated release
     expect(transfers.map((index) => depthOf(plan.callees, index))).toStrictEqual([4, 4, 4, 4]);
 
     // All four transfers credit one holder, and each later reach rewrites the node the one before it created rather
-    // than recreating it, so the reach check admits the plan. The settle then stops at the re-entered `setClaimed`.
-    // Owner: the SDK hop (`proxy/deploy.ts`, the kept callee records).
-    await expect(complete(network, deployed, stepped)).rejects.toThrow(SET_CLAIMED_GUARD);
-    expect(await rootRecords(network, deployed, stepped)).toStrictEqual(before);
+    // than recreating it, so the reach check admits the plan, and the hop settles.
+    const result = await complete(network, deployed, stepped);
+    await expectSettled(network, deployed, stepped, result, TURNS);
+    expect(await rootRecords(network, deployed, stepped)).not.toStrictEqual(before);
   });
 
-  it('with one turn in the claimer\'s record, the settle stops at the re-entered guard', async () => {
+  it('with one turn in the claimer\'s record, settles', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const stepped = artifactsFor('this.turns', 1);
     const deployed = await deployAll(network, stepped);
     const before = await rootRecords(network, deployed, stepped);
 
-    // One transfer passes the reach check. The settle learns its write and each read, then stops at the re-entered
-    // `setClaimed`. Owner: as above.
-    await expect(complete(network, deployed, stepped)).rejects.toThrow(SET_CLAIMED_GUARD);
-    expect(await rootRecords(network, deployed, stepped)).toStrictEqual(before);
+    // One transfer, and the same re-entered guard and claim as the four-turn flows.
+    const result = await complete(network, deployed, stepped);
+    await expectSettled(network, deployed, stepped, result, 1);
+    expect(await rootRecords(network, deployed, stepped)).not.toStrictEqual(before);
   });
 });

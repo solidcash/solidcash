@@ -94,6 +94,7 @@ import {
   type PerCallProxyExternal,
 } from './external-calls.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
+import { carriedFromChain, deriveReentryWriters, reentrySettleBefore, withReentryFrames } from './reentry.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
 export type PerCallProxyDeployHalf = Omit<DeployOptions, 'provider' | 'initialState'>;
@@ -1254,16 +1255,20 @@ interface CalleeSettlement {
  * earlier frame's write of a shared node left is settled after that writer, whose view is learned from its own
  * frame (`sharedNodeWritersBefore`). A hop with no shared write keeps the deepest-first order unchanged. Only the
  * frames being settled order each other: a frame this settle leaves out keeps the view an earlier settle learned.
+ * A frame that starts from a view an earlier frame of its contract left follows the frames that view's learning
+ * needs (`reentrySettleBefore`).
  */
 function calleeSettleOrder(callees: readonly HopCallee[], deepestFirst: readonly number[]): readonly number[] {
   const writersBefore = sharedNodeWritersBefore(callees);
+  const reentryBefore = reentrySettleBefore(callees);
   const inScope = new Set(deepestFirst);
   const settled = new Set<number>();
   const order: number[] = [];
   const remaining = [...deepestFirst];
   const ready = (index: number): boolean =>
     callees.every((callee, at) => callee.enteredBy !== index || !inScope.has(at) || settled.has(at))
-    && (writersBefore.get(index) ?? []).every((writer) => !inScope.has(writer) || settled.has(writer));
+    && (writersBefore.get(index) ?? []).every((writer) => !inScope.has(writer) || settled.has(writer))
+    && (reentryBefore.get(index) ?? []).every((frame) => !inScope.has(frame) || settled.has(frame));
   while (remaining.length > 0) {
     const at = remaining.findIndex(ready);
     if (at < 0) {
@@ -1362,6 +1367,9 @@ async function settleCallees(options: {
           + `${traceFrameFacts(callee.master, callee.functionName, callee.kind)} n=${attempt} `
           + `refs-before=[${traceCallRefs(candidate.draft, callee.master)}]`);
       }
+      // A frame that starts from a view an earlier frame of its contract wrote is judged once the draft learned it,
+      // so the writers are derived first (`reentry.ts`).
+      deriveReentryWriters(candidate, options.callees, calleeIndex);
       // A callee that makes calls cannot accept before its own calls are derived, so its subtree is derived first;
       // a stall there is the callee's own return comparison or one of its own write's declarations, read below.
       if (callee.calls.length > 0) {
@@ -2296,7 +2304,8 @@ async function planAndSettleHop(options: {
       // The calls before the waiting site are planned from values the execution computes, so a pair of reaches the
       // transaction cannot carry is refused here, before anything is settled for it.
       requireSatisfiableReachWrites(callees);
-      const frames = producerFramesOf(externalPlan, block);
+      // The frames whose views a producer starts from are settled with it (`reentrySettleBefore`).
+      const frames = withReentryFrames(producerFramesOf(externalPlan, block), callees);
       const seed = seedOf(learning, callees);
       if (trace) {
         const masters = [...frames].map((index) => callees[index]!.master);
@@ -2678,7 +2687,7 @@ function chainSharedNodeViews(
     chained.set(id, segments);
     master.segments.forEach((segment, at) => {
       segments.push(segment.map((entry, entryIndex): DraftRecordEntry => {
-        if (entry.viewIn === 'carried') return entry;
+        if (entry.viewIn === 'carried') return carriedFromChain(entry, nodes, continued, master.master, at, entryIndex);
         if (entry.viewOut === 'carried') return entry;
         if (entry.in === INDEX_NONE && entry.out !== undefined) {
           // A created record whose end the body computes is left as it is: the output the chain carries it to is
@@ -3301,7 +3310,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     for (const [nftIndex, published] of recordWriteSegments) {
       const record = declaredRecords[nftIndex];
       if (record === undefined) continue;
-      recordWriters.set(record.id, { master: callee.master });
+      // A delegate frame writes its owner's record, which only a master of the owner's category authorizes.
+      const authority = callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!;
+      recordWriters.set(record.id, { master: authority.master });
       if (hopTraceOn()) {
         const segments = published.map((segment) => String(segment === 'last' ? positionCount - 1 : segment));
         hopTrace(`callee-record-write ${callee.functionName} record=${String(nftIndex)} `

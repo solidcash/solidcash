@@ -1,22 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, secp256k1 } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, secp256k1 } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { ethers } from 'ethers';
 import {
-  SHARED_LIBRARY_SALT, encodePushdataValue, hash160, validatorAddress, type Artifact,
+  SHARED_LIBRARY_SALT, bytesToHex, encodePushdataValue, hash160, validatorAddress, type Artifact,
 } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { computeEcrecoverWitness } from '../../../src/ecrecover/ecrecoverRecovery.js';
 import { probeEcrecoverSplit } from '../../../src/ecrecover/ecrecoverComputeSidecar.js';
+import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import {
   PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
   type PerCallProxyCallResult,
 } from '../../../src/per-call/proxy/index.js';
-import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
+import { deploymentStateValues, type PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
 import { readPerCallEntry } from '../../../src/per-call/read/index.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -36,7 +38,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * the arbitrator (gated on the escrow's address), then writes its record under a counter field and returns the id.
  *
  * Each flow is pinned where it stops today; a flow that settles moves its case to every verdict accepted and the
- * broadcast. The whole file runs only under `PER_CALL_AHEAD=1`.
+ * broadcast, as `payStart` has. The whole file runs only under `PER_CALL_AHEAD=1`.
  */
 
 /** A 32-byte id that is neither one repeated byte nor a palindrome. */
@@ -542,26 +544,33 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
   });
 
   /**
-   * The wall both flows meet now that the read side is planned against the node an earlier reach created.
+   * The wall `take` meets once the token fan-in settles.
    *
-   * The root's `approve` inserts the allowance key and the escrow's `transferFrom` continues that node, so the two
-   * reaches of one allowance key settle. The hop-planner refusal is lifted as well: the `balanceOf` after the
-   * escrow's own `transferFrom` resolves to the node the insert created rather than the bracketing predecessor it
-   * relinked, so `requireChainableNodes` (`AFTER_INSERT`) no longer stops the plan. The created-form read record is
-   * also chained now, so a frame that only holds a node an earlier frame created declares both views the value the
-   * chain holds and the settlement equality holds. The wall that remains is the escrow's own explicit check: the
-   * `transferFrom` frame reads its allowance and refuses `require(allowances[from][msg.sender] >= amount)` before any
-   * settlement, so the hop stops there - before the `balanceOf` after it is reached - and nothing is broadcast.
-   * Captured from a run (`PER_CALL_HOP_TRACE=1`): the `transferFrom` frame (`callee-master-12` in `take`,
-   * `callee-master-8` in `payStart`), reading `opcode=105` (`OP_VERIFY`) at the allowance `require`. The created-read
-   * chaining feeds that read the view the `approve` write left; the value it carries is the write's own, which this
-   * lane does not state.
+   * The root's `approve` inserts the allowance key and the escrow's `transferFrom` continues that node. The hop
+   * settles `approve` before every later frame of the token, and a stopped plan settles it with the producers that
+   * follow it (`proxy/reentry.ts`), so `transferFrom` reads the allowance `approve` wrote rather than the candidate
+   * the plan started from, and the fan-in settles: `payStart` broadcasts. `take` posts to the job's notes twice, and
+   * `notes[id]` is a `Note[]` whose values chunk, which the hop does not chain across frames: the settled hop is
+   * refused by name before anything is broadcast (`requireSettledNodeChains`). Owner: the SDK hop (a long value
+   * written by several frames, spec section 20).
    */
-  const TRANSFER_FROM_REFUSED = new RegExp('the call\'s callee "Coin\\.transferFrom\\(\\)" did not settle through '
-    + 'the proxy: frame "callee-master-\\d+" of Coin\\.transferFrom\\(\\) at line 1: no source message '
-    + '\\(Program failed an OP_VERIFY operation\\.\\)');
+  const NOTES_NOT_CHAINED = 'the hop\'s reach "Journal.post()" touches a node of collection "notes" that an earlier '
+    + 'reach "Journal.post()" writes, and its values chunk';
 
-  it('take: learns the count and the fee in execution order, and stops where a read follows the insert of its key', async () => {
+  /** The token's balance node values for each named holder, read back from the chain. */
+  async function coinBalances(
+    deployed: Deployed, holders: Readonly<Record<string, Uint8Array>>,
+  ): Promise<Record<string, readonly string[]>> {
+    const deployment = await readPerCallDeployment(deployed.network, COIN_CATEGORY, compiled().coin.stateLayout!);
+    const nodes = (deployment.nodesByCollection.get('balances') ?? [])
+      .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)));
+    return Object.fromEntries(Object.entries(holders).map(([name, holder]) => {
+      const slot = bytesToHex(keyToSlotMulti([holder]));
+      return [name, nodes.filter((node) => bytesToHex(node.slot) === slot).map((node) => bytesToHex(node.value))];
+    }));
+  }
+
+  it('take: learns the count, the fee and the deal in execution order, and stops at its second post', async () => {
     const worker = splittableWorker();
     const deployed = await deployFanIn(worker);
     const coin = funding(id32('6a'));
@@ -569,33 +578,37 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
       lock: worker.lock, funder: new SignatureTemplate(worker.key).unlockP2PKH(), coin,
     });
 
-    // The post's note carries `noteCount`'s result and `pay` carries `feeOf`'s, so the hop plans in execution
-    // order: it stops before each, settles the read's two frames alone and plans on from what it returned
-    // (`PER_CALL_HOP_TRACE=1`: `stop-plan` twice, `learned=[|1:1]`, then `learned=[|4:250]`). Planning `pay`
-    // is then planned from the value its close states: it stores a `Deal` holding the amount it computes from its
-    // own two `balanceOf` reads. The allowance key chains and the balance read now resolves to the node the
-    // escrow's `transferFrom` created, so the planner no longer refuses the pair; the wall is the escrow's own
-    // allowance `require`, which the frame refuses before it settles.
-    // Owner: the escrow's own `Coin.transferFrom()` frame (compiler-side), reached once the planner admits the read.
+    // The post's note carries `noteCount`'s result, `pay` carries `feeOf`'s and the last post carries `pay`'s, so
+    // the hop plans in execution order: it stops before each, settles the frames it reads alone and plans on from
+    // what they returned (`PER_CALL_HOP_TRACE=1`: `stop-plan` three times, `learned=[|1:1]`, `learned=[|4:250]`,
+    // then `learned=[|5:0]`). The token fan-in settles inside `pay`, and so does the entry's own frame; the hop is
+    // refused at the second post to one job's notes.
     await expect(entered).rejects.toThrow(PerCallProxyDeployError);
-    await expect(entered).rejects.toThrow(TRANSFER_FROM_REFUSED);
+    await expect(entered).rejects.toThrow(NOTES_NOT_CHAINED);
     expect(await coinLive(deployed.network, worker.lock, coin)).toBe(true);
   });
 
-  it('pay start: learns the fee in execution order, and stops where a read follows the insert of its key', async () => {
+  it('pay start: learns the fee in execution order, and settles the token fan-in', async () => {
     const worker = splittableWorker();
     const deployed = await deployFanIn(worker);
     const coin = funding(id32('6b'));
-    const entered = enterDesk(deployed, 'payStart', [JOB, worker.lock], {
+    const result = await enterDesk(deployed, 'payStart', [JOB, worker.lock], {
       lock: deployed.creatorLock, funder: deployed.creatorFunder, coin,
     });
 
     // `pay` takes the fee `feeOf` returned, so the hop stops before it, settles the fee read's frames and plans on
-    // from the fee (`learned=[|2:250]`); the escrow's own write is planned from the value its close states, and
-    // the wall is the escrow's own allowance `require` in `transferFrom`, as in `take`.
-    // Owner: the escrow's own `Coin.transferFrom()` frame (compiler-side), reached once the planner admits the read.
-    await expect(entered).rejects.toThrow(PerCallProxyDeployError);
-    await expect(entered).rejects.toThrow(TRANSFER_FROM_REFUSED);
-    expect(await coinLive(deployed.network, deployed.creatorLock, coin)).toBe(true);
+    // from the fee (`learned=[|2:250]`). `transferFrom` reads the allowance the root's `approve` wrote, the escrow
+    // pulls the amount, and the root keeps the deal id `pay` returned.
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await coinBalances(deployed, {
+      desk: addressOf(DESK_PROXY_CATEGORY), vault: addressOf(VAULT_CATEGORY),
+    })).toStrictEqual({
+      desk: [bytesToHex(bigIntToVmNumber(SUPPLY - AMOUNT))], vault: [bytesToHex(bigIntToVmNumber(AMOUNT))],
+    });
+    const layout = buildProxyArtifact(compiled().desk).stateLayout!;
+    const desk = deploymentStateValues(layout, deployed.deskProxyCategoryId,
+      await readPerCallDeployment(deployed.network, deployed.deskProxyCategoryId, layout));
+    expect([desk.state, desk.dealId]).toStrictEqual([1n, 0n]);
   });
 });

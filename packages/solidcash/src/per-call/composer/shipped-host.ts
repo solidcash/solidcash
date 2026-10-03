@@ -172,7 +172,10 @@ function reachedFurther(before: ExecutionStop, after: ExecutionStop): boolean {
  *
  * A body's repeated spans are outlined into functions, so two stops can share one instruction pointer and one stack:
  * the same check of one function entered from two places, as the two segment closes around a call that leaves
- * nothing on the stack are. Where each function was entered from, outermost first, tells them apart.
+ * nothing on the stack are. Where each function was entered from, outermost first, tells them apart. A stop one
+ * function deeper than the other parts from it in the function the shallower one stopped in, so it stands where its
+ * own function was entered from: a run that passed the check the other failed and stopped in a helper it invoked
+ * after it, as the read of the next call's record, is further along.
  */
 function enteredLater(before: ExecutionStop, after: ExecutionStop): boolean {
   const left = before.frames ?? [];
@@ -180,6 +183,8 @@ function enteredLater(before: ExecutionStop, after: ExecutionStop): boolean {
   for (let depth = 0; depth < Math.min(left.length, right.length); depth += 1) {
     if (right[depth] !== left[depth]) return right[depth]! > left[depth]!;
   }
+  if (right.length > left.length) return right[left.length]! >= (before.ip ?? 0);
+  if (left.length > right.length) return (after.ip ?? 0) > left[right.length]!;
   return false;
 }
 

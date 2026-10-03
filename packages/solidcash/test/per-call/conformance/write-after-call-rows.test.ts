@@ -31,13 +31,11 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * decoders. A check after the writes and a revert in the nested coin are each refused with their own reason, and
  * the provider sees no transaction.
  *
- * Known wall: an escrow that also advances its own counter after its call (`fundNext`, keying its storage by the
- * counter) writes the callee's own data record. The hop declares every callee data record kept at the commitment
- * the chain holds (`proxy/deploy.ts`, `buildHopPlan`) and learns only a callee's mapping writes, events and return
- * (`settleHopCallees`), so the escrow's frame closes its record against the kept view while its body computed the
- * advanced counter: the refusal and the hop trace's reading of that close are pinned (the plan's "Walls ahead" MS5
- * row, owner the SDK hop). The plain call path on the broker implementation's own deployment, whose records hold
- * no escrow, refuses the entry by name.
+ * The escrow that also advances its own counter after its call (`fundNext`, keying its storage by the counter) writes
+ * the callee's own data record, and it is served: the record is declared in both segments its call splits the frame
+ * into - kept at the commitment the chain holds before the call, written after it - and the value the frame's close
+ * computed is the one the transaction carries. The plain call path on the broker implementation's own deployment,
+ * whose records hold no escrow, refuses the entry by name.
  */
 
 /** A 32-byte category or txid with varied bytes, taken from its label. */

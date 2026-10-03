@@ -1373,6 +1373,12 @@ async function settleCallees(options: {
           if (trace) {
             hopTrace(`stop callee=${callee.master} reason=derived `
               + `refs-after=[${traceCallRefs(candidate.draft, callee.master)}]`);
+            // The derivation bound the frame's own calls, which does not by itself mean the machine accepts the
+            // frame: a declaration the frame's body disagrees with still refuses, and the frame's own stop is named
+            // here so a frame that derived and refuses anyway is told apart from one that accepted.
+            hopTrace(`callee-derived-stop `
+              + `${traceFrameFacts(callee.master, callee.functionName, callee.kind)} `
+              + traceStopInstructions(options.vm, candidate.draft.programFor(callee.master)));
           }
           break;
         } catch (error) {

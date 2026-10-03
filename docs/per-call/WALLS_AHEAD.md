@@ -3,9 +3,9 @@
 Measured at `055833fb4`: a full 66-title run (44 passed, the set unchanged since 04:48), the walls-ahead replicas under
 `PER_CALL_AHEAD=1` (9 of 142 cases off their pins), a census of the compiled marketplace's entries (calls, kinds,
 guards, loops, side-cars, write segments), and the sources in `.marketplace/contracts/`. Each wall names its owner;
-"in progress" marks work started ahead of the ladder in the composer lane. Updated after `ed5ccadad` with the
-fan-in/re-entry slice of 2026-10-03 (23 titles: 9 passed, 12 failed); the ticked set is 49/66, and a full run is
-certifying it.
+"in progress" marks work started ahead of the ladder in the composer lane. Updated after `27a60158f`: the full
+66-title run of 2026-10-03 reads **50 passed | 16 failed (66)**, the scoreboard's ticked set is exactly that passing
+set, and the walls below are the verdicts that run printed.
 
 ## The order the titles meet them
 
@@ -20,9 +20,9 @@ certifying it.
 | #57, #65, #66 | one callee-side wall: `UnicrowDispute.challenge()` line 79 (`1-009`) and `Unicrow.refund()` line 229 (`1-011`) | - | escaper lane (`Unicrow*`) |
 | #53 refund | `Unicrow.refund()` line 253 (`no source message`) | - | escaper lane |
 | #58 dispute worker | `MarketplaceV1.dispute()` line 219 (`no source message`), with the run it declares for dynamic `jobs` 3 chunk(s) sized from the record's own declaration | - | hop |
-| #59 arbitrate sanity | the hop's interleave refusal: reaches `UnicrowArbitrator.arbitrate()` and `UnicrowArbitrator.getArbitratorData()` touch one `escrowArbitrator` node and one enters the other | - | hop |
-| #19 post two jobs, #30 whitelist worker | #19's first post settles and stops at a later step's read; #30 is refused by the hop | - | compiler + hop; in progress (R2) |
-| #50, #51 approve result | the setup's `takeJob` is served now; not yet re-measured | none predicted | - |
+| #50, #51 approve result, #59 arbitrate sanity | the hop's interleave refusal: `Unicrow.release()` enters `Unicrow.getEscrow()` over one `escrows` node, and `UnicrowArbitrator.arbitrate()` enters `getArbitratorData()` over one `escrowArbitrator` node - it fires before the Unicrow token-transfer target the earlier map named for them | the Unicrow identity wall (`1-009`/`1-011`) behind it | hop |
+| #19 post two jobs | a read frame of `MarketplaceV1.getJob()` line 212 refuses (`no source message`) | - | compiler + hop; in progress (R2) |
+| #30 whitelist worker | the entry's own check reports `no source message` | - | hop |
 | #31 update job | **served** (`5c4f232b7`) | - | - |
 
 ## Replicas whose pins are stale at `055833fb4`

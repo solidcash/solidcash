@@ -15,7 +15,7 @@ import { computeEcrecoverWitness } from '../../../src/ecrecover/ecrecoverRecover
 import { probeEcrecoverSplit } from '../../../src/ecrecover/ecrecoverComputeSidecar.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
+  buildProxyArtifact, callPerCallProxyEntry, deployPerCallProxy,
   type PerCallProxyCallResult,
 } from '../../../src/per-call/proxy/index.js';
 import { deploymentStateValues, type PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
@@ -479,12 +479,6 @@ async function enterDesk(
   });
 }
 
-/** True when the caller's coin is still unspent, i.e. nothing was broadcast from it. */
-async function coinLive(network: MockNetworkProvider, lock: Uint8Array, coin: Utxo): Promise<boolean> {
-  const live = await network.getUtxosForLockingBytecode(lock);
-  return live.some((utxo) => utxo.txid === coin.txid && utxo.vout === coin.vout);
-}
-
 /** The interface and method of each call site an entry publishes, in execution order. */
 function publishedSites(artifact: Artifact, functionName: string): readonly string[] {
   const row = artifact.abi.find((entry) => entry.name === functionName) as unknown as {
@@ -544,18 +538,26 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
   });
 
   /**
-   * The wall `take` meets once the token fan-in settles.
+   * The token fan-in and the two posts into one job's notes settle together.
    *
    * The root's `approve` inserts the allowance key and the escrow's `transferFrom` continues that node. The hop
    * settles `approve` before every later frame of the token, and a stopped plan settles it with the producers that
    * follow it (`proxy/reentry.ts`), so `transferFrom` reads the allowance `approve` wrote rather than the candidate
-   * the plan started from, and the fan-in settles: `payStart` broadcasts. `take` posts to the job's notes twice, and
-   * `notes[id]` is a `Note[]` whose values chunk, which the hop does not chain across frames: the settled hop is
-   * refused by name before anything is broadcast (`requireSettledNodeChains`). Owner: the SDK hop (a long value
-   * written by several frames, spec section 20).
+   * the plan started from. `take` posts to the job's notes twice, and `notes[id]` is a `Note[]` whose values chunk:
+   * the second post continues the node the first left, so the settled hop chains that node like any other shared one
+   * and both posts land (a long value written by several frames, spec section 20).
    */
-  const NOTES_NOT_CHAINED = 'the hop\'s reach "Journal.post()" touches a node of collection "notes" that an earlier '
-    + 'reach "Journal.post()" writes, and its values chunk';
+
+  /** The number of notes one job holds, read back through the shipped read path. */
+  async function noteCountOf(deployed: Deployed, id: bigint): Promise<bigint> {
+    const answered = await readPerCallEntry({
+      provider: deployed.network, artifact: compiled().journal,
+      categoryId: deployed.externals.IJournal!.categoryId, functionName: 'noteCount', args: [id],
+      vm: compositionMachine(),
+    });
+    expect(answered.accepted, answered.objection).toBe(true);
+    return answered.value as bigint;
+  }
 
   /** The token's balance node values for each named holder, read back from the chain. */
   async function coinBalances(
@@ -570,22 +572,21 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('the fan-in shape through the
     }));
   }
 
-  it('take: learns the count, the fee and the deal in execution order, and stops at its second post', async () => {
+  it('take: learns the count, the fee and the deal in execution order, and settles both posts', async () => {
     const worker = splittableWorker();
     const deployed = await deployFanIn(worker);
     const coin = funding(id32('6a'));
-    const entered = enterDesk(deployed, 'take', [JOB, worker.signature], {
+    const result = await enterDesk(deployed, 'take', [JOB, worker.signature], {
       lock: worker.lock, funder: new SignatureTemplate(worker.key).unlockP2PKH(), coin,
     });
 
     // The post's note carries `noteCount`'s result, `pay` carries `feeOf`'s and the last post carries `pay`'s, so
-    // the hop plans in execution order: it stops before each, settles the frames it reads alone and plans on from
-    // what they returned (`PER_CALL_HOP_TRACE=1`: `stop-plan` three times, `learned=[|1:1]`, `learned=[|4:250]`,
-    // then `learned=[|5:0]`). The token fan-in settles inside `pay`, and so does the entry's own frame; the hop is
-    // refused at the second post to one job's notes.
-    await expect(entered).rejects.toThrow(PerCallProxyDeployError);
-    await expect(entered).rejects.toThrow(NOTES_NOT_CHAINED);
-    expect(await coinLive(deployed.network, worker.lock, coin)).toBe(true);
+    // the hop plans in execution order (`PER_CALL_HOP_TRACE=1`: `stop-plan` three times, `learned=[|1:1]`,
+    // `learned=[|4:250]`, then `learned=[|5:0]`). The token fan-in settles inside `pay`, and the second post to one
+    // job's notes continues the node the first left, so the entry settles and both notes land.
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await noteCountOf(deployed, JOB)).toBe(NOTES_BEFORE + 2n);
   });
 
   it('pay start: learns the fee in execution order, and settles the token fan-in', async () => {

@@ -98,7 +98,9 @@ import {
 } from './external-calls.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
 import { carriedFromChain, deriveReentryWriters, reentrySettleBefore, withReentryFrames } from './reentry.js';
-import { EnclosingValueLearned, learnEnclosingValues } from './enclosed-values.js';
+import {
+  EnclosingValueLearned, enclosingCandidateCount, inlineValueAt, learnEnclosingValues,
+} from './enclosed-values.js';
 import {
   deferredRefusalMetFirst, dropDeferredBelow, firstDeferredRefusal, stalledCalleeRefusal,
 } from './refusal-order.js';
@@ -1439,6 +1441,8 @@ async function settleCallees(options: {
     .filter((index) => options.only === undefined || options.only.has(index))
     .sort((left, right) => depthOf(right) - depthOf(left));
   const nodeWritersBefore = sharedNodeWritersBefore(options.callees);
+  // The frames a later reach of one of their nodes continues from, which leave it the value they computed.
+  const continuedWriters = new Set([...nodeWritersBefore.values()].flat());
   for (const calleeIndex of calleeSettleOrder(options.callees, deepestFirst)) {
     const callee = options.callees[calleeIndex]!;
     // A frame that reads or rewrites a node an earlier frame's write left at bytes that frame's own close exposed was
@@ -1447,10 +1451,11 @@ async function settleCallees(options: {
     if (reachedValue !== undefined) throw new EnclosingValueLearned(reachedValue.master, reachedValue.value);
     const placeholder = hopRetvalPlaceholder(callee.contract, callee.entry);
     // One attempt per value the frame computes — its return, each unstated write, each event payload — plus the
-    // attempt that is accepted once every one of them is stated.
+    // attempt that is accepted once every one of them is stated, and one per view a writer it runs inside leaves it.
     const attempts = MAXIMUM_HOP_ATTEMPTS
       + (callee.entryWrites?.learningCandidates.length ?? 0)
-      + (calleeEvents.get(callee.master)?.length ?? 0);
+      + (calleeEvents.get(callee.master)?.length ?? 0)
+      + enclosingCandidateCount(options.callees, calleeIndex);
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const candidate = createComposedDerivationHost({
         vm: options.vm, artifacts: options.artifacts,
@@ -1464,15 +1469,24 @@ async function settleCallees(options: {
       // A frame that starts from a view an earlier frame of its contract wrote is judged once the draft learned it,
       // so the writers are derived first (`reentry.ts`).
       deriveReentryWriters(candidate, options.callees, calleeIndex);
-      // A frame inside a writer whose long value only the writer's own pin exposes starts from that value, which is
-      // read here; the hop is then planned again from it (`enclosed-values.ts`).
-      learnEnclosingValues(candidate, options.callees, calleeIndex, writeValues, {
+      // A frame inside a writer whose value only the writer's own run exposes starts from that value, which is read
+      // here: a chunking value plans the hop again from it, and the view of any other node is stated for the writer
+      // before the frame is judged (`enclosed-values.ts`).
+      const enclosing = learnEnclosingValues(candidate, options.callees, calleeIndex, writeValues, writeViews, {
         valueAt: (master) => learnedValueFromClose(options.vm, candidate.draft.programFor(master)),
         readingAt: (master) => readComputedDeclaration({
           vm: options.vm, program: candidate.draft.programFor(master),
           maximumCommitmentBytes: options.maximumCommitmentBytes,
         }),
       });
+      if (enclosing !== undefined) {
+        if (trace) hopTrace(`stop callee=${callee.master} reason=learned-enclosing-view writer=${enclosing.master}`);
+        const views = [...(writeViews.get(enclosing.master) ?? [])];
+        while (views.length <= enclosing.at) views.push(undefined);
+        views[enclosing.at] = enclosing.view;
+        writeViews.set(enclosing.master, views);
+        continue;
+      }
       // A callee that makes calls cannot accept before its own calls are derived, so its subtree is derived first;
       // a stall there is the callee's own return comparison or one of its own write's declarations, read below.
       if (callee.calls.length > 0) {
@@ -1575,9 +1589,15 @@ async function settleCallees(options: {
         const at = declaredAt >= 0 ? declaredAt : computedAt;
         if (at >= 0) {
           if (trace) hopTrace(`stop callee=${callee.master} reason=learned-write at=${at}`);
+          const view = Uint8Array.from(declaredAt >= 0 ? reading.computed : reading.declared);
           while (views.length <= at) views.push(undefined);
-          views[at] = Uint8Array.from(declaredAt >= 0 ? reading.computed : reading.declared);
+          views[at] = view;
           writeViews.set(callee.master, views);
+          // A chunking value the node keeps inline passes no pin, so the view this close rebuilt is the only place it
+          // shows; a later reach of the node continues from it as from a pin's (`reached-values.ts`).
+          const inline = callee.entryWrites?.awaitsValue === true && !writeValues.has(callee.master)
+            && continuedWriters.has(calleeIndex) ? inlineValueAt(options.callees, calleeIndex, at, view) : undefined;
+          if (inline !== undefined) writeValues.set(callee.master, inline);
           continue;
         }
       }
@@ -2492,7 +2512,7 @@ async function planAndSettleHop(options: {
   const planFromEnclosingValue = async (learned: EnclosingValueLearned): Promise<HopExternalPlan> => {
     if (learning.writeValues.has(learned.master)) {
       throw new PerCallProxyDeployError(
-        `the frame "${learned.master}" still leaves its write unstated after the hop learned the value its own pin `
+        `the frame "${learned.master}" still leaves its write unstated after the hop learned the value its own run `
         + 'exposed, so the frames it encloses cannot start from it',
       );
     }

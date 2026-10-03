@@ -31,9 +31,10 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * restore follows the loop, so no fixed count of calls stands before it, yet no call follows it: the artifact
  * publishes it in the run's last segment, and the hop declares the record written at both ends rather than kept,
  * which the guard's own close at the first call refused. The sibling's write is one the plan states from the call
- * data and the node, within the node's inline limit or past it into continuation chunks, or a long one the writer's
- * body computes: the writer's own close exposes those bytes, and the hop is planned again from them before the getter
- * and the second write are judged, so neither starts from the deployment's bytes.
+ * data and the node, within the node's inline limit or past it into continuation chunks, or one the writer's body
+ * computes: the writer's own run exposes those bytes, its chunk pin a long value's and its close of the node an inline
+ * one's, and the hop is planned again from them before the getter and the second write are judged, so neither starts
+ * from the deployment's bytes.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -225,6 +226,7 @@ async function openThenDecide(contracts: Contracts, note: string): Promise<{
 const CASES = [
   ['stated', 'within the inline limit', SHORT_NOTE],
   ['stated', 'taking chunks', LONG_NOTE],
+  ['computed', 'within the inline limit', SHORT_NOTE],
   ['computed', 'taking chunks', LONG_NOTE],
 ] as const;
 

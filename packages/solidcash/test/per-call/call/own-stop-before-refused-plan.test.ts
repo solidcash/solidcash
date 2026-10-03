@@ -18,14 +18,14 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * The hop plans every call the entry publishes, and every frame those calls reach, before it settles one, and a shape
  * the transaction cannot carry is refused by name there. The execution meets that shape only once the entry makes the
  * call that leads to it: an entry whose own guard fails first never makes it, so its own reason is the refusal, as
- * the EVM reports it. Three refused shapes stand behind the guard: a keeper whose entry rewrites a mark and then calls
- * out to a relay that re-enters the keeper to rewrite the same mark (one frame enters the other over one node), two
- * inserts of different keys into an empty collection through its one head, and a call to an address no deployment
- * sits at. A guard that passes reaches each shape, which is still refused by the planner's own name; a guard behind a
- * call the entry makes first reports the guard too, and a guard that names no reason is reported as the entry's own
- * stop all the same. A plan that stops to learn an earlier call's result settles that call first: when it refuses,
- * the guard before it is still the entry's own reason, and once the guard passes the refusing call's own reason is.
- * Nothing is broadcast in any case.
+ * the EVM reports it. Three refused shapes stand behind the guard: a keeper whose entry calls out to a relay that
+ * re-enters the keeper to rewrite a mark and then rewrites the same mark itself (one frame enters the other over one
+ * node, and their writes interleave), two inserts of different keys into an empty collection through its one head,
+ * and a call to an address no deployment sits at. A guard that passes reaches each shape, which is still refused by
+ * the planner's own name; a guard behind a call the entry makes first reports the guard too, and a guard that names no
+ * reason is reported as the entry's own stop all the same. A plan that stops to learn an earlier call's result
+ * settles that call first: when it refuses, the guard before it is still the entry's own reason, and once the guard
+ * passes the refusing call's own reason is. Nothing is broadcast in any case.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -58,7 +58,7 @@ const SOURCE = [
   '  address public implementation;',
   '  mapping(int => int) marks;',
   '  function initialize() { this.marks[1] = 5; require(true); }',
-  `  function enter() { this.marks[1] = 6; IRelay(${RELAY}).poke(${KEEPER}); }`,
+  `  function enter() { IRelay(${RELAY}).poke(${KEEPER}); this.marks[1] = 6; }`,
   '  function stamp() { this.marks[1] = 7; }',
   '}',
   'contract Relay {',
@@ -253,10 +253,10 @@ function ownStop(entry: string, reason: string): RegExp {
 
 /**
  * The planner's words for the keeper's two frames over its one mark, one entering the other: the inner frame rewrites
- * the mark its enclosing frame wrote first, a value that frame's body computes and keeps inline.
+ * the mark before its enclosing frame writes it, past the call that leads to the inner frame.
  */
-const INTERLEAVED = 'the hop\'s reach "Keeper.stamp()" rewrites a node of collection "marks" that "Keeper.enter()", '
-  + 'a frame it runs inside, writes before the call that leads to it, and that write\'s value is the body\'s to compute';
+const INTERLEAVED = 'the hop\'s reaches "Keeper.enter()" and "Keeper.stamp()" touch one node of collection "marks", '
+  + 'and one of them enters the other, so their segments interleave in an order this hop does not settle';
 
 describe('an entry whose own check fails before the call whose frames the planner refuses', () => {
   it('reports the entry\'s own reason for a call into a re-entering pair it never makes', async () => {

@@ -22,7 +22,8 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * lands in a later segment of the frame that encloses the read. The notes' collection chunks, so each write's value
  * is the plan's own, stated before the writer settles, and the notes stay inline; the judge sits behind its own
  * proxy, whose initialize seeds the note. A value the writer's body computes is stated by no plan before the read is
- * judged, so that pair is refused by a name of its own.
+ * judged, and a note the node keeps inline passes no chunk pin: the hop derives the writer up to the call that leads
+ * to the read, reads the note out of the node the writer's own close rebuilt, and plans again from it.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -232,12 +233,13 @@ describe('a node a frame writes before the call that leads to a frame of its con
     expect(lastOf(result)).toBe(4n);
   }, 300_000);
 
-  it('refuses the pair by its own name when the enclosing write\'s value is the body\'s to compute', async () => {
-    // The note is packed from what the claimer's `ping` returned, so the plan states no value for it: the read would
-    // be judged against the plan's placeholder before the writer settles.
-    await expect(callRoot(await deployed(), 'runOpaque')).rejects.toThrow(
-      'the hop\'s reach "Judge.count()" reads a node of collection "notes" that "Judge.enterOpaque()", a frame it runs '
-      + 'inside, writes before the call that leads to it, and that write\'s value is the body\'s to compute: the read '
-      + 'is judged before the writer settles, so it would read the plan\'s placeholder');
+  it('learns the note the enclosing frame computes from its close of the node, and plans again from it', async () => {
+    // The note is packed from what the claimer's `ping` returned, so the plan states no value for it: the read is
+    // judged against the note the writer's own close rebuilt, not the plan's placeholder. The packed note is 33
+    // bytes, which neither the seeded note nor the placeholder is, and still within the node's inline limit.
+    const result = await callRoot(await deployed(), 'runOpaque');
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(lastOf(result)).toBe(33n);
   }, 300_000);
 });

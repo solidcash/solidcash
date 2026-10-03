@@ -10,9 +10,11 @@
  * the frames the writer runs before that call settle first (`reentry.ts`). The touch is judged before the writer
  * settles, so the pair chains when the value the writer leaves is one the touch can be given then
  * (`enclosingWriteValue`): a value the plan states, as it does for a field the write sets beside the fields it keeps,
- * or a long value whose run the plan leaves unstated, which the writer's own chunk pin exposes and the hop learns
- * before the touch is judged (`enclosed-values.ts`). Any other value the body computes is refused by its own name,
- * and any other pair of touches one frame of which enters the other is still refused as before.
+ * or a value the body computes, which the hop learns from the writer's own run before the touch is judged
+ * (`enclosed-values.ts`): a long value from the writer's chunk pin, and a value the node keeps inline, which every
+ * value of a collection whose values do not chunk is, from the writer's close of the node. A computed value no run
+ * exposes is refused by its own name there, and any other pair of touches one frame of which enters the other is
+ * still refused as before.
  */
 
 import { bytesToHex } from '@solidcash/utils';
@@ -25,6 +27,8 @@ interface EnclosedTouch {
   readonly frame: number;
   readonly functionName: string;
   readonly kind: string;
+  /** True when the node's collection holds values that chunk. */
+  readonly chunkable: boolean;
 }
 
 /** True when frame `outer` enters frame `inner`, directly or through the frames between them. */
@@ -83,8 +87,8 @@ function followsEnclosingWrite(
  *
  * The touch is judged first, against the view the writer's declaration states, so the value has to be known before
  * the writer runs: a value the plan states is (a chunking collection's write the planner resolves, or one the hop
- * learned from the writer's own pin and planned again from). Any other value the writer's body computes is a
- * placeholder until the writer's own close is learned, so none is given here.
+ * learned from the writer's own run and planned again from). Any other value the writer's body computes is a
+ * placeholder until the writer's own run is read (`enclosed-values.ts`), so none is given here.
  */
 export function enclosingWriteValue(
   callees: readonly HopCallee[], writerFrame: number, nodeId: string,
@@ -98,7 +102,7 @@ export function enclosingWriteValue(
 
 /**
  * The refusal of a touch inside a writer whose value the touch cannot be given before the writer settles: one the
- * plan does not state, and no pin of the writer's own exposes.
+ * plan does not state, and neither the writer's own pin nor its close of the node exposes.
  */
 export function enclosedValueRefusal(
   inner: string, reads: boolean, collection: string, outer: string,
@@ -120,9 +124,9 @@ export function chainsEnclosedTouch(
 ): boolean {
   if (!followsEnclosingWrite(callees, outer, inner, collection)) return false;
   if (enclosingWriteValue(callees, outer.frame, nodeId) !== undefined) return true;
-  // A long value whose run the plan leaves unstated is exposed by the writer's own chunk pin: the hop learns it and
-  // plans again from it before the touch is judged, and refuses the touch by name there when no pin exposes it
-  // (`enclosed-values.ts`).
-  if (callees[outer.frame]!.entryWrites?.awaitsValue === true) return true;
+  // A value the body computes is exposed by the writer's own run: the hop learns it before the touch is judged, from
+  // the writer's chunk pin or its close of the node, and refuses the touch by name there when neither exposes it
+  // (`enclosed-values.ts`). A collection whose values do not chunk has every written view learned from the close.
+  if (!outer.chunkable || callees[outer.frame]!.entryWrites?.awaitsValue === true) return true;
   throw enclosedValueRefusal(inner.functionName, inner.kind === 'read', collection, outer.functionName);
 }

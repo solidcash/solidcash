@@ -26,7 +26,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * witnessed and kept from the bytes `advance` wrote. `advanceComputed` writes the entry's marks from a local it
  * rebuilds through a helper, so the compiler publishes no value for the write: the hop derives the writer up to its
  * call, reads the long value its own chunk pin stopped on, and plans again from it. A computed value the node keeps
- * inline passes no pin, so nothing exposes it before the frames inside are judged, and the read is refused by name.
+ * inline passes no pin, so the hop reads it out of the node the writer's own close rebuilt instead.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -241,11 +241,8 @@ describe('a node a frame rewrites before the call that leads to frames reading a
     await expectBothWrites(shared, await shared.enter('runComputed'), LONG_NOTE, 0n, [1n, 0n]);
   }, 300_000);
 
-  it('refuses by name a read inside a computed value the node keeps inline, which no pin exposes', async () => {
+  it('learns an inline value the enclosing writer computes from its close of the node, and plans again', async () => {
     const shared = await world(SHORT_NOTE);
-    await expect(shared.enter('runComputed')).rejects.toThrow(
-      'the hop\'s reach "Ledger.entry()" reads a node of collection "entries" that "Ledger.advanceComputed()", a '
-      + 'frame it runs inside, writes before the call that leads to it, and that write\'s value is the body\'s to '
-      + 'compute: the read is judged before the writer settles, so it would read the plan\'s placeholder');
+    await expectBothWrites(shared, await shared.enter('runComputed'), SHORT_NOTE, 0n, [1n, 0n]);
   }, 300_000);
 });

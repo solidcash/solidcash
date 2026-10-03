@@ -1,9 +1,14 @@
-import { decodePushdataValue, type AbiFunction, type Artifact, type EntryAccessAbi } from '@solidcash/utils';
+import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
+import {
+  decodePushdataValue, encodeChunkableValueTail, encodePushdataValue,
+  type AbiFunction, type Artifact, type EntryAccessAbi,
+} from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Signer, getContractFactory, upgrades } from '../../src/index.js';
 import type { FunctionArgument } from '../../src/Argument.js';
 import { externalReturnsForCallsites } from '../../src/stateful/external-returns-for-callsites.js';
+import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 
@@ -116,4 +121,33 @@ describe('kernel computed whole-value storage', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/u) });
     expect((await archive.getEntries('records'))[0]?.value).toMatchObject({ amount: 7n, payload });
   }, 180_000);
+
+  it('preserves amount in a probe-generated chunkable struct insert', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x64), provider);
+    for (let index = 0; index < 6; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Record { uint256 amount; bytes payload; }
+      contract Archive() {
+        mapping(uint256 => Record) records;
+        function store(uint256 key, uint256 amount, bytes payload) public {
+          records[key] = Record(amount, payload);
+          require(true);
+        }
+      }`, options);
+    const archive = await getContractFactory(artifact, signer).deploy();
+    const handler = artifact.abi.find((fn) => fn.name === 'store')!;
+    expect(handler.entryAccesses?.[0]?.valueSource).toMatch(/^call:Record\(/);
+    const payload = new Uint8Array(180).fill(0x54);
+    const probe = await archive._createBuilder('store', [1n, 7n, payload], {
+      abiFunction: handler, returnProbeOnly: true,
+    });
+    const expectedValue = encodePushdataValue({ amount: 7n, payload }, 'Record', artifact.structs);
+    const expectedEntry = binToHex(encodeEntryCommitment(
+      keyToSlot(bigIntToVmNumber(1n)), new Uint8Array(32), encodeChunkableValueTail(expectedValue),
+    ));
+    expect(probe.build().outputs.some((output) => output.token?.nft?.commitment === expectedEntry)).toBe(true);
+  }, 120_000);
 });

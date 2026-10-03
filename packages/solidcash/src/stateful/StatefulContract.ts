@@ -8083,8 +8083,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               for (const field of struct.fields) {
                 const member = record[field.name];
                 if (member === undefined) continue;
-                // EXPERIMENT: the covenant's own 197-byte value omits `amount` (our 206-byte value has it).
-                if (field.name === 'amount') continue;
                 const arrayInfo = field.type.match(/^(.+)\[\d+\]$/);
                 normalized[field.name] = arrayInfo !== null && Array.isArray(member)
                   ? member.map((element) => normalizeForType(element, arrayInfo[1]))

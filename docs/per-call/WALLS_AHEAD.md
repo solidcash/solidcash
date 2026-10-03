@@ -1,5 +1,16 @@
 # Walls past 55/66: measured from the focused slice (2026-10-03)
 
+**Measured 2026-10-03 22:08 at `fef851fee`, the eight titles of the table below only (`-t` on the marketplace
+config): `8 passed | 58 skipped (66)`.** #50 approve sanity, #51 approve result, #52 refund sanity, #59 arbitrate
+sanity, #60 80-20, #61 0-100, #62 100-0 and #66 integration test all settle; with the 58 ticked titles that is
+**66/66 expected**, pending a full 66-title run. The only source change between the slice below (`06cc9eef0`) and this
+run is `fef851fee`: a contract's data records are placed side by side in data-record order, so a frame reads each at
+its record base plus its layout offset. That matches the `setClaimed` signature (`declared=01 computed=02`): the frame
+read its neighbour's record. Landed since and not yet under a full run: `d2bf005a8`, `4999f7211`, `43d12a9f9`,
+`cf5f83e48`, `6e2626e48` (compiler: an entry cache ends at each call between two accesses), `f5f41861d`, `5f452f80b`,
+`e77cf6109`, `2534b954b`; the full compiler and SDK suites at `cf5f83e48` show no per-call regression beyond one
+stale publication pin (fixed in `2534b954b`). Log: `{SCRATCH}/mkt-logs/h4.txt`.
+
 Measured at `055833fb4`: a full 66-title run (44 passed, the set unchanged since 04:48), the walls-ahead replicas under
 `PER_CALL_AHEAD=1` (9 of 142 cases off their pins), a census of the compiled marketplace's entries (calls, kinds,
 guards, loops, side-cars, write segments), and the sources in `.marketplace/contracts/`. Each wall names its owner;

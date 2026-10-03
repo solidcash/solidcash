@@ -1,6 +1,8 @@
 import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
+import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { evalComputedKey } from '../../src/stateful/StatefulContract.js';
+import { evalComputedKey as evalRouteComputedKey } from '../../src/stateful/route-expression-key.js';
 
 describe('computed entry keys from conditional state reads', () => {
   it.each([true, false])('selects the declared branch of an equality predicate (%s)', (equal) => {
@@ -44,5 +46,31 @@ describe('computed entry keys from conditional state reads', () => {
       .toEqual(bigIntToVmNumber(9n));
     expect(evalComputedKey('ternary(map:flags(lit:0),lit:7,lit:9)', [], [], { flags: [true] }))
       .toEqual(bigIntToVmNumber(7n));
+  });
+
+  it('short-circuits compiler-emitted boolean entry keys before unavailable state', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Probe() {
+        bool enabledFlag;
+        mapping(uint256 => uint256) data;
+        function store(bool enabled, uint256 dataKey, uint256 value) public {
+          data[enabled && this.enabledFlag ? dataKey : 0] = value;
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    const handler = artifact.abi.find((candidate) => candidate.name === 'store')!;
+    const label = handler.entryAccesses?.[0]?.keySources?.[0]?.expressionLabel;
+    expect(label).toBe('ternary(binop:&&(id:enabled,state:enabledFlag),id:dataKey,lit:0)');
+    for (const evaluate of [evalComputedKey, evalRouteComputedKey]) {
+      expect(evaluate(label, [false, 7n, 9n], handler.inputs)).toEqual(bigIntToVmNumber(0n));
+      expect(evaluate(label, [true, 7n, 9n], handler.inputs)).toBeUndefined();
+      expect(evaluate(label, [true, 7n, 9n], handler.inputs, { enabledFlag: true }))
+        .toEqual(bigIntToVmNumber(7n));
+      expect(evaluate('ternary(binop:||(lit:true,state:enabledFlag),lit:7,lit:9)', [], []))
+        .toEqual(bigIntToVmNumber(7n));
+    }
   });
 });

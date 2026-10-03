@@ -2722,6 +2722,16 @@ export function evalComputedKey(
       const pair = splitTopLevel(m[2]);
       if (!pair) return undefined;
       const left = evalValue(pair[0]);
+      if (m[1] === '&&' || m[1] === '||') {
+        const asBoolean = (value: unknown): boolean | undefined => typeof value === 'boolean' ? value
+          : typeof value === 'bigint' ? value !== 0n
+            : typeof value === 'number' ? value !== 0 : undefined;
+        const leftValue = asBoolean(left);
+        if (leftValue === undefined) return undefined;
+        if (m[1] === '&&' && !leftValue) return false;
+        if (m[1] === '||' && leftValue) return true;
+        return asBoolean(evalValue(pair[1]));
+      }
       const right = evalValue(pair[1]);
       if (left === undefined || right === undefined) return undefined;
       if (m[1] === '==' || m[1] === '!=') {
@@ -2730,15 +2740,6 @@ export function evalComputedKey(
           : typeof left === typeof right && ['bigint', 'number', 'boolean', 'string'].includes(typeof left)
             ? left === right : undefined;
         return equal === undefined ? undefined : m[1] === '==' ? equal : !equal;
-      }
-      if (m[1] === '&&' || m[1] === '||') {
-        const asBoolean = (value: unknown): boolean | undefined => typeof value === 'boolean' ? value
-          : typeof value === 'bigint' ? value !== 0n
-            : typeof value === 'number' ? value !== 0 : undefined;
-        const leftValue = asBoolean(left);
-        const rightValue = asBoolean(right);
-        return leftValue === undefined || rightValue === undefined ? undefined
-          : m[1] === '&&' ? leftValue && rightValue : leftValue || rightValue;
       }
       if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
       if (m[1] === '+') return left + right;

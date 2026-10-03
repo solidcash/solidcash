@@ -19,6 +19,7 @@ import type {
   ComposeAtomicMessageBusOptions,
 } from './compose-prepared-invocation.js';
 import { resolveMessageBusAbiFunction } from './message-bus.js';
+import { stageUniqueDirectValueProductions } from './compose-direct-value-productions.js';
 
 export interface PrepareComposeDescriptorsResult {
   descriptors: CallDescriptor[];
@@ -79,6 +80,7 @@ export async function prepareComposeDescriptors(
     }
     return pending;
   };
+  await stageUniqueDirectValueProductions(descriptors, stateOf);
   const descriptorWitnesses = await deriveComposeDescriptorWitnesses(descriptors, stateOf);
   return {
     descriptors,

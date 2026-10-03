@@ -480,6 +480,24 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         && !statement.arrayIndex && !statement.arrayPush && !statement.arrayPop
         ? { name: statement.name, key: statement.keys[0], value: statement.expression } : undefined;
     const knownWrites = new Map<string, { key: ExpressionNode; value: ExpressionNode }>();
+    const knownCaptures = new Map<string, ExpressionNode>();
+    const projectKnownValues = (source: ExpressionNode): { value: ExpressionNode; replaced: boolean } => {
+      let value = cloneNode(source) as ExpressionNode;
+      let replaced = false;
+      for (const [name, capture] of knownCaptures) {
+        const projector = new ProjectCapturedMappingRead(name, capture);
+        value = projector.visit(value) as ExpressionNode;
+        replaced ||= projector.replaced;
+      }
+      for (const [name, write] of knownWrites) {
+        const keyLabel = expressionCanon(write.key);
+        if (!keyLabel) continue;
+        const projector = new ProjectWrittenMappingRead(name, keyLabel, write.value);
+        value = projector.visit(value) as ExpressionNode;
+        replaced ||= projector.replaced;
+      }
+      return { value, replaced };
+    };
     for (let index = 0; index < statements.length; index += 1) {
       if (index > 0) {
         const preceding = statements[index - 1];
@@ -488,10 +506,18 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           && argumentOnlyMappingValue(precedingWrite.value, parameters)) {
           // A write to another collection cannot invalidate this collection's known value.
           knownWrites.set(precedingWrite.name, precedingWrite);
-        } else if (!(preceding instanceof VariableDefinitionNode
-          && (!preceding.expression || expressionCanon(preceding.expression) !== undefined))) {
+        } else if (preceding instanceof VariableDefinitionNode
+          && (!preceding.expression || expressionCanon(preceding.expression) !== undefined)) {
+          const capture = preceding.expression && projectKnownValues(preceding.expression).value;
+          if (capture && argumentOnlyMappingValue(capture, parameters)) {
+            knownCaptures.set(preceding.name, capture);
+          } else {
+            knownCaptures.delete(preceding.name);
+          }
+        } else {
           // Calls, branches, assertions, and unsupported writes end the straight-line proof.
           knownWrites.clear();
+          knownCaptures.clear();
         }
       }
       const reader = statements[index];
@@ -511,37 +537,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           if (projector.replaced) reader.postWriteKeyExpressions = [projected];
         }
       }
-      // A read-only local may capture the just-written value before the later key is evaluated.
-      // Its declaration separates the two writes, but cannot change the captured value.
       const captured = writerIndex >= 0 ? statements[writerIndex] : undefined;
-      if (!write && captured instanceof VariableDefinitionNode && captured.expression
-        && expressionCanon(captured.expression) !== undefined) {
-        const sourceIndex = previousEffectful[writerIndex];
-        const source = sourceIndex >= 0 ? scalarWrite(statements[sourceIndex]) : undefined;
-        const sourceKey = source && expressionCanon(source.key);
-        if (source && sourceKey && argumentOnlyMappingValue(source.value, parameters)) {
-          const capture = new ProjectWrittenMappingRead(source.name, sourceKey, source.value);
-          const capturedValue = capture.visit(cloneNode(captured.expression)) as ExpressionNode;
-          if (capture.replaced && argumentOnlyMappingValue(capturedValue, parameters)) {
-            const alias = new ProjectCapturedMappingRead(captured.name, capturedValue);
-            const expanded = alias.visit(cloneNode(readerKeys[0])) as ExpressionNode;
-            if (alias.replaced) {
-              const projector = new ProjectWrittenMappingRead(source.name, sourceKey, source.value);
-              reader.postWriteKeyExpressions = [projector.visit(expanded) as ExpressionNode];
-            }
-          }
-        }
-      }
-      let projectedKey = reader.postWriteKeyExpressions?.[0] ?? cloneNode(readerKeys[0]);
-      let projectedFromWindow = false;
-      for (const [name, source] of knownWrites) {
-        const keyLabel = expressionCanon(source.key);
-        if (!keyLabel) continue;
-        const projector = new ProjectWrittenMappingRead(name, keyLabel, source.value);
-        projectedKey = projector.visit(projectedKey) as ExpressionNode;
-        projectedFromWindow ||= projector.replaced;
-      }
-      if (projectedFromWindow) reader.postWriteKeyExpressions = [projectedKey];
+      const projected = projectKnownValues(reader.postWriteKeyExpressions?.[0] ?? readerKeys[0]);
+      if (projected.replaced) reader.postWriteKeyExpressions = [projected.value];
       // Before the first mutation, a key read sees the authenticated input state. A read-only local
       // may have captured that value earlier; expand it only while no other effectful statement
       // intervenes, so a later mapping write cannot retroactively change its key.

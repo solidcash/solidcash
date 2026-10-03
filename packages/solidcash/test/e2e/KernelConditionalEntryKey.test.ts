@@ -235,4 +235,32 @@ describe('kernel conditional state-derived entry keys', () => {
     expect(data.map((entry) => entry.value)).toEqual([13n]);
     expect(data[0]?.slot).toEqual(keyToSlotMulti([bigIntToVmNumber(11n)]));
   }, 180_000);
+
+  it('resolves a mapping value captured after an unrelated mapping mutation', async () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Probe() {
+        mapping(uint256 => bool) flags;
+        mapping(uint256 => uint256) other;
+        mapping(uint256 => uint256) data;
+        function store(uint256 flagKey, uint256 otherKey, uint256 dataKey, uint256 value) public {
+          flags[flagKey] = true;
+          other[otherKey] = value + 1;
+          bool selected = flags[flagKey];
+          data[selected ? dataKey : 0] = value;
+          require(true);
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x6b), provider);
+    for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const probe = await getContractFactory(artifact, signer).deploy();
+    await expect(probe.call.store(7n, 9n, 11n, 13n).send()).resolves.toBeDefined();
+    const data = await probe.getEntries('data');
+    expect(data.map((entry) => entry.value)).toEqual([13n]);
+    expect(data[0]?.slot).toEqual(keyToSlotMulti([bigIntToVmNumber(11n)]));
+  }, 180_000);
 });

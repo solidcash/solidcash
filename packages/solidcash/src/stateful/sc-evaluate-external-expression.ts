@@ -365,7 +365,12 @@ export function evaluateExternalExpression(
         const writeDelta = stateName ? stateLengthDeltas?.[stateName] ?? 0n : 0n;
         const legacyDelta = !stateIncludesPriorWrites && typeof expression.value === 'string'
           ? BigInt(expression.value) : 0n;
-        return BigInt(value.length) + writeDelta + legacyDelta;
+        // SDK `bytes` arguments may be represented as canonical hex strings, but the VM observes
+        // their decoded byte length. A Solidity string still uses its ordinary text length here.
+        const length = typeof value === 'string' && inferredType(expression.expression).startsWith('bytes')
+          && /^0x(?:[0-9a-fA-F]{2})*$/.test(value)
+          ? (value.length - 2) / 2 : value.length;
+        return BigInt(length) + writeDelta + legacyDelta;
       }
     }
     if (expression.operator === '!') return !value;

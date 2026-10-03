@@ -2,6 +2,8 @@ import type { AuthenticationProgramStateCommon } from '@bitauth/libauth';
 import { Op, sha256, scriptToBytecode, type Script } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { extractHashedReturnCommitmentAtOutput } from '../../src/stateful/hashed-return-probe.js';
+import { messageBusReturnBlobFromTransaction } from '../../src/stateful/sc-derive-return-blob.js';
+import { encodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js';
 import type NetworkProvider from '../../src/network/NetworkProvider.js';
 import {
   BoundedProbeTraceCollector, compactFaithfulProbeTrace, evaluateFaithfulProbeTrace, evaluateProbeTrace,
@@ -122,5 +124,33 @@ describe('targeted hashed return extraction', () => {
     short.stack[0] = value.slice(0, 128);
     short.stack[1] = sha256(short.stack[0]);
     expect(extractHashedReturnCommitmentAtOutput([short], 7)).toBeUndefined();
+  });
+
+  it('recovers a message-bus hashed return despite a protected transient seed', () => {
+    const provider = { consensusLimits: {
+      maximumInputBytes: 100_000, maximumStackItemBytes: 100_000,
+      operationCostBudgetPerByte: 10_000, hashDigestIterationsPerByte: 10_000,
+    } } as NetworkProvider;
+    const returnBlob = scriptToBytecode([
+      encodeEvmInvocationResult([[1n, 2n, 3n, 4n, 5n]], ['uint16[5]']),
+    ]);
+    const pin = snapshot().instructions.map((instruction) => instruction.opcode);
+    const program = {
+      inputIndex: 0,
+      sourceOutputs: [{ lockingBytecode: scriptToBytecode([
+        Op.OP_0, returnBlob, ...pin, Op.OP_DROP, Op.OP_1,
+      ]), valueSatoshis: 1000n }],
+      transaction: {
+        version: 2, locktime: 0,
+        inputs: [{ outpointTransactionHash: new Uint8Array(32), outpointIndex: 0,
+          sequenceNumber: 0xffffffff, unlockingBytecode: new Uint8Array() }],
+        outputs: [{ lockingBytecode: Uint8Array.of(Op.OP_1), valueSatoshis: 900n }],
+      },
+    };
+    const host = { inner: { provider, artifact: { structs: [], enums: [] } } } as never;
+    expect(messageBusReturnBlobFromTransaction(host, { inputs: [] } as never, 0, 0, program, {
+      resultTypes: ['uint16[5]'], resultTypeGroups: [['uint16[5]']],
+      resultEncodings: ['evm-abi-v1'], protectTransientSeedOnFailedProbe: true,
+    })).toEqual(returnBlob);
   });
 });

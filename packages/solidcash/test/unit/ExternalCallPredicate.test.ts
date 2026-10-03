@@ -302,6 +302,27 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(packed).toEqual(Uint8Array.of(...addressHash, ...new Uint8Array(65).fill(0xab)));
   });
 
+  it('measures hex-encoded bytes by their decoded length in a pure packed helper', () => {
+    const expression: ExternalCallExpression = {
+      kind: 'call', name: 'prefixBytes', args: [source(0)], parameters: ['value'],
+      statements: [{
+        kind: 'return',
+        expression: {
+          kind: 'abiEncodePacked', fields: ['uint8', ''], args: [{
+            kind: 'cast', type: 'uint8', expression: {
+              kind: 'unary', operator: '.length', expression: {
+                kind: 'identifier', name: 'value', type: 'bytes',
+              },
+            },
+          }, { kind: 'identifier', name: 'value', type: 'bytes' }],
+        },
+      }],
+    };
+    expect(evaluator._evaluateExternalExpression(
+      expression, [`0x${'00'.repeat(32)}`], artifact, undefined, [{ type: 'bytes' }],
+    )).toEqual(Uint8Array.of(32, ...new Uint8Array(32)));
+  });
+
   it('uses the compiler address narrowing rule for Solidity P2SH32 values', () => {
     const lockingBytecode = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x23), 0x87);
     const expression: ExternalCallExpression = {

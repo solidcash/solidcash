@@ -352,6 +352,12 @@ export function messageBusReturnBlobFromTransaction(
   ) === true;
   const structs = host.inner.artifact.structs ?? host.inner.artifact.stateLayout?.structs;
   const enums = host.inner.artifact.enums;
+  // A long return is committed by SHA256(raw) and checked with the compiler's hash-or-raw pin,
+  // not the ordinary EQUALVERIFY pin. Recover its authenticated preimage before a failed probe's
+  // transient-seed guard: a zero-shaped seed must not hide a completed producer return vector.
+  const hashed = extractHashedReturnCommitmentAtOutput(trace, returnOutputIndex);
+  if (hashed !== undefined && (!allEvmResults
+    || isCanonicalEvmReturnBlob(hashed, resultSchema!.resultTypeGroups, structs, enums))) return hashed;
   if (commitment !== undefined && allEvmResults
     && !isCanonicalEvmReturnBlob(hexToBin(commitment), resultSchema.resultTypeGroups, structs, enums)) {
     commitment = undefined;

@@ -62,4 +62,26 @@ describe('kernel literal entry alternatives', () => {
     expect(handler).toMatchObject({ eligible: true });
     expect(new Set(handler.physicalEntrySlots).size).toBe(2);
   });
+
+  it('reuses one entry slot for commutative parameter-derived aliases', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ICounter { function bump() external; }
+      contract Coordinator() {
+        mapping(int => int) balances;
+        function poke(address counter, int base, int value) public {
+          this.balances[base + 1] = value;
+          this.balances[1 + base] = value + 1;
+          ICounter(counter).bump();
+        }
+      }`, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      suppressWarnings: true,
+    });
+    const handler = artifact.delegateArtifact!.messageBus!.handlers.find((entry) => entry.name === 'poke')!;
+    expect(handler).toMatchObject({ eligible: true });
+    expect(new Set(handler.physicalEntrySlots).size).toBe(1);
+  });
 });

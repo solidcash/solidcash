@@ -5241,7 +5241,7 @@ function synthesizeMessageBusRoute(
   const routeKeyWitnessCoordinates = new Map<string, {
     collection: string; keyIndex: number; alternativeIndex: number;
   }>();
-  const entryKeyExpressionIdentity = (
+  const entryKeyExpressionLabel = (
     key: ExpressionNode, parameters: readonly ParameterNode[],
   ): string | undefined => {
     if (key instanceof IntLiteralNode) return `const:${key.value}`;
@@ -5260,6 +5260,25 @@ function synthesizeMessageBusRoute(
     };
     if (parameterArithmetic(key)) return canonicalizeUpsertKeyExpression(key, new Set());
     return undefined;
+  };
+  const entryKeyExpressionIdentity = (
+    key: ExpressionNode, parameters: readonly ParameterNode[],
+  ): string | undefined => {
+    const label = entryKeyExpressionLabel(key, parameters);
+    if (label === undefined || key instanceof IntLiteralNode) return label;
+    // Commutativity identifies two spellings of the SAME entry. Keep the original label for off-chain
+    // evaluation and the on-chain equality guard; only the planner's deduplication key is normalized.
+    const normalize = (node: ExpressionNode): string => {
+      if (node instanceof BinaryOpNode) {
+        const left = normalize(node.left);
+        const right = normalize(node.right);
+        const operands = [BinaryOperator.PLUS, BinaryOperator.MUL].includes(node.operator)
+          ? [left, right].sort() : [left, right];
+        return `binop:${node.operator}(${operands.join(',')})`;
+      }
+      return canonicalizeUpsertKeyExpression(node, new Set())!;
+    };
+    return normalize(key);
   };
   const fixedIterationCollections = new Set<string>();
   const fixedArrayRouteHandlers = new Set<FunctionDefinitionNode>();
@@ -7242,7 +7261,7 @@ function synthesizeMessageBusRoute(
             // Keep labels positional with the route alternatives, including unprovable placeholders.
             const alternatives = expressionAlternatives.get(access.name) ?? [];
             alternatives.push(enableExpressionEntryAlternatives && indices.length === 1 && indices[0] === -1
-              ? entryKeyExpressionIdentity(access.keys[0], fn.parameters) : undefined);
+              ? entryKeyExpressionLabel(access.keys[0], fn.parameters) : undefined);
             expressionAlternatives.set(access.name, alternatives);
           }
           collectedIdentities.set(access.name, seen);

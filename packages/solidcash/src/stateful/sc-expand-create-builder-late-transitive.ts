@@ -115,6 +115,10 @@ export async function expandCreateBuilderLateTransitive(
       lockingBytecode: parentContract.inner.lockingBytecode,
     });
     const parentOutgoingSelfAddress = hexToBin(parentCallerIdentity.lockingBytecode);
+    // Expressions inside this invocation observe its incoming caller, not its own outgoing identity
+    // and not the transaction signer.
+    const parentIncomingCallerAddress = parent.callerIdentity
+      ? hexToBin(parent.callerIdentity.lockingBytecode) : undefined;
     const logicalParentArtifact = parent.logicalArtifact ?? logicalParentContract.inner.artifact;
     const logicalParentFunctionName = parent.logicalFunctionName ?? parent.functionName;
     const logicalParentArgs = parent.logicalFunctionArgs ?? parent.functionArgs;
@@ -135,6 +139,7 @@ export async function expandCreateBuilderLateTransitive(
         ? logicalParentContract._resolveExternalArgs(
           [nested.addressSource], logicalParentArgs, logicalParentArtifact, parentState,
           parentFn.inputs, undefined, 0, false, parentOutgoingSelfAddress,
+          parentIncomingCallerAddress,
         )?.[0]
         : nested.addressStateVar
           ? parentState[nested.addressStateVar] as FunctionArgument | undefined
@@ -190,6 +195,7 @@ export async function expandCreateBuilderLateTransitive(
         nested.rawArgSources ?? nested.argSources,
         logicalParentArgs, logicalParentArtifact, parentState,
         parentFn.inputs, undefined, 0, false, parentOutgoingSelfAddress,
+        parentIncomingCallerAddress,
       );
       if (childArgs === undefined) continue;
       const graphChildArgs = graphParentArgs === logicalParentArgs
@@ -198,6 +204,7 @@ export async function expandCreateBuilderLateTransitive(
           nested.rawArgSources ?? nested.argSources,
           [...graphParentArgs], logicalParentArtifact, parentState,
           parentFn.inputs, undefined, 0, false, parentOutgoingSelfAddress,
+          parentIncomingCallerAddress,
         ) ?? childArgs;
       const graphChildSources = nested.rawArgSources ?? nested.argSources;
       const resolveGraphChildArgs = preparedAtomicNodes && graphChildSources
@@ -213,6 +220,7 @@ export async function expandCreateBuilderLateTransitive(
           return logicalParentContract._resolveExternalArgs(
             graphChildSources, [...graphParentArgs], logicalParentArtifact, parentState,
             parentFn.inputs, externalReturns, 0, false, parentOutgoingSelfAddress,
+            parentIncomingCallerAddress,
           );
         }
         : undefined;

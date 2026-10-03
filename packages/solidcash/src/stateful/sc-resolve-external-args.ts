@@ -31,6 +31,7 @@ export interface ResolveExternalArgsHost {
     localBindings?: ReadonlyMap<string, FunctionArgument>,
     stateLengthDeltas?: Readonly<Record<string, bigint>>,
     strictFieldAccess?: boolean,
+    executionCallerAddress?: FunctionArgument,
   ): FunctionArgument | undefined;
 }
 
@@ -45,6 +46,7 @@ export function resolveExternalArgs(
   occurrenceIndex = 0,
   stateIncludesPriorWrites = false,
   executionSelfAddress?: FunctionArgument,
+  executionCallerAddress?: FunctionArgument,
 ): FunctionArgument[] | undefined {
   if (!argSources) return undefined;
   if (argSources.length === 0) return [];
@@ -89,6 +91,10 @@ export function resolveExternalArgs(
         break;
       }
       case 'msgSender': {
+        if (executionCallerAddress !== undefined) {
+          resolved.push(executionCallerAddress);
+          break;
+        }
         if (!host.signer) return undefined;
         resolved.push(addressToLockScript(host.signer.getAddress()));
         break;
@@ -123,6 +129,7 @@ export function resolveExternalArgs(
         const runtimeStep = source.stepExpression && host.evaluateExternalExpression(
           source.stepExpression, functionArgs, artifact, state, callerInputs, externalReturns,
           occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress,
+          undefined, undefined, false, executionCallerAddress,
         );
         const step = runtimeStep ?? source.stepValue;
         if (typeof step !== 'bigint' && typeof step !== 'number' && typeof step !== 'string') return undefined;
@@ -134,6 +141,7 @@ export function resolveExternalArgs(
           const value = host.evaluateExternalExpression(
             source.expression, functionArgs, artifact, state, callerInputs, externalReturns,
             occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress,
+            undefined, undefined, false, executionCallerAddress,
           );
           if (value === undefined) return undefined;
           resolved.push(value);

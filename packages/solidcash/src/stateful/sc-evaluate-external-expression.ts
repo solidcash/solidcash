@@ -29,6 +29,7 @@ export interface EvaluateExternalExpressionHost {
     occurrenceIndex?: number,
     stateIncludesPriorWrites?: boolean,
     executionSelfAddress?: FunctionArgument,
+    executionCallerAddress?: FunctionArgument,
   ): FunctionArgument[] | undefined;
   /**
    * The value a mapping collection's own node holds for a key, read from the frame's live deployment.
@@ -59,11 +60,13 @@ executionSelfAddress?: FunctionArgument,
 localBindings?: ReadonlyMap<string, FunctionArgument>,
 stateLengthDeltas?: Readonly<Record<string, bigint>>,
 strictFieldAccess = false,
+executionCallerAddress?: FunctionArgument,
 ): FunctionArgument | undefined {
   const evaluate = (candidate: ExternalCallExpression): FunctionArgument | undefined => (
     evaluateExternalExpression(host,
       candidate, functionArgs, artifact, state, callerInputs, externalReturns, occurrenceIndex,
       stateIncludesPriorWrites, executionSelfAddress, localBindings, stateLengthDeltas, strictFieldAccess,
+      executionCallerAddress,
     )
   );
   const concat = (parts: Uint8Array[]): Uint8Array => {
@@ -300,6 +303,7 @@ strictFieldAccess = false,
     const resolved = host.resolveExternalArgs(
       [expression.source], functionArgs, artifact, state, callerInputs, externalReturns,
       occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress,
+      executionCallerAddress,
     )?.[0];
     // A forwarded `bytes` argument is what the caller supplied, and ethers supplies `bytes` as `0x` hex text, while
     // the body reads the bytes: a length taken of the text counted its characters and a packed copy took its UTF-8.
@@ -558,6 +562,7 @@ strictFieldAccess = false,
         evaluateExternalExpression(host,
           candidate, functionArgs, artifact, state, callerInputs, externalReturns, occurrenceIndex,
           stateIncludesPriorWrites, executionSelfAddress, bindings,
+          undefined, false, executionCallerAddress,
         )
       );
       const defaultValue = (type: string | undefined): FunctionArgument => {

@@ -4728,6 +4728,69 @@ export function externalCallReachedOccurrenceIndices(
   return Object.freeze(Array.from({ length: count }, (_, occurrenceIndex) => occurrenceIndex));
 }
 
+const MAX_EXTERNAL_CALL_ITERATIONS = 10_000;
+
+/** Literal trip counts enumerate candidate iterations even when runtime guards skip some of them. */
+export function externalCallCandidateIterationIndices(
+  call: Parameters<typeof externalCallReachedOccurrenceIndices>[0] & {
+    occurrenceBoundSource?: 'literal' | 'guard' | 'structural';
+  },
+  functionArgs: readonly FunctionArgument[],
+): readonly number[] | undefined {
+  const reached = externalCallReachedOccurrenceIndices(call, functionArgs);
+  if (reached !== undefined) return reached;
+  if (call.occurrence !== 'loop' || call.occurrenceBoundSource !== 'literal') return undefined;
+  const count = call.maximumOccurrences;
+  if (count === undefined || !Number.isSafeInteger(count) || count < 0
+    || count > MAX_EXTERNAL_CALL_ITERATIONS) return undefined;
+  if (call.minimumOccurrences !== undefined && call.minimumOccurrences !== count) return undefined;
+  return Object.freeze(Array.from({ length: count }, (_, index) => index));
+}
+
+/** Evaluate a compiler-published pre-test recurrence, never guessing an unresolved loop bound. */
+export function evaluateExternalCallAffineIterationDomain<T extends object>(
+  domain: {
+    counterName: string; initialValue: T; stepValue: T; continueCondition: T;
+    maximumIterations: number;
+  },
+  evaluate: (expression: T, bindings: ReadonlyMap<string, bigint>) => bigint | boolean | undefined,
+): readonly number[] {
+  const compilerCeiling = domain.maximumIterations;
+  if (!Number.isSafeInteger(compilerCeiling) || compilerCeiling < 0) {
+    throw new Error('External call iteration domain has an invalid ceiling');
+  }
+  const ceiling = Math.min(compilerCeiling, MAX_EXTERNAL_CALL_ITERATIONS);
+  const empty = new Map<string, bigint>();
+  const initial = evaluate(domain.initialValue, empty);
+  if (typeof initial !== 'bigint') throw new Error('External call iteration domain has unresolved initial value');
+  const referencesCounter = (value: unknown, seen = new Set<object>()): boolean => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return false;
+    seen.add(value);
+    const expression = value as { kind?: string; name?: string };
+    if (expression.kind === 'identifier' && expression.name === domain.counterName) return true;
+    return Object.values(value).some((child) => Array.isArray(child)
+      ? child.some((part) => referencesCounter(part, seen)) : referencesCounter(child, seen));
+  };
+  if (referencesCounter(domain.stepValue)) throw new Error('External call iteration domain step is not invariant');
+  const step = evaluate(domain.stepValue, empty);
+  if (typeof step !== 'bigint') throw new Error('External call iteration domain has unresolved step');
+  if (step === 0n) throw new Error('External call iteration domain has non-progressing zero step');
+  const indices: number[] = [];
+  let counter = initial;
+  for (let iteration = 0; iteration <= ceiling; iteration += 1) {
+    const active = evaluate(domain.continueCondition, new Map([[domain.counterName, counter]]));
+    if (typeof active !== 'boolean') throw new Error('External call iteration domain has unresolved continue condition');
+    if (!active) return Object.freeze(indices);
+    if (iteration === ceiling) {
+      if (compilerCeiling > ceiling) throw new Error('External call iteration domain exceeds the SDK hard cap');
+      throw new Error(`External call iteration domain exceeds its ${ceiling}-iteration ceiling`);
+    }
+    indices.push(iteration);
+    counter += step;
+  }
+  throw new Error('External call iteration domain did not terminate');
+}
+
 function routeRowCollectionKey(
   row: RouteExpressionKeyRow,
   access: NonNullable<RouteExpressionKeyRow['handler']['entryAccesses']>[number],
@@ -14159,6 +14222,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     occurrenceIndex = 0,
     stateIncludesPriorWrites = false,
     executionSelfAddress?: FunctionArgument,
+    executionCallerAddress?: FunctionArgument,
   ): FunctionArgument[] | undefined {
     return resolveExternalArgsImpl(
       {
@@ -14168,7 +14232,58 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
       argSources, functionArgs, artifact, state, callerInputs, externalReturns,
       occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress,
+      executionCallerAddress,
     );
+  }
+
+  /** Resolve a callsite's reached rows against the authenticated execution frame. */
+  async _planExternalCallOccurrences(
+    call: ExternalCallAbi,
+    frame: {
+      functionArgs: FunctionArgument[];
+      artifact: Artifact;
+      state?: Record<string, unknown>;
+      callerInputs?: readonly { type: string }[];
+      executionSelfAddress?: FunctionArgument;
+      executionMsgSender?: FunctionArgument;
+      externalReturns?: ReadonlyMap<string, FunctionArgument>;
+    },
+  ): Promise<readonly { args: readonly FunctionArgument[]; sourceIteration: number; occurrenceIndex: number }[]> {
+    const evaluate = (expression: ExternalCallExpression, iteration: number,
+      bindings?: ReadonlyMap<string, FunctionArgument>): FunctionArgument | undefined =>
+      this._evaluateExternalExpression(
+        expression, frame.functionArgs, frame.artifact, frame.state, frame.callerInputs,
+        frame.externalReturns, iteration, false, frame.executionSelfAddress, bindings,
+        undefined, false, frame.executionMsgSender,
+      );
+    const candidates = call.iterationDomain
+      ? evaluateExternalCallAffineIterationDomain(call.iterationDomain,
+        (expression, bindings) => {
+          const value = evaluate(expression, 0, bindings);
+          return typeof value === 'bigint' || typeof value === 'boolean' ? value : undefined;
+        })
+      : externalCallCandidateIterationIndices(call, frame.functionArgs);
+    if (!candidates) {
+      throw new Error(`External callsite ${call.callsiteId ?? 'unknown'} has no exact iteration domain`);
+    }
+    const reached: Array<{ args: readonly FunctionArgument[]; sourceIteration: number; occurrenceIndex: number }> = [];
+    for (const sourceIteration of candidates) {
+      if (call.condition) {
+        const active = evaluate(call.condition, sourceIteration);
+        if (typeof active !== 'boolean') {
+          throw new Error(`External callsite ${call.callsiteId ?? 'unknown'} has unresolved condition`);
+        }
+        if (!active) continue;
+      }
+      const args = this._resolveExternalArgs(
+        call.rawArgSources ?? call.argSources, frame.functionArgs, frame.artifact, frame.state,
+        frame.callerInputs, frame.externalReturns, sourceIteration, false, frame.executionSelfAddress,
+        frame.executionMsgSender,
+      );
+      if (!args) throw new Error(`External callsite ${call.callsiteId ?? 'unknown'} has unresolved arguments`);
+      reached.push({ args, sourceIteration, occurrenceIndex: reached.length });
+    }
+    return reached;
   }
 
   private _vmapCounterDomain(
@@ -14253,6 +14368,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     localBindings?: ReadonlyMap<string, FunctionArgument>,
     stateLengthDeltas?: Readonly<Record<string, bigint>>,
     strictFieldAccess = false,
+    executionCallerAddress?: FunctionArgument,
   ): FunctionArgument | undefined {
     return evaluateExternalExpressionImpl(
       {
@@ -14261,6 +14377,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       expression, functionArgs, artifact, state, callerInputs, externalReturns,
       occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress, localBindings,
       stateLengthDeltas, strictFieldAccess,
+      executionCallerAddress,
     );
   }
 

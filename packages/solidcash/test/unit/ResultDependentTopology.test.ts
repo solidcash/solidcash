@@ -157,6 +157,26 @@ describe('result-dependent topology propagation', () => {
     expect(probes).toBe(0);
   });
 
+  it('does not seed a declared view without the compiler read-only proof', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0];
+    root.artifact.abi[0]!.externalCalls = [{ ...sources[0]!, hasReturnValues: true,
+      returnTypes: ['uint256'] }];
+    const child = ctx.descriptors[1].contract;
+    Object.assign(child.inner.artifact.abi[0], {
+      outputs: [{ type: 'uint256' }], modifiers: ['view'],
+      resultEncoding: 'compact-pushdata-v1',
+    });
+    let probes = 0;
+    (child as unknown as { _deriveReturnValue: unknown })._deriveReturnValue = async () => {
+      probes += 1;
+      return 7n;
+    };
+    const discovered = await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf);
+    expect(discovered[1]?.provisionalResultCommitment).toBeUndefined();
+    expect(probes).toBe(0);
+  });
+
   it('retains a transient seed when a failed trace only pins the provisional return', () => {
     expect(failedProbeCannotReplaceTransientSeed(true, undefined, 'aa')).toBe(true);
     expect(failedProbeCannotReplaceTransientSeed(true, 'aa', 'aa')).toBe(true);

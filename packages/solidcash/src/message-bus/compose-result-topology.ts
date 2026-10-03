@@ -621,7 +621,7 @@ async function rebuildCallTopology(
               && !template.nestedIterationDomains?.length
               && !priorWrite && !priorNestedEffect
               && childFn.modifiers?.some((modifier) => modifier === 'view' || modifier === 'pure')
-              && childFn.writesState !== true && !childFn.externalCalls?.length && !executor) {
+              && childFn.writesState === false && !childFn.externalCalls?.length && !executor) {
               try {
                 viewSeed = await contract._deriveReturnValue(
                   childFn.name, childArgs, undefined, childFn, undefined, self, logical.categoryId, logical,

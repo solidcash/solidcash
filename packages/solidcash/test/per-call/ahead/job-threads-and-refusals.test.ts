@@ -300,9 +300,6 @@ function lineOf(needle: string, after = 'pragma'): number {
   return lines.findIndex((line, index) => index >= start && line.includes(needle)) + 1;
 }
 
-/** Where the allowlist update's failing read of the task array is reported: its own line or its modifier's. */
-const ALLOWED_READ_LINES = [lineOf('function setAllowed('), lineOf('"not creator"')];
-
 type ArtifactMap = ReturnType<typeof compileStringMulti>;
 let compiledRun: ArtifactMap | undefined;
 /** The contracts, compiled once and only when the file runs. */
@@ -421,19 +418,6 @@ function reportOf(outcome: Outcome): composer.CompositionRefusal {
 function entryRefusal(entry: string, line: number, reason: string): string {
   return `the implementation's "${entry}" entry did not settle through the proxy: frame "implementation-master" of `
     + `Desk.${entry}() at line ${line}: ${reason} (Program failed an OP_VERIFY operation.)`;
-}
-
-/**
- * The line a refusal of the root's entry names for a check of the entry's own emitted code, which carries no source
- * message. It is the line the outlined code holding the check is attributed to, which moves with the program's
- * layout, so the caller bounds it rather than fixing it.
- */
-function unnamedRefusalLine(outcome: Outcome, entry: string): number {
-  const error = expectRefused(outcome, `the implementation's "${entry}" entry did not settle through the proxy: `
-    + `frame "implementation-master" of Desk.${entry}() at line `);
-  const line = /at line (\d+): no source message \(Program failed an OP_VERIFY operation\.\)/.exec(error.message);
-  expect(line).not.toBeNull();
-  return Number(line![1]);
 }
 
 /** The published facts of one root entry: its call sites with their occurrence, its reads and its write facts. */
@@ -699,18 +683,18 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       ]);
     }, 300_000);
 
-    it('an allowlist update from a non-creator (30) stops at the task read, before "not creator"', async () => {
+    it('an allowlist update from a non-creator (30) reports its modifier\'s "not creator" before any turn', async () => {
       const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [BOB_LOCK], []], WORKER);
-      // The loop's write is placed by its published turns now, so the frame runs to its modifier's read of the task
-      // array, which the hop declares no run for beside a loop's records. Owner: the SDK hop (`proxy/entry-writes.ts`,
-      // `hopEntryWrites`, which plans no read run beside a batch) and the body's read position beside the loop's.
-      expect(ALLOWED_READ_LINES).toContain(unnamedRefusalLine(outcome, 'setAllowed'));
+      // The hop declares the task array's run past the loop's records, where the frame finds it from the
+      // declaration's own end, so the modifier's read reaches its check.
+      expectRefused(outcome, entryRefusal('setAllowed', lineOf('"not creator"'), 'not creator'));
     }, 300_000);
 
-    it('an allowlist update adding a worker (20, 30) stops at the same read', async () => {
-      const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [ALICE_LOCK], []], CREATOR);
-      // Owner: as above.
-      expect(ALLOWED_READ_LINES).toContain(unnamedRefusalLine(outcome, 'setAllowed'));
+    it('an allowlist update adding a worker (20, 30) settles and the store posts its note', async () => {
+      const before = await world.network.takeSnapshot();
+      const settled = expectSettled(await enter(world, 'Desk', 'setAllowed', [TASK, [ALICE_LOCK], []], CREATOR));
+      expect(postedNotes(world, settled).map((note) => note.kind)).toStrictEqual([14n]);
+      await before.restore();
     }, 300_000);
 
     it('with the task read stepped around, the allowlist loop settles and the store posts its note', async () => {
@@ -812,13 +796,11 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead (L4): thread messages,
       });
     }, 300_000);
 
-    it('an allowlist update of a closed task (30) stops at the task read, before its own "not open"', async () => {
+    it('an allowlist update of a closed task (30) reports its own "not open"', async () => {
       const outcome = await enter(world, 'Desk', 'setAllowed', [TASK, [], []], CREATOR);
-      // Empty lists run no turn and plan no call, so the loop write is placed and the read `onlyCreator` makes of
-      // the array the entry never writes fails first: the hop declares a run the entry only reads beside no mapping
-      // write, and a loop that takes no turn is still one. Owner: the SDK hop (`proxy/entry-writes.ts`,
-      // `hopEntryWrites`).
-      expect(ALLOWED_READ_LINES).toContain(unnamedRefusalLine(outcome, 'setAllowed'));
+      // Empty lists run no turn and plan no call; the run the entry only reads follows the loop's records, which
+      // number none, so both reads of it reach their checks and the entry's own one fails.
+      expectRefused(outcome, entryRefusal('setAllowed', lineOf('"not open"', 'function _setAllowed('), 'not open'));
     }, 300_000);
 
     it('with the allowlist loop stepped around, posting (18) settles and stores the task', async () => {

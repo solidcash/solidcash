@@ -529,18 +529,24 @@ export type DeclaredRecordsKeptOptions = DeclaredViewCounts & {
   readonly exempt: number;
   /** When set, only the records before this position are checked: the ones past it are a write's own. */
   readonly leading?: number;
+  /**
+   * With `leading`, a record past it is the write's own only when it sits at the lock the caller leaves beneath the
+   * pairs: its output's lock, or its input's when it has no output. Every other record past it is checked too.
+   */
+  readonly leadingAtLock?: boolean;
 };
 
 /**
  * Builds the script that requires every record the running segment declares kept, unless the code accounts for it.
  *
- * Entry `[..., in_1, out_1, ..., in_n, out_n]` (with the segment index above them for run-time counts), exit
- * `[...]`. A record is kept when it reads and recreates one index with its view unchanged, or, beside another master of
- * the frame's contract under a validator, when it names a record another frame created at its output alone with its
- * view unchanged: the validator settles the contract then, and holds a created record's first view to nothing. A
- * record naming an exempt pair's input or output index is one the code wrote and verifies itself, and so is a
- * record at or past `leading`. Any other record changed in the segment is one no code computed: settlement would
- * chain it to the transaction's outputs and a callee between two segments would read it.
+ * Entry `[..., in_1, out_1, ..., in_n, out_n]` (with the segment index above them for run-time counts, and with
+ * `leadingAtLock` the lock beneath the pairs), exit `[...]`. A record is kept when it reads and recreates one index
+ * with its view unchanged, or, beside another master of the frame's contract under a validator, when it names a
+ * record another frame created at its output alone with its view unchanged: the validator settles the contract then,
+ * and holds a created record's first view to nothing. A record naming an exempt pair's input or output index is one
+ * the code wrote and verifies itself, and so is a record at or past `leading` (at the lock, with `leadingAtLock`).
+ * Any other record changed in the segment is one no code computed: settlement would chain it to the transaction's
+ * outputs and a callee between two segments would read it.
  */
 export function declaredRecordsKeptScript(options: DeclaredRecordsKeptOptions): Uint8Array {
   const bytes: number[] = [];
@@ -586,7 +592,17 @@ export function declaredRecordsKeptScript(options: DeclaredRecordsKeptOptions): 
     op(Opcodes.OP_TOALTSTACK);
     num(3); op(Opcodes.OP_PICK, Opcodes.OP_BIN2NUM); num(3); op(Opcodes.OP_PICK, Opcodes.OP_BIN2NUM);
     op(Opcodes.OP_0); // [shared, count, cursor, in, out, viewIn, viewOut, in#, out#, exempt]
-    if (options.leading !== undefined) {
+    if (options.leading !== undefined && options.leadingAtLock === true) {
+      num(7); op(Opcodes.OP_PICK); num(options.leading); op(Opcodes.OP_GREATERTHANOREQUAL);
+      op(Opcodes.OP_IF);
+      // The record's lock: its output's, or its input's when it has no output.
+      num(1); op(Opcodes.OP_PICK, Opcodes.OP_DUP); raw(encodeDataPush(INDEX_NONE_BYTES)); op(Opcodes.OP_NUMEQUAL);
+      op(Opcodes.OP_IF, Opcodes.OP_DROP); num(2); op(Opcodes.OP_PICK, Opcodes.OP_UTXOBYTECODE);
+      op(Opcodes.OP_ELSE, Opcodes.OP_OUTPUTBYTECODE, Opcodes.OP_ENDIF);
+      // Beneath those ten items and the lock just read sit the pairs, and the caller's lock beneath them.
+      num(11 + 2 * options.exempt); op(Opcodes.OP_PICK, Opcodes.OP_EQUAL, Opcodes.OP_BOOLOR);
+      op(Opcodes.OP_ENDIF);
+    } else if (options.leading !== undefined) {
       num(7); op(Opcodes.OP_PICK); num(options.leading); op(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_BOOLOR);
     }
     for (let pair = 1; pair <= options.exempt; pair += 1) {
@@ -616,6 +632,7 @@ export function declaredRecordsKeptScript(options: DeclaredRecordsKeptOptions): 
   op(Opcodes.OP_ENDIF);
   op(Opcodes.OP_2DROP, Opcodes.OP_2DROP); // count, cursor, the rest of the block, shared
   for (let pair = 0; pair < options.exempt; pair += 1) op(Opcodes.OP_2DROP);
+  if (options.leading !== undefined && options.leadingAtLock === true) op(Opcodes.OP_DROP); // the lock
   return new Uint8Array(bytes);
 }
 

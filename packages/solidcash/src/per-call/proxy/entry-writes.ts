@@ -1889,15 +1889,35 @@ function withAppendDeltas(request: HopEntryWritesRequest): HopEntryWritesRequest
   return deltas === undefined ? request : { ...request, stateLengthDeltas: deltas };
 }
 
+/**
+ * Refuses a run the entry only reads beside a run-time loop's writes unless its frame finds the run as the last family
+ * its segments declare: the one dynamic value the entry reads, beside no dynamic write and no long mapping value.
+ */
+function requireTrailingReadRun(request: HopEntryWritesRequest, batch: HopMappingBatch, writesDynamic: boolean): void {
+  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
+  const reads = fn?.dynamicReads ?? [];
+  const chunkable = (request.artifact.stateLayout?.collections ?? [])
+    .find((candidate) => candidate.name === batch.collection)?.chunkableValue === true;
+  if (reads.length === 1 && (fn?.dynamicWrites ?? []).length === 0 && !writesDynamic && !chunkable) return;
+  throw new PerCallProxyDeployError(
+    `the implementation's "${request.functionName}" entry reads ${reads.map((name) => `"${name}"`).join(', ')} beside `
+    + `a run-time loop's writes to "${batch.collection}", and its frame finds a run past the loop's records only `
+    + 'when it is the one dynamic value the entry reads and no dynamic write or long mapping value follows it',
+  );
+}
+
 /** Plans the entry's own writes, with the ids the plan places. */
 export function hopEntryWrites(rawRequest: HopEntryWritesRequest): HopEntryWrites | undefined {
   const request = withAppendDeltas(rawRequest);
   const batches = planHopMappingBatches(request);
   const dynamic = planHopDynamicRun(request);
-  // A read-only run is declared only beside no mapping write: a verified batch's body holds the records past its
-  // groups to the chunks it writes and counts no run it only reads, and a run-time loop's nodes, one per turn, do not
-  // keep the run one layout width past the frame's first declared record, where the body reads it.
-  const reads = batches.length === 0 ? planHopReadRuns(request) : [];
+  // A read-only run is declared beside no mapping write, or past a run-time loop's records, one per turn, as the
+  // declaration's last family: the frame finds the one run it reads there from the declaration's own end, and holds
+  // it kept. A verified batch's body holds the records past its groups to the chunks it writes and counts no run it
+  // only reads.
+  const loopOnly = batches.length === 1 && batches[0]!.loopWritten === true;
+  const reads = batches.length === 0 || loopOnly ? planHopReadRuns(request) : [];
+  if (loopOnly && reads.length > 0) requireTrailingReadRun(request, batches[0]!, dynamic !== undefined);
   if (batches.length === 0 && dynamic === undefined && reads.length === 0) return undefined;
   // One batch and one dynamic run sit in the frame's one segment, and the contract states the group's declared
   // surplus in both loops that address the run. Several batches beside a run would need the compiler's own order

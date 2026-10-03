@@ -1863,9 +1863,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // X170. `outlined` marks a loop emitted into an OP_DEFINE'd body, which the SDK addresses from the INVOKING
   // ENTRY's footprint rather than its own - checked against every reaching entry instead of against `fn`.
   // `widened` names the prior runs a per-call read stepped past at their declared width, the ones the body writes.
+  // `trails`, for a per-call loop frame's read, whether it found the run from the declaration's end.
   private dynamicReadBases: {
     fn: FunctionDefinitionNode; variable: string; priorNames: string[];
     outlined: boolean; trailingBase: number; iterCount: number; threaded?: boolean; widened?: string[];
+    trails?: boolean;
   }[] = [];
 
   // X203. An outlined body's physical trailing run belongs to its invoking entry point, not to the helper's
@@ -4770,9 +4772,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private dynamicReadBasisUnstable(
     sub: GenerateTargetTraversalWithLocation, fn: FunctionDefinitionNode,
   ): boolean {
-    return sub.dynamicReadBases.some(({ variable, priorNames, widened }) =>
+    return sub.dynamicReadBases.some(({ variable, priorNames, widened, trails }) =>
       this.dynamicReadPriorRuns(fn, variable).join(',') !== priorNames.join(',')
-      || (widened !== undefined && this.dynamicReadWidenedPriors(fn, priorNames).join(',') !== widened.join(',')));
+      || (widened !== undefined && this.dynamicReadWidenedPriors(fn, priorNames).join(',') !== widened.join(','))
+      || (trails !== undefined && trails !== this.perCallReadRunTrails(fn, variable)));
   }
 
   /**
@@ -4935,11 +4938,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       `reads=[${(fn.dynamicReads ?? []).join(', ')}] writes=[${(fn.dynamicWrites ?? []).join(', ')}]`;
     for (const record of this.dynamicReadBases) {
       const {
-        fn, variable, priorNames, outlined, trailingBase, iterCount, threaded, widened,
+        fn, variable, priorNames, outlined, trailingBase, iterCount, threaded, widened, trails,
       } = record;
       if (!outlined) {
         const required = this.dynamicReadPriorRuns(fn, variable);
         const widenedRequired = this.dynamicReadWidenedPriors(fn, priorNames);
+        if (trails !== undefined && trails !== this.perCallReadRunTrails(fn, variable)) {
+          throw new Error(`Chunk-backed read of '${variable}' in '${fn.name}' addresses its run `
+            + `${trails ? 'from the declaration\'s end' : 'past the loop\'s records'}, which footprint ${describe(fn)} `
+            + 'does not. The per-body basis fixpoint did not converge.');
+        }
         if (required.join(',') === priorNames.join(',')
           && (widened === undefined || widened.join(',') === widenedRequired.join(','))) continue;
         const widths = widened === undefined ? ''
@@ -27252,6 +27260,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const node = this.currentFunction;
     const written = this.readsRecordsFromFrame ? this.perCallRecordsWrittenHere(atEnd) : [];
     if (!atEnd) for (const [nftIdx, offset] of written) this.emitPerCallRecordRebuildCheck(nftIdx, offset, loc);
+    // A run-time loop's own records are the ones at its collection's lock, so a record past the loop's slot at any
+    // other lock, such as a run the body only reads, is held kept like the ones before it. The lock sits beneath.
+    const loopLock = this.perCallLoopRecordLock(atEnd);
+    if (loopLock !== undefined) {
+      this.emitMasterInputIndex(loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emitTakeFirst32(loc);
+      this.pushToStack('(loop_record_lock)');
+      this.emitSortedEntryAddress(loopLock, loc);
+    }
     for (const [, offset] of written) {
       for (const side of ['in', 'out'] as const) {
         this.emitRecordBlockBase(side, loc);
@@ -27285,12 +27303,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (atEnd && this.perCallWritesDynamicField()) {
       leadings.push(this.perCallDynamicChunkWidth() - 1 - (this.perCallRunApart ? this.batchTargetSlots().length : 0));
     }
-    const leading = leadings.length === 0 ? {} : { leading: Math.min(...leadings) };
+    const leading = leadings.length === 0 ? {}
+      : { leading: Math.min(...leadings), ...(loopLock === undefined ? {} : { leadingAtLock: true }) };
     if (this.perCallCallsMadeActive) {
       // The segment is the one the execution's own calls have reached.
       this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE))), loc);
       this.emit(Op.OP_PICK, loc);
-      const kept = (options: { leading?: number }): void => {
+      const kept = (options: { leading?: number; leadingAtLock?: boolean }): void => {
         this.emit(bytecodeToScript(declaredRecordsKeptScript({ runtimeCounts: true, exempt: written.length, ...options })),
           loc);
       };
@@ -27312,7 +27331,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...leading,
       })), loc);
     }
-    this.popFromStack(2 * written.length);
+    this.popFromStack(2 * written.length + (loopLock === undefined ? 0 : 1));
+  }
+
+  /**
+   * The collection hash of the nodes a per-call frame's run-time loop declares from its slot on, when the segment a
+   * close checks holds nothing else of the body's own past them: no long mapping value, and no dynamic run, which only
+   * the body's last segment pins. Undefined for any other close, and for loops over more than one collection.
+   */
+  private perCallLoopRecordLock(atEnd: boolean): Uint8Array | undefined {
+    if (!this.perCallDeclaredLoopOut || this.valueChunkTrailingCountActive) return undefined;
+    if (atEnd && this.perCallWritesDynamicField()) return undefined;
+    const signature = this.perCallLoopRecordSignature();
+    return signature === undefined ? undefined : computeCollectionHash(signature);
+  }
+
+  /**
+   * The collection whose nodes a per-call frame's run-time loops declare from the loop's slot on, by position, when
+   * those loops write one collection beside no batch; undefined for any other frame.
+   */
+  private perCallLoopRecordSignature(): string | undefined {
+    if (!this.readsRecordsFromFrame || this.batchTargetSlots().length > 0) return undefined;
+    const signatures = new Set((this.currentFunction.blockLayout?.slots ?? []).flatMap((slot) => (
+      slot.kind === 'entry' && slot.slotIndex !== undefined && this.entrySlots[slot.slotIndex]?.inLoop === true
+        ? [this.entrySlots[slot.slotIndex]!.collectionSignature] : [])));
+    return signatures.size === 1 ? [...signatures][0] : undefined;
+  }
+
+  /**
+   * True when `variable`'s run is the last family a loop frame's segments declare: the one run the body reads, beside
+   * no dynamic write, whose run a builder declares past it. A body whose footprint grows past that while it is emitted
+   * is compiled again (`dynamicReadBasisUnstable`).
+   */
+  private perCallReadRunTrails(fn: FunctionDefinitionNode, variable: string): boolean {
+    const reads = fn.dynamicReads ?? [];
+    return (fn.dynamicWrites ?? []).length === 0 && reads.length === 1 && reads[0] === variable;
   }
 
   /**
@@ -35349,6 +35402,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the chunks that run creates as well as the ones it consumes.
     const widenedPriors = this.readsRecordsFromFrame
       ? this.dynamicReadWidenedPriors(basisFunction, priorNames) : undefined;
+    // A run a loop frame only reads trails the loop's records, so it is found from the declaration's end.
+    const trailsLoop = this.perCallMaster && !this.isDefineSubTraversal && this.readsRecordsFromFrame
+      && !this.valueChunkTrailingCountActive && this.perCallLoopRecordSignature() !== undefined;
+    const readRunTrails = trailsLoop && this.perCallReadRunTrails(this.currentFunction, sv.name);
     this.dynamicReadBases.push({
       fn: this.currentFunction,
       variable: sv.name,
@@ -35359,6 +35416,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       threaded: this.getStackIndex('__internal__dynamicChunkInputBase', true) >= 0
         || this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true) >= 0,
       ...(widenedPriors === undefined ? {} : { widened: widenedPriors }),
+      ...(trailsLoop ? { trails: readRunTrails } : {}),
     });
     const priorNodes = priorNames.map((n) => this.stateVariables.find((v) => v.name === n)!);
     const fieldsInNft = this.stateVariables
@@ -35444,6 +35502,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // made before those turns has no count to add, so the run's position comes from the segment's own
           // declaration of the records instead.
           this.emitPerCallDeclaredRunOffset(sv, loc);
+        } else if (readRunTrails) {
+          // The run the body only reads is the declaration's last family, past however many records the loop's
+          // turns have declared in this segment: base + 1 + declaredCount - the run's own count.
+          this.emitDeclaredSegmentRecordCount(loc);
+          this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_rcount)') + 2)), loc); // +2: base, count
+          this.emit(Op.OP_PICK, loc);
+          this.emit(Op.OP_SUB, loc);
+          this.emit(Op.OP_1ADD, loc);
+          this.emit(Op.OP_ADD, loc);
         } else {
           this.emit(encodeInt(BigInt(this.perCallDynamicChunkWidth())), loc);
           this.emit(Op.OP_ADD, loc);

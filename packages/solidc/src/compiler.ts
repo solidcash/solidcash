@@ -8848,7 +8848,6 @@ function synthesizeMessageBusRoute(
   const graphWriteKeyPoolCollections = new Set<string>();
   if (compilerOptions.messageBusKernel === true) {
     let tupleGroup = 0;
-    const tupleHandlers = new Set<FunctionDefinitionNode>();
     const primaryByCollection = new Map<string, Array<{ routeInput: string; keyIndex: number }>>();
     for (const [routeInput, coordinate] of routeKeyWitnessCoordinates) {
       if (coordinate.alternativeIndex !== 0) continue;
@@ -8907,12 +8906,11 @@ function synthesizeMessageBusRoute(
       });
       const orientedTuples = hasMultipleOrientations ? handlerTuples : repeatedEntryTuples;
       if (orientedTuples.length === 0) continue;
-      // Independent tuple groups remain linear when their handler populations are disjoint. A handler present in
-      // two groups would require a product of physical orientations, so retain the existing fail-closed boundary.
-      if (orientedTuples.some(({ fn }) => tupleHandlers.has(fn))) continue;
+      // One handler may touch independent collections whose tuples choose different physical lanes. Keep each
+      // collection in its own complete tuple group; dispatch below selects their Cartesian product so neither
+      // collection's orientation is inferred from the other one's key.
       const group = tupleGroup++;
-      for (const { fn, bindings } of orientedTuples) {
-        tupleHandlers.add(fn);
+      for (const { bindings } of orientedTuples) {
         bindings.forEach((binding, keyComponentIndex) => {
           const alternateRouteInput = `${binding.routeInput}_alt`;
           binding.entryTupleGroup = group;
@@ -10674,28 +10672,22 @@ function synthesizeMessageBusRoute(
         }
         return dispatch;
       };
-      let dispatch = dispatchWithKeyPool(physicalEntryArgs);
-      const fixedTupleGroup = [...tupleGroups.values()][0];
-      if (fixedTupleGroup) {
-        const laneCount = fixedTupleGroup[0].keyPool?.length ?? 2;
-        const laneArgs = (lane: number): string[] => {
-          const byBase = new Map(fixedTupleGroup.map((binding) =>
+      const fixedTupleGroups = [...tupleGroups.values()];
+      const dispatchTupleGroups = (groupIndex: number, entryArgs: string[]): string => {
+        if (groupIndex === fixedTupleGroups.length) return dispatchWithKeyPool(entryArgs);
+        const bindings = fixedTupleGroups[groupIndex];
+        const laneCount = bindings[0].keyPool?.length ?? 2;
+        let selected = 'require(false);';
+        for (let lane = laneCount - 1; lane >= 0; lane -= 1) {
+          const byBase = new Map(bindings.map((binding) =>
             [binding.routeInput, tupleLaneInput(binding, lane)] as const));
-          return physicalEntryArgs.map((argument) => byBase.get(argument) ?? argument);
-        };
-        // Select every component together; independent coordinate choices could authorize a nested key that
-        // no source row requested. Preserve the compact two-lane default dispatch.
-        if (laneCount === 2) {
-          dispatch = `if (${tupleMatches(fixedTupleGroup, 0)}) { ${dispatch} } else { `
-            + `${dispatchWithKeyPool(laneArgs(1))} }`;
-        } else {
-          dispatch = 'require(false);';
-          for (let lane = laneCount - 1; lane >= 0; lane -= 1) {
-            dispatch = `if (${tupleMatches(fixedTupleGroup, lane)}) { `
-              + `${dispatchWithKeyPool(laneArgs(lane))} } else { ${dispatch} }`;
-          }
+          const laneArgs = entryArgs.map((argument) => byBase.get(argument) ?? argument);
+          selected = `if (${tupleMatches(bindings, lane)}) { `
+            + `${dispatchTupleGroups(groupIndex + 1, laneArgs)} } else { ${selected} }`;
         }
-      }
+        return selected;
+      };
+      let dispatch = dispatchTupleGroups(0, physicalEntryArgs);
       if (rowIndex !== undefined && rowIndex > 0 && entryShape) {
         // A route row can write a collection entry which a later, different handler reads (ERC-20 approve ->
         // transferFrom is the canonical shape). Cross-handler witness analysis already marks every key component

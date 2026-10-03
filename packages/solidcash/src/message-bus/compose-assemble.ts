@@ -1491,12 +1491,34 @@ export async function assembleAtomicComposition(
         if ((!layoutWitnessIsActiveCoordinate(value) && !pendingInsert)
           || (layoutWitnessIsActiveCoordinate(value) && !localCoordinate && !absoluteCoordinate)) continue;
         let physicalLocalOffset: number | undefined;
+        const predecessorLock = predecessor === undefined ? ''
+          : binToHex(predecessor.unlocker.generateLockingBytecode()).toLowerCase();
+        const samePredecessorLock = (output: Output): boolean =>
+          binToHex(typeof output.to === 'string' ? addressToLockScript(output.to) : output.to)
+            .toLowerCase() === predecessorLock;
         if (targetSlot !== undefined && predecessorCommitment.length >= 128) {
           const plannedPredecessor = `${predecessorCommitment.slice(0, 64)}${targetSlot}`
               + predecessorCommitment.slice(128);
           const found = local.outputs.findIndex((output) => output.token?.category === participantCategory
+              && samePredecessorLock(output)
               && commitmentHex(output.token?.nft?.commitment).toLowerCase() === plannedPredecessor.toLowerCase());
           if (found >= 0) physicalLocalOffset = found;
+        }
+        if (physicalLocalOffset === undefined && predecessorCommitment.length >= 128) {
+          // Several inserted targets can share one old gap. Its single rewritten predecessor points to the
+          // first sorted target, not necessarily this witness's target, so the exact-next lookup above cannot
+          // resolve later targets. Match the preserved predecessor identity (entry bytecode, old slot, value)
+          // while allowing only its next pointer to change. The bytecode separates collections sharing a master.
+          const matches = local.outputs.flatMap((output, index) => {
+            const commitment = commitmentHex(output.token?.nft?.commitment).toLowerCase();
+            return output.token?.category === participantCategory
+              && samePredecessorLock(output)
+              && commitment.length === predecessorCommitment.length
+              && commitment.slice(0, 64) === predecessorCommitment.slice(0, 64).toLowerCase()
+              && commitment.slice(128) === predecessorCommitment.slice(128).toLowerCase()
+              ? [index] : [];
+          });
+          if (matches.length === 1) physicalLocalOffset = matches[0];
         }
         if (physicalLocalOffset === undefined && routeTrailingBase !== undefined) {
           physicalLocalOffset = routeTrailingBase;

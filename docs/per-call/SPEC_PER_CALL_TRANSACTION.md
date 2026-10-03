@@ -2,11 +2,38 @@
 
 Design spec for the per-call path of [`PLAN_MARKETPLACE_66.md`](./PLAN_MARKETPLACE_66.md) (its section 4).
 
-Revision 12, 2026-09-25. Security assessment behind revisions 6-9: [`AUDIT_MSG_SENDER.md`](./AUDIT_MSG_SENDER.md).
+Revision 13, 2026-10-03. Security assessment behind revisions 6-9: [`AUDIT_MSG_SENDER.md`](./AUDIT_MSG_SENDER.md).
 
 ---
 
 ## 0. Changes
+
+### Since revision 12 (2026-10-03)
+
+Revision 13 states what the implementation at `93822cd78` does where the text said otherwise. "DECISIONS Dn" names
+row Dn of [`DECISIONS.md`](./DECISIONS.md), which is not the plan's Dn.
+- **Value at the root** (W1). A `ROOT` frame may carry value into a payable body. The user pays it into the
+  contract's containers, and 4b's conservation rule counts it; a body that is not payable requires 0.
+- **Static frames** (V10). A read-only subtree makes only `STATIC` or `DELEGATE` calls, a delegate frame below
+  being held to the same rules, so a view can reach an entry through a proxy.
+- **Depth** (V6). The bound of about 30 call levels is the machine's, and holds only where the validator settles a
+  contract; a chain of masters it does not settle is accepted at 40 levels. No rule depends on depth.
+- **Validator facets** (sections 3.2, 12, 24). A head and one facet ship, with sizes measured at `93822cd78`; a
+  wider split stays Phase R's.
+- **Layout** (sections 5, 16). Compute side-cars for `keccak256` and `ecrecover` follow their master, and the body
+  finds them at fixed offsets from its own input. The validator's facet follows its head.
+- **D2** (sections 3.3, 7.3). The settlers enforce it; no covenant does on every path.
+- **Mapping deletes** (sections 11, 16). A `delete` writes the default value and consumes no record.
+- **Addresses** (section 17). In Solidity-compat mode, results and call arguments carry the 20-byte identity
+  (DECISIONS D13).
+- **Derivation** (sections 10, 18). No read stop site is published, and the host reruns the master twice per stop
+  site. Resuming from a snapshot stays a stated future option.
+- **Time** (sections 4a, 18). `block.timestamp` and `block.number` are registers of each contract's record, which a
+  keeper or the mock clock writes; only `tx.time` is the transaction's.
+- **Pools** (sections 12, 21). The default is 12 masters and 4 validators for every contract, and a deployment
+  funds one facet UTXO.
+- **Security** (section 9). T50 (DECISIONS D15), T51 (DECISIONS D16), T52 (the read-only presence check, read as
+  absent only at the created-record sentinel, `8dedaf280`) and the residual G0 (DECISIONS D9).
 
 ### Since the implementation (2026-09-29)
 
@@ -22,7 +49,7 @@ Revision 12, 2026-09-25. Security assessment behind revisions 6-9: [`AUDIT_MSG_S
 - **Created records.** A created record's chain starts from nothing in both reference models, as section 20 already
   said and the program already enforced.
 - **Validator facets.** A validator may span several inputs (section 24). This resolves open point 7's size half;
-  the facets are built in Phase R.
+  the facets are built in Phase R. Later: a head and one facet shipped the next day (revision 13).
 
 ### Since the implementation (2026-09-26)
 
@@ -45,7 +72,7 @@ Revision 12, 2026-09-25. Security assessment behind revisions 6-9: [`AUDIT_MSG_S
 ### Since revision 10 (third review, 2026-09-25)
 
 - **Absence proofs** compare the masked slot `s(k)`, never the raw hash; slot 0 stays reserved for HEAD (section 20).
-- **Values over 64 bytes** — later corrected: the classifier decides the form from the value's type, not from a
+- **Values over 64 bytes**, later corrected: the classifier decides the form from the value's type, not from a
   measurement, so only variable-width values take the length prefix (section 20).
 - **Validators cannot run out inside a transaction.** One validator of the first root's category can cover every
   root, so the old second exhaustion clause could never fire; it is replaced (sections 12, 21).
@@ -370,10 +397,11 @@ A runs on two masters, so its validator settles it. B runs on one master, so B s
 - The pin is pushed, not bare: a bare category is 32 arbitrary bytes and the machine would execute them as opcodes,
   so the redeem script is a data push followed by the program, and `addrV(cat)` hashes those bytes.
 - The program reads its own bytes with `OP_ACTIVEBYTECODE` and skips the pin push to find itself, which is what lets
-  one program derive every category's address. It is emitted by the compiler (`validatorProgram`), and the runtime
-  budget its cost fits into is an open point (section 12).
+  one program derive every category's address. It is emitted by the compiler (`buildValidatorParts` in
+  `solidc/src/per-call/validator/program.ts`), and whether its cost fits the runtime budget at the 66's widths is
+  open (sections 12, 24).
 - It checks V1-V11 (section 7.2).
-- It may span several inputs, a head and its facets (section 24); the head is the input described here.
+- It spans two inputs, a head and one facet (section 24); the head is the input described here.
 - Its correctness is the security core of all composition (section 9).
 
 ### 3.3 `stateX`: state UTXOs
@@ -381,7 +409,7 @@ A runs on two masters, so its validator settles it. B runs on one master, so B s
 - `stateX` stands for X's record locks: the data-NFT lock, one per mapping collection, and those for value chunks,
   dynamic chunks and containers (section 20).
 - All are today's generic covenants, derived from the category (and a salt). They pin `catX` with `cap = 0x01`.
-- They run D1 and D2 (section 7.3).
+- They run D1. D2 is enforced by the settlers, not by the covenants (section 7.3).
 
 ---
 
@@ -473,8 +501,18 @@ validator:
 - Records and events such a frame creates are X's. Consensus lets them be minted, because the chain of callers
   starts at a master of X, which holds X's minting NFT.
 
-**Time.** `block.timestamp` and `block.number` come from the transaction: its locktime and the block oracle. Every
-frame sees the same values. The SDK sets the locktime before it derives anything.
+**Time.** `block.timestamp` and `block.number` are not the transaction's. Each compiles to a register of the
+contract's own state record, `__block_timestamp` and `__block_number` (`SynthesizeBlockOracle.ts`):
+- on a live chain a keeper refreshes them through the contract's owner-signed `__updateBlockOracle` entry
+  (`solidcash/src/oracle/blockOracleUpdater.ts`);
+- the mock provider writes its clock into the registers of every registered deployment whenever it mines a block,
+  which it does for every transaction it accepts and for `evm_mine`, and on `evm_increaseTime`.
+
+A frame reads the register of the contract whose records it runs on (the proxy's, for its implementation's
+`DELEGATE` frame). So two contracts in one transaction read the same time only as far as their registers agree: on
+the mock, which writes one clock into every registered deployment, they do; on a live chain, as far as their keepers
+keep them. `tx.time` is the transaction's locktime, the same for every frame, and the SDK sets it before it derives
+anything.
 
 **Value sends.**
 - A value send to a P2PKH lock is an output.
@@ -586,9 +624,23 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
 
 | Region | Inputs | Outputs |
 | --- | --- | --- |
-| One block per contract, in order of first entry | Its masters (the ladder); then, in the owner's block only, its validator; then the contract's touched state UTXOs | Each recreated, or its successor, at the same index |
+| One block per contract, in order of first entry | Its masters (the ladder), each followed by the compute side-cars its frame co-spends; then, in the owner's block only, its validator and the validator's facet (section 24); then the contract's touched state UTXOs | Each recreated, or its successor, at the same index |
 | Trailing | (none) | Events, each sending frame's container and then its value sends, then created UTXOs (new entries, chunks, containers) |
 | Fee | Funder inputs, including every root caller's signed input, and the containers a frame pays from | Change |
+
+**Compute side-cars** (`solidcash/src/per-call/composer/layout.ts`, `recovery.ts`).
+- A frame whose body hashes with `keccak256` or recovers a signer with `ecrecover` co-spends side-car inputs right
+  after its own master: each recovery's A/B pair in call order, then one keccak side-car per recovery projected to
+  an EVM address, then one per `keccak256` call in the order the body makes them.
+- The body finds them at fixed offsets from its own input (section 16), even in a frame that runs on its caller's
+  records. Each side-car recreates itself at its own index, like every other participant.
+- A side-car is a UTXO at its covenant's shared lock, holding that covenant's own token rather than the contract's.
+  It is not a record: no view declares it, and no census counts it.
+- The SDK spends live side-car UTXOs and refuses by name a pool that is short (`call/side-cars.ts`). A constructor's
+  frame co-spends its side-cars the same way (`c937caa8f`). A preimage or digest the body computes is learned from
+  the body's own bind (section 18).
+- A `keccak256` call or a recovery inside a loop would need a run-time number of side-cars, and is refused by name
+  (`solidc/src/per-call/master/support.ts`).
 
 ### 5.1 `ABBA` inputs
 
@@ -712,7 +764,14 @@ exactly the witness block the master executed with (section 4).
 - `self`:
   - for `ROOT`, `CALL`, `STATIC` and `CREATE` frames it is the `addrX` constant baked into the code;
   - for `DELEGATE` and `INTERNAL` frames it comes from the witness block and is checked by V5.
-- `msg.value = value`. A `ROOT` frame's `value` is 0 (users do not pay on the 66 path; open point 10).
+- `msg.value = value`, never negative. A body that is not payable requires it to be 0, the EVM's call-value check
+  (4b): the head requires it of every frame when no body of the master is payable, and each non-payable body
+  requires it otherwise (`master-head.ts` `valueChecks`, `assertZeroValue`; `GenerateTargetTraversal.ts`
+  `emitPerCallCallValueCheck`).
+- A `ROOT` frame may carry value into a payable body: the user pays it into a satoshi container of the contract,
+  and 4b's conservation rule counts it in `in(X)`, checked by the master when the frame settles alone and by the
+  validator otherwise (V7). The SDK takes it as the call's `value` and refuses one for an entry that is not payable
+  (`solidcash/src/per-call/call/call.ts`).
 - Every other value of a non-`ROOT` frame is checked by the validator (V5). The need test guarantees there is one.
 
 **O1. Origin.**
@@ -837,8 +896,12 @@ Conversely, every covered master that is not a root appears in exactly one calle
 - The walk must reach every covered master exactly once. This rules out cycles and unreachable masters (T31).
 - Each call's callee runs entirely between the caller's segment that made the call and the caller's next segment.
   One master's segments stay in order, and roots never interleave (T30).
-- The program derives the order with a recursive visit that takes three of the machine's 100 control-stack entries
-  per call level, so a call tree deeper than about 30 levels is refused.
+- The depth bound is the machine's, not a rule. Where the validator settles a contract, the head gathers that
+  contract's records in this order with a recursive visit that takes three of the machine's 100 control-stack
+  entries per call level, so there a call tree deeper than about 30 levels is refused (a 31-level chain refused
+  beside a 25-level one, `validator/script.test.ts`). The facet's walk is iterative, so a chain of masters whose
+  contracts the validator does not settle is accepted at 40 levels (`34bf101b5`). No rule depends on depth, and the
+  derivation and the reference model have no bound.
 
 **V7. Settlement**, for each contract X in `M.settles`:
 - every master of `catX` in the transaction is covered, so no other validator runs a frame on X's records;
@@ -870,7 +933,12 @@ safety; it keeps pools per contract.
 **V10. Static frames.** A covered `STATIC` master, and every master below it in the call tree:
 - has `viewOut == viewIn` for every record in every segment;
 - lists no `events`, no `sends`, and no call with a value;
-- makes only `STATIC` calls (T34).
+- makes only `STATIC` or `DELEGATE` calls, a delegate frame below being held to these same rules (T34).
+
+A `DELEGATE` call changes nothing by itself: its callee runs on the read-only frame's records and sits in the
+subtree, so a read-only frame may reach a read-only entry through a proxy (PW10 in `HANDOFF_PARALLEL.md`). The
+derivation (`checks.ts` `checkV10`), the program's read-only check and the reference model (since `34bf101b5`) all
+admit it.
 
 **V11. Addresses.**
 - For a `ROOT`, `CALL`, `STATIC` or `CREATE` frame, a covered master's `self` equals `addrV(its own category)`.
@@ -886,6 +954,11 @@ once.
 
 **D2.** The record's output, unless the settlement deletes the record, keeps at least the input's value: a contract
 pays its listed sends from its containers (S4, 4b), never from a record.
+- The settlers enforce it: a self-settling master (S4, `selfSettlementScript`) and the validator (V7,
+  `V7_RECORD_VALUE_DECREASED`).
+- No covenant enforces it on every path (`packages/utils/src/state.ts`). The data-NFT covenant keeps the value
+  exactly on the paths that keep the record, but its destroy path (flag 2) pins nothing, and the covenant of mapping
+  nodes and chunks pins nothing on its write path (section 20, T39).
 
 ---
 
@@ -947,7 +1020,8 @@ pays its listed sends from its containers (S4, 4b), never from a record.
 - V8: A (two masters) is settled here; B (one master, no `DELEGATE` call) is not.
 - V11: inputs 0 and 1 have `self == addrV(catA)`, and input 4 has `self == addrV(catB)`.
 
-**Input 3, `DA` at `stateA`.** D1: a `catA` master is present. D2: its output 3 keeps its value.
+**Input 3, `DA` at `stateA`.** D1: a `catA` master is present. D2: its output 3 keeps its value, which input 2
+checks (V7).
 
 **Input 4, B master #1, executing `B.g(3)` with `B.h` inline.**
 - `kind` is `CALL`, `callerRef` is 0, and `sender` is `addrA`, which equals `a`. The validator checks `sender` (V5).
@@ -964,7 +1038,8 @@ pays its listed sends from its containers (S4, 4b), never from a record.
   - `DB` chains `{10, addrA}` (the real input 5) -> `{14, addrA}` -> `{14, addrA}` (the real output 5);
   - the `catB` census is clean.
 
-**Input 5, `DB` at `stateB`.** D1: a `catB` master is present. D2: its output 5 keeps its value.
+**Input 5, `DB` at `stateB`.** D1: a `catB` master is present. D2: its output 5 keeps its value, which input 4
+checks (S4).
 
 **Input 6.** The user's P2PKH signature uses `SIGHASH_ALL`, so it covers all inputs and outputs. Input 0 checked
 that (W1).
@@ -1025,7 +1100,11 @@ by the code that produces it, by the validator program, or against real state.
 | T46 | Pass a plain UTXO, a mapping node or a chunk of the contract's category off as its data record: the master reads the record's fields from the record its segment declares and settlement ties them to the commitments at the coordinate, but a commitment names no lock, so a same-category mutable UTXO at any lock that merely preserves itself would stand in | W2: a non-delegate frame holds a data record's input and output to `buildDataNftCovenantScript(ownerCategory)` (`emitDataNftLbc`), as it does for a mapping node (T45); its token category is still preserved in place. A delegate (proxy) frame's data-record lock is the proxy/composer lane's | Yes |
 | T47 | Name a mapping write target at its output alone, with a start view no input carries, on a frame that settles alone, so a forged value is read and a second node for the key is written | W2: a proof record is named by the input it spends, or by its output only when an earlier frame created it, which needs a validator settling the contract beside another master; a created predecessor sits at its collection's covenant with a non-zero slot, so a created head stays refused | Yes |
 | T49 | Pass a commitment-bearing mutable pair at the contract's address off as its validator's token in a self-settling master's census | S2: beside a self-settling master the census admits only its category's validator token, recreated in place with the empty commitment it is deployed with | Yes |
+| T50 | Rewrite a mapping node that a conditional sorted write co-spends, in a run that does not take the write's arm: the frame declares the node for the write the arm would make, and nothing bound its output (VM-proven in the direct and per-call conventions) | W2: a conditional write does not authorize an unreached output mutation (DECISIONS D15). When the arm does not run, the master requires each node it would write to be recreated with the commitment it was spent with: per one-slot target (`bc67e44ca`) and per multi-slot batch in one arm (`b87bba777`) | Yes |
+| T51 | Forge a log at a proxy: an immutable NFT of the proxy's category at an output no frame lists, beside a forwarding entry that emits nothing | S2 and V7, and the master's own-category event pin. DECISIONS D16 ports the kernel's drop of that pin in a delegatecall function with no local emit (`71bee8228`) to the direct convention (`65a67fed5`), keeping it where no delegate co-spend is forced, where a runtime loop emits, and on a per-call master | Yes |
+| T52 | Declare a mapping entry at a coordinate that names no input (u16 0x8001, read as -1) with a forged view, so a read-only entry check passes with no entry spent | W2: an entry is read as absent only at the created-record sentinel 0xffff (`8dedaf280`); any other coordinate is read at the input it names, so one naming none fails. Was open since `4a0a9ce76` (VM-proven) | Yes |
 | T41 | Two frames claim the same event output, so one of two events disappears | S2 and V7: event outputs are pairwise distinct | Medium |
+| G0 | A `DELEGATE` frame's own category is settled by nobody. Its master runs on its caller's records and never settles its own (S), and V8 settles a contract only for a second master of it or for a `DELEGATE` or `INTERNAL` frame on its records. So when the frame's master is its contract's only one, nothing settles that contract: no census of its category, and no check on the records of it the transaction spends | Not stopped: a documented residual (DECISIONS D9), as the kernel's conservation rule (C3) skips delegate frames | Residual |
 
 **Residual risks:**
 - **The validator program is the single security core.** Which validator covers a composition does not matter,
@@ -1043,6 +1122,9 @@ by the code that produces it, by the validator program, or against real state.
   witness the validator does not check.
 - **Signature scope (T32, D8).** A wallet signing a transaction it did not build must decode every master's
   witnesses to show the user the calls made in their name.
+- **A delegate frame's own category (G0, DECISIONS D9).** A transaction that delegates into a contract's code
+  settles that contract nowhere when the delegate frame's master is its only one there. Behind a proxy that
+  contract is the implementation, whose own records hold its genesis state, not the application's (section 19).
 - **EVM hazards are reproduced, not fixed.**
   - A runtime self-call with a caller-chosen target and calldata acts with the contract's own authority.
   - `tx.origin` checks can be phished: a contract the user calls can reach a `tx.origin`-gated function in the
@@ -1064,15 +1146,16 @@ finished transaction.
 
 **Off chain.** The SDK derives values depth-first, by running the actual scripts in the VM:
 1. Keep each contract's logical state in execution order, loaded from chain on first touch.
-2. Run the root master's function against draft witnesses. Each run stops at a designated site recorded in debug
-   metadata:
-   - **a state read not yet supplied:** add the record's current logical commitment to the segment's `viewIn`;
+2. Run the root master's function against draft witnesses, each record the frame declares (section 20) starting
+   from its current logical commitment. Each run stops at a designated site the artifact publishes (section 18):
    - **an external call:** read the target, selector and arguments from the VM stack, then derive the callee fully
      first on a master of the callee's contract;
    - **a segment close:** copy the computed records into `viewOut`, and update the logical state.
+
+   No read site is published: the declared records already carry what a read needs.
 3. When the callee returns, copy its `retval` into the caller's `calls[k].result`, then run the caller again. Each run
-   gets strictly further, so the number of runs is bounded by reads + calls + segments. There is no transaction-wide
-   fixpoint. A run that gets no further is refused, not retried (section 18).
+   gets strictly further, so the number of runs is bounded by the sites, calls + segments (twice that as shipped,
+   section 18). There is no transaction-wide fixpoint. A run that gets no further is refused, not retried.
 4. Pick masters and validators from the pools, lay out the blocks (section 5), fill the frame witnesses (`kind`,
    `sender`, `self`), `callerRef`, `originRef`, `validatorRef`, `calleeRef` and the event indices, and
    write `M` (roots and masters).
@@ -1105,7 +1188,9 @@ A failing `require` that is not at a designated site is a real revert; the SDK r
   `INTERNAL` frame, which keeps `msg.sender` (section 4a).
 - **Mapping entries.**
   - An entry record is a whole entry-NFT commitment.
-  - An insert is a created record (a trailing output). A delete is a consumed record with no output.
+  - An insert is a created record (a trailing output). A `delete` consumes nothing: it writes the value type's
+    default, as any other write would, and the node stays in the list (section 20). A frame that declares the node
+    removed is refused (`solidc/test/per-call/master/mapping-delete-write.test.ts`).
   - A sorted-list update also touches the predecessor entry's record.
   - Settlement binds records to real inputs and outputs. The executing code handles keys and predecessor logic.
 - **Value chunks and dynamic `bytes`/`string`/arrays:** chunk records, handled the same way.
@@ -1132,8 +1217,8 @@ A failing `require` that is not at a designated site is a real revert; the SDK r
 
 | Pool | Created | Resized | Bound | Contention |
 | --- | --- | --- | --- | --- |
-| Masters | At deployment, with a config default (e.g. 12) | `split` / `merge` | A transaction can enter X at most N_X times; more is refused before building (section 21) | Transactions contend for them |
-| Validators | For contracts that start compositions | `split` / `merge` | One validator of the first root's category can cover every root in the transaction (V4, V9); it is recreated in place, so the only refusal is a first root whose category has none (section 21) | Transactions contend for them |
+| Masters | At deployment, with a config default (12) | `split` / `merge` | A transaction can enter X at most N_X times; more is refused before building (section 21) | Transactions contend for them |
+| Validators | At deployment, for every contract, with a config default (4) | `split` / `merge` | One validator of the first root's category can cover every root in the transaction (V4, V9); it is recreated in place, so the only refusal is a first root whose category has none (section 21) | Transactions contend for them |
 
 The harness creates both pools at deployment. The marketplace test cannot change, so the pool sizes come from
 defaults.
@@ -1144,14 +1229,20 @@ defaults.
 | --- | --- | --- |
 | 10,000 B per unlocking bytecode and per script (consensus: `maximumBytecodeLength`, a.k.a. `MAX_SCRIPT_SIZE`; also the 2026 relay limit) | Arguments + witnesses + code. Witnesses are about 0.1-2 KB; views are at most 128 B per record per segment | `M` (a few bytes per master and segment) + the fixed `V_TEMPLATE`, whose checks are split across facet inputs (section 24) |
 | 10,000 B stack item | Views are at most 128 B | Reads each covered master's unlocking bytecode. On a real chain that is at most 10,000 B, so a master must fit its code into 10,000 B through code splitting (open point 11). The mock lifts both limits |
-| Op-cost budget, (41 + unlocking length) x 800 | Its own execution | Reads and hashes every covered master's witnesses. Large compositions may need unlocking padding for density (open point 7) |
+| Op-cost budget, (41 + unlocking length) x 800 | Its own execution | Reads and hashes every covered master's witnesses. Each part carries 1,024 B of padding; large compositions need more padding or more parts (open point 7, section 24) |
 | 100,000 B transaction, relay policy (consensus: 1,000,000 B) | Every executing master carries its code, once per entry. Code splitting bounds each master, not their sum (below) | Negligible |
 
 **Measured (2026-09-26).** The reference `ABBA` composition sits just under its density budget before any program
 runs: the machine refuses it with the first ~150-instruction `V_TEMPLATE` and a trivial program in its place
 completes. The program's own cost is therefore what tips a composition over, and the two mitigations are the ones the
 table names: a smaller program, or unlocking padding to buy budget. The focused validator suite runs the relaxed
-cost profile for this reason, and the program's fit inside the published 800-per-byte budget is open.
+cost profile for this reason, and the program's fit inside the published 800-per-byte budget was then open.
+
+**Measured at `93822cd78`.** The validator now spans a head and a facet, each carrying 1,024 B of padding (section
+24). Under the chain's own profile (10,000 B per input, 800 units per byte) every input of the reference
+caller/callee composition is accepted: the head's unlocking bytecode is 8,231 B and spends 17% of its budget, the
+facet's 5,660 B and 51% (`validator/consensus-limits.test.ts`). Wider compositions still overrun the facet's budget
+(section 24), so the focused suites keep the relaxed profile.
 
 **Size on a real chain** (review and follow-up, 2026-09-25). Two layers, both pinned in libauth:
 - **Per input: consensus.** The VM rejects unlocking bytecode over `maximumBytecodeLength` = 10,000 B before
@@ -1201,7 +1292,8 @@ cost profile for this reason, and the program's fit inside the published 800-per
 **Status for the 66** (Part II):
 - Resolved by Part II: open points 1, 2, 3, 5 and 6 (sections 16-19 and 21), and 4 (section 20).
 - Outside the 66 (real chain, or features the tests do not use): 7, 8, 10 beyond preservation, 11, 14 and 16. Open
-  point 7's size half is resolved by design (section 24) and built in Phase R.
+  point 7's size half is resolved by design (section 24): a head and one facet are built, and a wider split is
+  Phase R's.
 - Decided: 12, 13 and 15.
 
 1. **The witness block's byte layout** (section 4): field order, length prefixes and versioning. Masters and the
@@ -1488,10 +1580,16 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
     from a spent state UTXO's;
   - a frame that reads or rewrites a record an earlier frame created: `in == out == that output index`, because the
     frame resolves the record through its own declaration and the record has no input to name;
-  - a deleted record: `out = 0xFFFF`. Only the record's last view in the V6 order may delete it.
+  - a deleted record: `out = 0xFFFF`. Only the record's last view in the V6 order may delete it. A dynamic write
+    deletes the old chunks it replaces; a mapping `delete` deletes no record (section 20).
 - **Values.** Entry `i` is the value the body's `i`-th long-value read takes; the body checks it against the root in
   the node's head (section 20). A read that finds its value inline, and a frame that reads none, leave the entry
   empty or the list short, and a master's head takes at most as many as its widest body reads.
+- **Side-cars.** No field names a compute side-car (section 5). The layout fixes where each one sits, so the body
+  addresses it from its own input: for `r` recoveries and `p` of them projected to an EVM address, recovery `j`'s
+  pair is at `OP_INPUTINDEX + 1 + 2j` and `+ 2 + 2j`, projection `j`'s keccak side-car at `+ 1 + 2r + j`, and the
+  `i`-th `keccak256` call's at `+ 1 + 2r + p + i` (`GenerateTargetTraversal.ts`). A side-car recreates itself at its
+  own index, so the same coordinate names its output.
 - **Counts.** `segCount == callCount + 1`.
 - **Exactness.** Lengths are exact, and nothing follows the last field (T33).
 
@@ -1499,9 +1597,18 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
 
 - **Addresses.**
   - A user's address is its 25-byte P2PKH locking bytecode. A contract's is its 35-byte `addrV` lock.
-  - State fields, arguments, results and event fields all use this form.
-  - `uint160(addr)` and 20-byte ABI words are today's truncation (audit F15). They are unchanged, and not used for
-    identity.
+  - In native mode, state fields, arguments, results and event fields all use this form
+    (`packages/utils/src/per-call/canonical.ts`).
+  - In Solidity-compat mode (`solidityImportCompat`, which the marketplace compiles with), stored values keep the
+    full lock, while results and the arguments of the calls a contract makes carry the 20-byte identity (DECISIONS
+    D13, the kernel's shared base). The identity is the hash a P2PKH lock names, or `HASH160` of a contract's
+    35-byte lock (`lockingBytecodeToSolidityAddressPayload`), and the all-zero address is the empty lock. For
+    example, an `address` the body packs into a call's argument with `abi.encodePacked` is its 20 bytes, and the SDK
+    states it so (`fadf5a3d2`, `ahead/packed-address-argument.test.ts`).
+  - The SDK widens an `address` argument a user gives in the 20-byte form to the P2PKH lock it names
+    (`encodeFunctionArgument`), so the entry receives the lock a contract stores and keys a mapping by.
+  - `uint160(addr)` and 20-byte ABI words are today's truncation (audit F15). They are unchanged, and identity never
+    comes from them: a frame's `sender`, `self` and `origin` are full locks in both modes (section 4a).
 - **Values.** Each value has one canonical byte string:
   - integers are minimal script numbers;
   - `bool` is 0 or 1 as a script number;
@@ -1529,24 +1636,37 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
 
 ## 18. SDK derivation, reverts and reads (resolves open point 3)
 
-- **Stop sites.** For every function, the compiler publishes three kinds of site in debug metadata:
-  - state reads, with the record they read;
-  - external calls, with their index;
-  - segment closes.
+- **Stop sites.** For every entry, the compiler publishes two kinds of site on the artifact
+  (`composition.stopSites`, `solidc/src/per-call/master/stop-sites.ts`):
+  - external calls, with their index, in call order: a call inside a loop is published once and marked `repeated`,
+    and a call on a branch is marked `conditional`;
+  - segment closes, one per segment, so an entry with `k` calls publishes `2k + 1` sites.
+- **No read site is published**, although the schema has the kind. A read's site would name the record it reads,
+  which the compiler does not hold: the records a frame touches are its declaration (section 20). So the plan
+  states each declared record's current commitment as its `viewIn` before the run.
 - **Loop.**
   - Run a master in the VM against draft witnesses.
-  - At the first site whose witness is missing, read what it needs from the VM stack: the record key; or the call's
-    kind, target, selector and arguments; or the computed records.
+  - At the first site whose witness is missing, read what it needs from the VM stack: the call's kind, target,
+    selector and arguments, or the computed records.
   - Fill that witness, derive any callee fully first, and continue. Every step gets strictly further (section 10).
-  - **Resume, do not restart.** Continue each master from a snapshot of its VM state at the stop site. Restarting
-    costs one full run per stop site, about 10 per master, which would be slower than today's kernel
-    (`EVAL_PER_CALL_VS_KERNEL.md` section 5).
+  - **What ships: every step reruns the master.** The driver's cursor only moves forward
+    (`solidcash/src/per-call/composer/derivation.ts`), but the shipped host runs each step from the master's start,
+    twice: once with the site's witness unfilled, noting where the program stops, and once with it filled, and counts
+    the site filled only when the second run gets strictly further (`composer/shipped-host.ts`). The compiled master
+    publishes no program offset per site, so a stop cannot be mapped back to its site, and the two runs prove the
+    fill instead. The call paths learn the values a body computes (record end views, events, sends, `retval`) the
+    same way, one run per learned value and one more over all of them (`call/call.ts`).
+  - **Resuming is a future option.** Continuing each master from a snapshot of its VM state at the stop site costs
+    about one run per master, where the rerun costs two per stop site, about 10 sites per master. The evaluation
+    estimated that even one run per site could cost more SDK time than today's kernel, and resuming 2-4x less
+    (`EVAL_PER_CALL_VS_KERNEL.md` section 5). Resuming needs the compiler to publish where each site's witness is
+    consumed, and a VM snapshot cheaper than a run.
   - **Stalls are refused** (review, 2026-09-25; the step cap was removed in revision 11). Every step must fill at
-    least one missing witness: a read, a call result or a segment close. A step that fills none stops derivation
-    with `PER_CALL_DERIVATION_STALLED`, naming the master, the function and the stop site. Nothing is built or
+    least one missing witness: a call result or a segment close. A step that fills none stops derivation with
+    `PER_CALL_DERIVATION_STALLED`, naming the master, the function and the stop site. Nothing is built or
     broadcast.
-  - **Termination needs no extra constant.** Each step fills a witness at a stop site that the one resumed execution
-    reaches, so the steps are bounded by that execution's length. The VM bounds the execution with the provider's
+  - **Termination needs no extra constant.** Each step fills a witness at a stop site that the execution reaches,
+    so the steps are bounded by that execution's length. The VM bounds the execution with the provider's
     op-cost budget, `(41 + L) x operationCostBudgetPerByte` for unlocking length `L`, at 100 per instruction. On a
     real chain that is `(41 + L) x 8` instructions, about 80,000 at 10,000 B. A large legitimate derivation (30
     `jobEvents` appends, the `sendEscrowShare` fan-outs) is therefore never refused for its size. An execution over
@@ -1575,11 +1695,14 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
   - It builds each against the state its predecessor produces.
   - A test that sends without awaiting (title #32) must not double-spend a master.
 - **Time.**
-  - The locktime, and with it `block.timestamp`, is fixed before any derivation.
-  - `evm_increaseTime` moves the mock provider's clock for the next transaction.
-  - Every accepted transaction is its own block, with a strictly later timestamp. A creator's dispute needs a block
-    after the pay block (`UD.challenge`). A `Rated` event's `timestamp_` must equal the review's timestamp written
-    in the same transaction (section 4a).
+  - The locktime, `tx.time`, is fixed before any derivation (plan E7). `block.timestamp` and `block.number` are not
+    the locktime but each contract's registers (section 4a).
+  - Every accepted transaction is its own block, with a strictly later timestamp, and the mock provider writes its
+    clock into every registered deployment's registers when it mines that block. `evm_increaseTime` and `evm_mine`
+    move the clock and write the registers the same way. A creator's dispute needs a block after the pay block
+    (`UD.challenge`).
+  - A `Rated` event's `timestamp_` must equal the review's timestamp written in the same transaction. Each is a
+    register read, and on the mock every deployment's registers hold one clock (section 4a).
 - **Simulation before funding.**
   - Derivation, and with it revert detection, runs before fee funding.
   - A send from an unfunded wallet (seven sends in the tests) reports its revert, for example
@@ -1736,8 +1859,11 @@ since each needs a master.
 - **Sizes** (plan D6, decided: as many masters as needed):
   - the table above gives each contract's minimum;
   - the default is 12 masters per contract, which covers Unicrow's 9, and a contract may get more;
-  - 2 validators for each contract that roots compositions. In the 66, that is only the MarketplaceV1 proxy. Direct
-    calls to MarketplaceData and FakeToken are standalone.
+  - the default is 4 validators for every contract, whether or not it roots compositions
+    (`DEFAULT_MASTER_POOL_SIZE` in `solidcash/src/per-call/deploy/pool.ts`), and a deployment may state either count.
+    In the 66 only the MarketplaceV1 proxy roots compositions; direct calls to MarketplaceData and FakeToken are
+    standalone;
+  - a deployment also funds one UTXO per validator facet (section 24), which serves any contract.
 - **Exhaustion is refused** (review, 2026-09-25; validator clause corrected in revision 11).
   - **Masters.** When derivation needs one more entry into X than X has masters, the SDK stops before building.
   - **Validators.** One validator covers every root of its group (V4), provided the group's first root has the
@@ -1762,8 +1888,9 @@ since each needs a master.
 
 - **Contracts:** M = MarketplaceV1 proxy, D = MarketplaceDataV1 proxy, T = FakeToken, U = Unicrow,
   UC = UnicrowClaim, UD = UnicrowDispute, UA = UnicrowArbitrator.
-- **Proxy hops:** every user call into M, and every M -> D call, is a `CALL` to the proxy plus a `DELEGATE` into its
-  implementation (section 19). No other `delegatecall` runs.
+- **Proxy hops:** every user call into M, and every M -> D call, is a `CALL` (for a view, a `STATIC` call) to the
+  proxy plus a `DELEGATE` into its implementation (section 19; V10 admits the `DELEGATE` below a `STATIC` frame).
+  No other `delegatecall` runs.
 
 | Edge | Kind | Notable shape | Rules |
 | --- | --- | --- | --- |
@@ -1824,7 +1951,7 @@ Implementation status of every rule and mechanism in this spec is tracked only i
 | 22 | `ecrecover` on `"0x"`, 65 zero bytes (v = 0), a 20-byte value | Take job sanity | The native `ecrecover` must return address 0 for invalid input, not fail the script; OpenZeppelin then raises its own errors |
 | 23 | Records growing within one transaction and across 30 transactions | 8 MECE tags in `initialize`; 30 events for one job; registrations | Section 20 |
 | 24 | `string => string` mapping set and delete | `updateMeceTag`, `removeMeceTag` (refused as `KERNEL_LAYOUT` today) | Section 20 |
-| 25 | Deep chains, four calls below M plus proxy hops, about 24 masters | `arbitrate` | The program's V6 walk allows about 30 call levels (section 7.2); pools (21) |
+| 25 | Deep chains, four calls below M plus proxy hops, about 24 masters | `arbitrate` | The program's V6 walk allows about 30 call levels where it settles a contract (section 7.2); pools (21) |
 | 26 | A multi-megabyte master script in the mock (MarketplaceV1) | Every M entry | The validator reads only the first push (W0); relaxed op-cost |
 
 Out of scope, and identical to the EVM: `U.pay` has no caller check while M leaves U a maximum allowance, so anyone
@@ -1834,9 +1961,26 @@ can move M's tokens into an escrow; `publishJobPost` also approves M for itself.
 
 A real chain caps each unlocking bytecode at 10,000 B and funds each input's execution at 800 operation-cost units
 per byte of that same unlocking bytecode (section 12). Measured on the reference composition after the order walk
-landed: the program is 10,270 B, the validator input's unlocking bytecode 10,354 B, and it spends 4,897,165 of the
-8,316,000 units its bytes buy. The program still has checks to emit, and `arbitrate` covers about 24 masters. So a
-validator may span several inputs.
+landed (2026-09-28): the program was 10,270 B, the validator input's unlocking bytecode 10,354 B, and it spent
+4,897,165 of the 8,316,000 units its bytes bought. The program still had checks to emit, and `arbitrate` covers
+about 24 masters. So a validator may span several inputs, and since `dc4c1bdc6` (2026-09-29) it does.
+
+**What ships** (`solidc/src/per-call/validator/program.ts`).
+- `K = 2`: a head and one facet.
+- The head (`HEAD_CHECKS`) runs V1, V2's header and index checks, V9, V3, V7's input, census, chain and value rules
+  with the V6 order the chains follow, and V11, and binds the facet. A check stays in the head when its rule is
+  about the input that runs it: V1 recreates the validator at its own index, V9 and the settle rule read its token,
+  V3 reads the validator reference the machine evaluates, the census reads the input its output belongs to, and V11
+  derives the address of the script running.
+- The facet (`FACET_CHECKS`) runs V4, V5, V6's reachability walk, V10, V7's rule that no category is settled twice,
+  V8 in both directions, and V7's rule that a settled contract carries no fungible amount.
+- Sizes, measured at `93822cd78` with `buildValidatorParts`: the head is 8,183 B of program and the facet 5,657 B,
+  each carrying 1,024 B of padding that buys its own budget (`VALIDATOR_INPUT_PADDING_BYTES`). On the reference
+  caller/callee composition under the chain's own profile (`validator/consensus-limits.test.ts`), the head's
+  unlocking bytecode is 8,231 B and spends 1,153,460 of the 6,617,600 units its bytes buy, the facet's is 5,660 B
+  and spends 2,303,585 of 4,560,800, and every input is accepted.
+- A deployment funds one facet UTXO beside its pools (section 21), and the composer places a facet at `head + 1`
+  (section 5).
 
 **Shape.**
 - A validator is a head and `K - 1` facets. `K` and the split of the checks are part of `V_TEMPLATE` v1.
@@ -1855,9 +1999,9 @@ validator may span several inputs.
 - Facets do not carry the head's hash, so the two hashes are not circular.
 
 **Reading, in each facet.**
-- Facet `k` reads `M` from the input at `OP_INPUTINDEX - k`: the first push of that input's unlocking bytecode, and
-  the category from the pin that opens its redeem script. A check that needs `V_TEMPLATE`'s bytes (V11 derives
-  addresses from them) reads them from the same redeem script.
+- Facet `k` reads `M` from the input at `OP_INPUTINDEX - k`: the first push of that input's unlocking bytecode. A
+  check that derives an address (V5's `DELEGATE` target rule) reads `V_TEMPLATE`'s bytes from the same input's
+  redeem script, past its pin push.
 - A facet does not check that input. The head binds its facets; nothing relies on a facet spent without its head,
   and the facet's value stays in the facet it recreates.
 - A transaction is valid only when every input succeeds, so a head and its facets decide exactly what one input
@@ -1868,17 +2012,27 @@ validator may span several inputs.
   work and not only the bytes, and each facet carries the padding its own checks need.
 - `K` inputs hold up to `K x 10,000 B` of program and `K x 8,000,000` units. Plan A9 sizes `K` and the split from
   the measured program and from `arbitrate`.
+- At `K = 2` the facet's walks grow faster than the composition while its bytes stay fixed. Measured at the split's
+  landing (`dc4c1bdc6`, plan 4.5), 24 masters cost the facet about 19 times its budget. A head and nine facets, each
+  padded to 9,600 B, fit 24 masters under the chain's profile (the worst part at 0.86 of its budget, and over it
+  from 28 masters; measured in the parked tree on 2026-09-30). They are parked as a patch rather than landed,
+  because changing `K` moves every address and every facet funding.
 
-**Threats** (section 9).
-- A facet left out or moved: the head requires each facet's lock at `head + k` (the T4 and T6 class).
+**Threats** (section 9; `solidcash/test/per-call/hostile/validator-facets.test.ts`).
+- A facet left out or moved: the head requires each facet's lock at `head + k` (the T4 and T6 class). A facet moved
+  behind another head leaves its own position to some other input, and its head is refused.
+- A facet spent away or drained: the head requires the output at `head + k` to recreate it, worth at least its
+  input.
 - A facet of other code: its lock is not `P2SH32(F_k)`.
 - A facet that reads another transcript: it reads the input at `OP_INPUTINDEX - k`, and the head holds it at
-  `head + k`, so both name the same head.
+  `head + k`, so both name the same head. A head whose unlocking bytecode pushes a second transcript ahead of the
+  one it runs, so that its facet checks the first, leaves that extra item on its stack, and the machine refuses it.
 - Two heads sharing a facet: a position holds one lock, the facets' codes differ, and a head's lock is not a facet's,
   so `h + k = h' + k'` forces `h = h'` and `k = k'`.
 
 **Unchanged:** `M`'s wire format, the witness blocks, the masters, `addrV`'s form and every check's rule. Only the
-input a check runs in moves. The facets are built in Phase R (plan A9), before the freeze binds (open point 13).
+input a check runs in moves. A head and one facet ship; a wider split is Phase R's (plan A9, DECISIONS D3), and must
+land before the freeze binds (open point 13).
 
 ---
 

@@ -134,15 +134,15 @@ describe('kernel nested dynamic return preimages', () => {
     const consumerArtifact = compileString(`pragma solidity ^0.8.0;
       struct Record { uint256 value; string label; }
       interface IDynamicProxyProducer { function read() external returns (Record memory); }
-      contract ProxyDynamicConsumer(address producer) {
+      contract ProxyDynamicConsumer {
         uint256 public observed;
-        function verify() public {
+        function verify(address producer) public {
           Record memory record = IDynamicProxyProducer(producer).read();
           observed = record.value;
           require(record.value == 7 && record.label == "${label}");
         }
       }`, KERNEL);
-    const consumerBase = new Contract(consumerArtifact, [producer.proxy.inner.lockingBytecode], { provider });
+    const consumerBase = new Contract(consumerArtifact, [], { provider });
     const consumerSetup = await setupStatefulUtxos(
       provider, consumerBase, consumerArtifact.stateLayout!, {}, { saltContract: true },
     );
@@ -156,7 +156,9 @@ describe('kernel nested dynamic return preimages', () => {
     expect(callsiteId).toBeDefined();
     const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
     const composition = messageBus.compose({
-      preparedCalls: [{ contract: consumer, functionName: 'verify', args: [] }, {
+      preparedCalls: [{
+        contract: consumer, functionName: 'verify', args: [producer.proxy.inner.lockingBytecode],
+      }, {
         contract: producer.proxy,
         functionName: 'read',
         args: [],

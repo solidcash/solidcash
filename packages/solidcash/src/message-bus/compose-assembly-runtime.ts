@@ -64,6 +64,7 @@ export interface CreateComposeAssemblyRuntimeInput {
   byLockingBytecode: Map<string, StatefulContract>;
   descriptorByLockingBytecode: Map<string, CallDescriptor>;
   categories: readonly string[];
+  preparedResults: Readonly<Record<number, string>>;
   logicalIdentities: Map<number, ResolvedLogicalIdentity>;
   runtimeEventSlots: Map<number, Array<{
     participant: number; offset: number; runtimeRow: number; eventSignature: string;
@@ -221,6 +222,7 @@ export function createComposeAssemblyRuntime(
   const deriveReturnResultsContext = (): DeriveReturnResultsContext => ({
     plan: input.plan,
     byLockingBytecode: input.byLockingBytecode,
+    preparedResults: input.preparedResults,
     participantReturnBlob,
     participantReturnCommitment,
     rebalanceFeeTail,

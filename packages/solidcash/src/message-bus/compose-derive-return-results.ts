@@ -21,6 +21,7 @@ type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 export interface DeriveReturnResultsContext {
   plan: CompiledGraphPlan;
   byLockingBytecode: Map<string, StatefulContract>;
+  preparedResults: Readonly<Record<number, string>>;
   participantReturnBlob: (
     participant: number, results: Readonly<Record<number, string>>,
   ) => Uint8Array | undefined;
@@ -131,6 +132,13 @@ export function deriveReturnResults(
         }
         if (invocation.resultEncoding === 'evm-abi-v1') {
           derivedResults[invocationIndex] = binToHex(outer.value.slice(start, cursor));
+        }
+        const prepared = ctx.preparedResults[invocationIndex];
+        if (prepared !== undefined && prepared !== derivedResults[invocationIndex]) {
+          throw new Error(
+            `messageBus: prepared return commitment for invocation ${invocationIndex} `
+            + 'differs from the observed producer result',
+          );
         }
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

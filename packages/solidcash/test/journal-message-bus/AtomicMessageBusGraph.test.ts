@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, type Artifact } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { messageBus, SignatureTemplate } from '../../src/index.js';
+import { hasTransientConvergenceResultSeed } from '../../src/message-bus/compose-prepared-invocation.js';
 import { valueChunkEffectDomainId } from '../../src/stateful/index.js';
 
 const artifact = (selector: string, inputType = 'int'): Artifact => ({
@@ -201,6 +202,31 @@ describe('atomic compiled invocation graph', () => {
     }, plan().invocations[0], 0)).not.toThrow();
     expect(() => messageBus.assertPreparedInvocationIdentity(base, plan().invocations[0], 0))
       .toThrow(/producer path disagrees/);
+  });
+
+  it('keeps a caller-prepared result strict and an SDK-learned result a provisional seed', () => {
+    const descriptor = { contract: {} as never, functionName: 'run', args: [0n], callsiteId: 7 };
+    const learned = messageBus.rebuildPreparedInvocation(descriptor, [1n], '01');
+    expect(hasTransientConvergenceResultSeed(learned)).toBe(true);
+    expect(messageBus.rebuildPreparedInvocation(learned, [1n], '03').provisionalResultCommitment)
+      .toEqual(Uint8Array.of(3));
+    // A caller's commitment survives a rebuild unchanged, so the composer compares it with the producer.
+    const supplied = messageBus.rebuildPreparedInvocation(
+      { ...descriptor, provisionalResultCommitment: Uint8Array.of(2) }, [1n], '01',
+    );
+    expect(supplied.provisionalResultCommitment).toEqual(Uint8Array.of(2));
+    expect(hasTransientConvergenceResultSeed(supplied)).toBe(false);
+    // Public entries drop the SDK mark; the SDK's own discovered graph marks every result it carries.
+    const options = { preparedCalls: [descriptor, learned], funder: {} as never, changeAddress: '' };
+    const second = (composition: messageBus.AtomicMessageBusComposition): messageBus.PreparedAtomicMessageBusCall => (
+      composition as unknown as { options: { preparedCalls: readonly messageBus.PreparedAtomicMessageBusCall[] } }
+    ).options.preparedCalls[1];
+    expect(hasTransientConvergenceResultSeed(second(messageBus.compose(options)))).toBe(false);
+    expect(hasTransientConvergenceResultSeed(second(new messageBus.AtomicMessageBusComposition(options))))
+      .toBe(false);
+    const discovered = second(messageBus.composeDiscoveredGraph({ ...options, preparedCalls: [descriptor, supplied] }));
+    expect(hasTransientConvergenceResultSeed(discovered)).toBe(true);
+    expect(discovered.provisionalResultCommitment).toEqual(Uint8Array.of(2));
   });
 
   it('does not authorize a computed chunk from a value-mismatched balanced dummy', () => {

@@ -121,6 +121,7 @@ export function createComposeSettlementContext(
     byLockingBytecode: input.byLockingBytecode,
     descriptorByLockingBytecode: input.descriptorByLockingBytecode,
     categories: input.categories,
+    preparedResults: input.preparedResults,
     logicalIdentities: input.logicalIdentities,
     runtimeEventSlots: slots.runtimeEventSlots,
     sidecarSlots: slots.sidecarSlots,
@@ -162,6 +163,7 @@ export async function resolveComposeValidatedIndexes(
   categories: string[];
   logicalIdentities: Map<number, import('../stateful/logical-identity.js').ResolvedLogicalIdentity>;
   returning: CompiledGraphPlan['invocations'];
+  seededResults: Record<number, string>;
   preparedResults: Record<number, string>;
   provisionalResults: Record<number, string>;
 }> {

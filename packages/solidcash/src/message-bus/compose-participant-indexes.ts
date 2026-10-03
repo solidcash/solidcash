@@ -13,7 +13,7 @@ import {
   preparedInvocationResult,
   provisionalInvocationResult,
 } from './compose-recipes.js';
-import type { CallDescriptor } from './compose-prepared-invocation.js';
+import { hasTransientConvergenceResultSeed, type CallDescriptor } from './compose-prepared-invocation.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
@@ -24,6 +24,9 @@ export interface ComposeParticipantIndexes {
   categories: string[];
   logicalIdentities: Map<number, ResolvedLogicalIdentity>;
   returning: CompiledGraphPlan['invocations'];
+  /** Every shape-checked descriptor result: caller-prepared commitments and SDK-learned seeds. */
+  seededResults: Record<number, string>;
+  /** Caller-prepared commitments only: the composed producer must return exactly these. */
   preparedResults: Record<number, string>;
   provisionalResults: Record<number, string>;
 }
@@ -76,19 +79,28 @@ export async function resolveComposeParticipantIndexes(
     logicalIdentities.set(participant.participant, identity);
   }));
   const returning = plan.invocations.filter((invocation) => invocation.resultTypes.length > 0);
-  const preparedResults = Object.fromEntries(returning.flatMap((invocation) => {
+  const seededResults = Object.fromEntries(returning.flatMap((invocation) => {
     const artifact = plan.participants[invocation.callee].artifact;
-    const prepared = preparedInvocationResult(
+    const seeded = preparedInvocationResult(
       descriptors[invocation.index]?.provisionalResultCommitment,
       artifact,
       invocation.resultTypes,
       invocation.resultEncoding,
     );
-    return prepared === undefined ? [] : [[invocation.index, prepared] as const];
+    return seeded === undefined ? [] : [[invocation.index, seeded] as const];
+  }));
+  // Values the SDK learned itself, in graph discovery or an earlier provisional pass, help convergence, but they
+  // are not caller-prepared commitments. Retain their shape-checked bytes as seeds without making them immutable
+  // expected results; the complete producer VM and final preflight remain authoritative.
+  const preparedResults = Object.fromEntries(returning.flatMap((invocation) => {
+    const descriptor = descriptors[invocation.index];
+    return descriptor && !hasTransientConvergenceResultSeed(descriptor)
+      && seededResults[invocation.index] !== undefined
+      ? [[invocation.index, seededResults[invocation.index]] as const] : [];
   }));
   const provisionalResults = Object.fromEntries(returning.map((invocation) => {
     const artifact = plan.participants[invocation.callee].artifact;
-    return [invocation.index, preparedResults[invocation.index]
+    return [invocation.index, seededResults[invocation.index]
       ?? provisionalInvocationResult(artifact, invocation.resultTypes, invocation.resultEncoding)];
   }));
   return {
@@ -97,6 +109,7 @@ export async function resolveComposeParticipantIndexes(
     categories,
     logicalIdentities,
     returning,
+    seededResults,
     preparedResults,
     provisionalResults,
   };

@@ -198,6 +198,7 @@ import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import CacheMappingEntryInLoop from './semantic/CacheMappingEntryInLoop.js';
 import DesugarDynamicArrayCopyCast from './semantic/DesugarDynamicArrayCopyCast.js';
 import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
+import { kernelArgumentComparisonActivation, stableKernelArgumentIndices } from './semantic/KernelEntryActivation.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import detectMappingArrayPagination from './semantic/DetectMappingArrayPagination.js';
 import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFunctions.js';
@@ -4444,24 +4445,9 @@ function fixedChunkableBoolParamActivation(
 /** Retain a conditional fixed entry only when its branch can be replayed from authenticated row arguments. */
 function stampKernelArgumentConditionalEntryActivations(fn: FunctionDefinitionNode): void {
   if (!fn.body || !fn.entryAccesses) return;
-  const mutableParameters = mutableFunctionParameterNames(fn);
-  const conditionRecipe = (expression: ExpressionNode): ExternalCallExpression | undefined => {
-    if (!(expression instanceof BinaryOpNode)
-      || ![BinaryOperator.EQ, BinaryOperator.NE].includes(expression.operator)) return undefined;
-    const parameter = expression.left instanceof IdentifierNode && expression.right instanceof IntLiteralNode
-      ? expression.left : expression.right instanceof IdentifierNode && expression.left instanceof IntLiteralNode
-        ? expression.right : undefined;
-    const literal = expression.left instanceof IntLiteralNode ? expression.left
-      : expression.right instanceof IntLiteralNode ? expression.right : undefined;
-    const index = fn.parameters.findIndex((candidate) => candidate.name === parameter?.name
-      && !candidate.name.startsWith('__internal__'));
-    if (index < 0 || literal === undefined || mutableParameters.has(parameter!.name)) return undefined;
-    return {
-      kind: 'binary', operator: expression.operator,
-      left: { kind: 'source', source: { kind: 'forward', paramIndex: index } },
-      right: { kind: 'literal', type: 'bigint', value: literal.value.toString() },
-    };
-  };
+  const stableArguments = stableKernelArgumentIndices(fn);
+  const conditionRecipe = (expression: ExpressionNode): ExternalCallExpression | undefined =>
+    kernelArgumentComparisonActivation(expression, stableArguments);
   const byOrdinal = new Map<number, ExternalCallExpression>();
   const combine = (outer: ExternalCallExpression | undefined, inner: ExternalCallExpression): ExternalCallExpression =>
     outer === undefined ? inner : { kind: 'binary', operator: '&&', left: outer, right: inner };
@@ -4519,7 +4505,8 @@ function hasMutableKernelArgumentConditionalEntryWrite(
   let unsupported = false;
   walkInvocationAst(fn.body, (node) => {
     if (!(node instanceof BranchNode) || !(node.condition instanceof BinaryOpNode)
-      || ![BinaryOperator.EQ, BinaryOperator.NE].includes(node.condition.operator)) return;
+      || ![BinaryOperator.EQ, BinaryOperator.NE, BinaryOperator.LT, BinaryOperator.LE,
+        BinaryOperator.GT, BinaryOperator.GE].includes(node.condition.operator)) return;
     const condition = node.condition;
     const parameter = condition.left instanceof IdentifierNode && condition.right instanceof IntLiteralNode
       ? condition.left : condition.right instanceof IdentifierNode && condition.left instanceof IntLiteralNode

@@ -21,18 +21,18 @@ import {
   VariableDefinitionNode,
   IdentifierNode,
   IntLiteralNode,
-  BinaryOpNode,
   WhileNode,
   DoWhileNode,
 } from '../ast/AST.js';
 import {
   Type, MappingType, ArrayType, StructType, PrimitiveType, isChunkableValueType,
 } from '@solidcash/utils';
-import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { Location } from '../ast/Location.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
+import { kernelArgumentComparisonActivation, stableKernelArgumentIndices } from './KernelEntryActivation.js';
 
 // A conditional mapping op normalized to its target + taken-path value.
 interface EntryOp {
@@ -88,7 +88,7 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
 
   // Mappings are CollectionNodes (node.collections), not stateVariables, pre-semantic.
   private mappings: Map<string, CollectionNode> = new Map();
-  private currentFunction?: FunctionDefinitionNode;
+  private stableArgumentIndices: ReadonlyMap<string, number> = new Map();
 
   // Names the hoisted condition locals uniquely per converted if/else branch.
   private condCounter = 0;
@@ -112,21 +112,15 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
-    const previous = this.currentFunction;
-    this.currentFunction = node;
+    const previousIndices = this.stableArgumentIndices;
+    this.stableArgumentIndices = stableKernelArgumentIndices(node);
     const result = super.visitFunctionDefinition(node);
-    this.currentFunction = previous;
+    this.stableArgumentIndices = previousIndices;
     return result;
   }
 
   private isArgumentLiteralCondition(expression: ExpressionNode): boolean {
-    if (!(expression instanceof BinaryOpNode)
-      || ![BinaryOperator.EQ, BinaryOperator.NE].includes(expression.operator)) return false;
-    const parameter = expression.left instanceof IdentifierNode && expression.right instanceof IntLiteralNode
-      ? expression.left : expression.right instanceof IdentifierNode && expression.left instanceof IntLiteralNode
-        ? expression.right : undefined;
-    return parameter !== undefined && this.currentFunction?.parameters.some((candidate) =>
-      candidate.name === parameter.name && !candidate.name.startsWith('__internal__')) === true;
+    return kernelArgumentComparisonActivation(expression, this.stableArgumentIndices) !== undefined;
   }
 
   visitWhile(node: WhileNode): Node {

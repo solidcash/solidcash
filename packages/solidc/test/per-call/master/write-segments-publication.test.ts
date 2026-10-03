@@ -11,9 +11,9 @@ import { compileStringMulti } from '../../../src/compiler.js';
  * places each write's records in the segment its own code wrote it in rather than refusing the entry.
  *
  * The calls that decide a write's segment need not all stand on the same side of it. A write no call site follows is
- * declared in the segment the run's own call count names, whatever arms the execution took, which is what a batch
- * write behind a body-wide re-entrancy check reads; a write with calls on both sides names no segment and the
- * contract refuses the entry by name.
+ * declared in the segment the run's own call count names, whatever arms the execution took and however many turns a
+ * calling loop before it made, which is what a batch write behind a body-wide re-entrancy check reads, and the check's
+ * own restore; a write with calls on both sides names no segment and the contract refuses the entry by name.
  */
 
 /** One write as the artifact publishes it. */
@@ -127,6 +127,25 @@ const guardedOneArm = compileStringMulti(GUARDED_ONE_ARM_SOURCE, { composition: 
 const guardedTwoArms = compileStringMulti(GUARDED_TWO_ARMS_SOURCE, { composition: 'per-call' }).Ledger!;
 const guardedBetween = compileStringMulti(GUARDED_BETWEEN_SOURCE, { composition: 'per-call' }).Ledger!;
 
+/**
+ * A ledger whose body sets a record, calls once per turn of a loop, and restores the record, with `after` past the
+ * restore: the loop's own bound decides how many calls stand before the restore.
+ */
+const GUARDED_LOOP_SOURCE = (after: string): string => `pragma solidcash ^0.13.0;${PING}`
+  + ' contract Ledger {'
+  + '   uint public count;'
+  + '   function move(int turns) {'
+  + '     this.count = 1;'
+  + `     for (int i = 0; i < turns; i = i + 1) { ${CALL} }`
+  + '     this.count = 0;'
+  + `     ${after}`
+  + '     require(true);'
+  + '   }'
+  + ' }';
+
+const guardedLoop = compileStringMulti(GUARDED_LOOP_SOURCE(''), { composition: 'per-call' }).Ledger!;
+const guardedLoopThenCall = compileStringMulti(GUARDED_LOOP_SOURCE(CALL), { composition: 'per-call' }).Ledger!;
+
 /** The write a published fact names, so the facts can be keyed by the identity a builder looks one up by. */
 const identityOf = (write: WriteIdentity): string => (write.record !== undefined ? `record:${write.record}`
   : write.collection !== undefined ? `mapping:${write.collection}` : `dynamic:${String(write.variable)}`);
@@ -194,6 +213,14 @@ describe('the segment each write of a per-call entry lands in, as an artifact pu
     expect(publishedWrites(guardedOneArm, 'Ledger', 'move').single).toBeUndefined();
     expect(segmentOf(guardedTwoArms, { collection: 'balances' })).toBe('last');
     expect(segmentsOf(guardedTwoArms, { record: 0 })).toStrictEqual([0, 'last']);
+  });
+
+  it('names both ends of a record its body writes around a loop whose turns call', () => {
+    // No call site stands after the restore, so it lands in the run's last segment however many turns called.
+    expect(segmentsOf(guardedLoop, { record: 0 })).toStrictEqual([0, 'last']);
+    expect(publishedWrites(guardedLoop, 'Ledger', 'move').single).toBeUndefined();
+    // A call after the restore leaves it in no segment the source fixes, so the entry publishes no fact.
+    expect(publishedWrites(guardedLoopThenCall, 'Ledger', 'move')).toStrictEqual({});
   });
 
   it('refuses by name the batch write a call on either side of it reaches, at any segment', () => {

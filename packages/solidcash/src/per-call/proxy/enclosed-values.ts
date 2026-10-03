@@ -25,12 +25,16 @@ import { enclosedValueRefusal, writesBeforeEntering } from './enclosed-reads.js'
 import type { HopCallee } from './external-calls.js';
 import { deriveUpToEntering } from './reentry.js';
 
-/** The hop learned the bytes an enclosing writer leaves a node at, and is to be planned again from them. */
+/**
+ * The hop learned the bytes a writer leaves a node at, and is to be planned again from them: an enclosing writer, or
+ * an earlier sibling of the frames that reach the node after it (`reached-values.ts`).
+ */
 export class EnclosingValueLearned extends Error {
   public readonly name = 'EnclosingValueLearned';
 
   public constructor(public readonly master: string, public readonly value: Uint8Array) {
-    super(`the hop learned the bytes the frame "${master}" leaves a node at, before the frames it encloses settled`);
+    super(`the hop learned the bytes the frame "${master}" leaves a node at, before the frames that start from them `
+      + 'settled');
   }
 }
 

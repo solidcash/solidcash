@@ -70,6 +70,7 @@ import {
 import { decodeReturnValues } from '../read/index.js';
 import { PerCallProxyDeployError } from './errors.js';
 import { hopTrace, hopTraceError, hopTraceOn } from './hop-trace.js';
+import { learnedReachedValue } from './reached-values.js';
 import {
   hopEntryWrites, mappingHeadCollection, mappingNodeSlot,
   type HopEntryWrites, type LaidHopEntryWrites,
@@ -1435,8 +1436,13 @@ async function settleCallees(options: {
     .map((_callee, index) => index)
     .filter((index) => options.only === undefined || options.only.has(index))
     .sort((left, right) => depthOf(right) - depthOf(left));
+  const nodeWritersBefore = sharedNodeWritersBefore(options.callees);
   for (const calleeIndex of calleeSettleOrder(options.callees, deepestFirst)) {
     const callee = options.callees[calleeIndex]!;
+    // A frame that reads or rewrites a node an earlier frame's write left at bytes that frame's own close exposed was
+    // planned without them, so the hop is planned again from them before the frame is judged (`reached-values.ts`).
+    const reachedValue = learnedReachedValue(options.callees, nodeWritersBefore.get(calleeIndex), writeValues);
+    if (reachedValue !== undefined) throw new EnclosingValueLearned(reachedValue.master, reachedValue.value);
     const placeholder = hopRetvalPlaceholder(callee.contract, callee.entry);
     // One attempt per value the frame computes — its return, each unstated write, each event payload — plus the
     // attempt that is accepted once every one of them is stated.

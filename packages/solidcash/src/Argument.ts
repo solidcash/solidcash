@@ -12,6 +12,7 @@ import {
   FixedType,
   FunctionType,
   IntType,
+  parseArrayTypeString,
   parseType,
   PrimitiveType,
   StateValue,
@@ -324,3 +325,84 @@ export const encodeFunctionArguments = (
 
   return encodedArgs;
 };
+
+/** An ethers `Addressable`: a value that names an address through `getAddress()`, as a signer or a contract does. */
+export interface Addressable {
+  getAddress(): string | Uint8Array | PromiseLike<string | Uint8Array>;
+}
+
+const isAddressable = (value: unknown): value is Addressable => typeof value === 'object' && value !== null
+  && typeof (value as Partial<Addressable>).getAddress === 'function';
+
+const isPromiseLike = (value: unknown): value is PromiseLike<unknown> => typeof value === 'object' && value !== null
+  && typeof (value as Partial<PromiseLike<unknown>>).then === 'function';
+
+const isAddressTypeString = (typeStr: string): boolean => parseType(typeStr) instanceof AddressType;
+
+// True when a value of `typeStr` can hold an address: an address, or an array or struct with one at some depth.
+function holdsAddress(
+  typeStr: string, structs: readonly StructDefinitionInfo[] | undefined, seen: Set<string> = new Set(),
+): boolean {
+  if (isAddressTypeString(typeStr)) return true;
+  const arrayInfo = parseArrayTypeString(typeStr);
+  if (arrayInfo) return holdsAddress(arrayInfo.elementType, structs, seen);
+  const structDef = structs?.find((s) => s.name === typeStr);
+  if (!structDef || seen.has(typeStr)) return false;
+  seen.add(typeStr);
+  return structDef.fields.some((field) => holdsAddress(field.type, structs, seen));
+}
+
+// A resolved value, boxed so that a value outside an address position is carried as given rather than awaited.
+interface ResolvedValue { readonly value: unknown }
+
+async function resolveAddressesIn(
+  value: unknown, typeStr: string, structs: readonly StructDefinitionInfo[] | undefined,
+): Promise<ResolvedValue> {
+  if (isAddressTypeString(typeStr)) {
+    if (isAddressable(value)) return { value: await value.getAddress() };
+    return { value: isPromiseLike(value) ? await value : value };
+  }
+  if (typeof value !== 'object' || value === null || value instanceof Uint8Array
+    || !holdsAddress(typeStr, structs)) return { value };
+  const structDef = structs?.find((s) => s.name === typeStr);
+  if (Array.isArray(value)) {
+    // An array, or a struct given as a positional tuple: each element resolves at its own type.
+    const elementType = parseArrayTypeString(typeStr)?.elementType;
+    const parts = await Promise.all(value.map((element, index) => {
+      const at = structDef ? structDef.fields[index]?.type : elementType;
+      return at === undefined ? { value: element } : resolveAddressesIn(element, at, structs);
+    }));
+    return parts.every((part, index) => part.value === value[index])
+      ? { value } : { value: parts.map((part) => part.value) };
+  }
+  if (!structDef) return { value };
+  // A struct given as an object keyed by field name: each field resolves at its declared type.
+  const record = value as Record<string, unknown>;
+  const parts = await Promise.all(structDef.fields.map((field) => resolveAddressesIn(
+    record[field.name], field.type, structs,
+  )));
+  if (parts.every((part, index) => part.value === record[structDef.fields[index].name])) return { value };
+  const resolved = { ...record };
+  structDef.fields.forEach((field, index) => {
+    if (parts[index].value !== record[field.name]) resolved[field.name] = parts[index].value;
+  });
+  return { value: resolved };
+}
+
+/**
+ * Resolves the values a call carries at `address` positions, as ethers resolves a contract call's arguments before it
+ * encodes them: an `Addressable` (a signer, a contract) stands for the address its `getAddress()` names, awaited when
+ * that is a promise, and a promise of an address for the address it settles to. Arrays and structs are walked to any
+ * depth, so an `address[]`, an `address[3]` and a struct's address field resolve alike. Every other value, a string
+ * or bytes included, is returned as given for the encoder to check, and a container in which nothing resolved is
+ * returned as the same object.
+ */
+export async function resolveAddressArguments(
+  inputs: readonly { readonly type: string }[],
+  args: readonly FunctionArgument[],
+  structs?: readonly StructDefinitionInfo[],
+): Promise<FunctionArgument[]> {
+  const parts = await Promise.all(args.map((arg, index) => (inputs[index] === undefined
+    ? { value: arg } : resolveAddressesIn(arg, inputs[index].type, structs))));
+  return parts.map((part) => part.value as FunctionArgument);
+}

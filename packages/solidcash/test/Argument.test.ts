@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { encodeInt, bytesToHex } from '@solidcash/utils';
 import { encodeFunctionArgument, SignatureTemplate } from '../src/index.js';
+import { resolveAddressArguments } from '../src/Argument.js';
 import { addressToLockScript } from '../src/utils.js';
-import { aliceAddress, alicePriv, bobPriv } from './fixture/vars.js';
+import { aliceAddress, alicePriv, bobAddress, bobPriv, carolAddress } from './fixture/vars.js';
 
 describe('encodeFunctionArgument: empty arrays', () => {
   it('preserves the zero count prefix through the outer unlocking-script push', () => {
@@ -194,5 +195,78 @@ describe('encodeFunctionArgument: struct field-name independence', () => {
 
     expect(encodeFunctionArgument(cashAddressValues, 'Envelope[][]', structs))
       .toEqual(encodeFunctionArgument(typedValues, 'Envelope[][]', structs));
+  });
+});
+
+// An ethers contract call resolves its arguments before it encodes them: a value at an `address` position that names
+// its address through `getAddress()` (a signer, a contract) stands for that address, wherever the position sits.
+describe('resolveAddressArguments: values that name an address', () => {
+  const syncAddressable = { getAddress: (): string => aliceAddress };
+  const asyncAddressable = { getAddress: async (): Promise<string> => bobAddress };
+
+  it('resolves a sync and an async getAddress() and a promised address, leaving strings and bytes as given', async () => {
+    const lock = addressToLockScript(carolAddress);
+    const resolved = await resolveAddressArguments(
+      ['address', 'address', 'address', 'address', 'address'].map((type) => ({ type })),
+      [syncAddressable, asyncAddressable, Promise.resolve(carolAddress), carolAddress, lock] as never,
+    );
+    expect(resolved).toEqual([aliceAddress, bobAddress, carolAddress, carolAddress, lock]);
+    expect(resolved[4]).toBe(lock);
+  });
+
+  it('resolves through nested and fixed-size address arrays', async () => {
+    const resolved = await resolveAddressArguments(
+      [{ type: 'address[][]' }, { type: 'address[3]' }],
+      [
+        [[syncAddressable], [asyncAddressable, carolAddress]],
+        [asyncAddressable, carolAddress, syncAddressable],
+      ] as never,
+    );
+    expect(resolved).toEqual([[[aliceAddress], [bobAddress, carolAddress]], [bobAddress, carolAddress, aliceAddress]]);
+  });
+
+  it('resolves a struct\'s address field, keyed or positional, and through an array of structs', async () => {
+    const structs = [
+      {
+        name: 'Payee',
+        fields: [{ name: 'who', type: 'address' }, { name: 'note', type: 'bytes' }, { name: 'share', type: 'uint16' }],
+      },
+      { name: 'Split', fields: [{ name: 'payees', type: 'Payee[]' }, { name: 'owner', type: 'address' }] },
+    ];
+    const note = Uint8Array.of(1, 2);
+    const split = {
+      payees: [{ who: asyncAddressable, note, share: 3n }, [syncAddressable, note, 4n]],
+      owner: syncAddressable,
+    };
+    const [keyed, positional, resolvedSplit] = await resolveAddressArguments(
+      [{ type: 'Payee' }, { type: 'Payee' }, { type: 'Split' }],
+      [{ who: syncAddressable, note, share: 1n }, [asyncAddressable, note, 2n], split] as never,
+      structs,
+    );
+    expect(keyed).toEqual({ who: aliceAddress, note, share: 1n });
+    expect(positional).toEqual([bobAddress, note, 2n]);
+    const byAddress = { payees: [{ who: bobAddress, note, share: 3n }, [aliceAddress, note, 4n]], owner: aliceAddress };
+    expect(resolvedSplit).toEqual(byAddress);
+    expect(encodeFunctionArgument(resolvedSplit!, 'Split', structs))
+      .toEqual(encodeFunctionArgument(byAddress, 'Split', structs));
+    // The caller's own value is left as it was.
+    expect(split.owner).toBe(syncAddressable);
+  });
+
+  it('leaves every other position as given, and a container in which nothing resolved as the same object', async () => {
+    const structs = [{ name: 'Tagged', fields: [{ name: 'tag', type: 'bytes' }, { name: 'who', type: 'address' }] }];
+    const addresses = [carolAddress];
+    const tagged = { tag: syncAddressable, who: carolAddress };
+    const pending = Promise.resolve(5n);
+    const [sameArray, number, bytes, sameStruct, kept] = await resolveAddressArguments(
+      [{ type: 'address[]' }, { type: 'uint256' }, { type: 'bytes' }, { type: 'Tagged' }, { type: 'uint256' }],
+      [addresses, 5n, syncAddressable, tagged, pending] as never,
+      structs,
+    );
+    expect(sameArray).toBe(addresses);
+    expect(number).toBe(5n);
+    expect(bytes).toBe(syncAddressable);
+    expect(sameStruct).toBe(tagged);
+    expect(kept).toBe(pending);
   });
 });

@@ -27,7 +27,7 @@
  */
 
 import type { Artifact, StateValue } from '@solidcash/utils';
-import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js';
+import { encodeFunctionArgument, resolveAddressArguments, type FunctionArgument } from '../../Argument.js';
 import type { TransactionDetails, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type Signer from '../../Signer.js';
@@ -111,26 +111,29 @@ export class PerCallFunctionCall {
   }
 
   /**
-   * Checks each argument against its ABI type as the encoder does in every convention (a `bytesN` value's length, an
+   * The arguments the call carries: a value at an `address` position that names its address through `getAddress()`
+   * (a signer, a contract) is resolved to that address, as ethers resolves a call's arguments, and each argument is
+   * then checked against its ABI type as the encoder does in every convention (a `bytesN` value's length, an
    * integer's range), so a value no call can carry is refused with the encoder's own message before anything is
    * composed, as ethers refuses it before anything is sent.
    */
-  private checkArguments(): void {
+  private async resolvedArguments(): Promise<readonly FunctionArgument[]> {
     const { artifact } = this.contract;
     const visible = (entry: Artifact['abi'][number]): Artifact['abi'][number]['inputs'] =>
       entry.inputs.filter((input) => !input.name.startsWith('__internal__'));
     const named = artifact.abi.filter((entry) => entry.name === this.functionName);
     const entry = named.find((candidate) => visible(candidate).length === this.args.length) ?? named[0];
-    if (entry === undefined) return;
+    if (entry === undefined) return this.args;
+    const args = await resolveAddressArguments(visible(entry), this.args, artifact.structs);
     visible(entry).forEach((input, index) => {
-      const argument = this.args[index];
+      const argument = args[index];
       if (argument !== undefined) encodeFunctionArgument(argument, input.type, artifact.structs);
     });
+    return args;
   }
 
   /** Composes and derives the call without requiring it to be accepted, for a caller that wants the verdicts. */
   public async compose(): Promise<PerCallCallResult> {
-    this.checkArguments();
     const { provider, signer, categoryId, proxyImplementationCategoryId } = this.contract;
     if (signer === undefined) {
       throw new PerCallCallError(
@@ -149,12 +152,16 @@ export class PerCallFunctionCall {
     return perCallSendQueue(provider).hold(resources, () => this.composeNow(provider, signer));
   }
 
-  /** Picks the caller's coin and composes over it, or simulates without one; a queued call runs this in its turn. */
+  /**
+   * Resolves the arguments, then picks the caller's coin and composes over it, or simulates without one. A queued
+   * call runs this in its turn, so resolving them never moves it ahead of a call made before it.
+   */
   private async composeNow(provider: NetworkProvider, signer: Signer): Promise<PerCallCallResult> {
+    const args = await this.resolvedArguments();
     const callerUtxo = await callerCoin(provider, signer);
     if (callerUtxo === undefined) {
       try {
-        return await this.composeWith(simulationProvider(provider), signer, STAND_IN_COIN);
+        return await this.composeWith(simulationProvider(provider), signer, STAND_IN_COIN, args);
       } catch (error) {
         if (!(error instanceof SimulationAccepted)) throw error;
         throw new PerCallCallError(
@@ -162,11 +169,13 @@ export class PerCallFunctionCall {
         );
       }
     }
-    return this.composeWith(provider, signer, callerUtxo);
+    return this.composeWith(provider, signer, callerUtxo, args);
   }
 
-  /** Composes the call over the caller's coin `callerUtxo`, reading and broadcasting through `provider`. */
-  private async composeWith(provider: NetworkProvider, signer: Signer, callerUtxo: Utxo): Promise<PerCallCallResult> {
+  /** Composes the call with `args` over the caller's coin `callerUtxo`, reading and broadcasting through `provider`. */
+  private async composeWith(
+    provider: NetworkProvider, signer: Signer, callerUtxo: Utxo, args: readonly FunctionArgument[],
+  ): Promise<PerCallCallResult> {
     const { artifact, categoryId, proxyImplementationCategoryId } = this.contract;
     if (proxyImplementationCategoryId !== undefined) {
       if (this.value > 0n) {
@@ -183,7 +192,7 @@ export class PerCallFunctionCall {
         proxyCategoryId: categoryId,
         implementationCategoryId: proxyImplementationCategoryId,
         functionName: this.functionName,
-        args: this.args,
+        args,
         callerUtxo,
         callerLockingBytecode: signer.getLockingBytecode(),
         funder: signer.unlockP2PKH(),
@@ -195,7 +204,7 @@ export class PerCallFunctionCall {
       artifact,
       categoryId,
       functionName: this.functionName,
-      args: this.args,
+      args,
       callerUtxo,
       callerLockingBytecode: signer.getLockingBytecode(),
       funder: signer.unlockP2PKH(),
@@ -211,10 +220,9 @@ export class PerCallFunctionCall {
    * runs there as the proxy's delegate frame, over the proxy's records, which is the frame the read composes.
    */
   public async staticCall(): Promise<PerCallReadResult> {
-    this.checkArguments();
     const { artifact, categoryId, provider } = this.contract;
     return readPerCallEntry({
-      provider, artifact, categoryId, functionName: this.functionName, args: this.args,
+      provider, artifact, categoryId, functionName: this.functionName, args: await this.resolvedArguments(),
     });
   }
 

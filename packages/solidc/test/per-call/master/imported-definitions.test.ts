@@ -16,8 +16,8 @@ import { categorySlotValue, seededCategory } from './validator-input.js';
  * What a file-level definition costs a per-call master.
  *
  * A source file is rarely alone: a contract imports an interface it calls through, and that interface is a
- * declaration with no code of its own. A per-call master opens with its head, and a file-level definition — an
- * imported library's function, or one the unit declares itself — is emitted ahead of it. This file measures both
+ * declaration with no code of its own. A per-call master opens with its head, and a file-level definition (an
+ * imported library's function, or one the unit declares itself) is emitted ahead of it. This file measures both
  * sides of that: an import that emits nothing leaves the compiled program byte-identical, and one that emits
  * definitions does too while no body reaches them, because a definition no entry can reach is compiled for
  * diagnostics and left out of the emitted bytecode. A body that does reach one is resolved by the machine, which
@@ -74,6 +74,8 @@ const WITH_INTERFACE = 'pragma solidity ^0.8.0;\nimport "./IFrame.sol";\n' + CON
 const WITHOUT_IMPORT = 'pragma solidity ^0.8.0;\n' + CONTRACT;
 const WITH_UNUSED_LIBRARY = 'pragma solidity ^0.8.0;\nimport "./Math.sol";\n' + CONTRACT;
 const WITH_CALLED_LIBRARY = 'pragma solidity ^0.8.0;\nimport "./Math.sol";\n' + CALLING_CONTRACT;
+/** The calling body with the library's value written as a literal. */
+const CALLING_LITERAL = 'pragma solidity ^0.8.0;\n' + CALLING_CONTRACT.replace('Math.two()', '2');
 
 /** A contract that calls a function the unit declares itself, beside the definition that supplies it. */
 const OWN_FUNCTION_CONTRACT = 'contract OwnCalling(address owner) {'
@@ -227,7 +229,9 @@ describe('an import that contributes emitted definitions', () => {
     // The entry compares its argument with what the imported function returns: an accept means the call ran the
     // definition the import contributed, and the refusal beside it is the argument that does not match.
     const artifact = compiling(WITH_CALLED_LIBRARY);
-    expect(scriptBytes(artifact).length).toBeGreaterThan(scriptBytes(compiling(WITHOUT_IMPORT)).length);
+    // `two()` returns a constant, so the call compiles to the program the literal does: the bytes do not show the
+    // definition, the machine's accept and refusal below do.
+    expect(scriptBytes(artifact)).toStrictEqual(scriptBytes(compiling(CALLING_LITERAL)));
     const calling = { constructorArgs: [OWNER_LOCK] };
     expect(spend(artifact, { ...calling, argumentPushes: [encodeDataPush(new Uint8Array([2]))] })).toBe(true);
     expect(spend(artifact, { ...calling, argumentPushes: [encodeDataPush(new Uint8Array([3]))] })).toBe(false);

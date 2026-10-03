@@ -529,14 +529,14 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(JSON.stringify(sources)).not.toContain('"name":"Record"');
   });
 
-  it('packs a zero address cast to uint160 as the compiler zero value', () => {
+  it('packs a zero address cast to uint160 at its declared Solidity width', () => {
     const expression: ExternalCallExpression = {
       kind: 'abiEncodePacked', fields: ['uint160'], args: [source(0)],
     };
 
     expect(evaluator._evaluateExternalExpression(
       expression, [`0x${'00'.repeat(20)}`], artifact, undefined, [{ type: 'address' }],
-    )).toEqual(new Uint8Array());
+    )).toEqual(new Uint8Array(20));
   });
 
   it.each([0, 0x47])('strips ABI framing from a packed uint160 address word (byte %s)', (byte) => {

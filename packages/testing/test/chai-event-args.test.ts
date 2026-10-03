@@ -1,4 +1,4 @@
-import { cashAddressToLockingBytecode } from '@bitauth/libauth';
+import { cashAddressToLockingBytecode, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import { decorateDecodedResult, hash160 } from '@solidcash/utils';
 import { describe, expect as vitestExpect, it } from 'vitest';
 import { expect } from '../src/chai.js';
@@ -26,6 +26,21 @@ describe('chai empty-address and event predicates', () => {
       .map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
     expect(lockingBytecodeHex).to.equal(address);
     expect(address).to.equal(lockingBytecodeHex);
+  });
+
+  it('compares a Solidity event address string with the exact P2SH32 CashAddress identity', () => {
+    const locking = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x31), 0x87);
+    const encoded = lockingBytecodeToCashAddress({
+      bytecode: locking, prefix: 'bchtest', tokenSupport: false,
+    });
+    const address = typeof encoded === 'string' ? encoded : encoded.address;
+    const identity = `0x${Array.from(hash160(locking), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+    expect(identity).to.equal(address);
+    expect(address).to.equal(identity);
+    const different = `0x${'12'.repeat(20)}`;
+    vitestExpect(() => expect(different).to.equal(address)).toThrow();
+    vitestExpect(() => expect(address).to.equal(different)).toThrow();
+    vitestExpect(() => expect(hash160(locking)).to.equal(locking)).toThrow();
   });
 
   it('compares typed Solidity-narrowed identities with native BCH locking bytecodes', () => {

@@ -109,6 +109,16 @@ async function sendAfterUnsupportedDebug(
 async function debugTransaction(
   transaction: Debuggable | (Buildable & Partial<Debuggable>) | Promise<unknown>,
 ): Promise<void> {
+  // A view FunctionCall is thenable: awaiting it runs the authenticated return probe, including its source
+  // requires. Building it as a send can reject a valid read shape before execution (for example two returning
+  // callees sharing one state owner), masking the require the assertion is asking about. Use the call's own
+  // conservative pure-read predicate so calls with send intent still take the transaction-debug path.
+  const viewCall = transaction as { _isPureRead?: () => boolean; then?: unknown };
+  if (typeof viewCall?._isPureRead === 'function' && viewCall._isPureRead()
+    && typeof viewCall.then === 'function') {
+    await transaction;
+    return;
+  }
   if (transaction && typeof (transaction as Debuggable).debug === 'function') {
     try {
       (transaction as Debuggable).debug();

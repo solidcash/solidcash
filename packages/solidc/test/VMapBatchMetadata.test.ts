@@ -358,6 +358,31 @@ describe('vmap fixed-write batch metadata', () => {
     expect(key(blocked)?.postWriteExpressionLabel).toBeUndefined();
   });
 
+  it('preserves pre-write mapping captures across a later source write', () => {
+    const compile = (body: string): KeySourceAbi | undefined => {
+      const artifact = compileString(`pragma solidity ^0.8.0;
+        contract Probe() {
+          mapping(uint256 => bool) flags;
+          mapping(uint256 => uint256) data;
+          function store(uint256 flagKey, uint256 dataKey, uint256 value) public {
+            ${body}
+            require(true);
+          }
+        }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+        messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+        suppressWarnings: true, optimizeForCompilationSpeed: true });
+      return artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses
+        ?.find((access) => access.collection === 'data')?.keySources?.[0];
+    };
+    const captured = compile('bool selected = flags[flagKey]; flags[flagKey] = false; data[selected ? dataKey : 0] = value;');
+    const aliased = compile('bool selected = flags[flagKey]; flags[flagKey] = false; bool alias = selected; data[alias ? dataKey : 0] = value;');
+    expect(captured?.preWriteMappingCollections).toEqual(['flags']);
+    expect(aliased?.preWriteMappingCollections).toEqual(['flags']);
+    expect(captured?.expressionLabel).toBe('ternary(map:flags(id:flagKey),id:dataKey,lit:0)');
+    expect(aliased?.expressionLabel).toBe('ternary(map:flags(id:flagKey),id:dataKey,lit:0)');
+    expect(captured?.postWriteExpressionLabel).toBeUndefined();
+  });
+
   it('records a mapping rmw of a parameter delta as valueSource', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;

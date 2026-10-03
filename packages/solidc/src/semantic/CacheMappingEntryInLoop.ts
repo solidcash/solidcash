@@ -476,6 +476,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     const knownWrites = new Map<string, { key: ExpressionNode; value: ExpressionNode }>();
     const knownCaptures = new Map<string, ExpressionNode>();
     const sourceCaptures = new Map<string, ExpressionNode>();
+    const capturePreWriteCollections = new Map<string, Set<string>>();
     let sourcePrefixSafe = true;
     const expandSourceCaptures = (source: ExpressionNode): ExpressionNode => {
       let value = cloneNode(source) as ExpressionNode;
@@ -487,15 +488,15 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     const projectKnownValues = (source: ExpressionNode): { value: ExpressionNode; replaced: boolean } => {
       let value = cloneNode(source) as ExpressionNode;
       let replaced = false;
-      for (const [name, capture] of knownCaptures) {
-        const projector = new ProjectCapturedMappingRead(name, capture);
-        value = projector.visit(value) as ExpressionNode;
-        replaced ||= projector.replaced;
-      }
       for (const [name, write] of knownWrites) {
         const keyLabel = expressionCanon(write.key);
         if (!keyLabel) continue;
         const projector = new ProjectWrittenMappingRead(name, keyLabel, write.value);
+        value = projector.visit(value) as ExpressionNode;
+        replaced ||= projector.replaced;
+      }
+      for (const [name, capture] of knownCaptures) {
+        const projector = new ProjectCapturedMappingRead(name, capture);
         value = projector.visit(value) as ExpressionNode;
         replaced ||= projector.replaced;
       }
@@ -508,13 +509,28 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (precedingWrite && argumentOnlyMappingValue(precedingWrite.key, parameters)
           && argumentOnlyMappingValue(precedingWrite.value, parameters)) {
           // A write to another collection cannot invalidate this collection's known value.
+          if (!knownWrites.has(precedingWrite.name)) {
+            for (const [local, capture] of sourceCaptures) {
+              const finder = new SourceMappingReadFinder(precedingWrite.name);
+              finder.visit(capture);
+              if (finder.found) capturePreWriteCollections.get(local)?.add(precedingWrite.name);
+            }
+          }
           knownWrites.set(precedingWrite.name, precedingWrite);
         } else if (preceding instanceof VariableDefinitionNode
           && (!preceding.expression || expressionCanon(preceding.expression) !== undefined)) {
           if (preceding.expression) {
+            const inheritedPreWrites = new Set<string>();
+            for (const [local, collections] of capturePreWriteCollections) {
+              const projector = new ProjectCapturedMappingRead(local, sourceCaptures.get(local)!);
+              projector.visit(cloneNode(preceding.expression));
+              if (projector.replaced) collections.forEach((name) => inheritedPreWrites.add(name));
+            }
+            capturePreWriteCollections.set(preceding.name, inheritedPreWrites);
             sourceCaptures.set(preceding.name, expandSourceCaptures(preceding.expression));
           } else {
             sourceCaptures.delete(preceding.name);
+            capturePreWriteCollections.delete(preceding.name);
           }
           const capture = preceding.expression && projectKnownValues(preceding.expression).value;
           if (capture && argumentOnlyMappingValue(capture, parameters)) {
@@ -527,6 +543,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           knownWrites.clear();
           knownCaptures.clear();
           sourceCaptures.clear();
+          capturePreWriteCollections.clear();
           sourcePrefixSafe = false;
         }
       }
@@ -555,6 +572,13 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       const preWriteKey = expandSourceCaptures(readerKeys[0]);
       if (expressionCanon(preWriteKey) === undefined) continue;
       const preWriteCollections: string[] = [];
+      for (const [local, collections] of capturePreWriteCollections) {
+        const projector = new ProjectCapturedMappingRead(local, sourceCaptures.get(local)!);
+        projector.visit(cloneNode(readerKeys[0]));
+        if (projector.replaced) collections.forEach((name) => {
+          if (!preWriteCollections.includes(name)) preWriteCollections.push(name);
+        });
+      }
       for (let laterIndex = index + 1; laterIndex < statements.length; laterIndex += 1) {
         if (transparentStatements[laterIndex]) continue;
         const laterWrite = scalarWrite(statements[laterIndex]);

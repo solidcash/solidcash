@@ -1026,6 +1026,85 @@ interface PerCallWriteStep {
   readonly followsEveryCall: boolean;
 }
 
+/**
+ * The resolved AST fields a syntax walk must not descend into, matching `walkInvocationAst`.
+ *
+ * A node keeps the definitions, symbols and types it resolved to; walking them would leave the body being analysed,
+ * and a shared resolved node would be revisited.
+ */
+const RESOLVED_AST_FIELDS = new Set([
+  'resolvedFunction', 'functionReference', 'definition', 'symbolTable', 'referencedContract', 'stateVariable',
+  'collection', 'type', 'location', 'name', 'functionId', 'error', 'opRolls', 'selectorHex', 'abiType',
+]);
+
+/** True for a node that makes an external call, a low-level call or a value send. */
+function isCallSiteNode(node: Node): boolean {
+  return node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
+    || node instanceof LowLevelCallStatementNode || isDirectOwnerTransferNode(node);
+}
+
+/**
+ * Walks the syntax children of a node, telling the visitor whether an enclosing construct can run its body again.
+ *
+ * The walk mirrors `walkInvocationAst`: a catch block is not an executable path, and resolved references are not
+ * descended into. `repeating` becomes true once the walk enters a loop, an iteration or a switch arm.
+ */
+function walkSyntax(
+  value: unknown,
+  visit: (node: Node, repeating: boolean) => boolean | void,
+  repeating = false,
+  seen = new Set<object>(),
+): void {
+  if (!(value instanceof Node) || seen.has(value)) return;
+  seen.add(value);
+  if (visit(value, repeating) === false) return;
+  const next = repeating || value instanceof WhileNode || value instanceof DoWhileNode
+    || value instanceof CollectionIterationNode || value instanceof SwitchNode;
+  if (value instanceof TryCatchNode) {
+    walkSyntax(value.expression, visit, next, seen);
+    walkSyntax(value.tryBlock, visit, next, seen);
+    return;
+  }
+  for (const key in value) {
+    if (RESOLVED_AST_FIELDS.has(key)) continue;
+    const child = value[key as keyof Node];
+    if (child instanceof Node) walkSyntax(child, visit, next, seen);
+    else if (Array.isArray(child)) for (const item of child) walkSyntax(item, visit, next, seen);
+  }
+}
+
+/**
+ * True when `target` runs after every call site the body can reach, read from the source rather than a call count.
+ *
+ * A count cannot locate a write that follows a run-time loop's calls, because such a loop makes a number the count
+ * walk refuses to bound. The source can: a write no call site follows, sitting in no construct whose body can run
+ * again, lands in the last segment the execution opens whatever the loop's trip count — an entry guard's release
+ * after a call-making loop, for one. A write inside such a loop is left unstated rather than placed in a segment a
+ * later turn could change.
+ */
+function writeFollowsEveryCall(entry: FunctionDefinitionNode, target: Node): boolean {
+  const body = entry.body;
+  if (body === undefined) return false;
+  let reached = false;
+  let repeatingAtTarget = false;
+  let callAfter = false;
+  walkSyntax(body, (node, repeating) => {
+    if (callAfter) return false;
+    if (node === target) {
+      reached = true;
+      repeatingAtTarget = repeating;
+      // A call in the write's own expression evaluates before its store, so it is not a call after the write.
+      return false;
+    }
+    if (reached && isCallSiteNode(node)) {
+      callAfter = true;
+      return false;
+    }
+    return true;
+  });
+  return reached && !repeatingAtTarget && !callAfter;
+}
+
 /** The record writes the entry's own source makes, in the order the walk reaches them. */
 function perCallWriteSteps(
   entry: FunctionDefinitionNode,
@@ -1047,7 +1126,8 @@ function perCallWriteSteps(
       steps.push({
         statement,
         calls: afterWrite,
-        followsEveryCall: mostCalls !== undefined && afterWrite !== undefined && afterWrite.most === mostCalls,
+        followsEveryCall: (mostCalls !== undefined && afterWrite !== undefined && afterWrite.most === mostCalls)
+          || writeFollowsEveryCall(entry, statement),
       });
       return afterWrite;
     }

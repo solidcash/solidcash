@@ -169,7 +169,7 @@ import {
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
 import { GlobalFunction, Modifier } from '../ast/Globals.js';
-import { isNumericType, resultingTypeForBinaryOp } from '../utils.js';
+import { isNumericType, literalTypeBesideBounded, resultingTypeForBinaryOp } from '../utils.js';
 import { analyzeAssemblyStack, getStackEffect } from '../asmStackEffects.js';
 import { ImportedLocations } from './ImportedLocations.js';
 import { generatedOriginOf } from '../ast/Location.js';
@@ -2638,6 +2638,18 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.left.type = node.right.type;
     } else if (node.right.type instanceof EnumType && node.left.type instanceof IntType) {
       node.right.type = node.left.type;
+    }
+
+    // A source literal that does not fit the bounded operand beside it gives the operation the literal's own type,
+    // as Solidity's common type does (`literalTypeBesideBounded`); a shift, split or power keeps its base's type.
+    if (node.sourceArithmetic && ![BinaryOperator.SHIFT_LEFT, BinaryOperator.SHIFT_RIGHT, BinaryOperator.SPLIT,
+      BinaryOperator.POW].includes(node.operator)) {
+      for (const [literal, other] of [[node.left, node.right], [node.right, node.left]]) {
+        if (!(literal instanceof IntLiteralNode) || literal.type !== PrimitiveType.INT) continue;
+        if (!(other.type instanceof IntType)) continue;
+        const widened = literalTypeBesideBounded(literal.value, other.type);
+        if (widened !== undefined) literal.type = widened;
+      }
     }
 
     const resType = resultingTypeForBinaryOp(node.operator, node.left.type!, node.right.type!, node.sourceArithmetic);

@@ -39,6 +39,11 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function compound(uint8 a) { uint8 b = a; b += 1; require(b > a); }'
   + '   function postfix(uint8 a) { uint8 b = a; uint8 c = b++; require(b > c); }'
   + '   function wraps(uint8 a) { unchecked { require(a - 1 == 255); } }'
+  + '   function widened(uint8 a) { require(a * 10000 / 10000 == a); }'
+  + '   function widenedLead(uint8 a) { require(10000 * a / 10000 == a); }'
+  + '   function widenedSum(uint8 a) { require(a + 1000 > a); }'
+  + '   function widenedWraps(uint8 a) { unchecked { require(a * 10000 == 50000); } }'
+  + '   function noCommonType(int8 a) { require(a * 300 / 300 == a); }'
   + ' }';
 const ARTIFACT = compileString(SOURCE, { composition: 'per-call' });
 const PROGRAM = fillPlaceholders(scriptToBytecode(asmToScript(ARTIFACT.bytecode)), ARTIFACT.composition!.placeholders, {
@@ -93,5 +98,26 @@ describe('arithmetic beside an integer literal in a per-call body', () => {
 
   it('wraps a - 1 on a uint8 inside unchecked, as Solidity does', () => {
     expect([spend('wraps', 0n), spend('wraps', 1n)]).toStrictEqual([true, false]);
+  });
+
+  // A literal that does not fit the bounded operand gives the operation the literal's own smallest type, as
+  // Solidity's common type does: `a * 10000` on a uint8 is checked, and wraps, as a uint16.
+  it.each([
+    ['a * 10000 on a uint8, as a uint16', 'widened', 6n, 7n],
+    ['10000 * a on a uint8, as a uint16', 'widenedLead', 6n, 7n],
+  ])('checks %s', (_shape, entry, inside, past) => {
+    expect([spend(entry, inside), spend(entry, past)]).toStrictEqual([true, false]);
+  });
+
+  it('accepts a + 1000 on a uint8 at its top, which a uint8 result would refuse', () => {
+    expect([spend('widenedSum', 0n), spend('widenedSum', 255n)]).toStrictEqual([true, true]);
+  });
+
+  it('wraps a * 10000 on a uint8 as a uint16 inside unchecked', () => {
+    expect([spend('widenedWraps', 5n), spend('widenedWraps', 7n)]).toStrictEqual([true, false]);
+  });
+
+  it('keeps the bounded type and its check where the literal\'s type takes no int8', () => {
+    expect([spend('noCommonType', 0n), spend('noCommonType', 1n)]).toStrictEqual([true, false]);
   });
 });

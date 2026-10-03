@@ -183,8 +183,9 @@ describe('a proxied entry that rewrites an element of a chunked dynamic value', 
     // More than one chunk payload, so the run's width is more than a single record.
     expect(BigInt(before.rows$len as bigint)).toBeGreaterThan(128n);
 
+    // Two edits: key 2 is absent between the list's two nodes and key 11 past its last, the two proofs of absence.
     const results = [];
-    for (const [index, absent] of [2n, 1n, 3n, 4n, 11n, 13n].entries()) {
+    for (const [index, absent] of [2n, 11n].entries()) {
       results.push(await callPerCallProxyEntry({
         provider: network,
         implementationArtifact: artifacts.Impl!,

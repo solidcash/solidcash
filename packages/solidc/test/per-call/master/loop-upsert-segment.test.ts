@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  binToHex, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
-  hash256,
+  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hash256,
 } from '@bitauth/libauth';
 import {
   asmToScript, buildEntryNftCovenantScript, computeCollectionHash, encodePushdataValue, encodeWitnessBlock,
@@ -12,14 +11,7 @@ import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
-import { COMPOSITION_LIMITS, compositionMachine } from '../machine.js';
-import { Contract, SignatureTemplate } from '../../../../solidcash/src/index.js';
-import MockNetworkProvider from '../../../../solidcash/src/network/MockNetworkProvider.js';
-import { deployStatefulContract } from '../../../../solidcash/src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../../solidcash/src/per-call/call/index.js';
-import p2pkhArtifact from '../../../../solidcash/test/fixture/p2pkh.artifact.js';
-import { alicePkh, alicePriv, alicePub } from '../../../../solidcash/test/fixture/vars.js';
-import { fundShippedFacets } from '../../../../solidcash/test/per-call/shapes/harness.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
 
@@ -404,89 +396,4 @@ describe('the same head with one mapping write beside the same call, the machine
     const outcome = verdict(build(batchProgram, batchLock, WORKER, [NODE_RECORD], LAST_SEGMENT));
     expect(outcome.accepted).toBe(false);
   });
-});
-
-/**
- * The other side of this suite's question: the run-time-loop upsert the shipped path *does* settle, accepted.
- *
- * Every verdict above is a refusal, and the two accepts beside them are the head's own controls rather than the
- * loop shape - so the loop upsert's accept is taken here as well, through the shipped compile and the shipped call
- * path, on the body whose key the frame holds and whose entry makes no call. The same body's publication is the
- * `loop-upsert-segment` publication pin's `loopUpsertAlone` case
- * (`solidc/test/per-call/master/write-shape-publication.test.ts:174`), and its accept and refused mutation are the
- * conformance guard's (`solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts:94`, with the mutation
- * refused inside the same case); the case here is
- * the machine's verdict in the file that asks which segment declares a loop upsert's records, so the served shape
- * and the varying-key shape are answered in one place.
- */
-const SERVED_LOOP_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Ledger {'
-  + '   mapping(address => uint) balances;'
-  + '   function move(address to, uint amount, int turns) {'
-  + '     for (int i = 0; i < turns; i = i + 1) { balances[to] = amount; }'
-  + '     require(turns > 0);'
-  + '   }'
-  + '   function ping() { require(true); }'
-  + ' }';
-
-/** A 32-byte outpoint hash whose bytes are not all the same, so a byte-order bug cannot hide in it. */
-function servedOutpoint(seed: number): string {
-  const bytes = new Uint8Array(32);
-  for (let index = 0; index < bytes.length; index += 1) bytes[index] = (seed + index * 7) & 0xff;
-  return binToHex(bytes);
-}
-
-const servedCommitment = (output: { readonly token?: { readonly nft?: { readonly commitment?: Uint8Array } } }):
-Uint8Array | undefined => output.token?.nft?.commitment;
-
-describe('the run-time-loop upsert the shipped path settles, its machine verdict', () => {
-  it('accepts the well-formed spend beside the refusal of the record the loop wrote being changed', async () => {
-    const artifact = compileStringMulti(SERVED_LOOP_SOURCE, { composition: 'per-call' }).Ledger!;
-    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const signature = new SignatureTemplate(alicePriv);
-    const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: servedOutpoint(0x30), vout: 0, satoshis: 500_000n };
-    await provider.addUtxo(funder.address, fundingUtxo);
-    await fundShippedFacets(provider);
-    const deployment = await deployStatefulContract(artifact, [], {
-      provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
-    });
-    const caller = encodeLockingBytecodeP2pkh(alicePkh);
-    const callerUtxo = { txid: servedOutpoint(0x50), vout: 0, satoshis: 200_000n };
-    await provider.addUtxo(binToHex(caller), callerUtxo);
-    const answered = await callPerCallEntry({
-      provider, artifact, categoryId: deployment.categoryId, functionName: 'move',
-      args: [binToHex(new Uint8Array(20).fill(0x44)), 42n, 2n] as never,
-      callerUtxo, callerLockingBytecode: caller, funder: signature.unlockP2PKH(), vm: compositionMachine(),
-    });
-    // `accepted` is true only when every participant's verdict is accepted, so this assertion is the machine's
-    // verdict on the well-formed spend of a mapping upsert that runs inside a loop.
-    expect({
-      accepted: answered.accepted,
-      objections: answered.verdicts.filter((participant) => !participant.accepted)
-        .map((participant) => String(participant.objection ?? 'refused')),
-    }).toStrictEqual({ accepted: true, objections: [] });
-
-    // The record the loop wrote is the output whose commitment differs from the input at the same index.
-    const index = answered.transaction.outputs.findIndex((output, at) =>
-      servedCommitment(output) !== undefined
-      && binToHex(servedCommitment(output)!)
-        !== binToHex(servedCommitment(answered.sourceOutputs[at]!) ?? new Uint8Array()));
-    expect(index).toBeGreaterThanOrEqual(0);
-    const committed = servedCommitment(answered.transaction.outputs[index]!)!;
-    const changed = new Uint8Array(committed);
-    changed[changed.length - 1] = (changed[changed.length - 1]! ^ 0x01) & 0xff;
-    const mutated = {
-      ...answered.transaction,
-      outputs: answered.transaction.outputs.map((output, at) => (at === index
-        ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: changed } } }
-        : output)),
-    };
-    const master = answered.verdicts.findIndex((participant) => participant.accepted);
-    expect(master).toBeGreaterThanOrEqual(0);
-    const vm = compositionMachine();
-    expect(vm.stateSuccess(vm.evaluate({
-      inputIndex: master, sourceOutputs: answered.sourceOutputs, transaction: mutated,
-    }))).not.toBe(true);
-  }, 600_000);
 });

@@ -57,9 +57,8 @@ const CALL = `IOther(${OTHER}).ping.call();`;
 // opens with, while the run the dynamic write grows is pinned by the epilogue in the segment the call opens.
 const MAPPING_THEN_SIZED_SOURCE = LEDGER(`balances[to] = amount; this.names.push("hi"); ${CALL}`);
 // The same two writes in the other source order: the segment of a sized field's write does not follow the source.
+// (The sized write after the call, on this ledger, is `write-shape-publication.test.ts`'s one-fact-per-write case.)
 const SIZED_THEN_MAPPING_SOURCE = LEDGER(`this.names.push("hi"); balances[to] = amount; ${CALL}`);
-// The sized write follows the call, which pins its run in the segment the call opened rather than the next one.
-const MAPPING_CALL_SIZED_SOURCE = LEDGER(`balances[to] = amount; ${CALL} this.names.push("hi");`);
 // A record written in one segment beside a dynamic run written in the last: both the record and the run land in
 // the segment the epilogue pins, and the batch keeps the segment its own write names.
 const RECORD_AND_MAPPING_SOURCE = LEDGER(`this.count = 1; balances[to] = amount; ${CALL}`);
@@ -83,7 +82,6 @@ const VARYING_LOOP_SOURCE = `pragma solidcash ^0.13.0;${PING}`
 
 const mappingThenSized = compileStringMulti(MAPPING_THEN_SIZED_SOURCE, { composition: 'per-call' }).Ledger!;
 const sizedThenMapping = compileStringMulti(SIZED_THEN_MAPPING_SOURCE, { composition: 'per-call' }).Ledger!;
-const mappingCallSized = compileStringMulti(MAPPING_CALL_SIZED_SOURCE, { composition: 'per-call' }).Ledger!;
 const recordAndMapping = compileStringMulti(RECORD_AND_MAPPING_SOURCE, { composition: 'per-call' }).Ledger!;
 const fixedAndSized = compileStringMulti(FIXED_AND_SIZED_SOURCE, { composition: 'per-call' }).Ledger!;
 const varyingLoop = compileStringMulti(VARYING_LOOP_SOURCE, { composition: 'per-call' }).Ledger!;
@@ -163,15 +161,6 @@ describe('the segment each write of a per-call entry lands in, as an artifact pu
     expect(segmentOf(sizedThenMapping, { collection: 'balances' })).toBe(0);
     expect(segmentOf(sizedThenMapping, { variable: 'names' })).toBe('last');
     expect(segmentOf(sizedThenMapping, { record: 0 })).toBe('last');
-  });
-
-  it('publishes the run\'s last segment for a sized write that follows the entry\'s call', () => {
-    // The call opens the second segment and the run is pinned in the last one the frame declares, so the batch's
-    // write and the run's do not share a segment and no single fact states the entry.
-    expect(publishedWrites(mappingCallSized, 'Ledger', 'move').single).toBeUndefined();
-    expect(segmentOf(mappingCallSized, { collection: 'balances' })).toBe(0);
-    expect(segmentOf(mappingCallSized, { variable: 'names' })).toBe('last');
-    expect(segmentOf(mappingCallSized, { record: 0 })).toBe('last');
   });
 
   it('names the segment of the fixed record and of the batch when they share one', () => {

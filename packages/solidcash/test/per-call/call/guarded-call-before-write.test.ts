@@ -21,9 +21,10 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  *
  * The `after` entry calls out when `total == 0` and only then sets `total = 5`; the write lies after the call, so
  * no write can precede the guarded site on the path that reaches it and the incoming state fixes the condition. The
- * `before` entry is the mirror: it writes `total` first, so the write does precede the site and the call must still
- * be stated. A planner that treated any write to the variable as preceding the site would state a record for the
- * arm the incoming state closes; one that dropped every write would lose the call the body makes true.
+ * mirror, a write that does precede the site and makes its condition true, still states the call: that is
+ * `call/proxy-guarded-write-call.test.ts` ("plans one call for the guarded site the frame itself makes true"). A
+ * planner that treated any write to the variable as preceding the site would state a record for the arm the
+ * incoming state closes; one that dropped every write would lose the call the body makes true.
  */
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
@@ -37,11 +38,6 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function after(int n) {'
   + '     if (this.total == 0) { IPing(this.target).ping(n); }'
   + '     this.total = 5;'
-  + '     require(true);'
-  + '   }'
-  + '   function before(int n) {'
-  + '     this.total = 5;'
-  + '     if (this.total == 5) { IPing(this.target).ping(n); }'
   + '     require(true);'
   + '   }'
   + ' }';
@@ -113,26 +109,6 @@ describe('a guarded call whose condition reads a variable the entry writes after
 
     expect(plan.calls).toHaveLength(0);
     expect(plan.callBases).toStrictEqual([-1]);
-  });
-
-  it('still states the call when the write precedes the guarded site', async () => {
-    const network = new MockNetworkProvider();
-    const pingCategoryId = categoryFor('guarded-after-write-ping');
-    const pingMaster = await liveCallee(network, pingCategoryId, ping);
-
-    // `total = 0` before the entry runs, and the entry writes `total = 5` ahead of the guard, so the call is made.
-    const plan = await planHopExternalCalls({
-      provider: network,
-      artifact: ledger,
-      functionName: 'before',
-      args: [1n],
-      externals: { IPing: { artifact: ping, categoryId: pingCategoryId } },
-      stateValues: { target: pingMaster, total: 0n },
-      validatorProgram: VALIDATOR_PROGRAM,
-    });
-
-    expect(plan.calls).toHaveLength(1);
-    expect(plan.callBases).toStrictEqual([0]);
   });
 
   it('keeps the conservative reading when a dynamic write precedes the guarded site', async () => {

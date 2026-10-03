@@ -22,21 +22,8 @@ function refusal(source: string, options: Record<string, unknown> = {}): string 
   }
 }
 
-describe('a contract whose transfer helper is written in assembly', () => {
-  it('is refused by name: inline assembly is not composed per-call', () => {
-    // The SafeERC20 shape re-raises a callee's revert from an assembly block, which a per-call master cannot emit.
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Token {'
-      + '   function safeTransfer(address to, int amount) {'
-      + '     assembly { OP_DUP OP_ADD 0x01 }'
-      + '     require(true);'
-      + '   }'
-      + ' }';
-    const message = refusal(source);
-    expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(message).toContain('inline assembly is not composed per-call');
-  });
-});
+// A body holding native assembly, as SafeERC20's re-raise of a callee's revert does, is refused by name in
+// `solidc/test/per-call/master/raw-call-refusals.test.ts`.
 
 describe('a value send', () => {
   it('is served: the body pins the lock it computed at the listed output', () => {
@@ -59,29 +46,15 @@ describe('a low-level call', () => {
   });
 });
 
-describe('composite values at an entry boundary', () => {
-  it('refuses an entry that returns an external function pointer', () => {
-    // A function pointer is an (address, selector) pair, so it is not one item the frame's `retval` comparison can
-    // hold; the entry is refused where it is compiled and the reason is published on the artifact.
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Returns {'
-      + '   function f() returns (function(int) external returns (int)) { revert("no"); }'
-      + ' }';
-    const message = refusal(source);
-    expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(message).toContain('returns a function pointer');
-  });
-
-  // An entry that returns a fixed-size array or a struct is admitted, not refused: each is one value the language
-  // holds already encoded, so the frame records the blob the entry's own `return` built and compares them. The
-  // accepts, the dynamic-member cases and the struct that stays refused (a mapping member is state, not a value)
-  // are machine cases in `solidc/test/per-call/master/composite-return.test.ts`.
-  //
-  // A call that passes a struct argument is admitted too, whether the struct is built from run-time values or
-  // written as a literal: the caller materializes one blob and the site's digest is the wire's. The accept, the
-  // array argument in both spellings, and the one argument type that stays refused (an external function pointer)
-  // are cases in `solidc/test/per-call/master/composed-arguments.test.ts`.
-});
+// At an entry boundary, an entry that returns a fixed-size array or a struct is admitted, not refused: each is one
+// value the language holds already encoded, so the frame records the blob the entry's own `return` built and
+// compares them. The accepts, the dynamic-member cases and the shapes that stay refused (a struct with a mapping
+// member, an external function pointer) are cases in `solidc/test/per-call/master/composite-return.test.ts`.
+//
+// A call that passes a struct argument is admitted too, whether the struct is built from run-time values or
+// written as a literal: the caller materializes one blob and the site's digest is the wire's. The accept, the
+// array argument in both spellings, and the one argument type that stays refused (an external function pointer)
+// are cases in `solidc/test/per-call/master/composed-arguments.test.ts`.
 
 describe('a recovery precompile', () => {
   it('is served: a master locates its recovery side-car pair from the input it runs on', () => {

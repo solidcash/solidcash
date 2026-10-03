@@ -8,7 +8,6 @@ import {
 } from '@solidcash/utils';
 import { ethers } from 'ethers';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory,
@@ -31,10 +30,11 @@ import {
  * The entry takes the four scalars as arguments and compares the recovered key against a compile-time owner. The
  * master dispatches over two entries, so a user enters it with the call data `selector || h || v || r || s`; the
  * composer reads the scalars from those argument pushes, builds the recovery side-car pair (and, for the EVM
- * projection, the keccak side-car), and `layoutTransaction` places them immediately after the master's input. A
- * digest the body computes is not an argument: the pair is built over placeholder scalars and learned from the
- * body's bind. The machine's verdict on every contract input - the master and each side-car - is the assertion; no
- * coordinate is supplied by the test.
+ * projection, the keccak side-car), and `layoutTransaction` places them immediately after the master's input. The
+ * machine's verdict on every contract input - the master and each side-car - is the assertion; no coordinate is
+ * supplied by the test. A digest the body computes, whose pair is learned from the body's bind, is driven through the
+ * shipped call path in `call/side-car-call.test.ts`, and so is the placeholder pair the EVM invalid-input rule
+ * co-spends (`master/ecrecover-invalid-input.test.ts` pins each range the body tests).
  */
 
 const CATEGORY = seededCategory('composer recovery');
@@ -62,17 +62,16 @@ const dummyUtxo = (odd: boolean): never => ({
 }) as never;
 
 /**
- * Signs one message, re-drawing fresh wallets until the shipped split probe accepts the signature. A given `hash`
- * (little-endian, as the builtin reads it) is signed instead of a message. The first draw is the key `firstKey`
- * names, known to split, because a refused probe tries every split and costs seconds.
+ * Signs one message, re-drawing fresh wallets until the shipped split probe accepts the signature. The first draw is
+ * the key `firstKey` names, known to split, because a refused probe tries every split and costs seconds.
  */
-async function splittableSigner(firstKey: string, hash?: Uint8Array): Promise<Signer> {
+async function splittableSigner(firstKey: string): Promise<Signer> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const wallet = attempt === 0
       ? new ethers.Wallet(ethers.sha256(ethers.toUtf8Bytes(firstKey))) : ethers.Wallet.createRandom();
     const message = `composer recovery ${attempt}`;
-    const digest = hash === undefined ? ethers.hashMessage(message) : `0x${binToHex(hash.slice().reverse())}`;
-    const signature = hash === undefined ? await wallet.signMessage(message) : wallet.signingKey.sign(digest).serialized;
+    const digest = ethers.hashMessage(message);
+    const signature = await wallet.signMessage(message);
     const { r, s, v } = ethers.Signature.from(signature);
     const h = leBytes(digest), rLe = leBytes(r), sLe = leBytes(s);
     const owner = hexToBin(ethers.SigningKey
@@ -228,18 +227,6 @@ function verdictsOf(test: RecoveryCase): Record<string, { accepted: boolean; obj
   }]));
 }
 
-/** The machine verdicts of a composed-but-underived case, for a body the derivation cannot settle. */
-function rawVerdicts(test: RecoveryCase): Record<string, boolean> {
-  const draft = composeDraft(test.plan);
-  const program = draft.programFor(MASTER_ID);
-  const vm = compositionMachine();
-  return Object.fromEntries(draft.layout.participants.map((placed) => [placed.id,
-    vm.stateSuccess(vm.evaluate({
-      inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
-    })) === true,
-  ]));
-}
-
 describe('a composed per-call recovery', () => {
   it('is accepted when the EVM projection reads its address from a keccak side-car', () => {
     // A trailing output, as an event or a send adds: the side-car must recreate at its own index, not at an offset
@@ -271,44 +258,6 @@ describe('a composed per-call recovery', () => {
     expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
     for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
   });
-});
-
-describe('a composed per-call recovery over a digest the body computes', () => {
-  it('stands on placeholder scalars until the body\'s bind hands back its own, then every input accepts', async () => {
-    // The digest is a signed-message digest the body hashes itself, so neither the recovery's hash nor the outer
-    // keccak256 preimage is an argument: both are learned from the body's binds.
-    const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
-    const prefix = utf8('per-call signed digest:');
-    const left = utf8('per-call recovery left');
-    const computed = await splittableSigner('composer recovery key 1',
-      keccak_256(Uint8Array.from([...prefix, ...keccak_256(left)])));
-    const { artifacts, program, abiFunction } = compiled('pragma solidcash ^0.13.0;'
-      + ' contract Auth {'
-      + '   function check(bytes prefix, bytes left, int v, bytes32 r, bytes32 s) {'
-      + '     bytes32 h = keccak256(bytes.concat(prefix, keccak256(left)));'
-      + `     require(ecrecoverPubKey(h, v, r, s) == pubkey(0x${binToHex(computed.owner)}));`
-      + '   }'
-      + '   function idle() { require(true); }'
-      + ' }');
-    const pushes = [
-      hexToBin(abiFunction.selector!), computed.s, computed.r, encodeIntegerValue(BigInt(computed.v)), left, prefix,
-    ];
-    // The keccak side-cars follow the recovery pair, where the body reads them.
-    const recovery = buildRecoverySideCars(MASTER_ID, recoveryCallsOf(abiFunction, pushes, 1));
-    const keccak = buildKeccakSideCars(MASTER_ID, keccakPreimagesOf(abiFunction, pushes, 1));
-    const test = caseOf(artifacts, program, pushes, {
-      ids: [...recovery.ids, ...keccak.ids],
-      inputs: { ...recovery.inputs, ...keccak.inputs },
-      computedWitnesses: [...recovery.computedWitnesses, ...keccak.computedWitnesses],
-    });
-    // Before the derivation the master refuses the placeholders, and every placeholder side-car stands on its own.
-    const before = rawVerdicts(test);
-    expect(before[MASTER_ID]).toBe(false);
-    for (const id of test.ids) expect(before[id], id).toBe(true);
-    const verdicts = verdictsOf(test);
-    expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
-    for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
-  }, 120_000);
 });
 
 describe('a composed per-call recovery in a frame that runs on its caller\'s records', () => {
@@ -420,19 +369,6 @@ describe('the recovery side-cars the composer places', () => {
     ]);
     const { layout } = composeDraft(test.plan);
     expect(layout.participants.map((placed) => placed.index)).toStrictEqual([0, 1, 2, 3]);
-  });
-});
-
-describe('the EVM invalid-input rule through the composer', () => {
-  // No pair recovers from these scalars, and the body answers the zero address for them without reading one, so
-  // the composer co-spends a placeholder pair that holds the place (`master/ecrecover-invalid-input.test.ts` pins
-  // each range the body tests).
-  it('co-spends a placeholder pair where the body answers the zero address, and every input accepts', () => {
-    const zero = new Uint8Array(32);
-    const test = recoveryCase({ h: zero, v: 0, r: zero, s: zero }, 'pubkey(0x)', 'pubkey');
-    const verdicts = verdictsOf(test);
-    expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
-    for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
   });
 });
 

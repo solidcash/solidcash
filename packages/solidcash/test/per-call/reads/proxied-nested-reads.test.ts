@@ -31,10 +31,11 @@ import {
  * which the provider's transaction count is asserted to show.
  *
  * A callee entry that takes a parameter is served when the caller's own code states the argument: the literal an
- * entry passes is resolved by the shipped resolver, exactly as the hop resolves its own call data. Everything else
- * the shape needs is served too: a view that returns a struct is one pushdata blob the shipped decoder reads back,
- * a contract a caller reaches more than once runs one frame per call with its own master each, and an entry that
- * makes two calls derives.
+ * entry passes is resolved by the shipped resolver, exactly as the hop resolves its own call data
+ * (`reads/read-through-external.test.ts`, "states a literal argument the caller pinned in its own code"). Everything
+ * else the shape needs is served too: a view that returns a struct is one pushdata blob the shipped decoder reads
+ * back, a contract a caller reaches more than once runs one frame per call with its own master each, and an entry
+ * that makes two calls derives.
  */
 
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
@@ -59,7 +60,6 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IStore {'
   + '   function value() view returns (int);'
   + '   function count() view returns (int);'
-  + '   function entry(int id) view returns (int);'
   + '   function guard() view returns (int);'
   + ' }'
   + ' contract Store {'
@@ -67,7 +67,6 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   int public n;'
   + '   function value() view returns (int) { return this.n; }'
   + '   function count() view returns (int) { return this.n; }'
-  + '   function entry(int id) view returns (int) { return this.n + id; }'
   + '   function guard() view returns (int) {'
   + '     require(this.n > 0, "n must be positive");'
   + '     return this.n;'
@@ -92,7 +91,6 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `     int second = IPeer(0x${hex(PEER_ADDRESS)}).value();`
   + '     return first + second;'
   + '   }'
-  + `   function byId() view returns (int) { return IStore(0x${hex(STORE_ADDRESS)}).entry(2); }`
   + `   function guarded() view returns (int) { return IStore(0x${hex(STORE_ADDRESS)}).guard(); }`
   + ' }';
 
@@ -243,15 +241,6 @@ describe('a read that reaches another contract\'s implementation at its proxy ad
 
     expect(result.accepted).toBe(true);
     expect(result.value).toBe(21n);
-  });
-
-  it('serves a callee entry that takes a literal argument', async () => {
-    // The `byId` entry calls the store's `entry(id)` with the literal 2, so the read states the call data from the
-    // caller's own code: the store's `n` is 7 and the entry's own body returns `n + id`.
-    const provider = await chain(7n);
-    const result = await read(provider, 'byId');
-    expect(result.accepted).toBe(true);
-    expect(result.value).toBe(9n);
   });
 
   it('reports the innermost refusal of a callee reached at its proxy, and builds nothing', async () => {

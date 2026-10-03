@@ -152,7 +152,6 @@ async function deployProxied(network: MockNetworkProvider): Promise<{ readonly p
     + '     this.total = 5;'
     + '   }'
     + '   function peek() view returns (int) { return this.total; }'
-    + '   function echo(int x) view returns (int) { return x; }'
     + ' }';
   const impl = compileStringMulti(source, { composition: 'per-call' }).Impl!;
 
@@ -230,7 +229,8 @@ describe('a read whose callee sits behind its own proxy', () => {
  * The caller's published routing says where each argument comes from, and the read resolves those sources with the
  * same resolver the hop uses: the read's own arguments, the frame's addresses, and a literal the caller's code
  * pinned. A source only the caller's live records state — its own stored field — is refused by the kind that names
- * it, so a read never invents a value it cannot see.
+ * it, so a read never invents a value it cannot see. The root's argument forwarded to a callee behind its own proxy
+ * is `reads/proxied-delegate-reads.test.ts`.
  */
 describe('a read that states a callee\'s arguments', () => {
   const ECHO_SOURCE = 'pragma solidcash ^0.13.0;'
@@ -284,33 +284,6 @@ describe('a read that states a callee\'s arguments', () => {
     const result = await readRoot('literal');
     expect(result.accepted).toBe(true);
     expect(result.value).toBe(11n);
-  });
-
-  it('forwards the root\'s argument through a callee reached behind its own proxy', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const { proxyAddress } = await deployProxied(network);
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' interface IEcho { function echo(int x) view returns (int); }'
-      + ` contract Root { function throughProxy(int x) view returns (int) {`
-      + `   return IEcho(0x${hex(proxyAddress)}).echo(x); } }`;
-    const proxiedRoot = compileStringMulti(source, { composition: 'per-call' }).Root!;
-    await fund(network, { artifact: proxiedRoot, category: A, categoryHex: A_HEX, seed: 'a', withValidator: true });
-
-    const result = await readPerCallEntry({
-      provider: network,
-      artifact: proxiedRoot,
-      categoryId: A_HEX,
-      functionName: 'throughProxy',
-      args: [6n],
-      vm: compositionMachine(),
-    });
-
-    expect(result.accepted).toBe(true);
-    expect(result.value).toBe(6n);
-    // The implementation runs as the proxy's delegate frame, and its call data is the pushes the caller recorded.
-    const implementationRun = result.draft.runs.find((run) => run.functionName.endsWith('.echo()'));
-    expect(implementationRun).toBeDefined();
-    expect(result.draft.blockOf(implementationRun!.master).kind).toBe(FrameKind.DELEGATE);
   });
 
   it('refuses an argument the caller\'s own live state records hold', async () => {

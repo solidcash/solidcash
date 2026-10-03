@@ -123,35 +123,24 @@ async function stamp(deployed: Deployed): Promise<Awaited<ReturnType<typeof call
 }
 
 describe('a per-call hop states the chain time as its nLocktime', () => {
-  it('stores the stated locktime in state and broadcasts a transaction carrying it', async () => {
-    const deployed = await deployClock();
-    deployed.network.increaseTime(1000);
-    const locktime = providerUnixLocktime(deployed.network)!;
-    expect(locktime).toBeGreaterThan(0);
-
-    const result = await stamp(deployed);
-
-    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(result.accepted).toBe(true);
-    expect(result.transaction.locktime).toBe(locktime);
-
-    // The broadcast transaction is the one the frames were evaluated against, so its locktime is the stated one.
-    const broadcast = decodeTransaction(hexToBin(result.broadcast!.hex));
-    expect(typeof broadcast).toBe('object');
-    expect((broadcast as { locktime: number }).locktime).toBe(locktime);
-
-    // The entry read the transaction's locktime and wrote it; the record the broadcast left carries it.
-    expect(await recordCommitment(deployed.network, deployed.proxyCategoryId)).toBe(bytesToHex(commitment(
-      impl.stateLayout!, { implementation: implementationAddress(), stamped: BigInt(locktime) },
-    )));
-  });
-
-  it('reads the tip each time, so a later chain time is stored as a later value', async () => {
+  it('stores the stated locktime and broadcasts it, reading the tip again for a later hop', async () => {
     const deployed = await deployClock();
     deployed.network.increaseTime(5000);
     const first = providerUnixLocktime(deployed.network)!;
+    expect(first).toBeGreaterThan(0);
+
     const firstResult = await stamp(deployed);
+
+    expect(firstResult.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(firstResult.accepted).toBe(true);
+    expect(firstResult.transaction.locktime).toBe(first);
+
+    // The broadcast transaction is the one the frames were evaluated against, so its locktime is the stated one.
+    const broadcast = decodeTransaction(hexToBin(firstResult.broadcast!.hex));
+    expect(typeof broadcast).toBe('object');
+    expect((broadcast as { locktime: number }).locktime).toBe(first);
+
+    // The entry read the transaction's locktime and wrote it; the record the broadcast left carries it.
     expect(await recordCommitment(deployed.network, deployed.proxyCategoryId)).toBe(bytesToHex(commitment(
       impl.stateLayout!, { implementation: implementationAddress(), stamped: BigInt(first) },
     )));

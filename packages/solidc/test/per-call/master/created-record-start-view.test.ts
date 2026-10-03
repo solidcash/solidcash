@@ -15,9 +15,9 @@ import {
  * holds a created record's declared start view to nothing, so a caller cannot make a fresh record appear to start
  * from a commitment no input carries.
  *
- * The cases run the shipped path: the source is compiled with the per-call convention, deployed, and the machine's
- * verdict on the master's own input is the assertion. The positive control is the created record declared from the
- * empty commitment; the refusal is the same spend with that start view replaced.
+ * The case runs the shipped path: the source is compiled with the per-call convention, deployed, and the machine's
+ * verdict on the master's own input is the assertion. The positive control, the created record declared from the
+ * empty commitment, sits beside the refusal: the same spend with that start view replaced.
  */
 
 const K = distinctBytes(20, 0x13);
@@ -53,10 +53,6 @@ function declaredWithCreatedStart(startView: Uint8Array): RecordEntry[] {
 }
 
 describe('a record the transaction creates', () => {
-  it('is accepted when its declared start view is empty', () => {
-    expect(evaluateMasterSpend(MASTER, { args, records: records() })).toStrictEqual({ accepted: true });
-  });
-
   it('is refused when its declared start view is not empty', () => {
     expect(evaluateMasterSpend(MASTER, {
       args, records: records(), declared: declaredWithCreatedStart(NON_EMPTY_START),

@@ -6,11 +6,8 @@ import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import {
-  mappingValueChunkLock, participant, planMappingBatch, planMappingWrite,
-} from '../../../src/per-call/composer/index.js';
-import { DEFAULT_MASTER_POOL_SIZE, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { mappingValueChunkLock, planMappingBatch, planMappingWrite } from '../../../src/per-call/composer/index.js';
+import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { bytesToSlotValue } from '../../../src/stateful/SortedList.js';
@@ -25,7 +22,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * UTXOs. The hop has to declare them in the frame's segment: the head sentinel it splices through, recreated in
  * place, and every node it creates as a trailing output. Each node's commitment carries the value the artifact
  * states for the write, so the plan declares it outright rather than learning it from the body's close. The
- * expected commitments here come from the shipped batch planner against the real keys and values.
+ * expected commitments here come from the shipped batch planner against the real keys and values. Eight keys in one
+ * initialize frame, broadcast and read back linked, are `conformance/record-growth-rows.test.ts`.
  */
 
 const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
@@ -35,20 +33,6 @@ const SINGLE_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Impl {'
   + '   mapping(string => string) tags;'
   + '   function initialize() { this.tags["DV"] = "DIGITAL_VIDEO"; }'
-  + ' }';
-
-/** The marketplace data contract's own eight-key initializer. */
-const EIGHT_TAGS: readonly (readonly [string, string])[] = [
-  ['DA', 'DIGITAL_AUDIO'], ['DV', 'DIGITAL_VIDEO'], ['DT', 'DIGITAL_TEXT'], ['DS', 'DIGITAL_SOFTWARE'],
-  ['DO', 'DIGITAL_OTHERS'], ['NDG', 'NON_DIGITAL_GOODS'], ['NDS', 'NON_DIGITAL_SERVICES'],
-  ['NDO', 'NON_DIGITAL_OTHERS'],
-];
-const EIGHT_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Impl {'
-  + '   mapping(string => string) tags;'
-  + '   function initialize() {'
-  + EIGHT_TAGS.map(([key, value]) => `     this.tags["${key}"] = "${value}";`).join('')
-  + '   }'
   + ' }';
 
 /**
@@ -242,53 +226,6 @@ describe('a proxied initialize that writes a sorted mapping', () => {
     const trailing = deployment.initialize.draft.trailingOutputs;
     expect(trailing).toHaveLength(1);
     expect(bytesToHex(trailing[0]!.output.token!.nft!.commitment)).toBe(bytesToHex(expected));
-  });
-
-  it('broadcasts the eight-key initializer, spending the head the proxy genesis minted', async () => {
-    const { deployment, network, artifacts } = await deploy(EIGHT_SOURCE, [], true);
-
-    expect(deployment.initialize.completed.map((frame) => frame.functionName))
-      .toStrictEqual(['Impl.initialize()', 'ImplProxy.__fallback()']);
-    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(deployment.initialize.accepted).toBe(true);
-    const hop = deployment.initialize.broadcast;
-    expect(hop).toBeDefined();
-
-    // The head participant sits on the UTXO the proxy's genesis minted, so the hop spends the empty head and
-    // recreates it as the collection's first node.
-    const headId = deployment.initialize.draft.layout.participants
-      .find((placed) => placed.id.startsWith('mapping-head-'))!.id;
-    const headIndex = participant(deployment.initialize.draft.layout, headId).index;
-    expect(binToHex(hop!.inputs[headIndex]!.outpointTransactionHash)).toBe(deployment.proxy.tx.txid);
-    expect(headId).toBe('mapping-head-tags');
-
-    const encoder = new TextEncoder();
-    const plan = planMappingBatch({
-      writes: EIGHT_TAGS.map(([key, value]) => ({ keys: [encoder.encode(key)], value: encoder.encode(value) })),
-      inventory: [headSentinelCommitment()],
-      encodeValue: encodeChunkableValueTail,
-    });
-    // The head is recreated with the commitment the batch relinked it to, and every created node its own.
-    expect(bytesToHex(hop!.outputs[headIndex]!.token!.nft!.commitment))
-      .toBe(bytesToHex(plan.written.find((node) => node.existed)!.after));
-    const created = plan.written.filter((node) => !node.existed);
-    const trailing = deployment.initialize.draft.trailingOutputs;
-    expect(trailing).toHaveLength(created.length);
-    created.forEach((node, position) => {
-      const output = trailing[position]!;
-      expect(bytesToHex(output.output.token!.nft!.commitment)).toBe(bytesToHex(node.after));
-      expect(bytesToHex(hop!.outputs[output.index]!.token!.nft!.commitment)).toBe(bytesToHex(node.after));
-    });
-    expect(await network.getRawTransaction(hop!.txid)).toMatch(/^[0-9a-f]+$/);
-
-    // The deployment reads the relinked head and the eight created nodes back as collection nodes rather than
-    // folding them into the validator pool.
-    const proxyLayout = buildProxyArtifact(artifacts.Impl!).stateLayout!;
-    const pools = await readPerCallDeployment(network, deployment.proxy.categoryId, proxyLayout);
-    expect(pools.collectionNodes.map((node) => node.token?.nft?.commitment).sort())
-      .toStrictEqual(plan.written.map((node) => binToHex(node.after)).sort());
-    expect(pools.validators).toHaveLength(DEFAULT_MASTER_POOL_SIZE.validators);
-    expect(pools.records).toHaveLength(1);
   });
 
   it('settles a struct value past the inline limit, declaring the run of chunks it wrote', async () => {

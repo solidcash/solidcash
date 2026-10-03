@@ -22,7 +22,8 @@ import {
  * The compiler's `address` is a locking bytecode, which is what a contract stores when it keys a mapping by one —
  * an element of an `address[]`, a `msg.sender`, an argument the body wrote. A caller may name the same address as a
  * locking bytecode, as a CashAddress, or as the 20-byte payload an EVM ABI carries, and all three name one key: the
- * read has to locate the node the lock names whichever form its own arguments use, or it proves the key absent.
+ * read has to locate the node the lock names whichever form its own arguments use, or it proves the key absent. The
+ * payload's hex spelling is widened by the same shipped encoder, which `Argument.test.ts` pins.
  */
 
 const LABEL = 'address argument read';
@@ -138,19 +139,5 @@ describe('reading a mapping keyed by an address', () => {
     const result = await read(provider, other);
     expect(result.accepted).toBe(true);
     expect(result.value).toBe(0n);
-  });
-
-  it('takes the account as a hex payload too, which names the same lock', async () => {
-    const provider = await chain();
-
-    // A caller may spell the account the way an EVM ABI prints it: the shipped encoder is what widens it, so the
-    // read keys the node the lock names rather than the payload's own bytes.
-    const result = await readPerCallEntry({
-      provider, artifact, categoryId: CATEGORY_HEX, functionName: 'heldAt',
-      args: [`0x${bytesToHex(PAYLOAD)}`], vm: compositionMachine(),
-    });
-    expect(result.accepted).toBe(true);
-    expect(result.value).toBe(HELD);
-    expect(spentNodeSlot(result)).toBe(bytesToHex(keyToSlotMulti([LOCK])));
   });
 });

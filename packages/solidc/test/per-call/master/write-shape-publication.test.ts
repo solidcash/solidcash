@@ -1,15 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import type { Artifact, PublishedRefusedEntry, PublishedWriteSegment } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
-import { COMPOSITION_LIMITS, compositionMachine } from '../machine.js';
-import { Contract, SignatureTemplate } from '../../../../solidcash/src/index.js';
-import MockNetworkProvider from '../../../../solidcash/src/network/MockNetworkProvider.js';
-import { deployStatefulContract } from '../../../../solidcash/src/stateful/sc-deploy.js';
-import { callPerCallEntry } from '../../../../solidcash/src/per-call/call/index.js';
-import p2pkhArtifact from '../../../../solidcash/test/fixture/p2pkh.artifact.js';
-import { alicePkh, alicePriv, alicePub } from '../../../../solidcash/test/fixture/vars.js';
-import { fundShippedFacets } from '../../../../solidcash/test/per-call/shapes/harness.js';
 
 /**
  * The write facts an entry publishes, for the three shapes a builder reads them for.
@@ -21,13 +12,11 @@ import { fundShippedFacets } from '../../../../solidcash/test/per-call/shapes/ha
  * the list. This file pins the first two: an entry that makes a call and writes nothing, and an entry whose mapping
  * write and dynamic run land in different segments.
  *
- * The publication facts are this file's subject, and the machine verdict they are read for is taken here too: the
- * last case deploys the body the fourth case publishes and calls it through the shipped call path, asserting that
- * the machine accepts the well-formed spend and refuses the same spend with one byte of the written record changed
- * (imports are relative because the shipped deploy and call path live in the SDK, as they do in the sibling harness
- * `loop-upsert-segment.test.ts`). The same accept/refuse pair beside a call is
- * `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts:217` (accept at `:221`, the mutation refused
- * at `:238`, the refusing participant named at `:272`).
+ * The publication facts are this file's subject. The machine verdict they are read for is the shipped call path's:
+ * the run-time-loop upsert the fourth case publishes is accepted, and refused with one byte of the written record
+ * changed, in `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts` ("the machine accepts the
+ * run-time-loop upsert, and refuses the record it wrote being changed"), and the same pair beside a call in
+ * `solidcash/test/per-call/conformance/loop-upsert-beside-call.test.ts`.
  */
 
 /** One write as the artifact publishes it. */
@@ -109,10 +98,9 @@ const LOOP_UPSERT_BETWEEN_CALLS_SOURCE = `pragma solidcash ^0.13.0;${PING}`
   + ' }';
 
 // The same loop with no call anywhere in the body: this is the runtime-loop-upsert shape whose well-formed spend
-// the shipped call path settles and whose mutation it refuses
-// (`solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`: `:93-96` accepts, `:110-121` refuses the
-// record the entry wrote being changed). The body below is that guard's body, so the fact this file pins and the
-// machine pair that file pins are about one shape.
+// the shipped call path settles and whose mutation it refuses (the first case of
+// `solidcash/test/per-call/conformance/loop-upsert-settlement.test.ts`). The body below is that guard's body, so the
+// fact this file pins and the machine pair that file pins are about one shape.
 const LOOP_UPSERT_ALONE_SOURCE = `pragma solidcash ^0.13.0;`
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
@@ -181,82 +169,4 @@ describe('the write facts an entry publishes', () => {
     ]);
     expect(published.refused).toStrictEqual([]);
   });
-});
-
-/**
- * The machine verdict for the shape this file publishes, taken through the shipped deploy and call path.
- *
- * The publication facts above are this file's subject; the verdict the acceptance asks for is the machine's, so it
- * is taken here on the same body the `loopUpsertAlone` case publishes - the run-time-loop upsert whose key the frame
- * holds - by deploying it and calling the entry exactly as a user does. `accepted` is true only when every
- * participant's verdict is accepted; the second half changes one byte of the record the entry wrote and the machine
- * refuses that spend.
- */
-function outpointHash(seed: number): string {
-  const bytes = new Uint8Array(32);
-  for (let index = 0; index < bytes.length; index += 1) bytes[index] = (seed + index * 7) & 0xff;
-  return binToHex(bytes);
-}
-
-// The body the verdict is taken on: the same run-time-loop upsert the `loopUpsertAlone` case publishes, with a
-// second entry so a user's frame carries a selector. The publication facts above are that body's; this one is only
-// the call path's vehicle for the machine's verdict.
-const SETTLE_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Ledger {'
-  + '   mapping(address => uint) balances;'
-  + '   function move(address to, uint amount, int turns) {'
-  + '     for (int i = 0; i < turns; i = i + 1) { balances[to] = amount; }'
-  + '     require(turns > 0);'
-  + '   }'
-  + '   function ping() { require(true); }'
-  + ' }';
-const settle = compileStringMulti(SETTLE_SOURCE, { composition: 'per-call' }).Ledger!;
-
-const commitmentOf = (output: { readonly token?: { readonly nft?: { readonly commitment?: Uint8Array } } }):
-Uint8Array | undefined => output.token?.nft?.commitment;
-
-describe('the machine verdict for the run-time-loop upsert whose key the frame holds', () => {
-  it('accepts the well-formed spend, and refuses the record the entry wrote being changed', async () => {
-    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const signature = new SignatureTemplate(alicePriv);
-    const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: outpointHash(0x30), vout: 0, satoshis: 500_000n };
-    await provider.addUtxo(funder.address, fundingUtxo);
-    await fundShippedFacets(provider);
-    const deployment = await deployStatefulContract(settle, [], {
-      provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
-    });
-    const caller = encodeLockingBytecodeP2pkh(alicePkh);
-    const callerUtxo = { txid: outpointHash(0x50), vout: 0, satoshis: 200_000n };
-    await provider.addUtxo(binToHex(caller), callerUtxo);
-    const answered = await callPerCallEntry({
-      provider, artifact: settle, categoryId: deployment.categoryId, functionName: 'move',
-      args: [binToHex(new Uint8Array(20).fill(0x44)), 42n, 2n] as never,
-      callerUtxo, callerLockingBytecode: caller, funder: signature.unlockP2PKH(), vm: compositionMachine(),
-    });
-    expect({ accepted: answered.accepted,
-      objections: answered.verdicts.filter((verdict) => !verdict.accepted)
-        .map((verdict) => String(verdict.objection ?? 'refused')) })
-      .toStrictEqual({ accepted: true, objections: [] });
-
-    const index = answered.transaction.outputs.findIndex((output, at) =>
-      commitmentOf(output) !== undefined
-      && binToHex(commitmentOf(output)!) !== binToHex(commitmentOf(answered.sourceOutputs[at]!) ?? new Uint8Array()));
-    expect(index).toBeGreaterThanOrEqual(0);
-    const committed = commitmentOf(answered.transaction.outputs[index]!)!;
-    const changed = new Uint8Array(committed);
-    changed[changed.length - 1] = (changed[changed.length - 1]! ^ 0x01) & 0xff;
-    const mutated = {
-      ...answered.transaction,
-      outputs: answered.transaction.outputs.map((output, at) => (at === index
-        ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: changed } } }
-        : output)),
-    };
-    const master = answered.verdicts.findIndex((verdict) => verdict.accepted);
-    expect(master).toBeGreaterThanOrEqual(0);
-    const vm = compositionMachine();
-    expect(vm.stateSuccess(vm.evaluate({
-      inputIndex: master, sourceOutputs: answered.sourceOutputs, transaction: mutated,
-    }))).not.toBe(true);
-  }, 600_000);
 });

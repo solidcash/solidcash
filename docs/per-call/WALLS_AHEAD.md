@@ -16,7 +16,7 @@ guards, loops, side-cars, write segments), and the sources in `.marketplace/cont
 | #52 refund sanity, #53 refund | `refund` declares its mapping batch in segment 2 and its dynamic record's chunk run in segment 4, and the frame reads the run past its own block's records (refused by name) | `_refund`'s one-turn whitelist loop (row above) | compiler/composer; in progress (R3) |
 | #50, #51 approve result | the setup's `takeJob` | MS4 (`ahead/reentry-payout.test.ts`) now passes the re-entered guard it was pinned at and stops in the payout loop: `Escrow.sendShare()` line 36 reads an input index the transaction does not have (a node one transfer created, rewritten by the next) | hop; in progress (R1) |
 | #59-#62 arbitrate | the setup's `takeJob` | MS7 (`ahead/deep-arbitration.test.ts`) now stops earlier than pinned: the re-entered `STATIC` `Judge.readFlag()` (line 64) reads the flag its outer frame just wrote through a view that does not parse; a re-entered frame needs the view its outer frame left | hop; in progress (R1) |
-| #31 update job | a 99,999-byte `contentHash` cannot be pushed (BCH's element limit is 10,000 bytes), so the SDK fails before the contract's own "incorrect data length" check | an option: derive with the largest encodable stand-in, report the contract's revert if it reverts, refuse by name otherwise, never broadcast | open |
+| #31 update job | **served** (`5c4f232b7`): "incorrect data length" is ethers' own encoder error for a `bytes32` of another length, raised before any contract runs; the per-call handle now checks each argument with the shared encoder (a `bytesN` length, an integer's range) before composing, and the title passes | - | - |
 
 ## Replicas whose pins are stale at `055833fb4`
 

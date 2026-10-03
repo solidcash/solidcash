@@ -8063,6 +8063,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // It lets epilogue cleanup distinguish runtime-only temporaries from the still-live caller frame below it.
       this.pushToStack(GRAPH_HANDLER_CALLER_DEPTH, true);
     }
+    // A constructor's arm runs only in its category's genesis, ahead of anything its frame supplies.
+    this.emitDirectGenesisGuard(node);
     // Only ABI entry frames contain attacker-supplied raw stack values. An OP_DEFINE subroutine is reachable
     // exclusively through compiler-emitted typed calls (including function-pointer dispatch), whose operands have
     // already been checked at their external boundary and after every bounded operation/cast. Rechecking every
@@ -9048,6 +9050,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NIP, { location: functionBodyNode.location, positionHint: PositionHint.END });
       this.nipFromStack();
     }
+  }
+
+  /**
+   * Runs a direct contract's constructor only in its category's genesis, by the per-call master's check: input 0
+   * must spend `(category, 0)`, which only the deployment's probe does. Without it a live contract ran the arm for
+   * anyone: an owner rewritten, a supply minted twice, a coin spent through a constructor that checks nothing.
+   */
+  private emitDirectGenesisGuard(node: FunctionDefinitionNode): void {
+    if (node.name !== '__construct' || this.isDefineSubTraversal || this.perCallMaster) return;
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    this.emit(bytecodeToScript(genesisSpendCheck()), loc);
+    this.requires.push({
+      ip: this.getMostRecentInstructionPointer(),
+      line: node.location.start.line,
+      message: 'a constructor runs only in its genesis',
+    });
   }
 
   enforceFunctionParameterTypes(node: FunctionDefinitionNode): void {

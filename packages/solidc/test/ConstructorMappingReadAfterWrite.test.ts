@@ -89,8 +89,9 @@ function settleDirect(artifact: Artifact, args: Record<string, Uint8Array>, crea
   const token = (capability: 'minting' | 'mutable', commitment: Uint8Array): VmOutput['token'] =>
     ({ category: CATEGORY, amount: 0n, nft: { capability, commitment } });
   const outpoint = (index: number): Uint8Array => distinctBytes(32, 0x80 + index);
+  // The constructor arm runs only where input 0 spends the category's genesis outpoint, as the probe's master does.
   const master = {
-    outpointIndex: 0, outpointTransactionHash: outpoint(0), sequenceNumber: 0xffffffff,
+    outpointIndex: 0, outpointTransactionHash: CATEGORY, sequenceNumber: 0xffffffff,
     unlockingBytecode: new Uint8Array([...encodeDataPush(hexToBin(constructor.selector!)),
       ...pushes.flatMap((push) => [...encodeDataPush(push)]), ...encodeDataPush(redeem)]),
   };

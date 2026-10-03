@@ -94,9 +94,10 @@ export async function deriveDeployCommitments<T extends Artifact>(
     stateLayout, options.initialState ?? {}, options.provider.consensusLimits?.maximumNftCommitmentBytes,
   );
 
-  // Synthetic master UTXO (contract's locking script + minting NFT)
+  // Synthetic master UTXO (contract's locking script + minting NFT). It spends the category's genesis outpoint, as
+  // the real genesis's input 0 does: the constructor arm runs only where input 0 spends `(category, 0)`.
   const syntheticMaster: Utxo = {
-    txid: '00'.repeat(32), vout: 0, satoshis: masterAmount,
+    txid: categoryId, vout: 0, satoshis: masterAmount,
     token: {
       category: categoryId, amount: 0n,
       nft: { capability: 'minting', commitment: '' },
@@ -412,8 +413,9 @@ export async function deriveDeployCommitments<T extends Artifact>(
     }
 
     // Direct msg.sender resolves to tx.origin, the first native P2PKH source output. Keep the real funder after
-    // the fixed constructor block so it supplies identity without shifting any positional covenant slots.
-    probeBuilder.addInput(options.fundingUtxo, options.funder);
+    // the fixed constructor block so it supplies identity without shifting any positional covenant slots. The
+    // master spends the funding coin's outpoint, so the funder keeps its lock and value at a probe-only one.
+    probeBuilder.addInput({ ...options.fundingUtxo, txid: `${'00'.repeat(31)}ef`, vout: 0 }, options.funder);
 
     // Output 0: master preserved
     probeBuilder.addOutput({

@@ -13,11 +13,12 @@ import { sharedNodeId, type HopEntryWrites } from '../../../src/per-call/proxy/e
  * checked together before any frame is settled. What the check reads of a frame is its own name, the category its
  * records sit at, the nodes it reads and the writes its plan stated, so a frame is stated here as exactly that much.
  *
- * A node several reaches touch is one participant whose views chain in the order the frames run, so reads and
- * updates of a key the list holds share one transaction. An insert does not chain on the master, so its chains are
- * refused by name at planning. A value that chunks chains the same way, and the later reach continues from the bytes
- * the reach before it wrote; a chunkable write that states no value leaves the later reach none, refused once the
- * hop has settled.
+ * A node several reaches touch is one participant whose views chain in the order the frames run, so reads, updates
+ * and the relinks of inserts share one transaction: each reach is planned against the list the reaches before it
+ * left. A key the list does not hold is inserted once, so a second insert of it is refused by name. A value that
+ * chunks chains the same way, and the later reach continues from the bytes the reach before it wrote; a chunkable
+ * write that states no value leaves the later reach none, refused once the hop has settled, and a relink states
+ * none, refused at planning.
  */
 
 const IMPL_CATEGORY = 'a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f708192a3b4c5d6e7f809';
@@ -217,31 +218,73 @@ describe('the cross-reach write check', () => {
     expect(() => requireSettledNodeChains(frames)).not.toThrow();
   });
 
-  it('refuses two reaches that insert through one node', () => {
-    // Two keys that land in one gap: each reach relinks the one predecessor to its own key.
+  it('allows two reaches that insert into one gap, the later settled after the earlier', () => {
+    // Two keys that land in one gap: the later reach is planned against the link the earlier one left, so it relinks
+    // the predecessor again from the view the earlier relink left.
     const writes = (slot: Uint8Array): HopEntryWrites => write({
       collection: '_held', chunkable: false, slots: [slot], predecessor: PREDECESSOR_SLOT,
       spentIds: [nodeOf('_held', PREDECESSOR_SLOT)],
     });
-    expect(() => requireSatisfiableReachWrites([
+    const frames = [
       frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: writes(KEY_SLOT) }),
       frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: writes(OTHER_KEY_SLOT) }),
-    ])).toThrow(/insert into collection "_held" through the same node/);
+    ];
+    expect(() => requireSatisfiableReachWrites(frames)).not.toThrow();
+    expect(sharedNodeWritersBefore(frames)).toStrictEqual(new Map([[1, [0]]]));
   });
 
-  it('refuses a read of the node an earlier reach relinks to insert a key', () => {
-    const insert = write({
-      collection: '_held', chunkable: false, slots: [KEY_SLOT], predecessor: PREDECESSOR_SLOT,
-      spentIds: [nodeOf('_held', PREDECESSOR_SLOT)],
+  it('allows an insert through a node an earlier reach updated, and an update of a node an earlier reach relinked',
+    () => {
+      const update = write({
+        collection: '_held', chunkable: false, slots: [PREDECESSOR_SLOT],
+        spentIds: [nodeOf('_held', PREDECESSOR_SLOT)],
+      });
+      const insert = write({
+        collection: '_held', chunkable: false, slots: [KEY_SLOT], predecessor: PREDECESSOR_SLOT,
+        spentIds: [nodeOf('_held', PREDECESSOR_SLOT)],
+      });
+      const updateFirst = [
+        frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: update }),
+        frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: insert }),
+      ];
+      expect(() => requireSatisfiableReachWrites(updateFirst)).not.toThrow();
+      expect(() => requireSatisfiableReachWrites([updateFirst[1]!, updateFirst[0]!])).not.toThrow();
+      expect(sharedNodeWritersBefore(updateFirst)).toStrictEqual(new Map([[1, [0]]]));
     });
+
+  it('allows an insert through the node an earlier reach created', () => {
+    // The created node carries no input, so the later reach names it at the creating reach's output and spends none.
     expect(() => requireSatisfiableReachWrites([
-      frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: insert }),
-      frame({
-        name: 'Ledger.held()', categoryHex: IMPL_CATEGORY,
-        reads: [{ id: nodeOf('_held', PREDECESSOR_SLOT), collection: '_held' }],
-      }),
-    ])).toThrow(/that an earlier reach "Ledger.move\(\)" relinks to insert a key/);
+      frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: write({
+        collection: '_held', chunkable: false, slots: [KEY_SLOT], predecessor: PREDECESSOR_SLOT,
+        spentIds: [nodeOf('_held', PREDECESSOR_SLOT)],
+      }) }),
+      frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: write({
+        collection: '_held', chunkable: false, slots: [OTHER_KEY_SLOT], predecessor: KEY_SLOT, spentIds: [],
+      }) }),
+    ])).not.toThrow();
   });
+
+  it('allows a read of the node an earlier reach relinks to insert a key, and refuses it for a value that chunks',
+    () => {
+      const insertInto = (collection: string, chunkable: boolean): HopEntryWrites => write({
+        collection, chunkable, slots: [KEY_SLOT], predecessor: PREDECESSOR_SLOT,
+        spentIds: [nodeOf(collection, PREDECESSOR_SLOT)],
+      });
+      const readOf = (collection: string): HopCallee => frame({
+        name: 'Ledger.held()', categoryHex: IMPL_CATEGORY,
+        reads: [{ id: nodeOf(collection, PREDECESSOR_SLOT), collection }],
+      });
+      expect(() => requireSatisfiableReachWrites([
+        frame({ name: 'Ledger.move()', categoryHex: IMPL_CATEGORY, writes: insertInto('_held', false) }),
+        readOf('_held'),
+      ])).not.toThrow();
+      // A chunking node's later reach continues from the bytes the write before it stated, and a relink states none.
+      expect(() => requireSatisfiableReachWrites([
+        frame({ name: 'Store.publish()', categoryHex: IMPL_CATEGORY, writes: insertInto('_events', true) }),
+        readOf('_events'),
+      ])).toThrow(/that an earlier reach "Store.publish\(\)" relinks to insert a key; a node whose values chunk/);
+    });
 
   it('allows a read of the node an earlier reach created, planned as its own node', () => {
     // The reach reads the key the insert added, so it resolves to the node the insert created rather than the

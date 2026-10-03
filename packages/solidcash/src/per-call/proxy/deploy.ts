@@ -47,7 +47,7 @@ import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { deployStatefulContract } from '../../stateful/sc-deploy.js';
 import { registerDeployment } from '../../stateful/deployment-registry.js';
-import { decodeEntryCommitment, headSentinelCommitment } from '../../stateful/SortedList.js';
+import { decodeEntryCommitment, encodeEntryCommitment, headSentinelCommitment } from '../../stateful/SortedList.js';
 import { providerUnixLocktime } from '../../stateful/soft-state-overlays.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails, scriptToLockingBytecode } from '../../utils.js';
@@ -2852,12 +2852,14 @@ function calleeDeclaredRecordsOfCategory(
 /**
  * Chains the views the frames declare for each node several of them touch, in the order the validator walks them.
  *
- * Every callee frame is planned against the deployment alone, so each declares a node as the deployment holds it,
- * while the transaction spends the node once and the validator reads its declarations as one chain in execution
- * order (V6): each frame's segments, a call's callee between the segment that makes it and the next. The walk
- * restates the declarations in that order: a kept one keeps the view the last write before it left, and a write
- * continues from that view to the one its own frame computed, which the hop learns from that frame. `ends` is the
- * view each written node's chain ends at, which its output carries.
+ * Every callee frame is planned against the deployment and the links the frames placed before it left, so each
+ * declares a node as the plan last saw it, while the transaction spends the node once and the validator reads its
+ * declarations as one chain in execution order (V6): each frame's segments, a call's callee between the segment that
+ * makes it and the next. The walk restates the declarations in that order: a kept one keeps the view the last write
+ * before it left, and a write continues from that view to the one its own frame computed, which the hop learns from
+ * that frame. A relink (`relinks`) keeps the slot and the value of the view it continues from and takes the
+ * successor its plan states, since a value an earlier frame wrote is that frame's to compute. `ends` is the view
+ * each written node's chain ends at, which its output carries.
  */
 function chainSharedNodeViews(
   masters: readonly DraftMaster[],
@@ -2866,6 +2868,7 @@ function chainSharedNodeViews(
   writes: ReadonlySet<DraftRecordEntry>,
   learned: ReadonlyMap<string, ReadonlySet<number>> = new Map(),
   held = false,
+  relinks: ReadonlySet<DraftRecordEntry> = new Set(),
 ): {
   readonly masters: readonly DraftMaster[];
   readonly ends: ReadonlyMap<number, Uint8Array>;
@@ -2908,12 +2911,14 @@ function chainSharedNodeViews(
           const heldHere = held && bytesEqual(entry.viewIn, entry.viewOut)
             && !(learned.get(id)?.has(entry.out) ?? false);
           if (writes.has(entry) && !heldHere) {
-            createdViews.set(entry.out, entry.viewOut);
+            const written = relinks.has(entry) ? relinkedView(view, entry.viewOut) : entry.viewOut;
+            createdViews.set(entry.out, written);
             if (hopTraceOn()) {
               hopTrace(`chain-created ${id} out=${String(entry.out)} write in=${String(entry.viewIn.length)} `
-                + `chain=${String(view.length)} learned=${String(learned.get(id)?.has(entry.out) ?? false)}`);
+                + `chain=${String(view.length)} learned=${String(learned.get(id)?.has(entry.out) ?? false)} `
+                + `relink=${String(relinks.has(entry))}`);
             }
-            return { ...entry, viewIn: view };
+            return { ...entry, viewIn: view, viewOut: written };
           }
           // A frame that only holds a node an earlier frame created reads and leaves the view the chain holds:
           // both sides are that view, so the frame's own kept declaration is what the settlement compares.
@@ -2939,7 +2944,13 @@ function chainSharedNodeViews(
           const head = (bytes: Uint8Array): string => `${bytes.length}:${binToHex(bytes.slice(0, 12))}..${binToHex(bytes.slice(-6))}`;
           hopTrace(`chain-write ${master.master} in=${String(entry.in)} out=${String(entry.out)} `
             + `viewIn=${head(entry.viewIn)} viewOut=${head(end)} view=${head(view)} `
-            + `learned=${String(learned.get(master.master)?.has(entry.in) ?? false)}`);
+            + `learned=${String(learned.get(master.master)?.has(entry.in) ?? false)} relink=${String(relinks.has(entry))}`);
+        }
+        if (relinks.has(entry) && entry.viewOut !== undefined) {
+          const relinked = relinkedView(view, entry.viewOut);
+          views.set(entry.in, relinked);
+          continued.set(entry.in, relinked);
+          return { ...entry, viewIn: view, viewOut: relinked };
         }
         if (entry.viewOut !== undefined) views.set(entry.in, entry.viewOut);
         continued.set(entry.in, end);
@@ -2958,6 +2969,12 @@ function chainSharedNodeViews(
     ends: views,
     createdEnds: createdViews,
   };
+}
+
+/** A relink's end view: the slot and the value of the view it continues from, and the successor its plan states. */
+function relinkedView(view: Uint8Array, planned: Uint8Array): Uint8Array {
+  const reached = decodeEntryCommitment(view);
+  return encodeEntryCommitment(reached.slot, decodeEntryCommitment(planned).nextKey, reached.value);
 }
 
 /** The created outputs, each carrying the view the chain of declarations of the node it holds ends at. */
@@ -3667,9 +3684,14 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       .filter((node) => laid.learnedSlots.some((slot) => bytesEqual(slot, node.slot)))
       .map((node) => node.out)));
   });
+  // The records that only relink a node: the walk restates each one's end view from the view the chain reaches it at.
+  const relinkTransitions = new Set<DraftRecordEntry>([
+    ...(laidWrites?.relinked ?? []),
+    ...calleeTrailing.flatMap((written) => written.laid?.relinked ?? []),
+  ]);
   const chained = chainSharedNodeViews(
     [proxyMasterDraft, implementationMasterDraft, ...calleeMasterDrafts], PROXY_MASTER_ID, sharedNodeIndices,
-    writeTransitions, learnedOutputs, options.heldContinuations === true,
+    writeTransitions, learnedOutputs, options.heldContinuations === true, relinkTransitions,
   );
   const proxyMasterAmount = options.proxyMasterAmount;
   const implementationMasterAmount = options.implementationMasterAmount;

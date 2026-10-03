@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
-import { bytesToHex, sha256 } from '@solidcash/utils';
+import { bytesEqual, bytesToHex, sha256 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -11,7 +11,9 @@ import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deplo
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry, type PerCallProxyCallResult } from '../../../src/per-call/proxy/deploy.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import {
+  bytesToSlotValue, decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti,
+} from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -21,9 +23,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * collection holds.
  *
  * A head is minted only at genesis: the store's proxy genesis mints the empty head of `logs` and of `counts`, though
- * its initialize writes neither, so no reach mints a head. Each reach of a callee is planned on its own against the
- * deployment, so two reaches into one empty collection both splice through that one head. Two inserts of different
- * keys into the fixed-width `counts` (`putTwo`) are refused by the hop's cross-reach check before anything settles.
+ * its initialize writes neither, so no reach mints a head. Each reach of a callee is planned against the list the
+ * reaches before it left, so two reaches into one empty collection splice in through that one head. Two inserts of
+ * different keys into the fixed-width `counts` (`putTwo`) settle, the second planned against the link the first left.
  * Two appends to one key of the dynamic-valued `logs` (`logTwice`, the shape of a store's per-job event log) both
  * splice through the one head: the first reach creates the key's node and the second continues the value the first
  * left, so its declaration names the record at the output the first created it at and the transaction carries the
@@ -181,18 +183,6 @@ function callRoot(world: World, functionName: string, args: readonly bigint[]): 
   });
 }
 
-/** True while the caller's coin is unspent, i.e. nothing was broadcast for the hop. */
-async function callCoinLive(world: World): Promise<boolean> {
-  return (await world.network.getUtxosForLockingBytecode(world.callerLock))
-    .some((utxo) => utxo.txid === world.callCoin.txid && utxo.vout === world.callCoin.vout);
-}
-
-/** The cross-reach check's words for `count` reaches of `entry` inserting into `collection` through one node. */
-function sameNodeRefusal(entry: string, count: number, collection: string): string {
-  return `the hop reaches the entry "${entry}" ${count} times, and ${count} of them insert into collection `
-    + `"${collection}" through the same node`;
-}
-
 /** The hop's words for an entry that writes `collection` of a live deployment that holds no head of it. */
 function noHeadRefusal(entry: string, collection: string): string {
   return `the implementation's "${entry}" entry writes mapping "${collection}", but the deployment's collection `
@@ -330,12 +320,31 @@ describe('reaches into a collection the store never wrote, through the head its 
     expect(held[0]!.value.length).toBeGreaterThan(oneAppend[0]!.value.length);
   });
 
-  it('refuses two inserts of different keys into an empty fixed-width collection, broadcasting nothing', async () => {
+  it('settles two inserts of different keys into an empty fixed-width collection through the one head', async () => {
     const world = await deployed();
 
-    // The keys differ, and both reaches relink the one head the genesis minted.
-    await expect(callRoot(world, 'putTwo', [1n, 2n])).rejects.toThrow(sameNodeRefusal('Store.put()', 2, 'counts'));
-    expect(await callCoinLive(world)).toBe(true);
+    // The keys differ, and the second reach is planned against the list the first left: the head the genesis minted
+    // already links to the first key, so the second splices in through the head again or through the first key's
+    // node, whichever brackets it.
+    const result = await callRoot(world, 'putTwo', [1n, 2n]);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+
+    // One head, linked through both keys in slot order to the end, each node holding the value its reach put.
+    const nodes = (await storeNodes(world, 'counts'))
+      .map((node) => decodeEntryCommitment(hexToBin(node.token!.nft!.commitment)));
+    const end = new Uint8Array(32);
+    const keyed = [{ key: 1n, value: 10n }, { key: 2n, value: 20n }]
+      .map(({ key, value }) => ({ slot: keyToSlotMulti([bigIntToVmNumber(key)]), value }))
+      .sort((left, right) => (bytesToSlotValue(left.slot) < bytesToSlotValue(right.slot) ? -1 : 1));
+    const nodeAt = (slot: Uint8Array): ReturnType<typeof decodeEntryCommitment> | undefined =>
+      nodes.find((node) => bytesEqual(node.slot, slot));
+    expect(nodes).toHaveLength(3);
+    expect(bytesToHex(nodeAt(end)!.nextKey)).toBe(bytesToHex(keyed[0]!.slot));
+    expect(bytesToHex(nodeAt(keyed[0]!.slot)!.nextKey)).toBe(bytesToHex(keyed[1]!.slot));
+    expect(bytesToHex(nodeAt(keyed[1]!.slot)!.nextKey)).toBe(bytesToHex(end));
+    expect(keyed.map(({ slot }) => bytesToHex(nodeAt(slot)!.value)))
+      .toStrictEqual(keyed.map(({ value }) => bytesToHex(bigIntToVmNumber(value))));
   });
 
   it('refuses by name a write into a collection a live deployment holds no head of, broadcasting nothing', async () => {

@@ -28,10 +28,10 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * continues from it to the one its own frame computed, so a read after a debit returns the debited balance.
  *
  * A key the list does not hold is inserted once and then rewritten: the first reach splices a node in at the
- * predecessor's output, and a later reach that writes the same key continues that node — its declaration names the
- * creating reach's output and carries the created view forward — so one transaction carries both. Only a key two
- * reaches insert through the same predecessor, or a read of a node an earlier reach relinks, is refused by name
- * before anything is broadcast.
+ * predecessor's output, and a later reach that writes the same key continues that node (its declaration names the
+ * creating reach's output and carries the created view forward), so one transaction carries both. Inserts that land
+ * beside one another chain the same way, each reach planned against the list the reaches before it left
+ * (`call/payouts-into-one-list.test.ts`).
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */

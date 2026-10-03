@@ -92,7 +92,7 @@ import {
 import { readEntryNode } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import type { RecoverySideCars } from '../composer/recovery.js';
-import { decodeEntryCommitment } from '../../stateful/SortedList.js';
+import { bytesToSlotValue, decodeEntryCommitment } from '../../stateful/SortedList.js';
 import { chainsEnclosedTouch } from './enclosed-reads.js';
 import { PerCallProxyDeployError } from './errors.js';
 import { reachedNodeValue } from './reached-values.js';
@@ -143,9 +143,9 @@ export interface HopCalleeReadNode {
   readonly value?: Uint8Array;
   readonly commitment: Uint8Array;
   /**
-   * The slot of the node this read resolves to when a reach placed earlier in the hop created it by inserting
-   * the key. The created node carries no input, so the frame names it by the creating frame's output rather than
-   * by a UTXO, and `utxo` is absent.
+   * The slot of the node this read resolves to when a reach placed earlier in the hop created it: the key's own
+   * node, or the node that brackets a key no list holds. The created node carries no input, so the frame names it by
+   * the creating frame's output rather than by a UTXO, and `utxo` is absent.
    */
   readonly createdSlot?: Uint8Array;
   readonly utxo?: Utxo;
@@ -909,6 +909,13 @@ export function registeredExternalFor(
     ?? externalOfName(provider, interfaceName);
 }
 
+/** The successor a reach left one node of a collection with. */
+interface ReachedLink {
+  readonly collection: string;
+  readonly slot: Uint8Array;
+  readonly next: Uint8Array;
+}
+
 /** The planner's running state: the live deployments it resolves against and the frames it has placed. */
 interface PlanContext {
   readonly provider: NetworkProvider;
@@ -948,6 +955,14 @@ interface PlanContext {
     commitment: Uint8Array;
     value?: Uint8Array;
   }[]>;
+  /**
+   * The successor every node the reaches placed so far wrote holds after the last of them, by category and then by
+   * collection and slot.
+   *
+   * An insert relinks its predecessor, so a later reach's batch is planned against the list these links make: the
+   * deployment's nodes, the nodes the earlier reaches created, and the successors they left each of them with.
+   */
+  readonly reachedLinks: Map<string, Map<string, ReachedLink>>;
   /** The end views a previous settle learned, per frame master, in each frame's own learning order. */
   readonly calleeWriteViews?: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>;
   /**
@@ -1293,6 +1308,17 @@ async function deploymentOf(
   return read;
 }
 
+/**
+ * The live deployment a reach placed now plans its writes against: the category's deployment, and what the reaches
+ * placed before it wrote there.
+ */
+function reachedDeploymentOf(
+  ctx: PlanContext, categoryId: string, deployment: PerCallDeploymentSet, layout: StateLayout,
+): HopLiveDeployment {
+  return liveDeploymentOf(categoryId, deployment, layout, ctx.writtenNodes.get(categoryId) ?? [],
+    ctx.rewrittenNodes.get(categoryId) ?? [], [...(ctx.reachedLinks.get(categoryId)?.values() ?? [])]);
+}
+
 /** The live deployment a frame's own writes are planned against, as `hopEntryWrites` states it. */
 function liveDeploymentOf(
   categoryId: string, deployment: PerCallDeploymentSet, layout: StateLayout,
@@ -1308,14 +1334,19 @@ function liveDeploymentOf(
     readonly commitment: Uint8Array;
     readonly value?: Uint8Array;
   }[] = [],
+  links: readonly ReachedLink[] = [],
 ): HopLiveDeployment {
+  // Each list is copied: a reach is planned, and planned again from a value its close exposed, against what the
+  // reaches before it left, not against what the ones placed after it add.
   return {
     // What the already-placed reaches of this hop wrote: a node one of them created is not in the deployment, and
     // a later reach's write over it continues from the view that reach left.
-    ...(written.length === 0 ? {} : { continuedNodes: written }),
+    ...(written.length === 0 ? {} : { continuedNodes: [...written] }),
     // A node an earlier reach rewrote is one the deployment still holds and the transaction still spends, so this
     // states only the bytes that reach left: a chunking value's, which the deployment's own node does not hold.
-    ...(rewritten.length === 0 ? {} : { rewrittenNodes: rewritten }),
+    ...(rewritten.length === 0 ? {} : { rewrittenNodes: [...rewritten] }),
+    // The successors the earlier reaches' inserts left their predecessors with, which the list is planned against.
+    ...(links.length === 0 ? {} : { reachedLinks: [...links] }),
     category: hexToBin(categoryId),
     recordCommitments: deployment.records.map((record) => {
       const commitment = record.token?.nft?.commitment;
@@ -1335,12 +1366,13 @@ function liveDeploymentOf(
 }
 
 /**
- * Records the nodes one reach created for the reaches placed after it.
+ * Records the nodes one reach created, and the links it left, for the reaches placed after it.
  *
  * A reach is planned against the deployment, which does not hold a node another reach of the same hop created in
  * this transaction: the reach that writes over one has to continue from the view this reach left, so the node and
  * that view are what this keeps. A node a reach spent is not recorded: the deployment holds it, and a reach that
- * writes it chains through the shared participant the plan already places.
+ * writes it chains through the shared participant the plan already places. The successor each written node holds
+ * is recorded either way, so a later insert splices into the list this reach left.
  */
 function recordWrittenNodes(
   ctx: PlanContext, categoryId: string, writes: HopEntryWrites | undefined,
@@ -1377,6 +1409,15 @@ function recordWrittenNodes(
     ...(node.value === undefined ? {} : { value: node.value }),
   })));
   ctx.writtenNodes.set(categoryId, held);
+  // The successor the plan writes each node with: an update keeps it, an insert's relink and the node it creates set
+  // it. A value the body computes is not stated here; the chain walk carries it to the reaches after this one.
+  const links = ctx.reachedLinks.get(categoryId) ?? new Map<string, ReachedLink>();
+  for (const node of nodes) {
+    links.set(`${node.collection}|${bytesToHex(node.slot)}`, {
+      collection: node.collection, slot: node.slot, next: decodeEntryCommitment(node.commitment).nextKey,
+    });
+  }
+  ctx.reachedLinks.set(categoryId, links);
   // A node this reach rewrote is one the deployment still holds and the transaction still spends, so a later reach
   // plans against the input's own view unless it is told what this reach left. Only a collection whose values chunk
   // needs that: a fixed-width node's declarations chain through the one participant the plan already places.
@@ -1600,12 +1641,18 @@ function calleeReadNodes(options: {
     // creating frame left, so its commitment is the read's own.
     const created = node.present ? undefined : (options.createdNodes ?? []).find((candidate) =>
       candidate.collection === node.collection && bytesEqual(candidate.slot, node.slot));
-    const commitment = created?.commitment ?? node.commitment;
+    // A key no list holds is proved absent by the closest node below it, and an earlier reach may have inserted one
+    // between the deployment's bracketing node and the key: the read is then planned against the node it created.
+    const bracket = node.present || created !== undefined ? undefined : closestCreatedBelow(
+      options.createdNodes ?? [], node.collection, node.slot, decodeEntryCommitment(node.commitment).slot);
+    const resolved = created ?? bracket;
+    const commitment = resolved?.commitment ?? node.commitment;
     const collection = options.artifact.stateLayout?.collections
       ?.find((candidate) => candidate.name === node.collection);
     let value: Uint8Array | undefined;
-    if (created !== undefined) {
-      value = created.value;
+    if (resolved !== undefined) {
+      // An absent key reads no value, so only the key's own node witnesses one.
+      value = created?.value;
     } else {
       const tail = node.commitment.slice(64);
       const length = tail.length < 4 ? 0 : new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
@@ -1630,19 +1677,34 @@ function calleeReadNodes(options: {
       // A key the list does not hold is read against the node that brackets it, so a shared id names the node's own
       // slot: two reads that resolve to one node are one input. A node an earlier reach created is named by the
       // slot the insert targeted, which is the node's own, so the read and the insert touch distinct nodes.
-      id: created === undefined
+      id: resolved === undefined
         ? options.nodeIdOf?.(node.collection, decodeEntryCommitment(node.commitment).slot)
           ?? `mapping-read-${node.collection}-${bytesToHex(node.slot)}`
-        : options.nodeIdOf?.(node.collection, created.slot)
-          ?? `mapping-read-${node.collection}-${bytesToHex(created.slot)}`,
+        : options.nodeIdOf?.(node.collection, resolved.slot)
+          ?? `mapping-read-${node.collection}-${bytesToHex(resolved.slot)}`,
       collection: node.collection,
       signature: node.signature,
       slotIndex: slot.slotIndex!,
       ...(value === undefined ? {} : { value }),
       commitment,
-      ...(created === undefined ? { utxo: node.utxo } : { createdSlot: created.slot }),
+      ...(resolved === undefined ? { utxo: node.utxo } : { createdSlot: resolved.slot }),
     };
   });
+}
+
+/** The node of `collection` an earlier reach created whose slot lies closest below `slot` and above `floor`. */
+function closestCreatedBelow<Node extends { readonly collection: string; readonly slot: Uint8Array }>(
+  nodes: readonly Node[], collection: string, slot: Uint8Array, floor: Uint8Array,
+): Node | undefined {
+  const ceiling = bytesToSlotValue(slot);
+  const least = bytesToSlotValue(floor);
+  let closest: Node | undefined;
+  for (const node of nodes) {
+    const at = bytesToSlotValue(node.slot);
+    if (node.collection !== collection || at >= ceiling || at <= least) continue;
+    if (closest === undefined || at > bytesToSlotValue(closest.slot)) closest = node;
+  }
+  return closest;
 }
 
 /**
@@ -1731,13 +1793,13 @@ async function placeCalleeMasters(
   const records = calleeRecordSet(ctx, contract, categoryId, layout, deployment);
   const stateValues = deploymentStateValues(layout, categoryId, deployment);
   const category = hexToBin(categoryId);
-  const live = liveDeploymentOf(categoryId, deployment, layout, ctx.writtenNodes.get(categoryId) ?? [],
-    ctx.rewrittenNodes.get(categoryId) ?? []);
-  const readMappingValue = liveMappingValueReader(external.artifact, live, external.artifact.structs);
   const nodeIdOf = (collection: string, slot: Uint8Array): string => sharedNodeId(categoryId, collection, slot);
   for (const [position, call] of resolved.entries()) {
     // A stop inside an earlier visit's own calls ends the plan there, so no later visit is placed.
     if (ctx.stop.blocked !== undefined) break;
+    // Each visit is planned against what the visits and reaches before it wrote, a loop's earlier turns included.
+    const live = reachedDeploymentOf(ctx, categoryId, deployment, layout);
+    const readMappingValue = liveMappingValueReader(external.artifact, live, external.artifact.structs);
     // The turn the call runs in names the frame; its place among the site's calls takes the master.
     const occurrence = reach.turns[position] ?? position;
     const calleeIndex = ctx.callees.length;
@@ -1888,17 +1950,15 @@ async function placeProxiedCallee(
   // them without owning them, so none are placed for the implementation's own category.
   const records = calleeRecordSet(ctx, proxyContract, external.categoryId, proxyLayout, proxyDeployment);
   const stateValues = deploymentStateValues(proxyLayout, external.categoryId, proxyDeployment);
-  // A delegate frame runs on the proxy's records, so a write its entry makes lands at the proxy's category and is
-  // planned against the proxy's own live records and collection nodes.
-  const live = liveDeploymentOf(
-    external.categoryId, proxyDeployment, proxyLayout, ctx.writtenNodes.get(external.categoryId) ?? [],
-    ctx.rewrittenNodes.get(external.categoryId) ?? []);
-  const readMappingValue = liveMappingValueReader(external.artifact, live, external.artifact.structs);
   // Whether the entry the proxy forwards to returns a value, which the fallback frame records in its own `retval`.
   const returnsValue = (entry.outputs ?? []).length > 0;
   for (const [position, call] of resolved.entries()) {
     // A stop inside an earlier visit's own calls ends the plan there, so no later visit is placed.
     if (ctx.stop.blocked !== undefined) break;
+    // A delegate frame runs on the proxy's records, so a write its entry makes lands at the proxy's category and is
+    // planned against the proxy's own live records and collection nodes, as the visits before it left them.
+    const live = reachedDeploymentOf(ctx, external.categoryId, proxyDeployment, proxyLayout);
+    const readMappingValue = liveMappingValueReader(external.artifact, live, external.artifact.structs);
     // The turn the call runs in names the pair; its place among the site's calls takes the masters.
     const occurrence = reach.turns[position] ?? position;
     const proxyIndex = ctx.callees.length;
@@ -2023,23 +2083,19 @@ async function placeProxiedCallee(
 interface CollectionReach {
   readonly functionName: string;
   readonly targets: readonly ReachWriteTarget[];
-  readonly spentIds: readonly string[];
-  /** The spent nodes the reach rewrites in place as its own key's update, rather than relinks for an insert. */
-  readonly updatedIds: ReadonlySet<string>;
   /** The keys the reach inserts, i.e. the nodes it creates because the list did not hold them. */
   readonly createdSlots: ReadonlySet<string>;
   /** The keys the reach rewrites as a continuation of a node an earlier reach created, keyed by slot. */
   readonly continuedSlots: ReadonlySet<string>;
 }
 
-/** Why a reach cannot follow an insert through the node it touches. */
-const AFTER_INSERT = 'relinks to insert a key, and each reach is planned against the deployment alone, so the later '
-  + 'one is not planned against the list the insert left';
-
-/** What a master would need before an insert can follow another reach's write of the node it splices through. */
-const CHAINED_INSERT_NEED = 'an insert chained after another reach\'s write would need the master\'s insert to prove '
-  + 'its predecessor, and the relink it writes, against the views its own frame declares, also for a node an earlier '
-  + 'reach created; it proves them against the spent input and the transaction\'s output';
+/**
+ * Why a node whose values chunk does not chain through an insert's relink: each reach of such a node sizes the run of
+ * chunk records a value takes, and witnesses a long value it reads, from the bytes the write before it stated, and a
+ * relink, which keeps the value, states none.
+ */
+const CHUNKED_RELINK = 'a node whose values chunk is continued from the bytes the write before each reach stated, '
+  + 'and a relink states none';
 
 /**
  * The spent nodes one reach's write rewrites in place: the targets the list held, which an update keeps where they
@@ -2059,16 +2115,18 @@ function updatedNodeIds(categoryId: string, write: ReachWrite): ReadonlySet<stri
 /**
  * Refuses a hop whose sibling reaches of one contract write one collection in a way one transaction cannot carry.
  *
- * Each reach of a mapping-writing callee runs as a master of its own and is planned on its own against the
- * deployment, while the transaction spends each node once. A node several reaches touch is one participant, and the
+ * Each reach of a mapping-writing callee runs as a master of its own and is planned against the list the reaches
+ * placed before it left: the deployment's nodes, the nodes those reaches created and the successors their inserts
+ * relinked. The transaction spends each node once, so a node several reaches touch is one participant, and the
  * frames' views of it chain in the order they run (`buildHopPlan`): a read sees the view every write before it left,
- * and an update of a key the list holds rewrites the view the update before it left, which the master's update reads
- * from its frame's declaration. Two reaches that update one key therefore share one transaction.
+ * an update rewrites it, and a relink keeps the slot and the value it reaches and takes a new successor. The master
+ * proves an insert's gap, and checks the relink it writes, against the views its own frame declares, also for a node
+ * an earlier frame created, so inserts into one gap, or through a node another reach updates, share a transaction.
  *
- * An insert does not chain: two reaches that write one key the list does not hold each insert it, and two reaches
- * that insert into one gap each relink the same predecessor to their own key. The master's insert proves the
- * predecessor from the spent input, not the view an earlier reach left, so either shape is refused by name here
- * rather than settled into a transaction the network rejects; so are the chains `requireChainableNodes` names.
+ * A key the list does not hold is inserted once, and a later reach that writes it continues the node the insert
+ * created. Two reaches that each insert one key, or a later reach that writes an inserted key without continuing
+ * it, state a list that holds the key twice, so either shape is refused by name here rather than settled into a
+ * transaction the network rejects; so are the chains `requireChainableNodes` names.
  */
 export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): void {
   const byCollection = new Map<string, {
@@ -2088,8 +2146,6 @@ export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): vo
       group.reaches.push({
         functionName: callee.functionName,
         targets: write.targets,
-        spentIds: write.spentIds,
-        updatedIds: updatedNodeIds(bytesToHex(owner.category), write),
         createdSlots: new Set(write.targets
           .filter((target) => target.predecessor !== undefined)
           .map((target) => bytesToHex(target.slot))),
@@ -2120,39 +2176,18 @@ export function requireSatisfiableReachWrites(callees: readonly HopCallee[]): vo
         if (sharedKey !== undefined) {
           // A later reach that rewrites the node an earlier reach created continues it: the created node carries no
           // input, the earlier reach's own declaration names it at the output it made, and the later reach's
-          // declaration names that same output, so one transaction carries both. Every other shared key still needs
-          // the reaches to write distinct keys — each would insert it, relink one predecessor twice, or read a list
-          // the planner never saw.
+          // declaration names that same output, so one transaction carries both. Any other reach of an inserted key
+          // inserts it a second time.
           const chained = first.createdSlots.has(bytesToHex(sharedKey.slot))
             && second.continuedSlots.has(bytesToHex(sharedKey.slot));
           if (!chained) {
             throw new PerCallProxyDeployError(
               `${where}, and ${group.reaches.filter((reach) => reach.targets.some((target) =>
                 bytesEqual(target.slot, sharedKey.slot))).length} of them write collection `
-              + `"${group.collection}" at the same key, which the list does not hold, so each reach inserts it; `
-              + `${CHAINED_INSERT_NEED}, so the reaches must write distinct keys`,
+              + `"${group.collection}" at the same key, which the list does not hold, so each reach inserts it; a `
+              + 'list holds one node per key, so a later reach of the key has to continue the node the insert created',
             );
           }
-        }
-        const sharedNode = first.spentIds.find((id) => second.spentIds.includes(id)
-          && !(first.updatedIds.has(id) && second.updatedIds.has(id)));
-        if (sharedNode !== undefined) {
-          throw new PerCallProxyDeployError(
-            `${where}, and ${group.reaches.filter((reach) => reach.spentIds.includes(sharedNode)).length} of them `
-            + `insert into collection "${group.collection}" through the same node, or write the node another `
-            + `inserts through; ${CHAINED_INSERT_NEED}, so the reaches must splice through distinct nodes`,
-          );
-        }
-        // A node the reach before this one creates carries no input, so an insert that splices through it cannot
-        // prove its predecessor either: the master's insert proves that from the input it spends.
-        const throughCreated = second.targets.find((target) => target.predecessor !== undefined
-          && first.targets.some((earlier) => earlier.predecessor !== undefined
-            && bytesEqual(earlier.slot, target.predecessor!)));
-        if (throughCreated !== undefined) {
-          throw new PerCallProxyDeployError(
-            `${where}, and the reach this one follows creates the node of collection "${group.collection}" it `
-            + `splices through; ${CHAINED_INSERT_NEED}, so the reaches must splice through distinct nodes`,
-          );
         }
       }
     }
@@ -2229,17 +2264,17 @@ function chunkingNode(touches: readonly NodeTouch[]): boolean {
 /**
  * Refuses a node several frames touch in a chain the hop cannot state.
  *
- * Every frame is planned against the deployment alone, and the views a shared node's frames declare are chained in
- * the order the frames run: a read keeps the view the last write before it left, and an update of the node's own key
- * rewrites it. That covers reads and updates of a fixed-width value in any order. Each remaining shape is refused by
- * name: a touch after an insert relinked the node, which reads a list the planner never saw; an insert through a node
- * an earlier reach wrote, which the master's insert does not chain; and two touches where one frame enters the other,
- * whose segments interleave in an order this hop does not settle, but for a read or an in-place rewrite after the
- * entering frame's write of the node, which lands before the call that leads there (`enclosed-reads.ts`).
+ * Every frame is planned against the list the frames placed before it left, and the views a shared node's frames
+ * declare are chained in the order the frames run: a read keeps the view the last write before it left, an update of
+ * the node's own key rewrites it, and an insert's relink keeps the slot and the value it reaches and takes the
+ * successor its plan states. That covers reads, updates and relinks of a fixed-width value in any order. Two touches
+ * where one frame enters the other are refused by name, since their segments interleave in an order this hop does not
+ * settle, but for a read or an in-place rewrite after the entering frame's write of the node, which lands before the
+ * call that leads there (`enclosed-reads.ts`).
  *
  * A node whose values chunk is chainable in the same way, except that the bytes a later reach continues from are
  * the ones the reach before it wrote: a reach whose chunkable write states no value leaves none, which
- * `requireSettledNodeChains` refuses once every frame has settled.
+ * `requireSettledNodeChains` refuses once every frame has settled, and a relink states none, which is refused here.
  */
 function requireChainableNodes(callees: readonly HopCallee[]): void {
   for (const [id, touches] of nodeTouches(callees)) {
@@ -2257,14 +2292,17 @@ function requireChainableNodes(callees: readonly HopCallee[]): void {
         );
       }
     }
+    if (!chunkingNode(touches)) continue;
     let written: NodeTouch | undefined;
     for (const touch of touches) {
       if (written !== undefined) {
         const pair = `the hop's reach "${touch.functionName}" touches a node of collection "${collection}" that an `
           + `earlier reach "${written.functionName}"`;
-        if (written.kind === 'relink') throw new PerCallProxyDeployError(`${pair} ${AFTER_INSERT}`);
+        if (written.kind === 'relink') {
+          throw new PerCallProxyDeployError(`${pair} relinks to insert a key; ${CHUNKED_RELINK}`);
+        }
         if (touch.kind === 'relink') {
-          throw new PerCallProxyDeployError(`${pair} writes, and inserts through it; ${CHAINED_INSERT_NEED}`);
+          throw new PerCallProxyDeployError(`${pair} writes, and inserts through it; ${CHUNKED_RELINK}`);
         }
       }
       if (touch.kind !== 'read') written = touch;
@@ -2292,10 +2330,12 @@ export function requireSettledNodeChains(callees: readonly HopCallee[]): void {
       const later = touches[at + 1]!;
       const pair = `the hop's reach "${later.functionName}" touches a node of collection "${later.collection}" that `
         + `an earlier reach "${earlier.functionName}"`;
-      // An insert's relink does not chain whatever the value, as `requireChainableNodes` names it.
-      if (earlier.kind === 'relink') throw new PerCallProxyDeployError(`${pair} ${AFTER_INSERT}`);
+      // A relink of a chunking node states no bytes to continue from, as `requireChainableNodes` names it.
+      if (earlier.kind === 'relink') {
+        throw new PerCallProxyDeployError(`${pair} relinks to insert a key; ${CHUNKED_RELINK}`);
+      }
       if (later.kind === 'relink') {
-        throw new PerCallProxyDeployError(`${pair} writes, and inserts through it; ${CHAINED_INSERT_NEED}`);
+        throw new PerCallProxyDeployError(`${pair} writes, and inserts through it; ${CHUNKED_RELINK}`);
       }
       if (earlier.kind === 'read') continue;
       if (!leavesValueForLaterReach(callees, earlier, id)) {
@@ -2491,6 +2531,7 @@ export async function planHopExternalCalls(
     records: new Map(),
     writtenNodes: new Map(),
     rewrittenNodes: new Map(),
+    reachedLinks: new Map(),
     ...(options.calleeWriteViews === undefined ? {} : { calleeWriteViews: options.calleeWriteViews }),
     ...(options.calleeWriteValues === undefined ? {} : { calleeWriteValues: options.calleeWriteValues }),
     ...(options.entryWriteViews === undefined ? {} : { entryWriteViews: options.entryWriteViews }),

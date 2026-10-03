@@ -251,10 +251,6 @@ function ownStop(entry: string, reason: string): RegExp {
     + `"implementation-master" of Root\\.${entry}\\(\\) at line \\d+: ${reason} \\(Program failed an OP_VERIFY`);
 }
 
-/** The planner's words for two inserts of different keys through the store's one head. */
-const SAME_NODE = 'the hop reaches the entry "Store.put()" 2 times, and 2 of them insert into collection "counts" '
-  + 'through the same node';
-
 /**
  * The planner's words for the keeper's two frames over its one mark, one entering the other: the inner frame rewrites
  * the mark its enclosing frame wrote first, a value that frame's body computes and keeps inline.
@@ -275,28 +271,29 @@ describe('an entry whose own check fails before the call whose frames the planne
     expect(await callCoinLive(world)).toBe(true);
   }, 300_000);
 
-  it('reports the entry\'s own reason before two inserts through one node', async () => {
+  // Two inserts through the store's one head settle, each planned against the list the one before it left; the entry's
+  // own check before them is still the stop reported, and nothing is broadcast for it.
+  it('reports the entry\'s own reason before two inserts through one node, which settle once it passes', async () => {
     const world = await deployed();
     await expect(callRoot(world, 'putTwoGated', [1n, 2n, 0n])).rejects.toThrow(ownStop('putTwoGated', 'gate closed'));
-    await expect(callRoot(world, 'putTwoGated', [1n, 2n, 1n])).rejects.toThrow(SAME_NODE);
     expect(await callCoinLive(world)).toBe(true);
+    expect((await callRoot(world, 'putTwoGated', [1n, 2n, 1n])).accepted).toBe(true);
   }, 300_000);
 
-  it('reports the entry\'s own reason after a call it makes and before the refused pair', async () => {
-    // The store's `bump` settles first, then the guard stops the entry before either insert: the plan settled is the
-    // one stopped before the second insert, whose first insert the entry never reaches either.
+  it('reports the entry\'s own reason after a call it makes and before the two inserts', async () => {
+    // The store's `bump` is made first, then the guard stops the entry before either insert.
     const world = await deployed();
     await expect(callRoot(world, 'putTwoAfterBump', [1n, 2n, 0n]))
       .rejects.toThrow(ownStop('putTwoAfterBump', 'gate closed'));
-    await expect(callRoot(world, 'putTwoAfterBump', [1n, 2n, 1n])).rejects.toThrow(SAME_NODE);
     expect(await callCoinLive(world)).toBe(true);
+    expect((await callRoot(world, 'putTwoAfterBump', [1n, 2n, 1n])).accepted).toBe(true);
   }, 300_000);
 
   it('reports a check that names no reason as the entry\'s own stop', async () => {
     const world = await deployed();
     await expect(callRoot(world, 'putTwoUnnamed', [1n, 2n, 0n]))
       .rejects.toThrow(ownStop('putTwoUnnamed', 'no source message'));
-    await expect(callRoot(world, 'putTwoUnnamed', [1n, 2n, 1n])).rejects.toThrow(SAME_NODE);
+    expect((await callRoot(world, 'putTwoUnnamed', [1n, 2n, 1n])).accepted).toBe(true);
   }, 300_000);
 
   it('reports the entry\'s own reason before a call whose result a later call reads and which refuses', async () => {

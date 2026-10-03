@@ -82,7 +82,9 @@ import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js
 import { evaluateExternalExpression } from '../../stateful/sc-evaluate-external-expression.js';
 import type { Utxo } from '../../interfaces.js';
 import { addressToLockScript, createUnlockingBytecode, scriptToLockingBytecode } from '../../utils.js';
-import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
+import {
+  decodeEntryCommitment, encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti,
+} from '../../stateful/SortedList.js';
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
 import { entryRecordReadUnlock } from '../deploy/records.js';
 import type { DraftInput, DraftSourceOutput, DraftToken } from '../composer/draft.js';
@@ -138,8 +140,8 @@ export interface ReachWriteTarget {
   /**
    * The slot of the node an insert splices through, present only when the list did not hold the target.
    *
-   * Two reaches whose targets land in one gap share this node: each writes it as the relinked predecessor of
-   * its own key, so a transaction one input recreates once cannot carry both relinks.
+   * A later reach that inserts into the same gap is planned against the link this one left, so it relinks the node
+   * again or splices through the node this one created.
    */
   readonly predecessor?: Uint8Array;
   /**
@@ -191,7 +193,10 @@ interface HopMappingBatch {
   /** For loops whose turns the artifact publishes, the loops of the run and the turn that mints each record. */
   readonly loopRun?: readonly CallLoopWritePlan[];
   readonly loopMints?: readonly LoopRecordMint[];
-  /** The nodes the batch spends, in write order, each with the id the hop's block holds it under. */
+  /**
+   * The nodes the batch spends, in write order, each with the commitment its input holds and the id the hop's block
+   * holds it under.
+   */
   readonly spent: readonly { readonly slot: Uint8Array; readonly before: Uint8Array; readonly id: string }[];
   /** Every key the batch writes, with the node an insert splices through. */
   readonly targets: readonly ReachWriteTarget[];
@@ -320,6 +325,20 @@ export interface HopLiveDeployment {
     readonly value?: Uint8Array;
   }[];
   /**
+   * The successor each node holds once the frames of this hop placed before this one wrote it, by collection and
+   * slot.
+   *
+   * An insert relinks its predecessor, so a later insert into the same list is planned against the links the
+   * earlier ones left: its predecessor is the closest node below its key there, and the node it creates links to
+   * that predecessor's successor there. Only the links are restated: the input still spends the deployment's node,
+   * and a value an earlier frame's body computed is the chain walk's to carry (`chainSharedNodeViews`).
+   */
+  readonly reachedLinks?: readonly {
+    readonly collection: string;
+    readonly slot: Uint8Array;
+    readonly next: Uint8Array;
+  }[];
+  /**
    * The deployment's own state, decoded through the layout the frame's declaration names.
    *
    * A key the artifact publishes as a state read — `state:<name>`, or an array's length — is the value the frame
@@ -368,6 +387,14 @@ export interface LaidHopEntryWrites {
    * it, so the output is the only coordinate it can carry the declaration at.
    */
   readonly createdNodes: readonly { readonly slot: Uint8Array; readonly out: number }[];
+  /**
+   * The records that only relink a node: a predecessor an insert splices through that the batch does not write.
+   *
+   * The node keeps its slot and its value and takes a new successor, so its end view is the view the chain carries
+   * to it with the successor the plan states, which `chainSharedNodeViews` restates once the views before it are
+   * known: an earlier frame may have rewritten the value with one only that frame's close states.
+   */
+  readonly relinked?: readonly RecordEntry[];
   /**
    * The nodes whose end view this frame's own settlement stated, by slot.
    *
@@ -1136,8 +1163,21 @@ function planHopCollectionBatch(
   for (const node of request.liveDeployment?.continuedNodes ?? []) {
     if (node.collection === collection.name) continuedBySlot.set(bytesToHex(node.slot), node.commitment);
   }
+  // The list as the frames placed before this one left it: a node an insert of theirs relinked takes its new
+  // successor, so this batch's predecessors and the links it writes are decided against the list it splices into.
+  const reachedNext = new Map<string, Uint8Array>();
+  for (const link of request.liveDeployment?.reachedLinks ?? []) {
+    if (link.collection === collection.name) reachedNext.set(bytesToHex(link.slot), link.next);
+  }
+  const reached = (commitment: Uint8Array): Uint8Array => {
+    const { slot, value } = decodeEntryCommitment(commitment);
+    const next = reachedNext.get(bytesToHex(slot));
+    return next === undefined ? commitment : encodeEntryCommitment(slot, next, value);
+  };
   const inventory: Uint8Array[] = [];
   const utxoBySlot = new Map<string, Utxo>();
+  // The commitment each spent node's input holds, which the reached list may have relinked past.
+  const spentBySlot = new Map<string, Uint8Array>();
   // The empty list's head sentinel is what a first write splices through. A deployment's own first hop runs before
   // the genesis that mints it, so that hop plans against the sentinel's commitment.
   if (request.liveDeployment === undefined) inventory.push(headSentinelCommitment());
@@ -1150,8 +1190,9 @@ function planHopCollectionBatch(
     }
     const slot = bytesToHex(decodeEntryCommitment(hexToBin(commitment)).slot);
     const bytes = new Uint8Array(hexToBin(commitment));
-    inventory.push(bytes);
+    inventory.push(reached(bytes));
     utxoBySlot.set(slot, node);
+    spentBySlot.set(slot, bytes);
   }
   // A head is minted only at genesis and a call never creates one, so every insert splices through a node the
   // transaction spends. A live collection with no head was deployed without it, and is refused by name.
@@ -1166,7 +1207,7 @@ function planHopCollectionBatch(
       + 'deployment was deployed without it',
     );
   }
-  for (const commitment of continuedBySlot.values()) inventory.push(commitment);
+  for (const commitment of continuedBySlot.values()) inventory.push(reached(commitment));
   const plan = planMappingBatch({
     writes, inventory,
     encodeValue: chunkable ? encodeChunkableValueTail : (encoded: Uint8Array) => encoded,
@@ -1186,7 +1227,7 @@ function planHopCollectionBatch(
   }
 
   // A node the batch creates, and a target it rewrites, carry the value the body computed; a node it only relinks
-  // keeps its own value, so its end view is stated by the planner.
+  // keeps its own value, so its end view is stated by the planner and restated from the chain (`relinked`).
   const writtenSlots = new Set(plan.groups.map((group) => bytesToHex(group.slot)));
   const learningSlots: Uint8Array[] = [];
   const learningCandidates: Uint8Array[] = [];
@@ -1208,8 +1249,8 @@ function planHopCollectionBatch(
     learningCandidates.push(record.viewOut);
   }
   // The key each write targets, and the node it splices through when the list did not hold it. The plan's groups
-  // are in write order, so each target reads its own group; a group the list did not hold names its predecessor,
-  // a node the transaction spends, first.
+  // are in write order, so each target reads its own group; a group the list did not hold names its predecessor
+  // first.
   const writeTargets = plan.groups.map((group): ReachWriteTarget => ({
     collection: collection.name,
     slot: group.slot,
@@ -1219,15 +1260,19 @@ function planHopCollectionBatch(
   }));
   const headCommitment = headSentinelCommitment();
   const spent = plan.written
-    .filter((node) => node.existed && !continuedBySlot.has(bytesToHex(node.slot))).map((node) => ({
-    slot: node.slot,
-    before: node.before,
-    // The empty head sentinel is named by its collection; any other spent node is named by its own slot, unless the
-    // caller names the nodes it shares across frames.
-    id: request.nodeIdOf?.(collection.name, node.slot) ?? (bytesEqual(node.before, headCommitment)
-      ? `${MAPPING_HEAD_PREFIX}${collection.name}`
-      : `${MAPPING_NODE_PREFIX}${bytesToHex(node.slot)}`),
-  }));
+    .filter((node) => node.existed && !continuedBySlot.has(bytesToHex(node.slot))).map((node) => {
+      // The input spends the deployment's node, whatever link the frames before this one left it with.
+      const before = spentBySlot.get(bytesToHex(node.slot)) ?? node.before;
+      return {
+        slot: node.slot,
+        before,
+        // The empty head sentinel is named by its collection; any other spent node is named by its own slot, unless
+        // the caller names the nodes it shares across frames.
+        id: request.nodeIdOf?.(collection.name, node.slot) ?? (bytesEqual(before, headCommitment)
+          ? `${MAPPING_HEAD_PREFIX}${collection.name}`
+          : `${MAPPING_NODE_PREFIX}${bytesToHex(node.slot)}`),
+      };
+    });
   return {
     collection: collection.name,
     signature: collection.signature,
@@ -2153,6 +2198,12 @@ function layEntryWrites(
     learnedBySlot.get(bytesToHex(slot)) ?? afterBySlot.get(bytesToHex(slot))!;
   const valueChunkEntries = entries.slice(entries.length - plan.chunks.length);
   const groupEntries = entries.slice(0, entries.length - plan.chunks.length);
+  // A node no target of the batch names is one an insert relinks and nothing else writes. The node records are laid
+  // in the order the plan states them, the groups' or, for a loop, the written nodes'.
+  const targetSlots = new Set(batch.targets.map((target) => bytesToHex(target.slot)));
+  const nodeRecords = batch.loopWritten === true ? laid.written : laid.groups.flatMap((group) => group.records);
+  const relinked = groupEntries.filter((_entry, at) => nodeRecords[at]?.existed === true
+    && !targetSlots.has(bytesToHex(nodeRecords[at]!.slot)));
 
   const covenant = buildEntryNftCovenantScript(context.category, computeCollectionHash(batch.signature));
   const lock = scriptToLockingBytecode(covenant, 'p2sh32');
@@ -2213,6 +2264,7 @@ function layEntryWrites(
     ],
     // A batch's created nodes sit at the created region's own indices, in the order the segment declares them.
     createdNodes: created.map((node, position) => ({ slot: node.slot, out: context.createdBase + position })),
+    ...(relinked.length === 0 ? {} : { relinked }),
     learnedSlots,
     ...(valueSlots === undefined ? {} : { values: valueSlots }),
   };
@@ -2235,6 +2287,7 @@ function layEntryWriteBatches(
   const trailingOutputs: DraftSourceOutput[] = [];
   const createdOutputs: number[] = [];
   const createdNodes: { slot: Uint8Array; out: number }[] = [];
+  const relinked: RecordEntry[] = [];
   const learnedSlots: Uint8Array[] = [];
   const valueSlots = new Map<number, Uint8Array>();
   let createdBase = context.createdBase;
@@ -2250,6 +2303,7 @@ function layEntryWriteBatches(
     trailingOutputs.push(...laid.trailingOutputs);
     createdOutputs.push(...laid.createdOutputs);
     createdNodes.push(...laid.createdNodes);
+    relinked.push(...laid.relinked ?? []);
     learnedSlots.push(...laid.learnedSlots);
     (laid.values ?? []).forEach((value, slot) => valueSlots.set(slot, value));
     learnedBase += batch.learningCandidates.length;
@@ -2261,5 +2315,6 @@ function layEntryWriteBatches(
       (_unused, slot) => valueSlots.get(slot) ?? new Uint8Array(0),
     );
   return { entries, inputs, trailingOutputs, createdOutputs, createdNodes, learnedSlots,
+    ...(relinked.length === 0 ? {} : { relinked }),
     ...(values === undefined ? {} : { values }) };
 }

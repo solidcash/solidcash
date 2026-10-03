@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { validatorAddress } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -22,9 +24,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * leaves untaken make four reaches in all, each writing its own key.
  *
  * The callee's initialize writes no key, so the mapping holds only the empty head its proxy's genesis minted (a
- * head is minted only at genesis), and every reach splices its own key in through that one head. The cross-reach
- * check refuses that by name before anything is broadcast, counting the loop's turns and the taken guarded site as
- * reaches of their own.
+ * head is minted only at genesis). Each reach, a loop's turn included, is planned against the list the reaches before
+ * it left, so it splices its key in through the head or through a node an earlier reach created, and the list the
+ * transaction leaves links every key in order.
  */
 
 const PING_CATEGORY = '99'.repeat(32);
@@ -74,6 +76,7 @@ function funding(txid: string): { txid: string; vout: number; satoshis: bigint }
 
 /** Deploys the callee's own callee, the proxied callee and the root behind its proxy, and runs both initializes. */
 async function deployAll(network: MockNetworkProvider): Promise<{
+  readonly innerProxyCategoryId: string;
   readonly outerProxyCategoryId: string;
   readonly outerImplementationCategoryId: string;
   readonly deployerLock: Uint8Array;
@@ -136,6 +139,7 @@ async function deployAll(network: MockNetworkProvider): Promise<{
   expect(outerDeployment.initialize.broadcast).toBeDefined();
 
   return {
+    innerProxyCategoryId: innerDeployment.proxy.categoryId,
     outerProxyCategoryId: outerDeployment.proxy.categoryId,
     outerImplementationCategoryId: outerDeployment.implementation.categoryId,
     deployerLock,
@@ -166,65 +170,68 @@ async function deployed(): Promise<World> {
   return world;
 }
 
-/** The cross-reach check's words for `count` reaches of the callee's entry whose inserts land one behind another. */
-function sameNodeRefusal(count: number): string {
-  return `the hop reaches the entry "${inner.contractName}.record()" ${count} times, and the reach this one follows `
-    + 'creates the node of collection "events" it splices through';
+/** The root's `run`, entered on its proxy, taking the guarded reach or not and looping `times` turns. */
+async function run(world: World, takeExtra: boolean, times: bigint): Promise<{ readonly txid?: string }> {
+  const { network, funded } = world;
+  const result = await callPerCallProxyEntry({
+    provider: network,
+    implementationArtifact: outer,
+    proxyArtifact: buildProxyArtifact(outer),
+    proxyCategoryId: funded.outerProxyCategoryId,
+    implementationCategoryId: funded.outerImplementationCategoryId,
+    functionName: 'run',
+    args: [takeExtra, times],
+    externals: { IPing: { artifact: ping, categoryId: PING_CATEGORY } },
+    callerUtxo: funded.callCoin,
+    callerLockingBytecode: funded.deployerLock,
+    funder: funded.funder,
+    changeAddress: funded.changeAddress,
+    vm: compositionMachine(),
+  });
+  expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+  return { ...(result.broadcast === undefined ? {} : { txid: result.broadcast.txid }) };
 }
 
-/** True while the caller's coin is unspent, i.e. nothing was broadcast for the hop. */
-async function callCoinLive(world: World): Promise<boolean> {
-  return (await world.network.getUtxosForLockingBytecode(world.funded.deployerLock))
-    .some((utxo) => utxo.txid === world.funded.callCoin.txid && utxo.vout === world.funded.callCoin.vout);
+/** The callee's `events` list as the chain holds it, walked from the head: each key's slot and its value's hex. */
+async function eventsList(world: World): Promise<readonly (readonly [bigint, string])[]> {
+  const layout = { ...buildProxyArtifact(inner).stateLayout!, collections: inner.stateLayout!.collections };
+  const deployment = await readPerCallDeployment(world.network, world.funded.innerProxyCategoryId, layout);
+  const nodes = new Map((deployment.nodesByCollection.get('events') ?? []).map((utxo) => {
+    const node = decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment));
+    return [bytesToSlotValue(node.slot), node] as const;
+  }));
+  const list: (readonly [bigint, string])[] = [];
+  for (let next = nodes.get(0n)?.nextKey; next !== undefined && bytesToSlotValue(next) !== 0n;) {
+    const node = nodes.get(bytesToSlotValue(next));
+    if (node === undefined) break;
+    list.push([bytesToSlotValue(node.slot), binToHex(node.value)]);
+    next = node.nextKey;
+  }
+  return list;
+}
+
+/** The list the written keys make, in slot order, each with its value's hex. */
+function expectedList(written: readonly (readonly [bigint, bigint])[]): readonly (readonly [bigint, string])[] {
+  return written
+    .map(([key, value]) => [
+      bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(key)])), binToHex(bigIntToVmNumber(value)),
+    ] as const)
+    .sort((left, right) => (left[0] < right[0] ? -1 : 1));
 }
 
 describe('a hop whose proxied callee writes beside a call of its own', () => {
-  it('refuses the four reaches, each splicing through the one genesis head, and broadcasts nothing', async () => {
+  it('settles the four reaches, each splicing its key into the list the ones before it left', async () => {
     const world = await deployed();
-    const { network, funded } = world;
 
-    // Each reach plans its insert against the deployment alone, so all four relink the one head the genesis minted
-    // to their own key, and one spent input is recreated once. Owner: the SDK hop planner
-    // (`proxy/external-calls.ts`, `requireSatisfiableReachWrites`), until reaches that touch one node share one
-    // participant with their views chained in execution order.
-    await expect(callPerCallProxyEntry({
-      provider: network,
-      implementationArtifact: outer,
-      proxyArtifact: buildProxyArtifact(outer),
-      proxyCategoryId: funded.outerProxyCategoryId,
-      implementationCategoryId: funded.outerImplementationCategoryId,
-      functionName: 'run',
-      args: [false, 2n],
-      externals: { IPing: { artifact: ping, categoryId: PING_CATEGORY } },
-      callerUtxo: funded.callCoin,
-      callerLockingBytecode: funded.deployerLock,
-      funder: funded.funder,
-      changeAddress: funded.changeAddress,
-      vm: compositionMachine(),
-    })).rejects.toThrow(sameNodeRefusal(4));
-    expect(await callCoinLive(world)).toBe(true);
+    expect((await run(world, false, 2n)).txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await eventsList(world)).toStrictEqual(expectedList([[10n, 100n], [20n, 200n], [100n, 0n], [101n, 1n]]));
   });
 
-  it('refuses the guarded reach too when the caller takes it, counting five', async () => {
+  it('settles the guarded reach too when the caller takes it, five keys in all', async () => {
     const world = await deployed();
-    const { network, funded } = world;
 
-    // Owner: as above.
-    await expect(callPerCallProxyEntry({
-      provider: network,
-      implementationArtifact: outer,
-      proxyArtifact: buildProxyArtifact(outer),
-      proxyCategoryId: funded.outerProxyCategoryId,
-      implementationCategoryId: funded.outerImplementationCategoryId,
-      functionName: 'run',
-      args: [true, 2n],
-      externals: { IPing: { artifact: ping, categoryId: PING_CATEGORY } },
-      callerUtxo: funded.callCoin,
-      callerLockingBytecode: funded.deployerLock,
-      funder: funded.funder,
-      changeAddress: funded.changeAddress,
-      vm: compositionMachine(),
-    })).rejects.toThrow(sameNodeRefusal(5));
-    expect(await callCoinLive(world)).toBe(true);
+    expect((await run(world, true, 2n)).txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await eventsList(world))
+      .toStrictEqual(expectedList([[10n, 100n], [20n, 200n], [100n, 0n], [101n, 1n], [99n, 99n]]));
   });
 });

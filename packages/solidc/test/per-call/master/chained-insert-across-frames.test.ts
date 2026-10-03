@@ -88,6 +88,15 @@ const CREDIT = deploy('credit', 'pragma solidcash ^0.13.0;'
   + '   mapping(address => uint) balances;'
   + '   function credit(address who, uint amount) { balances[who] = balances[who] + amount; }'
   + ' }');
+const MOVER_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Mover {'
+  + '   mapping(address => uint) balances;'
+  + '   function move(address from, address to, uint amount) {'
+  + '     balances[from] = balances[from] - amount;'
+  + '     balances[to] = balances[to] + amount;'
+  + '   }'
+  + ' }';
+const MOVER = deploy('mover', MOVER_SOURCE);
 
 /** Keys in the order of their slots, so each case knows which node brackets which. */
 const [K1, K2, K3, K4] = ['first holder', 'second holder', 'third holder', 'fourth holder']
@@ -494,6 +503,134 @@ describe('mapping nodes created and relinked across frames', () => {
       ],
     };
     expect(verdicts(LEDGER, composition)).toStrictEqual({ frameOne: true, frameTwo: true, settlement: false });
+  });
+});
+
+/**
+ * An insert through a node an earlier frame of the same transaction updated.
+ *
+ * The update's value is the earlier frame's to compute, so the later frame proves its gap against the view its own
+ * segment declares for the predecessor and writes the relink with that view's slot and value: the settlement chains
+ * the declaration to the view the update left. A relink that keeps the value from before the update, a gap proved
+ * against that older view, and a predecessor whose slot lies above the key are each refused.
+ */
+describe('an insert through a node an earlier frame updated', () => {
+  /** Frame one rewrites K1's balance from 5 to 7; frame two splices K2 in through K1. */
+  const updatedPredecessor = (change: {
+    readonly provedFrom?: Uint8Array;
+    readonly relinked?: Uint8Array;
+  } = {}): Composition => {
+    const relinked = change.relinked ?? node(K1, K2, 7);
+    return {
+      frames: [
+        put(K1, 7, [{ in: SPENT, out: SPENT, viewIn: node(K1, undefined, 5), viewOut: node(K1, undefined, 7) }]),
+        put(K2, 22, insertGroup(
+          { in: SPENT, out: SPENT, viewIn: change.provedFrom ?? node(K1, undefined, 7), viewOut: relinked },
+          CREATED, node(K2, undefined, 22),
+        )),
+      ],
+      spent: { before: node(K1, undefined, 5), after: relinked },
+      created: [{ commitment: node(K2, undefined, 22) }],
+    };
+  };
+
+  it('settles the insert, its relink keeping the balance the update left', () => {
+    expect(verdicts(LEDGER, updatedPredecessor())).toStrictEqual(ACCEPTED);
+  });
+
+  it('refuses a relink that writes back the balance from before the update', () => {
+    // The output carries the declaration, so the chain settles; the frame's check of its own relink refuses it.
+    expect(verdicts(LEDGER, updatedPredecessor({ relinked: node(K1, K2, 5) })))
+      .toStrictEqual({ frameOne: true, frameTwo: false, settlement: true });
+  });
+
+  it('refuses a gap proved against the view from before the update', () => {
+    // Frame two agrees with itself, proving and relinking the view the update replaced, which no chain from the
+    // input through frame one's write reaches.
+    expect(verdicts(LEDGER, updatedPredecessor({ provedFrom: node(K1, undefined, 5), relinked: node(K1, K2, 5) })))
+      .toStrictEqual({ frameOne: true, frameTwo: true, settlement: false });
+  });
+
+  it('refuses a predecessor whose slot lies above the key it splices in', () => {
+    // Frame one rewrites K3's balance, and frame two names K3's node as the predecessor of K2, which sorts below it.
+    const forged: Composition = {
+      frames: [
+        put(K3, 7, [{ in: SPENT, out: SPENT, viewIn: node(K3, undefined, 5), viewOut: node(K3, undefined, 7) }]),
+        put(K2, 22, insertGroup(
+          { in: SPENT, out: SPENT, viewIn: node(K3, undefined, 7), viewOut: node(K3, K2, 7) }, CREATED,
+          node(K2, undefined, 22),
+        )),
+      ],
+      spent: { before: node(K3, undefined, 5), after: node(K3, K2, 7) },
+      created: [{ commitment: node(K2, undefined, 22) }],
+    };
+    expect(verdicts(LEDGER, forged)).toStrictEqual({ frameOne: true, frameTwo: false, settlement: true });
+  });
+});
+
+/**
+ * Two transfers in one transaction, each debiting one balance and crediting a key the list does not hold.
+ *
+ * `move` writes two targets in one batch, the credit's group declared first. The first transfer credits K2, whose
+ * predecessor is the debited K1, so K1's node is both a target and the node the insert relinks; the second debits
+ * K1 again, from the view the first left, and credits K3 through K2, the node the first transfer created. Each frame
+ * proves its gaps against its own declarations, and the settlement chains them from K1's input to its output and from
+ * K2's creation to the relink.
+ */
+describe('two transfers that debit one balance and insert beside it', () => {
+  /** `move(from, to, amount)`: the parameters pushed deepest first, the records in the frame's segment order. */
+  const move = (from: Uint8Array, to: Uint8Array, amount: number, records: readonly RecordEntry[]): Frame =>
+    ({ pushes: [amountOf(amount), to, from], records });
+  /** K1 holds 100; the first transfer moves 10 to K2, inserted after K1, and leaves K1 linked to it. */
+  const FIRST = move(K1, K2, 10, [
+    ...insertGroup({ in: SPENT, out: SPENT, viewIn: node(K1, undefined, 100), viewOut: node(K1, K2, 90) }, CREATED,
+      node(K2, undefined, 10)),
+    { in: SPENT, out: SPENT, viewIn: node(K1, K2, 90), viewOut: node(K1, K2, 90) },
+  ]);
+  /** The second transfer moves 20 from K1 to K3, spliced in through `predecessor`, a declaration of its own. */
+  const secondThrough = (predecessor: RecordEntry, created: Uint8Array, debit: RecordEntry): Composition => ({
+    frames: [FIRST, move(K1, K3, 20, [...insertGroup(predecessor, CREATED + 1, created), debit])],
+    spent: { before: node(K1, undefined, 100), after: debit.viewOut },
+    created: [
+      { commitment: predecessor.in === NONE ? predecessor.viewOut : node(K2, undefined, 10) },
+      { commitment: created },
+    ],
+  });
+  const DEBITED = { in: SPENT, out: SPENT, viewIn: node(K1, K2, 90), viewOut: node(K1, K2, 70) };
+
+  it('declares the credit\'s group before the debit\'s', () => {
+    const entry = compileString(MOVER_SOURCE, { composition: 'per-call' }).abi.find((fn) => fn.name === 'move')!;
+    expect(entry.sortedBatchInfo![0]!.slotIndices.map((slot) =>
+      entry.entryAccesses!.find((access) => access.slotIndex === slot)!.keyParams)).toStrictEqual([['to'], ['from']]);
+  });
+
+  it('settles the second insert through the node the first created, the debits chained on one node', () => {
+    expect(verdicts(MOVER, secondThrough(
+      { in: NONE, out: CREATED, viewIn: node(K2, undefined, 10), viewOut: node(K2, K3, 10) },
+      node(K3, undefined, 20), DEBITED,
+    ))).toStrictEqual(ACCEPTED);
+  });
+
+  it('refuses a relink of the created node that does not keep the balance the first transfer credited', () => {
+    expect(verdicts(MOVER, secondThrough(
+      { in: NONE, out: CREATED, viewIn: node(K2, undefined, 10), viewOut: node(K2, K3, 30) },
+      node(K3, undefined, 20), DEBITED,
+    ))).toStrictEqual({ frameOne: true, frameTwo: false, settlement: true });
+  });
+
+  it('refuses the second insert spliced through the debited node, which K2 now follows below K3', () => {
+    // K1 links to K2 once the first transfer ran, so K3 lies past K1's gap: K1 is no predecessor of K3 there.
+    const relinked = { in: SPENT, out: SPENT, viewIn: node(K1, K2, 90), viewOut: node(K1, K3, 70) };
+    expect(verdicts(MOVER, secondThrough(
+      relinked, node(K3, K2, 20), { in: SPENT, out: SPENT, viewIn: node(K1, K3, 70), viewOut: node(K1, K3, 70) },
+    ))).toStrictEqual({ frameOne: true, frameTwo: false, settlement: true });
+  });
+
+  it('refuses a second debit that starts from the balance before the first', () => {
+    expect(verdicts(MOVER, secondThrough(
+      { in: NONE, out: CREATED, viewIn: node(K2, undefined, 10), viewOut: node(K2, K3, 10) },
+      node(K3, undefined, 20), { in: SPENT, out: SPENT, viewIn: node(K1, K2, 100), viewOut: node(K1, K2, 80) },
+    ))).toStrictEqual({ frameOne: true, frameTwo: true, settlement: false });
   });
 });
 

@@ -5,8 +5,8 @@ import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import type { PerCallProxyExternal } from '../../../src/per-call/proxy/external-calls.js';
@@ -24,9 +24,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * key the list holds share its node, each continuing from the view the one before it left: that is
  * `call/shared-node-across-reaches.test.ts` ("two debits of one balance settle").
  *
- * Three reaches inserting into one gap land one behind the other: the second splices through the node the first
- * creates, which the master's insert cannot prove, so that shape is refused by name rather than settled into a plan
- * that cannot broadcast.
+ * Three reaches inserting into one gap land one behind the other: each later reach is planned against the list the
+ * one before it left, so it splices through the node the one before it created, named at that reach's output, and
+ * the list the transaction leaves links every key in order.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -257,6 +257,25 @@ async function deployedChains(): Promise<Chains> {
   return chains;
 }
 
+/** The ledger's list as the chain holds it, walked from the head along each node's link, with each node's value. */
+async function heldList(
+  network: MockNetworkProvider,
+): Promise<readonly { readonly slot: bigint; readonly value: string }[]> {
+  const deployment = await readPerCallDeployment(network, LEDGER_CATEGORY, ledger.stateLayout!);
+  const nodes = new Map((deployment.nodesByCollection.get('held') ?? []).map((utxo) => {
+    const node = decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment));
+    return [bytesToSlotValue(node.slot), node] as const;
+  }));
+  const list: { slot: bigint; value: string }[] = [];
+  for (let next = nodes.get(0n)?.nextKey; next !== undefined && bytesToSlotValue(next) !== 0n;) {
+    const node = nodes.get(bytesToSlotValue(next));
+    if (node === undefined) break;
+    list.push({ slot: bytesToSlotValue(node.slot), value: binToHex(node.value) });
+    next = node.nextKey;
+  }
+  return list;
+}
+
 /** Runs one hop of the root entry, with the reaches' keys as its argument. */
 async function callRun(
   network: MockNetworkProvider,
@@ -295,12 +314,19 @@ describe('one entry reaching the same mapping-writing callee three times', () =>
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('refuses three reaches that insert into one gap, which one predecessor cannot carry', async () => {
+  it('settles three reaches that insert into one gap, each through the node the one before it created', async () => {
     const { network, funded } = await deployedChains();
-    const { sharedGap } = keySets();
-    await expect(callRun(network, funded, sharedGap)).rejects.toThrow(
-      /entry "Ledger\.move\(\)" 3 times.*creates the node of collection "held" it splices through.*distinct nodes/,
-    );
+    const { sharedGap, seeds } = keySets();
+    const result = await callRun(network, funded, sharedGap);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    // The list links every key in ascending order, the seeds' and the three new ones', each holding what it was
+    // moved by.
+    const list = await heldList(network);
+    expect(list.map((node) => node.slot))
+      .toStrictEqual([...seeds, ...sharedGap].map(slotOf).sort((left, right) => (left < right ? -1 : 1)));
+    expect(sharedGap.map((key) => list.find((node) => node.slot === slotOf(key))?.value))
+      .toStrictEqual([1n, 2n, 3n].map((by) => binToHex(bigIntToVmNumber(by))));
   });
 
 });

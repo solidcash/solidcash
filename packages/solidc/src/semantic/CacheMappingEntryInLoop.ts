@@ -508,9 +508,16 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private publishStraightLineMappingKeyValues(fn: FunctionDefinitionNode): void {
     const statements = fn.body.statements ?? [];
     const parameters = new Set(fn.parameters.map((parameter) => parameter.name));
-    const transparent = (statement: StatementNode): boolean => statement instanceof VariableDefinitionNode
-      && (!statement.expression || argumentOnlyMappingValue(statement.expression, parameters));
-    const transparentStatements = statements.map(transparent);
+    const transparentStatements: boolean[] = [];
+    const topLevelLocals = new Set<string>();
+    for (const statement of statements) {
+      transparentStatements.push(statement instanceof VariableDefinitionNode
+        ? !statement.expression || argumentOnlyMappingValue(statement.expression, parameters)
+        : statement instanceof AssignNode && !statement.isReferenceDataWrite
+          && topLevelLocals.has(statement.identifier.name)
+          && argumentOnlyMappingValue(statement.expression, parameters));
+      if (statement instanceof VariableDefinitionNode) topLevelLocals.add(statement.name);
+    }
     const previousEffectful: number[] = [];
     let previous = -1;
     for (let index = 0; index < statements.length; index += 1) {

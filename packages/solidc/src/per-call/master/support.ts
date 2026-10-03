@@ -84,7 +84,7 @@ import {
 } from '../../ast/AST.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../../ast/Operator.js';
 import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
-import { countTransfersMinMax } from '../../semantic/branchOps.js';
+import { countTransfersMinMax, isDirectOwnerTransferNode } from '../../semantic/branchOps.js';
 import type { MasterCallSite, MasterTailShape, SiteArgument } from './frame-tail.js';
 import { BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName } from './batch-witness-derivation.js';
 
@@ -694,18 +694,32 @@ function reachesAnyCall(value: unknown): boolean {
 }
 
 /**
+ * How many value sends a value reaches. A send is a call into its recipient's `receive()` where the recipient is a
+ * contract, which the code decides by the lock at run time, so each is a call the source does not fix (spec 4b).
+ */
+function sendsIn(value: unknown): number {
+  let sends = 0;
+  walkInvocationAst(value, (node) => {
+    if (isDirectOwnerTransferNode(node)) sends += 1;
+  });
+  return sends;
+}
+
+/**
  * Advances a call range past a value, or undefined when the value makes an open number of calls.
  *
  * A value that reaches no call contributes none on any path, even when the count walk cannot descend through it:
  * the walk answers a statement carrying a nested branch as open, and lowering leaves such branches inside
  * expressions (an unchecked arithmetic block keeps a disabled overflow check as `if (false) revert`). That branch
  * decides values rather than calls, so the segment the code after it runs in is the one the code before it reached.
+ * A value send may make a call or none, so it widens the range by one.
  */
-function advanceCallRange(range: CallRange, value: unknown): CallRange {
+function advanceCallRange(range: CallRange, value: unknown, countSends = true): CallRange {
   if (range === undefined) return undefined;
-  if (!reachesAnyCall(value)) return range;
+  const sends = countSends ? sendsIn(value) : 0;
+  if (!reachesAnyCall(value)) return sends === 0 ? range : { least: range.least, most: range.most + sends };
   const calls = callsInExpression(value);
-  return calls === undefined ? undefined : { least: range.least + calls, most: range.most + calls };
+  return calls === undefined ? undefined : { least: range.least + calls, most: range.most + calls + sends };
 }
 
 /** The calls either of two mutually exclusive paths makes, or undefined when either leaves the count open. */
@@ -723,7 +737,7 @@ function joinCallRanges(left: CallRange, right: CallRange): CallRange {
  * arms and its default each are their own.
  */
 function callFreeNestedBlocks(statement: Node): readonly BlockNode[] | undefined {
-  if (reachesExternalCall(statement)) return undefined;
+  if (reachesExternalCall(statement) || sendsIn(statement) > 0) return undefined;
   if (statement instanceof SwitchNode) {
     return [
       ...statement.cases.map((arm) => arm.body),
@@ -798,25 +812,83 @@ export function perCallBatchWriteSegment(entry: FunctionDefinitionNode): number 
 }
 
 /**
+ * For each value send of an entry, in transfer order, how many external calls the entry makes before it, or
+ * undefined when the source does not fix that number for every send (spec 4b).
+ *
+ * A send to a contract is a call made where the send is, so a builder places its record past the calls before it
+ * and past the calls the earlier sends to contracts made, which only the recipients a builder resolves can tell. A
+ * statement that both sends and calls, and a send in a loop or a switch, leave the number open.
+ */
+export function perCallSendCallsBefore(entry: FunctionDefinitionNode): readonly number[] | undefined {
+  const count = entry.transferInfos?.length ?? 0;
+  if (count === 0) return undefined;
+  const before = new Map<number, number>();
+  let open = false;
+  const place = (value: Node, incoming: CallRange): void => {
+    walkInvocationAst(value, (node) => {
+      if (!isDirectOwnerTransferNode(node)) return;
+      const index = (node as { readonly transferIndex?: number }).transferIndex;
+      if (index === undefined || incoming === undefined || incoming.least !== incoming.most
+        || reachesAnyCall(value) || before.has(index)) {
+        open = true;
+        return;
+      }
+      before.set(index, incoming.least);
+    });
+  };
+  const walkBlock = (block: BlockNode | undefined, incoming: CallRange): CallRange => {
+    let range = incoming;
+    for (const statement of block?.statements ?? []) range = walkStatement(statement, range);
+    return range;
+  };
+  const walkStatement = (statement: Node, incoming: CallRange): CallRange => {
+    if (statement instanceof BranchNode) {
+      place(statement.condition, incoming);
+      const afterCondition = advanceCallRange(incoming, statement.condition, false);
+      const thenRange = walkBlock(statement.ifBlock, afterCondition);
+      const elseRange = statement.elseBlock === undefined
+        ? afterCondition
+        : walkBlock(statement.elseBlock, afterCondition);
+      return joinCallRanges(thenRange, elseRange);
+    }
+    if (statement instanceof BlockNode) return walkBlock(statement, incoming);
+    if (statement instanceof SwitchNode || statement instanceof CollectionIterationNode
+      || statement instanceof WhileNode || statement instanceof DoWhileNode) {
+      if (sendsIn(statement) > 0) open = true;
+      return reachesExternalCall(statement) ? undefined : incoming;
+    }
+    if (statement instanceof TryCatchNode) {
+      place(statement.expression, incoming);
+      // A catch block is not an executable path, matching the invocation walk.
+      return walkBlock(statement.tryBlock, advanceCallRange(incoming, statement.expression, false));
+    }
+    place(statement, incoming);
+    return advanceCallRange(incoming, statement, false);
+  };
+  walkBlock(entry.body, { least: 0, most: 0 });
+  const placed = Array.from({ length: count }, (_unused, index) => before.get(index));
+  return open || placed.some((calls) => calls === undefined) ? undefined : placed as number[];
+}
+
+/**
  * True when every one of a body's derivable batch writes runs after every call the body reaches.
  *
  * A call closes the segment the code before it runs in, so a write no call follows lands in the last segment the
  * execution opens, whichever arm ran: its index is how many calls the execution made, which the witness block
  * declares. A call textually after the write is the only way one can execute after it, so every call's place in the
  * invocation walk lying below every write's is exactly the fact the derivation needs to read that segment at run
- * time. A write in a loop is refused elsewhere, so the walk order decides this. A body that sends pays a
- * recipient's `receive()` after its own code, which is a call after every write the source shows, so a sending
- * body never qualifies.
+ * time. A write in a loop is refused elsewhere, so the walk order decides this. A value send is a call where its
+ * recipient is a contract, so it counts as one.
  */
 export function perCallBatchWriteFollowsEveryCall(entry: FunctionDefinitionNode): boolean {
   const slots = new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
-  if (slots.size === 0 || (entry.transferInfos?.length ?? 0) > 0) return false;
+  if (slots.size === 0) return false;
   let order = 0;
   let lastCall = -1;
   let firstWrite = Number.POSITIVE_INFINITY;
   walkInvocationAst(entry.body, (node) => {
-    if (node instanceof ExternalFunctionCallNode
-      || node instanceof LowLevelCallStatementNode || node instanceof LowLevelCallNode) {
+    if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallStatementNode
+      || node instanceof LowLevelCallNode || isDirectOwnerTransferNode(node)) {
       lastCall = order;
     } else if ((node instanceof MappingAssignNode || node instanceof MappingDeleteNode)
       && slots.has(node.entrySlotIndex)) {
@@ -868,15 +940,13 @@ function writesSizedField(statement: Node): boolean {
 
 /** True when every write to the entry's own records runs after every call the entry reaches. */
 function entryRecordWritesFollowEveryCall(entry: FunctionDefinitionNode, batchSlots: ReadonlySet<number>): boolean {
-  // A body that sends pays a recipient's `receive()` after its own code, which is a call after every write the
-  // source shows, so a sending body never qualifies.
-  if ((entry.transferInfos?.length ?? 0) > 0) return false;
+  // A value send is a call where its recipient is a contract, so it counts as one.
   let order = 0;
   let lastCall = -1;
   let firstWrite = Number.POSITIVE_INFINITY;
   walkInvocationAst(entry.body, (node) => {
-    if (node instanceof ExternalFunctionCallNode
-      || node instanceof LowLevelCallStatementNode || node instanceof LowLevelCallNode) {
+    if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallStatementNode
+      || node instanceof LowLevelCallNode || isDirectOwnerTransferNode(node)) {
       lastCall = order;
     } else if (writesEntryRecord(node, batchSlots)) {
       firstWrite = Math.min(firstWrite, order);
@@ -933,7 +1003,7 @@ function perCallWriteSteps(
 ): readonly PerCallWriteStep[] {
   const steps: PerCallWriteStep[] = [];
   // The most calls any one path makes: a write the walk reaches with every one of them behind it follows them all.
-  const mostCalls = callCountRange(entry.body)?.most;
+  const mostCalls = callCountRange(entry.body, true)?.most;
   const walkBlock = (block: BlockNode | undefined, incoming: CallRange): CallRange => {
     let range = incoming;
     for (const statement of block?.statements ?? []) range = walkStatement(statement, range);
@@ -1363,6 +1433,8 @@ export interface PerCallEntryCallSites {
    * segment is not fixed, which the builder refuses by name.
    */
   readonly writeSegments?: readonly PerCallWriteSegmentFact[];
+  /** For each value send, in transfer order, how many external calls the entry makes before it, when fixed. */
+  readonly sendCallsBefore?: readonly number[];
 }
 
 export interface PerCallMasterShapeAssessment {
@@ -2136,6 +2208,7 @@ function derivePerCallMasterCallSites(
     }
     const writeSegment = perCallWriteSegment(entry);
     const writeSegments = perCallWriteSegments(entry);
+    const sendCallsBefore = perCallSendCallsBefore(entry);
     entryCalls.push({
       entryName: entry.name,
       calls: derived.calls,
@@ -2143,6 +2216,7 @@ function derivePerCallMasterCallSites(
       ...(callsRepeat(entry.body) ? { repeats: true } : {}),
       ...(writeSegment === undefined ? {} : { writeSegment }),
       ...(writeSegments === undefined ? {} : { writeSegments }),
+      ...(sendCallsBefore === undefined ? {} : { sendCallsBefore }),
     });
   }
   // The bound the head holds is how many records the body with the most calls declares, which is a path count
@@ -2213,12 +2287,15 @@ function reachesCallRecord(value: unknown): boolean {
   return reaches;
 }
 
-/** The fewest and most calls a block makes on any one path, or undefined when a construct leaves the count open. */
-function callCountRange(block: BlockNode | undefined): { least: number; most: number } | undefined {
+/**
+ * The fewest and most calls a block makes on any one path, or undefined when a construct leaves the count open.
+ * With `countSends`, a value send counts as a call some paths make, as it is one where its recipient is a contract.
+ */
+function callCountRange(block: BlockNode | undefined, countSends = false): { least: number; most: number } | undefined {
   let least = 0;
   let most = 0;
   for (const statement of block?.statements ?? []) {
-    const range = statementCallRange(statement);
+    const range = statementCallRange(statement, countSends);
     if (range === undefined) return undefined;
     least += range.least;
     most += range.most;
@@ -2227,20 +2304,27 @@ function callCountRange(block: BlockNode | undefined): { least: number; most: nu
 }
 
 /** The fewest and most calls one statement makes on any one path, or undefined when it leaves the count open. */
-function statementCallRange(statement: Node): { least: number; most: number } | undefined {
+function statementCallRange(statement: Node, countSends = false): { least: number; most: number } | undefined {
   if (statement instanceof BranchNode) {
     const inCondition = callsInExpression(statement.condition);
-    const inIf = callCountRange(statement.ifBlock);
+    const sendsInCondition = countSends ? sendsIn(statement.condition) : 0;
+    const inIf = callCountRange(statement.ifBlock, countSends);
     const inElse = statement.elseBlock === undefined
       ? { least: 0, most: 0 }
-      : callCountRange(statement.elseBlock);
+      : callCountRange(statement.elseBlock, countSends);
     if (inCondition === undefined || inIf === undefined || inElse === undefined) return undefined;
     return {
       least: inCondition + Math.min(inIf.least, inElse.least),
-      most: inCondition + Math.max(inIf.most, inElse.most),
+      most: inCondition + sendsInCondition + Math.max(inIf.most, inElse.most),
     };
   }
-  if (statement instanceof BlockNode) return callCountRange(statement);
+  if (statement instanceof BlockNode) return callCountRange(statement, countSends);
+  // A statement that sends makes a call where its recipient is a contract, so its sends widen the range; a send in
+  // a loop is refused elsewhere, and one in a switch counts on every arm, which only widens it further.
+  if (countSends && !(statement instanceof TryCatchNode) && sendsIn(statement) > 0) {
+    const own = callsInExpression(statement);
+    return own === undefined ? undefined : { least: own, most: own + sendsIn(statement) };
+  }
   if (statement instanceof WhileNode || statement instanceof DoWhileNode) {
     // A loop whose condition or body reaches a call makes a run-time number of them; one that reaches none makes
     // none on any path.
@@ -2257,9 +2341,10 @@ function statementCallRange(statement: Node): { least: number; most: number } | 
   if (statement instanceof TryCatchNode) {
     // A catch block is not an executable path, matching the invocation walk.
     const inExpression = callsInExpression(statement.expression);
-    const inTry = callCountRange(statement.tryBlock);
+    const inTry = callCountRange(statement.tryBlock, countSends);
     if (inExpression === undefined || inTry === undefined) return undefined;
-    return { least: inExpression + inTry.least, most: inExpression + inTry.most };
+    const sendsInExpression = countSends ? sendsIn(statement.expression) : 0;
+    return { least: inExpression + inTry.least, most: inExpression + sendsInExpression + inTry.most };
   }
   // Any other statement makes the calls its own expression reaches, all of them on every path.
   const own = callsInExpression(statement);
@@ -2576,7 +2661,8 @@ function deriveEntryCallSites(
   // call count the run's own block declares. The latter only names the write's segment when no call follows it, so a
   // body that writes such a collection behind a call the source does not fix stays refused unless every call
   // precedes every write rather than deriving the operands from another segment.
-  if ((entry.sortedBatchInfo?.length ?? 0) > 0 && varying
+  // A value send is such a call where its recipient is a contract.
+  if ((entry.sortedBatchInfo?.length ?? 0) > 0 && (varying || (entry.transferInfos?.length ?? 0) > 0)
     && perCallBatchWriteSegment(entry) === undefined
     && !perCallBatchWriteFollowsEveryCall(entry)) {
     return { calls: [], reason: 'the body writes a verified mapping behind a call whose occurrence the source '

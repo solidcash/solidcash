@@ -323,8 +323,9 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   mapping upsert meets on the shipped call path (the machine refuses the frame the path planned itself, while the
   same mapping written once from a parameter settles). The eleven cross-contract rows are
   `cross-contract-identity.test.ts`: A to B, `msg.sender` and `tx.origin` across a `STATIC` frame, served with the
-  EVM's answer (the call path plans callee frames between plain deployments, `call/plain-callees.test.ts`); the
-  other nine each the EVM's answer beside the refusal the per-call path meets by name.
+  EVM's answer (the call path plans callee frames between plain deployments, `call/plain-callees.test.ts`), and A
+  paying B before it reads what B's `receive()` recorded, served the same way (the value call made where A sends);
+  the other eight each the EVM's answer beside the refusal the per-call path meets by name.
 - **`solidcash/test/per-call/pw7-measure.test.ts`** - a measurement instrument rather than a regression guard: it
   drives the shipped composer and derivation on Y2, Y6 and the vault graph, counts the machine's own evaluations
   per master, and prints a JSON summary to `PW7_OUT` (default `/tmp/pw7-measure.json`). It runs only under
@@ -384,6 +385,7 @@ listed under the table, and none of those is claimed anywhere else.
 | A master whose declared segments are out of order | `reordered-segments.test.ts` (the derivation refuses `V7_CHAIN_START_MISMATCH`; the program's order-free chain walk accepts, which the case pins) |
 | Two frames that list the same event output | `shared-event-output.test.ts` (the composer refuses the plan's shared list, and a mutation of the assembled spend is refused by the derivation and the program alike) |
 | A payment to a contract made without the recipient's master: a plain output at its address listed as a send, the call record kept without the recipient's master, a send listed to a P2SH32 lock the body pays through a call, another contract or another body taking the value, or a payer claiming to stand alone while it makes the call (T35) | `contract-payment-plain-output.test.ts` (seven cases, beside the composed payment every input accepts) and `solidc/test/per-call/master/value-receive-call.test.ts` (the stand-alone payer) |
+| A value call made where the payer sends, before a call that reads the paid contract, with another amount than the payer sent, its value paid elsewhere than the recipient's containers, or recorded after the read | `value-call-order.test.ts` (one case of three changes, beside the composed payment every input accepts) |
 | A frame entered by the contract's own validator or data-record lock, posing as the contract (T19) | `standalone-caller-contract.test.ts` (each lock refused beside an accepted control) and `validator/script.test.ts` (a root and a called master, refused at the validator) |
 | A caller whose signature hash type does not commit to the whole transaction: `0xC1`, `0xC3`, `0x42`, `0x43`, `0xE1` (T20) | `standalone-caller-contract.test.ts` (standalone) and `caller-lock-binding.test.ts` (composed root, the validator still accepting) |
 | A facet not recreated, recreated lighter, moved to read another head's transcript, or reading a transcript pushed ahead of its head's | `validator-facets.test.ts` (four cases; a transcript only the facet refuses is the premise) |

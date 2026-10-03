@@ -103,11 +103,12 @@ export function publishPerCallStopSites(
     readonly pathCount?: number;
     readonly writeSegment?: number | 'last';
     readonly writeSegments?: readonly PublishedWriteSegment[];
+    readonly sendCallsBefore?: readonly number[];
   }[],
 ): PublishedPerCallStopSites {
   return {
     version: 1,
-    entries: entries.map(({ entryName, calls, pathCount, writeSegment, writeSegments }) => {
+    entries: entries.map(({ entryName, calls, pathCount, writeSegment, writeSegments, sendCallsBefore }) => {
       const functionName = entryFunctionName(contractName, entryName);
       return {
         functionName,
@@ -120,6 +121,7 @@ export function publishPerCallStopSites(
         })),
         ...(writeSegment === undefined ? {} : { writeSegment }),
         ...(writeSegments === undefined ? {} : { writeSegments }),
+        ...(sendCallsBefore === undefined ? {} : { sendCallsBefore }),
         sites: entryStopSites(functionName, calls, pathCount),
       };
     }),

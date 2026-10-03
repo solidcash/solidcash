@@ -33,6 +33,10 @@ Revision 14 records what landed after revision 13 (`3c0d52997`), and one place t
   frame, and its block records no `DELEGATE` or `INTERNAL` call; before, a `DELEGATE` site anywhere in its code
   skipped S for every entry (`2d517da79`, T57). Call records were already bound one per call executed (section 4);
   the hop's plan for a skipped site is the open part (DECISIONS D17).
+- **Value calls where the sender sends** (sections 4a, 4b, 10). A value send to a contract is a `CALL` made at its
+  source position, closing the sender's segment there, so a call after it reads the recipient after its `receive()`
+  ran; it was made after the sender's own code. The artifact publishes each send's place among the entry's calls
+  (`sendCallsBefore`), and a data field the sender wrote before the call is read again from the segment it opens.
 
 ### Since revision 12 (2026-10-03)
 
@@ -542,7 +546,8 @@ anything.
 
 **Value sends.**
 - A value send to a P2PKH lock is an output.
-- A value send to a contract is a `CALL` into its `receive()` or `fallback()`, with `msg.value`.
+- A value send to a contract is a `CALL` into its `receive()` or `fallback()`, with `msg.value`, made where the
+  sender sends (section 4b).
   - The recipient's master mints a satoshi container holding the value. This is how paying a contract already works
     today.
   - A plain output to a contract was never a payment.
@@ -583,22 +588,31 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
 - **Sending.** `transfer(v)`, `send(v)` and `call{value: v}("")` to a P2PKH lock are a listed send (4a). To any
   other lock they are a `CALL` carrying the selector of `receive()` alone, whose call record carries `value = v`:
   the recipient runs its `receive()`, else its payable `fallback()`. The sender's own code chooses by the lock's
-  length, so no witness chooses it. The call is made after the sender's own code, as its frame's last calls. A
-  recipient with neither body, or whose fallback is not payable, cannot run the frame, so the transaction fails, as
-  in the EVM; the SDK reads the recipient's artifact and refuses by name to compose such a send. The SDK plans the
-  recipient body's events, mapping writes and sends to users' locks as it plans the sender's, learning what the
-  body computed from the recipient's own program; a recipient's sends are paid from what it receives, then from its
-  own containers, as the EVM's are from its balance; a send on a branch is listed when the run makes it, as the
-  sender's is. A recipient body that calls, or sends to a contract, is not composed yet. A composed call cannot fail
-  (T22), so `send` and `call` return `true` whenever the transaction is valid.
+  length, so no witness chooses it. The call is made where the source sends, as the EVM makes it: it closes the
+  segment the sender's code before it ran in and binds the next call record, so the sender's later code, a call
+  that reads the recipient among it, runs after the recipient's body. A send to a user's lock is pinned once the
+  sender's own code has run; it makes no call, so it closes no segment. A recipient with neither body, or whose
+  fallback is not payable, cannot run the frame, so the transaction fails, as in the EVM; the SDK reads the
+  recipient's artifact and refuses by name to compose such a send. The artifact publishes, for each send, how many
+  calls the entry makes before it (`sendCallsBefore`), and the SDK places each value call there, past the value
+  calls of the earlier sends it resolves to contracts; a contract the sender both pays and calls is one block, whose
+  later frames start from the records the recipient's body left. The SDK plans the recipient body's events, mapping
+  writes and sends to users' locks as it plans the sender's, learning what the body computed from the recipient's
+  own program; a recipient's sends are paid from what it receives, then from its own containers, as the EVM's are
+  from its balance; a send on a branch is listed when the run makes it, as the sender's is. A recipient body that
+  calls, or sends to a contract, is not composed yet. A composed call cannot fail (T22), so `send` and `call`
+  return `true` whenever the transaction is valid.
 - **No gas, so no stipend.** BCH has no counterpart of gas, so `receive()` and `fallback()` are more permissive
   than in the EVM: whichever spelling sent the value, the recipient's body may write state, emit, send and call,
   where the EVM's `transfer` and `send` give it a 2300-gas stipend, enough for little more than an event.
   - A contract that relied on the stipend to keep a recipient from re-entering it has no such guard here.
-  - The recipient runs after the sender's own code, so it never sees the sender mid-execution, and a recipient that
-    calls back makes the sender a contract with two masters in the transaction, which the validator settles.
-  - Running the recipient after the sender's own code is the EVM's order for a recipient that neither calls back
-    into the sender nor reads its state; for one that does, it is a departure.
+  - The recipient runs where the sender sends, so it sees the sender's records as the segment the call closes left
+    them, and a recipient that calls back makes the sender a contract with two masters in the transaction, which
+    the validator settles.
+  - After the call the sender reads a data field it wrote before it from the segment the call opened, so it sees
+    what a recipient that called back left there, as the EVM's storage does. A verified-mapping value it wrote
+    before the call is still read as it wrote it; for a recipient that calls back and rewrites that entry, this is a
+    departure.
 - **Conservation, per contract X.** `growth(X) >= in(X) - out(X)`, where
   - `growth(X)` is the value of X's container outputs less the value of the containers X spends;
   - `in(X)` is the `value` of the frames entered into X from outside its context (`ROOT`, `CALL`, `CREATE`);
@@ -613,8 +627,8 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
   - The inequality is kept for now and is to be revisited (user direction 2026-09-29): holding a contract to the
     equality on chain would refuse a funder's gift, which the EVM cannot refuse either.
   - The rule is checked per transaction, where the EVM checks each send against the balance at that moment: a
-    contract may pay out value it receives later in the same transaction. This is one departure; the order of a
-    value call (Sending) is the other.
+    contract may pay out value it receives later in the same transaction. This is one departure; a mapping value
+    read back across a value call (No gas, so no stipend) is the other.
 - **What the master checks today.** A frame that settles alone is weighed by its own master: the growth of its
   contract's containers plus what the frame's listed sends and the records of its calls pay covers the value the
   frame receives, so the contract pays its sends and its value calls from them. A frame that does not settle alone
@@ -1183,7 +1197,10 @@ finished transaction.
      first on a master of the callee's contract;
    - **a segment close:** copy the computed records into `viewOut`, and update the logical state.
 
-   No read site is published: the declared records already carry what a read needs.
+   No read site is published: the declared records already carry what a read needs. A value call into a contract
+   is no published site either: it returns nothing, so the plain call path derives the recipient's body as a frame
+   of its own before the root, and a later frame on the recipient's records starts from the views that body left
+   (section 4b).
 3. When the callee returns, copy its `retval` into the caller's `calls[k].result`, then run the caller again. Each run
    gets strictly further, so the number of runs is bounded by the sites, calls + segments (twice that as shipped,
    section 18). There is no transaction-wide fixpoint. A run that gets no further is refused, not retried.

@@ -231,8 +231,8 @@ export interface DraftCall {
   readonly value: bigint;
   readonly argumentPushes: readonly Uint8Array[];
   /**
-   * True for a call the body makes after its own code, which no stop site names: a value send to a contract. Its
-   * callee reference is filled when the draft is built, and its callee is derived as a request of its own.
+   * True for a call no stop site names: a value send to a contract, made where the body sends. Its callee reference
+   * is filled when the draft is built, and its callee is derived as a request of its own.
    */
   readonly deferred?: boolean;
 }

@@ -94,9 +94,6 @@ const aRow = (label: string, entry: string, members: string, evm: Answer, extra:
 /** A frame of the root's own contract below a callee: the planner gives the root's contract one master. */
 const REENTRY = new RegExp('entry "viaReentry" makes 1 external call\\(s\\): the call to "IA\\.k" reaches "A", which '
   + 'this hop already places; a contract that reaches itself below itself cannot be given a second block');
-/** A value call runs after the entry's own code, so the getter after it would read B before `receive()` ran. */
-const VALUE_THEN_CALL = new RegExp('entry "viaSend" sends value to a contract and makes 1 external call\\(s\\); the '
-  + 'value call runs after the entry\'s own code');
 /** A raw call whose payload is not a typed call is refused by name in the body that makes it. */
 const rawCall = (entry: string): RegExp => new RegExp(`A\\.${entry}\\(\\): the call to '__raw__' takes the direct path's`);
 const NO_CREATE = /contract creation needs the witness `CREATE` checks, which are not emitted yet/;
@@ -128,7 +125,7 @@ const ROWS: readonly Row[] = [
   aRow('A sends value to B: receive() sender', 'viaSend',
     'function viaSend() external payable returns (address) {'
     + ' (bool ok, ) = payable(address(b)).call{value: msg.value}(""); require(ok);'
-    + ' return b.lastReceiveSender(); }', 'A', { value: 5n, refusal: VALUE_THEN_CALL }),
+    + ' return b.lastReceiveSender(); }', 'A', { value: 5n }),
   aRow('A calls B unknown fn: fallback() sender', 'viaFallback',
     'function viaFallback() external returns (address) {'
     + ' (bool ok, ) = address(b).call(abi.encodeWithSignature("nonexistent()")); require(ok);'

@@ -29,12 +29,14 @@
  * does not bring, and one of them, keeping the change, precedes the sends, which binds them to the frame. A send
  * the containers cannot cover is refused by name, as the EVM reverts it. A send on a branch is planned as made,
  * and dropped when the body shows it was not: a listed send it never pinned, or a value call it never made. A
- * send to a contract is a call into its `receive()` (or its payable `fallback()`), made after the entry's own code:
- * the call resolves the recipient from the send's published recipe, finds it among `externals`, and plans the
- * frame of that body, whose containers take the value; a recipient with neither is refused by name. The paid body
- * may emit, write its mapping and send to users' locks, paying from what it receives and then from its own
- * containers, all learned from its own program as the entry's are; one that calls, or sends to a contract or on a
- * branch, is refused by name.
+ * send to a contract is a call into its `receive()` (or its payable `fallback()`), made where the entry sends, so it
+ * takes its place among the entry's calls by the count its artifact publishes: the call resolves the recipient from
+ * the send's published recipe, finds it among `externals`, and plans the frame of that body, whose containers take
+ * the value; a recipient with neither is refused by name. A contract the entry both pays and calls is one block: a
+ * callee frame that runs after the payment starts from the records the paid body left. The paid body may emit,
+ * write its mapping and send to users' locks, paying from what it receives and then from its own containers, all
+ * learned from its own program as the entry's are; one that calls, or sends to a contract or on a branch, is
+ * refused by name.
  *
  * An entry that hashes through keccak256 or recovers a signer co-spends a side-car per call right after its master.
  * The call spends live side-car UTXOs (`entrySideCars`), and a preimage or a digest the body computes is learned
@@ -95,8 +97,8 @@ import {
 import { callEntryRecords, frameDataRecordIndices, orderLoopKeyArgs, type LaidCallEntryRecords } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
 import {
-  NO_CALLEE_VALUES, PerCallCalleeError, calleeFrames, calleeValuesOwed, learnCalleeValue, planEntryCallees,
-  type CalleeValues, type PlannedCallees,
+  NO_CALLEE_VALUES, PerCallCalleeError, calleeFrames, calleeValuesOwed, calleeWrites, learnCalleeValue,
+  planEntryCallees, type CalleeValues, type PlannedCallees,
 } from './callees.js';
 import { decodeReturnValues } from '../read/index.js';
 import {
@@ -108,11 +110,13 @@ import {
   participant,
   readPublishedStopSites,
   reportCompositionRefusal,
+  unstatedViewPlaceholder,
   validatorFacetsOf,
   type CompositionDraft,
   type CompositionDraftPlan,
   type CompositionRefusal,
   type ContractBlock,
+  type DraftCall,
   type DraftInput,
   type DraftMaster,
   type DraftRecordEntry,
@@ -626,7 +630,12 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       }
       const recipientCategory = hexToBin(external.categoryId);
       const set = await readPerCallDeployment(provider, external.categoryId, layout);
-      const recipientMaster = set.masters[0];
+      // The frames the entry's calls run on the same contract: its masters are theirs to run, so the payment takes
+      // one they leave, and its records are theirs.
+      const shared = calleePlan?.callees.filter((callee) => callee.categoryId === external.categoryId) ?? [];
+      const outpoint = (utxo: Utxo): string => `${utxo.txid}:${utxo.vout}`;
+      const taken = new Set(shared.flatMap((callee) => [...callee.utxos.values()].map(outpoint)));
+      const recipientMaster = set.masters.find((utxo) => !taken.has(outpoint(utxo)));
       if (recipientMaster === undefined || set.records.length < layout.dataNftCount) {
         throw new PerCallCallError(
           `contract "${external.artifact.contractName}" at category ${external.categoryId} holds no master or not every `
@@ -657,8 +666,9 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         // The records its body's frame declares, in the order its code reads them.
         records: frameDataRecordIndices(external.artifact, body.name).map((nftIndex) => {
           const utxo = set.records[nftIndex]!;
-          return { utxo, commitment: new Uint8Array(hexToBin(utxo.token?.nft?.commitment ?? '')) };
+          return { nftIndex, utxo, commitment: new Uint8Array(hexToBin(utxo.token?.nft?.commitment ?? '')) };
         }),
+        shared,
         entryName: body.name,
         onBranch: onBranch[transferPosition]!,
         selector: VALUE_SEND_CALL_DATA,
@@ -687,31 +697,107 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       `entry "${functionName}" pays one contract through two calls, which would need two of its masters to take value`,
     );
   }
-  // A value call runs after the entry's own code, so it would follow every call the body makes in source order.
-  if (calleePlan !== undefined && payees.length > 0) {
+  // A value call into a contract is a call made where the entry sends, so a mapping write beside it would need its
+  // segments placed, as one beside any call does.
+  if (payees.length > 0 && mappingRecords !== undefined) {
     throw new PerCallCallError(
-      `entry "${functionName}" sends value to a contract and makes ${calleePlan.calls.length} external call(s); the `
-      + 'value call runs after the entry\'s own code, so this call path does not plan both in one call yet',
+      `entry "${functionName}" writes mapping "${mappingRecords.collection}" and makes `
+      + `${(calleePlan?.calls.length ?? 0) + payees.length} external call(s), whose segments this call path does not `
+      + 'place its writes in yet',
     );
   }
+  // Each value call takes its place among the calls the entry makes: after the calls its artifact counts before the
+  // send, and after the value calls of the earlier sends to contracts (spec 4b).
+  const sendCallsBefore = published?.sendCallsBefore;
+  if (calleePlan !== undefined && payees.length > 0 && sendCallsBefore === undefined) {
+    throw new PerCallCallError(
+      `entry "${functionName}" sends value to a contract and makes ${calleePlan.calls.length} external call(s), and `
+      + 'its artifact does not place the sends among the calls, so this call path does not plan both in one call yet',
+    );
+  }
+  const typedCalls = calleePlan?.calls ?? [];
+  const payeeCallsBefore = payees.map((payee) => sendCallsBefore?.[payee.transferPosition] ?? typedCalls.length);
+  /** The position in the entry's calls of the call at `position` among the calls its body makes to typed entries. */
+  const typedCallPosition = (position: number): number =>
+    position + payeeCallsBefore.filter((before) => before <= position).length;
+  /** The position in the entry's calls of the value call paying the `index`-th contract. */
+  const valueCallPosition = (index: number): number => payeeCallsBefore[index]!
+    + payeeCallsBefore.filter((before, other) => before < payeeCallsBefore[index]! || (before === payeeCallsBefore[index]
+      && other < index)).length;
+  // A contract the entry both pays and calls is one block: the frame its `receive()` runs takes one of the contract's
+  // masters beside the callees', on the same records, and a callee that runs after the payment starts from the views
+  // the paid body left.
+  for (const payee of payees) {
+    if (payee.shared.length === 0) continue;
+    const label = `entry "${functionName}" pays "${payee.artifact.contractName}", which its calls also reach,`;
+    if (payee.mapping !== undefined || payee.sendCount > 0 || payee.emits.length > 0) {
+      throw new PerCallCallError(`${label} and the paid body writes a mapping, sends or emits, which this call path `
+        + 'does not plan beside the callee frames yet');
+    }
+    if (payee.shared.some(calleeWrites)) {
+      throw new PerCallCallError(`${label} and a callee frame of it writes its records, whose views beside the paid `
+        + 'body this call path does not chain yet');
+    }
+  }
+  const payeeRecordIds = payees.map((payee, index) => payee.records.map((record, position) =>
+    (payee.shared.length > 0 ? payee.shared[0]!.records[record.nftIndex]!.id : receiveRecordId(index, position))));
+  /** Each callee frame's position in the entry's calls: the position of the call its root-level caller answers. */
+  const rootCallOf = (calleeMaster: string): number => {
+    const callees = calleePlan?.callees ?? [];
+    let frame = callees.find((callee) => callee.master === calleeMaster);
+    while (frame !== undefined && frame.enteredBy !== null) frame = callees[frame.enteredBy];
+    const position = typedCalls.findIndex((call) => call.callee === frame?.master);
+    return position < 0 ? -1 : typedCallPosition(position);
+  };
+  // The views a callee frame starts from when a paid body on its contract ran before it: the ends of that body's
+  // declarations, which the derivation learns from the paid body's own close.
+  const startViews = new Map<string, Map<string, Uint8Array>>();
+  payees.forEach((payee, index) => {
+    const last = payee.segmentCount - 1;
+    for (const frame of payee.shared) {
+      if (rootCallOf(frame.master) <= valueCallPosition(index)) continue;
+      const views = startViews.get(frame.master) ?? new Map<string, Uint8Array>();
+      payeeRecordIds[index]!.forEach((id, position) => {
+        views.set(id, unstatedViewPlaceholder(receiveMasterId(index), last, position));
+      });
+      startViews.set(frame.master, views);
+    }
+  });
+  // The callee blocks with each paid body that shares one: its master beside the callees', its records once.
+  const calleeBlocks = (calleePlan?.blocks ?? []).map((block): ContractBlock => {
+    const index = payees.findIndex((payee) => payee.shared.length > 0
+      && payee.artifact.contractName === block.contract);
+    if (index < 0) return block;
+    return {
+      ...block,
+      masters: [...block.masters, receiveMasterId(index)],
+      state: [...block.state, ...payeeRecordIds[index]!.filter((id) => !block.state.includes(id))],
+    };
+  });
+  const sharedPlan = calleePlan === undefined ? undefined : { ...calleePlan, blocks: calleeBlocks };
+  const besideCallees = {
+    masters: new Map(payees.filter((payee) => payee.shared.length > 0)
+      .map((payee) => [payee.artifact.contractName, 1] as const)),
+    startViews,
+  };
 
   // One block for the contract: its master and its side-cars, its validator, and every record it reads and writes;
   // then one block for each contract it calls, holding the masters its frames run on and the records they read, and
-  // one for each contract it pays, holding the master that runs its `receive()` and its records.
+  // one for each other contract it pays, holding the master that runs its `receive()` and its records.
   const blocks: ContractBlock[] = [{
     contract: artifact.contractName,
     masters: [MASTER_ID],
     validator: { id: VALIDATOR_ID, settles: [] },
     state: [...recordIds, ...mappingIds],
     ...(sideCars.ids.length === 0 ? {} : { recovery: { [MASTER_ID]: sideCars.ids } }),
-  }, ...(calleePlan?.blocks ?? []), ...payees.map((payee, index) => ({
+  }, ...calleeBlocks, ...payees.flatMap((payee, index) => (payee.shared.length > 0 ? [] : [{
     contract: payee.artifact.contractName,
     masters: [receiveMasterId(index)],
     state: [
-      ...payee.records.map((_record, nftIndex) => receiveRecordId(index, nftIndex)),
+      ...payeeRecordIds[index]!,
       ...(payee.mapping?.participantIds ?? []).map((id) => receiveNodeId(index, id)),
     ],
-  }))];
+  }]))];
   // The validator runs as a head plus the facet inputs its program binds, so the call's own layout has to place
   // the same facets the composer places; otherwise the indices the plan states and the assembled ones differ.
   const validatorRedeem = validatorRedeemScript(category, validatorProgram);
@@ -852,10 +938,11 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   const callValueSentinels = payees.map((_payee, index) => recordValueBytes(CALL_VALUE_SENTINEL + BigInt(index)));
 
   // A call-free entry runs in exactly one segment, and one that calls closes one more per call it makes, which a
-  // loop's site makes once per turn. Every segment declares the frame's state records and the mapping records the
-  // entry writes, with each end commitment the body computes left unstated so the derivation learns it.
-  const segmentCount = calleePlan !== undefined
-    ? calleePlan.calls.length + 1
+  // loop's site makes once per turn, a value call into a contract among them. Every segment declares the frame's
+  // state records and the mapping records the entry writes, with each end commitment the body computes left
+  // unstated so the derivation learns it.
+  const segmentCount = calleePlan !== undefined || payees.length > 0
+    ? typedCalls.length + payees.length + 1
     : published?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1;
   const recordIndex = (id: string): number => participant(layout, id).index;
   // Where each value-dependent node's declaration sits in the frame's segments, and the structural candidate it
@@ -893,10 +980,11 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   // One attempt per value the body computes (each mapping node, each event, each send's lock and amount and the
   // frame's `retval`, each one a paid contract computes and each callee's return, event and written node), plus the
   // attempt that derives against every value. A paid contract's value learned before the amount it was paid is
-  // learned again once the amount is known.
+  // learned again once the amount is known, and so is a callee's when a paid contract shares its records.
+  const sharesPayee = payees.some((payee) => payee.shared.length > 0);
   const maximumAttempts = learningCandidates.length + emits.length + 2 * sendCount + payees.length
     + 2 * (payeeEventSentinels.flat().length + payeeCandidates.flat().length + 2 * payeeSendIndices.flat().length)
-    + (calleePlan?.learnable ?? 0)
+    + (calleePlan?.learnable ?? 0) * (sharesPayee ? 1 + payees.length : 1)
     + (returnsValue ? 1 : 0) + 3;
 
   const buildPlan = (
@@ -954,12 +1042,29 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       ...(laid?.entries ?? []),
     ];
     // The callees' events follow the entry's own, and the records their writes create follow the entry's.
-    const callees = calleePlan === undefined ? undefined : calleeFrames({
-      planned: calleePlan, layout, rootMaster: MASTER_ID, rootAddress: deployed.address, origin: CALLER_ID,
+    const callees = sharedPlan === undefined ? undefined : calleeFrames({
+      planned: sharedPlan, layout, rootMaster: MASTER_ID, rootAddress: deployed.address, origin: CALLER_ID,
       values: learnedCallees, eventBase: layout.participantCount + emits.length,
       createdBase: createdBase + (laid?.trailingOutputs.length ?? 0), recordAmount: validator.satoshis,
-      maximumCommitmentBytes,
+      maximumCommitmentBytes, beside: besideCallees,
     });
+    // The calls its body makes, each value call into a contract where the body sends.
+    const valueCalls = payees.map((payee, index): DraftCall => ({
+      kind: FrameKind.CALL,
+      callee: receiveMasterId(index),
+      target: payee.lock,
+      value: callValue(index),
+      argumentPushes: [payee.selector],
+      deferred: true,
+    }));
+    const rootCalls: DraftCall[] = [];
+    for (let position = 0; position <= typedCalls.length; position += 1) {
+      payees.forEach((_payee, index) => {
+        if (payeeCallsBefore[index] === position
+          || (position === typedCalls.length && payeeCallsBefore[index]! > position)) rootCalls.push(valueCalls[index]!);
+      });
+      if (position < typedCalls.length) rootCalls.push(typedCalls[position]!);
+    }
     // Each contract it pays: its events, listed right after the entry's, and the mapping nodes it creates.
     const payeeLaid = payees.map((payee, index) => ({
       events: payee.emits.map((_emit, position) => payeeEventBases[index]! + position),
@@ -996,23 +1101,14 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: deployed.address, value },
       enteredBy: CALLER_ID,
       origin: CALLER_ID,
-      // The calls its body makes, then the calls into the contracts it pays, after its own code: each of those leaves
-      // a segment of its own with no record.
-      calls: [...(calleePlan?.calls ?? []), ...payees.map((payee, index) => ({
-        kind: FrameKind.CALL,
-        callee: receiveMasterId(index),
-        target: payee.lock,
-        value: callValue(index),
-        argumentPushes: [payee.selector],
-        deferred: true,
-      }))],
-      ...(calleePlan === undefined ? {} : { callBaseBySite: calleePlan.callBases }),
+      calls: rootCalls,
+      // Each published site's first call, past the value calls made before it.
+      ...(calleePlan === undefined ? {} : {
+        callBaseBySite: calleePlan.callBases.map((base) => (base < 0 ? base : typedCallPosition(base))),
+      }),
       // A returning entry's slot starts from the candidate its own comparison fails against; a void entry's is empty.
       retval: learnedRetval ?? retvalPlaceholderBytes ?? new Uint8Array(0),
-      segments: [
-        ...Array.from({ length: segmentCount }, segment),
-        ...payees.map((): DraftRecordEntry[] => []),
-      ],
+      segments: Array.from({ length: segmentCount }, segment),
       events: eventIndices,
       sends: sendIndices,
       argumentPushes,
@@ -1034,7 +1130,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         callerIsUser: false,
         originEqualsCaller: false,
         makesExternalCall: false,
-        mastersOfContract: 1,
+        mastersOfContract: 1 + payee.shared.length,
       },
       frame: { kind: FrameKind.CALL, sender: deployed.address, self: payee.deployed.address, value: callValue(index) },
       enteredBy: MASTER_ID,
@@ -1042,8 +1138,8 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       calls: [],
       retval: new Uint8Array(0),
       segments: Array.from({ length: payee.segmentCount }, (): DraftRecordEntry[] => [
-        ...payee.records.map((record, nftIndex) => {
-          const at = recordIndex(receiveRecordId(index, nftIndex));
+        ...payee.records.map((record, position) => {
+          const at = recordIndex(payeeRecordIds[index]![position]!);
           return { in: at, out: at, viewIn: record.commitment };
         }),
         ...(payeeLaid[index]!.mapping?.entries ?? []),
@@ -1084,8 +1180,9 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         source: masterSource(payee.deployed.lockingBytecode, payee.category, payee.master.satoshis),
       };
       const payeeMasterIndex = recordIndex(receiveMasterId(index));
-      payee.records.forEach((record, nftIndex) => {
-        inputs[receiveRecordId(index, nftIndex)] = {
+      // Its body writes the records it declares, so its master authorizes their spend, a callee's kept input aside.
+      payee.records.forEach((record, position) => {
+        inputs[payeeRecordIds[index]![position]!] = {
           source: {
             lockingBytecode: stateRecordLockingBytecode(payee.categoryId),
             valueSatoshis: record.utxo.satoshis,
@@ -1312,6 +1409,9 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       const callAmount = vmNumberToBigInt(reading.declared, { requireMinimalEncoding: false });
       if (callPosition >= 0 && typeof callAmount === 'bigint') {
         learnedCallAmounts = learnedCallAmounts.map((amount, index) => (index === callPosition ? callAmount : amount));
+        // A callee on a paid contract's records computed from the paid body's candidate amount, so what it answered
+        // is learned again once the amount is known.
+        if (sharesPayee) calleeValues = NO_CALLEE_VALUES;
         continue;
       }
       const amountPosition = sendAmountSentinels.findIndex((sentinel) => bytesEqual(sentinel, reading.declared));
@@ -1491,7 +1591,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     ...(calleePlan?.utxos ?? []),
     ...payees.flatMap((payee, index) => [
       [receiveMasterId(index), payee.master] as const,
-      ...payee.records.map((record, nftIndex) => [receiveRecordId(index, nftIndex), record.utxo] as const),
+      ...payee.records.map((record, position) => [payeeRecordIds[index]![position]!, record.utxo] as const),
       ...[...(payee.mapping?.spentUtxos ?? new Map<string, Utxo>())]
         .map(([id, utxo]) => [receiveNodeId(index, id), utxo] as const),
     ]),

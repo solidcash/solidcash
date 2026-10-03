@@ -1787,6 +1787,14 @@ export interface PublishedEntryStopSites {
    * builder refuses by name rather than declaring its records in a guessed segment.
    */
   readonly writeSegments?: readonly PublishedWriteSegment[];
+  /**
+   * For each value send of the entry, in transfer order, how many external calls the entry makes before it.
+   *
+   * A send to a contract is a call into its `receive()` made where the send is, so its record follows those calls
+   * and the calls the earlier sends to contracts made, which a builder tells from the recipients it resolves.
+   * Absent means the entry makes no send, or makes one whose place among its calls the source does not fix.
+   */
+  readonly sendCallsBefore?: readonly number[];
   /** The sites in the order the driver reaches them, validated before publication. */
   readonly sites: StopSiteMetadata;
 }

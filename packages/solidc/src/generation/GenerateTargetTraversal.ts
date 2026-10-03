@@ -1302,6 +1302,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * declaration instead, until the body writes the field again, which makes the value current once more.
    */
   private perCallStaleWrites = new Set<string>();
+  /** The sends whose call into a contract the body makes where the source sends, so its end does not make it again. */
+  private perCallValueCallsAtSource = new Set<number>();
   /** Set when the master reserves the validator program hash slot, i.e. it can be reached through a call. */
   private perCallReservesValidatorHash = false;
   /** Set when some entry of the compiled master returns a value, so the head parks the frame's `retval`. */
@@ -7540,6 +7542,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallDeclaredLoopOut = false;
     this.perCallDeclaredLoopSlot = -1;
     this.perCallStaleWrites = new Set();
+    this.perCallValueCallsAtSource = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
     this.valueChunkTrailingCountActive = false;
@@ -17449,6 +17452,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.amount = this.visit(node.amount);
       this.emitReplace(this.getStackIndex(amtName), node);
       this.popFromStack();
+      this.emitPerCallValueCallAtSource(node.transferIndex, node);
     } else {
       // Normal path (outside branches)
       node.lockingBytecode = this.visit(node.lockingBytecode);
@@ -17488,6 +17492,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.amount = this.visit(node.amount);
       this.emitReplace(this.getStackIndex(amtName), node);
       this.popFromStack();
+      this.emitPerCallValueCallAtSource(node.transferIndex, node);
     } else {
       // Normal path (outside branches)
       node.addressExpression = this.visit(node.addressExpression);
@@ -17527,6 +17532,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.amount = this.visit(node.amount);
       this.emitReplace(this.getStackIndex(amtName), node);
       this.popFromStack();
+      this.emitPerCallValueCallAtSource(node.transferIndex, node);
     } else {
       node.addressExpression = this.visit(node.addressExpression);
       this.popFromStack();
@@ -27186,7 +27192,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The write's segment is the one whose own records, the groups and value chunks it declares, the batch walk
     // accounts for. A fixed body reaches it at the position its own calls name; a body whose calls the source does
     // not fix reaches it at the body's end, because a write no call follows closes the last segment the run opens.
-    const closesTheWriteSegment = (node.sortedBatchInfo?.length ?? 0) > 0
+    const batchWrite = (node.sortedBatchInfo?.length ?? 0) > 0;
+    // A value send closes a segment only where its recipient is a contract, which no position the source fixes
+    // counts, so a body that sends compares the write's fixed segment with the one its calls have reached.
+    const writeSegmentAtRunTime = batchWrite && !this.perCallBatchWriteRuntime && this.perCallCallsMadeActive
+      && (node.transferInfos?.length ?? 0) > 0;
+    const closesTheWriteSegment = batchWrite && !writeSegmentAtRunTime
       && (this.perCallBatchWriteRuntime ? atEnd : this.perCallSegmentIndex === this.perCallBatchWriteSegment);
     if (closesTheWriteSegment) {
       leadings.push(this.perCallRecordsBeforeGroups());
@@ -27203,8 +27214,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The segment is the one the execution's own calls have reached.
       this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE))), loc);
       this.emit(Op.OP_PICK, loc);
-      this.emit(bytecodeToScript(declaredRecordsKeptScript({ runtimeCounts: true, exempt: written.length, ...leading })),
-        loc);
+      const kept = (options: { leading?: number }): void => {
+        this.emit(bytecodeToScript(declaredRecordsKeptScript({ runtimeCounts: true, exempt: written.length, ...options })),
+          loc);
+      };
+      if (writeSegmentAtRunTime) {
+        this.emit(Op.OP_DUP, loc);
+        this.emit(encodeInt(BigInt(this.perCallBatchWriteSegment)), loc);
+        this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_IF, loc);
+        kept({ leading: Math.min(...leadings, this.perCallRecordsBeforeGroups()) });
+        this.emit(Op.OP_ELSE, loc);
+        kept(leading);
+        this.emit(Op.OP_ENDIF, loc);
+      } else {
+        kept(leading);
+      }
     } else {
       this.emit(bytecodeToScript(declaredRecordsKeptScript({
         segmentIndex: this.perCallSegmentIndex, callCount: this.perCallExecutionCallCount(), exempt: written.length,
@@ -35578,13 +35603,68 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * A per-call body's value sends, made once its own code has run and its last segment is closed (spec 4b).
+   * A per-call value send's call into a contract, made where the source sends (spec 4b).
+   *
+   * The code chooses by the lock's length: a user's lock is a listed send, pinned once the body's own code has run,
+   * and any other lock is a `CALL` into the recipient's `receive()` carrying the amount. That call closes the segment
+   * the code before it ran in and binds the next call record, so what the body does after it, a call that reads the
+   * recipient among it, runs after the recipient's own code, as in the EVM. A field the closed segment wrote is read
+   * again from the segment the call opens, so the code after the call sees the record as the frames between left
+   * it, as the EVM's storage does after a call; a user's lock leaves the field as written, so both arms leave the
+   * same frame. A send in an outlined body is left to the body's end, as before.
+   */
+  private emitPerCallValueCallAtSource(transferIndex: number, node: Node): void {
+    if (!this.perCallMaster || this.isDefineSubTraversal || !this.perCallCallsMadeActive) return;
+    const lock = `__internal__transfer_lb_${transferIndex}`;
+    const amount = `__internal__transfer_amt_${transferIndex}`;
+    if (this.getStackIndex(lock, true) < 0 || this.getStackIndex(amount, true) < 0) return;
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
+    this.emit(encodeInt(BigInt(this.getStackIndex(lock))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(25n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_NOTIF, loc);
+    const closes = this.stateVariables.length > 0 || this.collectionCount > 0;
+    const written = closes && this.readsRecordsFromFrame ? this.perCallRecordsWrittenHere(false) : [];
+    this.emitPerCallSegmentClose(loc, false);
+    this.emitPerCallReceiveCallSite(node, lock, amount, loc);
+    this.emitPerCallWrittenFieldsReread(written, node, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.perCallValueCallsAtSource.add(transferIndex);
+  }
+
+  /**
+   * Reads each field a closed segment wrote from the segment the call after it opened, into the field's slot.
+   *
+   * The slot stays current, so a read resolves from it and the record is rebuilt from it where the next segment
+   * closes; its value is now the one the frames that ran during the call left.
+   */
+  private emitPerCallWrittenFieldsReread(written: readonly [number, number][], node: Node, loc: SingleLocationData): void {
+    for (const [nftIdx] of written) {
+      const fields = this.stateVariables.filter((sv) => sv.nftIndex === nftIdx)
+        .sort((a, b) => a.fieldIndex - b.fieldIndex);
+      for (const sv of fields) {
+        const key = `${sv.nftIndex}:${sv.fieldIndex}`;
+        const slot = this.pendingStateWrites.get(key);
+        if (slot === undefined || this.perCallStaleWrites.has(key) || sv.isDynamic === true) continue;
+        this.emitStateFieldRead(sv, sv.type, fields, loc);
+        this.pushToStack('(value)');
+        this.emitPushdataEncode(sv.type, loc);
+        this.emitReplace(this.getStackIndex(slot), node);
+        this.popFromStack();
+      }
+    }
+  }
+
+  /**
+   * A per-call body's value sends, pinned once its own code has run and its last segment is closed (spec 4b).
    *
    * A send to a user's lock is a listed send: the next listed output pays that lock the amount, with no token. A
-   * send to any other lock is a call into the recipient's `receive()` carrying the amount, bound at the next call
-   * record, and the segment after it runs no code of this frame, so its records are kept. The EVM runs `transfer`
-   * and `send` with a stipend that keeps `receive()` from writing or calling back, so running it after the
-   * sender's own code is the same execution. The block lists exactly the sends made.
+   * send to any other lock is a call into the recipient's `receive()`, which the body made where it sent. A send in
+   * an outlined body made no call there, so it is made here, bound at the next call record, and the segment after it
+   * runs no code of this frame, so its records are kept. The block lists exactly the sends made.
    */
   private emitPerCallValueSends(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
@@ -35612,8 +35692,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMEQUAL, loc);
       this.emit(Op.OP_IF, loc);
       this.emitPerCallListedSend(lock, amount, loc);
-      this.emit(Op.OP_ELSE, loc);
-      this.emitPerCallReceiveCall(node, lock, amount, loc);
+      if (!this.perCallValueCallsAtSource.has(transferIndex)) {
+        this.emit(Op.OP_ELSE, loc);
+        this.emitPerCallReceiveCallSite(node, lock, amount, loc);
+        this.emitPerCallKeptAfterCall(loc);
+      }
       this.emit(Op.OP_ENDIF, loc);
       if (conditional) this.emit(Op.OP_ENDIF, loc);
     }
@@ -35673,13 +35756,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Binds the next call record to a call into the recipient's `receive()` carrying the amount, counts the call, and
-   * keeps the records of the segment after it, where this frame runs no code. The head's call count does not cover
-   * the call, so the site itself requires the validator that binds the recipient (T35).
+   * Binds the next call record to a call into the recipient's `receive()` carrying the amount, and counts the call.
+   * The head's call count does not cover the call, so the site itself requires the validator that binds the
+   * recipient (T35).
    */
-  private emitPerCallReceiveCall(
-    node: FunctionDefinitionNode, lock: string, amount: string, loc: SingleLocationData,
-  ): void {
+  private emitPerCallReceiveCallSite(node: Node, lock: string, amount: string, loc: SingleLocationData): void {
     const callsMade = GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE;
     const pick = (name: string): void => {
       this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
@@ -35694,8 +35775,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     })), loc);
     this.popFromStack(3);
     this.emitPerCallCountOneCall(node, loc);
+  }
+
+  /** Keeps the records of the segment after a call made once the body's own code has run, where it runs no code. */
+  private emitPerCallKeptAfterCall(loc: SingleLocationData): void {
     if (this.isDefineSubTraversal || (this.stateVariables.length === 0 && this.collectionCount === 0)) return;
-    this.emit(encodeInt(BigInt(this.getStackIndex(callsMade))), loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE))), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(bytecodeToScript(declaredRecordsKeptScript({ runtimeCounts: true, exempt: 0 })), loc);
   }

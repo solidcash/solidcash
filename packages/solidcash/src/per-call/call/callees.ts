@@ -17,7 +17,9 @@
  *
  * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that touches a dynamic
  * value's or a mapping value's chunks, sends value or co-spends a side-car; a contract entered twice that one of its
- * frames writes, or reached at two of its deployments; and a site that waits on an earlier call's result.
+ * frames writes, or reached at two of its deployments; and a site that waits on an earlier call's result. A frame the
+ * plan runs beside the callees on one of their contracts, a value send's `receive()`, counts among the contract's
+ * masters, and a callee that runs after it starts from the views it left.
  */
 
 import {
@@ -269,9 +271,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       refuse(`it reaches two deployments of "${contract}", whose blocks and records this call path does not tell `
         + 'apart yet');
     }
-    const writes = (frame: HopCallee): boolean => publishedRecordWrites(frame.artifact, frame.entry, 0).size > 0
-      || frame.entryWrites !== undefined;
-    if (frames.length > 1 && frames.some(writes)) {
+    if (frames.length > 1 && frames.some(calleeWrites)) {
       refuse(`it enters "${contract}" ${frames.length} times and a frame of it writes its records, whose views across `
         + 'the frames this call path does not chain yet');
     }
@@ -298,6 +298,11 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
     calls: plan.calls, callBases: plan.callBases, callees: plan.callees, utxos: plan.utxos, blocks,
     contracts: [...byContract.keys()], artifacts, eventCount, learnable,
   };
+}
+
+/** True when a callee frame writes its contract's records: a data record or a mapping node. */
+export function calleeWrites(callee: HopCallee): boolean {
+  return publishedRecordWrites(callee.artifact, callee.entry, 0).size > 0 || callee.entryWrites !== undefined;
 }
 
 /** The candidate a callee's `retval` starts from: a value its own return comparison fails against. */
@@ -343,6 +348,14 @@ export function calleeFrames(options: {
   readonly recordAmount: bigint;
   /** The bound an event's sentinel payload is sized to. */
   readonly maximumCommitmentBytes: number;
+  /**
+   * The frames the plan runs beside the callees on a callee's contract: how many masters each contract adds, and,
+   * by callee master and record id, the view a record starts from in a frame that runs after one of them wrote it.
+   */
+  readonly beside?: {
+    readonly masters: ReadonlyMap<string, number>;
+    readonly startViews: ReadonlyMap<string, ReadonlyMap<string, Uint8Array>>;
+  };
 }): CalleeFrames {
   const { planned, layout, values } = options;
   const { callees } = planned;
@@ -350,7 +363,7 @@ export function calleeFrames(options: {
   for (const call of [...planned.calls, ...callees.flatMap((callee) => callee.calls)]) {
     if (!callTo.has(call.callee)) callTo.set(call.callee, call);
   }
-  const mastersOf = new Map<string, number>();
+  const mastersOf = new Map<string, number>(options.beside?.masters ?? []);
   for (const callee of callees) mastersOf.set(callee.contract, (mastersOf.get(callee.contract) ?? 0) + 1);
   const indexOf = (id: string): number => participant(layout, id).index;
   // The master that writes each record, which the record's covenant names as the spend's authority.
@@ -422,13 +435,15 @@ export function calleeFrames(options: {
         const nftIndex = callee.records.indexOf(record);
         const written = writes.get(nftIndex) ?? [];
         const first = Math.min(...written);
+        // A record a frame beside the callees wrote before this one runs starts from the view that frame left.
+        const start = options.beside?.startViews.get(callee.master)?.get(record.id) ?? record.commitment;
         if (written.length === 0 || position < first) {
-          return { in: index, out: index, viewIn: record.commitment, viewOut: record.commitment };
+          return { in: index, out: index, viewIn: start, viewOut: start };
         }
         if (written.includes(position)) {
           writerOf.set(record.id, callee.master);
           return position === first
-            ? { in: index, out: index, viewIn: record.commitment }
+            ? { in: index, out: index, viewIn: start }
             : { in: index, out: index, viewIn: 'carried' };
         }
         return { in: index, out: index, viewIn: 'carried', viewOut: 'carried' };

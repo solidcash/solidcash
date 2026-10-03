@@ -284,6 +284,43 @@ export function stripSurplusDerivedValueChunkLocks(
   host: DerivedValueChunkApplyHost,
   builder: TransactionBuilder,
 ): number {
+  // A converged write may be observed first at a provisional coordinate and later at its physical band.
+  // One compiler-described resource part owns one output. Reconcile identical duplicate observations before
+  // counting redeem locks; conflicting bytes or an occupied predecessor coordinate remain hard failures.
+  const parts = new Map<string, { index: number; chunk: DerivedChunkOutputObservation }>();
+  let stripped = 0;
+  for (const [index, chunk] of [...host.derivedChunkOutputs].sort(([left], [right]) => left - right)) {
+    if (chunk.semanticKind !== 'valueChunk' || !chunk.resourceIdentity || !chunk.resourcePart) continue;
+    const key = JSON.stringify([chunk.resourceIdentity, chunk.resourcePart]);
+    const prior = parts.get(key);
+    if (!prior) {
+      parts.set(key, { index, chunk });
+      continue;
+    }
+    if (binToHex(prior.chunk.lockingBytecode) !== binToHex(chunk.lockingBytecode)
+      || prior.chunk.commitment !== chunk.commitment
+      || (prior.chunk.categoryId ?? host.categoryId) !== (chunk.categoryId ?? host.categoryId)) {
+      throw new Error(`Conflicting derived value-chunk resource part '${key}'.`);
+    }
+    if (prior.chunk.fixedIndex === true || chunk.fixedIndex === true) {
+      throw new Error(`Duplicate fixed value-chunk resource part '${key}'.`);
+    }
+    const spent = host.allInputs[index];
+    if (spent?.token?.nft?.capability === 'mutable' || spent?.token?.nft?.capability === 'minting') {
+      throw new Error(`Duplicate value-chunk resource part occupies a token predecessor at output ${index}.`);
+    }
+    const output = builder.outputs[index];
+    const lock = output?.to instanceof Uint8Array ? output.to
+      : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
+    if (!output || !lock || binToHex(lock) !== binToHex(chunk.lockingBytecode)
+      || output.token?.category !== (chunk.categoryId ?? host.categoryId)
+      || output.token?.nft?.commitment !== chunk.commitment) {
+      throw new Error(`Duplicate value-chunk resource part has a conflicting output at ${index}.`);
+    }
+    host.derivedChunkOutputs.delete(index);
+    builder.outputs[index] = { to: Uint8Array.of(0x51), amount: output.amount };
+    stripped += 1;
+  }
   const runs = new Map<string, { lockingBytecode: Uint8Array; indices: number[] }>();
   for (const [outputIndex, chunk] of host.derivedChunkOutputs) {
     if (!isP2sh32LockScript(chunk.lockingBytecode)
@@ -293,7 +330,6 @@ export function stripSurplusDerivedValueChunkLocks(
     run.indices.push(outputIndex);
     runs.set(lockHex, run);
   }
-  let stripped = 0;
   for (const run of runs.values()) {
     run.indices.sort((left, right) => left - right);
     const start = run.indices[0];

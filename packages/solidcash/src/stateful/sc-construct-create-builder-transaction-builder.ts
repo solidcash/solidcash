@@ -10,6 +10,7 @@ import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { batchPredecessorCommitment, isPendingBatchPredecessor } from '../message-bus/pending-batch-predecessor.js';
 import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import { groupIndexForExternalCallSlot } from './physical-external-call.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import {
   compilerRouteUsesPhysicalWrapper,
@@ -330,6 +331,43 @@ export function constructCreateBuilderTransactionBuilder(
         }));
       }
     };
+  const refreshTopLevelExternalCallInputIndices = (): boolean => {
+    if (!abiFunction || externalCallUtxoGroups.length === 0) return false;
+    const groupByCallsite = new Map<number, number>();
+    for (const [groupIndex, group] of externalCallUtxoGroups.entries()) {
+      if (group.sourceCallsiteId !== undefined && !groupByCallsite.has(group.sourceCallsiteId)) {
+        groupByCallsite.set(group.sourceCallsiteId, groupIndex);
+      }
+    }
+    let changed = false;
+    for (const [position, input] of abiFunction.inputs.entries()) {
+      if (position >= finalArgs.length) break;
+      const masterWitness = /^__internal__extcallMasterIdx(\d*)$/.exec(input.name);
+      if (masterWitness === null) continue;
+      const slot = masterWitness[1] === '' ? 0 : Number(masterWitness[1]);
+      const groupIndex = groupIndexForExternalCallSlot({
+        slot, externalCalls: abiFunction.externalCalls, groupByCallsite,
+        compactGroups: externalCallUtxoGroups.map((_, index) => index),
+      });
+      const group = groupIndex === undefined ? undefined : externalCallUtxoGroups[groupIndex];
+      if (group === undefined) continue;
+      const index = builder.findMaterializedMasterInput(group.sharedGroupIndex ?? groupIndex!);
+      if (index < 0 || finalArgs[position] === BigInt(index)) continue;
+      finalArgs[position] = BigInt(index);
+      changed = true;
+    }
+    const basePosition = abiFunction.inputs.findIndex((input) =>
+      input.name === '__internal__externalCallInputBase');
+    if (basePosition >= 0 && basePosition < finalArgs.length) {
+      const firstGroup = externalCallUtxoGroups[0];
+      const index = builder.findMaterializedMasterInput(firstGroup.sharedGroupIndex ?? 0);
+      if (index >= 0 && finalArgs[basePosition] !== BigInt(index)) {
+        finalArgs[basePosition] = BigInt(index);
+        changed = true;
+      }
+    }
+    return changed;
+  };
   // The compiled covenant reads a callee's return event at `__internal__externalReturnOutputIdxN`, so that witness
   // and the assembled transaction must name the same output. The planned coordinate is written before the builder
   // places its own outputs, and a callee's block (with the event's slot) can still move afterwards - a shared
@@ -505,6 +543,7 @@ export function constructCreateBuilderTransactionBuilder(
     builder._setMasterUnlockerRefresher((materialized) => {
       if (refreshPhysicalDelegateInputIndex) refreshPhysicalDelegateInputIndex(builder, materialized);
       refreshTopLevelDynamicChunkInputBase?.(materialized);
+      refreshTopLevelExternalCallInputIndices();
       refreshTopLevelReturnWitnesses(materialized);
       refreshTopLevelPredOutWitnesses(materialized);
       return buildStateInputUnlocker();

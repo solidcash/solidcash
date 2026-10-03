@@ -1880,6 +1880,7 @@ export class StatefulTransactionBuilder {
       authenticatedViewReturnByGroup: this.authenticatedViewReturnByGroup,
       applyDerivedValueChunks: (b) => { this._applyDerivedValueChunks(b); },
       reassertStagedValueChunkOutputs: (b) => { this._reassertStagedValueChunkOutputs(b); },
+      stripSurplusDerivedValueChunkLocks: (b) => { this._stripSurplusDerivedValueChunkLocks(b); },
       stripEmptyDuplicateEntryLocks: (b) => { this._stripEmptyDuplicateEntryLocks(b); },
       syncBuilderUnlockers: (b) => { this._syncBuilderUnlockers(b); },
       dynamicChunkOutputCount: () => this._dynamicChunkOutputCount(),
@@ -1911,6 +1912,7 @@ export class StatefulTransactionBuilder {
         this._loopEntryTransitionSatoshis(variable, commitment)
       ),
       getRequiredLoopEntryCount: (collection) => this.getRequiredLoopEntryCount(collection),
+      getLoopEntryOutputBase: () => this.getLoopEntryOutputBase(),
     };
   }
 
@@ -2814,6 +2816,7 @@ export class StatefulTransactionBuilder {
       get logicalIdentityUtxo() { return self.logicalIdentityUtxo; },
       get loopEntriesBeforeDynamicChunks() { return self.loopEntriesBeforeDynamicChunks; },
       trailingLoopEntryOutputCount: () => this._trailingLoopEntryOutputCount(),
+      dynamicChunkOutputCount: () => this._dynamicChunkOutputCount(),
       delegateLoopEntryVars: () => this._delegateLoopEntryVars(),
     };
   }
@@ -5477,6 +5480,7 @@ export class StatefulTransactionBuilder {
    * commitments determines how many trailing chunk NFT outputs are created.
    */
   setChunkRawCommitments(varName: string, commitments: string[]): this {
+    const priorCount = (this.chunkRawCommitments.get(varName) ?? []).length;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_CHUNK_GROW === '1'
       && (commitments.length >= 8 || (this.chunkRawCommitments.get(varName)?.length ?? 0) >= 8)) {
@@ -5491,6 +5495,13 @@ export class StatefulTransactionBuilder {
       });
     }
     this.chunkRawCommitments.set(varName, commitments);
+    // A larger run needs balanced input slots before any following callee. Its output width is learned during
+    // derivation, after initial input assembly, so rebuild the physical input order and its index witnesses.
+    if (commitments.length !== priorCount && this.allInputs.length > 0
+      && this.dynamicChunkInputs.length > 0 && this.externalCallUtxoGroups.length > 0
+      && !this.compilerRouteDelegateBlock && !this.delegateEntriesAfterLowLevel) {
+      this._refreshInputs();
+    }
     return this;
   }
 
@@ -5895,6 +5906,13 @@ export class StatefulTransactionBuilder {
           - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
           - this.runtimeLoopTransferOutputs.length;
       }
+      // Legacy direct loops co-spend their predecessor before a nested callee. The compiler verifies the
+      // predecessor recreation at that input's output coordinate; the later callee block must not move it.
+      const predecessorIndices = this.insertLoopPredecessorInputs.map((predecessor) => (
+        this.allInputs.findIndex((input) => input.txid.toLowerCase() === predecessor.txid.toLowerCase()
+          && input.vout === predecessor.vout)
+      )).filter((index) => index >= 0);
+      if (predecessorIndices.length > 0) return Math.min(...predecessorIndices);
       return this.getRuntimeLoopEventOutputBase() - this._trailingLoopEntryOutputCount();
     }
     if (this.delegateEntriesAfterLowLevel) {

@@ -45,6 +45,7 @@ export interface MaterializeRuntimeLoopTrailingHost {
   trailingLoopEntryOutputCount(): number;
   loopEntryTransitionSatoshis(variable: LoopEntryVar, commitment: string): bigint | undefined;
   getRequiredLoopEntryCount(collection: string): number;
+  getLoopEntryOutputBase(): number;
 }
 
 /**
@@ -52,8 +53,9 @@ export interface MaterializeRuntimeLoopTrailingHost {
  */
 export function materializeRuntimeLoopTrailing(
   host: MaterializeRuntimeLoopTrailingHost,
-  builder: { addOutput(output: Output): unknown },
+  builder: { outputs: Output[]; addOutput(output: Output): unknown },
 ): void {
+  let fixedLoopOutputIndex = host.getLoopEntryOutputBase();
   const appendLoopEntry = (
     lv: LoopEntryVar, commitment: string,
   ): void => {
@@ -64,7 +66,14 @@ export function materializeRuntimeLoopTrailing(
     };
     entryOutput.amount = host.loopEntryTransitionSatoshis(lv, commitment)
       ?? BigInt(Math.max(1200, calculateDust(entryOutput)));
-    builder.addOutput(entryOutput);
+    if (host.runtimeLoopTrailingSegments.length === 0 && host.loopEntriesBeforeDynamicChunks) {
+      while (builder.outputs.length <= fixedLoopOutputIndex) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+      }
+      builder.outputs[fixedLoopOutputIndex++] = entryOutput;
+    } else {
+      builder.addOutput(entryOutput);
+    }
   };
   const appendRuntimeLoopEvent = (eventIndex: number): void => {
     const event = host.runtimeLoopEventOutputs[eventIndex];

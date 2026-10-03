@@ -88,24 +88,25 @@ export async function expandResolveCreateBuilderExternalCalls(
   const loopIdxRanges: CreateBuilderLoopIdxRange[] = [];
   let callerStateSnapshot: Record<string, StateValue> | undefined;
 
-  // A zero-trip affine loop reaches none of its nested callees. Prove this from the published pre-test for
-  // EVERY callsite before registry lookup or argument evaluation; a later loop call may depend on a producer
-  // result from an earlier iteration and cannot be resolved eagerly when no iteration exists.
-  if (!overrideExternalCalls && externalCalls?.length
-    && externalCalls.every((call) => call.occurrence === 'loop' && call.iterationDomain)) {
+  // A zero-trip affine loop reaches none of its nested callees. Check each published pre-test before registry
+  // lookup or argument evaluation: two loops in one handler may have different argument-array lengths.
+  // Unknown pre-tests remain candidates; the completed covenant is authoritative if earlier writes change one.
+  if (!overrideExternalCalls && externalCalls?.some((call) =>
+    call.occurrence === 'loop' && call.iterationDomain)) {
     callerStateSnapshot = (await host.getFullState()).state;
     const evaluate = (expression: ExternalCallExpression,
       bindings?: ReadonlyMap<string, FunctionArgument>): FunctionArgument | undefined =>
       host.evaluateExternalExpression(expression, args, artifact, callerStateSnapshot,
         abiFunction?.inputs, undefined, 0, false, publicSelfAddress, bindings);
-    const allZeroTrip = externalCalls.every((call) => {
-      const domain = call.iterationDomain!;
+    externalCalls = externalCalls.filter((call) => {
+      if (call.occurrence !== 'loop' || !call.iterationDomain) return true;
+      const domain = call.iterationDomain;
       const initial = evaluate(domain.initialValue);
-      if (typeof initial !== 'bigint') return false;
+      if (typeof initial !== 'bigint') return true;
       const pretest = evaluate(domain.continueCondition, new Map([[domain.counterName, initial]]));
-      return pretest === false;
+      return pretest !== false;
     });
-    if (allZeroTrip) {
+    if (externalCalls.length === 0) {
       return {
         externalCalls: [], presetResolved: [], loopIdxRanges: [], resolvedExternalCalls: [],
         callerStateSnapshot,

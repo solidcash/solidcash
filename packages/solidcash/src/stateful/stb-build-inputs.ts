@@ -49,6 +49,7 @@ export interface BuildInputsHost {
   logicalIdentityUtxo?: UnlockableUtxo;
   loopEntriesBeforeDynamicChunks: boolean;
   trailingLoopEntryOutputCount(): number;
+  dynamicChunkOutputCount(): number;
   delegateLoopEntryVars(): Array<{ collection: string; delegate?: boolean }>;
 }
 
@@ -666,6 +667,15 @@ export function buildInputs(
         blockPadFunders.push(funderPool.shift()!);
       }
     }
+    // Reuse old dynamic-chunk coordinates, then reserve one neutral input for each new chunk before any
+    // following participant. Its one-to-one master output must start after the complete growing chunk run.
+    const dynamicGrowth = !host.compilerRouteDelegateBlock && !host.delegateEntriesAfterLowLevel
+      && host.dynamicChunkInputs.length > 0 && postBlockParticipants.length > 0
+      ? Math.max(0, host.dynamicChunkOutputCount() - host.dynamicChunkInputs.length) : 0;
+    if (dynamicGrowth > funderPool.length) {
+      throw new Error(`Dynamic chunk growth needs ${dynamicGrowth} balanced input slot(s)`);
+    }
+    const dynamicGrowthPads = funderPool.splice(0, dynamicGrowth);
     const assembled = [
       ...result,
       ...blockPadFunders,
@@ -673,6 +683,7 @@ export function buildInputs(
       ...immediateDelegateCallsBeforeResourceBand,
       ...(returnEventPad ? [returnEventPad] : []),
       ...preInsertResourceBand,
+      ...dynamicGrowthPads,
       ...earlyInsertPredecessors,
       ...(newNodePad ? [newNodePad] : []),
       ...postBlockParticipants,

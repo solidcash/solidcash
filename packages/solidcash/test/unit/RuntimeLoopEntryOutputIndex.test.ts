@@ -1,7 +1,46 @@
 import { describe, expect, it } from 'vitest';
 import { StatefulTransactionBuilder } from '../../src/stateful/StatefulTransactionBuilder.js';
+import { materializeRuntimeLoopTrailing } from '../../src/stateful/stb-materialize-runtime-loop-trailing.js';
 
 describe('runtime loop entry output indices', () => {
+  it('places a direct loop predecessor and new entry before a nested callee block', () => {
+    const predecessor = { txid: 'aa'.repeat(32), vout: 2 };
+    const builder = Object.create(StatefulTransactionBuilder.prototype) as StatefulTransactionBuilder & {
+      loopEntriesBeforeDynamicChunks: boolean;
+      runtimeLoopTrailingSegments: unknown[];
+      insertLoopPredecessorInputs: unknown[];
+      allInputs: unknown[];
+    };
+    builder.loopEntriesBeforeDynamicChunks = true;
+    builder.runtimeLoopTrailingSegments = [];
+    builder.insertLoopPredecessorInputs = [predecessor];
+    builder.allInputs = Array.from({ length: 7 }, (_, index) => index === 4 ? predecessor
+      : { txid: index.toString(16).padStart(64, '0'), vout: 0 });
+    expect(builder.getLoopEntryOutputBase()).toBe(4);
+
+    const outputs = Array.from({ length: 9 }, () => ({ to: Uint8Array.of(0x51), amount: 1000n }));
+    const calleeOutput = outputs[6];
+    const entry = { collection: 'entries', lockingBytecode: Uint8Array.of(0x51) };
+    materializeRuntimeLoopTrailing({
+      categoryId: '00'.repeat(32), runtimeLoopTrailingSegments: [],
+      runtimeLoopEventOutputs: [], runtimeLoopTransferOutputs: [],
+      loopEntryCommitments: new Map([['entries', ['11'.repeat(65), '22'.repeat(65)]]]),
+      kernelJournalSettlementOutputPlan: [], kernelJournalEagerOutputPlan: [],
+      loopEntriesBeforeDynamicChunks: true, delegateEntriesAfterLowLevel: false,
+      compilerRouteDelegateBlock: false, trailingLoopEntryVars: () => [entry],
+      delegateLoopEntryVars: () => [], validateKernelJournalSettlementOutputPlan: () => {},
+      kernelJournalOutputLayout: () => { throw new Error('unused'); },
+      trailingLoopEntryOutputCount: () => 2, loopEntryTransitionSatoshis: () => 1200n,
+      getRequiredLoopEntryCount: () => 0, getLoopEntryOutputBase: () => 4,
+    }, {
+      outputs: outputs as any,
+      addOutput(output) { outputs.push(output as any); },
+    });
+    expect((outputs[4] as any).token.nft.commitment).toBe('11'.repeat(65));
+    expect((outputs[5] as any).token.nft.commitment).toBe('22'.repeat(65));
+    expect(outputs[6]).toBe(calleeOutput);
+  });
+
   it('resolves interleaved segments after unsegmented entry outputs', () => {
     const builder = Object.create(StatefulTransactionBuilder.prototype) as StatefulTransactionBuilder & {
       categoryId: string;

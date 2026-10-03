@@ -3061,8 +3061,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * [] -> [1 if the read-only entry is present]. A per-call frame's sits at the coordinate its block declares; one an
-   * earlier frame created has no input, so its coordinate derives from the sentinel and names no input.
+   * [] -> [1 if the entry is present]. A per-call frame reads it at the coordinate its block declares. A node an
+   * earlier frame created declares the no-index sentinel there, which names no input, and only that coordinate reads
+   * as absent. Any other is read at the input it names, so one that names none fails rather than skipping the checks
+   * presence gates: settlement never visits a negative index, and reading one as absent admitted a declared view no
+   * input carries.
    */
   private emitReadOnlyEntryExistsCheck(slotIndex: number, locationData: SingleLocationData): void {
     if (!this.readsRecordsFromFrame) {
@@ -3071,9 +3074,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emitEntryInputIndex(slotIndex, locationData, 0);
     this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_TXINPUTCOUNT, locationData);
-    this.emit(Op.OP_WITHIN, locationData);
+    this.emit(new Uint8Array([0xff, 0xff]), locationData); // the sentinel, as the number a declared index reads as
+    this.emit(Op.OP_NUMNOTEQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
     this.emitBytesNonEmpty(locationData);

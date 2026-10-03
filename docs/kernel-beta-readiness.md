@@ -780,6 +780,14 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   two distinct helper calls still publish two callsites. The exact compiler title, the BCH-2026 nested-struct
   title (including callee verification of the returned address), and each immediately preceding title pass.
   `yarn build` and targeted lint pass; no broad suite ran.
+- 2026-10-03 literal-entry route follow-up: an explicit kernel route with two fixed writes to different literal
+  keys of one mapping previously collapsed both keys into one witness and one physical entry slot. The selected
+  proxy transaction failed BCH-2026 preflight. Route classification now preserves compiler-known literal
+  identity, binds each expression witness to its matching semantic key source, and projects two separate slots.
+  The exact proxy BCH-2026 title settles both values (5 and 6); the preceding nonzero-base proxy layout title
+  passes. Focused compiler titles prove distinct literals use two slots while repeated use of one literal keeps
+  one slot. This extension requires explicit kernel message-bus mode; automatic/simple-contract admission is
+  unchanged. `yarn build` passes. No broad compiler/SDK/Marketplace suite ran.
 
 ## Gate before the next leap
 

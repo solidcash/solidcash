@@ -5240,6 +5240,10 @@ function synthesizeMessageBusRoute(
   const routeKeyWitnessCoordinates = new Map<string, {
     collection: string; keyIndex: number; alternativeIndex: number;
   }>();
+  const literalEntryKeyIdentity = (key: ExpressionNode): string | undefined => {
+    if (key instanceof IntLiteralNode) return `const:${key.value}`;
+    return undefined;
+  };
   const fixedIterationCollections = new Set<string>();
   const fixedArrayRouteHandlers = new Set<FunctionDefinitionNode>();
   const runtimeLoopCollectionsByHandler = new Map<FunctionDefinitionNode, Set<string>>();
@@ -5248,6 +5252,8 @@ function synthesizeMessageBusRoute(
   const explicitlyEnabledMessageBus = ['enabled', 'required'].includes(
     (compilerOptions as InternalCompilerOptions).__messageBusMode ?? 'auto',
   );
+  const enableLiteralEntryAlternatives = compilerOptions.messageBusKernel === true
+    && explicitlyEnabledMessageBus;
   // X76(E1). A bare `m[k]` on a PACKED or DYNAMIC state array does not resolve to a mapping entry at all:
   // `SymbolTableTraversal.visitArrayAssign` sends it to `StateArrayAssignNode`, a different physical form with
   // no entry NFT. Normalizing one of those to a Mapping* node would silently retarget the write, so the bare
@@ -7093,8 +7099,15 @@ function synthesizeMessageBusRoute(
           });
         }
       }
-      const collectKeys = (includeBare: boolean, flattenBare = false): Map<string, number[][]> => {
+      const collectKeys = (includeBare: boolean, flattenBare = false): {
+        keys: Map<string, number[][]>;
+        computedKeysAreLiteral: Map<string, boolean>;
+        literalAlternatives: Map<string, Array<string | undefined>>;
+      } => {
         const collected = new Map<string, number[][]>();
+        const collectedIdentities = new Map<string, Set<string>>();
+        const computedKeysAreLiteral = new Map<string, boolean>();
+        const literalAlternatives = new Map<string, Array<string | undefined>>();
         const consumed = new Set<Node>();
         const senderGetters = new Map<string, boolean>();
         const isSenderGetter = (name: string, visiting = new Set<string>()): boolean => {
@@ -7201,11 +7214,28 @@ function synthesizeMessageBusRoute(
             return -1;
           });
           const group = collected.get(access.name) ?? [];
-          if (!group.some((prior) => prior.length === indices.length
-            && prior.every((value, index) => value === indices[index]))) group.push(indices);
+          const identity = indices.map((index, keyIndex) => index === -1
+            ? (enableLiteralEntryAlternatives
+              ? literalEntryKeyIdentity(access.keys[keyIndex]) : undefined) ?? 'computed'
+            : String(index)).join('|');
+          const seen = collectedIdentities.get(access.name) ?? new Set<string>();
+          if (!seen.has(identity)) {
+            group.push(indices);
+            seen.add(identity);
+            // Keep labels positional with the route alternatives, including non-literal placeholders.
+            const alternatives = literalAlternatives.get(access.name) ?? [];
+            alternatives.push(enableLiteralEntryAlternatives && indices.length === 1 && indices[0] === -1
+              ? literalEntryKeyIdentity(access.keys[0]) : undefined);
+            literalAlternatives.set(access.name, alternatives);
+          }
+          collectedIdentities.set(access.name, seen);
+          computedKeysAreLiteral.set(access.name,
+            (computedKeysAreLiteral.get(access.name) ?? true)
+              && indices.every((index, keyIndex) => index !== -1
+                || literalEntryKeyIdentity(access.keys[keyIndex]) !== undefined));
           collected.set(access.name, group);
         });
-        return collected;
+        return { keys: collected, computedKeysAreLiteral, literalAlternatives };
       };
       // X19 admitted the bare spelling only where the route reaches the entry through the handler ITSELF; every
       // other shape - a second key alternative, a msg.sender key - is served by a cloned handler whose keys are
@@ -7217,9 +7247,9 @@ function synthesizeMessageBusRoute(
       // so nothing normalizes it) and is decided EXACTLY as before, which is what keeps those artifacts
       // byte-identical. Normalization is not available for every bare form - `ArrayDeleteNode` has no state
       // path in `SymbolTableTraversal` at all - so the widened set is gated on the forms that do normalize.
-      const mappingOnlyKeys = collectKeys(false);
-      const withBareKeys = collectKeys(true);
-      const bareShapeIsSelfReached = [...withBareKeys].every(([name, alternatives]) => {
+      const mappingOnlyShape = collectKeys(false);
+      const withBareShape = collectKeys(true);
+      const bareShapeIsSelfReached = [...withBareShape.keys].every(([name, alternatives]) => {
         const collection = collectionByName.get(name)!;
         return alternatives.length === 1 && alternatives[0].length === collection.allKeyTypes.length
           && alternatives[0].every((index) => index >= 0);
@@ -7250,9 +7280,10 @@ function synthesizeMessageBusRoute(
           if (!explicitDynamicJournal) bareShapeIsNormalizable = false;
         }
       });
-      const directKeys = bareShapeIsSelfReached
-        ? withBareKeys
-        : bareShapeIsNormalizable && normalizeBareEntries ? collectKeys(true, true) : mappingOnlyKeys;
+      const directShape = bareShapeIsSelfReached
+        ? withBareShape
+        : bareShapeIsNormalizable && normalizeBareEntries ? collectKeys(true, true) : mappingOnlyShape;
+      const directKeys = directShape.keys;
       const closure = collectNamedFunctionClosure(fn, byName);
       const nonEntryCollectionOnly = directKeys.size === 0
         && [...footprint.reads, ...footprint.writes]
@@ -7365,8 +7396,16 @@ function synthesizeMessageBusRoute(
         // two rows and one handler, so no inactive physical entry slots exist.
         const globalInputs = new Set<number>();
         const perRowInputs = new Set<number>();
-        const kernelParamKeyedResource = compilerOptions.messageBusKernel === true
-          && !graphTailCallEligible
+        // Literal keys have compiler-known, distinct identities even when the handler owns a graph tail.
+        // Unknown computed keys still require the resource-shaped path rather than borrowing this proof.
+        const kernelLiteralAlternatives = enableLiteralEntryAlternatives
+          && [...directKeys].every(([collectionName, alternatives]) =>
+            collectionByName.get(collectionName)?.allKeyTypes.length === 1
+            && alternatives.length <= 2
+            && directShape.computedKeysAreLiteral.get(collectionName) === true
+            && alternatives.every((indices) => indices.length === 1 && indices[0] === -1));
+        const kernelFixedEntryAlternatives = compilerOptions.messageBusKernel === true
+          && (!graphTailCallEligible || kernelLiteralAlternatives)
           && [...directKeys.values()].every((alternatives) =>
             alternatives.every((indices) => indices.every((index) => index >= -2)));
         for (const [collectionName, alternatives] of directKeys) {
@@ -7404,7 +7443,7 @@ function synthesizeMessageBusRoute(
         }
         // The kernel authenticates every alternative from the selected row's arguments. Its first key is not a
         // global resource witness, so reusing that argument index in another collection is unambiguous.
-        if (!reason && !kernelParamKeyedResource
+        if (!reason && !kernelFixedEntryAlternatives
           && [...perRowInputs].some((index) => globalInputs.has(index))) {
           reason = 'collection-route-has-ambiguous-global-and-row-key';
         }
@@ -7414,7 +7453,7 @@ function synthesizeMessageBusRoute(
           // `resourceShapedHandler` or `_rN` copies. A project-wide graph context does not change a graph-free
           // leaf handler's physical shape; only a handler which actually owns a graph tail needs that context.
           // Legacy keeps the compact two-row resource batch.
-          if (!kernelParamKeyedResource) resourceShapedHandler ??= fn;
+          if (!kernelFixedEntryAlternatives) resourceShapedHandler ??= fn;
           // Witnesses are named by the physical entry they address - collection, key position, and whether the
           // entry is shared by every row or row-local - never by the handler or its parameter names. Two
           // handlers that touch the same entry then resolve to the same route input and the same vmap slot. Naming
@@ -7423,7 +7462,7 @@ function synthesizeMessageBusRoute(
             const collection = collectionByName.get(collectionName)!;
             const safeName = collectionName.replace(/[^A-Za-z0-9_]/g, '_');
             alternatives.forEach((indices, alternativeIndex) => {
-              const perRow = alternativeIndex > 0 && !kernelParamKeyedResource;
+              const perRow = alternativeIndex > 0 && !kernelFixedEntryAlternatives;
               indices.forEach((inputIndex, keyIndex) => {
                 if (inputIndex < -2) return;
                 const routeInput = alternativeIndex > 0
@@ -7445,7 +7484,7 @@ function synthesizeMessageBusRoute(
                   if (existingWitness.source === undefined) {
                     if (inputIndex === -2) existingWitness.source = 'msgSender';
                     else if (inputIndex === -1) existingWitness.source = 'expression';
-                    else if (kernelParamKeyedResource) existingWitness.source = 'argument';
+                    else if (kernelFixedEntryAlternatives) existingWitness.source = 'argument';
                   }
                   return;
                 }
@@ -7456,7 +7495,9 @@ function synthesizeMessageBusRoute(
                     ? { source: 'msgSender' as const }
                     : inputIndex === -1
                       ? { source: 'expression' as const }
-                      : kernelParamKeyedResource ? { source: 'argument' as const } : {}),
+                      : kernelFixedEntryAlternatives ? { source: 'argument' as const } : {}),
+                  ...(inputIndex === -1 && directShape.literalAlternatives.get(collectionName)?.[alternativeIndex]
+                    && { expressionLabel: directShape.literalAlternatives.get(collectionName)![alternativeIndex] }),
                   ...(perRow && { perRow: true }),
                 });
               });
@@ -9222,7 +9263,7 @@ function synthesizeMessageBusRoute(
         return `p:${key.name.replace(/__\d+(?:_\d+)*$/, '')}`;
       }
       if (key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER) return 'sender';
-      return 'other';
+      return (enableLiteralEntryAlternatives ? literalEntryKeyIdentity(key) : undefined) ?? 'other';
     }).join('|');
   /**
    * X76(E1). Rewrite the CLONE's bare `m[k]` / `m[k] = v` spellings into the Mapping* nodes
@@ -15055,6 +15096,15 @@ function compileResolvedAst(
             // the physical slot already claimed by a `m[0]` writer, rather than
             // manufacturing a second synthetic-key slot for the reader.
             if (source.kind === 'expression' || source.kind === 'state' || source.kind === 'constant') {
+              const exact = mergedCompilerOptions.messageBusKernel === true
+                && ['enabled', 'required'].includes(
+                  (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode ?? 'auto',
+                )
+                ? fn.messageBusKeyWitnesses?.find((binding) => binding.source === 'expression'
+                  && binding.expressionLabel === source.canonical
+                  && binding.routeInput.startsWith(witnessPrefix))
+                : undefined;
+              if (exact !== undefined) return exact.routeInput;
               return fn.messageBusKeyWitnesses
                 ?.find((binding) => binding.source === 'expression'
                   && (binding.routeInput === `${witnessPrefix}${keyIndex}`

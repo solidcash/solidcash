@@ -34,7 +34,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 78 |
 | `packages/solidcash/test/per-call/reads/` | `solidcash` | 53 |
 | `packages/solidcash/test/per-call/reverts/` | `solidcash` | 21 |
-| `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
+| `packages/solidcash/test/per-call/receipt/` | `solidcash` | 9 |
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 170 |
@@ -221,7 +221,11 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   parameter name and in declared order, including an event a nested frame emitted (reported with the callee's address)
   and an anonymous event (disambiguated by its covenant). `listeners.test.ts` delivers those logs to handlers
   registered per emitting address: a handler sees only its own contract's event, a nested emitter's log reaches its
-  own contract's handler, and a removed handler receives nothing.
+  own contract's handler, and a removed handler receives nothing. `handle-thread-listeners.test.ts` follows a thread
+  kept behind a generated proxy through the contract handle: a listener added on a connected handle is handed the
+  indexed id as a bigint and the item by field name, reads a member's key (one `bytes` field of a long struct value)
+  from inside its callback, and stays registered on its own instance when the unconnected handle removes it, as
+  ethers' listeners do; a page read from an offset returns the items from that offset on.
 - **`solidcash/test/per-call/queue/`** — sends that could touch the same masters, validators or records are
   serialized by `CompositionQueue`: each send holds its resources from the moment it is enqueued, so a later send on
   one of them resolves its plan only after the earlier one landed, and two sends with disjoint resources run

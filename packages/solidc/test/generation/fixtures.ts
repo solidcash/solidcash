@@ -107,23 +107,23 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_10 OP_4 OP_SUB 14 OP_SWAP OP_2 OP_MOD OP_ADD OP_LESSTHAN OP_VERIFY 48656c6c6f20576f726c64 OP_DUP OP_ROT OP_CAT OP_2 OP_PICK OP_RIPEMD160 OP_SWAP OP_RIPEMD160 OP_EQUALVERIFY OP_ROT OP_ROT OP_CHECKSIG OP_NIP',
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE OP_10 OP_4 OP_SUB 14 OP_SWAP OP_2 OP_MOD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_LESSTHAN OP_VERIFY 48656c6c6f20576f726c64 OP_DUP OP_ROT OP_CAT OP_2 OP_PICK OP_RIPEMD160 OP_SWAP OP_RIPEMD160 OP_EQUALVERIFY OP_ROT OP_ROT OP_CHECKSIG OP_NIP',
       'source': 'contract Reassignment(int x, string y) {\n    function hello(pubkey pk, sig s) {\n        int myVariable = 10 - 4;\n        int myOtherVariable = 20 + myVariable % 2;\n        require(myOtherVariable > x);\n\n        string hw = "Hello World";\n        hw = hw + y;\n\n        require(ripemd160(pk) == ripemd160(hw));\n        require(checkSig(s, pk));\n    }\n}\n',
       'debug': {
-        'bytecode': '5a549401147c5297939f690b48656c6c6f20576f726c64767b7e5279a67ca6887b7bac77',
-        'sourceMap': '3:25:3:27;:30::31;:25:::1;4:30:4:32:0;:35::45;:48::49;:35:::1;:30;5:16:5:35;:8::37;7:20:7:33:0;8:13:8:15;:18::19;:13:::1;10:26:10:28:0;;:16::29:1;:43::45:0;:33::46:1;:8::48;11:25:11:26:0;:28::30;:8::33:1;2:4:12:5',
+        'bytecode': '0c765102ff008d93012180012051895a549401147c5297518a7f7701008893518a7f770100889f690b48656c6c6f20576f726c64767b7e5279a67ca6887b7bac77',
+        'sourceMap': '1::13:1;;;3:25:3:27;:30::31;:25:::1;4:30:4:32:0;:35::45;:48::49;:35:::1;;;;;;;:30;;;;;;;5:16:5:35;:8::37;7:20:7:33:0;8:13:8:15;:18::19;:13:::1;10:26:10:28:0;;:16::29:1;:43::45:0;:33::46:1;:8::48;11:25:11:26:0;:28::30;:8::33:1;2:4:12:5',
         'logs': [],
         'requires': [
           {
-            'ip': 11,
+            'ip': 26,
             'line': 5,
           },
           {
-            'ip': 21,
+            'ip': 36,
             'line': 10,
           },
           {
-            'ip': 25,
+            'ip': 40,
             'line': 11,
           },
         ],
@@ -169,23 +169,23 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE OP_2 OP_PICK OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_3 OP_PICK OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_2OVER OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DUP OP_4 OP_PICK OP_SUB OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DUP OP_3 OP_ROLL OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_DUP OP_5 OP_PICK OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_PICK OP_OVER OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ROT OP_DROP OP_SWAP OP_2DUP OP_LESSTHAN OP_VERIFY OP_DROP OP_ELSE OP_DUP OP_4 OP_PICK OP_NUMEQUALVERIFY OP_ENDIF OP_DUP OP_4 OP_ROLL OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_3 OP_ROLL OP_NUMEQUAL OP_NIP OP_NIP OP_NIP',
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE OP_2 OP_PICK OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_3 OP_PICK OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_2OVER OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DUP OP_4 OP_PICK OP_SUB OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DUP OP_3 OP_ROLL OP_2 OP_SUB OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_NUMEQUAL OP_IF OP_DUP OP_5 OP_PICK OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_PICK OP_OVER OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ROT OP_DROP OP_SWAP OP_2DUP OP_LESSTHAN OP_VERIFY OP_DROP OP_ELSE OP_DUP OP_4 OP_PICK OP_NUMEQUALVERIFY OP_ENDIF OP_DUP OP_4 OP_ROLL OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_3 OP_ROLL OP_NUMEQUAL OP_NIP OP_NIP OP_NIP',
       'source': 'contract IfStatement(int x, int y) {\n    function hello(int a, int b) {\n        int d = a + b;\n        d = d - a;\n        if (d == x - 2) {\n            int c = d + b;\n            d = a + c;\n            require(c > d);\n        } else {\n            require(d == a);\n        }\n        d = d + a;\n        require(d == y);\n    }\n}\n',
       'debug': {
-        'bytecode': '0c765102ff008d93012180012051895279518a7f77010088755379518a7f77010088757093518a7f7701008876547994518a7f7701008876537a52949c6376557993518a7f7701008854797893518a7f770100887b757c6e9f6975677654799d6876547a93518a7f77010088537a9c777777',
-        'sourceMap': '1::15:1;;;2:19:2:24;;;;;;;;;:26::31;;;;;;;;;3:16:3:21;::::1;;;;;;;4:12:4:13:0;:16::17;;:12:::1;;;;;;;5::5:13:0;:17::18;;:21::22;:17:::1;:12;:24:9:9:0;6:20:6:21;:24::25;;:20:::1;;;;;;;7:16:7:17:0;;:20::21;:16:::1;;;;;;;:12::22;;;8:20:8:25:0;::::1;:12::27;5:24:9:9;9:15:11::0;10:20:10:21;:25::26;;:12::28:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;;;;;;;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
+        'bytecode': '0c765102ff008d93012180012051895279518a7f77010088755379518a7f77010088757093518a7f7701008876547994518a7f7701008876537a5294518a7f770100889c6376557993518a7f7701008854797893518a7f770100887b757c6e9f6975677654799d6876547a93518a7f77010088537a9c777777',
+        'sourceMap': '1::15:1;;;2:19:2:24;;;;;;;;;:26::31;;;;;;;;;3:16:3:21;::::1;;;;;;;4:12:4:13:0;:16::17;;:12:::1;;;;;;;5::5:13:0;:17::18;;:21::22;:17:::1;;;;;;;:12;:24:9:9:0;6:20:6:21;:24::25;;:20:::1;;;;;;;7:16:7:17:0;;:20::21;:16:::1;;;;;;;:12::22;;;8:20:8:25:0;::::1;:12::27;5:24:9:9;9:15:11::0;10:20:10:21;:25::26;;:12::28:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;;;;;;;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
         'logs': [],
         'requires': [
           {
-            'ip': 73,
+            'ip': 79,
             'line': 8,
           },
           {
-            'ip': 79,
+            'ip': 85,
             'line': 10,
           },
           {
-            'ip': 94,
+            'ip': 100,
             'line': 13,
           },
         ],
@@ -659,15 +659,15 @@ export const fixtures: Fixture[] = [
           'inputs': [],
         },
       ],
-      'bytecode': '93765102ff008d930121800120 OP_1 OP_DEFINE OP_1 OP_2 OP_3 OP_4 OP_5 OP_6 OP_5 OP_PICK OP_3 OP_LESSTHAN OP_IF OP_3 OP_6 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_ENDIF OP_2ROT OP_5 OP_ROLL OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_ROLL OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_3 OP_ROLL OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ROT OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_GREATERTHAN',
+      'bytecode': '93765102ff008d930121800120 OP_1 OP_DEFINE OP_1 OP_2 OP_3 OP_4 OP_5 OP_6 OP_5 OP_PICK OP_3 OP_LESSTHAN OP_IF OP_3 OP_6 OP_ROLL OP_DROP OP_2ROT OP_2ROT OP_5 OP_ROLL OP_ENDIF OP_2ROT OP_5 OP_ROLL OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_ROLL OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_3 OP_ROLL OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ROT OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_GREATERTHAN',
       'source': 'contract DeepReplace() {\n    function hello() {\n        int a = 1;\n        int b = 2;\n        int c = 3;\n        int d = 4;\n        int e = 5;\n        int f = 6;\n\n        if (a < 3) {\n            a = 3;\n        }\n\n        require(a > b + c + d + e + f);\n    }\n}\n',
       'debug': {
-        'bytecode': '0d93765102ff008d93012180012051895152535455565579539f6353567a757c6b7c6b7c6b7c6b7c6c6c6c6c6871557a518a7f77010088547a518a7f77010088537a518a7f770100887b518a7f77010088a0',
-        'sourceMap': '1::16:1;;;3:16:3:17;4::4;5::5;6::6;7::7;8::8;10:12:10:13;;:16::17;:12:::1;:19:12:9:0;11:16:11:17;:12::18:1;;;;;;;;;;;;;;;;10:19:12:9;14:16:14:21:0;:24::25;;:20:::1;;;;;;:28::29:0;;:20:::1;;;;;;:32::33:0;;:20:::1;;;;;;:36::37:0;:20:::1;;;;;;:8::39',
+        'bytecode': '0d93765102ff008d93012180012051895152535455565579539f6353567a757171557a6871557a518a7f77010088547a518a7f77010088537a518a7f770100887b518a7f77010088a0',
+        'sourceMap': '1::16:1;;;3:16:3:17;4::4;5::5;6::6;7::7;8::8;10:12:10:13;;:16::17;:12:::1;:19:12:9:0;11:16:11:17;:12::18:1;;;;;;;10:19:12:9;14:16:14:21:0;:24::25;;:20:::1;;;;;;:28::29:0;;:20:::1;;;;;;:32::33:0;;:20:::1;;;;;;:36::37:0;:20:::1;;;;;;:8::39',
         'logs': [],
         'requires': [
           {
-            'ip': 65,
+            'ip': 56,
             'line': 14,
           },
         ],
@@ -1159,32 +1159,32 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_DUP OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_DUP OP_1 OP_NUMEQUALVERIFY OP_1ADD OP_2 OP_NUMEQUAL',
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE OP_DUP OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_DUP OP_1 OP_NUMEQUALVERIFY OP_1ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_2 OP_NUMEQUAL',
       'source': "contract DebugMessages() {\n  function spend(int value) {\n    require(value == 1, \"Wrong value passed\");\n    console.log(value, \"test\");\n    console.log(value, \"test2\");\n    require(value + 1 == 2, \"Sum doesn't work\");\n  }\n}\n",
       'debug': {
-        'bytecode': '76765102ff008d9301218001207f770100887576519d8b529c',
-        'sourceMap': '2:17:2:26;;;;;;;;;;;;;;3:12:3:17;:21::22;:4::46:1;6:12:6:21;:25::26:0;:4::48:1',
+        'bytecode': '0c765102ff008d930121800120518976518a7f770100887576519d8b518a7f77010088529c',
+        'sourceMap': '1::8:1;;;2:17:2:26;;;;;;;;3:12:3:17;:21::22;:4::46:1;6:12:6:21;;;;;;;:25::26:0;:4::48:1',
         'logs': [
           {
-            'ip': 17,
+            'ip': 14,
             'line': 4,
             'data': [
               {
                 'stackIndex': 0,
                 'type': 'int256',
-                'ip': 17,
+                'ip': 14,
               },
               'test',
             ],
           },
           {
-            'ip': 17,
+            'ip': 14,
             'line': 5,
             'data': [
               {
                 'stackIndex': 0,
                 'type': 'int256',
-                'ip': 17,
+                'ip': 14,
               },
               'test2',
             ],
@@ -1192,12 +1192,12 @@ export const fixtures: Fixture[] = [
         ],
         'requires': [
           {
-            'ip': 16,
+            'ip': 13,
             'line': 3,
             'message': 'Wrong value passed',
           },
           {
-            'ip': 20,
+            'ip': 23,
             'line': 6,
             'message': "Sum doesn't work",
           },
@@ -1292,23 +1292,23 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_2 OP_PICK OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_ROT OP_SWAP OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_2DUP OP_EQUAL OP_ELSE OP_0 OP_ENDIF OP_IF OP_0 OP_VERIFY OP_ELSE OP_OVER 48656c6c6f20 OP_2 OP_PICK OP_CAT OP_EQUAL OP_IF OP_DUP 576f726c64 OP_EQUALVERIFY OP_ELSE OP_1 OP_0 OP_NOT OP_NOT OP_NOT OP_NUMEQUALVERIFY OP_ENDIF OP_ENDIF OP_2DROP OP_1',
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE OP_2 OP_PICK OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_ROT OP_SWAP OP_2 OP_SUB OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_NUMEQUAL OP_IF OP_2DUP OP_EQUAL OP_ELSE OP_0 OP_ENDIF OP_IF OP_0 OP_VERIFY OP_ELSE OP_OVER 48656c6c6f20 OP_2 OP_PICK OP_CAT OP_EQUAL OP_IF OP_DUP 576f726c64 OP_EQUALVERIFY OP_ELSE OP_1 OP_0 OP_NOT OP_NOT OP_NOT OP_NUMEQUALVERIFY OP_ENDIF OP_ENDIF OP_2DROP OP_1',
       'source': 'contract MultilineStatements(\n    int x,\n    string y\n) {\n    function spend(\n        int a,\n        string b\n    ) {\n        if (a == x - 2\n         && b == y) {\n            require(false);\n        } else if (b == "Hello "\n        + y) {\n            require(\n                y == "World"\n            );\n        } else {\n            require(true == !!!false);\n        }\n    }\n}\n',
       'debug': {
-        'bytecode': '5279765102ff008d9301218001207f77010088757b7c52949c636e8767006863006967780648656c6c6f2052797e87637605576f726c64886751009191919d68686d51',
-        'sourceMap': '6:8:6:13;;;;;;;;;;;;;;;9:12:9;:17::18;:21::22;:17:::1;:12;::10:18:0;10;::::1;9;;;10:20:12:9:0;11::11:25;:12::27:1;12:15:19:9:0;:19:12:20;:24::32;13:10:13:11;;12:24:::1;:19;13:13:17:9:0;15:16:15:17;:21::28;14:12:16:14:1;17:15:19:9:0;18:20:18:24;:31::36;:30:::1;:29;:28;:12::38;17:15:19:9;12;5:4:20:5;',
+        'bytecode': '0c765102ff008d93012180012051895279518a7f77010088757b7c5294518a7f770100889c636e8767006863006967780648656c6c6f2052797e87637605576f726c64886751009191919d68686d51',
+        'sourceMap': '1::21:1;;;6:8:6:13;;;;;;;;;9:12:9;:17::18;:21::22;:17:::1;;;;;;;:12;::10:18:0;10;::::1;9;;;10:20:12:9:0;11::11:25;:12::27:1;12:15:19:9:0;:19:12:20;:24::32;13:10:13:11;;12:24:::1;:19;13:13:17:9:0;15:16:15:17;:21::28;14:12:16:14:1;17:15:19:9:0;18:20:18:24;:31::36;:30:::1;:29;:28;:12::38;17:15:19:9;12;5:4:20:5;',
         'logs': [],
         'requires': [
           {
-            'ip': 30,
+            'ip': 33,
             'line': 11,
           },
           {
-            'ip': 41,
+            'ip': 44,
             'line': 14,
           },
           {
-            'ip': 48,
+            'ip': 51,
             'line': 18,
           },
         ],
@@ -1514,31 +1514,31 @@ export const fixtures: Fixture[] = [
           'inputs': [],
         },
       ],
-      'bytecode': 'OP_0 OP_0 OP_0 OP_0 OP_BEGIN OP_DUP OP_UTXOVALUE OP_4 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_DUP OP_1ADD OP_NIP OP_TXOUTPUTCOUNT OP_2DUP OP_LESSTHAN OP_DUP OP_IF OP_2 OP_PICK OP_OUTPUTTOKENCATEGORY OP_0 OP_EQUAL OP_NOT OP_NIP OP_DUP OP_IF OP_4 OP_PICK OP_3 OP_PICK OP_OUTPUTVALUE OP_ADD OP_5 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_ELSE OP_3 OP_PICK OP_1ADD OP_4 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_ENDIF OP_ENDIF OP_2DROP OP_DUP OP_TXINPUTCOUNT OP_GREATERTHANOREQUAL OP_UNTIL OP_2SWAP OP_GREATERTHAN OP_VERIFY OP_SWAP OP_0 OP_GREATERTHAN OP_NIP',
+      'bytecode': '8b765102ff008d930121800120 OP_1 OP_DEFINE OP_0 OP_0 OP_0 OP_0 OP_BEGIN OP_DUP OP_UTXOVALUE OP_4 OP_ROLL OP_DROP OP_2SWAP OP_3 OP_ROLL OP_DUP OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_NIP OP_TXOUTPUTCOUNT OP_2DUP OP_LESSTHAN OP_DUP OP_IF OP_2 OP_PICK OP_OUTPUTTOKENCATEGORY OP_0 OP_EQUAL OP_NOT OP_NIP OP_DUP OP_IF OP_4 OP_PICK OP_3 OP_PICK OP_OUTPUTVALUE OP_ADD OP_5 OP_ROLL OP_DROP OP_4 OP_ROLL OP_4 OP_ROLL OP_4 OP_ROLL OP_4 OP_ROLL OP_ELSE OP_3 OP_PICK OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_ROLL OP_DROP OP_2SWAP OP_3 OP_ROLL OP_ENDIF OP_ENDIF OP_2DROP OP_DUP OP_TXINPUTCOUNT OP_GREATERTHANOREQUAL OP_UNTIL OP_2SWAP OP_GREATERTHAN OP_VERIFY OP_SWAP OP_0 OP_GREATERTHAN OP_NIP',
       'source': 'contract Loopy() {\n    function doLoop() {\n        int inputSum = 0;\n        int outputSum = 0;\n        int tokenCount = 0;\n        int i = 0;\n\n        do {\n            inputSum = tx.inputs[i].value;\n            i = i + 1;\n\n            int x = tx.outputs.length;\n            bool b = i < x;\n\n            if (b) {\n                b = tx.outputs[i].tokenCategory != 0x;\n\n                if (b) {\n                    outputSum = outputSum + tx.outputs[i].value;\n                } else {\n                    tokenCount = tokenCount + 1;\n                }\n\n                console.log(tokenCount);\n            }\n        } while (i < tx.inputs.length);\n\n        require(inputSum > outputSum);\n        require(tokenCount > 0);\n    }\n}\n',
       'debug': {
-        'bytecode': '000000006576c6547a757c6b7c6b7c6c6c768b77c46e9f76635279d100879177766354795379cc93557a757c6b7c6b7c6b7c6c6c6c6753798b547a757c6b7c6b7c6c6c68686d76c3a26672a0697c00a077',
-        'sourceMap': '3:23:3:24;4:24:4:25;5:25:5:26;6:16:6:17;8:8:26:39;9:33:9:34;:23::41:1;:12::42;;;;;;;;;;10:16:10:17:0;:::21:1;:12::22;12:20:12:37:0;13:21:13:26;::::1;15:16:15:17:0;:19:25:13;16:31:16:32;;:20::47:1;:51::53:0;:20:::1;;:16::54;18:20:18:21:0;:23:20:17;19:32:19:41;;:55::56;;:44::63:1;:32;:20::64;;;;;;;;;;;;;20:23:22:17:0;21:33:21:43;;:::47:1;:20::48;;;;;;;;;;20:23:22:17;15:19:25:13;8:11:26:9;26:17::18:0;:21::37;8:8::39:1;;28:16:28:36:0;::::1;:8::38;29:16:29:26:0;:29::30;:8::32:1;2:4:30:5',
+        'bytecode': '0d8b765102ff008d9301218001205189000000006576c6547a7572537a76518a7f7701008877c46e9f76635279d100879177766354795379cc93557a75547a547a547a547a675379518a7f77010088547a7572537a68686d76c3a26672a0697c00a077',
+        'sourceMap': '1::31:1;;;3:23:3:24;4:24:4:25;5:25:5:26;6:16:6:17;8:8:26:39;9:33:9:34;:23::41:1;:12::42;;;;;;10:16:10:17:0;:::21:1;;;;;;:12::22;12:20:12:37:0;13:21:13:26;::::1;15:16:15:17:0;:19:25:13;16:31:16:32;;:20::47:1;:51::53:0;:20:::1;;:16::54;18:20:18:21:0;:23:20:17;19:32:19:41;;:55::56;;:44::63:1;:32;:20::64;;;;;;;;;;;20:23:22:17:0;21:33:21:43;;:::47:1;;;;;;:20::48;;;;;;20:23:22:17;15:19:25:13;8:11:26:9;26:17::18:0;:21::37;8:8::39:1;;28:16:28:36:0;::::1;:8::38;29:16:29:26:0;:29::30;:8::32:1;2:4:30:5',
         'logs': [
           {
-            'ip': 68,
+            'ip': 71,
             'line': 24,
             'data': [
               {
                 'stackIndex': 3,
                 'type': 'int256',
-                'ip': 68,
+                'ip': 71,
               },
             ],
           },
         ],
         'requires': [
           {
-            'ip': 76,
+            'ip': 79,
             'line': 28,
           },
           {
-            'ip': 80,
+            'ip': 83,
             'line': 29,
           },
         ],
@@ -1568,27 +1568,27 @@ export const fixtures: Fixture[] = [
           'inputs': [],
         },
       ],
-      'bytecode': 'OP_0 OP_2 OP_BEGIN OP_OVER OP_1ADD OP_ROT OP_DROP OP_SWAP OP_2DUP OP_ADD OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_10 OP_LESSTHAN OP_VERIFY OP_OVER OP_10 OP_GREATERTHANOREQUAL OP_UNTIL OP_2DROP OP_1',
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE OP_0 OP_2 OP_BEGIN OP_OVER OP_1ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ROT OP_DROP OP_SWAP OP_2DUP OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_10 OP_LESSTHAN OP_VERIFY OP_OVER OP_10 OP_GREATERTHANOREQUAL OP_UNTIL OP_2DROP OP_1',
       'source': 'contract Loopy() {\n    function doLoop() {\n        int i = 0;\n        int x = 2;\n\n        do {\n            i = i + 1;\n            console.log(i);\n            require(i + x < 10);\n        } while (i < 10);\n    }\n}\n',
       'debug': {
-        'bytecode': '005265788b7b757c6e93765102ff008d9301218001207f770100885a9f69785aa2666d51',
-        'sourceMap': '3:16:3:17;4::4;6:8:10:25;7:16:7:17;:::21:1;:12::22;;;9:20:9:25:0;::::1;;;;;;;;;;;;;:28::30:0;:20:::1;:12::32;10:17:10:18:0;:21::23;6:8::25:1;;2:4:11:5;',
+        'bytecode': '0c765102ff008d9301218001205189005265788b518a7f770100887b757c6e93518a7f770100885a9f69785aa2666d51',
+        'sourceMap': '1::12:1;;;3:16:3:17;4::4;6:8:10:25;7:16:7:17;:::21:1;;;;;;;:12::22;;;9:20:9:25:0;::::1;;;;;;;:28::30:0;:20:::1;:12::32;10:17:10:18:0;:21::23;6:8::25:1;;2:4:11:5;',
         'logs': [
           {
-            'ip': 8,
+            'ip': 17,
             'line': 8,
             'data': [
               {
                 'stackIndex': 1,
                 'type': 'int256',
-                'ip': 8,
+                'ip': 17,
               },
             ],
           },
         ],
         'requires': [
           {
-            'ip': 24,
+            'ip': 27,
             'line': 9,
           },
         ],

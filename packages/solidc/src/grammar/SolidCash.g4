@@ -163,7 +163,8 @@ hasFunctionCallAhead(): boolean {
   // SushiBar, `token.delegate(..)`) is a member call, which the MethodCall alternative parses as anyIdentifier;
   // predicting this rule for it failed on the keyword token.
   return second === lparen || second === lbrace
-    || (second === dot && input.LA(3) === SolidCashParser.Identifier && input.LA(4) === lparen);
+    || (second === dot && input.LA(3) === SolidCashParser.Identifier
+      && input.LA(4) === lparen && input.LA(5) !== lbrace);
 }
 }
 

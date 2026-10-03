@@ -2,7 +2,7 @@ contract BadAsm() {
     function test() {
         assembly {
             OP_1
-            OP_ROLL
+            OP_CHECKMULTISIG
         }
         require(true);
     }

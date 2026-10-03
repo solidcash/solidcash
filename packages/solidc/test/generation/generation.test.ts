@@ -28,6 +28,9 @@ describe('Code generation & target code optimisation', () => {
       const legacyArtifact = JSON.parse(JSON.stringify(artifact));
       delete legacyArtifact.invocationAnalysis;
       delete legacyArtifact.debug?.invokeDebug;
+      // Effect-order metadata is asserted by its dedicated graph/admission tests; these goldens pin direct
+      // bytecode and the historical ABI surface independently of that additive planner annotation.
+      for (const fn of legacyArtifact.abi) delete fn.sourceEffectOrder;
       delete legacyArtifact.compiler.options.messageBus;
       delete legacyArtifact.compiler.options.messageBusKernel;
       delete legacyArtifact.compiler.options.enforceFinalRequire;

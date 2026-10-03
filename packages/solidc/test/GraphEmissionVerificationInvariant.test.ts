@@ -223,12 +223,17 @@ describe('X206 graph emission verification ownership', () => {
 });
 
 describe('graph emission cursor ownership', () => {
-  it('uses the finalized route band for dynamic and fixed-state emission cursors', () => {
-    const selector = methodText(traversalSource, 'bandEmissionOrdinal');
+  it('uses one tracked top-relative frame slot for dynamic and fixed-state emission cursors', () => {
+    const selector = methodText(traversalSource, 'graphEmissionStreamSlot');
     expect(selector).toContain(
-      "return this.declaredBandOrdinal('__internal__graphEmissions');",
+      "this.getStackIndex('__internal__graphEmissions')",
     );
     expect(selector).not.toContain('__internal__dynamicChunkInputBase');
+    expect(selector).not.toContain('declaredBandOrdinal');
+    expect(methodText(traversalSource, 'emitGraphEmissionStreamRead'))
+      .toContain('this.graphEmissionStreamSlot()');
+    expect(methodText(traversalSource, 'emitReplaceGraphEmissionStream'))
+      .toContain('this.graphEmissionStreamSlot()');
     expect(compilerSource).toContain(
       'candidate.messageBusCallerBandNames = finalizedBandNames;',
     );

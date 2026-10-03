@@ -424,8 +424,8 @@ describe('interface-cast using-for + resolved-back-edge recursion robustness (OZ
   });
   it('handles the cast rewrite nested in a block and mixed with a genuine interface method', () => {
     ok(`pragma solidity ^0.8.0; ${lib} contract C { using SafeERC20 for IERC20;`
-      + ' function f(address x, address to, uint256 v, bool c) public {'
-      + ' if (c) { IERC20(x).safeTransfer(to, v); } require(IERC20(x).transfer(to, v)); } }');
+      + ' function f(address x, address y, address to, uint256 v, bool c) public {'
+      + ' if (c) { IERC20(x).safeTransfer(to, v); } require(IERC20(y).transfer(to, v)); } }');
   });
   it('does not stack-overflow the SymbolTable analysis walks on the OZ SafeERC20 _callOptionalReturn chain', () => {
     // The ad-hoc analysis walks (collectLoopWrittenSlotKeys, keccakCallInLoop, bodyContainsStateWrites,

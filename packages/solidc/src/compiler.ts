@@ -10,7 +10,7 @@ import {
   BailErrorStrategy, CharStream, CommonTokenStream, DefaultErrorStrategy, LexerATNSimulator,
   ParserATNSimulator, PredictionContextCache, PredictionMode,
 } from 'antlr4';
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, decodeAuthenticationInstructions, hexToBin } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   AbiFunctionReference, Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions,
@@ -361,15 +361,24 @@ function assertPublishedVerifierBinding(artifact: Artifact, maximumInputBytes?: 
     ...Object.values(artifact.debug?.invokeDebug ?? {}).map((entry) => entry.bytecode),
     ...Object.values(artifact.functionBodies ?? {}),
   ]);
-  const expectedPush = `23${expectedLock}`;
-  const occurrences = [...executableBytecodes]
-    .reduce((count, bytecode) => count + bytecode.split(expectedPush).length - 1, 0);
-  const embeddedLocks = [...executableBytecodes]
-    .flatMap((bytecode) => bytecode.match(/aa20[0-9a-f]{64}87/g) ?? []);
+  // A raw substring can straddle unrelated opcodes or live inside a different pushed program. Inspect
+  // complete P2SH32 pushes, excluding the compiler's fixed dummy-funder lock: that lock is used to validate
+  // balanced slots and has no relation to the detached verifier program.
+  const embeddedLocks = [...executableBytecodes].flatMap((bytecode) => (
+    decodeAuthenticationInstructions(hexToBin(bytecode))
+      .flatMap((instruction) => {
+        if (!('data' in instruction)) return [];
+        const lock = instruction.data;
+        const lockHex = binToHex(lock);
+        return lock.length === 35 && lock[0] === 0xaa && lock[1] === 0x20 && lock[34] === 0x87
+          && lockHex !== BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX
+          ? [lockHex] : [];
+      })
+  ));
   // Some leaf routes authenticate verifier membership without a literal P2SH32 comparison. The program-
   // provenance invariant above covers those. If codegen does emit a verifier lock, however, it must be this
   // exact published program rather than a preliminary specialization.
-  if (embeddedLocks.length > 0 && occurrences < 1) {
+  if (embeddedLocks.length > 0 && !embeddedLocks.includes(expectedLock)) {
     throw new Error(
       `message-bus route verifier lock does not match the published verifier program `
       + `(expected ${expectedLock}, found ${embeddedLocks.join(', ') || 'none'})`,
@@ -798,6 +807,8 @@ function rootSourceCoversProgram(ast: Ast): boolean {
 }
 
 function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
+  const mappingStorageReturn = (type: Type): boolean => type instanceof MappingType
+    || (type instanceof ArrayType && mappingStorageReturn(type.elementType));
   const seenNodes = new Set<Node>();
   const seenTypes = new Set<object>();
   const seenMappingTypes = new Set<object>();
@@ -884,6 +895,11 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     if (node instanceof FunctionDefinitionNode) {
       definedFunctionNames.add(node.name);
       if (node.returnNames.length > 0) needsNamedReturns = true;
+      // A helper returning a mapping storage reference has no standalone VM representation; prune it if unreached.
+      if (node.returnTypes.some((type, index) =>
+        node.returnModifiers?.[index]?.includes('storage') && mappingStorageReturn(type))) {
+        needsSpecialMethodPruning = true;
+      }
     }
     if (node instanceof WhileNode || node instanceof DoWhileNode) needsLoop = true;
     if (node instanceof BreakNode || node instanceof ContinueNode) needsBreakContinue = true;
@@ -5784,7 +5800,11 @@ function synthesizeMessageBusRoute(
       || (node instanceof FunctionCallNode && node.identifier.name.includes('.')
         && !['abi', 'bytes', 'string'].includes(node.identifier.name.split('.')[0]));
     const typedOutgoingCall = (node: Node): boolean =>
-      (node instanceof ExternalFunctionCallNode && node.interfaceName !== '__raw__'
+      // A lowered function pointer names a synthesized interface but selects its method at runtime. Its
+      // graph edge is not the statically typed call proven by this signature-flow policy.
+      !((node instanceof MethodCallNode || node instanceof ExternalFunctionCallNode)
+        && node.runtimeSelector !== undefined)
+      && ((node instanceof ExternalFunctionCallNode && node.interfaceName !== '__raw__'
         && node.callMode !== ExternalCallMode.DELEGATECALL)
       || contractTypedReceiverCall(node, interfaceReceivers)
       || (node instanceof MethodCallNode
@@ -5792,7 +5812,7 @@ function synthesizeMessageBusRoute(
           && node.object.type.interfaceName !== undefined)
           || (node.object instanceof FunctionCallNode
             && interfaceDefinitionNames.has(node.object.identifier.name)))
-        && !['call', 'staticcall', 'delegatecall'].includes(node.methodName));
+        && !['call', 'staticcall', 'delegatecall'].includes(node.methodName)));
     const signatureFlowBackrefs = new Set([
       'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable', 'stateVariable',
     ]);
@@ -12782,7 +12802,13 @@ function compileResolvedAst(
       fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.OVERRIDE);
     }
   }
-  if (ast.contract.parentInvocations.length > 0 || ast.contract.implements.length > 0) {
+  const hasRootOverride = ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.OVERRIDE))
+    || ast.contract.modifierDefinitions.some((modifier) => modifier.isOverride)
+    || [ast.contract.fallbackDef, ast.contract.receiveDef].some((fn) =>
+      fn?.modifiers.includes(FunctionModifier.OVERRIDE));
+  if (ast.contract.parentInvocations.length > 0 || ast.contract.implements.length > 0
+    || ast.importedContracts.some((contract) => contract.implements.length > 0)
+    || (mergedCompilerOptions.solidityImportCompat && hasRootOverride)) {
     ast = expandInheritance(ast, mergedCompilerOptions.solidityImportCompat ?? false);
   }
 
@@ -13708,7 +13734,11 @@ function compileResolvedAst(
     mergedCompilerOptions.solidityImportCompat ?? false,
     oracleDelegateExecutionContext,
   );
-  if (needsBlockOracle) ast = ast.accept(blockOracle) as Ast;
+  // Yul context builtins become ordinary block.* reads and gasleft() only after assembly lowering. The initial
+  // source survey cannot see those generated AST nodes, so resurvey only sources which actually had assembly.
+  if (needsBlockOracle || (needsInlineAssembly && surveyOptionalLowerings(ast).needsBlockOracle)) {
+    ast = ast.accept(blockOracle) as Ast;
+  }
 
   // Drop free/library functions the contract never reaches (OZ libraries ship many unused helpers). Runs last,
   // after every synthesis pass, so no reachable call is missed; conservative by name so nothing live is dropped.
@@ -15846,7 +15876,10 @@ function compileResolvedAst(
             })(),
             ...(fn.sortedInsertLoops?.length ? { sortedInsertLoops: fn.sortedInsertLoops } : {}),
             ...(fn.sortedInsertLoopInfo?.length ? { sortedInsertLoopInfo: fn.sortedInsertLoopInfo } : {}),
-            ...(fn.sortedUpsertLoopInfo?.length ? { sortedUpsertLoopInfo: fn.sortedUpsertLoopInfo } : {}),
+            // The source node retains BigInt iteration counters for lowering. Only the ABI has the
+            // serializable, counter-free descriptor that can be published in an artifact.
+            ...(sourceAbi?.sortedUpsertLoopInfo?.length
+              ? { sortedUpsertLoopInfo: sourceAbi.sortedUpsertLoopInfo } : {}),
             dynamicReads: fn.dynamicReads ?? [],
             dynamicWrites: fn.dynamicWrites ?? [],
             ...(sourceAbi?.keccakPreimageParams?.length
@@ -18035,7 +18068,18 @@ function predictExpressionPrefix(
   const first = input.LA(1);
   const lparen = SolidCashParser.T__56;
   const lbrack = SolidCashParser.T__81;
-  if (first === lparen) return EXPRESSION_ALT_GROUPED;
+  if (first === lparen) {
+    // `(type(T)).member` is a distinct metatype prefix, not a grouped expression.
+    if (input.LA(2) === SolidCashParser.T__62) return undefined;
+    const rparen = SolidCashParser.T__57;
+    const dot = SolidCashParser.T__6;
+    if ((input.LA(2) === SolidCashParser.Identifier && input.LA(3) === rparen && input.LA(4) === lparen)
+      || (input.LA(2) === SolidCashParser.Identifier && input.LA(3) === dot
+        && input.LA(4) === SolidCashParser.Identifier && input.LA(5) === rparen && input.LA(6) === lparen)) {
+      return EXPRESSION_ALT_CALL;
+    }
+    return EXPRESSION_ALT_GROUPED;
+  }
   if (first === SolidCashParser.Identifier) {
     // `uint(x)` is a typeCast alternative, not a call; let ATN keep that split.
     if (input.LT(1).text === 'uint') return undefined;
@@ -18045,7 +18089,8 @@ function predictExpressionPrefix(
     // Mirrors the grammar's hasFunctionCallAhead: `x.y(` is the namespaced call only when `y` is an Identifier; a
     // soft keyword there (`bar.leave(..)`) is a member call on the identifier.
     if (second === lparen || second === lbrace
-      || (second === dot && input.LA(3) === SolidCashParser.Identifier && input.LA(4) === lparen)) {
+      || (second === dot && input.LA(3) === SolidCashParser.Identifier
+        && input.LA(4) === lparen && input.LA(5) !== lbrace)) {
       return EXPRESSION_ALT_CALL;
     }
     return EXPRESSION_ALT_IDENTIFIER;
@@ -18399,6 +18444,7 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
       if (token === placeholderTok) return STATEMENT_ALT_PLACEHOLDER;
       if (token === lbrace) return STATEMENT_ALT_BLOCK;
       if (token === requireTok) {
+        if (input.LA(2) !== lparen) return orig(input, decision, ctx);
         // `timeOpStatement` and ordinary `requireStatement` share the `require (` prefix. Preserve the grammar's
         // exact `require ( TxVar >=` distinction in this optimized decision.
         return input.LA(3) === SolidCashParser.TxVar && input.LA(4) === SolidCashParser.T__22

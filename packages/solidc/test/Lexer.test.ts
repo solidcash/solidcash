@@ -46,12 +46,10 @@ describe('Soft keywords (reserved in SolidCash, valid identifiers in Solidity)',
     expect(compileString(src).contractName).toBe('C');
   });
 
-  it('the `deploy` modifier keyword was removed - deploy is a plain identifier, not a modifier', () => {
-    // A function named `deploy` still parses (deploy is now a normal identifier).
+  it('accepts deploy as a name while retaining the deploy lifecycle modifier', () => {
     expect(compileString('contract C() { int n; function deploy() { this.n = 1; } }').contractName).toBe('C');
-    // `deploy` in modifier position is no longer a keyword - it reads as an undefined custom modifier.
-    expect(() => compileString('contract C() { int n; function f() deploy { this.n = 1; } }'))
-      .toThrow(/[Uu]ndefined modifier/);
+    const artifact = compileString('contract C() { int n; function f() deploy { this.n = 1; } }');
+    expect(artifact.abi.find((entry) => entry.name === 'f')?.modifiers).toContain('deploy');
   });
 });
 

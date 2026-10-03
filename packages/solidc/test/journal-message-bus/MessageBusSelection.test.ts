@@ -182,13 +182,21 @@ describe('message-bus compilation selection', () => {
       maximumInputBytes: 1_000_000,
       optimizeForCompilationSpeed: true,
     });
+    // Each pooled collection reserves a primary and alternate key lane. The getter must keep the primary
+    // coordinate while the sibling write can select its alternate without aliasing the other collection.
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'itemsLength'))
-      .toEqual(expect.objectContaining({ eligible: true, physicalEntrySlots: [0] }));
+      .toEqual(expect.objectContaining({
+        eligible: true, physicalEntrySlots: [0], physicalEntrySlotAlternatives: [[0, 1]],
+      }));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'valueAt'))
-      .toEqual(expect.objectContaining({ eligible: true, physicalEntrySlots: [1] }));
+      .toEqual(expect.objectContaining({
+        eligible: true, physicalEntrySlots: [2], physicalEntrySlotAlternatives: [[2, 3]],
+      }));
     expect(artifact.messageBus?.route.entryAccesses).toEqual([
-      expect.objectContaining({ collection: 'items', keyParams: ['__message_bus_key_items_0'] }),
-      expect.objectContaining({ collection: 'values', keyParams: ['__message_bus_key_values_0'] }),
+      expect.objectContaining({ slotIndex: 0, collection: 'items', keyParams: ['__message_bus_key_items_0'] }),
+      expect.objectContaining({ slotIndex: 1, collection: 'items', keyParams: ['__message_bus_key_items_0_alt'] }),
+      expect.objectContaining({ slotIndex: 2, collection: 'values', keyParams: ['__message_bus_key_values_0'] }),
+      expect.objectContaining({ slotIndex: 3, collection: 'values', keyParams: ['__message_bus_key_values_0_alt'] }),
     ]);
     expect(artifact.messageBus?.route.entryAccesses?.flatMap((access) => access.keyParams)
       .some((key) => key.includes('AbiDecodeAtNode'))).toBe(false);
@@ -248,7 +256,9 @@ describe('message-bus compilation selection', () => {
     expect(layout?.slots.some((slot) => slot.kind === 'dataNft')).toBe(true);
     expect(layout?.slots.some((slot) => slot.kind === 'entry')).toBe(true);
     const recovery = layout?.slots.filter((slot) => slot.kind === 'ecrecoverSideCar') ?? [];
-    expect(recovery.length).toBeGreaterThanOrEqual(2 * (artifact.messageBus?.maximumRows ?? 0));
+    // Reserve A/B pairs for the compiled recovery sites, not 255 speculative row copies.
+    expect(recovery.map((slot) => slot.slotIndex)).toEqual([0, 1, 2, 3]);
+    expect(recovery.length).toBeLessThan(2 * (artifact.messageBus?.maximumRows ?? 0));
     expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
     expect(new Set(layout?.slots.map((slot) => slot.offset)).size).toBe(layout?.slots.length);
     expect(layout?.blockSize).toBe(Math.max(...layout!.slots.map((slot) => slot.offset)) + 1);

@@ -12,7 +12,7 @@ const OPTIONS = {
 } as const;
 
 describe('verified-mapping runtime-loop graph admission', () => {
-  it('refuses a graph handler whose loop key array is a locally constructed array', () => {
+  it('admits a literal local key array after its loop becomes one authenticated entry write', () => {
     const artifact = compileString(`
 pragma solidity ^0.8.0;
 interface IHub { function ping() external; }
@@ -31,13 +31,17 @@ contract Store {
 }
     `, OPTIONS);
     expect(artifact.abi.some((fn) => fn.name === 'refund')).toBe(true);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'refund')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'verified-mapping-runtime-loop-write-unsupported',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'refund'))
+      .toMatchObject({ eligible: true });
+    const refund = artifact.abi.find((fn) => fn.name === 'refund');
+    expect(refund?.sortedUpsertLoopInfo ?? []).toHaveLength(0);
+    expect(refund?.entryAccesses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ collection: 'whitelistWorkers', operations: ['write'] }),
+    ]));
+    expect(refund?.externalCalls).toHaveLength(1);
   });
 
-  it('refuses the marketplace refund shape after the whitelist helper is in the closure', () => {
+  it('admits the helper-owned literal key after inlining while retaining its foreign call', () => {
     const artifact = compileString(`
 pragma solidity ^0.8.0;
 interface IHub { function ping() external; }
@@ -61,10 +65,14 @@ contract Store {
   }
 }
     `, OPTIONS);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'refund')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'verified-mapping-runtime-loop-write-unsupported',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'refund'))
+      .toMatchObject({ eligible: true });
+    const refund = artifact.abi.find((fn) => fn.name === 'refund');
+    expect(refund?.sortedUpsertLoopInfo ?? []).toHaveLength(0);
+    expect(refund?.entryAccesses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ collection: 'whitelistWorkers', operations: ['write'] }),
+    ]));
+    expect(refund?.externalCalls).toHaveLength(1);
   });
 
   it('still publishes a verifier program when cheap admission skips throwaway outlining', () => {

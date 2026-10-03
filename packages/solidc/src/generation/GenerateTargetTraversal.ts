@@ -8318,13 +8318,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // sorted-batch operands its own body verification reads, from the witness block the head already walked. Those
     // must exist before the aliasing preflight snapshots them, so the derivation runs here, where the write's
     // runtime key is live, rather than in the head.
+    // Set before the derivation: a key it computes may read an element of the body's own dynamic run, and an apart
+    // body reads that run in the run's own segment, as every other read of it does.
+    this.perCallRunApart = this.perCallMaster && !this.isDefineSubTraversal && perCallRunApartFromBatch(node);
     if (this.perCallMaster) this.emitPerCallGenesisGuard(node);
     if (this.perCallMaster) this.emitPerCallCallCountCheck(node);
     if (this.perCallMaster) this.emitPerCallEventCountCheck(node);
     if (this.perCallMaster) this.emitPerCallUnusedSendSlotsCheck(node);
     if (this.perCallMaster) this.emitPerCallCallValueCheck(node);
     if (this.perCallMaster) this.emitPerCallBatchWitnessDerivation(node);
-    this.perCallRunApart = this.perCallMaster && !this.isDefineSubTraversal && perCallRunApartFromBatch(node);
     this.emitRuntimeAliasWitnessPreflight(node);
     if (!this.isDefineSubTraversal) {
       for (const collection of this.vmapRuntimeCollections(node)) {

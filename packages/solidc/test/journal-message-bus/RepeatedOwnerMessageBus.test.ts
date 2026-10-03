@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { compileFile } from '../../src/compileFile.js';
 import {
   compileString,
   compileStringMulti,
@@ -141,6 +142,37 @@ describe('inferred message-bus batching for repeated external callees', () => {
     `, { forceStateful: true });
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0].sourceEffectOrdinal)
       .toBeGreaterThan(0);
+  });
+
+  it('numbers external effects after an inlined helper at their caller program point', () => {
+    const artifact = compileString(`
+      interface IReader { function read(uint key) external view returns (uint); }
+      interface ISink { function record(uint value) external; }
+      contract Ordered(address reader, address sink) {
+        function relay(uint value) internal { ISink(sink).record(value); }
+        function run() public {
+          for (uint i = 0; i < 2; i++) {
+            uint observed = IReader(reader).read(i);
+            relay(observed);
+          }
+        }
+      }
+    `, { forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true });
+    const calls = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls;
+    expect(calls?.map((call) => call.functionName)).toEqual(['read', 'record']);
+    expect(calls?.[0].sourceEffectOrdinal).toBeLessThan(calls?.[1].sourceEffectOrdinal!);
+  });
+
+  it('keeps an inlined nested payout after the repeated producer calls', () => {
+    const artifact = compileFile('../../examples/effectiveacceleration/contracts/unicrow/UnicrowClaim.sol', {
+      solidityImportCompat: true, suppressWarnings: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+    });
+    const calls = artifact.abi.find((fn) => fn.name === 'claimMultiple')?.externalCalls;
+    const ordinal = (name: string): number | undefined => calls?.find((call) =>
+      call.functionName === name)?.sourceEffectOrdinal;
+    expect(ordinal('setClaimed')).toBeGreaterThan(ordinal('splitCalculation')!);
+    expect(ordinal('sendEscrowShare')).toBeGreaterThan(ordinal('setClaimed')!);
   });
 
   it('marks ternary and short-circuit effect domains as unsupported flow', () => {

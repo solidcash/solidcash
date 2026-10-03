@@ -8871,17 +8871,19 @@ function synthesizeMessageBusRoute(
         return [{ fn, bindings: complete, signature }];
       });
       const hasMultipleOrientations = new Set(handlerTuples.map(({ signature }) => signature)).size > 1;
-      // A read-only fixed entry can safely expose the route's existing two-lane tuple even when every handler
-      // spells its key through the same ABI position. This gives repeated rows two authenticated physical entry
-      // identities without `_rN` parameters or maximum-row-sized code. More than two concrete identities still
-      // fail closed in the encoder.
-      const repeatedReadTuples = handlerTuples.filter(({ fn }) => {
+      // A graph-context fixed entry can expose the route's existing two-lane tuple even when every handler
+      // spells its key through the same ABI position. The entire key tuple selects one physical journal lane,
+      // including its pending write cache, so a later row can observe an earlier write to the same identity.
+      // More than two concrete identities still fail closed in the encoder.
+      const repeatedEntryTuples = handlerTuples.filter(({ fn }) => {
         const handlerFootprint = analyseFunctionFootprint(fn, byName, footprintCache);
         const prefix = `collection:${collection}:`;
-        return [...handlerFootprint.reads].some((resource) => resource.startsWith(prefix))
-          && ![...handlerFootprint.writes].some((resource) => resource.startsWith(prefix));
+        return [...handlerFootprint.reads, ...handlerFootprint.writes]
+          .some((resource) => resource.startsWith(prefix))
+          && (compilerOptions.messageBusGraphContext === true
+            || ![...handlerFootprint.writes].some((resource) => resource.startsWith(prefix)));
       });
-      const orientedTuples = hasMultipleOrientations ? handlerTuples : repeatedReadTuples;
+      const orientedTuples = hasMultipleOrientations ? handlerTuples : repeatedEntryTuples;
       if (orientedTuples.length === 0) continue;
       // Independent tuple groups remain linear when their handler populations are disjoint. A handler present in
       // two groups would require a product of physical orientations, so retain the existing fail-closed boundary.
@@ -14487,6 +14489,15 @@ function compileResolvedAst(
   }
 
   restoreParkedFunctions(ast, cheapAdmissionPostStubPark);
+  // Internal helper expansion may splice externally calling statements into an entry after the first source
+  // effect survey. Their cloned ordinals are local to the helper, so keeping them would falsely place a nested
+  // call before its caller's already-numbered producers. Re-number the final physical bodies before the late
+  // route/semantic passes publish callsite metadata; this also covers clones made by early route synthesis.
+  if (needsExternalCallLowering || hasInternalHelpers || hasInternallyCalledPublicEntry) {
+    for (const fn of [...ast.contract.functions, ...ast.freeFunctions]) {
+      assignFunctionSourceEffectOrdinals(fn);
+    }
+  }
   // Delegate-variant compile: mark the proxy-implementable functions now that the function set is final (after
   // inheritance/modifier/getter expansion) and before SymbolTableTraversal injects _proxyMasterIndex. `delegate`
   // is never written in source; see AutoMarkDelegateFunctions.

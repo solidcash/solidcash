@@ -6,7 +6,7 @@ import {
 import { compileFile } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Signer, getContractFactory, getEntryNftAddress, getValueChunkAddress, upgrades } from '../../src/index.js';
-import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';
+import { bytesToSlotValue, encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';
 import { deriveLogicalCreateAddress } from '../../src/stateful/logical-identity.js';
 import type { ProxyContract } from '../../src/stateful/upgrades.js';
 import { addressToLockScript } from '../../src/utils.js';
@@ -30,12 +30,13 @@ const artifacts = Object.fromEntries(names.map((name) => [
 ])) as Record<(typeof names)[number], ReturnType<typeof compileFile>>;
 
 describe('real Unicrow proxy kernel arbitration callback', () => {
-  const setup = async (amount = 0n): Promise<{
+  const setup = async (amount = 0n, secondAmount?: bigint): Promise<{
     arbitrator: ProxyContract; claim: ProxyContract; unicrow: ProxyContract;
     sellerLock: Uint8Array;
   }> => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x4d), provider);
+    const sellerLock = addressToLockScript(new Signer(new Uint8Array(32).fill(0x5d), provider).getAddress());
     for (let index = 0; index < 36; index += 1) await provider.addUtxo(signer.getAddress(), {
       txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
     });
@@ -69,17 +70,26 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
     const seedEntry = async (
       name: 'UnicrowArbitrator' | 'Unicrow',
       owner: typeof arbitrator.proxy,
-      value: Record<string, StateValue>,
+      values: readonly Record<string, StateValue>[],
     ): Promise<void> => {
       const artifact = artifacts[name];
       const collection = artifact.stateLayout!.collections![0];
-      const encoded = encodePushdataValue(value, collection.valueType!, artifact.structs);
-      const slot = keyToSlot(bigIntToVmNumber(1n));
       const categoryId = owner.categoryId;
       const address = getEntryNftAddress(owner.inner, categoryId, collection.name);
+      const entries = values.map((value, index) => ({
+        slot: keyToSlot(bigIntToVmNumber(BigInt(index + 1))),
+        encoded: encodePushdataValue(value, collection.valueType!, artifact.structs),
+      })).sort((left, right) => {
+        const a = bytesToSlotValue(left.slot);
+        const b = bytesToSlotValue(right.slot);
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+      const zeroSlot = new Uint8Array(32);
       const commitments = [
-        encodeEntryCommitment(new Uint8Array(32), slot, new Uint8Array(64)),
-        encodeEntryCommitment(slot, new Uint8Array(32), encodeChunkableValueTail(encoded)),
+        encodeEntryCommitment(zeroSlot, entries[0]!.slot, new Uint8Array(64)),
+        ...entries.map((entry, index) => encodeEntryCommitment(
+          entry.slot, entries[index + 1]?.slot ?? zeroSlot, encodeChunkableValueTail(entry.encoded),
+        )),
       ];
       for (const [index, commitment] of commitments.entries()) await provider.addUtxo(address, {
         txid: categoryId, vout: 32 + index, satoshis: 10_000n,
@@ -87,32 +97,37 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
           capability: 'mutable', commitment: binToHex(commitment),
         } },
       });
-      for (const [index, chunk] of splitValueIntoValueChunks(encoded).entries()) {
-        await provider.addUtxo(getValueChunkAddress(
-          owner.inner, categoryId, collection.name, slot, sha256(encoded),
-        ), {
-          txid: categoryId, vout: 34 + index, satoshis: 10_000n,
-          token: { category: categoryId, amount: 0n, nft: {
-            capability: 'mutable', commitment: buildValueChunkCommitment(index, chunk),
-          } },
-        });
+      let vout = 32 + commitments.length;
+      for (const entry of entries) {
+        for (const [index, chunk] of splitValueIntoValueChunks(entry.encoded).entries()) {
+          await provider.addUtxo(getValueChunkAddress(
+            owner.inner, categoryId, collection.name, entry.slot, sha256(entry.encoded),
+          ), {
+            txid: categoryId, vout, satoshis: 10_000n,
+            token: { category: categoryId, amount: 0n, nft: {
+              capability: 'mutable', commitment: buildValueChunkCommitment(index, chunk),
+            } },
+          });
+          vout += 1;
+        }
       }
     };
 
-    await seedEntry('UnicrowArbitrator', arbitrator.proxy, {
+    const amounts = secondAmount === undefined ? [amount] : [amount, secondAmount];
+    await seedEntry('UnicrowArbitrator', arbitrator.proxy, amounts.map(() => ({
       arbitrator: signer.getAddress(), arbitratorFee: 0n,
       sellerConsensus: true, buyerConsensus: true, arbitrated: false,
-    });
+    })));
     const zeroAddress = new Uint8Array();
-    await seedEntry('Unicrow', unicrow.proxy, {
+    await seedEntry('Unicrow', unicrow.proxy, amounts.map((escrowAmount) => ({
       buyer: zeroAddress, challengeExtension: 0n,
-      seller: amount > 0n ? signer.getAddress() : zeroAddress,
+      seller: escrowAmount > 0n ? sellerLock : zeroAddress,
       challengePeriodStart: 0n, marketplace: zeroAddress, marketplaceFee: 0n,
       challengePeriodEnd: 0n, currency: zeroAddress, claimed: 0n,
       consensus: [0n, 1n], split: [0n, 10_000n, 0n, 0n],
-      amount, paymentReference: '',
-    });
-    if (amount > 0n) await provider.addUtxo(getSatoshiContainerAddress(
+      amount: escrowAmount, paymentReference: '',
+    })));
+    if (amounts.some((escrowAmount) => escrowAmount > 0n)) await provider.addUtxo(getSatoshiContainerAddress(
       unicrow.proxy.inner, unicrow.proxy.categoryId,
     ), { txid: 'fb'.repeat(32), vout: 0, satoshis: 30_000n });
 
@@ -123,7 +138,7 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
     unicrow.implementation._registerResolvedExternal('IUnicrowArbitrator', arbitrator);
     unicrow.implementation._registerResolvedExternal('IUnicrowClaim', claim);
 
-    return { arbitrator, claim, unicrow, sellerLock: addressToLockScript(signer.getAddress()) };
+    return { arbitrator, claim, unicrow, sellerLock };
   };
 
   it('forwards arbitration through three proxy state owners and reads the earlier arbitrated write', async () => {
@@ -152,5 +167,21 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
     const receipt = await claim.forward('claimMultiple', [[1n]]).send();
     expect(receipt.outputs.some((output) => output.valueSatoshis === 1_000n
       && binToHex(output.lockingBytecode) === binToHex(sellerLock))).toBe(true);
+  }, 300_000);
+
+  it('pays two funded real escrows through repeated nested proxy kernel rows', async () => {
+    const { claim, unicrow, sellerLock } = await setup(1_000n, 2_000n);
+    const receipt = await claim.forward('claimMultiple', [[1n, 2n]]).send();
+    const outpoints = receipt.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    expect(new Set(outpoints).size).toBe(outpoints.length);
+    expect(receipt.outputs.filter((output) =>
+      binToHex(output.lockingBytecode) === binToHex(sellerLock))
+      .map((output) => output.valueSatoshis).sort((left, right) => (
+        left < right ? -1 : left > right ? 1 : 0
+      ))).toEqual([1_000n, 2_000n]);
+    const escrows = await unicrow.proxy.getEntries('escrows');
+    expect(escrows).toHaveLength(2);
+    expect(escrows.every((entry) => (entry.value as { claimed: bigint }).claimed === 1n)).toBe(true);
   }, 300_000);
 });

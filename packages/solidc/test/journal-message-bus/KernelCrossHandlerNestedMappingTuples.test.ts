@@ -168,4 +168,34 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
     }
     expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
   });
+
+  it('reserves a second write lane only for graph-context repeated entry keys', () => {
+    const source = `contract RepeatedWriter {
+      mapping(uint => uint) private values;
+      function set(uint key, uint value) public {
+        values[key] = value;
+        require(true);
+      }
+    }`;
+    const options = {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      maximumInputBytes: 1_000_000, optimizeForCompilationSpeed: true,
+    } as const;
+    const ordinary = compileString(source, options);
+    const graph = compileString(source, { ...options, messageBusGraphContext: true });
+    const ordinaryWriter = ordinary.messageBus?.handlers.find((handler) => handler.name === 'set');
+    const graphWriter = graph.messageBus?.handlers.find((handler) => handler.name === 'set');
+    expect(ordinaryWriter).toMatchObject({ eligible: true, physicalEntrySlots: [0] });
+    expect(ordinaryWriter?.physicalEntrySlotAlternatives).toBeUndefined();
+    expect(graphWriter).toMatchObject({
+      eligible: true,
+      physicalEntrySlots: [0],
+      physicalEntrySlotAlternatives: [[0, 1]],
+      batchKeyWitnesses: [expect.objectContaining({
+        source: 'argument', inputIndex: 0, alternateRouteInput: '__message_bus_key_values_0_alt',
+      })],
+    });
+    expect(graph.messageBus?.route.sortedBatchInfo)
+      .toContainEqual({ collection: 'values', slotIndices: [0, 1] });
+  });
 });

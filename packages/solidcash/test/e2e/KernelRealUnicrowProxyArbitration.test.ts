@@ -30,7 +30,7 @@ const artifacts = Object.fromEntries(names.map((name) => [
 ])) as Record<(typeof names)[number], ReturnType<typeof compileFile>>;
 
 describe('real Unicrow proxy kernel arbitration callback', () => {
-  const setup = async (amount = 0n, secondAmount?: bigint): Promise<{
+  const setup = async (...amounts: bigint[]): Promise<{
     arbitrator: ProxyContract; claim: ProxyContract; unicrow: ProxyContract;
     sellerLock: Uint8Array;
   }> => {
@@ -113,7 +113,7 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
       }
     };
 
-    const amounts = secondAmount === undefined ? [amount] : [amount, secondAmount];
+    if (amounts.length === 0) amounts = [0n];
     await seedEntry('UnicrowArbitrator', arbitrator.proxy, amounts.map(() => ({
       arbitrator: signer.getAddress(), arbitratorFee: 0n,
       sellerConsensus: true, buyerConsensus: true, arbitrated: false,
@@ -182,6 +182,22 @@ describe('real Unicrow proxy kernel arbitration callback', () => {
       ))).toEqual([1_000n, 2_000n]);
     const escrows = await unicrow.proxy.getEntries('escrows');
     expect(escrows).toHaveLength(2);
+    expect(escrows.every((entry) => (entry.value as { claimed: bigint }).claimed === 1n)).toBe(true);
+  }, 300_000);
+
+  it('pays three funded real escrows through repeated nested proxy kernel rows', async () => {
+    const { claim, unicrow, sellerLock } = await setup(1_000n, 2_000n, 3_000n);
+    const receipt = await claim.forward('claimMultiple', [[1n, 2n, 3n]]).send();
+    const outpoints = receipt.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    expect(new Set(outpoints).size).toBe(outpoints.length);
+    expect(receipt.outputs.filter((output) =>
+      binToHex(output.lockingBytecode) === binToHex(sellerLock))
+      .map((output) => output.valueSatoshis).sort((left, right) => (
+        left < right ? -1 : left > right ? 1 : 0
+      ))).toEqual([1_000n, 2_000n, 3_000n]);
+    const escrows = await unicrow.proxy.getEntries('escrows');
+    expect(escrows).toHaveLength(3);
     expect(escrows.every((entry) => (entry.value as { claimed: bigint }).claimed === 1n)).toBe(true);
   }, 300_000);
 });

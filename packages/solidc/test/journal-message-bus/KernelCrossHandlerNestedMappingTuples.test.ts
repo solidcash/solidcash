@@ -169,7 +169,7 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
     expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
   });
 
-  it('reserves a second write lane only for graph-context repeated entry keys', () => {
+  it('reserves a bounded write key pool only for graph-context repeated entry keys', () => {
     const source = `contract RepeatedWriter {
       mapping(uint => uint) private values;
       function set(uint key, uint value) public {
@@ -187,15 +187,17 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
     const graphWriter = graph.messageBus?.handlers.find((handler) => handler.name === 'set');
     expect(ordinaryWriter).toMatchObject({ eligible: true, physicalEntrySlots: [0] });
     expect(ordinaryWriter?.physicalEntrySlotAlternatives).toBeUndefined();
+    const pool = Array.from({ length: 8 }, (_unused, lane) =>
+      lane === 0 ? '__message_bus_key_values_0' : `__message_bus_key_values_0_pool${lane}`);
     expect(graphWriter).toMatchObject({
       eligible: true,
       physicalEntrySlots: [0],
-      physicalEntrySlotAlternatives: [[0, 1]],
+      physicalEntrySlotAlternatives: [Array.from({ length: 8 }, (_unused, slot) => slot)],
       batchKeyWitnesses: [expect.objectContaining({
-        source: 'argument', inputIndex: 0, alternateRouteInput: '__message_bus_key_values_0_alt',
+        source: 'argument', inputIndex: 0, keyPool: pool,
       })],
     });
     expect(graph.messageBus?.route.sortedBatchInfo)
-      .toContainEqual({ collection: 'values', slotIndices: [0, 1] });
+      .toContainEqual({ collection: 'values', slotIndices: Array.from({ length: 8 }, (_unused, slot) => slot) });
   });
 });

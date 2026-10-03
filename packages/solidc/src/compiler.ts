@@ -8839,6 +8839,7 @@ function synthesizeMessageBusRoute(
     bindings.push({ inputIndex: binding.inputIndex, source: binding.source });
     bindingsByRouteInput.set(binding.routeInput, bindings);
   }
+  const graphWriteKeyPoolCollections = new Set<string>();
   if (compilerOptions.messageBusKernel === true) {
     let tupleGroup = 0;
     const tupleHandlers = new Set<FunctionDefinitionNode>();
@@ -8870,6 +8871,21 @@ function synthesizeMessageBusRoute(
           `${binding.source}:${binding.inputIndex}:${binding.expressionLabel ?? ''}`).join('|');
         return [{ fn, bindings: complete, signature }];
       });
+      // A repeated graph row may write more than two distinct entries of a one-key collection. Reuse the
+      // kernel's bounded physical key pool for every reader and writer of that collection, rather than giving
+      // readers a two-lane tuple while writers retain one scalar slot. Every selected row then names exactly
+      // one authenticated journal cache, including rows that read an earlier write.
+      const poolableTuples = handlerTuples.filter(({ fn, bindings }) => bindings[0].source === 'argument'
+        && bindings[0].inputIndex >= 0 && fn.messageBusKeyWitnesses?.length === 1);
+      const graphWriters = poolableTuples.filter(({ fn }) => [...analyseFunctionFootprint(
+        fn, byName, footprintCache,
+      ).writes].some((resource) => resource.startsWith(`collection:${collection}:`)));
+      const collectionType = collectionByName.get(collection)?.type;
+      if (compilerOptions.messageBusGraphContext === true && width === 1 && graphWriters.length > 0
+        && collectionType instanceof MappingType && !(collectionType.valueType instanceof ArrayType)) {
+        graphWriteKeyPoolCollections.add(collection);
+        continue;
+      }
       const hasMultipleOrientations = new Set(handlerTuples.map(({ signature }) => signature)).size > 1;
       // A graph-context fixed entry can expose the route's existing two-lane tuple even when every handler
       // spells its key through the same ABI position. The entire key tuple selects one physical journal lane,
@@ -9641,6 +9657,19 @@ function synthesizeMessageBusRoute(
   // key pool, not a row-indexed witness band: equal keys reuse a lane and every row invokes the same handler.
   // Its protocol capacity is independent of an individual route's requested row-count bound.
   if (kernelLoopDispatch) {
+    for (const collection of graphWriteKeyPoolCollections) {
+      const primary = `__message_bus_key_${collection.replace(/[^A-Za-z0-9_]/g, '_')}_0`;
+      const witness = routeKeyWitnesses.get(primary)?.[0];
+      if (!witness) throw new Error(`Missing graph-context key-pool witness '${primary}'`);
+      const keyPool = Array.from({ length: MAX_MESSAGE_BUS_ROWS }, (_unused, lane) =>
+        lane === 0 ? primary : `${primary}_pool${lane}`);
+      for (const fn of eligible) {
+        const binding = fn.messageBusKeyWitnesses?.find((candidate) => candidate.routeInput === primary);
+        if (binding?.source === 'argument' && binding.inputIndex >= 0
+          && fn.messageBusKeyWitnesses?.length === 1) binding.keyPool = keyPool;
+      }
+      for (const name of keyPool) routeKeyWitnesses.set(name, [{ ...witness, name }]);
+    }
     for (const fn of eligible) {
       const bindings = fn.messageBusKeyWitnesses ?? [];
       const varying = bindings.filter((binding) => binding.routeInput.endsWith('_row'));

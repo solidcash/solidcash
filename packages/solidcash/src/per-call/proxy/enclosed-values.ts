@@ -18,10 +18,11 @@
  *     there, so nothing is learned and the settle reports whichever refusal the execution meets first.
  */
 
-import { bytesEqual, decodePushdataValue, VALUE_INLINE_LIMIT } from '@solidcash/utils';
+import { bytesEqual, VALUE_INLINE_LIMIT } from '@solidcash/utils';
 import type { CompositionDraft, DerivationHost } from '../composer/index.js';
 import type { DeclarationReading } from '../deploy/declaration.js';
 import { enclosedValueRefusal, writesBeforeEntering } from './enclosed-reads.js';
+import { isWholeNodeValue } from './entry-writes.js';
 import type { HopCallee } from './external-calls.js';
 import { deriveUpToEntering } from './reentry.js';
 
@@ -100,12 +101,7 @@ function awaitedValues(
 function wholeLongValue(writer: HopCallee, collection: string, value: Uint8Array): boolean {
   if (value.length <= VALUE_INLINE_LIMIT) return false;
   const declared = writer.artifact.stateLayout?.collections?.find((candidate) => candidate.name === collection);
-  if (declared === undefined) return false;
-  try {
-    return decodePushdataValue(value, 0, declared.valueType, writer.artifact.structs).bytesConsumed === value.length;
-  } catch {
-    return false;
-  }
+  return declared !== undefined && isWholeNodeValue(declared, value, writer.artifact.structs);
 }
 
 /** True when the writer's run stopped closing a node it writes against the candidate the plan states for it. */

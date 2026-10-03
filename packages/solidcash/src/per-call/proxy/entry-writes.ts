@@ -707,6 +707,25 @@ export function joinedNodeValue(
   }
 }
 
+/**
+ * True when `value` is one whole value of the collection's own type, in the form its node and chunks hold it.
+ *
+ * A `string` or unbounded `bytes` value is held as its own bytes, so any bytes are one; every other value is held as
+ * its type's pushdata encoding, so it is one only when that encoding reads back over all of it.
+ */
+export function isWholeNodeValue(
+  collection: Pick<ArtifactCollection, 'valueType'>,
+  value: Uint8Array,
+  structs: Artifact['structs'],
+): boolean {
+  if (collection.valueType === 'string' || collection.valueType === 'bytes') return true;
+  try {
+    return decodePushdataValue(value, 0, collection.valueType, structs).bytesConsumed === value.length;
+  } catch {
+    return false;
+  }
+}
+
 /** The live node a collection holds for a slot, as the deployment's own classification reports it. */
 function liveNode(
   collection: ArtifactCollection,
@@ -1095,15 +1114,11 @@ function planHopCollectionBatch(
       const raw = resolveWriteValue(resolution, access)
         ?? resolveAppendedMappingValue(request, resolution, collection, access, keys);
       if (raw !== undefined) return { keys: [...keys], value: raw, stated: true };
+      // Fail closed: bytes the close exposed are only the value when they are one whole value of the collection's own
+      // type; anything else is not the value this write computed, and the run stays unstated.
       const learned = request.learnedValue;
-      if (learned !== undefined) {
-        // Fail closed: bytes the close exposed are only the value when they decode as the collection's own type.
-        try {
-          decodePushdataValue(learned, 0, collection.valueType, structs);
-          return { keys: [...keys], value: learned, stated: true };
-        } catch {
-          // Not this collection's value, so it is not the value this write computed; leave the run unstated.
-        }
+      if (learned !== undefined && isWholeNodeValue(collection, learned, structs)) {
+        return { keys: [...keys], value: learned, stated: true };
       }
       unstatedValue = true;
       // A placeholder fixes only the plan's structure: it is not the value the node holds, so no later reach of the

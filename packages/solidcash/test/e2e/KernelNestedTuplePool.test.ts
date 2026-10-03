@@ -987,4 +987,106 @@ describe('kernel complete nested-mapping tuple pool', () => {
     expect(binToHex(audits[0]!.slot)).toBe(binToHex(keyToSlotMulti([bigIntToVmNumber(2n)])));
     expect(audits[0]!.value).toBe(0n);
   }, 180_000);
+
+  it('keeps an untaken conditional delete absent on a direct call', async () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract DirectDelete {
+        mapping(uint => uint) audit;
+        function seed(uint key, uint value) public {
+          audit[key] = value;
+          require(true);
+        }
+        function erase(uint key) public {
+          uint selected = key;
+          if (selected > 1) { delete audit[key]; }
+          require(true);
+        }
+      }`, GRAPH_OPTIONS);
+    expect(artifact.abi.find((candidate) => candidate.name === 'erase')?.entryAccesses?.[0]?.activation)
+      .toMatchObject({ kind: 'binary', operator: '>' });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x72), provider);
+    for (let index = 0; index < 8; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const inner = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, setup.categoryId).connect(signer);
+    await contract.call.seed(2n, 999n).send();
+    await expect(contract.call.erase(1n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const afterUntaken = await contract.getEntries('audit');
+    expect(afterUntaken).toHaveLength(1);
+    expect(binToHex(afterUntaken[0]!.slot)).toBe(binToHex(keyToSlotMulti([bigIntToVmNumber(2n)])));
+    expect(afterUntaken[0]!.value).toBe(999n);
+    await expect(contract.call.erase(2n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const afterTaken = await contract.getEntries('audit');
+    expect(afterTaken).toHaveLength(1);
+    expect(afterTaken[0]!.value).toBe(0n);
+  }, 180_000);
+
+  it('routes delete-or-write arms without creating untaken mapping entries', async () => {
+    const artifacts = compileStringMulti(GRAPH_SOURCE, GRAPH_OPTIONS);
+    const altArtifact = compileString(`pragma solidity ^0.8.0;
+      contract DeleteOrWriteLedger {
+        mapping(uint => uint) audit;
+        mapping(uint => uint) skipped;
+        mapping(uint => mapping(uint => uint)) values;
+        function seed(uint key, uint value) public {
+          audit[key] = value;
+          require(true);
+        }
+        function set(uint outer, uint inner, uint value) public {
+          uint selected = inner;
+          if (selected > 1) { delete audit[inner]; }
+          else { skipped[inner] = value + 300; }
+          values[outer][inner] = value + 100;
+          require(true);
+        }
+      }`, GRAPH_OPTIONS);
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x73), provider);
+    for (let index = 0; index < 18; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const firstInner = new Contract(artifacts.Ledger, [], { provider });
+    const firstSetup = await setupStatefulUtxos(
+      provider, firstInner, artifacts.Ledger.stateLayout!, {}, { saltContract: true },
+    );
+    const first = StatefulContract.withCategory(firstInner, firstSetup.categoryId).connect(signer);
+    const secondInner = new Contract(altArtifact, [], { provider });
+    const secondSetup = await setupStatefulUtxos(
+      provider, secondInner, altArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const second = StatefulContract.withCategory(secondInner, secondSetup.categoryId).connect(signer);
+    await second.call.seed(2n, 999n).send();
+    registerDeployment(provider, {
+      contractName: altArtifact.contractName,
+      address: second.target,
+      lockingBytecode: second.inner.lockingBytecode,
+      contract: second,
+    });
+    const driverInner = new Contract(artifacts.Driver, [first.inner.lockingBytecode], { provider });
+    const driverSetup = await setupStatefulUtxos(
+      provider, driverInner, artifacts.Driver.stateLayout!, {}, { saltContract: true },
+    );
+    const driver = StatefulContract.withCategory(driverInner, driverSetup.categoryId).connect(signer);
+    driver._registerResolvedExternal('ILedger', first);
+    await expect(driver.call.runTargets([
+      hexToBin(first.inner.lockingBytecode), hexToBin(second.inner.lockingBytecode),
+      hexToBin(second.inner.lockingBytecode),
+    ]).send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(await second.getEntries('values')).toHaveLength(2);
+    const audits = await second.getEntries('audit');
+    expect(audits).toHaveLength(1);
+    expect(binToHex(audits[0]!.slot)).toBe(binToHex(keyToSlotMulti([bigIntToVmNumber(2n)])));
+    expect(audits[0]!.value).toBe(0n);
+    const skipped = await second.getEntries('skipped');
+    expect(skipped).toHaveLength(1);
+    expect(binToHex(skipped[0]!.slot)).toBe(binToHex(keyToSlotMulti([bigIntToVmNumber(1n)])));
+    expect(skipped[0]!.value).toBe(331n);
+  }, 180_000);
 });

@@ -179,11 +179,10 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
       const elseTarget = elseWrite && this.entryOpInfo(elseWrite);
       const ifSignature = ifTarget && this.targetSig(ifTarget.name, ifTarget.keys);
       const elseSignature = elseTarget && this.targetSig(elseTarget.name, elseTarget.keys);
-      // Distinct mapping targets have independent entry slots. Preserve both guarded writes when the kernel can
+      // Distinct mapping targets have independent entry slots. Preserve both guarded mutations when the kernel can
       // replay the branch from its row arguments; predicating either arm would mint a zero-valued phantom node.
       if (this.preserveKernelArgumentConditionalWrites && this.isArgumentLiteralCondition(node.condition)
-        && (ifWrite instanceof MappingAssignNode || ifWrite instanceof ArrayAssignNode)
-        && (elseWrite instanceof MappingAssignNode || elseWrite instanceof ArrayAssignNode)
+        && ifTarget !== undefined && elseTarget !== undefined
         && ifSignature !== undefined && elseSignature !== undefined && ifSignature !== elseSignature) return undefined;
       return this.tryConvertIfElse(node);
     }

@@ -310,6 +310,7 @@ import {
   BATCH_DERIVATION_SLOT_ORDER, BATCH_EXTRA_RECORDS_SLOT, batchDerivationSlotName, buildBatchTargetsDerivationScript,
 } from '../per-call/master/batch-witness-derivation.js';
 import { assertP2pkhShapeScript, countMastersScript, type MasterCallSite } from '../per-call/master/frame-tail.js';
+import { genesisSpendCheck } from '../per-call/master/prologue.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
 // array maps to transaction inputs/outputs, so it cannot exceed the tx input/output count (~3119 minimal outputs
@@ -3814,6 +3815,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.popFromStack(2);
+  }
+
+  /**
+   * Runs a constructor only in its category's genesis.
+   *
+   * The selector stays dispatchable because the deployment's genesis probe runs the constructor's frame, but a live
+   * master would run it again for anyone: an owner rewritten, a supply minted twice. The check requires input 0 to
+   * spend the category's genesis outpoint, which no transaction spending a live master can. It is net zero on the
+   * stack, reads no tracked slot, and names itself at its one verify.
+   */
+  private emitPerCallGenesisGuard(node: FunctionDefinitionNode): void {
+    if (node.name !== '__construct' || this.isDefineSubTraversal) return;
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    this.emit(bytecodeToScript(genesisSpendCheck()), loc);
+    this.requires.push({
+      ip: this.getMostRecentInstructionPointer(),
+      line: node.location.start.line,
+      message: 'a constructor runs only in its genesis',
+    });
   }
 
   /**
@@ -8241,6 +8261,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // sorted-batch operands its own body verification reads, from the witness block the head already walked. Those
     // must exist before the aliasing preflight snapshots them, so the derivation runs here, where the write's
     // runtime key is live, rather than in the head.
+    if (this.perCallMaster) this.emitPerCallGenesisGuard(node);
     if (this.perCallMaster) this.emitPerCallCallCountCheck(node);
     if (this.perCallMaster) this.emitPerCallEventCountCheck(node);
     if (this.perCallMaster) this.emitPerCallUnusedSendSlotsCheck(node);

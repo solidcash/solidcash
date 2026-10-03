@@ -13,7 +13,7 @@
  * The prologue consumes nothing and leaves nothing: it is a prefix, and the function body follows it.
  */
 
-import { Opcodes } from '@bitauth/libauth';
+import { encodeDataPush, Opcodes } from '@bitauth/libauth';
 import { categoryPin, chainCategory, TokenCapability } from '@solidcash/utils';
 
 /** The capability a master's own token carries. */
@@ -70,6 +70,23 @@ export function recreationInPlaceCheck(
     // At least the input's value, so an entry cannot take value away from a master.
     op(Opcodes.OP_INPUTINDEX, Opcodes.OP_OUTPUTVALUE, Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOVALUE,
       Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY),
+  ]);
+}
+
+/**
+ * Proves the transaction is its category's genesis: input 0 spends `(category, 0)`, the category read off the
+ * master's own token.
+ *
+ * A category is the txid of the vout-0 outpoint its genesis spends, so only the genesis spends it, and no transaction
+ * that spends a live master can. A constructor arm opens with this: the deployment's genesis probe places that
+ * outpoint at input 0, as the genesis transaction's own funding input is, and a replay on a live master is refused.
+ * Both facts end in one `OP_VERIFY`, so a refusal is not an `OP_EQUALVERIFY` a learner would read as a record close.
+ */
+export function genesisSpendCheck(capability: number = MASTER_CAPABILITY): Uint8Array {
+  return new Uint8Array([
+    Opcodes.OP_0, Opcodes.OP_OUTPOINTTXHASH, ...encodeDataPush(Uint8Array.of(capability)), Opcodes.OP_CAT,
+    Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY, Opcodes.OP_EQUAL,
+    Opcodes.OP_0, Opcodes.OP_OUTPOINTINDEX, Opcodes.OP_NOT, Opcodes.OP_BOOLAND, Opcodes.OP_VERIFY,
   ]);
 }
 

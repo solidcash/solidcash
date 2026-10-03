@@ -99,11 +99,15 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
   const transaction: VmTransaction = {
     version: 2,
     inputs: [
-      input(1, new Uint8Array([
-        ...encodeDataPush(encodeWitnessBlock(block)),
-        ...encodeArgumentList([selectorOf(spend.entry, target), ...spend.args]),
-        ...encodeDataPush(program),
-      ])),
+      {
+        ...input(1, new Uint8Array([
+          ...encodeDataPush(encodeWitnessBlock(block)),
+          ...encodeArgumentList([selectorOf(spend.entry, target), ...spend.args]),
+          ...encodeDataPush(program),
+        ])),
+        // A constructor runs only where input 0, here the master's own, spends the category's genesis outpoint.
+        ...(spend.entry === '__construct' ? { outpointTransactionHash: CATEGORY } : {}),
+      },
       input(2, callerUnlockingBytecode()),
       ...spend.containersIn.map((_, index) => input(3 + index, encodeDataPush(new Uint8Array([1])))),
     ],

@@ -126,7 +126,8 @@ function verdict(options: {
 }): { accepted: boolean; objection?: string } {
   const masterInput = {
     outpointIndex: 0,
-    outpointTransactionHash: new Uint8Array(32).fill(1),
+    // A constructor runs only where input 0, here the master's own, spends the category's genesis outpoint.
+    outpointTransactionHash: options.selector === CONSTRUCTOR_SELECTOR ? CATEGORY : new Uint8Array(32).fill(1),
     sequenceNumber: 0xffffffff,
     // The convention's unlocker: the witness block, then the selector, then the body's argument pushes.
     unlockingBytecode: new Uint8Array([

@@ -95,6 +95,11 @@ interface Options {
   readonly declared?: RecordEntry;
   /** A frame `self` the contract was not deployed at. */
   readonly self?: Uint8Array;
+  /**
+   * The outpoint the caller's coin, input 0, spends. A constructor spend defaults to the category's genesis
+   * outpoint, the only one its arm accepts; an entry's to an ordinary coin.
+   */
+  readonly callerOutpoint?: { readonly hash: Uint8Array; readonly index: number };
 }
 
 /** Builds the spend of the filled master and the record its frame declares, then asks the BCH-2026 machine. */
@@ -127,8 +132,10 @@ function verdict(options: Options): boolean {
   const inputs: VmInput[] = [];
   const outputs: VmOutput[] = [];
   const sourceOutputs: VmProgram['sourceOutputs'] = [];
+  const callerOutpoint = options.callerOutpoint ?? (options.selector === CONSTRUCTOR_SELECTOR
+    ? { hash: CATEGORY, index: 0 } : { hash: new Uint8Array(32).fill(7), index: 0 });
   inputs[CALLER_INDEX] = {
-    outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(7), sequenceNumber: 0xffffffff,
+    outpointIndex: callerOutpoint.index, outpointTransactionHash: callerOutpoint.hash, sequenceNumber: 0xffffffff,
     unlockingBytecode: callerUnlockingBytecode(),
   };
   outputs[CALLER_INDEX] = { lockingBytecode: OWNER_LOCK, valueSatoshis: 100_000n };
@@ -215,5 +222,17 @@ describe('a per-call master for a contract with a constructor', () => {
       after: STORED,
       self: encodeLockingBytecodeP2sh32(hash256(new Uint8Array([9, 9, 9]))),
     })).toBe(false);
+  });
+
+  it('runs the constructor only where input 0 spends the category\'s genesis outpoint', () => {
+    // Only the genesis spends `(category, 0)`, so a live master cannot run its constructor again. Another output of
+    // the funding transaction, another coin, and the category's bytes reversed are refused beside the accepted one.
+    const spend = (hash: Uint8Array, index: number): boolean => verdict({
+      selector: CONSTRUCTOR_SELECTOR, argument: ADMIN, before: EMPTY, after: STORED, callerOutpoint: { hash, index },
+    });
+    expect(spend(CATEGORY, 0)).toBe(true);
+    expect(spend(CATEGORY, 1)).toBe(false);
+    expect(spend(new Uint8Array(32).fill(7), 0)).toBe(false);
+    expect(spend(categorySlotValue(CATEGORY), 0)).toBe(false);
   });
 });

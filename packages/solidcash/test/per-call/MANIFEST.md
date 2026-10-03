@@ -236,8 +236,8 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   or non-recreated validator output, a covered witness block with a trailing byte or cut short, and a read-only
   frame that changes a record, emits, or calls with value or into a frame that is not read-only, a proxied call
   whose delegate callee is not the contract the caller's record names (refused by the derivation, by the reference
-  checker and by the shipped validator program), and a record declared changed in a segment its frame's code
-  does not write it in. The validator
+  checker and by the shipped validator program), a record declared changed in a segment its frame's code
+  does not write it in, and a constructor entered again on a live master. The validator
   program's per-rule refusals are `validator/script.test.ts`'s, one per rule it emits; the table below maps each
   attack to the file that refuses it.
 - **`solidcash/test/per-call/primitives/`** — one case per primitive a flow shape is made of, driven on the shipped
@@ -380,6 +380,7 @@ listed under the table, and none of those is claimed anywhere else.
 | An extra call naming an already-used signed input (the call-receipt residual) | `reused-signature.test.ts` (recorded as accepted, so adopting receipts flips it) |
 | A proxy's call the contract does not hold the target for: a fallback beside ordinary entries, a receive, a delegatecall whose data is not the entry's own received call data, a target the contract does not hold | `proxy-binding.test.ts` (each refused at compile by name) |
 | A standalone master entered by a contract's input rather than a user's | `standalone-caller-contract.test.ts` (refused, with the attribution controls: the same forge is refused whether the frame claims that lock or the user, and a token behind a user lock is accepted) |
+| A constructor entered again on a live master: an owner rewritten, a supply minted twice | `constructor-replay.test.ts` (two cases, each after an honest genesis; refused at the master alone, its validator, records and nodes accepting) and `solidc/test/per-call/master/constructor-body.test.ts` (input 0 spending another output of the funding transaction or another coin, beside the genesis outpoint accepted) |
 | A proxied call whose delegate callee is not the implementation the proxy's own record names | `delegate-callee-mutation.test.ts` (the faithful forwarded hop the proxy's record names is accepted by the derivation and the machine, and a callee that is a second deployed contract's master is refused `V5_DELEGATE_TARGET_MISMATCH` off chain and by the facet's edge rule on chain; `delegate-target-binding.test.ts` states the same rule for a master entered under the record's target) |
 | A master whose declared segments are out of order | `reordered-segments.test.ts` (the derivation refuses `V7_CHAIN_START_MISMATCH`; the program's order-free chain walk accepts, which the case pins) |
 | Two frames that list the same event output | `shared-event-output.test.ts` (the composer refuses the plan's shared list, and a mutation of the assembled spend is refused by the derivation and the program alike) |

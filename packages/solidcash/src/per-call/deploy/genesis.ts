@@ -1326,7 +1326,12 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
     sequenceNumber: 0xffffffff, unlockingBytecode: Uint8Array.of(0x01, 0x01),
   });
 
-  inputs[layout.caller] = { ...plainInput(layout.caller), unlockingBytecode: rootCallerUnlockingBytecode() };
+  // The caller's coin is the category's genesis outpoint at input 0, as the deployment's funding input is: the
+  // constructor arm runs only in a transaction that spends `(category, 0)` there.
+  inputs[layout.caller] = {
+    ...plainInput(layout.caller), outpointTransactionHash: category, outpointIndex: 0,
+    unlockingBytecode: rootCallerUnlockingBytecode(),
+  };
   outputs[layout.caller] = plain();
   sourceOutputs[layout.caller] = outputs[layout.caller]!;
 

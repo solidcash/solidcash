@@ -22,6 +22,9 @@ export type PlanCreateBuilderNestedComposeRouteHost = {
   selectProxyForwardInput: (...args: any[]) => FunctionArgument;
   resolvePreparedProducerEntry: (...args: any[]) => { selector?: string } | undefined;
   externalCallReachedOccurrenceIndices: (...args: any[]) => readonly number[] | undefined;
+  planExternalCallOccurrences: (...args: any[]) => Promise<readonly {
+    args: readonly FunctionArgument[]; sourceIteration: number; occurrenceIndex: number;
+  }[]>;
   nestedFullState: (contract: any) => Promise<OnChainState>;
   nestedMasterState: (contract: any) => Promise<OnChainState>;
   preparedChildProducerPath: (depth: number, row: any) => ValueChunkProducerPathDisposition;
@@ -377,40 +380,52 @@ export async function planCreateBuilderNestedComposeRoute(
     occurrenceIndex,
     sourceEffectOrdinal: nested.sourceEffectOrdinal,
   });
+  const affineOccurrences = !childCompilerRoute && nested.iterationDomain
+    ? await host.planExternalCallOccurrences(nested, {
+      functionArgs: delegateVisibleArgs,
+      artifact: callInfoContract.inner.artifact,
+      state: onChainState.state,
+      callerInputs: delegateVisibleInputs,
+      executionSelfAddress: delegateSelfAddress,
+      externalReturns: graphExpressionReturns,
+    }) : undefined;
+  const directOccurrenceIndices = affineOccurrences === undefined
+    ? host.externalCallReachedOccurrenceIndices(nested, delegateVisibleArgs)
+    : affineOccurrences.map((row) => row.sourceIteration);
   const directInvocationRows: readonly RouteExpressionKeyRow[] | undefined =
   !childCompilerRoute && selectedFn && producerSelector
-    ? host.externalCallReachedOccurrenceIndices(nested, delegateVisibleArgs)?.map(
-      (occurrenceIndex): RouteExpressionKeyRow => {
-        const occurrenceArgs = occurrenceIndex === 0
-          ? graphNestedArgs
-          : host.resolveExternalArgs(
-            nestedSources,
-            delegateVisibleArgs,
-            callInfoContract.inner.artifact,
-            onChainState.state,
-            delegateVisibleInputs,
-            graphExpressionReturns,
-            occurrenceIndex,
-            false,
-            delegateSelfAddress,
-          );
-        if (!occurrenceArgs) {
-          throw new Error(
-            `Delegate external callsite ${nested.callsiteId ?? 'unknown'} occurrence `
-            + `${occurrenceIndex} has arguments that cannot be resolved by the SDK.`,
-          );
-        }
-        return {
-          args: occurrenceArgs,
-          handler: selectedFn,
-          selector: producerSelector,
-          sourceCallsiteId: nested.callsiteId,
+    ? directOccurrenceIndices?.map((occurrenceIndex, rowIndex): RouteExpressionKeyRow => {
+      const occurrenceArgs = affineOccurrences?.[rowIndex]?.args ?? (occurrenceIndex === 0
+        ? graphNestedArgs
+        : host.resolveExternalArgs(
+          nestedSources,
+          delegateVisibleArgs,
+          callInfoContract.inner.artifact,
+          onChainState.state,
+          delegateVisibleInputs,
+          graphExpressionReturns,
           occurrenceIndex,
-          sourceEffectOrdinal: nested.sourceEffectOrdinal,
-          producerPath: producerPathForDirectOccurrence(occurrenceIndex),
-        };
-      },
-    )
+          false,
+          delegateSelfAddress,
+        ));
+      if (!occurrenceArgs) {
+        throw new Error(
+          `Delegate external callsite ${nested.callsiteId ?? 'unknown'} occurrence `
+          + `${occurrenceIndex} has arguments that cannot be resolved by the SDK.`,
+        );
+      }
+      return {
+        args: [...occurrenceArgs],
+        handler: selectedFn,
+        selector: producerSelector,
+        sourceCallsiteId: nested.callsiteId,
+        occurrenceIndex: affineOccurrences?.[rowIndex]?.occurrenceIndex ?? occurrenceIndex,
+        sourceEffectOrdinal: nested.sourceEffectOrdinal,
+        producerPath: producerPathForDirectOccurrence(
+          affineOccurrences?.[rowIndex]?.occurrenceIndex ?? occurrenceIndex,
+        ),
+      };
+    })
     : undefined;
   if (!proxyCallee && selectedFn?.blockLayout) {
   // The caller records requirements against the source interface. A concrete deployment can have

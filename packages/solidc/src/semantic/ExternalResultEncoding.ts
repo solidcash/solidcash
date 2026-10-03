@@ -99,6 +99,12 @@ export const evmStaticResultBytes = (types: readonly Type[]): number | undefined
   return total;
 };
 
+/** Dynamic ABI results may exceed an NFT commitment even when their runtime value is short. */
+export const evmResultNeedsPreimage = (types: readonly Type[]): boolean => {
+  const staticBytes = evmStaticResultBytes(types);
+  return staticBytes === undefined || staticBytes > 128;
+};
+
 /** Tuple-wide wire representation emitted and expected by this exact compiler boundary. */
 export const externalResultEncoding = (
   types: readonly Type[], options: Pick<CompilerOptions, 'evmCompat' | 'solidityImportCompat'>,

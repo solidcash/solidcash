@@ -207,10 +207,15 @@ export async function resolveCreateBuilderNestedComposeCallee(
     void host.nestedIdentity(callee._logicalAddress ?? callee.target!);
   }
 
-  const needsExpressionReturns = nestedSources?.some((source) => containsReturningExpression(source)) === true;
+  const domainSources: ArgSource[] = nested.iterationDomain
+    ? [nested.iterationDomain.initialValue, nested.iterationDomain.stepValue,
+      nested.iterationDomain.continueCondition].map((expression) => ({ kind: 'expression', expression }))
+    : [];
+  const returnSources = [...(nestedSources ?? []), ...domainSources];
+  const needsExpressionReturns = returnSources.some((source) => containsReturningExpression(source));
   const nestedExpressionReturns = needsExpressionReturns
     ? await host.resolveExternalExpressionReturns(
-      nestedSources, delegateVisibleArgs, callInfoContract, onChainState.state,
+      returnSources, delegateVisibleArgs, callInfoContract, onChainState.state,
       delegateVisibleInputs,
       delegateSelfAddress,
       publishedNestedExternalCalls,
@@ -267,7 +272,7 @@ export async function resolveCreateBuilderNestedComposeCallee(
   }
   const graphExpressionReturns = preparedAtomicNodes && needsExpressionReturns
     ? await host.resolveExternalExpressionReturns(
-      nestedSources,
+      returnSources,
       projectMessageBusHandlerArguments(
         callInfoContract.inner.artifact, delegateFn?.name ?? '', delegateFn?.selector,
         delegateVisibleArgs,

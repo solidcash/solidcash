@@ -267,7 +267,7 @@ import {
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
 import {
-  evmStaticResultBytes, externalResultEncoding, isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
+  evmResultNeedsPreimage, externalResultEncoding, isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
 } from '../semantic/ExternalResultEncoding.js';
 import { analyseContractInvocations, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
@@ -19517,18 +19517,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       if (!node.opaqueReturn
         && externalResultEncoding(returnTypes, this.compilerOptions) === 'evm-abi-v1'
-        && (evmStaticResultBytes(returnTypes) ?? 0) > 128) {
+        && evmResultNeedsPreimage(returnTypes)) {
         const preimageParamName = returningSlotCount === 1
           ? '__internal__externalReturnPreimage'
           : `__internal__externalReturnPreimage${returnSlotIndex}`;
-        // The output carries SHA256(raw), not raw: authenticate the caller's raw witness before ABI decoding.
+        // A long result is committed by SHA256(raw); a short dynamic result can be stored raw. Authenticate
+        // a supplied preimage against either representation before ABI decoding. An absent preimage is valid
+        // only when the output itself is longer than a digest, so a hashed result cannot be decoded as data.
         // One untracked output commitment is above the tracked parameters at this point.
         this.emit(encodeInt(BigInt(this.getStackIndex(preimageParamName) + 1)), locationData);
-        this.emit(Op.OP_PICK, locationData); // [digest, raw]
+        this.emit(Op.OP_PICK, locationData); // [commitment, raw]
         this.emit(Op.OP_DUP, locationData);
-        this.emit(Op.OP_SHA256, locationData); // [digest, raw, SHA256(raw)]
-        this.emit(Op.OP_ROT, locationData); // [raw, SHA256(raw), digest]
-        this.emit(Op.OP_EQUALVERIFY, locationData); // [raw]
+        this.emit(Op.OP_SIZE, locationData);
+        this.emit(Op.OP_NIP, locationData);
+        this.emit(Op.OP_IF, locationData);
+        this.emit(Op.OP_2DUP, locationData);
+        this.emit(Op.OP_EQUAL, locationData);
+        this.emit(Op.OP_TOALTSTACK, locationData); // [commitment, raw]; alt: [exact]
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(Op.OP_SHA256, locationData);
+        this.emit(Op.OP_ROT, locationData); // [raw, SHA256(raw), commitment]
+        this.emit(Op.OP_EQUAL, locationData);
+        this.emit(Op.OP_FROMALTSTACK, locationData);
+        this.emit(Op.OP_BOOLOR, locationData);
+        this.emit(Op.OP_VERIFY, locationData); // [raw]
+        this.emit(Op.OP_ELSE, locationData);
+        this.emit(Op.OP_DROP, locationData); // [commitment]
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(Op.OP_SIZE, locationData);
+        this.emit(Op.OP_NIP, locationData);
+        this.emit(encodeInt(32n), locationData);
+        this.emit(Op.OP_GREATERTHAN, locationData);
+        this.emit(Op.OP_VERIFY, locationData); // [raw commitment]
+        this.emit(Op.OP_ENDIF, locationData);
       }
 
       if (node.opaqueReturn) {

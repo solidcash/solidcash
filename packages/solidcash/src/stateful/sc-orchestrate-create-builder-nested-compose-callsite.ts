@@ -61,6 +61,7 @@ export type OrchestrateCreateBuilderNestedComposeCallsiteHost = {
   resolvePreparedProducerEntry: (...args: any[]) => any;
   externalReturnsForCallsites: (...args: any[]) => any;
   externalCallReachedOccurrenceIndices: (...args: any[]) => any;
+  planExternalCallOccurrences: (...args: any[]) => Promise<any>;
   [key: string]: any;
 };
 
@@ -245,6 +246,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
         externalCallReachedOccurrenceIndices: (...a: any[]) => (
           externalCallReachedOccurrenceIndices as (...args: any[]) => readonly number[] | undefined
         )(...a) as number[] | undefined,
+        planExternalCallOccurrences: (...a: any[]) => host.planExternalCallOccurrences(...a),
         nestedFullState,
         nestedMasterState,
         preparedChildProducerPath,

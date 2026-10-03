@@ -11893,6 +11893,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   externalCallReachedOccurrenceIndices: (...a: any[]) => (
                     externalCallReachedOccurrenceIndices as any
                   )(...a),
+                  planExternalCallOccurrences: (...a: any[]) => (
+                    this as any
+                  )._planExternalCallOccurrences(...a),
                   concatBytes: (...a: any[]) => (StatefulContract as any)._concatBytes(...a),
                 },
                 {
@@ -13353,13 +13356,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       callerInputs?: readonly { type: string }[];
       executionSelfAddress?: FunctionArgument;
       executionMsgSender?: FunctionArgument;
+      externalReturns?: ReadonlyMap<string, FunctionArgument>;
     },
   ): Promise<readonly { args: readonly FunctionArgument[]; sourceIteration: number; occurrenceIndex: number }[]> {
     const evaluate = (expression: ExternalCallExpression, iteration: number,
       bindings?: ReadonlyMap<string, FunctionArgument>): FunctionArgument | undefined =>
       this._evaluateExternalExpression(
         expression, frame.functionArgs, frame.artifact, frame.state, frame.callerInputs,
-        undefined, iteration, false, frame.executionSelfAddress, bindings,
+        frame.externalReturns, iteration, false, frame.executionSelfAddress, bindings,
         undefined, false, frame.executionMsgSender,
       );
     const candidates = call.iterationDomain
@@ -13383,7 +13387,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const args = this._resolveExternalArgs(
         call.rawArgSources ?? call.argSources, frame.functionArgs, frame.artifact, frame.state,
-        frame.callerInputs, undefined, sourceIteration, false, frame.executionSelfAddress,
+        frame.callerInputs, frame.externalReturns, sourceIteration, false, frame.executionSelfAddress,
         frame.executionMsgSender,
       );
       if (!args) throw new Error(`External callsite ${call.callsiteId ?? 'unknown'} has unresolved arguments`);

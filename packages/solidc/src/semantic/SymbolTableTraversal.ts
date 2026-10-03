@@ -125,7 +125,7 @@ import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
-import { evmStaticResultBytes, externalResultEncoding } from './ExternalResultEncoding.js';
+import { evmResultNeedsPreimage, externalResultEncoding } from './ExternalResultEncoding.js';
 import { cloneNode } from '../ast/clone.js';
 import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 import {
@@ -4210,10 +4210,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           returnOutputIdxSymbol.references.push({ name: paramName } as IdentifierNode);
         }
         this.pushToStack(returnOutputIdxParam);
-        // A CashTokens NFT cannot carry more than 128 return bytes. A long static ABI result is carried as
-        // a caller witness whose hash is checked against the callee's return NFT before it is decoded.
+        // A CashTokens NFT cannot carry more than 128 return bytes. A statically long or dynamically sized
+        // ABI result can be carried as a caller witness checked against the callee's return NFT before decode.
         if (slot.returnTypes && externalResultEncoding(slot.returnTypes, this.compilerOptions) === 'evm-abi-v1'
-          && (evmStaticResultBytes(slot.returnTypes) ?? 0) > 128) {
+          && evmResultNeedsPreimage(slot.returnTypes)) {
           const preimageName = returningSlots.length === 1
             ? '__internal__externalReturnPreimage'
             : `__internal__externalReturnPreimage${slot.returnSlotIndex}`;

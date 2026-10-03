@@ -113,6 +113,10 @@ function expressionCanon(k: Node): string | undefined {
     const index = expressionCanon(k.index);
     return array && index ? `index(${array},${index})` : undefined;
   }
+  if (k instanceof TupleIndexOpNode) {
+    const tuple = expressionCanon(k.tuple);
+    return tuple ? `tidx(${tuple},${k.index})` : undefined;
+  }
   if (k instanceof FunctionCallNode) {
     const pure = PURE_KEY_BUILTINS.has(k.identifier.name)
       || k.resolvedFunction?.modifiers.includes(FunctionModifier.PURE) === true;
@@ -143,6 +147,15 @@ class ProjectWrittenMappingRead extends AstTraversal {
     private readonly keyLabel: string,
     private readonly value: ExpressionNode,
   ) { super(); }
+
+  visitTupleIndexOp(node: TupleIndexOpNode): Node {
+    if (node.tuple instanceof IdentifierNode && node.tuple.name === this.mapping
+      && expressionCanon(new IntLiteralNode(BigInt(node.index))) === this.keyLabel) {
+      this.replaced = true;
+      return cloneNode(this.value);
+    }
+    return super.visitTupleIndexOp(node);
+  }
 
   visitArrayAccess(node: ArrayAccessNode): Node {
     if (node.array instanceof IdentifierNode && node.array.name === this.mapping

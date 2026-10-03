@@ -377,4 +377,56 @@ describe('kernel conditional state-derived entry keys', () => {
     expect(data.map((entry) => entry.value)).toEqual([13n]);
     expect(data[0]?.slot).toEqual(keyToSlotMulti([bigIntToVmNumber(11n)]));
   }, 180_000);
+
+  it('reads a literal-index mapping key before clearing that source entry', async () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Probe() {
+        mapping(uint256 => bool) flags;
+        mapping(uint256 => uint256) data;
+        function enable() public { flags[7] = true; require(true); }
+        function readThenClear(uint256 value) public {
+          data[flags[7] ? 11 : 0] = value;
+          flags[7] = false;
+          require(true);
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x70), provider);
+    for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const probe = await getContractFactory(artifact, signer).deploy();
+    await expect(probe.call.enable().send()).resolves.toBeDefined();
+    await expect(probe.call.readThenClear(13n).send()).resolves.toBeDefined();
+    const data = await probe.getEntries('data');
+    expect(data.map((entry) => entry.value)).toEqual([13n]);
+    expect(data[0]?.slot).toEqual(keyToSlotMulti([bigIntToVmNumber(11n)]));
+  }, 180_000);
+
+  it('reads a newly written literal-index mapping key in the same handler', async () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Probe() {
+        mapping(uint256 => bool) flags;
+        mapping(uint256 => uint256) data;
+        function setThenStore(uint256 value) public {
+          flags[7] = true;
+          data[flags[7] ? 11 : 0] = value;
+          require(true);
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x71), provider);
+    for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const probe = await getContractFactory(artifact, signer).deploy();
+    await expect(probe.call.setThenStore(13n).send()).resolves.toBeDefined();
+    const data = await probe.getEntries('data');
+    expect(data.map((entry) => entry.value)).toEqual([13n]);
+    expect(data[0]?.slot).toEqual(keyToSlotMulti([bigIntToVmNumber(11n)]));
+  }, 180_000);
 });

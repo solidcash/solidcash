@@ -404,6 +404,27 @@ describe('vmap fixed-write batch metadata', () => {
     expect(earlierSameKey?.preWriteMappingCollections).toBeUndefined();
   });
 
+  it('keeps literal-index source reads in their write order', () => {
+    const compile = (body: string): KeySourceAbi | undefined => {
+      const artifact = compileString(`pragma solidity ^0.8.0;
+        contract Probe() {
+          mapping(uint256 => bool) flags;
+          mapping(uint256 => uint256) data;
+          function store(uint256 value) public { ${body} require(true); }
+        }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+        messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+        suppressWarnings: true, optimizeForCompilationSpeed: true });
+      return artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses
+        ?.find((access) => access.collection === 'data')?.keySources?.[0];
+    };
+    const before = compile('data[flags[7] ? 11 : 0] = value; flags[7] = false;');
+    const after = compile('flags[7] = true; data[flags[7] ? 11 : 0] = value;');
+    expect(before?.preWriteMappingCollections).toEqual(['flags']);
+    expect(before?.postWriteExpressionLabel).toBeUndefined();
+    expect(after?.preWriteMappingCollections).toBeUndefined();
+    expect(after?.postWriteExpressionLabel).toBe('ternary(lit:true,lit:11,lit:0)');
+  });
+
   it('records a mapping rmw of a parameter delta as valueSource', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;

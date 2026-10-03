@@ -8,6 +8,7 @@ import {
   BranchNode,
   WhileNode,
   DoWhileNode,
+  CollectionIterationNode,
   UncheckedNode,
   SwitchNode,
   TryCatchNode,
@@ -95,6 +96,76 @@ function mayCall(node: Node, variables: ReadonlySet<string>): boolean {
     || node instanceof LowLevelCallStatementNode || node instanceof TransferStatementNode
     || node instanceof AddressTransferStatementNode || node instanceof AddressSendExpressionNode
     || node instanceof SelfdestructStatementNode || node instanceof AssemblyStatementNode;
+}
+
+/** A node's executable children, each once: a statement form may hold one child under two fields. */
+function executableChildren(node: Node): Node[] {
+  const children = new Set<Node>();
+  for (const key of Object.keys(node)) {
+    if (BACK_REFERENCES.has(key)) continue;
+    const child = (node as unknown as Record<string, unknown>)[key];
+    if (child instanceof Node) children.add(child);
+    else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) children.add(item);
+  }
+  return [...children];
+}
+
+/** Whether part of a statement reads a cache and calls, and whether each of its reads runs before each of its calls. */
+interface Sequencing { readonly reads: boolean; readonly calls: boolean; readonly ordered: boolean }
+
+const NOTHING: Sequencing = { reads: false, calls: false, ordered: true };
+
+/** Parts that run one after another: a block's statements, a condition and then its arms. */
+function inOrder(parts: readonly Sequencing[]): Sequencing {
+  let reads = false;
+  let calls = false;
+  let ordered = true;
+  for (const part of parts) {
+    ordered = ordered && part.ordered && !(calls && part.reads);
+    reads ||= part.reads;
+    calls ||= part.calls;
+  }
+  return { reads, calls, ordered };
+}
+
+/** Parts of which at most one runs: the arms of a branch. */
+function oneOf(parts: readonly Sequencing[]): Sequencing {
+  return {
+    reads: parts.some((part) => part.reads),
+    calls: parts.some((part) => part.calls),
+    ordered: parts.every((part) => part.ordered),
+  };
+}
+
+/** Parts whose order evaluation leaves open: the operands of one expression, a call's receiver and arguments. */
+function inAnyOrder(parts: readonly Sequencing[]): Sequencing {
+  return {
+    reads: parts.some((part) => part.reads),
+    calls: parts.some((part) => part.calls),
+    ordered: parts.every((part, index) => part.ordered
+      && !(part.reads && parts.some((other, at) => at !== index && other.calls))),
+  };
+}
+
+/**
+ * Whether every read `reads` names in a statement runs before every call `calls` names in it.
+ *
+ * Evaluation fixes the order between statements, between a condition and its arms, and between a call's operands
+ * and the call; it leaves open the order of one expression's operands, and a loop runs its body again after a call
+ * it makes, so a read and a call in either of those are taken as unordered.
+ */
+function sequencing(node: Node, reads: (node: Node) => boolean, calls: (node: Node) => boolean): Sequencing {
+  const of = (child: Node | undefined): Sequencing => (child === undefined ? NOTHING : sequencing(child, reads, calls));
+  if (node instanceof BlockNode) return inOrder((node.statements ?? []).map(of));
+  if (node instanceof BranchNode) return inOrder([of(node.condition), oneOf([of(node.ifBlock), of(node.elseBlock)])]);
+  if (node instanceof TernaryOpNode) return inOrder([of(node.condition), oneOf([of(node.ifTrue), of(node.ifFalse)])]);
+  const operands = inAnyOrder(executableChildren(node).map(of));
+  if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode) {
+    return { ...operands, ordered: operands.ordered && !(operands.reads && operands.calls) };
+  }
+  if (calls(node)) return { reads: operands.reads, calls: true, ordered: operands.ordered };
+  if (reads(node)) return { reads: true, calls: operands.calls, ordered: operands.ordered && !operands.calls };
+  return operands;
 }
 
 // A mapping key we can cache on. Only INVARIANT keys qualify: a simple identifier (invariance re-checked via
@@ -276,6 +347,18 @@ type EntryInfo = {
   written: boolean; readAfterWrite: boolean; fromModifier?: string;
 };
 
+/** An entry the cache serves, as `collectCacheableEntries` selects it. */
+type CacheableEntry = {
+  mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; fromModifier?: string; anchorIndex?: number;
+};
+
+/**
+ * A run of top-level statements one of an entry's caches serves under the per-call composition, by index in the body
+ * before any declaration is inserted: the entry is read right before `first`, its accesses up to `last` name the
+ * cache, and a run that writes (`lastWrite` >= 0) is written back right after that write when a call follows it.
+ */
+type CacheSpan = { first: number; last: number; lastWrite: number; closes: boolean };
+
 type ScalarMappingInfo = { valueType: Type; depth: number };
 
 /**
@@ -294,10 +377,11 @@ type ScalarMappingInfo = { valueType: Type; depth: number };
  * fail closed), and no whole-entry assignment of that entry (only delete / element / push / pop writes + reads).
  *
  * Under the per-call composition a call closes the segment the code before it runs in, and the callee may read the
- * entry back through the contract's getter. The cache then keeps to the segments the entry's own accesses run in: a
- * call before the first access puts the read at that access, and a call after the last write puts the flush right
- * after that write, so the one write lands in the segment the source makes it in rather than past the call. A call
- * between the first access and the last write still runs inside the cache, before the one write it flushes.
+ * entry back through the contract's getter or write it by entering the contract again. The cache then keeps to the
+ * segments the entry's own accesses run in: a call before the first access puts the read at that access, and a call
+ * after the last write puts the flush right after that write, so the one write lands in the segment the source makes
+ * it in rather than past the call. A call between two accesses ends the cache: each run of accesses between calls
+ * gets one of its own, written back before the call and read again after it (`straddleSpans`).
  */
 export default class CacheMappingEntryInLoop extends AstTraversal {
   private arrayMappings: Map<string, Type> = new Map(); // single-key array-valued mapping name -> array value type
@@ -353,21 +437,58 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       && !e.keys.some((key) => key.kind === 'expression'
         || (key.kind === 'id' && key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)))
       && !e.inLoop));
+    // Under the per-call composition, which top-level statements make a call another contract's code runs in. A call
+    // of a variable is a call through a pointer, which may lower to one another contract runs.
+    const variables = new Set([...this.stateVariableNames, ...fn.parameters.map((parameter) => parameter.name)]);
+    let calling: boolean[] = [];
+    if (this.callsCloseSegments && selected.length > 0) {
+      reaches(fn.body, (node) => {
+        if (node instanceof VariableDefinitionNode) variables.add(node.name);
+        if (node instanceof TupleAssignmentNode) {
+          for (const element of node.elements) if (element.name !== undefined) variables.add(element.name);
+        }
+        return false;
+      });
+      calling = (fn.body.statements ?? []).map((statement) => reaches(statement, (node) => mayCall(node, variables)));
+    }
     // Every redirect runs before any declaration is inserted: a redirect replaces the node it rewrites (a write
     // becomes a dirty-marking block), so an anchored cache resolves its insertion point by statement position
-    // afterwards instead of holding a node that is no longer in the body.
-    const prepared = selected.map((e) => {
-      const local = `${PREFIX}${e.mapping}_${this.counter++}`;
-      const dirty = `${local}_dirty`;
-      new EntryRedirect(e.mapping, e.keys, local, dirty, e.valueType).visit(fn.body);
-      return { e, local, dirty };
-    });
+    // afterwards instead of holding a node that is no longer in the body. An entry with a call between two of its
+    // accesses gets a cache per run of statements (`straddleSpans`), each redirect rewriting its own run alone.
+    const prepared: { e: CacheableEntry; local: string; dirty: string; span?: CacheSpan }[] = [];
+    for (const e of selected) {
+      const spans = calling.some(Boolean)
+        ? this.straddleSpans(fn.body, e, calling, (node) => mayCall(node, variables)) : undefined;
+      for (const span of spans ?? [undefined]) {
+        const local = `${PREFIX}${e.mapping}_${this.counter++}`;
+        const dirty = `${local}_dirty`;
+        const redirect = new EntryRedirect(e.mapping, e.keys, local, dirty, e.valueType);
+        if (span === undefined) {
+          redirect.visit(fn.body);
+        } else {
+          const statements = fn.body.statements ?? [];
+          for (let index = span.first; index <= span.last; index += 1) {
+            statements[index] = redirect.visit(statements[index]!) as StatementNode;
+          }
+        }
+        prepared.push({ e, local, dirty, ...(span === undefined ? {} : { span }) });
+      }
+    }
     // Resolve every anchor before any flush statement is inserted: an insertion shifts the statement list, and the
     // anchor is a position in the body as it stands after the redirects.
+    const statements = fn.body.statements ?? [];
     const anchors = new Map<(typeof prepared)[number], StatementNode>();
+    // The statement holding the last write, for a cache flushed right after it rather than at the body's end.
+    const closings = new Map<(typeof prepared)[number], StatementNode>();
     for (const item of prepared) {
+      if (item.span !== undefined) {
+        // A run's cache is read right before its first statement, past the call that ends the run before it.
+        anchors.set(item, statements[item.span.first]!);
+        if (item.span.closes) closings.set(item, statements[item.span.lastWrite]!);
+        continue;
+      }
       if (item.e.anchorIndex === undefined) continue;
-      const anchor = (fn.body.statements ?? [])[item.e.anchorIndex];
+      const anchor = statements[item.e.anchorIndex];
       if (anchor === undefined) {
         throw new Error(
           `CacheMappingEntryInLoop: the cache anchor for '${item.e.mapping}' in '${fn.name}' is missing; the entry `
@@ -376,21 +497,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       }
       anchors.set(item, anchor);
     }
-    // The statement holding the last write, for a cache flushed right after it rather than at the body's end.
-    const closings = new Map<(typeof prepared)[number], StatementNode>();
     if (this.callsCloseSegments) {
-      const statements = fn.body.statements ?? [];
-      // A call of a variable is a call through a pointer, which may lower to one another contract runs.
-      const variables = new Set([...this.stateVariableNames, ...fn.parameters.map((parameter) => parameter.name)]);
-      reaches(fn.body, (node) => {
-        if (node instanceof VariableDefinitionNode) variables.add(node.name);
-        if (node instanceof TupleAssignmentNode) {
-          for (const element of node.elements) if (element.name !== undefined) variables.add(element.name);
-        }
-        return false;
-      });
-      const calls = (statement: StatementNode): boolean => reaches(statement, (node) => mayCall(node, variables));
       for (const item of prepared) {
+        if (item.span !== undefined) continue;
         // The redirects name the cache at every access and mark the dirty flag at every write.
         const firstUse = statements.findIndex((statement) => reaches(statement,
           (node) => (node as { readonly name?: unknown }).name === item.local));
@@ -400,10 +509,10 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
             lastWrite = index;
           }
         });
-        if (firstUse > 0 && !anchors.has(item) && statements.slice(0, firstUse).some(calls)) {
+        if (firstUse > 0 && !anchors.has(item) && calling.slice(0, firstUse).some(Boolean)) {
           anchors.set(item, statements[firstUse]!);
         }
-        if (lastWrite >= 0 && statements.slice(lastWrite + 1).some(calls)) closings.set(item, statements[lastWrite]!);
+        if (lastWrite >= 0 && calling.slice(lastWrite + 1).some(Boolean)) closings.set(item, statements[lastWrite]!);
       }
     }
     // Flushes that close after one statement keep the order the entries were prepared in.
@@ -424,34 +533,40 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       const dirtyLocal = new VariableDefinitionNode(PrimitiveType.BOOL, [], dirty, dirtyInit);
       dirtyLocal.location = fn.body.location;
       const anchor = anchors.get(item);
-      // An anchored cache is declared at its anchor, so only a return reached from there on can find the entry
-      // read and dirty. Flushing at an earlier return named the cache before its declaration (KashiPair: an
-      // early `return;` ahead of the first `balanceOf[_feeTo]`). Returns before the anchor keep no flush.
+      // A run that only reads is never written back, so it keeps no dirty flag and no flush of its own.
+      const writes = item.span === undefined || item.span.lastWrite >= 0;
       const body = fn.body.statements ?? [];
-      const anchorAt = anchor === undefined ? 0 : Math.max(0, body.indexOf(anchor));
-      // A cache with a closing write is flushed right after it: a return past it leaves nothing unwritten, so only a
-      // return up to it needs a flush of its own.
-      const closing = closings.get(item);
-      const closeAt = closing === undefined ? body.length - 1 : body.indexOf(flushedAfter.get(closing) ?? closing);
-      if (closing !== undefined && closeAt < anchorAt) {
-        throw new Error(`CacheMappingEntryInLoop: the last write of '${e.mapping}' in '${fn.name}' is missing.`);
+      let stmts = body;
+      if (writes) {
+        // An anchored cache is declared at its anchor, so only a return reached from there on can find the entry
+        // read and dirty. Flushing at an earlier return named the cache before its declaration (KashiPair: an
+        // early `return;` ahead of the first `balanceOf[_feeTo]`). Returns before the anchor keep no flush.
+        const anchorAt = anchor === undefined ? 0 : Math.max(0, body.indexOf(anchor));
+        // A cache with a closing write is flushed right after it: a return past it leaves nothing unwritten, so only
+        // a return up to it needs a flush of its own.
+        const closing = closings.get(item);
+        const closeAt = closing === undefined ? body.length - 1 : body.indexOf(flushedAfter.get(closing) ?? closing);
+        if (closing !== undefined && closeAt < anchorAt) {
+          throw new Error(`CacheMappingEntryInLoop: the last write of '${e.mapping}' in '${fn.name}' is missing.`);
+        }
+        stmts = [
+          ...body.slice(0, anchorAt),
+          ...this.insertFlushesBeforeReturns(body.slice(anchorAt, closeAt + 1), e.mapping, e.keys, local, dirty),
+        ];
+        if (closing !== undefined) {
+          const flush = this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier);
+          flushedAfter.set(closing, flush);
+          stmts = [...stmts, flush, ...body.slice(closeAt + 1)];
+        } else if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
+          stmts = [...stmts, this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier)];
+        }
       }
-      let stmts = [
-        ...body.slice(0, anchorAt),
-        ...this.insertFlushesBeforeReturns(body.slice(anchorAt, closeAt + 1), e.mapping, e.keys, local, dirty),
-      ];
-      if (closing !== undefined) {
-        const flush = this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier);
-        flushedAfter.set(closing, flush);
-        stmts = [...stmts, flush, ...body.slice(closeAt + 1)];
-      } else if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
-        stmts = [...stmts, this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier)];
-      }
+      const declarations = writes ? [cache, dirtyLocal] : [cache];
       if (anchor !== undefined) {
         // The entry is read at its first use: a key that is a body local is only declared there, and a call before
         // that use would run between the read and the access it serves. Every later read observes the cache, as the
         // writes are redirected to it.
-        anchoredDeclarations.set(anchor, [...(anchoredDeclarations.get(anchor) ?? []), cache, dirtyLocal]);
+        anchoredDeclarations.set(anchor, [...(anchoredDeclarations.get(anchor) ?? []), ...declarations]);
       } else {
         // Point-in-time key snapshots must execute before the cache read which consumes them. They are emitted as
         // a contiguous compiler-owned prefix by LowerVMapCounterLoops; retain that prefix even when several cache
@@ -478,15 +593,71 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     }
   }
 
+  /**
+   * The runs of top-level statements an entry's caches serve under the per-call composition when a call runs between
+   * two of its accesses, or undefined when none does and one cache placed around the calls serves the entry.
+   *
+   * A call closes the segment the code before it runs in, and the callee may read the entry through the contract's
+   * getter or write it by entering the contract again: a cache held across the call shows the callee the entry as it
+   * was before the body's writes, and writes back over the callee's own write. Each run of accesses between two calls
+   * gets a cache of its own instead, written back before the call that ends the run and read again after the call
+   * that starts the next. A statement that calls and also accesses the entry joins a run only where evaluation puts
+   * its accesses on one side of its calls: reads its calls all follow end a run, and a whole-entry write whose value
+   * makes the calls starts one, the read before it never being used. Any other such statement keeps its accesses on
+   * the entry itself, which observes its calls as the source does.
+   */
+  private straddleSpans(
+    body: BlockNode, e: CacheableEntry, calling: readonly boolean[], isCall: (node: Node) => boolean,
+  ): CacheSpan[] | undefined {
+    // The redirect is rehearsed on a copy, so the accesses found are exactly the ones it rewrites.
+    const local = '(cache)';
+    const dirty = '(dirty)';
+    const rehearsal = cloneNode(body);
+    new EntryRedirect(e.mapping, e.keys, local, dirty, e.valueType).visit(rehearsal);
+    const statements = rehearsal.statements ?? [];
+    const reads = (node: Node): boolean => (node as { readonly name?: unknown }).name === local;
+    const marks = (node: Node): boolean => node instanceof AssignNode && node.identifier.name === dirty;
+    const accessing = statements.map((statement) => reaches(statement, reads));
+    const first = accessing.indexOf(true);
+    if (first < 0 || !calling.slice(first, accessing.lastIndexOf(true) + 1).some(Boolean)) return undefined;
+    const spans: CacheSpan[] = [];
+    let open: CacheSpan | undefined;
+    const extend = (index: number, writes: boolean): void => {
+      open ??= { first: index, last: index, lastWrite: -1, closes: false };
+      open.last = index;
+      if (writes) open.lastWrite = index;
+    };
+    const end = (): void => {
+      if (open !== undefined) spans.push(open);
+      open = undefined;
+    };
+    statements.forEach((statement, index) => {
+      if (!calling[index]) {
+        if (accessing[index]) extend(index, reaches(statement, marks));
+        return;
+      }
+      if (accessing[index] && !reaches(statement, marks) && sequencing(statement, reads, isCall).ordered) {
+        extend(index, false);
+        end();
+        return;
+      }
+      end();
+      // `m[k] = f()` is redirected to the cache's whole assignment beside its dirty mark.
+      const [write, mark] = statement instanceof BlockNode ? statement.statements ?? [] : [];
+      if (statement instanceof BlockNode && statement.statements?.length === 2 && write instanceof AssignNode
+        && write.identifier.name === local && !reaches(write.expression, reads) && mark !== undefined && marks(mark)) {
+        extend(index, true);
+      }
+    });
+    end();
+    for (const span of spans) span.closes = span.lastWrite >= 0 && calling.slice(span.lastWrite + 1).some(Boolean);
+    return spans;
+  }
+
   // Entries m[k] written via array ops (element/push/pop) more than once OR inside a loop, with an INVARIANT key
   // (identifier not reassigned, or msg.sender/tx.origin) and no whole-entry assign/delete. Those need
   // read-once/mutate-local/write-once.
-  private collectCacheableEntries(
-    body: Node,
-  ): Array<{
-    mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; fromModifier?: string;
-    anchorIndex?: number;
-  }> {
+  private collectCacheableEntries(body: Node): CacheableEntry[] {
     const info = new Map<string, EntryInfo>();
     const get = (mapping: string, rawKeys: Node | Node[], allowExpression = false): EntryInfo | null => {
       const keys = Array.isArray(rawKeys) ? rawKeys : [rawKeys];
@@ -648,9 +819,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       }
     };
     scan(body, false);
-    const out: Array<{
-      mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; fromModifier?: string;
-    }> = [];
+    const out: CacheableEntry[] = [];
     for (const e of info.values()) {
       // A struct entry needs the local rebuild path for even one field write, but a read-only struct access must
       // stay read-only. Treating every struct entry as cacheable synthesized an unconditional whole-entry flush

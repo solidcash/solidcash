@@ -155,7 +155,8 @@ export function firstUnconfinedReturn(statements: StatementNode[], last = true):
   for (const [index, statement] of statements.entries()) {
     const ends = last && index >= lastIndex;
     if (statement instanceof ReturnNode) {
-      if (!ends) return statement;
+      // An assembly `return(ptr, size)` halts the call: nothing after it runs, so none of the function runs after it.
+      if (!ends && !statement.isYulReturn) return statement;
       continue;
     }
     const loop = statement instanceof WhileNode || statement instanceof DoWhileNode
@@ -203,6 +204,8 @@ class CanonicalizeScalarReturns extends AstTraversal {
   constructor(private readonly name: string) { super(); }
 
   visitReturn(node: ReturnNode): Node {
+    // An assembly `return(ptr, size)` halts with raw bytes; it is not a value of the function's result.
+    if (node.isYulReturn) return node;
     const id = new IdentifierNode(this.name); id.location = node.location;
     const assign = new AssignNode(id, node.expressions[0]); assign.location = node.location;
     return assign;

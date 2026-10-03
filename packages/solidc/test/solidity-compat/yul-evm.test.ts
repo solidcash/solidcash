@@ -884,7 +884,7 @@ describe('Yul assignment to a named storage return slot', () => {
       + ' function pointer(uint choice) internal view returns (S storage result) { assembly {'
       + ' switch choice case 0 { result.slot := s.slot } } } }',
       { solidityImportCompat: true },
-    )).toThrow(/Unsupported inline assembly|Expected variable/);
+    )).toThrow(/Unsupported inline assembly|Expected variable|Unsupported return/);
   });
 });
 

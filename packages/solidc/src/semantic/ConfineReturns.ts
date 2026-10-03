@@ -120,6 +120,9 @@ function returnInLoop(statements: StatementNode[]): boolean {
 function confineFunction(fn: FunctionDefinitionNode, lenient: boolean): void {
   const statements = fn.body?.statements;
   if (!statements || nestsReturnsToTail(statements) || (lenient && returnInLoop(statements))) return;
+  // A storage pointer is not stashed: the stash is declared unassigned, so a path that falls through would return a
+  // pointer to nothing. Such a function keeps EarlyReturnTransformation's refusal of statements after a return.
+  if (fn.returnModifiers.some((modifiers) => modifiers?.includes('storage'))) return;
   const located = <T extends Node>(node: T): T => Object.assign(node, { location: node.location ?? fn.location });
   // The second run names its locals apart, as a function both runs lower declares the first run's already.
   const late = lenient ? '_late' : '';
@@ -142,6 +145,11 @@ function confineFunction(fn: FunctionDefinitionNode, lenient: boolean): void {
 function lowerList(statements: StatementNode[], exit: ReturnExit, loops: number): StatementNode[] {
   const lowered: StatementNode[] = [];
   for (const [index, statement] of statements.entries()) {
+    // An assembly `return(ptr, size)` halts the call with raw bytes, not the function's values: nothing after it runs.
+    if (statement instanceof ReturnNode && statement.isYulReturn) {
+      lowered.push(statement);
+      return lowered;
+    }
     if (statement instanceof ReturnNode) {
       lowered.push(...exit.values(statement), setFlag(exit.flag, statement));
       // Outside a loop nothing after a return runs. Inside one, the break lowering skips the rest of the body.

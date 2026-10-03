@@ -135,6 +135,9 @@ export function evalComputedKey(
       if (typeof element === 'bigint') return bigIntToVmNumber(element);
       if (typeof element === 'boolean') return bigIntToVmNumber(element ? 1n : 0n);
       if (typeof element === 'string' && element.includes(':')) return addressToLockScript(element);
+      // A struct element is handed on whole for a `field:` around this access to read (`items[i].parts.owner`);
+      // as a key by itself it still encodes to nothing.
+      if (element !== null && typeof element === 'object') return element;
       return undefined;
     }
     m = s.match(/^binop:([^()]+)\((.*)\)$/);
@@ -143,6 +146,10 @@ export function evalComputedKey(
       if (!pair) return undefined;
       const left = evalValue(pair[0]);
       const right = evalValue(pair[1]);
+      // A comparison decides a ternary's arm: a local array element read after its write is published as
+      // `ternary(binop:==(<read index>,<written index>),<written value>,<default>)`.
+      const compared = comparedValues(m[1], left, right);
+      if (compared !== undefined) return compared;
       if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
       if (m[1] === '+') return left + right;
       if (m[1] === '-') return left - right;
@@ -169,6 +176,28 @@ export function evalComputedKey(
     return undefined;
   };
   return encode(evalValue(label));
+}
+
+/**
+ * The truth of a comparison label's operator over its two evaluated operands, or `undefined` when the operator is
+ * not a comparison or the operands are not of one kind it orders: equality over two numbers, two byte strings or two
+ * booleans, and order over two numbers.
+ */
+function comparedValues(operator: string, left: unknown, right: unknown): boolean | undefined {
+  if (operator === '==' || operator === '!=') {
+    let equal: boolean | undefined;
+    if (typeof left === 'bigint' && typeof right === 'bigint') equal = left === right;
+    else if (typeof left === 'boolean' && typeof right === 'boolean') equal = left === right;
+    else if (left instanceof Uint8Array && right instanceof Uint8Array) equal = binToHex(left) === binToHex(right);
+    if (equal === undefined) return undefined;
+    return operator === '==' ? equal : !equal;
+  }
+  if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
+  if (operator === '<') return left < right;
+  if (operator === '<=') return left <= right;
+  if (operator === '>') return left > right;
+  if (operator === '>=') return left >= right;
+  return undefined;
 }
 
 const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),schema=\[([^\]]*)\]\}$/;

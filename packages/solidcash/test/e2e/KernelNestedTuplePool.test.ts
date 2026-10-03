@@ -1,7 +1,7 @@
 import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString, compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, messageBus } from '../../src/index.js';
+import { Contract, Signer, StatefulContract, messageBus } from '../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { keyToSlotMulti } from '../../src/stateful/SortedList.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
@@ -23,6 +23,32 @@ const SOURCE = `contract NestedTuplePool() {
 const OPTIONS = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
   maximumInputBytes: 1_000_000,
+} as const;
+
+const GRAPH_SOURCE = `pragma solidity ^0.8.0;
+  interface ILedger { function set(uint outer, uint inner, uint value) external; }
+  contract Ledger {
+    mapping(uint => mapping(uint => uint)) values;
+    function set(uint outer, uint inner, uint value) public {
+      values[outer][inner] = value;
+      require(true);
+    }
+  }
+  contract Driver(address target) {
+    function run() public {
+      for (uint i = 0; i < 3; i = i + 1) ILedger(target).set(1, i, i + 10);
+      require(true);
+    }
+    function runLimited(uint count) public {
+      require(count <= 3);
+      for (uint i = 0; i < count; i = i + 1) ILedger(target).set(2, i, i + 20);
+      require(true);
+    }
+  }`;
+
+const GRAPH_OPTIONS = {
+  ...OPTIONS, messageBusGraphContext: true, messageBusEntryPoolCapacity: 3,
+  solidityImportCompat: true, suppressWarnings: true, optimizeForCompilationSpeed: true,
 } as const;
 
 type NestedTuple = readonly [bigint, bigint, bigint];
@@ -113,5 +139,106 @@ describe('kernel complete nested-mapping tuple pool', () => {
       sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
       transaction: builder.buildLibauthTransaction(),
     }))).not.toBe(true);
+  }, 180_000);
+
+  it('settles three nested tuple lanes reached through a typed foreign-call loop', async () => {
+    const artifacts = compileStringMulti(GRAPH_SOURCE, GRAPH_OPTIONS);
+    expect(artifacts.Ledger.messageBus?.handlers.find((handler) => handler.name === 'set')
+      ?.physicalEntrySlotAlternatives).toEqual([[0, 1, 2]]);
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x62), provider);
+    for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const ledgerInner = new Contract(artifacts.Ledger, [], { provider });
+    const ledgerSetup = await setupStatefulUtxos(
+      provider, ledgerInner, artifacts.Ledger.stateLayout!, {}, { saltContract: true },
+    );
+    const ledger = StatefulContract.withCategory(ledgerInner, ledgerSetup.categoryId).connect(signer);
+    const driverInner = new Contract(artifacts.Driver, [ledger.inner.lockingBytecode], { provider });
+    const driverSetup = await setupStatefulUtxos(
+      provider, driverInner, artifacts.Driver.stateLayout!, {}, { saltContract: true },
+    );
+    const driver = StatefulContract.withCategory(driverInner, driverSetup.categoryId).connect(signer);
+    driver._registerResolvedExternal('ILedger', ledger);
+    const receipt = await driver.call.run().send();
+    expect(receipt).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const entries = await ledger.getEntries('values');
+    expect(entries).toHaveLength(3);
+    for (let inner = 0n; inner < 3n; inner += 1n) {
+      const slot = keyToSlotMulti([bigIntToVmNumber(1n), bigIntToVmNumber(inner)]);
+      expect(entries.find((entry) => binToHex(entry.slot) === binToHex(slot))?.value).toBe(inner + 10n);
+    }
+  }, 180_000);
+
+  it('refuses a signerless typed loop before broadcasting a one-call prefix', async () => {
+    const artifacts = compileStringMulti(GRAPH_SOURCE, GRAPH_OPTIONS);
+    const provider = createMessageBusCapstoneTestProvider();
+    const ledgerInner = new Contract(artifacts.Ledger, [], { provider });
+    const ledgerSetup = await setupStatefulUtxos(
+      provider, ledgerInner, artifacts.Ledger.stateLayout!, {}, { saltContract: true },
+    );
+    const ledger = StatefulContract.withCategory(ledgerInner, ledgerSetup.categoryId);
+    const driverInner = new Contract(artifacts.Driver, [ledger.inner.lockingBytecode], { provider });
+    const driverSetup = await setupStatefulUtxos(
+      provider, driverInner, artifacts.Driver.stateLayout!, {}, { saltContract: true },
+    );
+    const driver = StatefulContract.withCategory(driverInner, driverSetup.categoryId);
+    driver._registerResolvedExternal('ILedger', ledger);
+    await expect(driver.call.run().build()).rejects.toThrow(
+      /typed loop callsite 0 requires atomic composition; connect a signer/,
+    );
+    await expect(driver.call.run().send()).rejects.toThrow(
+      /typed loop callsite 0 requires atomic composition; connect a signer/,
+    );
+    expect(await ledger.getEntries('values')).toHaveLength(0);
+    await expect(driver.call.runLimited(0n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(await ledger.getEntries('values')).toHaveLength(0);
+  }, 180_000);
+
+  it('promotes a potentially repeated typed loop across zero, one and two rows', async () => {
+    const artifacts = compileStringMulti(GRAPH_SOURCE, GRAPH_OPTIONS);
+    const loopEdge = artifacts.Driver.abi.find((entry) => entry.name === 'runLimited')?.externalCalls?.[0];
+    expect(loopEdge).toMatchObject({ occurrence: 'loop', iterationDomain: expect.any(Object) });
+    expect(loopEdge?.maximumOccurrences).toBeGreaterThan(1);
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x63), provider);
+    for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const ledgerInner = new Contract(artifacts.Ledger, [], { provider });
+    const ledgerSetup = await setupStatefulUtxos(
+      provider, ledgerInner, artifacts.Ledger.stateLayout!, {}, { saltContract: true },
+    );
+    const ledger = StatefulContract.withCategory(ledgerInner, ledgerSetup.categoryId).connect(signer);
+    const driverInner = new Contract(artifacts.Driver, [ledger.inner.lockingBytecode], { provider });
+    const driverSetup = await setupStatefulUtxos(
+      provider, driverInner, artifacts.Driver.stateLayout!, {}, { saltContract: true },
+    );
+    const driver = StatefulContract.withCategory(driverInner, driverSetup.categoryId).connect(signer);
+    driver._registerResolvedExternal('ILedger', ledger);
+    await expect(driver.call.runLimited(1n).build()).rejects.toThrow(/requires atomic composition/);
+    await expect(driver.call.runLimited(0n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(await ledger.getEntries('values')).toHaveLength(0);
+    await expect(driver.call.runLimited(1n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const entries = await ledger.getEntries('values');
+    expect(entries).toHaveLength(1);
+    const slot = keyToSlotMulti([bigIntToVmNumber(2n), bigIntToVmNumber(0n)]);
+    expect(entries.find((entry) => binToHex(entry.slot) === binToHex(slot))?.value).toBe(20n);
+    await expect(driver.call.runLimited(2n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const updatedEntries = await ledger.getEntries('values');
+    expect(updatedEntries).toHaveLength(2);
+    const secondSlot = keyToSlotMulti([bigIntToVmNumber(2n), bigIntToVmNumber(1n)]);
+    expect(updatedEntries.find((entry) => binToHex(entry.slot) === binToHex(secondSlot))?.value).toBe(21n);
   }, 180_000);
 });

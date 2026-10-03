@@ -8996,15 +8996,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (predOutputs.length > 0) {
           batchPredCommitments.set(batch.collection, predOutputs.map((o) => binToHex(o.commitment)));
         }
-        // A single routed source row with one target (including several alias arms for the same key) emits an
-        // INSERT with its predecessor at the fixed entry coordinate and its NEW target in the trailing lane.
-        // Publishing the predecessor there displaces the node the route checks at `trailingBase`, and naming a
-        // trailing coordinate with `predOut` makes one coordinate carry two contradictory expectations.
-        // Distinct-key writes in one handler (add+remove) need the trailing-predecessor model: each key keeps its
-        // own fixed TARGET and P' trails. Gate on one unique sorted target, not the number of physical lanes.
-        // A batch fed by SEVERAL rows is a genuine batch and keeps the trailing-predecessor model even when the
-        // rows happen to resolve to the same key at runtime (measured: FakeToken `_allowances`, approve +
-        // transferFrom, equal target slots, trailing predecessor required).
+        // Only a physical one-slot, one-row insert places its predecessor at the fixed entry coordinate and
+        // its NEW target in the trailing lane. A multi-slot batch covenant reserves fixed TARGET coordinates
+        // and requires P' to trail, even if inactive/alias lanes leave just one unique key at runtime. Several
+        // source rows likewise keep the trailing-predecessor model when their keys happen to alias.
         const batchSourceRows = ((entryAbiFunction as { messageBusRowArguments?: readonly {
           handler: { entryAccesses?: readonly { collection: string }[] };
         }[] }).messageBusRowArguments ?? []).filter((row) =>
@@ -9014,7 +9009,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex))
             .map((slotIndex) => binToHex(batchTargetSlots.get(slotIndex) ?? new Uint8Array())),
         );
-        const singleTargetRowBatch = predOutputs.length > 0
+        // The one-slot compiler layout can place its predecessor at the fixed entry coordinate. A kernel
+        // union with inactive reserve lanes still has a multi-slot batch covenant: it requires the target
+        // in the fixed slot and the rewritten predecessor in a separate trailing slot, even when one row ran.
+        const singleTargetRowBatch = batch.slotIndices.length === 1 && predOutputs.length > 0
           && batchSourceRows.length === 1
           && uniqueBatchTargets.size === 1;
         const linearRows = batch.linear ? batch.slotIndices

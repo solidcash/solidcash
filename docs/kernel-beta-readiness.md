@@ -754,6 +754,18 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   BCH-2026 check replaces one row's tuple with a cross-lane combination while keeping the honest route
   witnesses and physical inputs; the VM rejects it. Each new title and its immediately preceding title pass.
   The rejection check establishes transaction failure, not attribution to one specific opcode. No broad suite ran.
+- 2026-10-03 typed-loop fallback follow-up: a signerless natural `send()` of a compiler-proven three-call
+  foreign loop previously broadcast only occurrence zero and returned success. That was the legacy builder,
+  not the atomic graph: connecting a signer makes the same source settle all three nested tuple keys. The
+  legacy builder now refuses an unexpanded potentially repeated typed loop before broadcast. A connected
+  signer uses atomic composition for one or more reached rows; when exact discovery finds no callee, the
+  legacy builder may send the root alone only after independently proving that all published affine loops
+  are zero-trip. The SDK's one-slot predecessor placement shortcut no longer applies to a multi-slot kernel
+  pool with inactive lanes: a one-row insert now publishes its rewritten predecessor separately, as the
+  multi-slot covenant requires. Focused BCH-2026 checks settle zero, one, and two runtime rows in sequence,
+  plus a separate literal three-row route. The signerless refusal title covers both `build()` and `send()`
+  and confirms that a provably zero-trip call can still send the root alone.
+  No broad suite ran.
 
 ## Gate before the next leap
 

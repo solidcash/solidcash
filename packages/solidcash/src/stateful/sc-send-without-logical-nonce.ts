@@ -95,6 +95,8 @@ async function prepareTypedCallbackGraph(
     registeredOwners.add(key);
     return false;
   });
+  const requiresAtomicLoop = entry.externalCalls.some((edge) => edge.occurrence === 'loop'
+    && (edge.maximumOccurrences === undefined || edge.maximumOccurrences > 1));
   if (!mayReachCallback && !mayRepeatOwner) return undefined;
   const rootOwner = `${contract.categoryId.toLowerCase()}:${contract.inner.lockingBytecode.toLowerCase()}`;
   const registeredPathReturnsToRoot = (
@@ -160,10 +162,16 @@ async function prepareTypedCallbackGraph(
   // bound is known. Retain the atomic graph for every compiler-published result-dependent domain.
   const deferredResultDomain = entry.resultConsumers?.some((lane) => 'iterationDomain' in lane
     && lane.iterationDomain === true) === true;
+  // The composer needs a callee row. If exact discovery finds only the root, let the legacy builder run its
+  // independent all-zero-trip proof; it will send the root alone only when every published loop pre-test is
+  // false, and the repeated-loop guard otherwise refuses it. Never synthesize an absent callee row here.
+  if (calls.length === 1 && entry.externalCalls.every((edge) => edge.occurrence === 'loop'
+    && edge.iterationDomain !== undefined)) return undefined;
   // A typed address can select a different deployed owner than the interface registry suggests. If the
   // registered path is a callback, compose the runtime-resolved finite graph even when that choice removes
   // the repeated owner; falling back to the legacy registry-only guard would pin the callee incorrectly.
-  return registeredCallback || deferredResultDomain || [...ownerCounts.values()].some((count) => count > 1)
+  return registeredCallback || deferredResultDomain || requiresAtomicLoop
+    || [...ownerCounts.values()].some((count) => count > 1)
     ? calls : undefined;
 }
 

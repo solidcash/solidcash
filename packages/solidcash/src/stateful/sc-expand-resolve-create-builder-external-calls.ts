@@ -136,6 +136,18 @@ export async function expandResolveCreateBuilderExternalCalls(
     }
   }
 
+  // This legacy builder places one physical callee block per published callsite. A non-array loop can reach
+  // that same callsite repeatedly, but expanding it here would duplicate the owner's master input and cannot
+  // authenticate one ordered journal across the rows. The atomic composer handles that exact source domain;
+  // without a connected signer, refuse rather than broadcasting only the first call as a successful prefix.
+  const repeatedLoop = externalCalls?.find((call) => call.occurrence === 'loop'
+    && !call.loopArrayVar && !call.batchInvocations
+    && (call.maximumOccurrences === undefined || call.maximumOccurrences > 1));
+  if (repeatedLoop) {
+    throw new Error(`messageBus: typed loop callsite ${repeatedLoop.callsiteId ?? '?'} requires atomic composition; `
+      + 'connect a signer before sending');
+  }
+
   if (externalCalls?.some((ec) => ec.loopArrayVar)) {
     const expanded: ExternalCallAbi[] = [];
     presetResolved = [];

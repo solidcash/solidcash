@@ -474,6 +474,47 @@ describe('vmap fixed-write batch metadata', () => {
     expect(stateDerived?.preWriteMappingCollections).toBeUndefined();
   });
 
+  it('keeps signature validation transparent to a later mapping write', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Probe() {
+        mapping(uint256 => bool) flags;
+        mapping(uint256 => uint256) data;
+        function store(pubkey pk, sig s, uint256 flagKey, uint256 dataKey, uint256 value) public {
+          require(checkSig(s, pk));
+          data[flags[flagKey] ? dataKey : 0] = value;
+          flags[flagKey] = false;
+          require(true);
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true });
+    const source = artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses
+      ?.find((access) => access.collection === 'data')?.keySources?.[0];
+    expect(source?.preWriteMappingCollections).toEqual(['flags']);
+  });
+
+  it('does not treat a user checkSig lookalike as a builtin guard', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Probe() {
+        mapping(uint256 => bool) flags;
+        mapping(uint256 => uint256) data;
+        function checkSig(uint256 flagKey) internal returns (bool) {
+          return flagKey == 7;
+        }
+        function store(uint256 flagKey, uint256 dataKey, uint256 value) public {
+          require(checkSig(flagKey));
+          data[flags[flagKey] ? dataKey : 0] = value;
+          flags[flagKey] = false;
+          require(true);
+        }
+      }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true });
+    const source = artifact.abi.find((fn) => fn.name === 'store')?.entryAccesses
+      ?.find((access) => access.collection === 'data')?.keySources?.[0];
+    expect(source?.preWriteMappingCollections).toBeUndefined();
+  });
+
   it('records a mapping rmw of a parameter delta as valueSource', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;

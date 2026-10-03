@@ -71,6 +71,7 @@ const PURE_KEY_BUILTINS = new Set([
   'ripemd160', 'sha1', 'sha256', 'hash160', 'hash256',
   'toPaddedBytes', 'intToString', 'stringToInt',
 ]);
+const READ_ONLY_GUARD_BUILTINS = new Set(['checkSig', 'checkMultiSig', 'checkDataSig']);
 
 function literalCanon(k: LiteralNode): string {
   const value = k.value instanceof Uint8Array ? [...k.value].join(',') : String(k.value);
@@ -127,6 +128,39 @@ function expressionCanon(k: Node): string | undefined {
       ? `call:${k.identifier.name}(${args.join(',')})` : undefined;
   }
   return undefined;
+}
+
+function readOnlyGuardExpression(node: ExpressionNode, shadowedCalls: ReadonlySet<string>): boolean {
+  if (node instanceof FunctionCallNode) {
+    const knownBuiltin = node.resolvedFunction === undefined && !node.lexicalIndirectCall
+      && !shadowedCalls.has(node.identifier.name)
+      && (READ_ONLY_GUARD_BUILTINS.has(node.identifier.name)
+        || PURE_KEY_BUILTINS.has(node.identifier.name));
+    const safe = knownBuiltin
+      || node.resolvedFunction?.modifiers.includes(FunctionModifier.PURE) === true;
+    return safe && node.parameters.every((parameter) => readOnlyGuardExpression(parameter, shadowedCalls));
+  }
+  if (node instanceof BinaryOpNode) {
+    return readOnlyGuardExpression(node.left, shadowedCalls)
+      && readOnlyGuardExpression(node.right, shadowedCalls);
+  }
+  if (node instanceof TernaryOpNode) {
+    return readOnlyGuardExpression(node.condition, shadowedCalls)
+      && readOnlyGuardExpression(node.ifTrue, shadowedCalls)
+      && readOnlyGuardExpression(node.ifFalse, shadowedCalls);
+  }
+  if (node instanceof UnaryOpNode || node instanceof CastNode || node instanceof FieldAccessNode) {
+    return readOnlyGuardExpression(node.expression, shadowedCalls);
+  }
+  if (node instanceof ArrayAccessNode) {
+    return readOnlyGuardExpression(node.array, shadowedCalls)
+      && readOnlyGuardExpression(node.index, shadowedCalls);
+  }
+  if (node instanceof TupleIndexOpNode) return readOnlyGuardExpression(node.tuple, shadowedCalls);
+  if (node instanceof MappingAccessNode) {
+    return node.keys.every((key) => readOnlyGuardExpression(key, shadowedCalls));
+  }
+  return expressionCanon(node) !== undefined;
 }
 
 /** SDK key planning may substitute only a value that is already fixed by public arguments. */
@@ -384,16 +418,20 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   // model has its own write-in-loop handling); depth 1 only.
   private scalarMappings: Map<string, ScalarMappingInfo> = new Map();
   private structMappings: Map<string, StructType> = new Map();
+  private sourceFunctionNames: Set<string> = new Set();
+  private contractFunctionNames: Set<string> = new Set();
   private counter = 0;
 
   constructor(private routeSnapshotKeysOnly = false) { super(); }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.sourceFunctionNames = new Set(node.freeFunctions.map((fn) => fn.name));
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
 
   visitContract(node: ContractNode): Node {
+    this.contractFunctionNames = new Set(node.functions.map((fn) => fn.name));
     this.arrayMappings = new Map();
     this.scalarMappings = new Map();
     this.structMappings = new Map();
@@ -509,9 +547,16 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private publishStraightLineMappingKeyValues(fn: FunctionDefinitionNode): void {
     const statements = fn.body.statements ?? [];
     const parameters = new Set(fn.parameters.map((parameter) => parameter.name));
+    // This pass also runs before symbol resolution. A contract/free function or lexical pointer may
+    // shadow a global builtin, so a name alone cannot prove the call has no storage effects.
+    const shadowedCalls = new Set([
+      ...this.sourceFunctionNames, ...this.contractFunctionNames, ...parameters,
+      ...statements.filter((statement): statement is VariableDefinitionNode => statement instanceof VariableDefinitionNode)
+        .map((statement) => statement.name),
+    ]);
     const readOnlyGuard = (statement: StatementNode): boolean => statement instanceof RequireNode
-      && expressionCanon(statement.expression) !== undefined
-      && statement.args.every((arg) => expressionCanon(arg) !== undefined);
+      && readOnlyGuardExpression(statement.expression, shadowedCalls)
+      && statement.args.every((arg) => readOnlyGuardExpression(arg, shadowedCalls));
     const transparentStatements: boolean[] = [];
     const topLevelLocals = new Set<string>();
     for (const statement of statements) {

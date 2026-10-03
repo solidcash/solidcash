@@ -4441,6 +4441,58 @@ function fixedChunkableBoolParamActivation(
   return undefined;
 }
 
+/** Retain a conditional fixed entry only when its branch can be replayed from authenticated row arguments. */
+function stampKernelArgumentConditionalEntryActivations(fn: FunctionDefinitionNode): void {
+  if (!fn.body || !fn.entryAccesses) return;
+  const conditionRecipe = (expression: ExpressionNode): ExternalCallExpression | undefined => {
+    if (!(expression instanceof BinaryOpNode)
+      || ![BinaryOperator.EQ, BinaryOperator.NE].includes(expression.operator)) return undefined;
+    const parameter = expression.left instanceof IdentifierNode && expression.right instanceof IntLiteralNode
+      ? expression.left : expression.right instanceof IdentifierNode && expression.left instanceof IntLiteralNode
+        ? expression.right : undefined;
+    const literal = expression.left instanceof IntLiteralNode ? expression.left
+      : expression.right instanceof IntLiteralNode ? expression.right : undefined;
+    const index = fn.parameters.findIndex((candidate) => candidate.name === parameter?.name
+      && !candidate.name.startsWith('__internal__'));
+    if (index < 0 || literal === undefined) return undefined;
+    return {
+      kind: 'binary', operator: expression.operator,
+      left: { kind: 'source', source: { kind: 'forward', paramIndex: index } },
+      right: { kind: 'literal', type: 'bigint', value: literal.value.toString() },
+    };
+  };
+  const byOrdinal = new Map<number, ExternalCallExpression>();
+  const combine = (outer: ExternalCallExpression | undefined, inner: ExternalCallExpression): ExternalCallExpression =>
+    outer === undefined ? inner : { kind: 'binary', operator: '&&', left: outer, right: inner };
+  const scan = (node: Node, activation: ExternalCallExpression | undefined, representable: boolean): void => {
+    if (node instanceof BranchNode) {
+      const branch = conditionRecipe(node.condition);
+      const supported = representable && branch !== undefined;
+      scan(node.ifBlock, supported ? combine(activation, branch!) : undefined, supported);
+      if (node.elseBlock) scan(node.elseBlock, supported ? combine(activation, {
+        kind: 'unary', operator: '!', expression: branch!,
+      }) : undefined, supported);
+      return;
+    }
+    if (node instanceof MappingAssignNode && representable && activation !== undefined
+      && node.sourceEffectOrdinal !== undefined) byOrdinal.set(node.sourceEffectOrdinal, activation);
+    for (const [field, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+        'stateVariable', 'type'].includes(field)) continue;
+      if (value instanceof Node) scan(value, activation, representable);
+      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
+        scan(item, activation, representable);
+      }
+    }
+  };
+  scan(fn.body, undefined, true);
+  for (const access of fn.entryAccesses) {
+    if (access.activation !== undefined || access.mutationEffectOrdinals?.length !== 1) continue;
+    const activation = byOrdinal.get(access.mutationEffectOrdinals[0]);
+    if (activation !== undefined) access.activation = activation;
+  }
+}
+
 /**
  * path-effect activation: bool-param BranchNode (+ opaque-control) activations for direct emit sites.
  * Maps emitIndex → ECE stamped onto pathEffectSchedule event entries.
@@ -14471,7 +14523,9 @@ function compileResolvedAst(
 
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically
   // tell it ran). If-convert it to an unconditional predicated write `m[k] = cond ? default : m[k]`.
-  if (needsCollectionJournal) ast = ast.accept(new IfConvertConditionalEntryOp()) as Ast;
+  if (needsCollectionJournal) ast = ast.accept(new IfConvertConditionalEntryOp(
+    mergedCompilerOptions.messageBusKernel === true,
+  )) as Ast;
 
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
   // no on-chain constructor; the read is resolved off-chain at deploy). Runs before the target-address synth.
@@ -14742,6 +14796,11 @@ function compileResolvedAst(
   // Semantic analysis
   const semanticStarted = Date.now();
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
+  // Entry accesses are discovered by semantic analysis, so attach source-branch activation only after that
+  // traversal has assigned their mutation ordinals. Route synthesis happens too early for this metadata.
+  if (mergedCompilerOptions.messageBusKernel === true) {
+    for (const fn of ast.contract.functions) stampKernelArgumentConditionalEntryActivations(fn);
+  }
   if (mergedCompilerOptions.messageBus) {
     padMessageBusCloneCalls(ast);
   }
@@ -18157,7 +18216,9 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new CoalesceStateArrayStructFieldWrites()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
     singleAst = singleAst.accept(new CacheMappingEntryInLoop()) as Ast;
-    singleAst = singleAst.accept(new IfConvertConditionalEntryOp()) as Ast;
+    singleAst = singleAst.accept(new IfConvertConditionalEntryOp(
+      compilerOptions.messageBusKernel === true,
+    )) as Ast;
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
     singleAst = singleAst.accept(new HoistBranchLocalExtcallTargets()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;

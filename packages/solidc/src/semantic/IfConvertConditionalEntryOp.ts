@@ -21,13 +21,14 @@ import {
   VariableDefinitionNode,
   IdentifierNode,
   IntLiteralNode,
+  BinaryOpNode,
   WhileNode,
   DoWhileNode,
 } from '../ast/AST.js';
 import {
   Type, MappingType, ArrayType, StructType, PrimitiveType, isChunkableValueType,
 } from '@solidcash/utils';
-import { UnaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { Location } from '../ast/Location.js';
 import { cloneNode } from '../ast/clone.js';
@@ -83,8 +84,11 @@ interface MergedTarget {
  * Result: all entry writes are unconditional (stable output count).
  */
 export default class IfConvertConditionalEntryOp extends AstTraversal {
+  constructor(private readonly preserveKernelArgumentConditionalWrites = false) { super(); }
+
   // Mappings are CollectionNodes (node.collections), not stateVariables, pre-semantic.
   private mappings: Map<string, CollectionNode> = new Map();
+  private currentFunction?: FunctionDefinitionNode;
 
   // Names the hoisted condition locals uniquely per converted if/else branch.
   private condCounter = 0;
@@ -105,6 +109,24 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
       if (fn?.body) this.visit(fn as FunctionDefinitionNode);
     }
     return node;
+  }
+
+  visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    const previous = this.currentFunction;
+    this.currentFunction = node;
+    const result = super.visitFunctionDefinition(node);
+    this.currentFunction = previous;
+    return result;
+  }
+
+  private isArgumentLiteralCondition(expression: ExpressionNode): boolean {
+    if (!(expression instanceof BinaryOpNode)
+      || ![BinaryOperator.EQ, BinaryOperator.NE].includes(expression.operator)) return false;
+    const parameter = expression.left instanceof IdentifierNode && expression.right instanceof IntLiteralNode
+      ? expression.left : expression.right instanceof IdentifierNode && expression.left instanceof IntLiteralNode
+        ? expression.right : undefined;
+    return parameter !== undefined && this.currentFunction?.parameters.some((candidate) =>
+      candidate.name === parameter.name && !candidate.name.startsWith('__internal__')) === true;
   }
 
   visitWhile(node: WhileNode): Node {
@@ -162,6 +184,13 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
       if (!op) return undefined;
       ops.push(op);
     }
+
+    // The kernel can publish an argument-authenticated activation for this bounded conditional write. Keep the
+    // source branch so a false row owns no mapping mutation; if-converting it would insert an enumerable zero
+    // node for an absent key even though the source never executed the write.
+    if (this.preserveKernelArgumentConditionalWrites && this.isArgumentLiteralCondition(node.condition)
+      && stmts.every((statement) => statement instanceof MappingAssignNode
+        || statement instanceof ArrayAssignNode)) return undefined;
 
     // A single op re-uses the condition once (always safe); multiple require a side-effect-free condition.
     if (ops.length > 1 && this.hasCall(node.condition)) return undefined;

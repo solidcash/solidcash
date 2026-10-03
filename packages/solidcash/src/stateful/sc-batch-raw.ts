@@ -15,6 +15,7 @@ import {
   type TokenContainerTransferSiteAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { encodeFunctionArgument } from '../Argument.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose-prepared-invocation.js';
 import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-authority.js';
 import {
@@ -666,6 +667,9 @@ export function batchRaw(
     const bare = name.startsWith('id:') ? name.slice(3) : name;
     return bare.startsWith('__message_bus_ek_') ? bare.slice('__message_bus_ek_'.length) : bare;
   };
+  const routeWitnessByName = new Map(materializedRouteInputs.map((input, index) => [
+    routeKeyName(input.name), { input, value: routeArgs[index] },
+  ] as const));
   let inactiveRouteEntrySlots = (capability.route.entryAccesses ?? []).flatMap((access, denseIndex) => {
     const keys = access.keyParams.map(routeKeyName);
     return keys.length > 0 && keys.every((key) => key.startsWith('__message_bus_key_'))
@@ -710,7 +714,7 @@ export function batchRaw(
   // operations of its direct handler using the compiler-published physical-slot correspondence. Per-row route
   // slots are copies of that canonical physical slot, so replace only the `_rN` coordinate and find the exact
   // copy rather than depending on route ordering or collection-specific conventions.
-  const fixedChunkableAccessActive = (
+  const fixedEntryAccessActive = (
     access: {
       activation?: ExternalCallExpression;
       mutationEffectOrdinals?: readonly number[];
@@ -721,11 +725,11 @@ export function batchRaw(
     const fallbackActive = (): boolean => {
       if (access.activation === undefined) return true;
       if (rowArgs === undefined) {
-        throw new Error('messageBus: fixed-chunkable activation requires authenticated row arguments');
+        throw new Error('messageBus: fixed entry activation requires authenticated row arguments');
       }
       const active = evaluateFixedEffectPredicate(access.activation, rowArgs);
       if (typeof active !== 'boolean') {
-        throw new Error('messageBus: fixed-chunkable activation could not be evaluated');
+        throw new Error('messageBus: fixed entry activation could not be evaluated');
       }
       return active;
     };
@@ -736,7 +740,7 @@ export function batchRaw(
           effect.kind === 'stateWrite' && effect.ordinal === ordinal
         ))
       ));
-      if (scheduled) return allowsWriteUnderExecutionContext(context, access.mutationEffectOrdinals);
+      if (scheduled && !allowsWriteUnderExecutionContext(context, access.mutationEffectOrdinals)) return false;
     }
     return fallbackActive();
   };
@@ -756,8 +760,13 @@ export function batchRaw(
     handler.physicalEntrySlots?.forEach((physicalSlot, directIndex) => {
       const directAccess = selected?.entryAccesses?.[directIndex];
       if (!directAccess) return;
+      const operations = fixedEntryAccessActive(directAccess, rowIndex)
+        ? directAccess.operations
+        : directAccess.operations.filter((operation) => operation !== 'write');
+      if (operations.length === 0) return;
       const physicalAlternatives = handler.physicalEntrySlotAlternatives?.[directIndex]
         ?? [physicalSlot];
+      let matchedConditionalLane = false;
       for (const alternativeSlot of physicalAlternatives) {
         const canonicalAccess = entryAccessAt(capability.route, alternativeSlot);
         if (!canonicalAccess) continue;
@@ -768,11 +777,35 @@ export function batchRaw(
           && candidate.keyParams.length === selectedKeys.length
           && candidate.keyParams.every((key, keyIndex) => routeKeyName(key) === selectedKeys[keyIndex]));
         if (!selectedAccess) continue;
+        if (directAccess.activation !== undefined && rowArgs !== undefined) {
+          const keyMatches = selectedKeys.map((name) => {
+            const binding = handler.batchKeyWitnesses?.find((candidate) => (
+              candidate.source === 'argument'
+              && (candidate.keyPool ?? [candidate.routeInput, candidate.alternateRouteInput])
+                .includes(name)
+            ));
+            const witness = routeWitnessByName.get(name);
+            if (binding === undefined || witness === undefined || binding.inputIndex < 0) return undefined;
+            try {
+              const actual = encodeFunctionArgument(rowArgs[binding.inputIndex], witness.input.type);
+              const selectedKey = encodeFunctionArgument(witness.value, witness.input.type);
+              return actual instanceof Uint8Array && selectedKey instanceof Uint8Array
+                ? binToHex(actual) === binToHex(selectedKey) : undefined;
+            } catch { return undefined; }
+          });
+          if (keyMatches.some((match) => match === undefined)) {
+            throw new Error('messageBus: conditional entry lane lacks an authenticated key witness');
+          }
+          if (keyMatches.some((match) => !match)) continue;
+          // Kernel dispatch tests pooled lanes in order and takes the first complete key match. Identical
+          // witnesses in multiple lanes must not turn one source write into several physical writes.
+          matchedConditionalLane = true;
+        }
         const selectedSlot = selectedAccess.slotIndex
           ?? capability.route.entryAccesses!.indexOf(selectedAccess);
         const directSlot = directAccess.slotIndex ?? directIndex;
         const selectedBatch = selected?.sortedBatchInfo?.find((batch) => batch.slotIndices.includes(directSlot));
-        if (directAccess.operations.includes('write') && selectedBatch !== undefined) {
+        if (operations.includes('write') && selectedBatch !== undefined) {
           activeRouteSortedBatchSlots.add(selectedSlot);
           const publishedBatch = capability.route.sortedBatchInfo?.find((batch) =>
             batch.collection === selectedBatch.collection);
@@ -786,12 +819,6 @@ export function batchRaw(
           activeRouteSortedBatches.set(selectedBatch.collection, activeBatch);
         }
         const prior = activeRouteEntryOperations.get(selectedSlot) ?? [];
-        const operations = fixedChunkableAccessActive(
-          directAccess,
-          rowIndex,
-        )
-          ? directAccess.operations
-          : directAccess.operations.filter((operation) => operation !== 'write');
         activeRouteEntryOperations.set(
           selectedSlot,
           [...new Set([...prior, ...operations])],
@@ -808,6 +835,11 @@ export function batchRaw(
           });
           activeRouteEntryRecipes.set(selectedSlot, recipes);
         }
+        if (directAccess.activation !== undefined && physicalAlternatives.length > 1) break;
+      }
+      if (directAccess.activation !== undefined && operations.includes('write')
+        && physicalAlternatives.length > 1 && !matchedConditionalLane) {
+        throw new Error('messageBus: conditional entry has no matching authenticated lane');
       }
     });
   });
@@ -843,7 +875,7 @@ export function batchRaw(
       candidate.selector === handler.selector || candidate.name === handler.name);
     return (selected?.entryAccesses ?? [])
       .filter((access) => access.operations.includes('write')
-        && fixedChunkableAccessActive(access, rowIndex))
+        && fixedEntryAccessActive(access, rowIndex))
       .map((access) => access.collection);
   }))];
   const reachedFtTransfers = reachedHandlers.reduce((sum, handler) =>

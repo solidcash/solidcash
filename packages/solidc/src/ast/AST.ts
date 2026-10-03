@@ -302,8 +302,8 @@ export interface EntryAccessInfo {
   /** Exact collection-array mutation represented by this access. */
   arrayMutation?: 'push' | 'pop' | 'indexed' | 'mixed';
   /**
-   * Optional fixed-chunkable activation recipe. Absent means the write is unconditional. When present, the SDK
-   * evaluates it against authenticated row arguments and omits continuation bands / write planning when false.
+   * Optional fixed entry-mutation activation recipe. Absent means the write is unconditional. When present, the
+   * SDK evaluates it against authenticated row arguments and omits inactive write planning (including bands).
    */
   activation?: ExternalCallExpression;
 }

@@ -25,8 +25,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * it names at the base its block declares plus the record's offset in its own layout, so the records it names have to
  * sit side by side in data-record order. The hop placed a contract's records in the order its frames first declared
  * them, record 1 for the earlier frame and record 0 behind it for the later one, so the later frame read its record 1
- * one input past record 0 and refused at its caller check. The records now sit in data-record order ahead of the
- * nodes, and a frame whose named records the contract's other frames would split is refused by name.
+ * one input past record 0 and refused at its caller check. When that order leaves a frame's records apart, they are
+ * now placed in data-record order ahead of the nodes; a block whose frames name records no order keeps side by side
+ * (`Vault.audit` names records 0 and 2, `claimOnce` 0 and 1) is refused by name.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -46,6 +47,7 @@ const SOURCE = [
   'interface IVault {',
   '  function settle(uint16 mark) external view returns (uint16);',
   '  function claimOnce() external;',
+  '  function audit() external;',
   '}',
   'contract Vault {',
   '  uint256 private status;',
@@ -54,8 +56,12 @@ const SOURCE = [
   '  address public immutable claimer;',
   '  address public immutable spare;',
   '  uint16 public fee;',
-  '  constructor(address judge_, address claimer_, address spare_, uint16 fee_) {',
-  '    judge = judge_; claimer = claimer_; spare = spare_; fee = fee_; status = 1;',
+  '  address public immutable keeper;',
+  '  address public immutable auditor;',
+  '  uint16 public cap;',
+  '  constructor(address judge_, address claimer_, address spare_, uint16 fee_, address keeper_, address auditor_) {',
+  '    judge = judge_; claimer = claimer_; spare = spare_; fee = fee_; keeper = keeper_; auditor = auditor_;',
+  '    status = 1; cap = 9;',
   '  }',
   '  function settle(uint16 mark) external view returns (uint16) {',
   '    require(msg.sender == claimer || msg.sender == spare, "not a settler");',
@@ -67,6 +73,10 @@ const SOURCE = [
   '    status = 2;',
   '    rounds = rounds + 1;',
   '    status = 1;',
+  '  }',
+  '  function audit() external {',
+  '    require(msg.sender == auditor, "not the auditor");',
+  '    rounds = rounds + cap;',
   '  }',
   '}',
   'contract Root {',
@@ -81,6 +91,11 @@ const SOURCE = [
   '  function runClaimFirst(uint16 mark) public {',
   '    IVault(vault).claimOnce();',
   '    seen = IVault(vault).settle(mark);',
+  '  }',
+  '  function runAndAudit(uint16 mark) public {',
+  '    seen = IVault(vault).settle(mark);',
+  '    IVault(vault).claimOnce();',
+  '    IVault(vault).audit();',
   '  }',
   '}',
 ].join('\n');
@@ -129,7 +144,7 @@ async function deployed(): Promise<{
   const callerFunder = new SignatureTemplate(alicePriv).unlockP2PKH();
   const rootAddress = addressOf(ROOT_PROXY_CATEGORY);
   await network.addUtxo(wallet.address, funding(VAULT_CATEGORY));
-  await deployStatefulContract(vault, [CALLER, rootAddress, CALLER, FEE] as never, {
+  await deployStatefulContract(vault, [CALLER, rootAddress, CALLER, FEE, CALLER, rootAddress] as never, {
     fundingUtxo: funding(VAULT_CATEGORY), funder, changeAddress, provider: network, threadCount: 4,
   });
   for (const id of [ROOT_IMPL_CATEGORY, ROOT_PROXY_CATEGORY]) await network.addUtxo(wallet.address, funding(id));
@@ -187,9 +202,10 @@ async function settledValues(network: MockNetworkProvider, result: PerCallProxyC
 }
 
 describe('a contract whose later frame in a hop declares a record its earlier frame did not', () => {
-  it('compiles the read to name record 1 alone and the guarded write to name records 0 and 1', () => {
+  it('compiles the read to name record 1 alone, the guarded write records 0 and 1, the audit records 0 and 2', () => {
     expect(namedRecords(vault, 'settle')).toStrictEqual([1]);
     expect(namedRecords(vault, 'claimOnce')).toStrictEqual([0, 1]);
+    expect(namedRecords(vault, 'audit')).toStrictEqual([0, 2]);
   });
 
   it('settles the read of record 1 and then the guarded write that names both records', async () => {
@@ -209,5 +225,14 @@ describe('a contract whose later frame in a hop declares a record its earlier fr
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
     expect(await settledValues(network, result)).toStrictEqual({ rounds: 1n, status: 1n, seen: MARK + FEE });
+  }, 300_000);
+
+  it('refuses by name a hop whose frames name records no order keeps side by side', async () => {
+    const { network, enter } = await deployed();
+    // `claimOnce` needs record 1 right after record 0 and `audit` needs record 2 there.
+    await expect(enter('runAndAudit')).rejects.toThrow(/reads its data records of "Vault" side by side/);
+    const layout = vault.stateLayout!;
+    const deployment = await readPerCallDeployment(network, VAULT_CATEGORY, layout);
+    expect(deploymentStateValues(layout, VAULT_CATEGORY, deployment).rounds).toBe(0n);
   }, 300_000);
 });

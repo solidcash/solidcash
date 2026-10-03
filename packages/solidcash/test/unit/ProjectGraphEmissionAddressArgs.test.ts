@@ -1,4 +1,4 @@
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { addressToGraphEmissionBytes, encodePushdataValue } from '@solidcash/utils';
 import {
@@ -72,5 +72,22 @@ describe('projectGraphEmissionAddressArgs', () => {
 
     expect(projected[0]).toEqual(addressToGraphEmissionBytes(value));
     expect(projected[1]).toEqual(target);
+  });
+
+  it('projects a CashAddress value to the same ABI word as its locking bytecode', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract C {
+        function act(address value) public { require(value != address(0)); require(true); }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    const lock = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x31), 0x88, 0xac);
+    const address = lockingBytecodeToCashAddress({ bytecode: lock, prefix: 'bchtest' });
+    if (typeof address === 'string') throw new Error(address);
+    const fromLock = encodeMessageBatch(artifact, [{ function: 'act', args: [lock] }]).rows[0]!.argsHex;
+    const fromAddress = encodeMessageBatch(artifact, [{ function: 'act', args: [address.address] }]).rows[0]!.argsHex;
+    expect(fromAddress).toBe(fromLock);
+    expect(fromAddress).toBe(`20${binToHex(addressToGraphEmissionBytes(lock))}`);
   });
 });

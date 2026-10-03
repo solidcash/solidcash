@@ -11,6 +11,7 @@ import {
   type SignatureTemplateArgument,
 } from '../Argument.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
+import { tryCashAddressToLockScript } from '../utils.js';
 import {
   findKernelAbiFunctionBySelector,
   findKernelHandlerBySelector,
@@ -374,6 +375,7 @@ const coerceAddressBytes = (value: StateValue): Uint8Array | undefined => {
     const hex = value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
     return hexToBin(hex);
   }
+  if (typeof value === 'string') return tryCashAddressToLockScript(value);
   return undefined;
 };
 

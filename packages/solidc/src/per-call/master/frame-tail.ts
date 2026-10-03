@@ -714,6 +714,10 @@ export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
  * spent are exactly the record declared, and that no state output carries the contract's token that no segment
  * declared.
  *
+ * It also counts the outputs whose token is the bare category, which the head's census makes immutable NFTs, and
+ * holds the count to the events the frame declares (spec S2). The tail walk proved each listed event a distinct such
+ * output, so no unlisted one remains.
+ *
  * The check re-reads the block rather than reusing the shape walk, because the shape walk drops the view payloads it
  * reads. One chain is settled: a contract's data NFT is one record, so the shape covers it. A segment declaring
  * several records, and a later segment declaring a record the chain does not already name, are refused rather than
@@ -759,8 +763,9 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
     toAlt(depth + 1);
   };
 
-  // The index under test, and the pass over every index the transaction could name.
-  emit(Opcodes.OP_0);
+  // The own-category immutable outputs seen, the index under test, and the pass over every index the transaction
+  // could name.
+  emit(Opcodes.OP_0, Opcodes.OP_0);
   emit(Opcodes.OP_BEGIN);
   {
     emit(Opcodes.OP_TOALTSTACK);
@@ -897,8 +902,8 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
       emit(num(1), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_LESSTHANOREQUAL);
       emit(Opcodes.OP_UNTIL);
     }
-    // Two counters are spent, and the block's own remainder with them.
-    emit(Opcodes.OP_DROP, Opcodes.OP_DROP);
+    // The spent counter goes, and the remainder leaves the declared event count, read as the tail walk read it.
+    emit(Opcodes.OP_NIP, ...takeFixedWidthField(2), Opcodes.OP_DROP, Opcodes.OP_BIN2NUM);
 
     // The pass's closing checks: what the chain ended at, and the census at this index.
     copyAlt(1); // seenOut
@@ -917,13 +922,21 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
     fromAlt(3);
     emit(Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP);
     emit(Opcodes.OP_FROMALTSTACK);
+
+    // [seen, declared, index]: a bare own-category output is counted, and the count never passes the events listed.
+    emit(Opcodes.OP_DUP, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_LESSTHAN, Opcodes.OP_IF);
+    emit(Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY, Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY);
+    emit(num(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP, Opcodes.OP_EQUAL);
+    emit(Opcodes.OP_ELSE, Opcodes.OP_0, Opcodes.OP_ENDIF);
+    emit(num(3), Opcodes.OP_ROLL, Opcodes.OP_ADD, Opcodes.OP_ROT);
+    emit(Opcodes.OP_OVER, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY, Opcodes.OP_SWAP);
   }
   emit(Opcodes.OP_1ADD);
   emit(Opcodes.OP_DUP);
   emit(Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_MAX);
   emit(Opcodes.OP_GREATERTHANOREQUAL);
   emit(Opcodes.OP_UNTIL);
-  emit(Opcodes.OP_DROP);
+  emit(Opcodes.OP_2DROP);
   return new Uint8Array(bytes);
 }
 

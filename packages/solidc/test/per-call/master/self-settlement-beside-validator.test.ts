@@ -92,7 +92,8 @@ interface Verdicts {
   readonly validator: boolean;
 }
 
-function verdicts(extra?: ExtraPair): Verdicts {
+/** `minted` is an output past every other, which no input carries. */
+function verdicts(extra?: ExtraPair, minted?: VmOutput): Verdicts {
   const validator = validatorSpend(CATEGORY_CALLER, { roots: [CALLER], masters: [CALLER, CALLEE], settles: [] });
   const outpoint = (index: number): Uint8Array => label(`beside validator outpoint ${index}`);
   const input = (index: number, unlockingBytecode: Uint8Array): VmInput => ({
@@ -154,6 +155,7 @@ function verdicts(extra?: ExtraPair): Verdicts {
   ];
   const outputs: VmOutput[] = [
     callerMaster, record(AFTER), validatorOutput, ...facetOutputs, user, calleeMaster, ...extraPair,
+    ...(minted === undefined ? [] : [minted]),
   ];
   const transaction: VmTransaction = { version: 2, inputs, outputs, locktime: 0 };
   const vm = compositionMachine();
@@ -178,5 +180,15 @@ describe('a self-settling master beside the validator of its own category', () =
   it('refuses a second mutable token of its category at another lock', () => {
     expect(verdicts({ lock: dataRecordLock(CATEGORY_CALLER), commitment: EMPTY }).caller).toBe(false);
     expect(verdicts({ lock: dataRecordLock(CATEGORY_CALLER), commitment: AFTER }).caller).toBe(false);
+  });
+
+  it('refuses an immutable NFT or a fungible amount of its category, which its validator does not settle', () => {
+    // S2's census is the caller's alone: the validator settles no contract here, so it and the callee accept.
+    const minted = (held: VmOutput['token']): VmOutput =>
+      ({ lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: held });
+    const forged = { category: CATEGORY_CALLER, amount: 0n, nft: { capability: 'none' as const, commitment: AFTER } };
+    expect(verdicts(undefined, minted(forged))).toStrictEqual({ caller: false, callee: true, validator: true });
+    expect(verdicts(undefined, minted({ category: CATEGORY_CALLER, amount: 3n })))
+      .toStrictEqual({ caller: false, callee: true, validator: true });
   });
 });

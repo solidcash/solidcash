@@ -197,25 +197,37 @@ function bytes(ops: readonly Op[]): Uint8Array {
 const O = Opcodes;
 
 /**
- * Keeps the pool: every index's output carries the pinned minting NFT exactly when its input does.
+ * Keeps the pool: every index's output carries the pinned minting NFT exactly when its input does. No input or output
+ * of the pin's category carries a fungible amount (spec S2, V7), so a bare category is an immutable NFT.
  *
  * Entry `[.., pin]`, exit `[..]`. Each master recreates itself at its own index, so this is what refuses a master
  * minted beside them, or one an entry left out of its outputs.
  */
 export function mastersRecreatedInPlaceScript(): Uint8Array {
   return bytes([
-    O.OP_0, // [pin, j]
+    O.OP_DUP, num(32), O.OP_SPLIT, O.OP_DROP, O.OP_0, // [pin, cat, j]
     O.OP_BEGIN,
     O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN,
-    O.OP_IF, O.OP_DUP, O.OP_UTXOTOKENCATEGORY, num(2), O.OP_PICK, O.OP_EQUAL, O.OP_ELSE, O.OP_0, O.OP_ENDIF,
+    O.OP_IF, ...noOwnAmount(O.OP_DUP, O.OP_UTXOTOKENAMOUNT, O.OP_UTXOTOKENCATEGORY, 2),
+    O.OP_DUP, O.OP_UTXOTOKENCATEGORY, num(3), O.OP_PICK, O.OP_EQUAL, O.OP_ELSE, O.OP_0, O.OP_ENDIF,
     O.OP_OVER, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN,
-    O.OP_IF, O.OP_OVER, O.OP_OUTPUTTOKENCATEGORY, num(3), O.OP_PICK, O.OP_EQUAL, O.OP_ELSE, O.OP_0, O.OP_ENDIF,
+    O.OP_IF, ...noOwnAmount(O.OP_OVER, O.OP_OUTPUTTOKENAMOUNT, O.OP_OUTPUTTOKENCATEGORY, 3),
+    O.OP_OVER, O.OP_OUTPUTTOKENCATEGORY, num(4), O.OP_PICK, O.OP_EQUAL, O.OP_ELSE, O.OP_0, O.OP_ENDIF,
     O.OP_EQUALVERIFY,
     O.OP_1ADD,
     O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_TXOUTPUTCOUNT, O.OP_MAX, O.OP_GREATERTHANOREQUAL,
     O.OP_UNTIL,
-    O.OP_2DROP,
+    O.OP_2DROP, O.OP_DROP,
   ]);
+}
+
+/** Refuses an amount on a token of `cat` at `j`: `fetch` copies `j`, and `cat` is `depth` below its category. */
+function noOwnAmount(fetch: number, amount: number, category: number, depth: number): Op[] {
+  return [
+    fetch, amount, O.OP_0NOTEQUAL,
+    O.OP_IF, fetch, category, num(32), O.OP_SPLIT, O.OP_DROP, num(depth), O.OP_PICK, O.OP_EQUAL, O.OP_NOT, O.OP_VERIFY,
+    O.OP_ENDIF,
+  ];
 }
 
 /**

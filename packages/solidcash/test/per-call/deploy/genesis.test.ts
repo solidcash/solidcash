@@ -950,6 +950,19 @@ describe('a per-call genesis whose constructor hashes a runtime value', () => {
       provider: compositionProvider(), constructorArgs: [HASH_SEED, 2n], senderLockingBytecode: OWNER_LOCK,
     })).toThrow(/hashes inside a loop, so how many compute side-cars it co-spends is the loop's to decide/);
   });
+
+  it('refuses a body that publishes the hash with no per-call entry to count its side-cars by', () => {
+    // A hand-built publication: the artifact says the body computes, and names no call, so nothing states how many
+    // side-cars its frame reads. The refusal answers that rather than building a frame the machine cannot run.
+    const stated = {
+      ...hashArtifact,
+      abi: hashArtifact.abi.map((row) => (row.name === '__construct' ? { ...row, keccakPreimageParams: [] } : row)),
+    };
+    expect(() => derivePerCallGenesis({
+      artifact: stated, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+      provider: compositionProvider(), constructorArgs: [HASH_SEED], senderLockingBytecode: OWNER_LOCK,
+    })).toThrow(/publishes keccakCompute with no per-call entry, so this deployment cannot tell how many compute/);
+  });
 });
 
 /**

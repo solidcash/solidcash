@@ -356,6 +356,14 @@ function refuseUnservedShape(
       + 'co-spends is the loop\'s to decide and this deployment lays the artifact\'s fixed count',
     );
   }
+  // A body that hashes or recovers publishes one entry per call, which is the count this deployment lays its
+  // side-cars by. A body that says it computes with none published is one whose witness cannot be counted at all.
+  if (constructorAbi.keccakCompute === true && (constructorAbi.keccakPreimageParams?.length ?? 0) === 0) {
+    throw new PerCallGenesisError(
+      `the constructor of "${artifact.contractName}" publishes keccakCompute with no per-call entry, so this `
+      + 'deployment cannot tell how many compute side-cars its frame reads',
+    );
+  }
 }
 
 /**

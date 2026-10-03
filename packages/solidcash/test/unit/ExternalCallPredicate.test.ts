@@ -627,6 +627,48 @@ describe('conditional external-call topology', () => {
     }]);
   });
 
+  it('retains earlier callees when a later require proves its unresolved call unreachable', async () => {
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const guard: ExternalCallExpression = {
+      kind: 'binary', operator: '&&',
+      left: { kind: 'binary', operator: '>', left: {
+        kind: 'addressCodeLength', expression: source(0),
+      }, right: { kind: 'literal', type: 'bigint', value: '0' } },
+      right: { kind: 'producerResult', callsiteId: 0, resultIndex: 0, type: 'bool' },
+    };
+    const fn = {
+      name: 'run', inputs: [{ name: 'target', type: 'address' }], externalCalls: [
+        { interfaceName: 'IReached', functionName: 'read', requiredDataNftIndices: [], argSources: [] },
+        { interfaceName: 'IUnregistered', functionName: 'write', requiredDataNftIndices: [],
+          argSources: [], preCallRequires: [guard] },
+      ],
+    } as unknown as Artifact['abi'][number];
+    const host = {
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: (name: string) => name === 'IReached' ? callee : undefined,
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+    };
+    const zero = await expandResolveCreateBuilderExternalCalls(
+      host, fn, [new Uint8Array()], artifact, undefined, undefined,
+    );
+    expect(zero.externalCalls?.map((call) => call.functionName)).toEqual(['read']);
+    expect(zero.resolvedExternalCalls).toEqual([{ externalContract: callee, functionName: 'read', args: [] }]);
+
+    const live = await expandResolveCreateBuilderExternalCalls(
+      host, fn, [Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32), 0x87)],
+      artifact, undefined, undefined,
+    );
+    expect(live.externalCalls?.map((call) => call.functionName)).toEqual(['read', 'write']);
+    expect(live.resolvedExternalCalls).toBeUndefined();
+  });
+
   it('hydrates mapping-backed arguments before resolving a direct callee', async () => {
     const callee = { categoryId: 'ab'.repeat(32) };
     const fn = {

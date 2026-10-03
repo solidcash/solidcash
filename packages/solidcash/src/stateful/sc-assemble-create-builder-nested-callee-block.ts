@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _createBuilder extract — assemble nested callee B-block inputs (slot switch).
  */
 
-import { binToHex, bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
+import { binToHex, bigIntToVmNumber, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import {
   parseEntryCommitment,
   joinValueChunks,
@@ -253,6 +253,8 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
               // Convert FunctionArgument to primitive for key matching. CashAddress strings must
               // become locking bytecode so they hash to the same slot as `msg.sender` inserts.
               const keyValue = tryCashAddressToLockScript(rawKeyValue)
+                ?? (typeof rawKeyValue === 'string' && (bCollection?.keyTypes?.[0] ?? bCollection?.keyType) === 'string'
+                  ? utf8ToBin(rawKeyValue) : undefined)
                 ?? (rawKeyValue instanceof Uint8Array || typeof rawKeyValue === 'bigint'
                   || typeof rawKeyValue === 'boolean' ? rawKeyValue : undefined);
               // msg.sender key (cross-contract): B's `bal[msg.sender]` where msg.sender = US (the caller). Resolve
@@ -289,6 +291,10 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                   const value = index >= 0 ? bRouteArgs[index] : undefined;
                   const addressKey = tryCashAddressToLockScript(value);
                   if (addressKey) return addressKey;
+                  if (typeof value === 'string'
+                    && (bCollection.keyTypes?.[keyIndex] ?? bCollection.keyType) === 'string') {
+                    return utf8ToBin(value);
+                  }
                   if (value instanceof Uint8Array) return value;
                   if (typeof value === 'bigint') return bigIntToVmNumber(value);
                   if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);

@@ -136,6 +136,23 @@ export async function expandResolveCreateBuilderExternalCalls(
     }
   }
 
+  // A source `require` that dominates a call can prove the call unreachable even if its later operands depend
+  // on an external return: `false && unresolved` is false. Keep any unknown guard and let the VM decide. This
+  // proof runs before all-or-nothing registry resolution, so an unreachable zero-address call cannot erase the
+  // earlier, reached callees needed to execute the require itself.
+  if (!overrideExternalCalls && externalCalls?.some((call) => call.preCallRequires?.length)) {
+    callerStateSnapshot ??= (await host.getFullState()).state;
+    const guards = externalCalls.flatMap((call) => call.preCallRequires ?? []);
+    if (host.hydrateExternalPredicateState) {
+      callerStateSnapshot = await host.hydrateExternalPredicateState(
+        guards, args, artifact, callerStateSnapshot, abiFunction?.inputs, publicSelfAddress,
+      ) as Record<string, StateValue>;
+    }
+    externalCalls = externalCalls.filter((call) => !call.preCallRequires?.some((guard) =>
+      host.evaluateExternalExpression(guard, args, artifact, callerStateSnapshot,
+        abiFunction?.inputs, undefined, 0, false, publicSelfAddress) === false));
+  }
+
   if (externalCalls?.some((ec) => ec.loopArrayVar)) {
     const expanded: ExternalCallAbi[] = [];
     presetResolved = [];

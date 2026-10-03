@@ -7632,7 +7632,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   private collectExternalCalls(
     node: Node,
     slots: ExternalCallSlot[],
-    enclosingConditions: readonly { expression: ExpressionNode; negated: boolean }[] = [],
+    enclosingConditions: readonly {
+      expression: ExpressionNode; negated: boolean; shortCircuit?: boolean;
+    }[] = [],
   ): void {
     if (this.compilerOptions.messageBus === false
       && node instanceof BranchNode && node.condition instanceof BoolLiteralNode) {
@@ -9080,12 +9082,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Returning-helper normalization may nest a straight-line continuation under a callee postcondition, so
       // discard any lowered suffix beyond the source depth. Conversely, retain the source expressions only when
       // lowering no longer exposes enough corresponding predicates to serialize.
+      const branchConditions = loweredConditions?.filter((candidate) => !('shortCircuit' in candidate));
       const sourceConditions = node.sourceActivationConditions === undefined
-        ? loweredConditions
-        : loweredConditions && loweredConditions.length >= node.sourceActivationConditions.length
-          ? loweredConditions.slice(0, node.sourceActivationConditions.length)
+        ? branchConditions
+        : branchConditions && branchConditions.length >= node.sourceActivationConditions.length
+          ? branchConditions.slice(0, node.sourceActivationConditions.length)
           : node.sourceActivationConditions;
-      const serializedConditions = (sourceConditions ?? []).map(({ expression, negated }) => {
+      // A short-circuit RHS is reached only after its LHS succeeds (&&) or fails (||). Source activation
+      // snapshots count enclosing statements, so preserve this expression-local predicate separately.
+      const activeConditions = [...(sourceConditions ?? []),
+        ...enclosingConditions.filter((candidate) => candidate.shortCircuit === true)];
+      const serializedConditions = activeConditions.map(({ expression, negated }) => {
         // A branch predicate observes writes before branch entry, not later writes before this call. Reusing
         // the call's prefix can turn an already-entered `if (entry.status == 1)` into `0 == 1` after its body
         // assigns status = 0, dropping subsequent calls. Each nested predicate owns its own evaluation prefix.
@@ -9143,7 +9150,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           const serialized = serializeExpression(statement.expression);
           // Lowered return-carrier checks can leave a literal `0 == 1` placeholder before their producer
           // call. A constant-only predicate cannot safely prove source reachability at this callsite.
-          return serialized && !containsUnresolvedPreCallRequireNode(serialized)
+          // The RHS of `A && B` is irrelevant once a resolvable A is false. Publishing that guard lets the
+          // SDK omit a later call after a failed require without pretending it can resolve B's producer result.
+          const provablyShortCircuitable = serialized?.kind === 'binary'
+            && serialized.operator === '&&' && serialized.left !== undefined
+            && !containsUnresolvedPreCallRequireNode(serialized.left);
+          return serialized && (!containsUnresolvedPreCallRequireNode(serialized)
+            || provablyShortCircuitable)
             && dependsOnRuntimeValue(serialized) ? [serialized] : [];
         } finally {
           priorStatements = callPriorStatements;
@@ -9261,6 +9274,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // Generic recursion
+    if (node instanceof BinaryOpNode
+      && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR)) {
+      this.collectExternalCalls(node.left, slots, enclosingConditions);
+      this.collectExternalCalls(node.right, slots, [...enclosingConditions, {
+        expression: node.left,
+        negated: node.operator === BinaryOperator.OR,
+        shortCircuit: true,
+      }]);
+      return;
+    }
     if ('statements' in node && Array.isArray((node as any).statements)) {
       for (const stmt of (node as any).statements) {
         this.collectExternalCalls(stmt, slots, enclosingConditions);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
 import { encodeFunctionArgument } from '../../src/Argument.js';
+import { evalComputedKey as evalRouteComputedKey } from '../../src/stateful/route-expression-key.js';
 import {
   canShareIdempotentCounterLoopSettlement,
   evalComputedKey,
@@ -247,6 +248,23 @@ describe('evalComputedKey map: state-array labels', () => {
     expect(evalComputedKey('map:items(lit:0)', [], [], { items: 5n })).toBeUndefined();
     expect(evalComputedKey('map:items(lit:2)', [], [], { items: [lockA, lockB] })).toBeUndefined();
     expect(evalComputedKey('map:items(id:missing)', [], [], { items: [lockA] })).toBeUndefined();
+  });
+});
+
+describe('route-key conditional expressions', () => {
+  it('uses Script truthiness and refuses an unresolved ternary guard', () => {
+    const label = 'ternary(id:choice,lit:7,lit:9)';
+    const inputs = [{ name: 'choice', type: 'uint256' }];
+    expect(evalRouteComputedKey(label, [2n], inputs)).toEqual(bigIntToVmNumber(7n));
+    expect(evalRouteComputedKey(label, [0n], inputs)).toEqual(bigIntToVmNumber(9n));
+    expect(evalRouteComputedKey(label, [], [])).toBeUndefined();
+    expect(evalRouteComputedKey('ternary(binop:>(id:choice,lit:1),lit:7,lit:9)', [2n], inputs))
+      .toEqual(bigIntToVmNumber(7n));
+    expect(evalRouteComputedKey('ternary(binop:&&(id:active,unop:!(id:blocked)),lit:7,lit:9)',
+      [true, false], [{ name: 'active', type: 'bool' }, { name: 'blocked', type: 'bool' }]))
+      .toEqual(bigIntToVmNumber(7n));
+    expect(evalRouteComputedKey('binop:+(map:counts(lit:0),lit:2)', [], [], { counts: [7n] }))
+      .toEqual(bigIntToVmNumber(9n));
   });
 });
 

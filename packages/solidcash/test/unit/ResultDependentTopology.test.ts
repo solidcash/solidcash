@@ -15,6 +15,7 @@ import {
   discoverInitialCallTopology, propagateResultDependentCallTopology,
 } from '../../src/message-bus/compose-result-topology.js';
 import { externalReturnsForCallsites } from '../../src/stateful/external-returns-for-callsites.js';
+import { encodeExternalReturnValue } from '../../src/stateful/external-return-encoding.js';
 import type { StatefulContract } from '../../src/stateful/StatefulContract.js';
 
 const producer: ExternalCallExpression = { kind: 'producerResult', callsiteId: 0, resultIndex: 0 };
@@ -106,6 +107,25 @@ describe('result-dependent topology propagation', () => {
     }];
     await expect(discoverInitialCallTopology(root, new Uint8Array(), async () => ({ flag: 0n })))
       .rejects.toThrow(/cannot resolve newly reached callsite 0/);
+  });
+
+  it('seeds a scalar leaf view without pinning its graph return', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0];
+    root.artifact.abi[0]!.externalCalls = [{ ...sources[0]!, hasReturnValues: true,
+      returnTypes: ['uint256'] }];
+    const child = ctx.descriptors[1].contract;
+    Object.assign(child.inner.artifact.abi[0], {
+      outputs: [{ type: 'uint256' }], modifiers: ['view'], writesState: false,
+      resultEncoding: 'compact-pushdata-v1',
+    });
+    (child as unknown as { _deriveReturnValue: unknown })._deriveReturnValue = async () => 7n;
+    const discovered = await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf);
+    expect(discovered).toHaveLength(2);
+    expect(discovered[1]?.provisionalResultCommitment).toEqual(encodeExternalReturnValue(
+      7n, 'uint256', undefined, false,
+    ));
+    expect(hasTransientConvergenceResultSeed(discovered[1]!)).toBe(true);
   });
 
   it('replaces the selected subtree without moving a later producer seed to the new branch', async () => {

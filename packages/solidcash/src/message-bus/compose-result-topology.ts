@@ -1,7 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   ATOMIC_MESSAGE_BUS_MAX_ROWS, decodePushdataValue, getDefaultStateValue, scriptToBytecode,
-  type ArgSource, type Artifact, type ExternalCallAbi, type ExternalCallExpression,
+  type ArgSource, type Artifact, type ExternalCallAbi, type ExternalCallExpression, type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';
@@ -13,6 +13,8 @@ import { AuthenticatedProducerResults } from './authenticated-producer-results.j
 import { externalCallIterationIndices } from '../stateful/external-call-iteration-domain.js';
 import { hydrateExternalPredicateState } from '../stateful/sc-hydrate-external-predicate-state.js';
 import { evaluateExternalExpression } from '../stateful/sc-evaluate-external-expression.js';
+import { encodeExternalReturnValue } from '../stateful/external-return-encoding.js';
+import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
 import { deriveValueChunkProducerChildPath } from '../stateful/ValueChunkProducerIdentity.js';
 import { addressToLockScript, tryCashAddressToLockScript } from '../utils.js';
 import {
@@ -592,20 +594,44 @@ async function rebuildCallTopology(
               }),
               resolveArgsFromResults,
             };
-            selected.push({ call: child });
+            // A later row in the same participant can revert before its complete return vector is exposed.
+            // Probe an independent scalar leaf view against the current owner state as an optimistic seed,
+            // never as a prepared commitment. The final graph VM still authenticates the value in context.
+            let viewSeed: StateValue | undefined;
+            const onlyOutput = childFn.outputs?.length === 1 ? childFn.outputs[0] : undefined;
+            if (previous === undefined && template.hasReturnValues && onlyOutput !== undefined
+              && template.occurrence !== 'loop' && !template.iterationDomain
+              && !template.nestedIterationDomains?.length
+              && childFn.modifiers?.some((modifier) => modifier === 'view' || modifier === 'pure')
+              && childFn.writesState !== true && !childFn.externalCalls?.length && !executor) {
+              try {
+                viewSeed = await contract._deriveReturnValue(
+                  childFn.name, childArgs, undefined, childFn, undefined, self, logical.categoryId, logical,
+                );
+              } catch {
+                // An isolated probe may lack the full caller/resource frame. It supplies no fact on failure.
+              }
+            }
+            const seededChild = viewSeed === undefined || onlyOutput === undefined ? child : rebuildPreparedInvocation(
+              child, childArgs, binToHex(encodeExternalReturnValue(
+                viewSeed, onlyOutput.type, childArtifact.structs,
+                artifactUsesSolidityAbi(childArtifact), childArtifact.enums,
+              )),
+            );
+            selected.push({ call: seededChild });
             // A newly discovered producer may feed a mandatory later edge before any aggregate VM pass exists.
-            // Seed each compiler-qualified reached occurrence in this candidate topology with a typed empty
-            // result; never publish it as a prepared return commitment. The composer must replace it with the
-            // observed producer result, rebuild the graph, and pass the complete VM before admission.
+            // Seed each compiler-qualified reached occurrence with the isolated observation when available,
+            // otherwise a typed empty value. Neither is a prepared return commitment.
             if (previous === undefined && template.hasReturnValues
               && template.returnTypes?.length === 1 && template.callsiteId !== undefined
               && (template.occurrence === 'loop'
                 ? outerDomainKey !== undefined && outerIndex !== undefined
                   && template.sourceLogicalIndex === undefined
                 : (template.maximumOccurrences ?? 1) === 1)) {
-              candidateSeeds.push({ occurrenceIndex: occurrence, value: getDefaultStateValue(
-                template.returnTypes[0], artifact.structs ?? artifact.stateLayout?.structs,
-              ) as FunctionArgument });
+              candidateSeeds.push({ occurrenceIndex: occurrence, value: (viewSeed as FunctionArgument | undefined)
+                ?? getDefaultStateValue(
+                  template.returnTypes[0], artifact.structs ?? artifact.stateLayout?.structs,
+                ) as FunctionArgument });
             }
             occurrence += 1;
           }

@@ -5,14 +5,17 @@
  * never enters it: the entry stopped before the call that leads to it. The execution meets refusals in the order the
  * validator derives (spec V6), so a callee's refusal is met only below a call the entry made, and of those the first
  * the execution finishes - a callee before the frame that entered it, an earlier call's frames before a later one's.
- * When no deferred refusal sits below a call the entry made, the entry's own stop is the one met first.
+ * When no deferred refusal sits below a call the entry made, the entry's own stop is the one met first. A callee
+ * whose refusal is its own derivation's stall is reported by the frame and reason the stalled draft names.
  */
 
 import type { createVirtualMachineBch2026 } from '@bitauth/libauth';
+import type { Artifact } from '@solidcash/utils';
 import {
-  frameMadeCall, frameStopOf, readsUnfilledReference,
-  type CompositionDraft, type CompositionRefusal, type FrameStop,
+  describeFrameReason, describeInnermost, frameMadeCall, frameStopOf, readsUnfilledReference, reportCompositionRefusal,
+  type CompositionDraft, type CompositionRefusal, type FrameStop, type RefusedFrame,
 } from '../composer/index.js';
+import { PerCallProxyDeployError } from './errors.js';
 import type { HopCallee } from './external-calls.js';
 
 type Machine = ReturnType<typeof createVirtualMachineBch2026>;
@@ -99,4 +102,30 @@ export function deferredRefusalMetFirst(options: {
   };
   const first = finishOrder(callees).find((index) => deferred.has(index) && made(index));
   return first === undefined ? undefined : deferred.get(first);
+}
+
+/**
+ * The refusal a callee frame's stalled derivation stands for, when the stalled draft names a source reason for it.
+ *
+ * A void frame with nothing to learn is refused by its own derivation stalling, and the stall names only the site the
+ * derivation stopped at. The frame that refused and its own `require` or `revert` are read off the stalled draft, as
+ * any frame's refusal is read off the draft it was evaluated on. A refusal that names no source reason leaves the
+ * stall standing: a frame can stop on what a refusal below it left rather than on a check of its own.
+ */
+export function stalledCalleeRefusal(options: {
+  readonly draft: CompositionDraft;
+  readonly vm: Machine;
+  readonly artifacts: readonly Artifact[];
+  /** The frame whose derivation stalled. */
+  readonly callee: HopCallee;
+}): { readonly failure: PerCallProxyDeployError; readonly innermost: RefusedFrame } | undefined {
+  const { draft, callee } = options;
+  const { innermost } = reportCompositionRefusal({
+    draft, artifacts: options.artifacts, vm: options.vm, reached: [callee.master],
+  });
+  if (innermost === undefined || describeFrameReason(innermost.reason) === undefined) return undefined;
+  const failure = new PerCallProxyDeployError(
+    `the call's callee "${callee.functionName}" did not settle through the proxy: ${describeInnermost(innermost)}`,
+  );
+  return { failure, innermost };
 }

@@ -96,7 +96,9 @@ import {
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
 import { carriedFromChain, deriveReentryWriters, reentrySettleBefore, withReentryFrames } from './reentry.js';
 import { EnclosingValueLearned, learnEnclosingValues } from './enclosed-values.js';
-import { deferredRefusalMetFirst, dropDeferredBelow, firstDeferredRefusal } from './refusal-order.js';
+import {
+  deferredRefusalMetFirst, dropDeferredBelow, firstDeferredRefusal, stalledCalleeRefusal,
+} from './refusal-order.js';
 import {
   declareUnstatedCalls, entryMeetsRefusedSite, entrySiteOf, planBeforeRefusedSite, planBeforeSite,
 } from './planning-refusal.js';
@@ -1492,14 +1494,24 @@ async function settleCallees(options: {
             || (calleeEvents.get(callee.master)?.length ?? 0) > 0;
           // A void callee with nothing to learn has no return, no unstated write and no event, so a stall is its
           // refusal. The full settle records it and moves on, so a later frame the entry does not reach cannot abort
-          // a settle the entry's own check would refuse first.
+          // a settle the entry's own check would refuse first. The stall names only where the derivation stopped,
+          // so the frame and its own reason are read off the stalled draft once its views are learned.
           if (!learnable) {
+            candidate.draft.learnUnstatedViews();
+            const named = stalledCalleeRefusal({
+              draft: candidate.draft, vm: options.vm, artifacts: options.artifacts, callee,
+            });
+            const failure = named?.failure ?? (error as Error);
             if (deferFailures) {
-              deferred ??= error as Error;
-              deferredFrames.set(calleeIndex, error as Error);
+              deferred ??= failure;
+              deferredFrames.set(calleeIndex, failure);
+              // A frame whose own check its report names first never made the calls below it that refused (spec V6).
+              if (named?.innermost.master === callee.master) {
+                dropDeferredBelow(options.callees, deferredFrames, calleeIndex);
+              }
               break;
             }
-            throw error;
+            throw failure;
           }
         }
       }

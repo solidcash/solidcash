@@ -10,3 +10,4 @@
 export { PerCallProxyDeployError } from './errors.js';
 export * from './deploy.js';
 export * from './generate.js';
+export * from './upgrade.js';

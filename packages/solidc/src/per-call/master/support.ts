@@ -2482,7 +2482,16 @@ export function isProxyFallbackContract(contract: ContractNode): boolean {
     || contract.constructorDef !== undefined || contract.functions.some((fn) => fn.isEntryPoint)) {
     return false;
   }
-  return isForwardingFallback(contract.fallbackDef, new Set(contract.stateVariables.map((state) => state.name)));
+  return hasForwardingFallback(contract);
+}
+
+/**
+ * True when the contract's fallback forwards the call data it received to an address the contract holds, whether
+ * it is the only body or one a dispatcher reaches beside other entries.
+ */
+export function hasForwardingFallback(contract: ContractNode): boolean {
+  return contract.fallbackDef !== undefined
+    && isForwardingFallback(contract.fallbackDef, new Set(contract.stateVariables.map((state) => state.name)));
 }
 
 /** True when a fallback is exactly the proxy shape the convention serves: one forwarded delegatecall to state. */

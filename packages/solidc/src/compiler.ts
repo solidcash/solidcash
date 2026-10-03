@@ -62,6 +62,7 @@ import {
   resolveCompositionConvention,
 } from './per-call/master/composition.js';
 import { assessPerCallMasterShape, directRefusedEntries, stripFrameParameters } from './per-call/master/support.js';
+import { requireUpgradeLayouts, type UpgradesFrom } from './per-call/upgrade-layout.js';
 import type { MasterCallSite } from './per-call/master/frame-tail.js';
 import {
   entryFunctionName,
@@ -1095,6 +1096,11 @@ export interface CompileOptions extends CompilerOptions {
    * root does not pay a second full pipeline for declarations its declaring file will compile.
    */
   compileDeclarations?: readonly string[];
+  /**
+   * Per contract name, the state layout of the implementation the contract replaces behind a per-call proxy. The
+   * compile refuses, by name, a contract that would read those records differently (`per-call/upgrade-layout.ts`).
+   */
+  upgradesFrom?: UpgradesFrom;
 }
 
 function compilerProfileEnabled(): boolean {
@@ -2877,9 +2883,12 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   enforceSolidcEnvPolicy();
   clearDefineFrameValidations();
   pendingSpanAdmissionAnalysis = undefined;
+  const { upgradesFrom, ...artifactOptions } = compilerOptions;
   return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
     try {
-      return compileStringUnchecked(code, compilerOptions);
+      const artifact = compileStringUnchecked(code, artifactOptions);
+      requireUpgradeLayouts({ [artifact.contractName]: artifact }, upgradesFrom);
+      return artifact;
     } catch (cause) {
       if (cause instanceof RangeError && cause.message === 'Maximum call stack size exceeded') {
         throw new CompilerRecursionLimitError();
@@ -16280,10 +16289,12 @@ function validateInheritedPrivateFunctionAccess(ast: Ast): void {
  * See docs/multi-contract-artifacts.md.
  */
 export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
-  return withCompilerWarnings(
-    compilerOptions.suppressWarnings,
-    () => compileStringMultiUnchecked(code, compilerOptions),
-  );
+  const { upgradesFrom, ...artifactOptions } = compilerOptions;
+  return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
+    const artifacts = compileStringMultiUnchecked(code, artifactOptions);
+    requireUpgradeLayouts(artifacts, upgradesFrom);
+    return artifacts;
+  });
 }
 
 function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptions): ArtifactMap {

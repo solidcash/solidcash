@@ -13,3 +13,4 @@ export * from './transcript.js';
 export * from './canonical.js';
 export * from './identity.js';
 export * from './stop-site.js';
+export * from './upgrade-layout.js';

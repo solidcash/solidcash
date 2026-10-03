@@ -1786,7 +1786,13 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
   - `__gap` arrays (OpenZeppelin's reserved storage) are dropped at compile time under `solidityImportCompat`
     (`compiler.ts:12452-12458`), which the project compile configs set (`solidcash.config.ts:13`,
     `solidcash.faketoken.config.ts:9`). They have no record.
-  - A layout-compatibility rule for proxy upgrades is deferred (plan 4.7). The 66 do not upgrade.
+  - **Upgrade layout rule** (`readUpgradeLayoutVerdict`, plan 4.7). An upgrade keeps every record the old
+    implementation wrote: each state variable by name, type, coordinates and encoding, each struct a field or
+    collection reaches field for field, each collection by signature and value form. A per-call record is minted
+    only at genesis, so an appended field or collection has no record behind the proxy and is refused too; `__gap`
+    carries no record. The compiler refuses by name under `upgradesFrom`, and the SDK's `requirePerCallUpgrade`
+    refuses by name before an upgrade is built. The generated proxy serves no upgrade entry (19.4 is held), and the
+    66 do not upgrade.
 
 **In this model:**
 - **Which records a frame declares.**

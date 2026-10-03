@@ -302,7 +302,8 @@ import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
   derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, perCallBatchWriteFollowsEveryCall,
   perCallBatchWriteSegment,
-  callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER, isOwnAddress, isProxyFallbackContract,
+  callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER, hasForwardingFallback, isOwnAddress,
+  isProxyFallbackContract,
   ORIGIN_FRAME_SLOT, SENDER_FRAME_SLOT,
 } from '../per-call/master/support.js';
 import {
@@ -1312,6 +1313,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private perCallAcceptsValue = false;
   /** True when the master is the proxy shape, whose head leaves the call data as its fallback's parameter. */
   private perCallProxyFallback = false;
+  /** True when the master's fallback forwards the call data it received, as the only body or a dispatched one. */
+  private perCallForwardingFallback = false;
   /** True when this traversal compiles a dispatched per-call fallback, which the dispatcher hands its input on top. */
   private perCallFallbackInputOnTop = false;
   /** True when the master has one entry and no dispatcher, so a user's frame to it carries no selector. */
@@ -3366,6 +3369,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // tail, the return shape and the value checks for the body that actually runs.
     const fallbackAsEntry = isProxyFallbackContract(node);
     this.perCallProxyFallback = fallbackAsEntry;
+    this.perCallForwardingFallback = hasForwardingFallback(node);
     const entries = [
       ...node.functions.filter((fn) => fn.isEntryPoint),
       ...(node.receiveDef ? [node.receiveDef] : []),
@@ -5791,6 +5795,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // widening or it can count a body with the old arity and silently select a different extraction plan.
       probe.outlinedRecoveryInputFunctionIds = this.outlinedRecoveryInputFunctionIds;
       probe.perCallProxyFallback = this.perCallProxyFallback;
+      probe.perCallForwardingFallback = this.perCallForwardingFallback;
       probe.perCallSoleEntry = this.perCallSoleEntry;
       probe.emitFunctionDefinesAndDispatch(node);
       this.structSkipIds = new Map(probe.structSkipIds);
@@ -6468,6 +6473,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Copy necessary context
       subTraversal.perCallReturnsValue = this.perCallReturnsValue;
+      subTraversal.perCallForwardingFallback = this.perCallForwardingFallback;
       subTraversal.perCallMaxEventCount = this.perCallMaxEventCount;
       subTraversal.perCallSendCount = this.perCallSendCount;
       subTraversal.perCallAcceptsValue = this.perCallAcceptsValue;
@@ -8908,7 +8914,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // the readable signature may be declared by the proxy, which the implementation cannot see.
       const declaresEvents = this.eventDefinitions.length > 0 || this.currentContractEmitsEvent
         || ((node.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent')
-          && !this.perCallProxyFallback);
+          && !this.isForwardingFallbackBody(node));
       const proxyCanAdmitDelegateEvent = this.functionHasDelegatecall
         && (this.getStackIndex('__internal__callInputIndex', true) >= 0
           || this.getStackIndex('__internal__callInputIndex0', true) >= 0);
@@ -38785,6 +38791,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * True when `body` is a per-call fallback forwarding the call data it received. A dispatcher may reach it beside
+   * other entries, and it settles its return and its events as the sole-body proxy's does: without that, a forged
+   * `retval` passed and the delegated result was framed twice.
+   */
+  private isForwardingFallbackBody(body: FunctionDefinitionNode | undefined): boolean {
+    return this.perCallMaster && this.perCallForwardingFallback && body?.isFallback === true;
+  }
+
+  /**
    * True when the body being emitted is a proxy fallback returning the bytes its delegate recorded.
    *
    * The generated proxy is the shape `isProxyFallbackContract` names: a contract whose only body is a fallback
@@ -38795,7 +38810,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * value its own body computed.
    */
   private proxyFallbackRawReturn(): boolean {
-    if (!this.perCallMaster || !this.perCallProxyFallback) return false;
+    if (!this.isForwardingFallbackBody(this.currentFunction)) return false;
     const returnTypes = this.currentFunction?.returnTypes ?? [];
     return returnTypes.length === 1 && returnTypes[0] instanceof BytesType && returnTypes[0].bound === undefined;
   }

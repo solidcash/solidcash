@@ -9,6 +9,7 @@ import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { batchPredecessorCommitment, isPendingBatchPredecessor } from '../message-bus/pending-batch-predecessor.js';
+import { isDisposableAlignmentPad } from './value-chunk-band-helpers.js';
 import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
 import { groupIndexForExternalCallSlot } from './physical-external-call.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
@@ -513,7 +514,35 @@ export function constructCreateBuilderTransactionBuilder(
       const structural = entryOutputBase >= 0 && ordinal >= 0 ? entryOutputBase + ordinal : -1;
       if (structural < 0 || !sameLock(outputLock(structural), required)
         || expectedPredOut === undefined
-        || commitmentOf(structural)?.toLowerCase() !== expectedPredOut.toLowerCase()) continue;
+        || commitmentOf(structural)?.toLowerCase() !== expectedPredOut.toLowerCase()) {
+        // A later continuation band can occupy the provisional P' coordinate. Restore the predecessor in a
+        // token-free alignment slot after the participant block, using the authenticated proof input's lock and
+        // exact slot/next/value commitment. The VM still proves that output against the input and target hash.
+        if (expectedPredOut === undefined || !/^[0-9a-f]{128,256}$/i.test(expectedPredOut)) continue;
+        const proofInput = materialized.inputs[masterIndex + Number(proofOffset)];
+        const category = proofInput?.token?.category;
+        if (proofInput?.token?.nft?.capability !== 'mutable'
+          || category === undefined || category !== materialized.inputs[masterIndex]?.token?.category) continue;
+        const free = materialized.outputs.findIndex((output, index) => (
+          index >= masterIndex + (effectiveBlockLayout?.blockSize ?? 1)
+          && isDisposableAlignmentPad(output)
+          && output.to instanceof Uint8Array && output.to.length === 1 && output.to[0] === 0x51
+          && materialized.inputs[index]?.token === undefined
+        ));
+        // If every balanced pad is already a co-spent token's output, add a distinct mint output only when the
+        // transaction has no reverse-indexed OP_RETURN suffix to shift. The final conservation pass funds it.
+        if (free < 0 && materialized.outputs.some((output) => output.to instanceof Uint8Array
+          && output.to.length === 1 && output.to[0] === 0x6a)) continue;
+        const destination = free >= 0 ? free : materialized.outputs.length;
+        materialized.outputs[destination] = {
+          to: required,
+          amount: free >= 0 ? materialized.outputs[free]!.amount : 1200n,
+          token: { category, amount: 0n, nft: { capability: 'mutable', commitment: expectedPredOut } },
+        };
+        finalArgs[position] = BigInt(destination);
+        changed = true;
+        continue;
+      }
       const replacement = structural;
       finalArgs[position] = BigInt(replacement);
       changed = true;

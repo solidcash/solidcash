@@ -149,9 +149,25 @@ export async function expandResolveCreateBuilderExternalCalls(
         guards, args, artifact, callerStateSnapshot, abiFunction?.inputs, publicSelfAddress,
       ) as Record<string, StateValue>;
     }
-    externalCalls = externalCalls.filter((call) => !call.preCallRequires?.some((guard) =>
-      host.evaluateExternalExpression(guard, args, artifact, callerStateSnapshot,
-        abiFunction?.inputs, undefined, 0, false, publicSelfAddress) === false));
+    const guardVerdict = (call: ExternalCallAbi, returns?: ReadonlyMap<string, FunctionArgument>): boolean =>
+      call.preCallRequires?.some((guard) => host.evaluateExternalExpression(
+        guard, args, artifact, callerStateSnapshot, abiFunction?.inputs,
+        returns, 0, false, publicSelfAddress,
+      ) === false) ?? false;
+    externalCalls = externalCalls.filter((call) => !guardVerdict(call));
+    const returningGuards = externalCalls.flatMap((call) => call.preCallRequires ?? [])
+      .filter((guard) => containsReturningExpression(guard));
+    if (returningGuards.length > 0 && host.resolveExternalExpressionReturns) {
+      // A source require can stop before a later external call after an earlier producer returned false.
+      // Resolve only the referenced producer results through the callee VM; if a predicate remains unknown,
+      // retain its call so the final covenant remains the authority for a successful transaction.
+      const returns = await host.resolveExternalExpressionReturns(
+        returningGuards.map((expression) => ({ kind: 'expression', expression })),
+        args, callerStateSnapshot, abiFunction?.inputs, publicSelfAddress,
+        abiFunction?.externalCalls ?? [],
+      );
+      externalCalls = externalCalls.filter((call) => !guardVerdict(call, returns));
+    }
   }
 
   if (externalCalls?.some((ec) => ec.loopArrayVar)) {

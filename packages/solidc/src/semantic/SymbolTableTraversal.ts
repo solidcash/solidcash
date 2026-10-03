@@ -9117,7 +9117,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           .some((child) => child !== undefined && containsUnresolvedConditionNode(child));
       };
       const containsUnresolvedPreCallRequireNode = (expression: ExternalCallExpression): boolean => {
-        if (['unsupported', 'missing', 'identifier', 'reference', 'externalCall', 'producerResult']
+        if (['unsupported', 'missing', 'identifier', 'reference']
           .includes(expression.kind)) return true;
         return [expression.expression, expression.left, expression.right, expression.condition,
           expression.ifTrue, expression.ifFalse, expression.source?.expression,
@@ -9135,6 +9135,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const dependsOnRuntimeValue = (expression: ExternalCallExpression): boolean => (
         (expression.kind === 'source' && expression.source?.kind !== 'literal')
         || expression.kind === 'state' || expression.kind === 'stateAccess'
+        || expression.kind === 'externalCall' || expression.kind === 'producerResult'
         || [expression.expression, expression.left, expression.right, expression.condition,
           expression.ifTrue, expression.ifFalse, expression.source?.expression,
           ...(expression.args ?? [])]

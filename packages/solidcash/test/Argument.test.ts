@@ -24,6 +24,15 @@ describe('encodeFunctionArgument: address arrays', () => {
   });
 });
 
+describe('encodeFunctionArgument: numeric arrays', () => {
+  it('coerces safe JS integer leaves in fixed and nested integer arrays', () => {
+    expect(encodeFunctionArgument([0, 10_000, 0, 69] as unknown as bigint[], 'uint16[4]'))
+      .toEqual(encodeFunctionArgument([0n, 10_000n, 0n, 69n], 'uint16[4]'));
+    expect(encodeFunctionArgument([[1, 2], [3, 4]] as unknown as bigint[][], 'uint256[2][2]'))
+      .toEqual(encodeFunctionArgument([[1n, 2n], [3n, 4n]], 'uint256[2][2]'));
+  });
+});
+
 describe('encodeFunctionArgument: deferred signature arrays', () => {
   it('preserves a sig[] template vector until the transaction is final', () => {
     const signatures = [new SignatureTemplate(alicePriv), new SignatureTemplate(bobPriv)];

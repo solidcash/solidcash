@@ -73,8 +73,17 @@ function coerceNumericObject(value: object): bigint | undefined {
   return undefined;
 }
 
-function coerceArrayElements(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(coerceArrayElements);
+function coerceArrayElements(value: unknown, type: ReturnType<typeof parseType> | undefined): unknown {
+  if (Array.isArray(value)) {
+    const elementType = type instanceof ArrayType ? type.elementType : undefined;
+    return value.map((element) => coerceArrayElements(element, elementType));
+  }
+  // Scalar integer arguments already accept safe JS numbers and decimal/hex strings. Apply the same
+  // conversion to typed array leaves before fixed-width packing, without changing bool/bytes/address arrays.
+  const numeric = type === PrimitiveType.INT || type === PrimitiveType.BIGINT
+    || type instanceof IntType || type instanceof FixedType;
+  if (numeric && typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (numeric && typeof value === 'string' && /^(?:-?\d+|0x[0-9a-f]+)$/i.test(value)) return BigInt(value);
   if (value && typeof value === 'object' && !(value instanceof Uint8Array)
     && !(value instanceof SignatureTemplate)) return coerceNumericObject(value) ?? value;
   return value;
@@ -152,7 +161,7 @@ export function encodeFunctionArgument(
       // Address strings inside an `address[]` (or nested array) must become their locking bytecode BEFORE the
       // pushdata encoder runs. Otherwise it encodes hex strings as UTF-8 text, while scalar address arguments
       // and the compiler's address operations use the binary locking bytecode.
-      const coerced = coerceArrayElements(argument);
+      const coerced = coerceArrayElements(argument, parsed);
       const encoded = encodePushdataValue(convertAddressArg(coerced, typeStr) as StateValue, typeStr, structs);
       // The unlocking template pushes each encoded argument as one stack item. A sole 0x00 count prefix would be
       // minimally encoded as OP_0 and arrive as an empty item, so the covenant could no longer split/decode the

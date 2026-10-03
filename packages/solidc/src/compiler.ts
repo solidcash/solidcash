@@ -2901,12 +2901,24 @@ function restoreSpeculativeMessageBusRefusals(
   }
 }
 
+/**
+ * The options without `upgradesFrom`, which only the layout check after the compile reads. Each other option keeps
+ * its descriptor, so an accessor is read where the pipeline reads it (the pass-token sanitation boundary first),
+ * not evaluated here by a spread.
+ */
+function withoutUpgradesFrom(options: CompileOptions): CompileOptions {
+  if (!Object.prototype.hasOwnProperty.call(options, 'upgradesFrom')) return options;
+  const { upgradesFrom: _layoutOnly, ...descriptors } = Object.getOwnPropertyDescriptors(options);
+  return Object.defineProperties({}, descriptors) as CompileOptions;
+}
+
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
   // SOLIDC env registry: when SOLIDC_STRICT_UNKNOWN_ENV=1 (CI), refuse unknown SOLIDC_* before any compile work.
   enforceSolidcEnvPolicy();
   clearDefineFrameValidations();
   pendingSpanAdmissionAnalysis = undefined;
-  const { upgradesFrom, ...artifactOptions } = compilerOptions;
+  const { upgradesFrom } = compilerOptions;
+  const artifactOptions = withoutUpgradesFrom(compilerOptions);
   return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
     try {
       const artifact = compileStringUnchecked(code, artifactOptions);
@@ -16357,9 +16369,9 @@ function validateInheritedPrivateFunctionAccess(ast: Ast): void {
  * See docs/multi-contract-artifacts.md.
  */
 export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
-  const { upgradesFrom, ...artifactOptions } = compilerOptions;
+  const { upgradesFrom } = compilerOptions;
   return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
-    const artifacts = compileStringMultiUnchecked(code, artifactOptions);
+    const artifacts = compileStringMultiUnchecked(code, withoutUpgradesFrom(compilerOptions));
     requireUpgradeLayouts(artifacts, upgradesFrom);
     return artifacts;
   });

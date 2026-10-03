@@ -8484,6 +8484,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         return value;
       };
       const followable = (identifier: IdentifierNode): boolean => {
+        // Only the per-call composition follows: its call-site check binds every argument, so a followed source is a
+        // plan. The other compositions authenticate a call result's alias from these sources, by their resolvers'
+        // exact rules (a dominating assignment, an exact two-arm join), which a follow would bypass.
+        if (this.compilerOptions.composition !== 'per-call') return false;
         if (identifier.name.startsWith('__dlcache_') || identifier.name.startsWith('__vmapcache_')) return false;
         const definition = identifier.definition?.definition;
         return !(definition instanceof VariableDefinitionNode

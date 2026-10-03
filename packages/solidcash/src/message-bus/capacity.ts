@@ -18,10 +18,10 @@ export const ATOMIC_MESSAGE_BUS_CAPACITY = Object.freeze({
 
 /** Refuse graphs outside the measured participant envelope before funding or signing their physical blocks. */
 export const assertAtomicParticipantCapacity = (participants: number): void => {
-  if (!Number.isSafeInteger(participants) || participants < 2) {
+  if (!Number.isSafeInteger(participants) || participants < 1) {
     throw new MessageBusDiagnosticError(
       'L3_PARTICIPANT_LIMIT',
-      `atomic composition requires between 2 and ${ATOMIC_MESSAGE_BUS_CAPACITY.maximumParticipants} `
+      `atomic composition requires between 1 and ${ATOMIC_MESSAGE_BUS_CAPACITY.maximumParticipants} `
         + `physical participants; measured ${participants}`,
       { measured: participants, limit: ATOMIC_MESSAGE_BUS_CAPACITY.maximumParticipants },
     );

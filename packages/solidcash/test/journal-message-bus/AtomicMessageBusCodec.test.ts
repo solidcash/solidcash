@@ -24,6 +24,17 @@ const sample = (): messageBus.AtomicMessageBusCallManifest => ({
 });
 
 describe('atomic single-transaction codec', () => {
+  it('round-trips a sole authenticated root without inventing a child participant', () => {
+    const value = sample();
+    const singleton = {
+      participants: [value.participants[0]!],
+      rows: [{ ...value.rows[0]!, owner: 0, consumer: 0, position: 0 }],
+    };
+    const encoded = messageBus.encodeAtomicMessageBusCallManifest(singleton);
+    expect(messageBus.decodeAtomicMessageBusCallManifest(encoded)).toEqual(singleton);
+    expect(messageBus.atomicMessageBusPhysicalLayout([2]).participantInputs).toEqual([0]);
+  });
+
   it('round-trips one canonical callManifest and messageEnvelope', () => {
     const value = sample();
     const encoded = messageBus.encodeAtomicMessageBusCallManifest(value);

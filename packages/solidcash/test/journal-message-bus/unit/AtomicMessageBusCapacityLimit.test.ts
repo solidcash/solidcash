@@ -9,13 +9,14 @@ describe('atomic single-transaction admission limit', () => {
       firstRejectedParticipants: 9,
       operationCostBudgetPerByte: 800,
     });
+    expect(() => messageBus.assertAtomicParticipantCapacity(1)).not.toThrow();
     expect(() => messageBus.assertAtomicParticipantCapacity(8)).not.toThrow();
     expect(() => messageBus.assertAtomicParticipantCapacity(9)).toThrow(expect.objectContaining({
       code: 'L3_PARTICIPANT_LIMIT', context: { measured: 9, limit: 8 },
     }));
   });
 
-  it.each([0, 1, 1.5, Number.NaN])('refuses non-protocol participant count %s', (participants) => {
+  it.each([0, 1.5, Number.NaN])('refuses non-protocol participant count %s', (participants) => {
     expect(() => messageBus.assertAtomicParticipantCapacity(participants)).toThrow(expect.objectContaining({
       code: 'L3_PARTICIPANT_LIMIT',
     }));

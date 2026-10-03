@@ -53,8 +53,8 @@ export async function prepareComposeDescriptors(
     );
     if (selected?.selector !== undefined) descriptor.selector = selected.selector;
   }
-  if (descriptors.length < 2) {
-    throw new Error('messageBus: atomic composition requires at least two prepared calls');
+  if (descriptors.length < 1) {
+    throw new Error('messageBus: atomic composition requires at least one prepared call');
   }
   const feeFunder = funderUtxo(options.funder);
   const rootCaller = feeFunder.unlocker.generateLockingBytecode();

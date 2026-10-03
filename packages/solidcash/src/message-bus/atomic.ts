@@ -230,8 +230,8 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
   if (version === 4 && !requiresV4) {
     throw new Error('messageBus: atomic V4 requires transaction-signature provenance');
   }
-  if (participants.length < 2 || participants.length > ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS) {
-    throw new Error(`messageBus: participant count must be in [2, ${ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS}]`);
+  if (participants.length < 1 || participants.length > ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS) {
+    throw new Error(`messageBus: participant count must be in [1, ${ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS}]`);
   }
   if (rows.length > ATOMIC_MESSAGE_BUS_MAX_ROWS) {
     const rowCounts = rows.reduce<Record<number, number>>((counts, row) => {
@@ -390,7 +390,7 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
     throw new Error('messageBus: atomic callManifest length mismatch');
   }
   const participantCount = reader.uint(1, 'participant count');
-  if (participantCount < 2 || participantCount > ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS) {
+  if (participantCount < 1 || participantCount > ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS) {
     throw new Error('messageBus: atomic participant count is out of range');
   }
   const participants: AtomicParticipant[] = [];
@@ -523,8 +523,8 @@ export interface AtomicPhysicalLayout {
 export function atomicMessageBusPhysicalLayout(
   blockSizes: readonly number[], authorities: readonly ('routed' | 'direct')[] = blockSizes.map(() => 'routed'),
 ): AtomicPhysicalLayout {
-  if (blockSizes.length < 2 || blockSizes.length > ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS) {
-    throw new Error(`messageBus: participant count must be in [2, ${ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS}]`);
+  if (blockSizes.length < 1 || blockSizes.length > ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS) {
+    throw new Error(`messageBus: participant count must be in [1, ${ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS}]`);
   }
   if (authorities.length !== blockSizes.length || authorities[0] !== 'routed'
     || authorities.some((authority) => authority !== 'routed' && authority !== 'direct')) {

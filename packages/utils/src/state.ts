@@ -1536,7 +1536,13 @@ export function packFixedWidthElement(value: PrimitiveStateValue, elementType: s
   const t = parseTypeStrict(elementType);
   if (t === PrimitiveType.BOOL) return new Uint8Array([value ? 1 : 0]);
   if (t instanceof IntType || t instanceof FixedType) {
-    return encodeIntAsFixedBytes(value as bigint, t.byteWidth);
+    // SDK scalar arguments already accept safe JS integers. Preserve that contract for the elements of a
+    // fixed array instead of passing a number into libauth's bigint-only VM-number encoder.
+    const numeric = typeof value === 'number' && Number.isSafeInteger(value) ? BigInt(value) : value;
+    if (typeof numeric !== 'bigint') {
+      throw new Error(`packFixedWidthElement: '${elementType}' requires a bigint or safe integer`);
+    }
+    return encodeIntAsFixedBytes(numeric, t.byteWidth);
   }
   if ((t instanceof BytesType && t.bound !== undefined) || t === PrimitiveType.PUBKEY) {
     const width = fixedWidthBytes(t);

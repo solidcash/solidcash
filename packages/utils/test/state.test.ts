@@ -958,6 +958,12 @@ describe('dynamic-storage data-NFT commitment (A$len header)', () => {
 });
 
 describe('flat-stream fixed-width array codec', () => {
+  it('packs safe numeric elements the same as bigint elements', () => {
+    expect(packFixedWidthArray([8000, 2000] as unknown as bigint[], 'uint16'))
+      .toEqual(packFixedWidthArray([8000n, 2000n], 'uint16'));
+    expect(() => packFixedWidthElement((Number.MAX_SAFE_INTEGER + 1) as unknown as bigint, 'uint16'))
+      .toThrow('requires a bigint or safe integer');
+  });
   // The tight blob backing a chunk-packed fixed-width T[] (see docs/arrays.md). Round-trip + the
   // computable element offset (element i at byte i*width) that gives O(1) random access.
   it.each([

@@ -13,6 +13,7 @@ import { AuthenticatedProducerResults } from './authenticated-producer-results.j
 import { externalCallIterationIndices } from '../stateful/external-call-iteration-domain.js';
 import { hydrateExternalPredicateState } from '../stateful/sc-hydrate-external-predicate-state.js';
 import { evaluateExternalExpression } from '../stateful/sc-evaluate-external-expression.js';
+import { discoveredReturnFollowsParticipantWrite } from '../stateful/sc-materialize-create-builder-return-emit.js';
 import { encodeExternalReturnValue } from '../stateful/external-return-encoding.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
 import { deriveValueChunkProducerChildPath } from '../stateful/ValueChunkProducerIdentity.js';
@@ -599,9 +600,26 @@ async function rebuildCallTopology(
             // never as a prepared commitment. The final graph VM still authenticates the value in context.
             let viewSeed: StateValue | undefined;
             const onlyOutput = childFn.outputs?.length === 1 ? childFn.outputs[0] : undefined;
+            const precedingCalls = [
+              ...calls, ...next.map((scheduledChild) => scheduledChild.call),
+              ...selected.map((scheduledChild) => scheduledChild.call),
+            ];
+            const priorWrite = discoveredReturnFollowsParticipantWrite(
+              [...precedingCalls, child], precedingCalls.length,
+            );
+            const priorNestedEffect = [...next, ...selected].some(({ call: priorCall }) => {
+              const priorArtifact = priorCall.executionArtifact ?? priorCall.contract.inner.artifact;
+              const priorFn = resolveMessageBusAbiFunction(
+                priorArtifact, priorCall.functionName, priorCall.selector,
+              );
+              // A prior nested call can write this participant even if its direct owner is different. An
+              // unrecognised predecessor provides no proof that the isolated pre-transaction view is current.
+              return !priorFn || Boolean(priorFn.externalCalls?.length);
+            });
             if (previous === undefined && template.hasReturnValues && onlyOutput !== undefined
               && template.occurrence !== 'loop' && !template.iterationDomain
               && !template.nestedIterationDomains?.length
+              && !priorWrite && !priorNestedEffect
               && childFn.modifiers?.some((modifier) => modifier === 'view' || modifier === 'pure')
               && childFn.writesState !== true && !childFn.externalCalls?.length && !executor) {
               try {

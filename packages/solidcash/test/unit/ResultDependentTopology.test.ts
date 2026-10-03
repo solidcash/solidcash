@@ -128,6 +128,34 @@ describe('result-dependent topology propagation', () => {
     expect(hasTransientConvergenceResultSeed(discovered[1]!)).toBe(true);
   });
 
+  it('does not seed a view after an earlier write to its participant', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0];
+    root.artifact.abi[0]!.externalCalls = [
+      { callsiteId: 0, interfaceName: 'ISource', functionName: 'transferFrom',
+        requiredDataNftIndices: [], argSources: [], sourceEffectOrdinal: 0 },
+      { callsiteId: 1, interfaceName: 'ISource', functionName: 'read',
+        requiredDataNftIndices: [], argSources: [], sourceEffectOrdinal: 1,
+        hasReturnValues: true, returnTypes: ['uint256'] },
+    ];
+    const child = ctx.descriptors[1].contract;
+    child.inner.artifact.abi.unshift({ name: 'transferFrom', selector: '00000002', inputs: [],
+      writesState: true } as Artifact['abi'][number]);
+    Object.assign(child.inner.artifact.abi[1], {
+      outputs: [{ type: 'uint256' }], modifiers: ['view'], writesState: false,
+      resultEncoding: 'compact-pushdata-v1',
+    });
+    let probes = 0;
+    (child as unknown as { _deriveReturnValue: unknown })._deriveReturnValue = async () => {
+      probes += 1;
+      return 7n;
+    };
+    const discovered = await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf);
+    expect(discovered.map((call) => call.functionName)).toEqual(['run', 'transferFrom', 'read']);
+    expect(discovered[2]?.provisionalResultCommitment).toBeUndefined();
+    expect(probes).toBe(0);
+  });
+
   it('replaces the selected subtree without moving a later producer seed to the new branch', async () => {
     const ctx = fixture();
     const results = { 1: '01'.padStart(64, '0'), 4: '4d'.padStart(64, '0') };

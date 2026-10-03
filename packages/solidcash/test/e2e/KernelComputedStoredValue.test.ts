@@ -114,5 +114,6 @@ describe('kernel computed whole-value storage', () => {
       await archive.getAddress(), payload, addressToLockScript(signer.getAddress()),
     ]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/u) });
+    expect((await archive.getEntries('records'))[0]?.value).toMatchObject({ amount: 7n, payload });
   }, 180_000);
 });

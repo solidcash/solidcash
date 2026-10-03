@@ -17,8 +17,9 @@ import { withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope } fro
 import { addressToLockScript } from '../utils.js';
 import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
 import {
-  chunksFromValue, persistValueChunkLock, valueChunkWriteResourceIdentity,
+  chunksFromValue, persistValueChunkLock, valueChunkIndexFromCommitment, valueChunkWriteResourceIdentity,
 } from '../stateful/StatefulTransactionBuilder.js';
+import { isValidComputedValueChunkCommitmentEncoding } from '../stateful/computed-value-chunk-pin.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { ResolvedLogicalIdentity } from '../stateful/logical-identity.js';
@@ -525,7 +526,7 @@ export async function assembleAtomicComposition(
     // here so `_batchRaw` can build; the unlocker sync below rebases every absolute from that single result.
     const valueChunkSlotOffset = transportedChunkCount > 0
       ? selectedValueChunkSlots[0]!.offset : undefined;
-    const pendingValueChunkClaim = valueChunkSlotOffset === undefined ? undefined : {
+    let pendingValueChunkClaim = valueChunkSlotOffset === undefined ? undefined : {
       localSlotOffset: valueChunkSlotOffset,
       chunkCount: transportedChunkCount,
       collection: transportedValueChunks[0]?.production.write.collectionSignature ?? 'valueChunk',
@@ -1287,6 +1288,54 @@ export async function assembleAtomicComposition(
     // back to the full block below; using blockSize here turns the valid range into an empty interval.
     const fixedSize = Math.min(participant.blockLayout!.trailingBase ?? blockSize,
       terminalConditionalReturnBase(participant.blockLayout!) ?? blockSize);
+    // A concrete route can materialize its own value chunks without a graph-transported production. Its
+    // provisional absolute witness and the complete physical chunk run are then the layout claim; relying only
+    // on transported productions left an active witness with no band in the transaction-global resolver.
+    if (pendingValueChunkClaim === undefined) {
+      const unlocker = local.inputs[0]?.unlocker as {
+        abiFunction?: { inputs?: readonly { name: string }[] }; params?: readonly unknown[];
+      } | undefined;
+      const witnessIndex = unlocker?.abiFunction?.inputs?.findIndex(
+        (input) => input.name === '__internal__valueChunkOutputBase',
+      ) ?? -1;
+      const witness = witnessIndex < 0 ? undefined : unlocker?.params?.[witnessIndex];
+      if (layoutWitnessIsActiveCoordinate(witness)) {
+        const startCandidates = [...new Set([
+          Number(witness), Number(witness) - participantInputBase,
+        ])].filter((offset) => Number.isSafeInteger(offset)
+          && offset >= fixedSize && offset < blockSize && valueChunkSlots.some((slot) => slot.offset === offset));
+        const category = local.inputs[0]?.token?.category?.toLowerCase();
+        const candidateRuns = startCandidates.flatMap((start) => {
+          const first = local.outputs[start];
+          const lock = first === undefined ? undefined
+            : typeof first.to === 'string' ? addressToLockScript(first.to) : first.to;
+          if (category === undefined || lock?.length !== 35 || lock[0] !== 0xaa || lock[1] !== 0x20
+            || lock[34] !== 0x87) return [];
+          let count = 0;
+          for (let offset = start; offset < blockSize; offset += 1) {
+            const output = local.outputs[offset];
+            const outputLock = output === undefined ? undefined
+              : typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+            const commitment = output?.token?.nft?.commitment;
+            if (!valueChunkSlots.some((slot) => slot.offset === offset)
+              || output?.token?.category?.toLowerCase() !== category || output.token.amount !== 0n
+              || output.token.nft?.capability !== 'mutable' || commitment === undefined
+              || !isValidComputedValueChunkCommitmentEncoding(commitment)
+              || valueChunkIndexFromCommitment(commitment) !== count
+              || outputLock === undefined || binToHex(outputLock) !== binToHex(lock)) break;
+            count += 1;
+          }
+          return count === 0 ? [] : [{ start, count }];
+        });
+        if (candidateRuns.length === 1) {
+          pendingValueChunkClaim = {
+            localSlotOffset: candidateRuns[0]!.start,
+            chunkCount: candidateRuns[0]!.count,
+            collection: 'valueChunk',
+          };
+        }
+      }
+    }
     const computedValueChunkMetadata = localComputedChunkMetadata;
     const observedContinuationClaims = orderedContinuationClaims.flatMap((claim) => Array.from(
       { length: claim.chunkCount }, (_, chunkIndex) => ({
@@ -1299,13 +1348,14 @@ export async function assembleAtomicComposition(
       ...(computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? []),
       ...(computedValueChunkMetadata.__messageBusComputedValueChunks ?? []),
     ], observedContinuationClaims);
-    const computedMinimumActualSize = minimumActualSizeForComputedValueChunkClaims(
+    const computedMinimumActualSize = Math.max(minimumActualSizeForComputedValueChunkClaims(
       participant.participant,
       graph.layout.participantInputs[participant.participant],
       fixedSize,
       blockSize,
       computedValueChunkClaims,
-    );
+    ), pendingValueChunkClaim === undefined ? 0
+      : pendingValueChunkClaim.localSlotOffset + pendingValueChunkClaim.chunkCount);
     const minimumActualSize = participant.blockLayout!.fixedSuffix
       ? blockSize : computedMinimumActualSize;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

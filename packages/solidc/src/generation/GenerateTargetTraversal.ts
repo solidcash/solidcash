@@ -15048,6 +15048,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && (node.left.type instanceof BytesType || node.left.type instanceof AddressType)) {
       return this.emitBytesCompare(node);
     }
+    // An imported Solidity address is one 20-byte identity carried in two physical forms (DECISIONS D13): a frame's
+    // sender, origin and self and every stored address are full locks, while an evm-abi-v1 result decodes to the
+    // identity. Comparing the bytes made an escrow's buyer, read back through `getEscrow`, unequal to the
+    // `msg.sender` it was recorded from, so both operands are normalized to the identity first, as the kernel lane
+    // does (231810f30). The native language keeps its exact-byte address equality.
+    if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+      && (node.operator === BinaryOperator.EQ || node.operator === BinaryOperator.NE)
+      && node.left.type instanceof AddressType && node.right.type instanceof AddressType) {
+      const identityLocation = { location: node.location, positionHint: PositionHint.END };
+      node.left = this.visit(node.left);
+      this.emitGraphAddressIdentity(identityLocation);
+      node.right = this.visit(node.right);
+      this.emitGraphAddressIdentity(identityLocation);
+      this.emit(compileBinaryOp(node.operator, false), identityLocation);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      return node;
+    }
     node.left = this.visit(node.left);
     const bothOperandsAreNumeric = isNumericType(node.left.type) && isNumericType(node.right.type);
     const locationData = { location: node.location, positionHint: PositionHint.END };

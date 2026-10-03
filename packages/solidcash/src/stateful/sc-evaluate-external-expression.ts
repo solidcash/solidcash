@@ -297,10 +297,16 @@ strictFieldAccess = false,
     return localBindings?.get(expression.name);
   }
   if (expression.kind === 'source' && expression.source) {
-    return host.resolveExternalArgs(
+    const resolved = host.resolveExternalArgs(
       [expression.source], functionArgs, artifact, state, callerInputs, externalReturns,
       occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress,
     )?.[0];
+    // A forwarded `bytes` argument is what the caller supplied, and ethers supplies `bytes` as `0x` hex text, while
+    // the body reads the bytes: a length taken of the text counted its characters and a packed copy took its UTF-8.
+    // The text is read through the type the entry declares for it.
+    const declared = expression.source.kind === 'forward' ? inferredType(expression) : '';
+    return typeof resolved === 'string' && /^bytes\d*$/.test(declared) && /^0x(?:[0-9a-fA-F]{2})*$/.test(resolved)
+      ? hexToBin(resolved.slice(2)) : resolved;
   }
   if (expression.kind === 'literal') {
     if (typeof expression.value === 'string'

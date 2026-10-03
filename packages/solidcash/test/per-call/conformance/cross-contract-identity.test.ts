@@ -106,6 +106,14 @@ const ROWS: readonly Row[] = [
     'function viaCross() external view returns (address) { (address s, ) = b.who(); return s; }', 'A'),
   aRow('A -> B.who(): tx.origin', 'originInCross',
     'function originInCross() external view returns (address) { (, address o) = b.who(); return o; }', 'EOA'),
+  // A returned address is the 20-byte identity while `address(this)` and `tx.origin` are full locks (DECISIONS
+  // D13): equality compares the one address both forms name, as an escrow checks a sender against its record.
+  aRow('A -> B.who(): the returned sender equals address(this)', 'senderIsSelf',
+    'function senderIsSelf() external view returns (bool) { (address s, ) = b.who(); return s == address(this); }',
+    true),
+  aRow('A -> B.who(): the returned origin equals tx.origin', 'originIsOrigin',
+    'function originIsOrigin() external view returns (bool) { (, address o) = b.who(); return o == tx.origin; }',
+    true),
   aRow('A -> staticcall B.who()', 'viaStaticcall',
     'function viaStaticcall() external view returns (address) {'
     + ' (bool ok, bytes memory r) = address(b).staticcall(abi.encodeCall(B.who, ())); require(ok);'

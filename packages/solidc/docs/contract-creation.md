@@ -69,6 +69,13 @@ The order a caller follows is: reserve as many coins as children, predict each c
 then deploy each child with `getFundingUtxo(nonce)` as its funding UTXO. `reserve()` tops up rather than replacing,
 and the base nonce is fixed at the first `reserve()`, so nonces predicted earlier stay valid across top-ups.
 
+A caller that only predicts addresses — a ported deployment script reading `getCreateAddress({ from, nonce })`, or
+any call that names an account and a nonce — reaches the same reservations without handing over a coin: reading the
+account's nonce opens its look-ahead and reserves a small window of genesis-eligible coins, each prediction answers
+from that window, and a deployment whose nonce the window covers spends the coin its prediction named. Outside the
+window — a script that predicts more addresses than the window holds, or an account with no nonce read — preparing
+these coins is the caller's responsibility, as above.
+
 ## The three modes
 
 | | **Stateless** (`bytes lbc = new T(...)`, p2sh, no token) | **Stateful** (`new T()` mints a token genesis) |

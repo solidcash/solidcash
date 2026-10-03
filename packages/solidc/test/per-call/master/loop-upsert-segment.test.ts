@@ -340,13 +340,14 @@ describe('a per-call master whose entry upserts a mapping in a run-time loop bes
   });
 
   it('refuses the run-time-loop upsert with its records in the last segment the run opens', () => {
-    // A segment whose list holds no record leaves the sentinel, which no index opcode accepts: the read the body
-    // makes for its turn names no UTXO at all rather than another participant's.
+    // A node is addressed at the coordinate the running segment declares at the node's position, so a segment that
+    // declares a different record there names that record's coordinate and the body's own comparison fails; a
+    // segment whose list holds no such position leaves the sentinel, which no index opcode accepts. Either way the
+    // read names no record of the frame's own.
     const outcome = verdict(build(loopProgram, loopLock, WORKERS, [NODE_RECORD], LAST_SEGMENT));
     expect({ accepted: outcome.accepted, objection: outcome.objection }).toStrictEqual({
       accepted: false,
-      objection: 'Program attempted to read from an invalid transaction UTXO index. Transaction UTXO count: 5; '
-        + 'requested index: -32767.',
+      objection: 'Program failed an OP_VERIFY operation.',
     });
   });
 });
@@ -379,20 +380,16 @@ describe('the fixture\'s own shape: the loop body both upserts the mapping and m
 
   it('refuses the well-formed spend wherever the node record is declared', () => {
     // The same head with the loop removed is accepted above, and the same head with a parameter key settles under
-    // the machine's own segment control below. The frame's base is the record its block declares first, so the
-    // segment the declaration sits in decides what the loop's per-turn coordinate lands on: the record declared in
-    // the segment the loop runs in makes that coordinate name another participant's UTXO (the body fails its
-    // comparison), and a segment whose list holds no record leaves the sentinel, which no index opcode accepts.
+    // the machine's own segment control below. The node's coordinate is the one its running segment declares at the
+    // node's position, so the segment the declaration sits in decides what that coordinate lands on: a segment that
+    // declares a different record there names its coordinate (the body fails its comparison), and one whose list
+    // holds no such position leaves the sentinel, which no index opcode accepts.
     const objections = ([0, 1] as const).map((segment) => ({
       segment, ...verdict(build(insideProgram, insideLock, WORKERS, [NODE_RECORD], segment)),
     }));
     expect(objections).toStrictEqual([
       { segment: 0, accepted: false, objection: 'Program failed an OP_VERIFY operation.' },
-      {
-        segment: 1, accepted: false,
-        objection: 'Program attempted to read from an invalid transaction UTXO index. Transaction UTXO count: 5; '
-          + 'requested index: -32767.',
-      },
+      { segment: 1, accepted: false, objection: 'Program failed an OP_VERIFY operation.' },
     ]);
   });
 });

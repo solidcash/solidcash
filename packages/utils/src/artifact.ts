@@ -477,6 +477,31 @@ export interface DelegateForwardingAbi {
   terminalRequire: true;
 }
 
+/**
+ * How much a per-call entry's own write grows one dynamic value's run, in elements.
+ *
+ * A per-call body holds a dynamic value in a run of chunk records, and an append grows that run by the elements it
+ * pushes. `dynamicWriteSources` states the element itself when the artifact's vocabulary can name it; this fact
+ * states the count that holds when it cannot, so a consumer can still size the run.
+ */
+export interface DynamicWriteGrowthAbi {
+  /**
+   * Elements the write appends: the total for a straight-line write, or the per-turn count when the appends run in
+   * a run-time loop (the total is then `elements * length` of `varyingArrayParam`).
+   */
+  elements: number;
+  /**
+   * The array parameter whose length is the enclosing loop's trip count. Present when the appends run in a loop
+   * over an array the call carries, so the run grows by `elements` per element of the caller's array.
+   */
+  varyingArrayParam?: string;
+  /**
+   * True when the appends run in a run-time loop whose trip count the compiler could not pin to a call parameter.
+   * `elements` is then the per-turn count and the total is the loop's own width, which a consumer cannot resolve.
+   */
+  looping?: boolean;
+}
+
 export interface AbiFunction {
   name: string;
   selector?: string;  // 4-byte hex selector (e.g. "a9059cbb")
@@ -644,6 +669,11 @@ export interface AbiFunction {
    * serializable; absence is unknown and must retain VM-probe fallback behavior.
    */
   dynamicWriteSources?: Readonly<Record<string, ExternalCallExpression>>;
+  /**
+   * Per-call entry writes that grow a dynamic value's run without stating the element, keyed by variable name.
+   * The count lets a consumer size the run the write creates when `dynamicWriteSources` publishes no element.
+   */
+  dynamicWriteGrowth?: Readonly<Record<string, DynamicWriteGrowthAbi>>;
   // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`); the SDK derives the N (key,value) pairs from
   // the VM trace and creates N trailing entry NFT outputs (a runtime-variable count, like dynamicWrites chunks).
   entryLoopWrites?: readonly string[];
@@ -849,6 +879,17 @@ export interface CollectionInfo {
   /** True for an `enumerable mapping(...)` - the mapping may be iterated. A plain mapping is not enumerable
    * (Solidity parity). Omitted when false. */
   enumerable?: boolean;
+}
+
+/**
+ * True when the artifact publishes the collection as one whose values chunk.
+ *
+ * A chunking collection keeps the value's four-byte byte length ahead of a node's value; any other collection holds
+ * the encoded value itself where that length would sit, so bytes read there are a length only where one is written.
+ */
+export function collectionChunksValue(artifact: Artifact | undefined, collection: string): boolean {
+  return artifact?.stateLayout?.collections
+    ?.find((candidate) => candidate.name === collection)?.chunkableValue === true;
 }
 
 export interface SortedInsertLoopAbi {
@@ -1700,6 +1741,23 @@ export interface PublishedWriteSegment {
   readonly collection?: string;
   readonly variable?: string;
   readonly segment: number | 'last';
+  /**
+   * The fields of the written dynamic value's element whose prior value the write provably copies back unchanged.
+   *
+   * A condition that reads one of these fields is settled by the value the frame starts with, because the write
+   * neither recomputes it nor changes it. A field not named here may be changed by the write, so a condition that
+   * reads it is not settled by the incoming state. Absent means the write's effect on the element's fields is not
+   * known, which is the broad case: every field is treated as changeable.
+   */
+  readonly preservedFields?: readonly string[];
+  /**
+   * For a data-record write, the state variable(s) whose write rebuilt that record.
+   *
+   * A record holds several state variables, and writing one rebuilds the whole commitment while leaving the others
+   * as they were. Naming the written variable lets a condition reading another field of the same record stay
+   * settled by the incoming state. Absent means the written variables are not known, which is the broad case.
+   */
+  readonly writtenVariables?: readonly string[];
 }
 
 /** One per-call entry's stop sites, plus the call facts a driver resolves a callee through. */
@@ -1721,10 +1779,12 @@ export interface PublishedEntryStopSites {
   /**
    * One fact per write the entry makes, each naming the segment that write's records are declared in.
    *
-   * The fact is published whenever every write's segment is fixed, so a body whose writes do not all land in one
-   * segment still tells a builder where each of them lands. An empty list is an entry that writes no record of its
-   * own; absent means a write's segment is not fixed, which the builder refuses by name rather than declaring its
-   * records in a guessed segment.
+   * A write a record's body makes in more than one segment is closed in each of them, so such a record publishes
+   * one fact per segment, in segment order: the value between two of them is the body's to compute, and a builder
+   * chains the declarations rather than stating it. The fact is published whenever every write's segment is fixed,
+   * so a body whose writes do not all land in one segment still tells a builder where each of them lands. An empty
+   * list is an entry that writes no record of its own; absent means a write's segment is not fixed, which the
+   * builder refuses by name rather than declaring its records in a guessed segment.
    */
   readonly writeSegments?: readonly PublishedWriteSegment[];
   /** The sites in the order the driver reaches them, validated before publication. */

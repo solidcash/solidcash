@@ -137,11 +137,11 @@ export function declarationOf(records: readonly PlacedRecord[]): RecordEntry[] {
   }));
 }
 
-/** Evaluates the master's own input in the transaction the spend lays out. */
-export function evaluateMasterSpend(
+/** The program and transaction the spend lays out, for a caller that wants to trace the machine itself. */
+export function masterSpendProgram(
   master: DeployedMaster,
   spend: MasterSpend,
-): { accepted: boolean; objection?: string } {
+): { readonly sourceOutputs: VmProgram['sourceOutputs']; readonly transaction: VmTransaction } {
   const token = (capability: 'minting' | 'mutable', commitment: Uint8Array): VmOutput['token'] =>
     ({ category: master.category, amount: 0n, nft: { capability, commitment } });
   const outpoint = (index: number): Uint8Array => distinctBytes(32, 0x80 + index);
@@ -207,9 +207,23 @@ export function evaluateMasterSpend(
       });
   }
   const transaction: VmTransaction = { version: 2, inputs, outputs, locktime: 0 };
+  return { sourceOutputs, transaction };
+}
+
+/** Evaluates the master's own input in the transaction the spend lays out. */
+export function evaluateMasterSpend(
+  master: DeployedMaster,
+  spend: MasterSpend,
+): { accepted: boolean; objection?: string; ip?: number; stack?: readonly Uint8Array[] } {
+  const { sourceOutputs, transaction } = masterSpendProgram(master, spend);
   const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: MASTER_INDEX, sourceOutputs, transaction });
-  return vm.stateSuccess(state) === true
-    ? { accepted: true }
-    : { accepted: false, objection: String(state.error) };
+  if (vm.stateSuccess(state) === true) return { accepted: true };
+  const failed = state as { readonly ip?: number; readonly stack?: readonly Uint8Array[]; readonly error?: unknown };
+  return {
+    accepted: false,
+    objection: String(failed.error),
+    ...(failed.ip === undefined ? {} : { ip: failed.ip }),
+    ...(failed.stack === undefined ? {} : { stack: failed.stack }),
+  };
 }

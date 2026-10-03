@@ -9,6 +9,11 @@ import { compileStringMulti } from '../../../src/compiler.js';
  * declared in the run's last segment the epilogue pins, while the sorted batch the body plans is declared in the
  * segment its own calls name. The artifact publishes one fact per write beside the entry's stop sites, so a builder
  * places each write's records in the segment its own code wrote it in rather than refusing the entry.
+ *
+ * The calls that decide a write's segment need not all stand on the same side of it. A write no call site follows is
+ * declared in the segment the run's own call count names, whatever arms the execution took, which is what a batch
+ * write behind a body-wide re-entrancy check reads; a write with calls on both sides names no segment and the
+ * contract refuses the entry by name.
  */
 
 /** One write as the artifact publishes it. */
@@ -83,6 +88,47 @@ const recordAndMapping = compileStringMulti(RECORD_AND_MAPPING_SOURCE, { composi
 const fixedAndSized = compileStringMulti(FIXED_AND_SIZED_SOURCE, { composition: 'per-call' }).Ledger!;
 const varyingLoop = compileStringMulti(VARYING_LOOP_SOURCE, { composition: 'per-call' }).Ledger!;
 
+/**
+ * A ledger whose body sets a record, calls under a condition, writes a mapping, and restores the record.
+ *
+ * The two writes to `count` sit at the body's ends, so that record lands in the segment the frame opens with and in
+ * the last one the run opens, while the batch's write follows every call site. This is the shape a body-wide
+ * re-entrancy check leaves behind, and it is the shape whose facts a builder reads when its entry has no single
+ * segment: the record names both of its landings, so a builder chains them and leaves the value between them to the
+ * body that computes it.
+ */
+const GUARDED_LEDGER = (condition: string): string => `pragma solidcash ^0.13.0;${PING}`
+  + ' contract Ledger {'
+  + '   uint public count;'
+  + '   mapping(address => uint) balances;'
+  + '   function move(address to, uint amount, bool take) {'
+  + '     this.count = 1;'
+  + `     ${condition}`
+  + '     balances[to] = amount;'
+  + '     this.count = 0;'
+  + '     require(true);'
+  + '   }'
+  + ' }';
+// The count before the batch's write varies with the arm the execution took, while no call site stands after it.
+const GUARDED_ONE_ARM_SOURCE = GUARDED_LEDGER(`if (take) { ${CALL} }`);
+const GUARDED_TWO_ARMS_SOURCE = GUARDED_LEDGER(`if (take) { ${CALL} } else { require(amount > 0); }`);
+// The batch's write stands between two conditional calls: a call precedes it on one path and follows it on another,
+// so no segment the run opens is its own and the entry publishes no fact.
+const GUARDED_BETWEEN_SOURCE = `pragma solidcash ^0.13.0;${PING}`
+  + ' contract Ledger {'
+  + '   mapping(address => uint) balances;'
+  + '   function move(address to, uint amount, bool first, bool second) {'
+  + `     if (first) { ${CALL} }`
+  + '     balances[to] = amount;'
+  + `     if (second) { ${CALL} }`
+  + '     require(true);'
+  + '   }'
+  + ' }';
+
+const guardedOneArm = compileStringMulti(GUARDED_ONE_ARM_SOURCE, { composition: 'per-call' }).Ledger!;
+const guardedTwoArms = compileStringMulti(GUARDED_TWO_ARMS_SOURCE, { composition: 'per-call' }).Ledger!;
+const guardedBetween = compileStringMulti(GUARDED_BETWEEN_SOURCE, { composition: 'per-call' }).Ledger!;
+
 /** The write a published fact names, so the facts can be keyed by the identity a builder looks one up by. */
 const identityOf = (write: WriteIdentity): string => (write.record !== undefined ? `record:${write.record}`
   : write.collection !== undefined ? `mapping:${write.collection}` : `dynamic:${String(write.variable)}`);
@@ -91,6 +137,16 @@ const identityOf = (write: WriteIdentity): string => (write.record !== undefined
 function segmentOf(artifact: Pick<Artifact, 'composition'>, write: WriteIdentity): number | 'last' | undefined {
   const published = publishedWrites(artifact, 'Ledger', 'move');
   return published.writes?.find((candidate) => identityOf(candidate) === identityOf(write))?.segment;
+}
+
+/** Every segment one write is published at, in the order the artifact lists them. */
+function segmentsOf(
+  artifact: Pick<Artifact, 'composition'>,
+  write: WriteIdentity,
+): readonly (number | 'last')[] {
+  const published = publishedWrites(artifact, 'Ledger', 'move');
+  return (published.writes ?? []).filter((candidate) => identityOf(candidate) === identityOf(write))
+    .map((candidate) => candidate.segment);
 }
 
 describe('the segment each write of a per-call entry lands in, as an artifact publishes it', () => {
@@ -143,5 +199,26 @@ describe('the segment each write of a per-call entry lands in, as an artifact pu
     // mutation) and `solidcash/test/per-call/call/loop-turns.test.ts` pins for three elements. The variant here
     // additionally needs the hop's callee-frame planning, because a call inside the loop opens a segment per turn.
     expect(publishedWrites(varyingLoop, 'Ledger', 'move')).toStrictEqual({});
+  });
+
+  it('names both segments of a record its body writes at both ends, and the run\'s last for the batch', () => {
+    // The batch's write follows every call site, so it is declared in the segment the run's own call count names,
+    // whichever arm the execution took; the record written at both ends is closed in both of them, so its own two
+    // landings are published and a builder chains the declarations rather than guessing the value between them.
+    expect(segmentOf(guardedOneArm, { collection: 'balances' })).toBe('last');
+    expect(segmentsOf(guardedOneArm, { record: 0 })).toStrictEqual([0, 'last']);
+    expect(publishedWrites(guardedOneArm, 'Ledger', 'move').single).toBeUndefined();
+    expect(segmentOf(guardedTwoArms, { collection: 'balances' })).toBe('last');
+    expect(segmentsOf(guardedTwoArms, { record: 0 })).toStrictEqual([0, 'last']);
+  });
+
+  it('refuses by name the batch write a call on either side of it reaches, at any segment', () => {
+    // A call precedes the write on one path and follows it on another, so no segment the run opens is its own: the
+    // entry publishes no fact and the contract names the shape its own derivation cannot follow.
+    expect(publishedWrites(guardedBetween, 'Ledger', 'move')).toStrictEqual({});
+    expect((guardedBetween.composition?.refusedEntries ?? []).map((refusal) => refusal.reason)).toStrictEqual([
+      'the body writes a verified mapping behind a call whose occurrence the source does not fix, and the derived '
+      + 'operands cannot follow the segment the write lands in',
+    ]);
   });
 });

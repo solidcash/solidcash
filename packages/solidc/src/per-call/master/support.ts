@@ -32,6 +32,10 @@ import type { Type } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
 import {
   ArrayAccessNode,
+  ArrayAssignNode,
+  ArrayDeleteNode,
+  ArrayPopNode,
+  ArrayPushNode,
   AssignNode,
   BinaryOpNode,
   BlockNode,
@@ -838,7 +842,8 @@ export type PerCallWriteSegment = number | 'last';
  * target of the verified mapping batch the entry plans.
  *
  * A call closes the segment the code before it runs in, so which segment such a write is declared in is the number
- * of calls the entry's own source makes before it.
+ * of calls the entry's own source makes before it — the ones before its statement, and any the statement's own
+ * expression makes, since the store is emitted after the expression it computes.
  */
 function writesEntryRecord(statement: Node, batchSlots: ReadonlySet<number>): boolean {
   if (statement instanceof MappingAssignNode || statement instanceof MappingDeleteNode) {
@@ -911,6 +916,14 @@ interface PerCallWriteStep {
   readonly statement: Node;
   /** The calls the path that reaches this write made before it, or undefined when the source does not fix them. */
   readonly calls: CallRange;
+  /**
+   * True when every call site of the body stands before this write, so the write runs after whatever calls the
+   * execution made.
+   *
+   * The calls before a write are a count that varies with the arms taken, but a write no call site follows sits
+   * past all of them: its segment is the segment the run's own call count names, whichever arms it took.
+   */
+  readonly followsEveryCall: boolean;
 }
 
 /** The record writes the entry's own source makes, in the order the walk reaches them. */
@@ -919,6 +932,8 @@ function perCallWriteSteps(
   batchSlots: ReadonlySet<number>,
 ): readonly PerCallWriteStep[] {
   const steps: PerCallWriteStep[] = [];
+  // The most calls any one path makes: a write the walk reaches with every one of them behind it follows them all.
+  const mostCalls = callCountRange(entry.body)?.most;
   const walkBlock = (block: BlockNode | undefined, incoming: CallRange): CallRange => {
     let range = incoming;
     for (const statement of block?.statements ?? []) range = walkStatement(statement, range);
@@ -926,8 +941,15 @@ function perCallWriteSteps(
   };
   const walkStatement = (statement: Node, incoming: CallRange): CallRange => {
     if (writesEntryRecord(statement, batchSlots)) {
-      steps.push({ statement, calls: incoming });
-      return advanceCallRange(incoming, statement);
+      // The write's own expression is emitted before the store, so a call the statement itself makes closes a
+      // segment the write lands past: the calls before it are the ones the walk had reached, plus its own.
+      const afterWrite = advanceCallRange(incoming, statement);
+      steps.push({
+        statement,
+        calls: afterWrite,
+        followsEveryCall: mostCalls !== undefined && afterWrite !== undefined && afterWrite.most === mostCalls,
+      });
+      return afterWrite;
     }
     if (statement instanceof BranchNode) {
       const afterCondition = advanceCallRange(incoming, statement.condition);
@@ -960,7 +982,10 @@ function perCallWriteSteps(
 /** The segment one write lands in: the calls before a sized field's write past, or where that write's run is. */
 function writeStepSegment(step: PerCallWriteStep): PerCallWriteSegment | undefined {
   if (writesSizedField(step.statement)) return 'last';
-  return step.calls === undefined || step.calls.least !== step.calls.most ? undefined : step.calls.least;
+  if (step.calls !== undefined && step.calls.least === step.calls.most) return step.calls.least;
+  // The calls before the write vary with the arms taken, but no call site follows it: it lands in the segment the
+  // run's own call count names, which is the last one the execution opens.
+  return step.followsEveryCall ? 'last' : undefined;
 }
 
 /**
@@ -975,6 +1000,23 @@ export interface PerCallWriteSegmentFact {
   readonly collection?: string;
   readonly variable?: string;
   readonly segment: PerCallWriteSegment;
+  /**
+   * For a write to a dynamic value's element, the fields the write provably copies back unchanged.
+   *
+   * The source spells a partial element update as a whole-element construction whose untouched fields are read
+   * back out of the element. Such a field keeps the value the frame started with, so a guarded call that only
+   * reads it is decided by the incoming state. Absent means the write's effect on the fields is not known, which
+   * is the conservative case. Only a write to a variable sets this; a record or collection write never does.
+   */
+  readonly preservedFields?: readonly string[];
+  /**
+   * For a write to a data record, the state variable(s) whose write rebuilt that record.
+   *
+   * A record holds several state variables, and a write to one of them rebuilds the whole commitment while leaving
+   * the others' values as they were. Naming the written variable is what lets a guarded call that reads another
+   * field of the same record stay decided by the incoming state. Absent means the written variables are not known.
+   */
+  readonly writtenVariables?: readonly string[];
 }
 
 /**
@@ -1036,56 +1078,183 @@ export function perCallWriteSegments(
     .filter((step) => step.statement instanceof MappingAssignNode || step.statement instanceof MappingDeleteNode)
     .map((step) => (step.statement as MappingAssignNode | MappingDeleteNode).entrySlotIndex));
   if ([...perCallBatchSlots(entry)].some((slot) => !reached.has(slot))) return undefined;
-  const records = perCallRecordWriteSegments(steps);
+  const records = perCallRecordWriteSegments(steps, entry);
   if (records === undefined) return undefined;
-  for (const [record, segment] of records.segments) {
-    if (!admit(`record:${record}`, { record, segment })) return undefined;
+  for (const [record, list] of records.segments) {
+    for (const segment of list) {
+      const written = records.writtenVariables.get(record)?.get(segment);
+      if (!admit(`record:${record}@${String(segment)}`, {
+        record,
+        segment,
+        ...(written === undefined || written.length === 0 ? {} : { writtenVariables: [...written] }),
+      })) return undefined;
+    }
   }
   // A dynamic value's bytes live in the run of chunk records the epilogue pins in the last segment, whatever the
   // source position of the write that grows it.
   for (const variable of records.variables) {
-    if (!admit(`dynamic:${variable}`, { variable, segment: 'last' })) return undefined;
+    if (!admit(`dynamic:${variable.name}`, {
+      variable: variable.name,
+      segment: 'last',
+      ...(variable.preservedFields === undefined ? {} : { preservedFields: variable.preservedFields }),
+    })) return undefined;
   }
   return facts.length > 0 ? facts : (writesOwnRecord(entry) ? undefined : []);
 }
 
 /** The identity one published write is keyed by, as `perCallWriteSegments` builds it. */
 function identityOfWrite(fact: PerCallWriteSegmentFact): string {
-  if (fact.record !== undefined) return `record:${fact.record}`;
+  if (fact.record !== undefined) return `record:${fact.record}@${String(fact.segment)}`;
   if (fact.collection !== undefined) return `mapping:${fact.collection}`;
   return `dynamic:${fact.variable}`;
 }
 
-/** The segment each written data record is declared in, and the dynamic values the entry's writes grow. */
+/** The segments each written data record is declared in, and the dynamic values the entry's writes grow. */
 interface PerCallRecordWriteSegments {
-  /** One segment per written data record. */
-  readonly segments: ReadonlyMap<number, PerCallWriteSegment>;
+  /** Every segment each written data record is declared in, in segment order. */
+  readonly segments: ReadonlyMap<number, readonly PerCallWriteSegment[]>;
+  /** The state variables whose write rebuilt each data record, per segment. */
+  readonly writtenVariables: ReadonlyMap<number, ReadonlyMap<PerCallWriteSegment, readonly string[]>>;
   /** The dynamic values a write grows, whose run of chunk records the epilogue pins. */
-  readonly variables: readonly string[];
+  readonly variables: readonly PerCallDynamicWrite[];
+}
+
+/** Segment order: the counted segments first, then the run's own last one. */
+function segmentOrder(left: PerCallWriteSegment, right: PerCallWriteSegment): number {
+  if (left === right) return 0;
+  if (left === 'last') return 1;
+  if (right === 'last') return -1;
+  return left - right;
+}
+
+/** One dynamic value an entry writes, with the element fields every write to it provably leaves unchanged. */
+interface PerCallDynamicWrite {
+  readonly name: string;
+  /** The intersection of the fields the writes preserve; absent when any write's effect is unknown. */
+  readonly preservedFields?: readonly string[];
+}
+
+/** True when two expressions are the same compile-time key: an identifier of the same name, or the same literal. */
+function sameWrittenKey(left: ExpressionNode | undefined, right: ExpressionNode | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  if (left.constructor !== right.constructor) return false;
+  if (left instanceof IdentifierNode && right instanceof IdentifierNode) return left.name === right.name;
+  if (left instanceof LiteralNode && right instanceof LiteralNode) return String(left.value) === String(right.value);
+  return false;
+}
+
+/** True when an element read's base reaches `variableName` at the key the write targets. */
+function readsSameElement(base: Node, variableName: string, key: ExpressionNode | undefined): boolean {
+  if (base instanceof MappingAccessNode) {
+    return base.name === variableName && sameWrittenKey(base.keys?.[0], key);
+  }
+  if (base instanceof StateAccessNode) {
+    return base.name === variableName && key === undefined;
+  }
+  if (base instanceof ArrayAccessNode && base.array instanceof IdentifierNode) {
+    return base.array.name === variableName && sameWrittenKey(base.index, key);
+  }
+  return false;
+}
+
+/** The fields a whole-element construction copies back unchanged, or undefined when its effect is not known. */
+function preservedFieldsOfConstruction(
+  value: ExpressionNode | undefined, key: ExpressionNode | undefined, variableName: string,
+): readonly string[] | undefined {
+  if (!(value instanceof FunctionCallNode)) return undefined;
+  const preserved: string[] = [];
+  for (const parameter of value.parameters ?? []) {
+    if (!(parameter instanceof FieldAccessNode)) continue;
+    if (!readsSameElement(parameter.expression, variableName, key)) continue;
+    if (!preserved.includes(parameter.name)) preserved.push(parameter.name);
+  }
+  return preserved;
+}
+
+/** The intersection of two preserved-field sets, keeping only the fields both leave unchanged. */
+function intersectFields(left: readonly string[], right: readonly string[]): string[] {
+  return left.filter((field) => right.includes(field));
 }
 
 /**
- * The segment each of the entry's own data records is declared in, or undefined when one is not fixed.
+ * The fields the element writes the source makes to `variableName` provably copy back unchanged.
  *
- * A record is rebuilt from the fields the body holds where the segment that wrote them closes, so a record whose
- * every write lands in one segment is declared written there. A write to a field the record only sizes takes the
- * record with it into the run's last segment wherever the source makes it, because the record is only rebuilt once
- * the chunk run is written; such a record is declared written there and nowhere else. A record the entry writes in
- * two segments would have to be declared at both, which states a value between them that no plan knows.
+ * The source spells a partial element update as a whole-element construction whose untouched fields are read back
+ * out of the element, so every field not named by the construction keeps the value the frame started with. The
+ * write statements may have been redirected through the compiler's dynamic-array cache local, so the cache's own
+ * element writes are read beside the state's: either spelling carries the same construction. A push, pop, delete
+ * or whole-array assign changes the element set itself, so it leaves the answer unknown.
+ */
+function preservedElementFields(entry: FunctionDefinitionNode, variableName: string): readonly string[] | undefined {
+  const cache = `__dlcache_${variableName}`;
+  let start: string[] | undefined;
+  let coarse = false;
+  const include = (fields: readonly string[]): void => {
+    start = start === undefined ? [...fields] : intersectFields(start, fields);
+  };
+  const consider = (value: ExpressionNode | undefined, key: ExpressionNode | undefined, base: string): void => {
+    const fields = preservedFieldsOfConstruction(value, key, base);
+    if (fields === undefined) coarse = true;
+    else include(fields);
+  };
+  walkInvocationAst(entry.body, (node) => {
+    if (coarse) return;
+    if (node instanceof StateArrayAssignNode && (node.name === variableName || node.name === cache)) {
+      consider(node.value, node.index, node.name === variableName ? variableName : cache);
+    } else if (node instanceof ArrayAssignNode && node.name === cache) {
+      consider(node.value, node.index, cache);
+    } else if ((node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+      || node instanceof StateArrayDeleteNode) && (node.name === variableName || node.name === cache)) {
+      coarse = true;
+    } else if ((node instanceof ArrayPushNode || node instanceof ArrayPopNode || node instanceof ArrayDeleteNode)
+      && node.name === cache) {
+      coarse = true;
+    } else if (node instanceof AssignNode && node.identifier.name === cache) {
+      coarse = true;
+    } else if (node instanceof StateAssignNode && node.name === variableName
+      && !(node.expression instanceof IdentifierNode && node.expression.name === cache)) {
+      coarse = true;
+    }
+  });
+  return coarse || start === undefined ? undefined : start;
+}
+
+/**
+ * The segments each of the entry's own data records is declared in, or undefined when one is not fixed.
+ *
+ * A record is rebuilt from the fields the body holds where the segment that wrote them closes, so every segment a
+ * write of it lands in is a segment its declaration changes in: one a guard writes on entry and on exit is declared
+ * in both, whatever record it is. The segments are published in the order the writes land in, which is what a
+ * builder needs to chain them — the value between two of them is not the plan's to state. A write to a field the
+ * record only sizes takes the record with it into the run's last segment wherever the source makes it, because the
+ * record is only rebuilt once the chunk run is written; such a record is declared written there and nowhere else.
+ * A write the source does not locate leaves the whole entry unstated, which the builder refuses by name.
  */
 function perCallRecordWriteSegments(
   steps: readonly PerCallWriteStep[],
+  entry: FunctionDefinitionNode,
 ): PerCallRecordWriteSegments | undefined {
   const sized = new Set<number>();
-  const variables = new Set<string>();
+  const variables = new Map<string, Set<string> | null>();
   const segments = new Map<number, Set<PerCallWriteSegment>>();
+  const writtenVariables = new Map<number, Map<PerCallWriteSegment, Set<string>>>();
   for (const step of steps) {
     if (step.statement instanceof MappingAssignNode || step.statement instanceof MappingDeleteNode) continue;
     const stateVariable = (step.statement as { readonly stateVariable?: StateVariableNode }).stateVariable;
     if (stateVariable === undefined) return undefined;
     if (stateVariable.isDynamic === true) {
       sized.add(stateVariable.nftIndex);
-      variables.add(stateVariable.name);
+      const names = writtenVariables.get(stateVariable.nftIndex) ?? new Map<PerCallWriteSegment, Set<string>>();
+      const lastName = names.get('last') ?? new Set<string>();
+      lastName.add(stateVariable.name);
+      names.set('last', lastName);
+      writtenVariables.set(stateVariable.nftIndex, names);
+      const preserved = preservedElementFields(entry, stateVariable.name);
+      const incoming = preserved === undefined ? null : new Set(preserved);
+      const previous = variables.has(stateVariable.name) ? variables.get(stateVariable.name)! : undefined;
+      if (previous === undefined) variables.set(stateVariable.name, incoming);
+      else if (previous === null || incoming === null) variables.set(stateVariable.name, null);
+      else for (const field of [...previous]) if (!incoming.has(field)) previous.delete(field);
       continue;
     }
     const segment = writeStepSegment(step);
@@ -1093,15 +1262,26 @@ function perCallRecordWriteSegments(
     const forRecord = segments.get(stateVariable.nftIndex) ?? new Set<PerCallWriteSegment>();
     forRecord.add(segment);
     segments.set(stateVariable.nftIndex, forRecord);
+    const names = writtenVariables.get(stateVariable.nftIndex) ?? new Map<PerCallWriteSegment, Set<string>>();
+    const atSegment = names.get(segment) ?? new Set<string>();
+    atSegment.add(stateVariable.name);
+    names.set(segment, atSegment);
+    writtenVariables.set(stateVariable.nftIndex, names);
   }
-  const written = new Map<number, PerCallWriteSegment>();
+  const written = new Map<number, readonly PerCallWriteSegment[]>();
   for (const [record, at] of segments) {
-    if (sized.has(record)) continue;
-    if (at.size !== 1) return undefined;
-    written.set(record, [...at][0]!);
+    // Every segment the record's own writes land in is published, in segment order: the emitter closes a written
+    // record in each of them, so a builder places a record's declarations in all of them rather than in one.
+    written.set(record, sized.has(record) ? ['last'] : [...at].sort(segmentOrder));
   }
-  for (const record of sized) written.set(record, 'last');
-  return { segments: written, variables: [...variables] };
+  for (const record of sized) if (!written.has(record)) written.set(record, ['last']);
+  const dynamicWrites: PerCallDynamicWrite[] = [...variables].map(([name, fields]) =>
+    (fields === null ? { name } : { name, preservedFields: [...fields] }));
+  const recordWriters = new Map<number, ReadonlyMap<PerCallWriteSegment, readonly string[]>>();
+  for (const [record, perSegment] of writtenVariables) {
+    recordWriters.set(record, new Map([...perSegment].map(([segment, names]) => [segment, [...names]] as const)));
+  }
+  return { segments: written, writtenVariables: recordWriters, variables: dynamicWrites };
 }
 
 /** True for a hidden operand that is neither a frame value nor a sorted-batch operand the master derives. */

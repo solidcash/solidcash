@@ -176,7 +176,7 @@ describe('the write facts an entry publishes', () => {
     expect(published.single).toBeUndefined();
     expect(published.writes).toStrictEqual([
       { collection: 'balances', segment: 0 },
-      { record: 0, segment: 'last' },
+      { record: 0, segment: 'last', writtenVariables: ['names'] },
       { variable: 'names', segment: 'last' },
     ]);
     expect(published.refused).toStrictEqual([]);

@@ -45,6 +45,9 @@ effects that function actually has:
 - `entryAccesses` - mapping/collection entry reads/writes (the entry NFT + key sources + operations).
 - `collectionIterations` - `for (x in collection)` (mode + which iteration slot).
 - `dynamicReads` / `dynamicWrites` - unbounded `string`/`bytes`/dynamic-array chunk vars read/written.
+- `dynamicWriteSources` / `dynamicWriteGrowth` - a per-call entry's append: the element it states when the
+  vocabulary can name it, and otherwise how many elements the write appends (a bare `push()` appends one, a push
+  in a run-time loop one per turn of the array the artifact names).
 - `externalCalls` - `IFoo(addr).m()` / opaque `addr.call(...)` (address source, callee data-NFT count,
   return-event signature, `computedOffset`, `callMode`, `loopArrayVar`, `argSources`).
 - `externalReads` / `externalOutStateReads` - cross-contract state reads.

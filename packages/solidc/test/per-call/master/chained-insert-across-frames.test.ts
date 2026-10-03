@@ -307,6 +307,39 @@ describe('mapping nodes created and relinked across frames', () => {
     expect(verdicts(LEDGER, composition)).toStrictEqual(ACCEPTED);
   });
 
+  it('settles a read-modify-write over a node an earlier frame created', () => {
+    // Both frames run the `credit` body, which reads the key's balance and writes it back increased: frame one reads
+    // the absent default and creates the node, frame two reads the node frame one created and writes back the sum.
+    const composition: Composition = {
+      frames: [
+        put(K1, 11, insertGroup(
+          { in: SPENT, out: SPENT, viewIn: HEAD, viewOut: head(K1) }, CREATED, node(K1, undefined, 11),
+        )),
+        put(K1, 5, [{ in: NONE, out: CREATED, viewIn: node(K1, undefined, 11), viewOut: node(K1, undefined, 16) }]),
+      ],
+      spent: { before: HEAD, after: head(K1) },
+      created: [{ commitment: node(K1, undefined, 16) }],
+    };
+    expect(verdicts(CREDIT, composition)).toStrictEqual(ACCEPTED);
+  });
+
+  it('refuses a read-modify-write whose declared end view is not the sum the body computes', () => {
+    // The same composition with the second frame's declared end view left at the node it read: the body computes the
+    // sum, so the frame's own close disagrees with what it declared. That the refusal is the frame's is what makes
+    // the accept beside it evidence that the read of the created node served the value the earlier frame wrote.
+    const composition: Composition = {
+      frames: [
+        put(K1, 11, insertGroup(
+          { in: SPENT, out: SPENT, viewIn: HEAD, viewOut: head(K1) }, CREATED, node(K1, undefined, 11),
+        )),
+        put(K1, 5, [{ in: NONE, out: CREATED, viewIn: node(K1, undefined, 11), viewOut: node(K1, undefined, 11) }]),
+      ],
+      spent: { before: HEAD, after: head(K1) },
+      created: [{ commitment: node(K1, undefined, 11) }],
+    };
+    expect(verdicts(CREDIT, composition)).toStrictEqual({ frameOne: true, frameTwo: false, settlement: true });
+  });
+
   it('settles a two-target batch whose inserts share a predecessor an earlier frame created', () => {
     // Frame one inserts K1 and K4 through the head; frame two inserts K2 and K3, both in the gap K1's node opens, so
     // each of its groups declares that node again and both gaps are proved against the view the batch started from.

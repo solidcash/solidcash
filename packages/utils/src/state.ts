@@ -1540,7 +1540,14 @@ export function packFixedWidthElement(value: PrimitiveStateValue, elementType: s
   const t = parseTypeStrict(elementType);
   if (t === PrimitiveType.BOOL) return new Uint8Array([value ? 1 : 0]);
   if (t instanceof IntType || t instanceof FixedType) {
-    return encodeIntAsFixedBytes(value as bigint, t.byteWidth);
+    // ethers-parity: a fixed-width element accepts a JS `number` the same way a scalar int state value does, so an
+    // array built from JS numbers packs the identical bytes as one built from bigints.
+    let numeric = value as bigint | number;
+    if (typeof numeric === 'number' && Number.isSafeInteger(numeric)) numeric = BigInt(numeric);
+    if (typeof numeric !== 'bigint') {
+      throw new Error(`packFixedWidthElement: expected bigint for type '${elementType}', got ${typeof numeric}`);
+    }
+    return encodeIntAsFixedBytes(numeric, t.byteWidth);
   }
   if ((t instanceof BytesType && t.bound !== undefined) || t === PrimitiveType.PUBKEY) {
     const width = fixedWidthBytes(t);

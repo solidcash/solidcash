@@ -293,9 +293,10 @@ import {
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { dropFirstPushScript, dropLastPushScript, dropPrefix } from '../per-call/master/witness-reader.js';
 import {
-  declaredRecordFirstViewByNameScript, declaredRecordOrdinalFieldsScript, declaredRecordOrdinalIndexScript,
-  declaredRecordOrdinalViewScript, declaredRecordViewScript, declaredRecordsKeptScript,
-  declaredSegmentRecordCountScript, validatorSettledScript, type DeclaredViewCounts, type RecordSide,
+  declaredRecordFirstViewByNameScript, declaredRecordOrdinalFieldsScript,
+  declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript, declaredRecordViewScript,
+  declaredRecordsKeptScript, declaredSegmentRecordCountScript, validatorSettledScript,
+  type DeclaredViewCounts, type RecordSide,
 } from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
@@ -1259,6 +1260,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * arms are required to agree, which the admission has already established.
    */
   private perCallOrdinal = 0;
+  /** The call sites already bound in this pass, so an argument's own call is not bound a second time. */
+  private perCallLoweredSites = new Set<ExternalFunctionCallNode>();
   /**
    * The last segment each record block offset was touched in, which is where a frame that ends after a segment it
    * did not touch rebuilds the record: the record's value there is the one the frame left.
@@ -3545,7 +3548,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // one, so it is not part of the block that is always there: a loop that takes no turn declares nothing where
     // the slot sits, and the run is addressed past the records that are always declared. The records the turns do
     // add are counted where the run is addressed.
-    return blockInputSize(layout) - layout.slots.filter(
+    //
+    // A side-car slot carries a co-spent input the frame's owner places after its own master, outside the record
+    // block the run is addressed from, so it advances no record coordinate and is not part of the width either.
+    const sideCars = layout.slots.filter(
+      (slot) => slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar',
+    ).length;
+    return blockInputSize(layout) - sideCars - layout.slots.filter(
       (slot) => slot.kind === 'entry' && slot.slotIndex !== undefined && !isOutputOnlyBlockSlot(slot)
         && this.entrySlots[slot.slotIndex]?.inLoop === true,
     ).length;
@@ -4052,8 +4061,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             );
           }
           // The value the code computes replaces itself with the push the wire carries, so the frame is unchanged.
-          this.markArrayArgumentBlobEncoded(parameter);
-          this.visit(parameter);
+          if (this.perCallMaster && parameter instanceof ExternalFunctionCallNode
+            && this.perCallLoweredSites.has(parameter)) {
+            // The argument is a call that was lowered into its own site before this one, and the value it left sits
+            // directly beneath the digest built so far. Lifting it over the digest is what visiting it in place
+            // would leave; running the site again would bind a second record. Both items are consumed by the
+            // concatenation below, so the frame is unchanged either way.
+            this.emit(Op.OP_SWAP, loc);
+          } else {
+            this.markArrayArgumentBlobEncoded(parameter);
+            this.visit(parameter);
+          }
           this.emit(bytecodeToScript(canonicalPushScript(argument.numeric)), loc);
         }
         this.emit(Op.OP_CAT, loc);
@@ -7471,6 +7489,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallCallsMadeActive = false;
     this.perCallSegmentIndex = 0;
     this.perCallOrdinal = 0;
+    this.perCallLoweredSites = new Set<ExternalFunctionCallNode>();
     this.perCallRecordSegment = new Map();
     this.perCallReadSegment = undefined;
     this.perCallBatchWriteSegment = 0;
@@ -21153,16 +21172,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return consider(node.addressExpression);
   }
 
+  /**
+   * Lowers the calls an argument expression makes into their own sites, before the call they feed.
+   *
+   * The execution reaches a call inside an argument before the call it feeds, so it is closed and bound first; the
+   * value it leaves is what the outer site's argument digest consumes.
+   */
+  private lowerPerCallArgumentCalls(expression: Node): void {
+    walkInvocationAst(expression, (candidate) => {
+      if (candidate instanceof ExternalFunctionCallNode && !this.perCallLoweredSites.has(candidate)) {
+        this.visit(candidate);
+      }
+    });
+  }
+
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
     // A call folded into a deploy genesis is inert here - its effect is emitted by the deploy covenant.
     if (node.foldedIntoDeploy) return node;
+    // A call an argument expression makes was already lowered into its own site for the call it feeds; visiting it
+    // again would bind a second record, so the value it left on the frame is what the digest consumes.
+    if (this.perCallMaster && this.perCallLoweredSites.has(node)) return node;
     // A per-call master binds each call to its own witness record where the call is made: the body reads its
     // block, walks to the site's record and checks kind, target, calleeRef and argsHash against what the source
     // says, then takes the call's result from the record. The head no longer checks the record; it only walks
     // past the call section to reach the segments, events and sends.
     if (this.perCallMaster) {
+      // A call an argument expression makes is its own site, and the execution reaches it before the call it feeds:
+      // closing and binding the outer site first would number the two against the source's order and leave the
+      // inner one sharing the outer's record. Lower the arguments' own sites first, marking them so the digest's
+      // own visit reuses the value they left instead of binding the record a second time.
+      for (const parameter of node.parameters ?? []) this.lowerPerCallArgumentCalls(parameter);
       this.emitPerCallSegmentClose({ location: node.location, positionHint: PositionHint.START }, false);
       this.emitPerCallCallSite(node, { location: node.location, positionHint: PositionHint.START });
+      this.perCallLoweredSites.add(node);
       // The call closes this segment; the code that follows runs in the next one, whose record views differ. Any
       // value written before the call is the closed segment's, so a later read resolves from the declaration.
       this.perCallSegmentIndex += 1;
@@ -27839,11 +27881,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(flagIndex)), loc);
         this.emit(Op.OP_PICK, loc);
         this.emit(Op.OP_NOTIF, loc);
-        this.emitPerCallEntryIndex('in', slot, loc);
-        this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-        this.emitPerCallEntryIndex('out', slot, loc);
+        // The node is the one the group's proof names, not whichever record the frame's declaration happens to put
+        // at the slot's position: a target the frame continues is named by the output it was created at, and the
+        // group's own proof carries that coordinate. A node the frame spends is held to the commitment it was spent
+        // with; one it continues has no input, so its output is held to the view the declaration gives the node.
+        arg(`__internal__vmapBatchProof_${slot}`);
+        this.emitMasterInputIndex(loc);
+        this.emit(Op.OP_ADD, loc);
+        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc);
         this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+        this.emit(Op.OP_SWAP, loc);
+        this.emit(bytecodeToScript(declaredRecordFirstViewByNameScript(this.declaredViewCounts(loc))), loc);
         this.emit(Op.OP_EQUALVERIFY, loc);
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+        this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);
+        this.emit(Op.OP_ENDIF, loc);
         this.emit(Op.OP_ENDIF, loc);
       }
     }
@@ -28372,8 +28428,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_0, locationData);
         this.emit(Op.OP_NUMNOTEQUAL, locationData);
       } else {
-        // Ordinary entry points use physical fixed-slot presence.
-        this.emitSlotExistsCheck('entry', i, locationData);
+        // Ordinary entry points use physical fixed-slot presence. A per-call frame records a node an earlier frame
+        // created at the sentinel coordinate, which names no input, so presence is read the read-only way there and
+        // a created node takes the `false` arm rather than reading a category at a coordinate that holds no input.
+        this.emitReadOnlyEntryExistsCheck(i, locationData);
       }
 
       // If the slot is active, verify the entry input's token category.
@@ -33439,10 +33497,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (returningExternalSlots.length > 0) this.emitAddCollectionIterCounts(loc);
       // The run's own record sits after the batch's target slots and the extra records a splice declares.
       this.emitSortedBatchRecordSurplus(loc);
-      if (this.runtimeLoopEntryOutputCountActive) {
+      if (this.runtimeLoopEntryOutputCountActive && !this.perCallMaster) {
         // Runtime mapping entries are verified inline before the epilogue's newly written dynamic chunks. Their
         // exact width can differ from the source iteration count (an insert may emit predecessor + NEW), so use
         // the accumulated on-chain output counters rather than reconstructing this offset from ABI arguments.
+        // A per-call frame's base already counts the nodes its own loops declared, so it adds the total once.
         this.emitPickCompilerRouteFrameValue(
           GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT, loc, 1,
         );
@@ -33790,6 +33849,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     fieldsInNft: StateVariableNode[],
     loc: SingleLocationData,
     extraStackOffset = 0,
+    side: RecordSide = 'in',
   ): void {
     if (this.usesMessageBusOwnerBlockBase() || this.usesProxyStateBlockBase()) {
       this.emitMasterInputIndex(loc, extraStackOffset);
@@ -33810,7 +33870,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A per-call master's record block is where its own frame declared it, so the read is written where it is
     // made: the index a shared helper would bake in is a depth the invoking frame does not share.
     if (this.readsRecordsFromFrame) {
-      this.emitStateFieldReadInline({ offset, decode }, loc);
+      this.emitStateFieldReadInline({ offset, decode }, loc, side);
       return;
     }
     const key = [
@@ -33834,7 +33894,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
-    this.emitStateFieldReadInline(this.stateReads.get(key)!, loc);
+    this.emitStateFieldReadInline(this.stateReads.get(key)!, loc, side);
   }
 
   private emitStateFieldReadInline(
@@ -33849,8 +33909,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       };
     },
     loc: SingleLocationData,
+    side: RecordSide = 'in',
   ): void {
-    this.emitRecordBlockBase('in', loc);
+    this.emitRecordBlockBase(side, loc);
     this.emit(encodeInt(BigInt(read.offset)), loc);
     this.emit(Op.OP_ADD, loc);
     // A source read marks the record touched in this segment; a read emitted for a known earlier segment (the
@@ -33858,7 +33919,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.perCallReadSegment === undefined) {
       this.perCallRecordSegment.set(read.offset, this.perCallSegmentIndex);
     }
-    this.emitRecordCommitmentRead('in', loc);
+    this.emitRecordCommitmentRead(side, loc);
     this.emitStateFieldDecodeInline(read.decode, loc);
   }
 
@@ -34236,21 +34297,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Leaves the coordinate the frame's declaration puts an entry at, on top of whatever working area a site has
-   * built. The frame parks the declared input and output of the record its block opens with, so the entry sits
-   * its per-call offset past that base. The pick addresses the frame by its stable bottom ordinal rather than a
-   * top-relative depth, which would have to be told the size of the working area.
+   * built.
+   *
+   * The frame's own segment declares one position per record it holds, and its entry nodes hold fixed positions
+   * among them, so a position inside that declaration names the coordinate the plan stated. That is what lets a
+   * record the frame does not name — one its owner declares past the implementation's, for instance — sit where
+   * the band-and-offset count would otherwise put the node. A position past the declaration is a read that names a
+   * node the running frame never made, and keeps the count: the frame parks the declared input and output of the
+   * record its block opens with, so the entry sits its per-call offset past that base, which the pick addresses by
+   * the frame's stable bottom ordinal rather than a top-relative depth.
    */
   private emitPerCallEntryIndex(side: 'in' | 'out', slotIndex: number, loc: SingleLocationData): void {
-    const name = side === 'in' ? recordInputIndexSlotName() : recordOutputIndexSlotName();
-    this.emitPickTrackedFromBottom(name, loc);
-    this.emit(encodeInt(BigInt(this.perCallEntryOffset(slotIndex))), loc);
-    this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(BigInt(this.perCallEntryOffset(slotIndex) - 1)), loc);
     // A paging read names a different node each turn, and the frame declares one per turn past the slot's own; the
-    // counter is how many turns in the read is, so the coordinate counts it. Every other read leaves the slot's own.
+    // counter is how many turns in the read is, so the position counts it. Every other read leaves the slot's own.
     if (this.perCallPagingTurnAddend !== undefined) {
       this.emitPickTrackedFromBottom(this.perCallPagingTurnAddend, loc);
       this.emit(Op.OP_ADD, loc);
     }
+    this.emit(Op.OP_DUP, loc); // the position, kept for the branch that counts it
+    this.emitDeclaredSegmentRecordCount(loc); // [position, position, count]
+    this.emit(Op.OP_LESSTHAN, loc); // [position, the position names a declared record]
+    this.emit(Op.OP_IF, loc);
+    this.emitDeclaredOrdinalIndexRead(side, loc); // [coordinate]
+    this.emit(Op.OP_ELSE, loc);
+    this.emitRecordBlockBase(side, loc); // [position, base]
+    this.emit(Op.OP_SWAP, loc); // [base, position]
+    this.emit(Op.OP_ADD, loc); // [base + position]
+    this.emit(Op.OP_1ADD, loc); // [base + the entry's own offset]
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -34602,11 +34677,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Read a dynamic var's uint32 A$len header from its data NFT INPUT commitment; push as `trackName`. */
   private emitReadDynamicLen(
     sv: StateVariableNode, trackName: string, loc: SingleLocationData, extraStackOffset = 0,
+    side: RecordSide = 'in',
   ): void {
     const fieldsInNft = this.stateVariables
       .filter((v) => v.nftIndex === sv.nftIndex)
       .sort((a, b) => a.fieldIndex - b.fieldIndex);
-    this.emitStateFieldRead(sv, new IntType(false, 32), fieldsInNft, loc, extraStackOffset);
+    this.emitStateFieldRead(sv, new IntType(false, 32), fieldsInNft, loc, extraStackOffset, side);
     this.pushToStack(trackName);
   }
 
@@ -34916,6 +34992,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Whether a body's own dynamic run is the last record family its segments declare.
+   *
+   * A run the entry grows is declared past the read-only runs and ahead of the value chunks a long mapping value
+   * takes, so a run the body only reads, or a body that writes such a value beside it, declares records past the
+   * run: its position then cannot come from the declaration's own width.
+   */
+  private perCallRunClosesSegment(sv: StateVariableNode): boolean {
+    return (this.currentFunction.dynamicWrites ?? []).includes(sv.name)
+      && !this.valueChunkTrailingCountActive;
+  }
+
+  /**
+   * Adds the distance from the frame's parked record base to a dynamic run's first declared record.
+   *
+   * Entry `[..., base]`, exit `[..., base + 1 + declaredCount - runWidth]`: the block's first declared record sits
+   * one past the base, and the run's records are the declaration's last, so the run leads the declared width less
+   * its own count.
+   *
+   * A per-call frame counts the records a run-time loop declares only as its turns mint them, so a body that
+   * addresses the run before those turns has no count to add: the segment's own declaration states where the run
+   * sits for the execution whatever turns the loop took. The run's width covers both versions of the value, the
+   * chunks the segment started with and the ones it writes, both of which its declaration of the data record
+   * states.
+   */
+  private emitPerCallDeclaredRunOffset(sv: StateVariableNode, loc: SingleLocationData): void {
+    const CHUNK = 120;
+    this.emitReadDynamicLen(sv, '(dyn_rwidth)', loc, 0, 'out');
+    this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(BigInt(CHUNK)), loc);
+    this.emit(Op.OP_DIV, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_rcount)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(dyn_rcount_copy)');
+    this.emit(Op.OP_MAX, loc);
+    this.popFromStack(2);
+    this.pushToStack('(dyn_rwidth)');
+    this.emitDeclaredSegmentRecordCount(loc);
+    this.popFromStack(); // the width sits below the declaration's count, untracked with it
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_SUB, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_ADD, loc);
+  }
+
+  /**
    * Read a persisted dynamic-storage var (string / unbounded bytes) on-chain. Reads the uint32 A$len header,
    * then loops over the var's co-spent chunk INPUTS (trailing, at OP_INPUTINDEX + blockSize + i), verifying
    * each is a genuine chunk (address + chunkIndex == i) and OP_CATing its data onto an accumulator;
@@ -35020,6 +35142,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // inputIdx = masterInputIndex + blockSize + sum(collection-iter counts) + sum(prior read counts) + i
     const explicitBase = this.getStackIndex('__internal__dynamicChunkInputBase', true);
     const threadedBase = this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true);
+    // The run a body writes is declared in the frame's last segment, where the epilogue pins it, so a read made
+    // before the calls the frame makes resolves it there rather than in the segment it is running in.
+    const runInLastSegment = this.perCallMaster && this.runtimeLoopEntryOutputCountActive
+      && this.perCallRunClosesSegment(sv);
     if (explicitBase >= 0) {
       // No untracked value has been pushed in this branch yet: the absolute base is still at its tracked depth.
       // Adding one here asks OP_PICK for exactly one item below the runtime stack when the witness is the oldest
@@ -35030,14 +35156,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(explicitBase)), loc);
       this.emit(Op.OP_PICK, loc);
       if (this.perCallMaster) {
-        this.emit(encodeInt(BigInt(this.perCallDynamicChunkWidth())), loc);
-        this.emit(Op.OP_ADD, loc);
-        // The run follows the nodes the body's own loops declared for this frame, which is a count the frame
-        // carries: a loop that took no turn declared none.
-        this.emitLoopDeclaredNodeCount(loc, 1);
-        // The read addresses the same record the write does, so it states the same batch surplus: without it the
-        // run's coordinate names the record a spliced target's extra declaration displaced.
-        this.emitSortedBatchRecordSurplus(loc);
+        if (runInLastSegment) {
+          // The body declares run-time loop records, which the frame counts only as its turns mint them: a read
+          // made before those turns has no count to add, so the run's position comes from the segment's own
+          // declaration of the records instead.
+          this.emitPerCallDeclaredRunOffset(sv, loc);
+        } else {
+          this.emit(encodeInt(BigInt(this.perCallDynamicChunkWidth())), loc);
+          this.emit(Op.OP_ADD, loc);
+          // The run follows the nodes the body's own loops declared for this frame, which is a count the frame
+          // carries: a loop that took no turn declared none.
+          this.emitLoopDeclaredNodeCount(loc, 1);
+          // The read addresses the same record the write does, so it states the same batch surplus: without it the
+          // run's coordinate names the record a spliced target's extra declaration displaced.
+          this.emitSortedBatchRecordSurplus(loc);
+        }
       }
       // Values below -1 encode an inactive-write route while retaining its read-only chunk coordinate:
       // encoded = -(base + 3). Decode before applying read-loop offsets.

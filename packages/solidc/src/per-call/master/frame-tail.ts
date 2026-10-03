@@ -696,8 +696,10 @@ export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
  * segment per external call plus one, and each segment declares, for the record it touches, the commitment that
  * record holds at the segment's start and at its end. This walk turns those declarations into one transition: the
  * first begins at the commitment the transaction spends, every later one carries on from the one before it, and the
- * last ends at the commitment the transaction writes. The same walk checks that the state UTXOs spent are exactly
- * the record declared, and that no state output carries the contract's token that no segment declared.
+ * last ends at the commitment the transaction writes; a record the transaction creates has no input index, so it
+ * begins at the empty commitment rather than at one an input carries. The same walk checks that the state UTXOs
+ * spent are exactly the record declared, and that no state output carries the contract's token that no segment
+ * declared.
  *
  * The check re-reads the block rather than reusing the shape walk, because the shape walk drops the view payloads it
  * reads. One chain is settled: a contract's data NFT is one record, so the shape covers it. A segment declaring
@@ -857,6 +859,8 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
             copyNumber(0); // in
             emit(Opcodes.OP_0, Opcodes.OP_LESSTHAN);
             emit(Opcodes.OP_VERIFY); // a created record has no index to be read at
+            copy(2); // viewIn
+            emit(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY); // and it starts from nothing
             copyAlt(1); // seenOut
             emit(Opcodes.OP_NOT, Opcodes.OP_VERIFY); // and it is created once
             replaceAlt(2, (held) => copy(3, held)); // lastView = viewOut

@@ -2,7 +2,7 @@ import {
   AbiFunction, Artifact, CompilerOptions, DebugInformation, Script, scriptToAsm, StateLayout, ArrayType,
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type,
   EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
-  ValueProvenance, ValueProvenanceKind,
+  ValueProvenance, ValueProvenanceKind, DynamicWriteGrowthAbi,
   abiTypeString, ChildDeploymentValueRecipe, FixedBchTransferAbi, ExternalResultConsumerAbi,
   ATOMIC_MESSAGE_BUS_MAX_ROWS,
 } from '@solidcash/utils';
@@ -13,11 +13,13 @@ import {
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
   ExpressionNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
   BlockNode, WhileNode, VariableDefinitionNode,
+  DoWhileNode, CollectionIterationNode,
   BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode, IntLiteralNode,
   RevertNode,
   ArrayNode, NewArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode, StateArrayPushNode,
+  ArrayPushNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
   ExternalCallStatement, EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode,
   UnaryOpNode, NullaryOpNode, BranchNode, BoolLiteralNode,
@@ -671,7 +673,9 @@ const expressionSource = (
  * push appends, under the pushed variable's name. A body that pushes the element type's default and then fills
  * its fields in place rebuilds that element once per field write; the fields are folded into the stated element,
  * so what is published is the element the body writes rather than the default the push appended. A field value
- * the vocabulary cannot state leaves the element unstated, as any other unrepresentable value does. The run's
+ * the vocabulary cannot state leaves the element unstated, as any other unrepresentable value does - except the
+ * machine's own clock (`block.timestamp`), which is published as a read of the register it desugars to, so an
+ * element a body stamps with the transaction's time is the element the consumer states. The run's
  * width is the live value's plus that element, so the element is what a consumer has to state; the same
  * one-write-per-path proof applies. Only the per-call convention
  * reads this entry shape, so the other conventions' artifacts are unchanged.
@@ -787,6 +791,14 @@ const dynamicWriteSourcesOf = (
       && (expression.operator === NullaryOperator.MSG_SENDER
         || expression.operator === NullaryOperator.TX_ORIGIN)) {
       return { kind: 'source', source: { kind: 'msgSender' } };
+    }
+    // The machine's own clock is a register of the contract's state, so an element field the body fills with it is
+    // a read of that register: the consumer resolves it from the state its plan runs on, exactly as the direct
+    // convention's appended-element recipe does.
+    if (appendMode && ((expression instanceof NullaryOpNode
+      && expression.operator === NullaryOperator.BLOCK_TIMESTAMP)
+      || (expression instanceof StateAccessNode && expression.name === '__block_timestamp'))) {
+      return { kind: 'state', name: '__block_timestamp', type: expression.type?.toString() ?? 'uint32' };
     }
     if (appendMode && (expression instanceof InstantiationNode || expression instanceof FunctionCallNode)) {
       // Only a call spelled exactly as a declared struct constructs one; a function returning a struct has the
@@ -1155,6 +1167,298 @@ const dynamicWriteSourcesOf = (
   return Object.fromEntries([...completed.writes]
     .filter(([, write]) => write.minimum === 1 && write.maximum === 1 && write.value !== undefined)
     .map(([name, write]) => [name, write.value!]));
+};
+
+/**
+ * Publish how many elements a per-call entry's own write appends to each dynamic value it writes.
+ *
+ * A per-call body holds a dynamic value in a run of chunk records at the value's own collection covenant, and an
+ * append grows that run. The hop has to state the run's width before the body runs, and the width is the value the
+ * deployment holds plus the elements the write appends. The element's own bytes are published separately, in
+ * `dynamicWriteSources`, whenever the artifact's vocabulary can state them; this map is what remains when it cannot
+ * - a `push()` whose in-place field fills name a machine value the vocabulary has no word for still grows the run
+ * by that one element, and the run can be sized without stating the element at all.
+ *
+ * The count is the same on every completing path that appends. A write the body performs inside a run-time loop
+ * appends the count once per turn, so the total is the loop's width: the loop's array is published when the call
+ * carries it (`varyingArrayParam`), and the loop is marked `looping` when the compiler cannot pin its width to a
+ * call parameter, so a consumer refuses that shape by name rather than guessing a width. A variable whose write the
+ * body also performs the other way - an assignment, a pop, or a straight push beside a loop - is left absent.
+ *
+ * Only the per-call convention reads this fact; the other conventions' artifacts are unchanged.
+ */
+const dynamicWriteGrowthOf = (
+  func: FunctionDefinitionNode,
+  _contract: ContractNode | undefined,
+  compilerOptions: CompilerOptions = {},
+): Readonly<Record<string, DynamicWriteGrowthAbi>> => {
+  if (compilerOptions.composition !== 'per-call' || func.name === '__construct' || !func.body) return {};
+  const names = new Set(func.dynamicWrites ?? []);
+  if (names.size === 0) return {};
+  const parameterNames = new Set(func.parameters
+    .filter((parameter) => !parameter.name.startsWith('__internal__'))
+    .map((parameter) => parameter.name));
+
+  // True when an expression reads the named array (the state variable or the loop cache the pass redirects writes
+  // through): an indexed write whose own value does so rebuilds an element in place (no element is appended).
+  const readsVariable = (expression: ExpressionNode, name: string): boolean => {
+    const seen = new Set<object>();
+    const visit = (value: unknown): boolean => {
+      if (!(value instanceof Node) || seen.has(value)) return false;
+      seen.add(value);
+      if ((value instanceof MappingAccessNode || value instanceof StateAccessNode
+        || value instanceof IdentifierNode) && value.name === name) return true;
+      for (const [key, child] of Object.entries(value)) {
+        if (['location', 'definition', 'symbolTable', 'stateVariable', 'collection'].includes(key)) continue;
+        if (child instanceof Node && visit(child)) return true;
+        if (Array.isArray(child) && child.some((item) => visit(item))) return true;
+      }
+      return false;
+    };
+    return visit(expression);
+  };
+
+  // A dynamic state array written inside a loop is cached in a local (`CacheDynamicArrayInLoop`), so the writes are
+  // spelled `__dlcache_<name>` and a flush writes the local back at every exit. Both spellings name the state
+  // array, and the flush is the write the body's own append produced rather than a second, independent one.
+  const dynamicName = (name: string): string | undefined => {
+    const root = name.startsWith('__dlcache_') ? name.slice('__dlcache_'.length) : name;
+    return names.has(root) ? root : undefined;
+  };
+  const writeTarget = (statement: Node): string | undefined => {
+    const named = statement as unknown as { name?: string };
+    if (named.name === undefined || !/(?:Push|Pop|Delete|Assign)Node$/.test(statement.constructor.name)) {
+      return undefined;
+    }
+    return dynamicName(named.name);
+  };
+  const isCacheFlush = (statement: Node, target: string): boolean =>
+    statement instanceof StateAssignNode && statement.name === target
+    && statement.expression instanceof IdentifierNode && statement.expression.name === `__dlcache_${target}`;
+
+  const abruptControl = new Set(['ReturnNode', 'BreakNode', 'ContinueNode', 'TryCatchNode']);
+  const hasAbrupt = (value: unknown, seen = new Set<object>()): boolean => {
+    if (!(value instanceof Node) || seen.has(value)) return false;
+    seen.add(value);
+    if (abruptControl.has(value.constructor.name)) return true;
+    for (const [key, child] of Object.entries(value)) {
+      if (['location', 'definition', 'symbolTable'].includes(key)) continue;
+      if (child instanceof Node && hasAbrupt(child, seen)) return true;
+      if (Array.isArray(child) && child.some((item) => hasAbrupt(item, seen))) return true;
+    }
+    return false;
+  };
+  const armAlwaysReverts = (block: BlockNode): boolean =>
+    block.statements?.at(-1) instanceof RevertNode && !hasAbrupt(block);
+
+  // True when a statement writes a dynamic value in a way this analysis does not model as an append, or calls a
+  // helper that does. Fail closed: the variable is left absent rather than counted short.
+  const touchesDynamicWrite = (value: unknown, seen = new Set<object>()): boolean => {
+    if (!(value instanceof Node) || seen.has(value)) return false;
+    seen.add(value);
+    if (value instanceof FunctionCallNode) {
+      const callee = value.resolvedFunction;
+      if (callee !== undefined && callee !== func && callee.body !== undefined
+        && touchesDynamicWrite(callee.body, seen)) return true;
+    }
+    if (writeTarget(value) !== undefined) return true;
+    for (const [key, child] of Object.entries(value)) {
+      if (['location', 'definition', 'symbolTable', 'resolvedFunction', 'functionReference',
+        'stateVariable', 'collection'].includes(key)) continue;
+      if (child instanceof Node && touchesDynamicWrite(child, seen)) return true;
+      if (Array.isArray(child) && child.some((item) => touchesDynamicWrite(item, seen))) return true;
+    }
+    return false;
+  };
+
+  // The name of a call parameter whose array length bounds the expression, when one does. `for (i < who.length)`
+  // is the loop whose width the call itself states; any other bound is a width the call does not carry.
+  const lengthParamOf = (value: unknown, seen = new Set<object>()): string | undefined => {
+    if (!(value instanceof Node) || seen.has(value)) return undefined;
+    seen.add(value);
+    if (value instanceof UnaryOpNode && value.operator === UnaryOperator.SIZE
+      && value.expression instanceof IdentifierNode && parameterNames.has(value.expression.name)) {
+      return value.expression.name;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['location', 'definition', 'symbolTable'].includes(key)) continue;
+      if (child instanceof Node) {
+        const found = lengthParamOf(child, seen);
+        if (found !== undefined) return found;
+      } else if (Array.isArray(child)) {
+        for (const item of child) {
+          const found = lengthParamOf(item, seen);
+          if (found !== undefined) return found;
+        }
+      }
+    }
+    return undefined;
+  };
+
+  const isLoopNode = (node: Node): boolean =>
+    node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode;
+  const loopBodyOf = (node: Node): BlockNode =>
+    node instanceof WhileNode || node instanceof DoWhileNode ? node.block : (node as CollectionIterationNode).body;
+  const loopConditionOf = (node: Node): ExpressionNode | undefined =>
+    node instanceof WhileNode || node instanceof DoWhileNode ? node.condition : undefined;
+
+  const addCounts = (target: Map<string, number>, source: ReadonlyMap<string, number>): void => {
+    for (const [name, count] of source) target.set(name, (target.get(name) ?? 0) + count);
+  };
+  const sameCounts = (left: ReadonlyMap<string, number>, right: ReadonlyMap<string, number>): boolean => {
+    for (const name of names) if ((left.get(name) ?? 0) !== (right.get(name) ?? 0)) return false;
+    return true;
+  };
+
+  // The elements one turn of a loop appends. A nested loop, an early exit, or any other write to a dynamic value
+  // makes the per-turn count indeterminate, so the whole loop is left unstated rather than counted short.
+  const perTurnAppends = (block: BlockNode): Map<string, number> | undefined => {
+    const state = new Map<string, number>();
+    for (const statement of block.statements ?? []) {
+      const target = writeTarget(statement);
+      if (target !== undefined) {
+        if (statement instanceof StateArrayPushNode || statement instanceof ArrayPushNode) {
+          state.set(target, (state.get(target) ?? 0) + 1);
+          continue;
+        }
+        if ((statement instanceof StateArrayAssignNode || statement instanceof ArrayAssignNode)
+          && readsVariable(statement.value, statement.name)) continue;
+        if (isCacheFlush(statement, target)) continue;
+        return undefined;
+      }
+      if (statement instanceof BranchNode) {
+        const ifCounts = perTurnAppends(statement.ifBlock);
+        const elseCounts = statement.elseBlock ? perTurnAppends(statement.elseBlock) : new Map<string, number>();
+        if (ifCounts === undefined || elseCounts === undefined) return undefined;
+        const ifAborts = armAlwaysReverts(statement.ifBlock);
+        const elseAborts = statement.elseBlock !== undefined && armAlwaysReverts(statement.elseBlock);
+        if (ifAborts !== elseAborts) { addCounts(state, ifAborts ? elseCounts : ifCounts); continue; }
+        if (ifAborts && elseAborts) return undefined;
+        if (!sameCounts(ifCounts, elseCounts)) return undefined;
+        addCounts(state, ifCounts);
+        continue;
+      }
+      if (statement instanceof BlockNode) {
+        const nested = perTurnAppends(statement);
+        if (nested === undefined) return undefined;
+        addCounts(state, nested);
+        continue;
+      }
+      if (isLoopNode(statement) || hasAbrupt(statement) || touchesDynamicWrite(statement)) return undefined;
+    }
+    return state;
+  };
+
+  interface Growth { straight: number; loop?: { perTurn: number; arrayParam?: string } }
+  const blockAppends = (block: BlockNode): Map<string, Growth> | undefined => {
+    const state = new Map<string, Growth>();
+    const bumpStraight = (name: string): void => {
+      const growth = state.get(name) ?? { straight: 0 };
+      growth.straight += 1;
+      state.set(name, growth);
+    };
+    // Fold in growth a statement that always runs contributes: the counts add, and one variable cannot carry two
+    // appending loops, whose widths would have to be added rather than named.
+    const addGrowth = (source: ReadonlyMap<string, Growth>): boolean => {
+      for (const [name, growth] of source) {
+        const existing = state.get(name) ?? { straight: 0 };
+        const loops = [existing.loop, growth.loop].filter(
+          (loop): loop is NonNullable<Growth['loop']> => loop !== undefined,
+        );
+        if (loops.length > 1) return false;
+        state.set(name, {
+          straight: existing.straight + growth.straight,
+          ...(loops.length === 0 ? {} : { loop: loops[0]! }),
+        });
+      }
+      return true;
+    };
+    // Fold in one arm of a branch, which every completing path either took or did not: the arms must agree for the
+    // write to be the same one on every path.
+    const sameGrowth = (left: ReadonlyMap<string, Growth>, right: ReadonlyMap<string, Growth>): boolean => {
+      for (const name of names) {
+        const one = left.get(name) ?? { straight: 0 };
+        const other = right.get(name) ?? { straight: 0 };
+        if (one.straight !== other.straight) return false;
+        if ((one.loop === undefined) !== (other.loop === undefined)) return false;
+        if (one.loop !== undefined && other.loop !== undefined
+          && (one.loop.perTurn !== other.loop.perTurn || one.loop.arrayParam !== other.loop.arrayParam)) {
+          return false;
+        }
+      }
+      return true;
+    };
+    for (const statement of block.statements ?? []) {
+      const target = writeTarget(statement);
+      if (target !== undefined) {
+        if (statement instanceof StateArrayPushNode || statement instanceof ArrayPushNode) {
+          bumpStraight(target);
+          continue;
+        }
+        if ((statement instanceof StateArrayAssignNode || statement instanceof ArrayAssignNode)
+          && readsVariable(statement.value, statement.name)) continue;
+        if (isCacheFlush(statement, target)) continue;
+        return undefined;
+      }
+      if (statement instanceof BranchNode) {
+        const ifState = blockAppends(statement.ifBlock);
+        const elseState = statement.elseBlock ? blockAppends(statement.elseBlock) : new Map<string, Growth>();
+        if (ifState === undefined || elseState === undefined) return undefined;
+        const ifAborts = armAlwaysReverts(statement.ifBlock);
+        const elseAborts = statement.elseBlock !== undefined && armAlwaysReverts(statement.elseBlock);
+        // One arm always reverts, so every completing path took the other: only it contributes.
+        if (ifAborts !== elseAborts) {
+          if (!addGrowth(ifAborts ? elseState : ifState)) return undefined;
+          continue;
+        }
+        if (ifAborts && elseAborts) return undefined;
+        if (!sameGrowth(ifState, elseState) || !addGrowth(ifState)) return undefined;
+        continue;
+      }
+      if (statement instanceof BlockNode) {
+        const nested = blockAppends(statement);
+        if (nested === undefined || !addGrowth(nested)) return undefined;
+        continue;
+      }
+      if (isLoopNode(statement)) {
+        const turn = perTurnAppends(loopBodyOf(statement));
+        if (turn === undefined) return undefined;
+        const condition = loopConditionOf(statement);
+        const arrayParam = condition === undefined ? undefined : lengthParamOf(condition);
+        for (const [name, perTurn] of turn) {
+          const existing = state.get(name);
+          if (existing !== undefined && (existing.loop !== undefined || existing.straight > 0)) return undefined;
+          state.set(name, {
+            straight: 0,
+            loop: { perTurn, ...(arrayParam === undefined ? {} : { arrayParam }) },
+          });
+        }
+        continue;
+      }
+      if (touchesDynamicWrite(statement)) return undefined;
+    }
+    return state;
+  };
+
+  const completed = blockAppends(func.body);
+  if (completed === undefined) return {};
+  const growth: Record<string, DynamicWriteGrowthAbi> = {};
+  for (const name of names) {
+    const found = completed.get(name);
+    if (found === undefined || (found.straight === 0 && found.loop === undefined)) continue;
+    if (found.loop !== undefined) {
+      // A straight push beside a loop append is not one count, so the variable stays unstated.
+      if (found.straight > 0) continue;
+      growth[name] = {
+        elements: found.loop.perTurn,
+        ...(found.loop.arrayParam === undefined
+          ? { looping: true } : { varyingArrayParam: found.loop.arrayParam }),
+      };
+      continue;
+    }
+    growth[name] = { elements: found.straight };
+  }
+  return growth;
 };
 
 const transferEffects = (
@@ -1729,6 +2033,7 @@ function buildFunctionAbiMetadata(
   interfaces: readonly InterfaceNode[] = [], compilerOptions: CompilerOptions = {},
 ): Partial<AbiFunction> {
   const dynamicWriteSources = dynamicWriteSourcesOf(func, contract, compilerOptions);
+  const dynamicWriteGrowth = dynamicWriteGrowthOf(func, contract, compilerOptions);
   const iterationDomains = externalCallIterationDomains(func, compilerOptions);
   const possibleSelectorTargets = (
     interfaceName: string, parameters: readonly ExpressionNode[],
@@ -2831,6 +3136,7 @@ function buildFunctionAbiMetadata(
     ...(func.dynamicReads && func.dynamicReads.length > 0 && { dynamicReads: [...func.dynamicReads] }),
     ...(func.dynamicWrites && func.dynamicWrites.length > 0 && { dynamicWrites: [...func.dynamicWrites] }),
     ...(Object.keys(dynamicWriteSources).length > 0 && { dynamicWriteSources }),
+    ...(Object.keys(dynamicWriteGrowth).length > 0 && { dynamicWriteGrowth }),
     ...(routeEntryLoopWrites && routeEntryLoopWrites.some(
       (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
     ) && {

@@ -8,6 +8,10 @@ guards, loops, side-cars, write segments), and the sources in `.marketplace/cont
 set. Updated again at `384859f30` from targeted title runs (no full run): **56 expected** - the 50 plus #30
 (`499e1d178`), #58 (`69283cde1`), #55 and #57 (`b366f1bdf` on `69283cde1`), #19 (`db78982a0`) and #46
 (`384859f30`), each confirmed green by its own run.
+**Measured 2026-10-03 by a full 66-title run at `db78982a0`: `55 passed | 11 failed (66)`** - the 54 above
+plus #19 (`db78982a0`, the read path's per-turn frames for a loop's calls), with the ticked set exactly that
+passing set. The 11 still failing are #46, #50-#53, #59-#62, #65 and #66; each one's own verdict is in the
+plan's Log row for `db78982a0`.
 
 ## The order the titles meet them (HEAD `384859f30`)
 

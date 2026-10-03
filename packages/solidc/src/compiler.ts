@@ -9965,6 +9965,13 @@ function synthesizeMessageBusRoute(
     handler.messageBusEligible = undefined;
     handler.messageBusRejectionReason = undefined;
     handler.messageBusKeyWitnesses = undefined;
+    // A dynamic-only sibling of a pooled entry handler must use the same kernel journal. Leaving it direct
+    // blocks the entry helper's pending array cache, which in turn leaves repeated mapping writes physical and
+    // demands a separate intermediate output for every row. Routes with no pooled entry helper stay unchanged.
+    if (kernelLoopDispatch && [...siblingHandlerInvokeNames.values()].some((name) =>
+      contract.functions.some((candidate) => candidate.name === name && candidate.forceCollectionJournalPool))) {
+      handler.forceCollectionJournalPool = true;
+    }
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }

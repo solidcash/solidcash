@@ -29486,17 +29486,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // explicit dynamic base already includes them and must not count them again.
           const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
           if (batchCountIdx >= 0) {
-            if (explicitDynamicBase >= 0) {
-            // A nonnegative runtime base is the assembled input/output coordinate, including any preceding
-            // mapping entry band. Only the negative sentinel takes the reconstructed path below.
-              this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc, 1);
-              this.emit(encodeInt(0n), loc);
-              this.emit(Op.OP_LESSTHAN, loc);
-              this.emit(Op.OP_IF, loc);
-            }
+            // The absolute dynamic witness locates the first INPUT chunk. A fixed sorted batch can mint an
+            // output-only predecessor before the replacement chunks, so even a nonnegative input base must
+            // advance past that output band. The batch count excludes entry proofs already in the input base.
             this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 1);
             this.emit(Op.OP_ADD, loc);
-            if (explicitDynamicBase >= 0) this.emit(Op.OP_ENDIF, loc);
           }
           if (this.runtimeLoopEntryOutputCountActive) {
           // Runtime mapping entries are verified inline before the epilogue's newly written dynamic chunks. Their

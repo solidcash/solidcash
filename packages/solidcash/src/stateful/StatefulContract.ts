@@ -7487,19 +7487,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const name = match[1];
             const mapped = stateLayout.collections.find((candidate) => candidate.name === name
               && candidate.kind === 'mapping');
-            if (mapped && !locallyWrittenCollections.has(name) && !keyMappingEntries.has(name)) {
+            if (mapped && (!locallyWrittenCollections.has(name)
+              || source.preWriteMappingCollections?.includes(name)) && !keyMappingEntries.has(name)) {
               keyMappingEntries.set(name, await this.getEntries(mapped.signature));
             }
           }
         }
       }
-      const mappingKeyValue = (name: string, key: unknown): StateValue | undefined => {
+      const mappingKeyValue = (
+        name: string, key: unknown, preWriteCollections?: readonly string[],
+      ): StateValue | undefined => {
         const mapped = stateLayout.collections?.find((candidate) => candidate.name === name
           && candidate.kind === 'mapping');
         const entries = keyMappingEntries.get(name);
-        // A handler that also mutates this collection may read a newer in-script value. Never substitute
-        // the pre-transaction snapshot for that read; leave it unresolved for the VM-derived path.
-        if (!mapped || !entries || locallyWrittenCollections.has(name)
+        // A handler that also mutates this collection may read a newer in-script value. Use the
+        // pre-transaction snapshot only when the compiler proves this key read precedes that mutation.
+        if (!mapped || !entries || (locallyWrittenCollections.has(name)
+          && !preWriteCollections?.includes(name))
           || (typeof key !== 'bigint' && typeof key !== 'boolean'
           && typeof key !== 'string' && !(key instanceof Uint8Array))) return undefined;
         const entry = selectMappingEntryByKeys(
@@ -7690,7 +7694,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // Auto-derive a direct computed key (hash160(pk), sha256(x), ...) from its canonical label.
               const auto = evalComputedKey(source.postWriteExpressionLabel ?? source.expressionLabel,
                 entryArgs, entryAbiFunction!.inputs,
-                onChainState.state, undefined, mappingKeyValue);
+                onChainState.state, undefined,
+                (name, key) => mappingKeyValue(name, key, source.preWriteMappingCollections));
               if (auto) return auto;
               // `map:<stateArray>(...)` keys an entry by an element of a dynamic state array, which no ABI input can
               // express: the label indexes by a source-loop local. The entry access's own frame is the row that
@@ -7721,7 +7726,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (source?.kind === 'expression') {
                 const described = evalComputedKey(source.postWriteExpressionLabel ?? paramName,
                   entryArgs, entryAbiFunction!.inputs,
-                  describedState, undefined, mappingKeyValue);
+                  describedState, undefined,
+                  (name, key) => mappingKeyValue(name, key, source.preWriteMappingCollections));
                 if (described !== undefined) return described;
               }
               const ov = overrides?.entryKeyOverrides?.get(slotIndex);
@@ -7798,7 +7804,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     access.keySources[0].postWriteExpressionLabel
                       ?? access.keySources[0].expressionLabel,
                     entryArgs, entryAbiFunction!.inputs, describedState,
-                    undefined, mappingKeyValue,
+                    undefined, (name, key) => mappingKeyValue(
+                      name, key, access.keySources?.[0]?.preWriteMappingCollections,
+                    ),
                   )
                   ?? overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))
                 : access.keySources?.[0]?.kind === 'stateArrayLast'

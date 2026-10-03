@@ -323,7 +323,9 @@ describe('vmap fixed-write batch metadata', () => {
       ?.entryAccesses?.find((access) => access.collection === 'data')?.keySources?.[0];
     expect(key(early)?.expressionLabel).toBe('ternary(map:flags(id:flagKey),id:dataKey,lit:0)');
     expect(key(early)?.postWriteExpressionLabel).toBe('ternary(lit:true,id:dataKey,lit:0)');
+    expect(key(early)?.preWriteMappingCollections).toBeUndefined();
     expect(key(late)?.postWriteExpressionLabel).toBeUndefined();
+    expect(key(late)?.preWriteMappingCollections).toEqual(['flags']);
   });
 
   it('records a mapping rmw of a parameter delta as valueSource', () => {

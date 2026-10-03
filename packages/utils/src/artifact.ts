@@ -1027,6 +1027,8 @@ export interface KeySourceAbi {
   expressionLabel?: string;
   /** Compiler-proven key expression after an adjacent, unconditional mapping write. */
   postWriteExpressionLabel?: string;
+  /** Authenticated mapping snapshots this key reads before the handler's first mutation. */
+  preWriteMappingCollections?: readonly string[];
 }
 
 export interface EntryAccessAbi {

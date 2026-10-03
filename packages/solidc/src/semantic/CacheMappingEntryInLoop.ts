@@ -163,6 +163,25 @@ class ProjectWrittenMappingRead extends AstTraversal {
   }
 }
 
+class SourceMappingReadFinder extends AstTraversal {
+  found = false;
+
+  constructor(private readonly mapping: string) { super(); }
+
+  visitArrayAccess(node: ArrayAccessNode): Node {
+    if (node.array instanceof IdentifierNode && node.array.name === this.mapping
+      && expressionCanon(node.index) !== undefined) this.found = true;
+    return super.visitArrayAccess(node);
+  }
+
+  visitMappingAccess(node: MappingAccessNode): Node {
+    if (node.name === this.mapping && node.keys.every((key) => expressionCanon(key) !== undefined)) {
+      this.found = true;
+    }
+    return super.visitMappingAccess(node);
+  }
+}
+
 function canonKeyOf(k: Node, allowExpression = false): { canon: string; key: KeyKind } | null {
   if (k instanceof IdentifierNode) return { canon: `id:${k.name}`, key: { kind: 'id', name: k.name } };
   if (k instanceof NullaryOpNode
@@ -423,6 +442,21 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private publishAdjacentMappingKeyValues(fn: FunctionDefinitionNode): void {
     const statements = fn.body.statements ?? [];
     const parameters = new Set(fn.parameters.map((parameter) => parameter.name));
+    const first = statements[0];
+    const second = statements[1];
+    const laterWrite = second instanceof ArrayAssignNode && this.scalarMappings.has(second.name)
+      ? second.name : second instanceof MappingAssignNode && this.scalarMappings.has(second.name)
+        ? second.name : undefined;
+    const firstKey = first instanceof ArrayAssignNode && this.scalarMappings.has(first.name)
+      ? first.index : first instanceof MappingAssignNode && this.scalarMappings.has(first.name)
+        && first.keys.length === 1 ? first.keys[0] : undefined;
+    if (laterWrite && firstKey && expressionCanon(firstKey) !== undefined) {
+      const finder = new SourceMappingReadFinder(laterWrite);
+      finder.visit(firstKey);
+      if (finder.found && (first instanceof ArrayAssignNode || first instanceof MappingAssignNode)) {
+        first.preWriteMappingCollections = [laterWrite];
+      }
+    }
     for (let index = 1; index < statements.length; index += 1) {
       const writer = statements[index - 1];
       const reader = statements[index];

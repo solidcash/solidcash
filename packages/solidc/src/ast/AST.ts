@@ -248,6 +248,8 @@ export interface KeySourceInfo {
   canonical: string;       // canonical string for deduplication (all kinds)
   /** SDK-only key expression after a proven adjacent, unconditional mapping write. */
   postWriteExpressionLabel?: string;
+  /** Mapping collections this key reads before any mutation in the source handler. */
+  preWriteMappingCollections?: string[];
 }
 
 export interface EntryAccessInfo {
@@ -1662,6 +1664,8 @@ export class MappingAssignNode extends StatementNode implements Named {
   keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
   /** SDK-only post-write keys proven from adjacent source statements before entry caching. */
   postWriteKeyExpressions?: ExpressionNode[];
+  /** Collections read by this key before any source mutation. */
+  preWriteMappingCollections?: string[];
   /** Function-local program point shared with external-call effects. */
   sourceEffectOrdinal?: number;
   /** Exact argument-only value of a cached final write on its replayable dirty arm. */
@@ -2112,6 +2116,8 @@ export class ArrayAssignNode extends StatementNode implements Named {
   messageBusRuntimeOldValueWitness?: ArrayAccessNode;
   /** SDK-only post-write keys proven before this bare mapping assignment is lowered. */
   postWriteKeyExpressions?: ExpressionNode[];
+  /** Collections read by this key before any source mutation. */
+  preWriteMappingCollections?: string[];
 
   constructor(
     public name: string,

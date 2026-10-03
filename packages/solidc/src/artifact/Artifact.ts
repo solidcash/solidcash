@@ -2625,6 +2625,9 @@ function buildFunctionAbiMetadata(
               ...((ks.kind === 'msgSender' || syntheticSender) && { senderOp: ks.senderOp ?? 'msg.sender' }),
               ...(ks.kind === 'expression' && { expressionLabel: ks.canonical }),
               ...(ks.postWriteExpressionLabel && { postWriteExpressionLabel: ks.postWriteExpressionLabel }),
+              ...(ks.preWriteMappingCollections?.length && {
+                preWriteMappingCollections: [...ks.preWriteMappingCollections],
+              }),
             };
           }),
         }),

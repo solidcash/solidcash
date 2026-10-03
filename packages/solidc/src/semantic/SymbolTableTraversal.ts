@@ -6108,6 +6108,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           keySources[index].postWriteExpressionLabel = this.canonicalizeExpression(expression);
         }
       });
+      if (node.preWriteMappingCollections?.length) {
+        for (const source of keySources) {
+          if (source.kind === 'expression') {
+            source.preWriteMappingCollections = [...node.preWriteMappingCollections];
+          }
+        }
+      }
       node.keySources = keySources;
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const existing = map.get(slotKey);
@@ -11257,6 +11264,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         stateNode.fromModifier = node.fromModifier;
         stateNode.messageBusRuntimeOldValueWitness = node.messageBusRuntimeOldValueWitness;
         stateNode.postWriteKeyExpressions = node.postWriteKeyExpressions;
+        stateNode.preWriteMappingCollections = node.preWriteMappingCollections;
       }
       return this.visit(stateNode);
     }

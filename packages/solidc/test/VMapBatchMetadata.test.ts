@@ -318,6 +318,7 @@ describe('vmap fixed-write batch metadata', () => {
     });
     const early = compile('flags[flagKey] = true; data[flags[flagKey] ? dataKey : 0] = value;');
     const earlyWithLocal = compile('flags[flagKey] = true; uint256 tmp = value + 1; data[flags[flagKey] ? dataKey : 0] = value; require(tmp > value);');
+    const captured = compile('flags[flagKey] = true; bool selected = flags[flagKey]; data[selected ? dataKey : 0] = value;');
     const late = compile('data[flags[flagKey] ? dataKey : 0] = value; flags[flagKey] = true;');
     const lateWithLocal = compile('data[flags[flagKey] ? dataKey : 0] = value; uint256 tmp = value + 1; flags[flagKey] = true; require(tmp > value);');
     const blocked = compile('flags[flagKey] = true; require(true); data[flags[flagKey] ? dataKey : 0] = value;');
@@ -329,6 +330,7 @@ describe('vmap fixed-write batch metadata', () => {
     expect(key(early)?.preWriteMappingCollections).toBeUndefined();
     expect(key(earlyWithLocal)?.postWriteExpressionLabel).toBe('ternary(lit:true,id:dataKey,lit:0)');
     expect(key(earlyWithLocal)?.preWriteMappingCollections).toBeUndefined();
+    expect(key(captured)?.postWriteExpressionLabel).toBe('ternary(lit:true,id:dataKey,lit:0)');
     expect(key(late)?.postWriteExpressionLabel).toBeUndefined();
     expect(key(late)?.preWriteMappingCollections).toEqual(['flags']);
     expect(key(lateWithLocal)?.postWriteExpressionLabel).toBeUndefined();

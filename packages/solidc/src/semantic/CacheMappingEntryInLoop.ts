@@ -163,6 +163,20 @@ class ProjectWrittenMappingRead extends AstTraversal {
   }
 }
 
+class ProjectCapturedMappingRead extends AstTraversal {
+  replaced = false;
+
+  constructor(private readonly name: string, private readonly value: ExpressionNode) { super(); }
+
+  visitIdentifier(node: IdentifierNode): Node {
+    if (node.name === this.name) {
+      this.replaced = true;
+      return cloneNode(this.value);
+    }
+    return node;
+  }
+}
+
 class SourceMappingReadFinder extends AstTraversal {
   found = false;
 
@@ -481,6 +495,27 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           const projector = new ProjectWrittenMappingRead(write.name, keyLabel, write.value);
           const projected = projector.visit(cloneNode(readerKeys[0])) as ExpressionNode;
           if (projector.replaced) reader.postWriteKeyExpressions = [projected];
+        }
+      }
+      // A read-only local may capture the just-written value before the later key is evaluated.
+      // Its declaration separates the two writes, but cannot change the captured value.
+      const captured = writerIndex >= 0 ? statements[writerIndex] : undefined;
+      if (!write && captured instanceof VariableDefinitionNode && captured.expression
+        && expressionCanon(captured.expression) !== undefined) {
+        const sourceIndex = previousEffectful[writerIndex];
+        const source = sourceIndex >= 0 ? scalarWrite(statements[sourceIndex]) : undefined;
+        const sourceKey = source && expressionCanon(source.key);
+        if (source && sourceKey && argumentOnlyMappingValue(source.value, parameters)) {
+          const capture = new ProjectWrittenMappingRead(source.name, sourceKey, source.value);
+          const capturedValue = capture.visit(cloneNode(captured.expression)) as ExpressionNode;
+          if (capture.replaced && argumentOnlyMappingValue(capturedValue, parameters)) {
+            const alias = new ProjectCapturedMappingRead(captured.name, capturedValue);
+            const expanded = alias.visit(cloneNode(readerKeys[0])) as ExpressionNode;
+            if (alias.replaced) {
+              const projector = new ProjectWrittenMappingRead(source.name, sourceKey, source.value);
+              reader.postWriteKeyExpressions = [projector.visit(expanded) as ExpressionNode];
+            }
+          }
         }
       }
       // Before the first effectful statement, a pure key read still sees the authenticated input state.

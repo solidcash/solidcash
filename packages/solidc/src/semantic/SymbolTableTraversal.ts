@@ -132,6 +132,7 @@ import {
 } from './branchOps.js';
 import { describeFunctionLowLevelCallsites } from './LowLevelCallShapes.js';
 import { KERNEL_JOURNAL_ACCESS_STREAMS } from './LowerVMapCounterLoops.js';
+import { blockEndsWithReturn } from './EarlyReturnTransformation.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -516,6 +517,123 @@ const RESOLVED_BACKREF_KEYS = new Set([
 const selectsPath = (node: Node): boolean => node instanceof BranchNode || node instanceof WhileNode
   || node instanceof DoWhileNode || node instanceof SwitchNode || node instanceof TryCatchNode
   || node instanceof CollectionIterationNode;
+
+/** A branch predicate on the path to a node, negated when the path takes the branch's other arm. */
+type PathGuard = { expression: ExpressionNode; negated: boolean };
+
+/** The keys a walk over one body's own statements skips: back-references and the copies published beside them. */
+const BODY_WALK_SKIP_KEYS = new Set([
+  'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable', 'referencedContract',
+  'stateVariable', 'collection', 'sourceCallNode', 'sourceActivationConditions',
+]);
+
+/** True when `root` is, or holds, a node `matches` accepts. */
+function bodyHolds(root: Node | undefined, matches: (node: Node) => boolean, seen = new Set<Node>()): boolean {
+  if (root === undefined || seen.has(root)) return false;
+  if (matches(root)) return true;
+  seen.add(root);
+  for (const [key, child] of Object.entries(root)) {
+    if (BODY_WALK_SKIP_KEYS.has(key)) continue;
+    if (child instanceof Node && bodyHolds(child, matches, seen)) return true;
+    if (Array.isArray(child) && child.some((item) => item instanceof Node && bodyHolds(item, matches, seen))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The guards an early return puts `target` under once `EarlyReturnTransformation` has nested the statements after
+ * it, or undefined when `statements` does not reach `target`.
+ *
+ * That transformation runs after this pass. It moves the statements after a branch whose arm ends in a `return`
+ * into the branch's other arm, so they run only while the returning arm is not taken, though no branch encloses
+ * them here. This walk follows the lists it rewrites, in its order: a branch's arms, a try block, a switch's cases
+ * and an unchecked block, but not a plain block or a loop body, whose returns it leaves where they are. It names
+ * the predicate of each branch `target` is moved out of. A branch that encloses `target` in the source is not
+ * named, as its predicate is the call's own already, and neither is an arm that only reverts: a run that takes it
+ * fails, so it skips no call a settled run makes.
+ */
+function earlyReturnGuards(statements: readonly StatementNode[], target: Node): PathGuard[] | undefined {
+  const reaches = (root: Node | undefined): boolean => bodyHolds(root, (node) => node === target);
+  for (const [index, statement] of statements.entries()) {
+    // Nothing after a return or a revert is kept.
+    if (statement instanceof ReturnNode || statement instanceof RevertNode) return reaches(statement) ? [] : undefined;
+    const exit = !(statement instanceof BranchNode) || index + 1 === statements.length ? undefined
+      : blockEndsWithReturn(statement.ifBlock) ? 'if'
+        : statement.elseBlock !== undefined && blockEndsWithReturn(statement.elseBlock) ? 'else' : undefined;
+    if (statement instanceof BranchNode && exit !== undefined) {
+      if (reaches(statement.condition)) return [];
+      const [exits, continues] = exit === 'if'
+        ? [statement.ifBlock, statement.elseBlock] : [statement.elseBlock!, statement.ifBlock];
+      const inExit = earlyReturnGuards(exits.statements ?? [], target);
+      if (inExit !== undefined) return inExit;
+      // The arm that does not exit runs first, then everything after the branch.
+      const after = earlyReturnGuards([...(continues?.statements ?? []), ...statements.slice(index + 1)], target);
+      if (after === undefined) return undefined;
+      const named = !reaches(continues) && bodyHolds(exits, (node) => node instanceof ReturnNode);
+      return named ? [{ expression: statement.condition, negated: exit === 'if' }, ...after] : after;
+    }
+    if (!reaches(statement)) continue;
+    if (statement instanceof BranchNode) {
+      if (reaches(statement.ifBlock)) return earlyReturnGuards(statement.ifBlock.statements ?? [], target);
+      return reaches(statement.elseBlock) ? earlyReturnGuards(statement.elseBlock!.statements ?? [], target) : [];
+    }
+    if (statement instanceof TryCatchNode) {
+      return reaches(statement.tryBlock) ? earlyReturnGuards(statement.tryBlock.statements ?? [], target) : [];
+    }
+    if (statement instanceof SwitchNode) {
+      const arm = [...statement.cases.map((switchCase) => switchCase.body), statement.defaultCase].find(reaches);
+      return arm === undefined ? [] : earlyReturnGuards(arm.statements ?? [], target);
+    }
+    if (statement instanceof UncheckedNode) return earlyReturnGuards(statement.block.statements ?? [], target);
+    return [];
+  }
+  return undefined;
+}
+
+/** The names a body writes after declaring them: a local's or a parameter's value, or an element of one. */
+function assignedNames(body: Node): ReadonlySet<string> {
+  const names = new Set<string>();
+  bodyHolds(body, (node) => {
+    if (node instanceof AssignNode || node instanceof DeleteLocalNode) names.add(node.identifier.name);
+    else if (node instanceof TupleAssignmentNode) {
+      for (const element of node.elements) if (element.existing === true && element.name) names.add(element.name);
+    } else if (node instanceof ArrayAssignNode || node instanceof ArrayPushNode || node instanceof ArrayPopNode
+      || node instanceof ArrayDeleteNode || node instanceof MappingFieldAssignNode) names.add(node.name);
+    return false;
+  });
+  return names;
+}
+
+/** True when an expression reads one of `names`, itself or through the initializer of a local it reads. */
+function readsName(expression: Node, names: ReadonlySet<string>, seen = new Set<Node>()): boolean {
+  return bodyHolds(expression, (node) => {
+    if (!(node instanceof IdentifierNode)) return false;
+    if (names.has(node.name)) return true;
+    const definition = node.definition?.definition;
+    if (!(definition instanceof VariableDefinitionNode) || definition.expression === undefined
+      || seen.has(definition)) return false;
+    seen.add(definition);
+    return readsName(definition.expression, names, seen);
+  });
+}
+
+/**
+ * The guards the early returns of `fn` put `target` under, when each can be published as the condition it is.
+ *
+ * A guard is read where its branch starts, as the source's own predicates are, so one that reads a local or a
+ * parameter the body writes - a return flag a loop sets, say - would be published from a value the run no longer
+ * holds; such a call keeps the condition it had. A fallback's and a receive's returns are not nested, since the
+ * transformation visits the constructor and the functions only.
+ */
+function returnGuardsOf(fn: FunctionDefinitionNode, target: Node): PathGuard[] {
+  if (fn.isFallback || fn.isReceive || !bodyHolds(fn.body, (node) => node instanceof ReturnNode)) return [];
+  const guards = earlyReturnGuards(fn.body.statements ?? [], target) ?? [];
+  if (guards.length === 0) return guards;
+  const assigned = assignedNames(fn.body);
+  return guards.some((guard) => readsName(guard.expression, assigned)) ? [] : guards;
+}
 
 interface FunctionBodySurvey {
   usesMsgSender: boolean;
@@ -9068,7 +9186,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         };
         return this.currentFunction?.body ? visit(this.currentFunction.body) : undefined;
       };
-      const serializedConditions = (sourceConditions ?? []).map(({ expression, negated }) => {
+      const serializeGuard = ({ expression, negated }: PathGuard): ExternalCallExpression => {
         // A predicate is evaluated where its branch starts, before any statement of the arm that leads to this call,
         // so an arm's own write to a field the predicate reads must not be folded into it.
         const owner = branchOwning(expression);
@@ -9084,7 +9202,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         return negated
           ? { kind: 'unary', operator: '!', expression: serialized } as ExternalCallExpression
           : serialized;
-      });
+      };
+      const serializedConditions = (sourceConditions ?? []).map(serializeGuard);
       const containsUnresolvedConditionNode = (expression: ExternalCallExpression): boolean => {
         if (expression.kind === 'unsupported' || expression.kind === 'missing'
           || expression.kind === 'identifier') return true;
@@ -9092,9 +9211,19 @@ export default class SymbolTableTraversal extends AstTraversal {
           expression.ifTrue, expression.ifFalse, ...(expression.args ?? [])]
           .some((child) => child !== undefined && containsUnresolvedConditionNode(child));
       };
-      const condition = serializedConditions.some(containsUnresolvedConditionNode)
+      // A per-call body binds its call records in execution order, so a call an earlier `return` skips makes no
+      // record, and its site is published with the condition it runs under: no earlier return taken, then the
+      // call's own predicates. Returns are nested only after this pass, so their guards are read from the source;
+      // a guard that cannot be published as it is leaves the call's condition as it was.
+      const returnGuards = this.compilerOptions.composition === 'per-call' && this.currentFunction?.body
+        ? returnGuardsOf(this.currentFunction, node).map(serializeGuard)
+        : [];
+      const activation = returnGuards.length > 0 && !returnGuards.some(containsUnresolvedConditionNode)
+        ? [...returnGuards, ...serializedConditions]
+        : serializedConditions;
+      const condition = activation.some(containsUnresolvedConditionNode)
         ? undefined
-        : serializedConditions.reduce<ExternalCallExpression | undefined>(
+        : activation.reduce<ExternalCallExpression | undefined>(
           (combined, next) => combined === undefined
             ? next
             : { kind: 'binary', operator: '&&', left: combined, right: next },

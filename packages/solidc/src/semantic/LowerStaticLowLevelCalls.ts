@@ -2,10 +2,12 @@ import {
   AbiEncodeCallNode,
   AbiEncodeNode,
   AbiEncodeWithSelectorNode,
+  AbiEncodeWithSignatureNode,
   AssignNode,
   BlockNode,
   BoolLiteralNode,
   CallOptions,
+  CastNode,
   ContractNode,
   ExpressionNode,
   FieldAccessNode,
@@ -17,16 +19,21 @@ import {
   InterfaceNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
+  type LowLevelRoute,
   MethodCallNode,
   MethodCallStatementNode,
   Node,
+  ParameterNode,
   ReturnNode,
   SourceFileNode,
   StatementNode,
+  StringLiteralNode,
   TupleAssignmentNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
-import { AddressType, BytesType, type Type } from '@solidcash/utils';
+import {
+  AddressType, BytesType, computeEvmFunctionSelector, computeFunctionSelector, computeFunctionSignature, type Type,
+} from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { isStaticallyZeroCallValue } from './branchOps.js';
@@ -34,31 +41,44 @@ import { isStaticallyZeroCallValue } from './branchOps.js';
 /** Temporary holding a typed call's return values while the low-level `(success, returndata)` pair is rebuilt. */
 const PREFIX = '__staticcall_ret_';
 
-/** One interface method a low-level payload names statically. */
+/** The ABI entry a contract's fallback is published under, which a call routed to it names. */
+const FALLBACK_ENTRY = '__fallback';
+
+/** One call a low-level payload names statically: an interface method, or the target's fallback. */
 interface NamedCall {
   readonly interfaceName: string;
   readonly functionName: string;
   readonly args: ExpressionNode[];
+  /** Set when no function of the target's interface has the payload's selector, which its fallback then runs. */
+  readonly fallback?: LowLevelRoute['fallback'];
 }
 
-/** A low-level call site whose payload names an interface method, with the value the callee is addressed by. */
+/** A low-level call site, with the value the callee is addressed by and the spelling that chose its frame. */
 interface LowLevelSite {
   readonly target: ExpressionNode;
   readonly payload: ExpressionNode;
+  readonly mode: 'call' | 'staticcall';
 }
 
 /**
- * Rewrites a low-level call whose payload names an interface method into the typed call it denotes.
+ * Rewrites a low-level call whose payload names its call statically into the typed call it denotes.
  *
  * `address(t).call(abi.encodeCall(I.f, (args)))` and `address(t).call(abi.encodeWithSelector(I.f.selector, args))`
  * both denote `I(address(t)).f(args)`. The rewrite emits that typed call and rebuilds the low-level result from it:
  * a reached call on BCH either aborts the transaction or succeeds, so the success bit is the constant true, and
  * the return data is the ABI encoding of the typed call's own return values. The typed call is the one the
  * convention already compiles, so the site publishes the same call record, argument digest and callee reference as
- * the spelled-out typed call.
+ * the spelled-out typed call. `I` may be an interface or a contract the unit declares, typed as the semantic pass
+ * types it: by its entry points.
  *
- * A payload the compiler cannot name statically - a selector computed at run time, an interface it does not know -
- * is left alone, so the call keeps its own low-level refusal.
+ * `abi.encodeWithSignature("f(T1,..)", args)` names its call through the target's own type: a function of it with
+ * that signature, or, when none has the payload's selector, the target's fallback, which runs with the payload's own
+ * selector and no arguments. The call keeps the frame kind its spelling chose: `staticcall` a static frame, `call` a
+ * message frame, whatever the method's mutability.
+ *
+ * A payload the compiler cannot name statically - a selector computed at run time, an interface it does not know,
+ * a target whose type it cannot read, a fallback it cannot run - is left alone, so the call keeps its own low-level
+ * refusal.
  *
  * The method may be named through a variable of the interface's type (`abi.encodeCall(token.f, (args))`, as OZ
  * SafeERC20 spells it) rather than the interface name itself; the interface is then read from the variable's
@@ -70,6 +90,12 @@ interface LowLevelSite {
  */
 export default class LowerStaticLowLevelCalls extends AstTraversal {
   private interfaces = new Map<string, InterfaceNode>();
+  /** The interfaces the source declares, whose handle as a receiver names the callee itself. */
+  private declaredInterfaces = new Set<string>();
+  /** The contracts the unit declares, by name, whose fallback a call their entry points do not name can run. */
+  private contracts = new Map<string, ContractNode>();
+  /** Every function, state variable and collection name a contract or an interface of the unit declares. */
+  private declaredNames = new Set<string>();
   private counter = 0;
   /** The locals currently being followed, so a chain that names itself stops instead of recursing. */
   private resolving = new Set<string>();
@@ -88,8 +114,25 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
   // Parameter types of the function whose body is being entered; consumed by that body's own block scope.
   private incomingParameterTypes: Map<string, Type> | undefined;
 
+  /** `evmCompat` selects the selector rule `abi.encodeWithSignature` follows, as the semantic pass does. */
+  constructor(private readonly evmCompat = false) {
+    super();
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     this.interfaces = new Map(node.interfaceDefinitions.map((iface) => [iface.name, iface]));
+    this.declaredInterfaces = new Set(this.interfaces.keys());
+    // A contract the unit declares is a call target too, typed as the semantic pass types it: by its entry points.
+    this.contracts = new Map();
+    for (const contract of [...node.importedContracts, node.contract]) {
+      if (contract === undefined || this.interfaces.has(contract.name)) continue;
+      this.contracts.set(contract.name, contract);
+      this.interfaces.set(contract.name, contractInterface(contract));
+    }
+    this.declaredNames = new Set([...node.interfaceDefinitions, ...node.importedContracts, node.contract]
+      .flatMap((declared) => (declared === undefined ? [] : [
+        ...declared.functions, ...declared.stateVariables, ...declared.collections,
+      ].map((member) => member.name))));
     this.stateVariableTypes = new Map((node.contract?.stateVariables ?? []).map((sv) => [sv.name, sv.type]));
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     node.freeFunctions = this.visitList(node.freeFunctions) as FunctionDefinitionNode[];
@@ -233,7 +276,8 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
    * declares its parameter and assigns the caller's argument to it, so the chain is followed name by name.
    */
   private carriedPayload(value: ExpressionNode | undefined): ExpressionNode | undefined {
-    if (value instanceof AbiEncodeCallNode || value instanceof AbiEncodeWithSelectorNode) return value;
+    if (value instanceof AbiEncodeCallNode || value instanceof AbiEncodeWithSelectorNode
+      || value instanceof AbiEncodeWithSignatureNode) return value;
     return value instanceof IdentifierNode ? value : undefined;
   }
 
@@ -300,7 +344,9 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
     if (statement instanceof LowLevelCallStatementNode) {
       if (statement.callMode !== 'call' && statement.callMode !== 'staticcall') return undefined;
       if (!this.callCarriesNoValue(statement.callOptions)) return undefined;
-      const lowered = this.lower({ target: statement.targetExpression, payload: statement.data }, true);
+      const lowered = this.lower({
+        target: statement.targetExpression, payload: statement.data, mode: statement.callMode,
+      }, true);
       return lowered?.stmts;
     }
     return undefined;
@@ -312,15 +358,16 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
       && expression.parameters.length === 1 && this.callCarriesNoValue(expression.callOptions)) {
       // An interface handle as the receiver already names the callee, so the payload's interface is not the method
       // the spelling denotes; leave that form to its own lowering.
-      if (expression.object instanceof FunctionCallNode && this.interfaces.has(expression.object.identifier.name)) {
+      if (expression.object instanceof FunctionCallNode
+        && this.declaredInterfaces.has(expression.object.identifier.name)) {
         return undefined;
       }
-      return { target: expression.object, payload: expression.parameters[0]! };
+      return { target: expression.object, payload: expression.parameters[0]!, mode: expression.methodName };
     }
     if (expression instanceof LowLevelCallNode
       && (expression.callMode === 'call' || expression.callMode === 'staticcall')
       && this.callCarriesNoValue(expression.callOptions)) {
-      return { target: expression.targetExpression, payload: expression.data };
+      return { target: expression.targetExpression, payload: expression.data, mode: expression.callMode };
     }
     // A simple identifier receiver parses as a namespaced call (`target.call(payload)`), not a MethodCall.
     if (expression instanceof FunctionCallNode && this.callCarriesNoValue(expression.callOptions)
@@ -331,10 +378,10 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
       const receiver = dot < 0 ? undefined : name.slice(0, dot);
       if ((method === 'call' || method === 'staticcall') && receiver !== undefined && !receiver.includes('.')) {
         // `this.<fn>(..)` is a self-invocation, and an interface handle already names its own callee.
-        if (receiver === 'this' || this.interfaces.has(receiver)) return undefined;
+        if (receiver === 'this' || this.declaredInterfaces.has(receiver)) return undefined;
         const target = new IdentifierNode(receiver);
         target.location = expression.identifier.location;
-        return { target, payload: expression.parameters[0]! };
+        return { target, payload: expression.parameters[0]!, mode: method };
       }
     }
     return undefined;
@@ -343,9 +390,12 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
   private lower(site: LowLevelSite, discardResult = false): {
     stmts: StatementNode[]; success: () => ExpressionNode; retval: () => ExpressionNode;
   } | undefined {
-    const named = this.resolveNamedCall(site.payload);
+    const named = this.resolveNamedCall(site.payload, site.target);
     if (!named) return undefined;
-    const fn = this.findFunction(named.interfaceName, named.functionName);
+    // A fallback route returns nothing the caller reads: the run's return data is the empty bytes.
+    const fn = named.fallback === undefined
+      ? this.findFunction(named.interfaceName, named.functionName)
+      : new InterfaceFunctionNode(named.functionName, [], []);
     if (!fn) return undefined;
 
     const loc = site.target.location;
@@ -353,6 +403,7 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
     receiver.location = loc;
     const typedCall = new MethodCallNode(receiver, named.functionName, named.args);
     typedCall.location = loc;
+    typedCall.lowLevelRoute = { mode: site.mode, ...(named.fallback === undefined ? {} : { fallback: named.fallback }) };
 
     const success = (): ExpressionNode => {
       const literal = new BoolLiteralNode(true);
@@ -401,7 +452,7 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
     return { stmts, success, retval };
   }
 
-  private resolveNamedCall(payload: ExpressionNode): NamedCall | undefined {
+  private resolveNamedCall(payload: ExpressionNode, target: ExpressionNode): NamedCall | undefined {
     if (payload instanceof IdentifierNode) {
       // Locals may name each other - an inlined body's parameter is assigned the caller's local, which is itself
       // bound to the payload - so a name already being resolved is not followed again.
@@ -410,7 +461,7 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
       if (!bound) return undefined;
       this.resolving.add(payload.name);
       try {
-        const named = this.resolveNamedCall(bound);
+        const named = this.resolveNamedCall(bound, target);
         // The bound declaration keeps its own argument nodes, so the typed call reads independent copies.
         return named && { ...named, args: named.args.map((arg) => cloneNode(arg)) };
       } finally {
@@ -434,7 +485,71 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
       if (interfaceName === undefined) return undefined;
       return { interfaceName, functionName: declaration.name, args: payload.parameters };
     }
+    if (payload instanceof AbiEncodeWithSignatureNode && payload.signature instanceof StringLiteralNode) {
+      return this.resolveSignatureCall(payload.signature.value, payload.parameters, target);
+    }
     return undefined;
+  }
+
+  /**
+   * The call a signature payload names through the target's own type, or undefined when it names none this pass
+   * can serve.
+   *
+   * The payload's selector is the hash of the signature exactly as written, as the EVM's is, so the method it names
+   * is the one whose canonical signature is that string. When no method of the target has the selector, the
+   * target's fallback runs: a contract the unit declares must have one that returns nothing, and an interface is
+   * taken at its word that its implementation does. Such a call carries no arguments here. A name the unit declares
+   * anywhere may be a method or a getter the target answers through a base this pass does not see, so only a name
+   * declared nowhere is routed to the fallback.
+   */
+  private resolveSignatureCall(
+    signature: string, args: ExpressionNode[], target: ExpressionNode,
+  ): NamedCall | undefined {
+    const interfaceName = this.targetInterface(target);
+    if (interfaceName === undefined) return undefined;
+    const functions = this.interfaceFunctions(interfaceName);
+    const canonical = (fn: InterfaceFunctionNode): string =>
+      computeFunctionSignature(fn.name, fn.parameters.map((parameter) => parameter.type.toString()));
+    const named = functions.find((fn) => canonical(fn) === signature);
+    if (named !== undefined) {
+      // The typed call resolves its method by name, so an overloaded name is not one it can pick.
+      if (functions.filter((fn) => fn.name === named.name).length !== 1) return undefined;
+      if (named.parameters.length !== args.length) return undefined;
+      return { interfaceName, functionName: named.name, args };
+    }
+    if (args.length > 0 || this.declaredNames.has(signature.split('(')[0]!)) return undefined;
+    const contract = this.contracts.get(interfaceName);
+    if (contract !== undefined
+      && (contract.fallbackDef === undefined || contract.fallbackDef.returnTypes.length > 0)) return undefined;
+    const selector = this.evmCompat ? computeEvmFunctionSelector(signature) : computeFunctionSelector(signature);
+    const answered = functions.some((fn) =>
+      computeFunctionSelector(canonical(fn)).every((byte, index) => byte === selector[index]));
+    if (answered) return undefined;
+    return { interfaceName, functionName: FALLBACK_ENTRY, args, fallback: { selector } };
+  }
+
+  /** The interface a call's target is typed as, through the address casts around it, or undefined. */
+  private targetInterface(target: ExpressionNode): string | undefined {
+    let inner = target;
+    while (inner instanceof CastNode) inner = inner.expression;
+    if (inner instanceof FunctionCallNode && inner.parameters.length === 1
+      && this.interfaces.has(inner.identifier.name)) return inner.identifier.name;
+    return inner instanceof IdentifierNode ? this.resolveReceiverInterface(inner.name) : undefined;
+  }
+
+  /** Every function of an interface, its parents' included. */
+  private interfaceFunctions(interfaceName: string): InterfaceFunctionNode[] {
+    const seen = new Set<string>();
+    const functions: InterfaceFunctionNode[] = [];
+    const collect = (name: string): void => {
+      const iface = this.interfaces.get(name);
+      if (iface === undefined || seen.has(name)) return;
+      seen.add(name);
+      functions.push(...iface.functions);
+      for (const parent of iface.parents) collect(parent);
+    };
+    collect(interfaceName);
+    return functions;
   }
 
   /**
@@ -473,4 +588,12 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
     };
     return search(interfaceName);
   }
+}
+
+/** A contract as a call target, typed as the semantic pass types it: by its entry points. */
+function contractInterface(contract: ContractNode): InterfaceNode {
+  const functions = contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => new InterfaceFunctionNode(
+    fn.name, fn.parameters.map((parameter) => new ParameterNode(parameter.type, parameter.name)), fn.returnTypes,
+  ));
+  return new InterfaceNode(contract.name, [], [], functions);
 }

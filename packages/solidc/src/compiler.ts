@@ -13542,12 +13542,13 @@ function compileResolvedAst(
       )) as Ast;
     }
   }
-  // A low-level call whose payload names an interface method (`addr.call(abi.encodeCall(I.f, (args)))` or the
-  // selector spelling) denotes the typed call `I(addr).f(args)`. It is rewritten to that call before semantic
-  // analysis, so the per-call convention - which compiles typed calls but refuses the raw calldata form - serves
-  // it as the call its spelling denotes. After LowerSelfLowLevelCalls, so a self-call has already been lowered.
+  // A low-level call whose payload names an interface method (`addr.call(abi.encodeCall(I.f, (args)))`, or the
+  // selector or signature spelling) denotes the typed call `I(addr).f(args)`, or the target's fallback for a
+  // signature none of its methods has. It is rewritten to that call before semantic analysis, so the per-call
+  // convention - which compiles typed calls but refuses the raw calldata form - serves it as the call its spelling
+  // denotes. After LowerSelfLowLevelCalls, so a self-call has already been lowered.
   if (mergedCompilerOptions.composition === 'per-call' && needsExternalCallLowering) {
-    ast = ast.accept(new LowerStaticLowLevelCalls()) as Ast;
+    ast = ast.accept(new LowerStaticLowLevelCalls(mergedCompilerOptions.evmCompat === true)) as Ast;
     // A value-carrying low-level call with no payload (`to.call{value: v}("")`) denotes the send it pays, which the
     // convention pins at a listed output only a P2PKH lock can hold (W2).
     ast = ast.accept(new LowerValueLowLevelCalls()) as Ast;

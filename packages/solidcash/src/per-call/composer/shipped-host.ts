@@ -122,6 +122,11 @@ export interface ExecutionStop {
   readonly accepted: boolean;
   /** Where the run stopped, as the instruction pointer; absent when it accepted. */
   readonly ip?: number;
+  /**
+   * The return position of each function the run had entered when it stopped, outermost first: `ip` is a position
+   * in the innermost one's instructions, so these say where in the program that function was entered from.
+   */
+  readonly frames?: readonly number[];
   readonly error?: string;
   /**
    * The main and alternate stacks the run stopped with, as one opaque fingerprint.
@@ -157,8 +162,25 @@ export interface ShippedHostOptions {
 function reachedFurther(before: ExecutionStop, after: ExecutionStop): boolean {
   if (after.accepted) return true;
   if ((after.ip ?? 0) > (before.ip ?? 0)) return true;
+  if (enteredLater(before, after)) return true;
   return after.ip !== undefined && after.ip === before.ip
     && after.stack !== undefined && after.stack !== before.stack;
+}
+
+/**
+ * True when `after` stopped inside a function the program entered later than the one `before` stopped in.
+ *
+ * A body's repeated spans are outlined into functions, so two stops can share one instruction pointer and one stack:
+ * the same check of one function entered from two places, as the two segment closes around a call that leaves
+ * nothing on the stack are. Where each function was entered from, outermost first, tells them apart.
+ */
+function enteredLater(before: ExecutionStop, after: ExecutionStop): boolean {
+  const left = before.frames ?? [];
+  const right = after.frames ?? [];
+  for (let depth = 0; depth < Math.min(left.length, right.length); depth += 1) {
+    if (right[depth] !== left[depth]) return right[depth]! > left[depth]!;
+  }
+  return false;
 }
 
 /** The VM's verdict for one program, as the host reads it. */
@@ -170,15 +192,20 @@ function runOnce(vm: VirtualMachine, program: ShippedVmProgram): ExecutionStop {
     readonly error?: string;
     readonly stack?: readonly Uint8Array[];
     readonly altStack?: readonly Uint8Array[];
+    readonly controlStack?: readonly unknown[];
   };
   const fingerprintOf = (items: readonly Uint8Array[] | undefined): string | undefined =>
     items?.map((item) => binToHex(item)).join('|');
   const stack = typed.stack === undefined
     ? undefined
     : [fingerprintOf(typed.stack), fingerprintOf(typed.altStack)].join('#');
+  // An entered function is the control-stack entry that holds the position execution returns to.
+  const frames = (typed.controlStack ?? []).flatMap((entry) => (typeof entry === 'object' && entry !== null
+    && typeof (entry as { readonly ip?: unknown }).ip === 'number' ? [(entry as { readonly ip: number }).ip] : []));
   return {
     accepted: false,
     ...(typed.ip === undefined ? {} : { ip: typed.ip }),
+    ...(frames.length === 0 ? {} : { frames }),
     ...(typed.error === undefined ? {} : { error: String(typed.error) }),
     ...(stack === undefined ? {} : { stack }),
   };

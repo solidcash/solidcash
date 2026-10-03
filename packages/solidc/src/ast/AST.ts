@@ -2675,6 +2675,18 @@ export enum ExternalCallMode {
   DELEGATECALL = 'delegatecall',
 }
 
+/**
+ * How a per-call low-level call whose payload names its call statically was lowered to a typed call.
+ *
+ * `mode` is the low-level spelling, which fixes the frame kind: `staticcall` a static frame, `call` a message frame.
+ * `fallback` is set for a payload no function of the target's interface has: the call runs the target's fallback,
+ * and its call data is the payload's own selector.
+ */
+export interface LowLevelRoute {
+  readonly mode: 'call' | 'staticcall';
+  readonly fallback?: { readonly selector: Uint8Array };
+}
+
 export interface ExternalFunctionCallInfo {
   interfaceName: string;
   functionName: string;
@@ -2725,6 +2737,8 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // Foreign fn-ptr ARRAY dispatch table with per-element methods: the parallel `bytes4[]` state array of
   // per-element selectors; the array-call loop asserts the co-spent callee's selector == sel[i].
   selectorArrayVar?: string;
+  // Set for a per-call low-level call lowered to this typed call (LowerStaticLowLevelCalls).
+  lowLevelRoute?: LowLevelRoute;
 
   constructor(
     public interfaceName: string,
@@ -2981,6 +2995,9 @@ export class MethodCallNode extends ExpressionNode {
   // Set by LowerForeignFunctionPointerArrayElements for a varying-method array dispatch table: the parallel
   // `bytes4[]` state array of per-element selectors; threaded to the external call slot in semantic analysis.
   selectorArrayVar?: string;
+  // Set by LowerStaticLowLevelCalls for a per-call low-level call it lowered to this typed call; threaded to the
+  // external call node in semantic analysis.
+  lowLevelRoute?: LowLevelRoute;
   // Set when InlineReturningStateHelpers copies a supported global operator implementation into an entry point.
   // SynthesizeExternalAddressLocals uses it to materialize the operator's pure helper-return receiver without
   // broadening computed-receiver acceptance for unrelated Solidity-negative fixtures.

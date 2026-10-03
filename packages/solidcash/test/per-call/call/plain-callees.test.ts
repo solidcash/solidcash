@@ -22,9 +22,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * segments the call splits its frame into. `A.chain` and `A.chainOrigin` are nested `STATIC` frames, A into B into
  * C: C answers its own `msg.sender`, the contract that called it, and the `tx.origin` the user's input carries.
  * `A.readTwice` enters B twice, on two masters of B's block, whose category the validator settles, and `A.sumThree`
- * enters it once per turn of a loop. `A.notify` makes a `CALL` into `B.note`, whose event output follows the
- * root's. A contract entered twice that a frame of it writes, and two deployments of one contract, are refused by
- * name before anything is built.
+ * enters it once per turn of a loop. `A.twice` enters B twice with frames that both write its record, the second
+ * starting from what the first wrote. `A.notify` makes a `CALL` into `B.note`, whose event output follows the
+ * root's. Two deployments of one contract are refused by name before anything is built.
  */
 
 const SOURCE = 'pragma solidity ^0.8.0;'
@@ -184,11 +184,13 @@ describe('callee frames on the plain call path', () => {
     expect(result.draft.blockOf('master').segments).toHaveLength(4);
   });
 
-  it('refuses a contract entered twice when a frame of it writes, by name', async () => {
+  it('serves a contract entered twice whose frames both write its record, chained frame to frame', async () => {
     const chain = await deployed();
-    await expect(enter(chain, 'twice', [2n])).rejects.toThrow(
-      'entry "twice" makes 2 external call(s): it enters "B" 2 times and a frame of it writes its records',
-    );
+    const result = await enter(chain, 'twice', [2n]);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    // The second frame starts from the total the first one wrote, as the EVM's second call does.
+    expect(result.values).toStrictEqual([6n]);
+    expect(await recordOf(chain, 'B')).toMatchObject({ total: 4n });
   });
 
   it('refuses two deployments of one contract by name: its block and records are named by the contract', async () => {

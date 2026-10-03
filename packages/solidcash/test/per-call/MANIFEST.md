@@ -230,7 +230,8 @@ frame runs, by `reads/proxied-root-read.test.ts`.
 - **`solidcash/test/per-call/hostile/`** - spends that must be refused, each beside the faithful spend it mutates
   and each decided by the machine: loose funds at a master's lock, a master not recreated in place, a covered
   master presenting an address its category does not derive, a validator UTXO carrying no token or another
-  category's, a call record naming the wrong input or carrying the wrong argument digest, a declared record the
+  category's, a call record naming the wrong input or carrying the wrong argument digest, a low-level call's record
+  restated with a selector its payload does not name, a declared record the
   transaction does not spend, a second signed user offered as the origin, a root whose sender is rewritten while a
   validator covers the edge, and the validator-program cases `validator/script.test.ts` does not make: a missing
   or non-recreated validator output, a covered witness block with a trailing byte or cut short, and a read-only
@@ -321,11 +322,14 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   settle order) and `deep-chain-rows.test.ts` (25, its twenty-four-master case under `PER_CALL_FULL=1`).
   Beside them `loop-upsert-settlement.test.ts` pins the wall a run-time-loop
   mapping upsert meets on the shipped call path (the machine refuses the frame the path planned itself, while the
-  same mapping written once from a parameter settles). The eleven cross-contract rows are
-  `cross-contract-identity.test.ts`: A to B, `msg.sender` and `tx.origin` across a `STATIC` frame, served with the
-  EVM's answer (the call path plans callee frames between plain deployments, `call/plain-callees.test.ts`), and A
-  paying B before it reads what B's `receive()` recorded, served the same way (the value call made where A sends);
-  the other eight each the EVM's answer beside the refusal the per-call path meets by name.
+  same mapping written once from a parameter settles). The twelve cross-contract rows are
+  `cross-contract-identity.test.ts`: A to B, `msg.sender` and `tx.origin` across a `STATIC` frame, the same read
+  made by a `staticcall` whose `abi.encodeCall` payload names it, a `call` whose literal
+  `abi.encodeWithSignature` payload names no function of B and so runs B's fallback, and A paying B before it reads
+  what B's `receive()` recorded (the value call made where A sends), served with the EVM's answer (the call path
+  plans callee frames between plain deployments, `call/plain-callees.test.ts`); the other seven each the EVM's
+  answer beside the refusal the per-call path meets by name, the fallback call with its signature built at run time
+  among them.
 - **`solidcash/test/per-call/pw7-measure.test.ts`** - a measurement instrument rather than a regression guard: it
   drives the shipped composer and derivation on Y2, Y6 and the vault graph, counts the machine's own evaluations
   per master, and prints a JSON summary to `PW7_OUT` (default `/tmp/pw7-measure.json`). It runs only under
@@ -359,6 +363,7 @@ listed under the table, and none of those is claimed anywhere else.
 | A master drained, duplicated or not recreated in place: output token, category, capability, commitment, lock or value | `master-recreation.test.ts` (six cases) |
 | A record a master settles alone written back with less value, whether its entry writes, reads or never touches it and whether or not it sends, or a mapping node drained (T39) | `solidc/test/per-call/master/record-value-send.test.ts` (six cases) and `shapes/mapping-values.test.ts` (one case) |
 | A forged call edge: a recorded callee that is not the covered callee the call ran, or an argument digest that is not the callee's call data | `call-record.test.ts` (two cases) |
+| A low-level call's record and its callee's call data restated with a selector the payload does not name: the fallback's own, which the callee runs as it runs the payload's | `raw-call-payload.test.ts` (one case, refused at the caller while the callee and the validator accept, beside the honest spend) |
 | A forged or missing event: payload, lock, token presence, capability, output position, or a body that emits a value the output does not carry | `solidc/test/per-call/master/event-output.test.ts` (the compiled entry's refusals) |
 | A state UTXO spent outside settlement, a declared record the transaction does not spend, or a declaration that does not chain from the spent commitment to the written one | `record-census.test.ts` (the undeclared spend) and `solidc/test/per-call/master/record-settlement.test.ts` (three cases) |
 | A validator UTXO that is not the mutable NFT its own script pins (minting token, no token, another category) | `validator/script.test.ts` (minting token) and `validator-program.test.ts` (two cases) |

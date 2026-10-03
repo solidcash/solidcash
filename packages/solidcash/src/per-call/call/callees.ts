@@ -13,15 +13,18 @@
  * emits, after the root's own, at the covenant its category derives; and the node each key it reads or writes sits at,
  * or the one a new key is spliced beside, declared in the segment its artifact publishes for the write, with the node
  * an insert creates as a trailing output. Each event's payload and each written node's end view are its body's to
- * compute, so they are learned from its own close, as its return is.
+ * compute, so they are learned from its own close, as its return is. A contract entered more than once chains its
+ * data records across its frames in the order the validator walks them: a frame starts from the view the last write
+ * before it leaves, which is learned from that frame's own close.
  *
  * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that touches a dynamic
- * value's or a mapping value's chunks, sends value or co-spends a side-car; a contract entered twice that one of its
- * frames writes, or reached at two of its deployments; and a site that waits on an earlier call's result. A frame the
- * plan runs beside the callees on one of their contracts, a value send's `receive()`, counts among the contract's
- * masters, and a callee that runs after it starts from the views it left.
+ * value's or a mapping value's chunks, sends value or co-spends a side-car; a contract entered twice whose frames
+ * write its mapping nodes, or reached at two of its deployments; and a site that waits on an earlier call's result. A
+ * frame the plan runs beside the callees on one of their contracts, a value send's `receive()`, counts among the
+ * contract's masters, and a callee that runs after it starts from the views it left.
  */
 
+import { hexToBin } from '@bitauth/libauth';
 import {
   bytesEqual, FrameKind, INDEX_NONE, sha256, type Artifact, type PublishedWriteSegment, type RecordEntry,
 } from '@solidcash/utils';
@@ -31,6 +34,7 @@ import type NetworkProvider from '../../network/NetworkProvider.js';
 import {
   participant,
   readPublishedStopSites,
+  unstatedViewPlaceholder,
   type CompositionDraft,
   type ContractBlock,
   type DraftCall,
@@ -47,7 +51,8 @@ import {
 } from '../deploy/index.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
 import {
-  deploymentStateValues, planHopExternalCalls, type HopCallee, type HopCalleeRecord, type PerCallProxyExternal,
+  deploymentStateValues, planHopExternalCalls, routingOf,
+  type HopCallee, type HopCalleeRecord, type HopExternalPlan, type PerCallProxyExternal,
 } from '../proxy/external-calls.js';
 import { frameDataRecordIndices } from './entry-records.js';
 
@@ -191,6 +196,55 @@ function touchesChunks(callee: HopCallee): boolean {
     || callee.readNodes.some((node) => chunking.has(node.collection));
 }
 
+/** The ABI entry a contract's fallback is published under, which a call routed to it names. */
+const FALLBACK_ENTRY = '__fallback';
+
+/**
+ * One frame's calls as its sites' own code binds them.
+ *
+ * The hop states a call from the callee entry it reaches: that entry's mutability picks the frame kind, and its own
+ * selector leads the call data. A low-level call's spelling chose its frame kind instead, and one routed to its
+ * target's fallback carries its payload's selector, which the fallback's own entry does not have; the artifact
+ * publishes both for the site, so every call the site makes takes them from there.
+ */
+function spelledCalls(
+  artifact: Artifact, entry: string, calls: readonly DraftCall[], callBases: readonly number[],
+): DraftCall[] {
+  const identity = `${artifact.contractName}.${entry}()`;
+  const sites = readPublishedStopSites(artifact).entries
+    .find((candidate) => candidate.functionName === identity)?.calls ?? [];
+  const routing = routingOf(artifact, entry);
+  const spelled = [...calls];
+  callBases.forEach((base, site) => {
+    const row = routing[site];
+    if (base < 0 || row === undefined) return;
+    const end = callBases.slice(site + 1).find((later) => later >= 0) ?? calls.length;
+    const selector = row.functionName === FALLBACK_ENTRY ? sites[site]?.selector : undefined;
+    const kind = row.callMode === 'staticcall' ? FrameKind.STATIC
+      : row.callMode === 'call' ? FrameKind.CALL : undefined;
+    for (let at = base; at < end; at += 1) {
+      const call = spelled[at]!;
+      const argumentPushes = selector === undefined
+        ? call.argumentPushes : [hexToBin(selector), ...call.argumentPushes.slice(1)];
+      spelled[at] = { ...call, kind: kind ?? call.kind, argumentPushes };
+    }
+  });
+  return spelled;
+}
+
+/** A plan whose calls, and the callee frames they enter, carry what each site's own code binds. */
+function withSpelledCalls(plan: HopExternalPlan, artifact: Artifact, entry: string): HopExternalPlan {
+  const calls = spelledCalls(artifact, entry, plan.calls, plan.callBases);
+  const callees = plan.callees.map((callee) => ({
+    ...callee, calls: spelledCalls(callee.artifact, callee.entry, callee.calls, callee.callBases),
+  }));
+  const kindOf = new Map([...calls, ...callees.flatMap((callee) => callee.calls)]
+    .map((call) => [call.callee, call.kind]));
+  return {
+    ...plan, calls, callees: callees.map((callee) => ({ ...callee, kind: kindOf.get(callee.master) ?? callee.kind })),
+  };
+}
+
 /** The shape one callee frame takes that this path does not settle yet, or undefined for one it does. */
 function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefined {
   const label = `the callee "${callee.functionName}"`;
@@ -251,6 +305,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
     if (!(error instanceof PerCallProxyDeployError)) throw error;
     return refuse(error.message);
   }
+  plan = withSpelledCalls(plan, options.artifact, options.functionName);
   if (plan.blocked !== undefined) {
     refuse(`${plan.blocked.where} reads an earlier call's result, which this call path does not plan yet`);
   }
@@ -262,7 +317,8 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
     if (why !== undefined) refuse(why);
   }
   // A contract entered more than once is settled by the validator, which chains its records' views across its
-  // frames; a frame that writes one would need those chains stated, which this path does not do yet.
+  // frames. Its data records are chained here (`calleeFrames`); a frame that writes its mapping nodes would need
+  // those chains stated too, which this path does not do yet.
   const byContract = new Map<string, HopCallee[]>();
   for (const callee of plan.callees) byContract.set(callee.contract, [...(byContract.get(callee.contract) ?? []), callee]);
   for (const [contract, frames] of byContract) {
@@ -271,9 +327,9 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       refuse(`it reaches two deployments of "${contract}", whose blocks and records this call path does not tell `
         + 'apart yet');
     }
-    if (frames.length > 1 && frames.some(calleeWrites)) {
-      refuse(`it enters "${contract}" ${frames.length} times and a frame of it writes its records, whose views across `
-        + 'the frames this call path does not chain yet');
+    if (frames.length > 1 && frames.some((frame) => frame.entryWrites !== undefined)) {
+      refuse(`it enters "${contract}" ${frames.length} times and a frame of it writes its mapping nodes, whose views `
+        + 'across the frames this call path does not chain yet');
     }
   }
   // A contract's block holds the records its frames declare, then the nodes they only read, then the nodes their
@@ -368,6 +424,10 @@ export function calleeFrames(options: {
   const indexOf = (id: string): number => participant(layout, id).index;
   // The master that writes each record, which the record's covenant names as the spend's authority.
   const writerOf = new Map<string, string>();
+  // Each data record's view where the frames placed so far leave it. A contract's frames are placed in the order the
+  // validator walks them (V6), and none runs inside another of its own contract, so a frame starts from the view the
+  // last write before it leaves: that frame's unstated end, which the derivation learns from its own close.
+  const chainEnds = new Map<string, Uint8Array>();
   const inputs: Record<string, DraftInput> = {};
   const eventOutputs: DraftSourceOutput[] = [];
   const createdOutputs: DraftSourceOutput[] = [];
@@ -435,8 +495,10 @@ export function calleeFrames(options: {
         const nftIndex = callee.records.indexOf(record);
         const written = writes.get(nftIndex) ?? [];
         const first = Math.min(...written);
-        // A record a frame beside the callees wrote before this one runs starts from the view that frame left.
-        const start = options.beside?.startViews.get(callee.master)?.get(record.id) ?? record.commitment;
+        // A record an earlier frame of this contract wrote starts from that frame's end; one a frame beside the
+        // callees wrote before this one runs starts from the view that frame left.
+        const start = chainEnds.get(record.id)
+          ?? options.beside?.startViews.get(callee.master)?.get(record.id) ?? record.commitment;
         if (written.length === 0 || position < first) {
           return { in: index, out: index, viewIn: start, viewOut: start };
         }
@@ -451,6 +513,13 @@ export function calleeFrames(options: {
       ...readEntries,
       ...writesAt(position),
     ]);
+    // A record this frame writes ends where its last write leaves it: the placeholder the composer declares for that
+    // segment's unstated end, at the record's own place among the segment's entries.
+    declared.forEach((record, entryIndex) => {
+      const written = writes.get(callee.records.indexOf(record)) ?? [];
+      if (written.length === 0) return;
+      chainEnds.set(record.id, unstatedViewPlaceholder(callee.master, Math.max(...written), entryIndex));
+    });
     return {
       master: callee.master,
       contract: callee.contract,

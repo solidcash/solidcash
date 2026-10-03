@@ -7678,7 +7678,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         && this.interfaceMap.get(callInfo.interfaceName)?.functions.some(
           (fn) => fn.name === callInfo.functionName,
         );
-      if (concreteCallee && !splitLogicalGetter && (stateMemberHidden
+      // A per-call low-level call routed to the callee's fallback reaches that body, which is no function of it.
+      const routedFallback = node.lowLevelRoute?.fallback !== undefined && concreteCallee?.fallbackDef !== undefined;
+      if (concreteCallee && !splitLogicalGetter && !routedFallback && (stateMemberHidden
         || !concreteCallee.functions.some((f) => f.name === callInfo.functionName))) {
         const missing = new IdentifierNode(`${callInfo.interfaceName}.${callInfo.functionName}`);
         missing.location = node.location;
@@ -14870,6 +14872,19 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitMethodCall(node: MethodCallNode): Node {
+    const resolved = this.resolveMethodCall(node);
+    // A per-call low-level call lowered to this typed call keeps the frame kind its spelling chose, whatever the
+    // method's mutability: `staticcall` a static frame, `call` a message frame.
+    const route = node.lowLevelRoute;
+    if (route !== undefined && resolved instanceof ExternalFunctionCallNode && resolved.callInfo !== undefined) {
+      resolved.lowLevelRoute = route;
+      resolved.callMode = route.mode === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.CALL;
+      resolved.callInfo.callMode = resolved.callMode;
+    }
+    return resolved;
+  }
+
+  private resolveMethodCall(node: MethodCallNode): Node {
     // A named-field constructor for a contract/interface-scoped struct (`Lib.S({a: 1})`) parses as a method call,
     // unlike its positional counterpart, which already arrives as FunctionCall("Lib.S"). Route the known type
     // namespace through the ordinary qualified struct-constructor path before visiting `Lib` as a runtime value.
@@ -15028,7 +15043,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // Validate: interface has function with this name
         const allFunctions = this.getAllInterfaceFunctions(iface);
-        const ifaceFunc = allFunctions.find((f) => f.name === node.methodName);
+        const ifaceFunc = allFunctions.find((f) => f.name === node.methodName) ?? routedFallbackFunction(node);
         if (!ifaceFunc) {
           throw new UndefinedInterfaceFunctionError(node, iface.name, node.methodName);
         }
@@ -15221,7 +15236,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ?? this.stateVariableMap.get(varName)?.type;
       const calleeName = varType instanceof AddressType ? varType.interfaceName : undefined;
       const calleeFns = calleeName ? this.getCalleeFunctions(calleeName) : undefined;
-      const ifaceFunc = calleeFns?.find((f) => f.name === node.methodName);
+      const ifaceFunc = calleeFns?.find((f) => f.name === node.methodName) ?? routedFallbackFunction(node);
       if (calleeName && ifaceFunc) {
         if (this.deployResultLocals.has(varName)) {
           // The `{value:}` call-option form is not folded in v1 (always a separate tx). Resolve the real
@@ -16517,6 +16532,12 @@ export default class SymbolTableTraversal extends AstTraversal {
 
 function isEmptyBytesLiteral(expr: ExpressionNode): boolean {
   return expr instanceof HexLiteralNode && expr.value.byteLength === 0;
+}
+
+/** The method a per-call low-level call routed to its target's fallback names, which no interface declares. */
+function routedFallbackFunction(node: MethodCallNode): InterfaceFunctionNode | undefined {
+  return node.lowLevelRoute?.fallback === undefined
+    ? undefined : new InterfaceFunctionNode(node.methodName, [], [], 'payable');
 }
 
 // True if the body reads a genesis input's outpoint transaction hash (tx.inputs[i].outpointTransactionHash) - the

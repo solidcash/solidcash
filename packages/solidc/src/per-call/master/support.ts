@@ -2679,9 +2679,11 @@ function deriveEntryCallSites(
       return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, whose callee `
         + 'runs on its caller\'s own records, and the master head has no arm that recognises such a caller' };
     }
+    // A `call` mode is a low-level `.call` the lowering typed from its payload, whose spelling chose a message frame.
     if (slot.callMode !== undefined
       && slot.callMode !== ExternalCallMode.REGULAR
-      && slot.callMode !== ExternalCallMode.STATICCALL) {
+      && slot.callMode !== ExternalCallMode.STATICCALL
+      && !(slot.callMode === ExternalCallMode.CALL && slot.sourceCallNode?.lowLevelRoute !== undefined)) {
       return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, which the `
         + 'master head has no frame kind for' };
     }
@@ -2713,7 +2715,8 @@ function deriveEntryCallSites(
     }
     const target = siteTarget(slot);
     if ('reason' in target) return { calls: [], reason: target.reason };
-    const selector = slot.compileTimeSelector
+    // A call routed to the target's fallback carries its payload's own selector, which no method of it names.
+    const selector = slot.compileTimeSelector ?? slot.sourceCallNode?.lowLevelRoute?.fallback?.selector
       ?? resolveInterfaceSelector(interfaces, slot.interfaceName, slot.functionName);
     if (selector === undefined) {
       return { calls: [], reason: `the call to '${slot.interfaceName}.${slot.functionName}' has no four-byte `

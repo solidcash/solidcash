@@ -532,6 +532,8 @@ describe('kernel conditional state-derived entry keys', () => {
       }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'authorizedStoreThenClear'))
+      .toMatchObject({ eligible: true });
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x75), provider);
     for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {
@@ -563,6 +565,8 @@ describe('kernel conditional state-derived entry keys', () => {
       }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'store'))
+      .toMatchObject({ eligible: true });
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x76), provider);
     for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {

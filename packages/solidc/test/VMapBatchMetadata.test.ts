@@ -325,6 +325,7 @@ describe('vmap fixed-write batch metadata', () => {
     const capturedBeforeWrite = compile('bool selected = flags[flagKey]; data[selected ? dataKey : 0] = value; flags[flagKey] = true;');
     const capturedAfterOtherWrite = compile('other[dataKey] = value + 1; bool selected = flags[flagKey]; data[selected ? dataKey : 0] = value; flags[flagKey] = true;');
     const directAfterOtherWrite = compile('other[dataKey] = value + 1; data[flags[flagKey] ? dataKey : 0] = value; flags[flagKey] = true;');
+    const beforeInterveningWrite = compile('data[flags[flagKey] ? dataKey : 0] = value; other[dataKey] = value + 1; flags[flagKey] = false;');
     const preWriteBlocked = compile('require(true); bool selected = flags[flagKey]; data[selected ? dataKey : 0] = value; flags[flagKey] = true;');
     const unrelatedWrite = compile('flags[flagKey] = true; other[dataKey] = value + 1; data[flags[flagKey] ? dataKey : 0] = value;');
     const capturedAfterOther = compile('flags[flagKey] = true; other[dataKey] = value + 1; bool selected = flags[flagKey]; data[selected ? dataKey : 0] = value;');
@@ -348,6 +349,7 @@ describe('vmap fixed-write batch metadata', () => {
     expect(key(capturedBeforeWrite)?.preWriteMappingCollections).toEqual(['flags']);
     expect(key(capturedAfterOtherWrite)?.preWriteMappingCollections).toEqual(['flags']);
     expect(key(directAfterOtherWrite)?.preWriteMappingCollections).toEqual(['flags']);
+    expect(key(beforeInterveningWrite)?.preWriteMappingCollections).toEqual(['flags']);
     expect(key(preWriteBlocked)?.preWriteMappingCollections).toBeUndefined();
     expect(key(unrelatedWrite)?.postWriteExpressionLabel).toBe('ternary(lit:true,id:dataKey,lit:0)');
     expect(key(capturedAfterOther)?.postWriteExpressionLabel).toBe('ternary(lit:true,id:dataKey,lit:0)');

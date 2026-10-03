@@ -465,12 +465,6 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       previousEffectful[index] = previous;
       if (!transparentStatements[index]) previous = index;
     }
-    const nextEffectful: number[] = [];
-    let next = statements.length;
-    for (let index = statements.length - 1; index >= 0; index -= 1) {
-      nextEffectful[index] = next;
-      if (!transparentStatements[index]) next = index;
-    }
     const scalarWrite = (statement: StatementNode): {
       name: string; key: ExpressionNode; value: ExpressionNode;
     } | undefined => statement instanceof ArrayAssignNode && this.scalarMappings.has(statement.name)
@@ -560,13 +554,18 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       if (!sourcePrefixSafe) continue;
       const preWriteKey = expandSourceCaptures(readerKeys[0]);
       if (expressionCanon(preWriteKey) === undefined) continue;
-      const laterIndex = nextEffectful[index];
-      const laterWrite = laterIndex < statements.length ? scalarWrite(statements[laterIndex]) : undefined;
-      if (laterWrite && !knownWrites.has(laterWrite.name)) {
+      const preWriteCollections: string[] = [];
+      for (let laterIndex = index + 1; laterIndex < statements.length; laterIndex += 1) {
+        if (transparentStatements[laterIndex]) continue;
+        const laterWrite = scalarWrite(statements[laterIndex]);
+        if (!laterWrite || !argumentOnlyMappingValue(laterWrite.key, parameters)
+          || !argumentOnlyMappingValue(laterWrite.value, parameters)) break;
+        if (knownWrites.has(laterWrite.name) || preWriteCollections.includes(laterWrite.name)) continue;
         const finder = new SourceMappingReadFinder(laterWrite.name);
         finder.visit(preWriteKey);
-        if (finder.found) reader.preWriteMappingCollections = [laterWrite.name];
+        if (finder.found) preWriteCollections.push(laterWrite.name);
       }
+      if (preWriteCollections.length > 0) reader.preWriteMappingCollections = preWriteCollections;
     }
   }
 

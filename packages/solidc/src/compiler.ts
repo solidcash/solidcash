@@ -65,6 +65,10 @@ import { assessPerCallMasterShape, directRefusedEntries, stripFrameParameters } 
 import { requireUpgradeLayouts, type UpgradesFrom } from './per-call/upgrade-layout.js';
 import type { MasterCallSite } from './per-call/master/frame-tail.js';
 import {
+  extractPerCallLifecycle, perCallLifecycleFunctions, publishLifecycle, wrapLifecycleArm,
+  type PerCallLifecycleEntry,
+} from './per-call/master/lifecycle.js';
+import {
   entryFunctionName,
   publishPerCallStopSites,
   type PublishedPerCallStopSites,
@@ -602,6 +606,8 @@ type InternalCompilerOptions = CompilerOptions & {
   __perCallStopSites?: PublishedPerCallStopSites;
   /** Set when the master reserves a slot for the validator program's hash, i.e. it can be reached through a call. */
   __perCallReservesValidatorHash?: boolean;
+  /** The source's `split(n)` and `merge(n)`, served by the master's lifecycle arm rather than its head. */
+  __perCallLifecycle?: readonly PerCallLifecycleEntry[];
   /**
    * Functions refused for a loop guard their published recipe cannot carry, by name, with the published reason. Set
    * by `compileStringUnchecked` after code generation reached the loop; never seeded by a caller.
@@ -14396,6 +14402,13 @@ function compileResolvedAst(
     ast.contract.functions = ast.contract.functions.filter(
       (fn) => !(fn.messageBusRoute === true || fn.name.startsWith('__message_bus')),
     );
+    // `split(n)` and `merge(n)` resize the master pool in an arm beside the head, so the head never serves them.
+    const lifecycle = extractPerCallLifecycle(ast.contract);
+    if (lifecycle.length > 0) {
+      const lifecycleFunctions = new Set(perCallLifecycleFunctions(ast.contract));
+      ast.contract.functions = ast.contract.functions.filter((fn) => !lifecycleFunctions.has(fn));
+      (mergedCompilerOptions as InternalCompilerOptions).__perCallLifecycle = lifecycle;
+    }
     // A per-call compile emits one master program per contract. The shapes that program can carry are checked here,
     // after semantic analysis, so a contract whose frame the head cannot supply refuses by name instead of
     // compiling into a master that would violate its own frame rules.
@@ -14518,6 +14531,11 @@ function compileResolvedAst(
   if (isPerCallMaster(mergedCompilerOptions as InternalCompilerOptions)) {
     const reservesValidatorHash = (mergedCompilerOptions as InternalCompilerOptions)
       .__perCallReservesValidatorHash === true;
+    // The lifecycle arm wraps the optimised master, so the census is retargeted after it moves the master's bytes.
+    const lifecycle = (mergedCompilerOptions as InternalCompilerOptions).__perCallLifecycle;
+    if (lifecycle !== undefined) {
+      Object.assign(optimisationResult, wrapLifecycleArm(optimisationResult, lifecycle, ast.contract.location));
+    }
     // The padding comes after the census retarget: it is appended, so no earlier offset moves, and the artefact,
     // the published slots and the fingerprint are all built from the padded script.
     optimisationResult.script = padPerCallMasterScript(
@@ -14599,6 +14617,8 @@ function compileResolvedAst(
     if (balanceReaders.length > 0) {
       composition.balanceReaders = balanceReaders.map((name) => entryFunctionName(ast.contract.name, name));
     }
+    const lifecycle = (mergedCompilerOptions as InternalCompilerOptions).__perCallLifecycle;
+    if (lifecycle !== undefined) composition.lifecycle = publishLifecycle(lifecycle);
     artifact.composition = composition;
   } else {
     // A direct artifact names its functions refused for a loop guard as a master names its refused entries, with

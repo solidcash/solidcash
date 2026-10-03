@@ -93,3 +93,4 @@ export * as masterPrologue from './per-call/master/prologue.js';
 export * as witnessReader from './per-call/master/witness-reader.js';
 export * as compositionPlaceholders from './per-call/master/placeholders.js';
 export * as perCallValidator from './per-call/validator/index.js';
+export * as perCallLifecycle from './per-call/master/lifecycle.js';

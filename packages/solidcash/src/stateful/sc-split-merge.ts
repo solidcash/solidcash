@@ -25,6 +25,15 @@ export async function splitStatefulContract(options: SplitOptions): Promise<Spli
     provider, contract, splitFunctionName, splitFunctionArgs,
     funder, fundingUtxos, changeAddress,
   } = options;
+  // A per-call master serves split(n) in its lifecycle arm, outside its ABI.
+  if (contract.inner.artifact.composition?.convention === 'per-call') {
+    const { resizeOptionsFromCall, resizePerCallPool } = await import('../per-call/deploy/resize.js');
+    const tx = await resizePerCallPool('split', resizeOptionsFromCall('split', {
+      provider, contract, functionName: splitFunctionName, args: splitFunctionArgs, fundingUtxos, funder,
+      changeAddress, ...(options.newMintingAmount === undefined ? {} : { masterAmount: options.newMintingAmount }),
+    }));
+    return { tx, categoryId: contract.categoryId };
+  }
 
   // Validate the split function exists and has the 'split' modifier
   const splitAbi = contract.inner.artifact.abi.find(
@@ -168,6 +177,15 @@ export async function mergeStatefulContract(options: MergeOptions): Promise<Merg
     provider, contract, mergeFunctionName, mergeFunctionArgs,
     funder, consumedMasterUtxos, fundingUtxos, changeAddress,
   } = options;
+  // A per-call master serves merge(n) in its lifecycle arm; the consumed masters are the ones retired.
+  if (contract.inner.artifact.composition?.convention === 'per-call') {
+    const { resizeOptionsFromCall, resizePerCallPool } = await import('../per-call/deploy/resize.js');
+    const tx = await resizePerCallPool('merge', resizeOptionsFromCall('merge', {
+      provider, contract, functionName: mergeFunctionName, args: mergeFunctionArgs, fundingUtxos, funder,
+      changeAddress, retire: consumedMasterUtxos,
+    }));
+    return { tx, categoryId: contract.categoryId };
+  }
 
   // Validate the merge function exists and has the 'merge' modifier
   const mergeAbi = contract.inner.artifact.abi.find(

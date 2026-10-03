@@ -1810,6 +1810,20 @@ export interface PublishedRefusedEntry {
   readonly reason: string;
 }
 
+/** A `split(n)` or `merge(n)` function a per-call master serves outside its ABI. */
+export interface PublishedLifecycleEntry {
+  readonly name: string;
+  readonly inputs: readonly AbiInput[];
+  /** The parameter that counts the masters minted or retired. */
+  readonly countParameter: string;
+}
+
+/** The pool resizes a per-call master serves: unlocked by `<1|2> <n> <sig>`, a retired master by `<3>`. */
+export interface PublishedPerCallLifecycle {
+  readonly split?: PublishedLifecycleEntry;
+  readonly merge?: PublishedLifecycleEntry;
+}
+
 export interface Artifact {
   contractName: string;
   constructorInputs: readonly AbiInput[];
@@ -1866,6 +1880,8 @@ export interface Artifact {
      * contract for them. Absent when no entry reads it.
      */
     balanceReaders?: readonly string[];
+    /** The source's pool resizes, served beside the head (spec R2b); absent when it declares none. */
+    lifecycle?: PublishedPerCallLifecycle;
   };
   messageBus?: {
     version: 1;

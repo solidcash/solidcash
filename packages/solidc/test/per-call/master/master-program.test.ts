@@ -7,6 +7,7 @@ import {
   asmToScript, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
+import { mastersRecreatedInPlaceScript } from '../../../src/per-call/master/lifecycle.js';
 import {
   ADDRESS_SLOT_LENGTH, CATEGORY_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH, assertPlaceholders, fillPlaceholders,
 } from '../../../src/per-call/master/placeholders.js';
@@ -95,7 +96,8 @@ describe('a compiled per-call master', () => {
     // Recreation in place: same lock, then the same category on the output side.
     expect(contains(script, [0xc0, 0xcd, 0xc0, 0xc7, 0x88])).toBe(true); // INPUTINDEX OUTPUTBYTECODE ... EQV
     expect(contains(script, [0x76, 0xc0, 0xd1, 0x88])).toBe(true); // DUP INPUTINDEX OUTPUTTOKENCATEGORY EQV
-    expect(contains(script, [0x75, 0xc0, 0xd2, 0x00, 0x88])).toBe(true); // DROP INPUTINDEX OUTPUTTOKENCOMMITMENT 0 EQV
+    // The pool census consumes the pin: no index gains or loses a master.
+    expect(contains(script, [...mastersRecreatedInPlaceScript(), 0xc0, 0xd2, 0x00, 0x88])).toBe(true);
     expect(contains(script, [0xc0, 0xcc, 0xc0, 0xc6, 0xa2, 0x69])).toBe(true); // ... OUTPUTVALUE >= UTXOVALUE VERIFY
     // W0: the reader compares the block's leading magic and version with its constant.
     expect(contains(script, [0x03, 0x50, 0x57, 0x01, 0x88])).toBe(true);

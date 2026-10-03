@@ -53,6 +53,7 @@ import {
   type MasterTailShape,
 } from './frame-tail.js';
 import { callValuesScript, containerGrowthScript, containerLockScript } from './value.js';
+import { mastersRecreatedInPlaceScript } from './lifecycle.js';
 
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]); // u16 sentinel used by the frozen witness-block codec
 
@@ -395,7 +396,9 @@ class HeadEmitter {
     this.emitInputIndex();
     this.emitPopPush(Opcodes.OP_OUTPUTTOKENCATEGORY, 'outputCategory');
     this.equalVerify();
-    this.dropTop();
+    // The pool: no entry mints a master or retires one (spec R2b).
+    this.emitBytes(mastersRecreatedInPlaceScript());
+    this.pop(1);
     this.emitInputIndex();
     this.emitPopPush(Opcodes.OP_OUTPUTTOKENCOMMITMENT, 'commitment');
     this.emit0();

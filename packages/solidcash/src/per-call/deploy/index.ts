@@ -13,3 +13,4 @@ export * from './genesis.js';
 export * from './stateful.js';
 export * from './records.js';
 export * from './reload.js';
+export * from './resize.js';

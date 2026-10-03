@@ -25,13 +25,21 @@ cause. #50 is the attribution sibling (`expected revert reason Review text too l
 declaredLen=107 computedLen=107 declared=005123aa201162... computed=005223aa201162...` - the frame's declared view of
 its 107-byte record differs from the computed one at byte 2 only (`0x51` vs `0x52`). Log:
 `{SCRATCH}/ladder-slice-r4.log`, `{SCRATCH}/trace-claim.log`, `{SCRATCH}/trace-step.log`.
+**Served after that slice:** `92c6cf9bc` locates an entry's own record write after a call-making loop from the
+source, so the claim frame settles and the execution moves one frame deeper: `-t 'arbitrate 100-0'` now reports
+`frame "callee-master-10" of Unicrow.setClaimed() at line 96` with `reading … declared=01 computed=02`, and the
+signature is the published write facts - the `segment:"last"` release write that `Unicrow.refund()` and
+`Unicrow.pay()` publish is absent for that entry. The claim replica is
+`test/per-call/edges/dynamic-struct-return-edge.test.ts` (3 passed) and a six-title regression batch
+(`read mece tag`, `post job 1`, `post job with whitelist`, `withdraw collateral`, `close job before timeout`,
+`take job take job`) is 6 passed, so the compiler change broke none of the measured green set.
 
 ## The order the titles meet them (HEAD `9b271b622`)
 
 | Titles | Wall at HEAD | Next walls predicted from the code | Owner |
 | --- | --- | --- | --- |
-| #51 approve result, #52 refund sanity, #59 arbitrate sanity, #60 80-20, #61 0-100, #62 100-0, #66 integration test | one wall: the composed execution's frame for the claim entry refuses at its body's first statement, a STATIC call whose return is a struct holding a dynamic member, with an unattributed `OP_VERIFY` (ip 717, before any record is filled) | the frame's own declared view of its 107-byte record against the computed one at byte 2 (`0x51` vs `0x52`) is the closest lead; nothing past it is measured | hop + compiler; in progress (a neutral reproducer is being built beside the existing replicas) |
-| #50 approve sanity | the entry's own revert reason is not attributed where the transaction reverts (`expected revert reason Review text too long, but the contract's own reason was "no source message"`) | the claim wall above, once its own reasons are reported | attribution (`composer/refusal.ts`) |
+| #51 approve result, #52 refund sanity, #59 arbitrate sanity, #60 80-20, #61 0-100, #62 100-0, #66 integration test | the claim frame is served (`92c6cf9bc`); the execution now enters `Unicrow.setClaimed()`, which refuses at its `onlyUnicrowClaim` check (`Unicrow.sol:96`) with an unattributed `OP_VERIFY`. The hop trace names the comparison: `declared=01 computed=02` (`_status` 1 vs 2, a 1-byte record) | measured: the artifact publishes `[{record:0,segment:0,_status}]` for this entry but not the `{record:0,segment:"last",_status}` release fact that `Unicrow.refund()` and `Unicrow.pay()` publish, so segment 0 declares the spent `_status` where the body computed the entered one. Behind it: the `escrows` element write (`claimed = 1` on a 13-field struct with a dynamic `string`) and its chunk run | hop + compiler; `solidc/src/per-call/master/support.ts` read with the artifact |
+| #50 approve sanity | the entry's own revert reason is not attributed where the transaction reverts (`expected revert reason Review text too long, but the contract's own reason was "no source message"`) | the wall above, once the execution reaches the entry's own checks | attribution (`composer/refusal.ts`) |
 
 Served on 2026-10-03, each confirmed by its own title run: #53 refund and #65 refuse arbitration job taken
 (`bfa670351`: a write that leaves a chunked dynamic value shorter than the run the deployment holds plans the run at

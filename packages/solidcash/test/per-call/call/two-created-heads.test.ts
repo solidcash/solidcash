@@ -283,7 +283,7 @@ async function storeNodes(world: World, collection: string): Promise<readonly Ut
 }
 
 describe('reaches into a collection the store never wrote, through the head its genesis minted', () => {
-  it('settles two appends to one key, chaining the node the first reach created', async () => {
+  it('settles one reach, and two appends to one key chaining the node the first reach created', async () => {
     const world = await deployed();
 
     // Both reaches splice key 7 in through the genesis head: the first creates the key's node and the second appends
@@ -309,13 +309,24 @@ describe('reaches into a collection the store never wrote, through the head its 
     const held = nodes.filter((node) => bytesToHex(node.slot) === keySlot);
     expect(held).toHaveLength(1);
 
-    // The second reach appended to the value the first left, so the node holds more than one append's worth.
+    // One reach, from the same genesis head: the hop spends that head and recreates it linked to key 7, beside the
+    // node it created, and nothing else.
     const single = await deployed();
-    await callRoot(single, 'logOnce', [7n, 5n]);
-    const oneAppend = (await storeNodes(single, 'logs'))
-      .map((node) => decodeEntryCommitment(hexToBin(node.token!.nft!.commitment)))
-      .filter((node) => bytesToHex(node.slot) === keySlot);
-    expect(oneAppend).toHaveLength(1);
+    const once = await callRoot(single, 'logOnce', [7n, 5n]);
+    expect(once.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(once.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    const reached = (await storeNodes(single, 'logs'))
+      .map((node) => ({ txid: node.txid, ...decodeEntryCommitment(hexToBin(node.token!.nft!.commitment)) }));
+    const onceHeads = reached.filter((node) => bytesToHex(node.slot) === headSlot);
+    expect(onceHeads).toHaveLength(1);
+    expect(onceHeads[0]!.txid).toBe(once.broadcast!.txid);
+    expect(onceHeads[0]!.txid).not.toBe(before[0]!.txid);
+    expect(bytesToHex(onceHeads[0]!.nextKey)).toBe(keySlot);
+    expect(reached.map((node) => bytesToHex(node.slot)).sort()).toStrictEqual([headSlot, keySlot].sort());
+
+    // The second of the two reaches appended to the value the first left, so its node holds more than one append's
+    // worth.
+    const oneAppend = reached.filter((node) => bytesToHex(node.slot) === keySlot);
     expect(held[0]!.value.length).toBeGreaterThan(oneAppend[0]!.value.length);
   });
 
@@ -325,30 +336,6 @@ describe('reaches into a collection the store never wrote, through the head its 
     // The keys differ, and both reaches relink the one head the genesis minted.
     await expect(callRoot(world, 'putTwo', [1n, 2n])).rejects.toThrow(sameNodeRefusal('Store.put()', 2, 'counts'));
     expect(await callCoinLive(world)).toBe(true);
-  });
-
-  it('settles one reach through the head the genesis minted, leaving one head linked to its key', async () => {
-    const world = await deployed();
-
-    // Before the call the collection holds the genesis head alone, empty.
-    const before = await storeNodes(world, 'logs');
-    expect(before.map((node) => node.token!.nft!.commitment)).toStrictEqual([binToHex(headSentinelCommitment())]);
-
-    const result = await callRoot(world, 'logOnce', [7n, 5n]);
-    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-
-    // The hop spent that head and recreated it linked to key 7, beside the node it created, and nothing else.
-    const nodes = (await storeNodes(world, 'logs'))
-      .map((node) => ({ txid: node.txid, ...decodeEntryCommitment(hexToBin(node.token!.nft!.commitment)) }));
-    const headSlot = bytesToHex(new Uint8Array(32));
-    const keySlot = bytesToHex(keyToSlotMulti([bigIntToVmNumber(7n)]));
-    const heads = nodes.filter((node) => bytesToHex(node.slot) === headSlot);
-    expect(heads).toHaveLength(1);
-    expect(heads[0]!.txid).toBe(result.broadcast!.txid);
-    expect(heads[0]!.txid).not.toBe(before[0]!.txid);
-    expect(bytesToHex(heads[0]!.nextKey)).toBe(keySlot);
-    expect(nodes.map((node) => bytesToHex(node.slot)).sort()).toStrictEqual([headSlot, keySlot].sort());
   });
 
   it('refuses by name a write into a collection a live deployment holds no head of, broadcasting nothing', async () => {

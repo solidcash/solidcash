@@ -142,6 +142,23 @@ describe('an ERC-20-like callee on the plain call path', () => {
       .toStrictEqual([['Token', 'Transfer', result.draft.trailingOutputs[0]!.index]]);
     expect(logs[0]!.args).toStrictEqual({ from: chain.locks.get('Payer')!, to: RECIPIENT, value: 100n });
     expect(logs[0]!.address).toStrictEqual(chain.locks.get('Token')!);
+
+    // The callee's master refuses the same spend once its event output carries another payload: the value field is
+    // the payload's last byte, so 100 becomes 101.
+    const master = result.draft.layout.participants.find((placed) => placed.id === 'callee-master-1')!;
+    const [eventIndex] = result.draft.blockOf(master.id).events;
+    const machine = compositionMachine();
+    const evaluate = (outputs: typeof result.transaction.outputs): boolean => machine.stateSuccess(machine.evaluate({
+      inputIndex: master.index, sourceOutputs: result.sourceOutputs, transaction: { ...result.transaction, outputs },
+    })) === true;
+    expect(evaluate(result.transaction.outputs)).toBe(true);
+    const outputs = result.transaction.outputs.map((output, index) => {
+      if (index !== eventIndex) return output;
+      const commitment = Uint8Array.from(output.token!.nft!.commitment);
+      commitment[commitment.length - 1] ^= 0x01;
+      return { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment } } };
+    });
+    expect(evaluate(outputs)).toBe(false);
   });
 
   it('serves a callee that only reads the mapping: it answers from the node its key sits at', async () => {
@@ -167,26 +184,5 @@ describe('an ERC-20-like callee on the plain call path', () => {
       .toMatch(/^frame "callee-master-1" of Token\.transfer\(\) at line 1: balance /);
     expect(await balanceOf(chain, chain.locks.get('Payer')!)).toBe(1000n);
     expect(await balanceOf(chain, RECIPIENT)).toBe(0n);
-  });
-
-  it('refuses the transfer at the callee\'s master when its event output carries another payload', async () => {
-    const chain = await deployed();
-    const result = await enter(chain, 'pay', [RECIPIENT, 100n]);
-    expect(result.accepted).toBe(true);
-    const master = result.draft.layout.participants.find((placed) => placed.id === 'callee-master-1')!;
-    const [eventIndex] = result.draft.blockOf(master.id).events;
-    const machine = compositionMachine();
-    const evaluate = (outputs: typeof result.transaction.outputs): boolean => machine.stateSuccess(machine.evaluate({
-      inputIndex: master.index, sourceOutputs: result.sourceOutputs, transaction: { ...result.transaction, outputs },
-    })) === true;
-    expect(evaluate(result.transaction.outputs)).toBe(true);
-    // The value field is the payload's last byte: 100 becomes 101.
-    const outputs = result.transaction.outputs.map((output, index) => {
-      if (index !== eventIndex) return output;
-      const commitment = Uint8Array.from(output.token!.nft!.commitment);
-      commitment[commitment.length - 1] ^= 0x01;
-      return { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment } } };
-    });
-    expect(evaluate(outputs)).toBe(false);
   });
 });

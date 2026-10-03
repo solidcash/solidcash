@@ -19,9 +19,6 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * The callee's frame declares one segment per call plus one, and each write lands in the segment its own source
  * fixes. With two collections the frame declares two collections' nodes, so the plan has to place each write's
  * records in the segment that write names rather than all of them in one.
- *
- * The one-collection sibling reaches the same calls with one collection's nodes, so it isolates the second
- * collection from the call itself.
  */
 
 const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
@@ -34,8 +31,8 @@ const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
 const DESK_ADDRESS = validatorAddress(hexToBin(DESK_CATEGORY), VALIDATOR_PROGRAM);
 const PROBE_ADDRESS = validatorAddress(hexToBin(PROBE_CATEGORY), VALIDATOR_PROGRAM);
 
-/** The callee writes one collection or two; everything else about the two shapes is the same. */
-function sourceOf(collections: 'one' | 'two'): string {
+/** The callee writes two collections between its two calls. */
+function sourceOf(): string {
   return 'pragma solidcash ^0.13.0;'
     + ' struct Note { uint amount; uint fee; uint seen; }'
     + ' struct Book { uint low; uint high; }'
@@ -47,11 +44,11 @@ function sourceOf(collections: 'one' | 'two'): string {
     + ' contract Desk {'
     + '   uint public total;'
     + '   mapping(uint => Note) public notes;'
-    + (collections === 'two' ? '   mapping(uint => Book) public books;' : '')
+    + '   mapping(uint => Book) public books;'
     + '   function record(uint x) returns (uint) {'
     + `     uint before = IProbe(0x${binToHex(PROBE_ADDRESS)}).probe(x);`
     + '     this.notes[x] = Note(before, x, before);'
-    + (collections === 'two' ? '     this.books[x] = Book(before, x);' : '')
+    + '     this.books[x] = Book(before, x);'
     + `     uint after = IProbe(0x${binToHex(PROBE_ADDRESS)}).probe(before);`
     + '     this.total = before + after;'
     + '     return after;'
@@ -72,7 +69,7 @@ function sourceOf(collections: 'one' | 'two'): string {
     + ' }';
 }
 
-async function deploy(collections: 'one' | 'two'): Promise<{
+async function deploy(): Promise<{
   readonly network: MockNetworkProvider;
   readonly artifacts: ReturnType<typeof compileStringMulti>;
   readonly callerUtxos: readonly { txid: string; vout: number; satoshis: bigint }[];
@@ -81,7 +78,7 @@ async function deploy(collections: 'one' | 'two'): Promise<{
   readonly signature: SignatureTemplate;
   readonly initialized: boolean;
 }> {
-  const artifacts = compileStringMulti(sourceOf(collections), { composition: 'per-call' });
+  const artifacts = compileStringMulti(sourceOf(), { composition: 'per-call' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signature = new SignatureTemplate(alicePriv);
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -127,15 +124,9 @@ async function deploy(collections: 'one' | 'two'): Promise<{
 }
 
 /** Calls the entry through the shipped hop and reports what the transaction carried. */
-async function record(collections: 'one' | 'two'): Promise<{
-  readonly accepted: boolean;
-  readonly txid: string | undefined;
-  readonly slots: readonly string[];
-}> {
-  const { network, artifacts, callerUtxos, deployerLock, changeAddress, signature, initialized }
-    = await deploy(collections);
+async function record(): Promise<{ readonly accepted: boolean; readonly txid: string | undefined }> {
+  const { network, artifacts, callerUtxos, deployerLock, changeAddress, signature, initialized } = await deploy();
   expect(initialized).toBe(true);
-  const callee = artifacts.Desk!.abi.find((candidate) => candidate.name === 'record')!;
   const result = await callPerCallProxyEntry({
     provider: network,
     implementationArtifact: artifacts.Ledger!,
@@ -155,31 +146,19 @@ async function record(collections: 'one' | 'two'): Promise<{
     changeAddress,
     vm: compositionMachine(),
   });
-  return {
-    accepted: result.verdicts.every((verdict) => verdict.accepted),
-    txid: result.broadcast?.txid,
-    slots: (callee.blockLayout?.slots ?? []).map((slot) => slot.kind),
-  };
+  return { accepted: result.verdicts.every((verdict) => verdict.accepted), txid: result.broadcast?.txid };
 }
 
 describe('a callee that writes mapping collections beside its own calls', () => {
-  it('settles one collection of its own records beside the calls, and broadcasts', async () => {
-    const { accepted, txid, slots } = await record('one');
-    // One collection's node, then the frame's own data record and the entry node its read declares.
-    expect(slots).toStrictEqual(['master', 'dataNft', 'entry', 'returnEvent']);
-    expect(accepted).toBe(true);
-    expect(txid).toMatch(/^[0-9a-f]{64}$/);
-  }, 300_000);
-
   it('settles two collections of its own records beside the calls, and broadcasts', async () => {
     // Both collections' nodes start from the same placeholder - the value each holds is the body's to compute - so
     // the frame's own close matches two candidates at once and each pass has to learn the next node in the order the
     // body closes them, rather than restating the first. Once both are stated the frame reaches the pin that sizes
     // its run, and the value is read there.
-    const slots = (compileStringMulti(sourceOf('two'), { composition: 'per-call' }).Desk!.abi
+    const slots = (compileStringMulti(sourceOf(), { composition: 'per-call' }).Desk!.abi
       .find((candidate) => candidate.name === 'record')!.blockLayout?.slots ?? []).map((slot) => slot.kind);
     expect(slots).toStrictEqual(['master', 'dataNft', 'entry', 'entry', 'returnEvent']);
-    const { accepted, txid } = await record('two');
+    const { accepted, txid } = await record();
     expect(accepted).toBe(true);
     expect(txid).toMatch(/^[0-9a-f]{64}$/);
   }, 300_000);

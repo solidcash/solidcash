@@ -89,29 +89,26 @@ const FIRST = { kind: 2n, from: hexToBin('a1b2c3d4'), body: hexToBin('0102030405
 const SECOND = { kind: 5n, from: hexToBin('0e0f'), body: hexToBin('6a6b6c6d6e6f'), memo: 'second note' };
 
 describe('a struct argument with two bytes members and a string', () => {
-  it('reaches the callee whole, is appended and emitted, and the length it returns reaches the caller', async () => {
+  it('reaches the callee whole, is appended and emitted, and the length it returns reaches the caller; a struct '
+    + 'the caller builds from its own arguments is appended after it', async () => {
     const run = await deployed();
-    const result = await settleEdge(run, 'post', [LOG_ID, FIRST]);
-    expect(result.completed.map((frame) => frame.functionName))
+    const first = await settleEdge(run, 'post', [LOG_ID, FIRST]);
+    expect(first.completed.map((frame) => frame.functionName))
       .toStrictEqual(['Archive.append()', 'Desk.post()', 'DeskProxy.__fallback()']);
     expect(await callerFields(run)).toMatchObject({ posted: 1n, lastLength: 1n });
     expect(await readCallee(run, 'countOf', [LOG_ID])).toStrictEqual([1n]);
     expect(await readCallee(run, 'noteAt', [LOG_ID, 0n])).toStrictEqual([FIRST]);
-    expect((await eventsOnChain(run, run.callee, run.calleeCategoryId, result.txid))
+    expect((await eventsOnChain(run, run.callee, run.calleeCategoryId, first.txid))
       .map(({ name, args }) => ({ name, args }))).toStrictEqual([
       { name: 'Appended', args: { id: LOG_ID, ...FIRST } },
     ]);
-  });
 
-  it('carries a struct the caller builds from its own arguments, appended after the first', async () => {
-    const run = await deployed();
-    await settleEdge(run, 'post', [LOG_ID, FIRST]);
-    const result = await settleEdge(run, 'postBuilt', [LOG_ID, SECOND.kind, SECOND.from, SECOND.body, SECOND.memo]);
+    const built = await settleEdge(run, 'postBuilt', [LOG_ID, SECOND.kind, SECOND.from, SECOND.body, SECOND.memo]);
     expect(await callerFields(run)).toMatchObject({ posted: 2n, lastLength: 2n });
     expect(await readCallee(run, 'countOf', [LOG_ID])).toStrictEqual([2n]);
     expect(await readCallee(run, 'noteAt', [LOG_ID, 0n])).toStrictEqual([FIRST]);
     expect(await readCallee(run, 'noteAt', [LOG_ID, 1n])).toStrictEqual([SECOND]);
-    expect((await eventsOnChain(run, run.callee, run.calleeCategoryId, result.txid)).map(({ args }) => args))
+    expect((await eventsOnChain(run, run.callee, run.calleeCategoryId, built.txid)).map(({ args }) => args))
       .toStrictEqual([{ id: LOG_ID, ...SECOND }]);
   });
 

@@ -75,6 +75,13 @@ export function kernelArgumentConditionActivation(
     const inner = kernelArgumentConditionActivation(expression.expression, argumentIndices, booleanArgumentIndices);
     return inner === undefined ? undefined : { kind: 'unary', operator: '!', expression: inner };
   }
+  if (expression instanceof BinaryOpNode
+    && (expression.operator === BinaryOperator.AND || expression.operator === BinaryOperator.OR)) {
+    const left = kernelArgumentConditionActivation(expression.left, argumentIndices, booleanArgumentIndices);
+    const right = kernelArgumentConditionActivation(expression.right, argumentIndices, booleanArgumentIndices);
+    return left === undefined || right === undefined ? undefined
+      : { kind: 'binary', operator: expression.operator, left, right };
+  }
   if (!(expression instanceof BinaryOpNode) || !COMPARISON_OPERATORS.has(expression.operator)) return undefined;
   const operand = (node: ExpressionNode): ExternalCallExpression | undefined => {
     if (node instanceof IdentifierNode) {

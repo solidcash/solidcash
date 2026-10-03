@@ -1122,4 +1122,37 @@ describe('kernel complete nested-mapping tuple pool', () => {
     expect(binToHex(entries[0]!.slot)).toBe(binToHex(keyToSlotMulti([bigIntToVmNumber(2n)])));
     expect(entries[0]!.value).toBe(22n);
   }, 180_000);
+
+  it('keeps a compound-guarded mapping write absent in a kernel batch', async () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract GuardedLedger {
+        mapping(uint => uint) values;
+        mapping(uint => uint) trace;
+        function set(uint key, uint value, bool enabled) public {
+          if (enabled && (value > 10 || value == 3)) { values[key] = value; }
+          trace[key] = value + 100;
+          require(true);
+        }
+      }`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'set')?.entryAccesses?.[0]?.activation)
+      .toMatchObject({ kind: 'binary', operator: '&&' });
+    const provider = createMessageBusCapstoneTestProvider();
+    const inner = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, setup.categoryId);
+    await expect(contract.batch([
+      { function: 'set', args: [1n, 11n, false] },
+      { function: 'set', args: [1n, 9n, true] },
+    ]).send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(await contract.getEntries('values')).toHaveLength(0);
+    expect((await contract.getEntries('trace'))[0]?.value).toBe(109n);
+    await expect(contract.batch([{ function: 'set', args: [2n, 3n, true] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const entries = await contract.getEntries('values');
+    expect(entries).toHaveLength(1);
+    expect(binToHex(entries[0]!.slot)).toBe(binToHex(keyToSlotMulti([bigIntToVmNumber(2n)])));
+    expect(entries[0]!.value).toBe(3n);
+  }, 180_000);
 });

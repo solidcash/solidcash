@@ -137,6 +137,77 @@ const LONG_UPDATE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function rename(address who, Member m) { this.members[who] = m; this.items.push(msg.sender); }'
   + ' }';
 
+/**
+ * A partial write of one field of a struct mapping element whose live value chunks.
+ *
+ * The body leaves every other field as it was, so the compiler publishes the write's value as a struct built from a
+ * literal and a field read back out of the live node (`field:reference(map:escrows(id:id))`). The string is long
+ * enough that the node keeps only its hash and the write needs a run of value chunks.
+ */
+const PARTIAL_FIELD_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   struct Escrow { uint16 claimed; string reference; }'
+  + '   address public implementation;'
+  + '   mapping(uint256 => Escrow) public escrows;'
+  + '   function initialize(uint256 id, Escrow e) { this.escrows[id] = e; }'
+  + '   function setClaimed(uint256 id) { this.escrows[id].claimed = 1; }'
+  + ' }';
+
+/** A partial write whose new value crosses back under the inline limit, so the live value's chunks are consumed. */
+const SHRINK_FIELD_SOURCE = PARTIAL_FIELD_SOURCE.replace(
+  'function setClaimed(uint256 id) { this.escrows[id].claimed = 1; }',
+  'function setReference(uint256 id, string r) { this.escrows[id].reference = r; }',
+);
+
+/** The write's real shape: the marketplace's 13-field `Escrow`, whose last member is a dynamic string. */
+const FULL_ESCROW_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   struct Escrow { address buyer; uint64 challengeExtension; address seller; uint64 challengePeriodStart;'
+  + '     address marketplace; uint256 marketplaceFee; uint64 challengePeriodEnd; address currency; uint16 claimed;'
+  + '     int16[2] consensus; uint16[4] split; uint256 amount; string paymentReference; }'
+  + '   address public implementation;'
+  + '   mapping(uint256 => Escrow) public escrows;'
+  + '   function initialize(uint256 id, Escrow e) { this.escrows[id] = e; }'
+  + '   function setClaimed(uint256 id) { this.escrows[id].claimed = 1; }'
+  + ' }';
+
+/** The settle shape: one fixed-array field of the live element is replaced from the call's argument. */
+const SETTLE_FIELD_SOURCE = FULL_ESCROW_SOURCE.replace(
+  'function setClaimed(uint256 id) { this.escrows[id].claimed = 1; }',
+  'function setSplit(uint256 id, uint16[4] split) { this.escrows[id].split = split; }',
+);
+
+/** The same partial write behind the reentrancy guard the marketplace's entry carries. */
+const GUARDED_PARTIAL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' abstract contract Guard {'
+  + '   uint256 private constant _NOT_ENTERED = 1;'
+  + '   uint256 private constant _ENTERED = 2;'
+  + '   uint256 private _status;'
+  + '   constructor() { _status = _NOT_ENTERED; }'
+  + '   modifier nonReentrant() { require(_status != _ENTERED); _status = _ENTERED; _; _status = _NOT_ENTERED; }'
+  + ' }'
+  + ' contract Impl is Guard {'
+  + '   struct Escrow { uint16 claimed; string reference; }'
+  + '   address public implementation;'
+  + '   mapping(uint256 => Escrow) public escrows;'
+  + '   function initialize(uint256 id, Escrow e) { this.escrows[id] = e; }'
+  + '   function setClaimed(uint256 id) nonReentrant { this.escrows[id].claimed = 1; }'
+  + ' }';
+
+/** A partial write whose new field value is a local the artifact does not state, so the hop learns the value. */
+const UNSTATED_PARTIAL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   struct Escrow { uint16 claimed; string reference; }'
+  + '   address public implementation;'
+  + '   mapping(uint256 => Escrow) public escrows;'
+  + '   function initialize(uint256 id, Escrow e) { this.escrows[id] = e; }'
+  + '   function setClaimed(uint256 id, bool flag) {'
+  + '     uint16 c = 1;'
+  + '     if (flag) { c = 2; }'
+  + '     this.escrows[id].claimed = c;'
+  + '   }'
+  + ' }';
+
 /** An element type the artifact states only as a literal, which the hop sizes through the shipped encoder. */
 const LITERAL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Impl {'
@@ -776,6 +847,272 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
       expect(output.output.token!.nft!.commitment).toStrictEqual(valueChunks[position]!.commitment);
     });
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+});
+
+describe('a proxied entry that writes one field of a struct mapping element', () => {
+  const ID = 7n;
+  const SLOT = keyToSlotMulti([bigIntToVmNumber(ID)]);
+
+  interface PartialRun {
+    readonly result: Awaited<ReturnType<typeof callPerCallProxyEntry>>;
+    readonly network: MockNetworkProvider;
+    readonly artifacts: ReturnType<typeof compileStringMulti>;
+    readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
+    readonly trailing: NonNullable<Awaited<ReturnType<typeof callPerCallProxyEntry>>['draft']['trailingOutputs']>;
+  }
+
+  /** Seeds one element with `reference`, then enters the partial-field write through the shipped hop. */
+  async function partialWrite(reference: string): Promise<PartialRun> {
+    const { deployment, network, artifacts, funding }
+      = await deploy(PARTIAL_FIELD_SOURCE, [ID, { claimed: 0n, reference }], true);
+    expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'setClaimed',
+      args: [ID],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+    return { result, network, artifacts, deployment, trailing: result.draft.trailingOutputs };
+  }
+
+  /** The one mapping node the write rewrote, decoded from the transaction's own output. */
+  function rewrittenNode(run: PartialRun): ReturnType<typeof decodeEntryCommitment> {
+    const nodeIds = run.result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
+    expect(nodeIds).toHaveLength(1);
+    return decodeEntryCommitment(
+      Uint8Array.from(run.result.transaction.outputs[nodeIds[0]!.index]!.token!.nft!.commitment!));
+  }
+
+  it('settles a partial write whose live value lives in value chunks', async () => {
+    const reference = 'r'.repeat(80);
+    const run = await partialWrite(reference);
+    const { result, network, artifacts } = run;
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    // The node carries the whole value: the literal `claimed`, and the reference the live node held.
+    const value = encodePushdataValue({ claimed: 1n, reference }, 'Escrow', artifacts.Impl!.structs);
+    expect(value.length).toBeGreaterThan(VALUE_INLINE_LIMIT);
+    const chunkLock = mappingValueChunkLock(
+      hexToBin(run.deployment.proxy.categoryId), 'escrows', { slot: SLOT, root: sha256(value) },
+    );
+    const valueChunks = splitValueIntoValueChunks(value).map(
+      (piece, index) => ({ index, commitment: hexToBin(buildValueChunkCommitment(index, piece)) }),
+    );
+    expect(run.trailing).toHaveLength(valueChunks.length);
+    run.trailing.forEach((output, position) => {
+      expect(output.output.lockingBytecode).toStrictEqual(chunkLock);
+      expect(output.output.token!.nft!.commitment).toStrictEqual(valueChunks[position]!.commitment);
+    });
+
+    const node = rewrittenNode(run);
+    expect(bytesToHex(node.slot)).toBe(bytesToHex(SLOT));
+    expect(bytesToHex(node.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it('settles a partial write whose live value stays inline in the node tail', async () => {
+    const reference = 'short ref';
+    const run = await partialWrite(reference);
+    const { result, network, artifacts } = run;
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+
+    const value = encodePushdataValue({ claimed: 1n, reference }, 'Escrow', artifacts.Impl!.structs);
+    expect(value.length).toBeLessThanOrEqual(VALUE_INLINE_LIMIT);
+    expect(run.trailing).toStrictEqual([]);
+    const node = rewrittenNode(run);
+    expect(bytesToHex(node.slot)).toBe(bytesToHex(SLOT));
+    expect(bytesToHex(node.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it('settles a partial write whose new value crosses back under the inline limit', async () => {
+    const reference = 'r'.repeat(80);
+    const { deployment, network, artifacts, funding }
+      = await deploy(SHRINK_FIELD_SOURCE, [ID, { claimed: 0n, reference }], true);
+    expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'setReference',
+      args: [ID, 'short'],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    const value = encodePushdataValue({ claimed: 0n, reference: 'short' }, 'Escrow', artifacts.Impl!.structs);
+    expect(value.length).toBeLessThanOrEqual(VALUE_INLINE_LIMIT);
+    expect(result.draft.trailingOutputs).toStrictEqual([]);
+    const nodeIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
+    expect(nodeIds).toHaveLength(1);
+    const node = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[nodeIds[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(node.slot)).toBe(bytesToHex(SLOT));
+    expect(bytesToHex(node.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
+  });
+
+  it('control: the machine refuses the same plan when the node output is drained of value', async () => {
+    // The hop plans the whole transaction; a node output that does not keep its own value must not be accepted, which
+    // is what shows this case drives the shipped hop rather than accepting any plan.
+    const run = await partialWrite('r'.repeat(80));
+    const program = run.result.draft.programFor('implementation-master');
+    const nodeIndex = run.result.draft.layout.participants
+      .find((placed) => placed.id.startsWith('mapping-node-'))!.index;
+    const drained = program.transaction.outputs.map((output, index) => (index === nodeIndex
+      ? { ...output, valueSatoshis: output.valueSatoshis - 1_000n } : output));
+    const vm = compositionMachine();
+    const refused = run.result.draft.layout.participants.filter((placed) => vm.stateSuccess(vm.evaluate({
+      inputIndex: placed.index,
+      sourceOutputs: program.sourceOutputs,
+      transaction: { ...program.transaction, outputs: drained },
+    })) !== true).map((placed) => placed.id);
+    expect(refused).toContain('validator');
+  });
+});
+
+describe('a proxied entry that writes one field of the marketplace\'s 13-field element', () => {
+  const ID = 11n;
+  const SLOT = keyToSlotMulti([bigIntToVmNumber(ID)]);
+  const WALLET = encodeLockingBytecodeP2pkh(alicePkh);
+  const reference = 'r'.repeat(80);
+  const seeded = {
+    buyer: WALLET, challengeExtension: 0n, seller: WALLET, challengePeriodStart: 0n,
+    marketplace: WALLET, marketplaceFee: 0n, challengePeriodEnd: 0n, currency: WALLET,
+    claimed: 0n, consensus: [0n, 0n], split: [0n, 0n, 0n, 0n], amount: 5n, paymentReference: reference,
+  };
+
+  it('settles a partial write of one field of a 13-field element', async () => {
+    const { deployment, network, artifacts, funding }
+      = await deploy(FULL_ESCROW_SOURCE, [ID, seeded], true);
+    expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'setClaimed',
+      args: [ID],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    const value = encodePushdataValue({ ...seeded, claimed: 1n }, 'Escrow', artifacts.Impl!.structs);
+    expect(value.length).toBeGreaterThan(VALUE_INLINE_LIMIT);
+    const nodeIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
+    expect(nodeIds).toHaveLength(1);
+    const node = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[nodeIds[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(node.slot)).toBe(bytesToHex(SLOT));
+    expect(bytesToHex(node.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
+  });
+
+  it('settles replacing one fixed-array field of a live element from the call argument', async () => {
+    const split = [100n, 200n, 300n, 400n];
+    const { deployment, network, artifacts, funding }
+      = await deploy(SETTLE_FIELD_SOURCE, [ID, seeded], true);
+    expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'setSplit',
+      args: [ID, split],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    const value = encodePushdataValue({ ...seeded, split }, 'Escrow', artifacts.Impl!.structs);
+    const nodeIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
+    expect(nodeIds).toHaveLength(1);
+    const node = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[nodeIds[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(node.slot)).toBe(bytesToHex(SLOT));
+    expect(bytesToHex(node.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
+  });
+
+  it('settles a partial write whose new field value the artifact does not state', async () => {
+    const id = 21n;
+    const reference = 'r'.repeat(80);
+    const { deployment, network, artifacts, funding }
+      = await deploy(UNSTATED_PARTIAL_SOURCE, [id, { claimed: 0n, reference }], true);
+    expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'setClaimed',
+      args: [id, true],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    const value = encodePushdataValue({ claimed: 2n, reference }, 'Escrow', artifacts.Impl!.structs);
+    const nodeIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
+    expect(nodeIds).toHaveLength(1);
+    const node = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[nodeIds[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(node.slot)).toBe(bytesToHex(keyToSlotMulti([bigIntToVmNumber(id)])));
+    expect(bytesToHex(node.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
+  });
+
+  it('settles the guard shape: one segment, the entry write and the release both in it', async () => {
+    const id = 11n;
+    const { deployment, network, artifacts, funding }
+      = await deploy(GUARDED_PARTIAL_SOURCE, [id, { claimed: 0n, reference }], true);
+    expect(deployment.initialize.accepted, JSON.stringify(deployment.initialize.verdicts)).toBe(true);
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'setClaimed',
+      args: [id],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    const value = encodePushdataValue({ claimed: 1n, reference }, 'Escrow', artifacts.Impl!.structs);
+    const nodeIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
+    expect(nodeIds).toHaveLength(1);
+    const node = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[nodeIds[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(node.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
   });
 });
 

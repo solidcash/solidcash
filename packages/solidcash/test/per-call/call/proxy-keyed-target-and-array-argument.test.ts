@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
-import { buildPushdataCommitment, bytesToHex, encodePushdataValue, type Artifact } from '@solidcash/utils';
+import { buildPushdataCommitment, bytesToHex, type Artifact } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -124,17 +124,17 @@ describe('the hop resolves a target a callee\'s own mapping holds', () => {
     await seed(network, echo, ECHO_CATEGORY);
     await seed(network, sink, SINK_CATEGORY);
 
-    // The callee's own mapping entry: the key's slot, a null successor, and the address's pushdata value.
+    // The callee's own mapping entry: the key's slot, a null successor, and the address as the body stores it, its
+    // own locking bytecode.
     const routes = registry.stateLayout!.collections!.find((collection) => collection.name === 'routes')!;
     const slot = keyToSlotMulti([bigIntToVmNumber(1n)]);
-    const tail = encodePushdataValue(sinkMaster, routes.valueType);
     await network.addUtxo(binToHex(entryRecordLockingBytecode(REGISTRY_CATEGORY, routes.signature)), {
       txid: 'b1'.repeat(32), vout: 0, satoshis: 1200n,
       token: {
         category: REGISTRY_CATEGORY, amount: 0n,
         nft: {
           capability: 'mutable',
-          commitment: bytesToHex(encodeEntryCommitment(slot, new Uint8Array(32), tail)),
+          commitment: bytesToHex(encodeEntryCommitment(slot, new Uint8Array(32), sinkMaster)),
         },
       },
     });

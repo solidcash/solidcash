@@ -39,7 +39,7 @@
  * the running execution holds, a loop width the caller's facts do not fix — is refused by name.
  */
 
-import { binToHex, binToUtf8, hexToBin } from '@bitauth/libauth';
+import { binToHex, binToUtf8, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import { hopTrace, hopTraceOn } from './hop-trace.js';
 import {
   bytesEqual,
@@ -745,16 +745,56 @@ export function deploymentStateValues(
   return values;
 }
 
+/** A mapping value type a node holds as a script number: an integer, a fixed-point number or a `bool`. */
+const NUMBER_VALUE_TYPE = /^(?:bool|bigint|u?int\d+|u?fixed\d+x\d+)$/;
+
+/** A mapping value type a node holds as its own bytes. */
+const BYTES_VALUE_TYPE = /^(?:string|bytes\d*|address(?: payable)?|pubkey|sig|datasig)$/;
+
+/**
+ * One mapping value as the contract's own body reads it: from the whole value its node holds, or the type's default
+ * for a key the mapping does not hold (`raw` absent).
+ *
+ * A node holds the value as the body's own stack item. An integer, an enum or a `bool` is a script number, which the
+ * body reads with `OP_BIN2NUM`; a `string`, `bytes` or `bytesN`, an address or a public key is its own bytes; a struct
+ * or an array is its pushdata encoding. A chunking collection's values are therefore read in the forms
+ * `isWholeNodeValue` holds a learned one to. A value its type does not decode, or a type none of these names, is left
+ * unstated.
+ */
+function mappingValueOf(
+  type: string, raw: Uint8Array | undefined, artifact: Artifact, structs: Artifact['structs'],
+): FunctionArgument | undefined {
+  if (NUMBER_VALUE_TYPE.test(type) || (artifact.enums ?? []).some((declared) => declared.name === type)) {
+    // An absent key reads as the empty item the body pushes for the default.
+    const number = vmNumberToBigInt(raw ?? new Uint8Array(0), { requireMinimalEncoding: false });
+    if (typeof number !== 'bigint') return undefined;
+    return type === 'bool' ? number !== 0n : number;
+  }
+  if (BYTES_VALUE_TYPE.test(type)) {
+    const bytes = raw ?? getDefaultStateValue(type, structs) as Uint8Array;
+    return type === 'string' ? binToUtf8(bytes) : bytes;
+  }
+  if (!(structs ?? []).some((struct) => struct.name === type) && parseArrayTypeString(type) === undefined) {
+    return undefined;
+  }
+  if (raw === undefined) return getDefaultStateValue(type, structs) as FunctionArgument;
+  try {
+    return decodePushdataValue(raw, 0, type, structs).value as FunctionArgument;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Builds the reader a frame resolves a mapping-backed state read with, from its own live deployment.
  *
  * A mapping's entries are separate nodes, so the caller's data-NFT state never carries the collection: the reader
- * finds the node the key's slot names among the deployment's own nodes and decodes the value the node's tail (or
- * its continuation chunks) holds. A node an earlier reach of the same hop created is not in the deployment - the
- * transaction has no input carrying it - so the reader takes the commitment that reach left, which is what the body
- * reads over. Only a slot neither holds is the language's default, exactly as the contract's own read yields, so a
- * routing over an absent key states the same value the body would. A node value the deployment cannot reassemble is
- * left unstated, which refuses the site by name rather than guessing.
+ * finds the node the key's slot names among the deployment's own nodes and reads the value the node's tail (or its
+ * continuation chunks) holds, in the form the body stores it (`mappingValueOf`). A node an earlier reach of the same
+ * hop created is not in the deployment - the transaction has no input carrying it - so the reader takes the commitment
+ * that reach left, which is what the body reads over. Only a slot neither holds is the language's default, exactly as
+ * the contract's own read yields, so a routing over an absent key states the same value the body would. A node value
+ * the deployment cannot reassemble is left unstated, which refuses the site by name rather than guessing.
  */
 export function liveMappingValueReader(
   artifact: Artifact,
@@ -765,6 +805,9 @@ export function liveMappingValueReader(
   return (name, keys) => {
     const collection = collections.find((candidate) => candidate.name === name && candidate.kind === 'mapping');
     if (collection === undefined) return undefined;
+    // The value the body reads from the whole value a node holds; bytes the hop cannot reassemble state none.
+    const held = (raw: Uint8Array | undefined): FunctionArgument | undefined =>
+      (raw === undefined ? undefined : mappingValueOf(collection.valueType, raw, artifact, structs));
     const scalarKeys = keys.filter((key): key is bigint | boolean | Uint8Array | string => (
       typeof key === 'bigint' || typeof key === 'boolean' || typeof key === 'string' || key instanceof Uint8Array
     ));
@@ -779,11 +822,7 @@ export function liveMappingValueReader(
     // before that write, so the value the body reads is the one that reach left.
     const rewritten = (live.rewrittenNodes ?? []).find((candidate) =>
       candidate.collection === collection.name && slots.some((slot) => bytesEqual(candidate.slot, slot)));
-    if (rewritten !== undefined) {
-      const raw = rewritten.value ?? joinedNodeValue(collection, rewritten.commitment, live);
-      if (raw === undefined) return undefined;
-      return decodePushdataValue(raw, 0, collection.valueType, structs).value as FunctionArgument;
-    }
+    if (rewritten !== undefined) return held(rewritten.value ?? joinedNodeValue(collection, rewritten.commitment, live));
     // Slot candidates are exact-first, so the exact key's node wins over a compatibility alias's.
     let node: (typeof nodes)[number] | undefined;
     for (const slot of slots) {
@@ -797,16 +836,12 @@ export function liveMappingValueReader(
       // hold is a deployment that already carries the write, which is a plan the positions agree on.
       const continued = (live.continuedNodes ?? []).find((candidate) =>
         candidate.collection === collection.name && slots.some((slot) => bytesEqual(candidate.slot, slot)));
-      if (continued === undefined) return getDefaultStateValue(collection.valueType, structs) as FunctionArgument;
-      const continuedRaw = joinedNodeValue(collection, continued.commitment, live);
-      if (continuedRaw === undefined) return undefined;
-      return decodePushdataValue(continuedRaw, 0, collection.valueType, structs).value as FunctionArgument;
+      if (continued === undefined) return mappingValueOf(collection.valueType, undefined, artifact, structs);
+      return held(joinedNodeValue(collection, continued.commitment, live));
     }
     const commitment = node.token?.nft?.commitment;
     if (commitment === undefined) return undefined;
-    const raw = joinedNodeValue(collection, hexToBin(commitment), live);
-    if (raw === undefined) return undefined;
-    return decodePushdataValue(raw, 0, collection.valueType, structs).value as FunctionArgument;
+    return held(joinedNodeValue(collection, hexToBin(commitment), live));
   };
 }
 

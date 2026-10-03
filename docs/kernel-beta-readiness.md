@@ -774,6 +774,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   12. Batch layout authority now packs each participant's manifest-published actual span and recomputes its
   physical trailing capacity. The exact BCH-2026 title settles two nested keys on A and one on B; its
   immediately preceding runtime-selected-bytecode title passes. No broad suite ran.
+- 2026-10-03 nested-struct return follow-up: an address-returning helper nested in a struct argument to a
+  later graph call was published twice from one external-call AST node. The duplicate became a phantom graph
+  target requiring a second proof. Slot collection and assignment now count each external-call node once, while
+  two distinct helper calls still publish two callsites. The exact compiler title, the BCH-2026 nested-struct
+  title (including callee verification of the returned address), and each immediately preceding title pass.
+  `yarn build` and targeted lint pass; no broad suite ran.
 
 ## Gate before the next leap
 

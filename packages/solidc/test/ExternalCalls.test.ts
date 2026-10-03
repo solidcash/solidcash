@@ -109,6 +109,39 @@ describe('returned external-call loop metadata', () => {
     }
   });
 
+  it('publishes an external return nested in a struct argument once while retaining distinct calls', () => {
+    const artifact = compileMessageBus(`pragma solidity ^0.8.0;
+      struct Peer { address who; uint256 tag; }
+      interface IHelper { function who() external view returns (address); }
+      interface ICallee {
+        function act(Peer memory peer) external;
+        function actPair(address first, address second) external;
+      }
+      contract Owner(address helper, address callee) {
+        function apply() public {
+          ICallee(callee).act(Peer({ who: IHelper(helper).who(), tag: 7 }));
+          require(true);
+        }
+        function applyPair() public {
+          ICallee(callee).actPair(IHelper(helper).who(), IHelper(helper).who());
+          require(true);
+        }
+      }`, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      suppressWarnings: true,
+    });
+    const applyCalls = artifact.abi.find((entry) => entry.name === 'apply')!.externalCalls!;
+    const pairCalls = artifact.abi.find((entry) => entry.name === 'applyPair')!.externalCalls!;
+    expect(applyCalls.map((call) => call.functionName)).toEqual(['who', 'act']);
+    expect(pairCalls.map((call) => call.functionName)).toEqual(['who', 'who', 'actPair']);
+    expect(applyCalls.map((call) => call.callsiteId)).toEqual([0, 1]);
+    expect(pairCalls.map((call) => call.callsiteId)).toEqual([0, 1, 2]);
+  });
+
   it('does not clone an effectful producer to derive a constructed collection key', () => {
     const artifact = compileMessageBus(`
       interface ISource { function keyAt(uint index) external view returns (uint); }

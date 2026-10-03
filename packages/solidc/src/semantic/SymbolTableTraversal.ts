@@ -7672,6 +7672,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (this.compilerOptions.messageBus === false && node instanceof WhileNode
       && node.condition instanceof BoolLiteralNode && node.condition.value === false) return;
     if (node instanceof ExternalFunctionCallNode && node.callInfo && !node.foldedIntoDeploy) {
+      // Lowered struct constructors can retain the same argument node through two AST edges. One source
+      // call must own one physical slot even when the generic walk reaches its node again.
+      if (slots.some((slot) => slot.sourceCallNode === node)) return;
       // `call{value: amount}("")` has no selector-bearing callee operation. Its independently indexed transfer
       // output is the complete BCH effect, and a reached required output reconstructs `(true, bytes(""))`.
       // Keeping it out of the call manifest avoids manufacturing an unauthenticated empty-selector callsite.
@@ -9409,7 +9412,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
-  private assignExternalCallSlotIndices(node: Node, slots: ExternalCallSlot[], counter: { idx: number }): void {
+  private assignExternalCallSlotIndices(
+    node: Node, slots: ExternalCallSlot[],
+    counter: { idx: number; visited?: Set<ExternalFunctionCallNode> },
+  ): void {
     if (this.compilerOptions.messageBus === false
       && node instanceof BranchNode && node.condition instanceof BoolLiteralNode) {
       const active = node.condition.value ? node.ifBlock : node.elseBlock;
@@ -9419,6 +9425,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (this.compilerOptions.messageBus === false && node instanceof WhileNode
       && node.condition instanceof BoolLiteralNode && node.condition.value === false) return;
     if (node instanceof ExternalFunctionCallNode && node.callInfo) {
+      counter.visited ??= new Set();
+      if (counter.visited.has(node)) return;
+      counter.visited.add(node);
       if (node.addressExpression instanceof Node) {
         this.assignExternalCallSlotIndices(node.addressExpression, slots, counter);
       }

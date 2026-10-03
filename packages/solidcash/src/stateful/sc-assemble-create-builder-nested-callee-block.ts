@@ -81,7 +81,7 @@ export interface AssembleCreateBuilderNestedCalleeBlockCtx {
   externalCategoryId: string;
   slotIndex: number;
   loopIdxRanges: readonly { start: number; count: number }[];
-  publicSelfAddress: Uint8Array | undefined;
+  publicSelfIdentity: { categoryId: string; lockingBytecode: string };
 }
 
 /**
@@ -109,7 +109,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
     externalCategoryId,
     slotIndex,
     loopIdxRanges,
-    publicSelfAddress,
+    publicSelfIdentity,
   } = ctx;
 
   if (bBlockLayout) {
@@ -257,14 +257,14 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                   ? utf8ToBin(rawKeyValue) : undefined)
                 ?? (rawKeyValue instanceof Uint8Array || typeof rawKeyValue === 'bigint'
                   || typeof rawKeyValue === 'boolean' ? rawKeyValue : undefined);
-              // msg.sender key (cross-contract): B's `bal[msg.sender]` where msg.sender = US (the caller). Resolve
-              // the key to OUR category-pinned locking bytecode - the covenant keys the entry by keyToSlot(caller
-              // LBC) too (emitSortedKeyHash visits msg.sender -> emitMsgSenderMintingVerification -> caller LBC).
+              // The callee reconstructs msg.sender from the authenticated caller identity anchor. Its entry
+              // witness must use that same locking bytecode, even when the caller executes at another lock.
+              const callerAddress = hexToBin(publicSelfIdentity.lockingBytecode);
               const isSenderKey = (
                 source: NonNullable<typeof bEntryAccess.keySources>[number] | undefined,
               ): boolean => isMsgSenderKeySource(source);
               const effKeyValue = isSenderKey(bEntryAccess.keySources?.[0])
-                ? publicSelfAddress
+                ? callerAddress
                 : keyValue;
               let matchUtxo: Utxo | undefined;
               if (bCollection?.sorted && effKeyValue !== undefined) {
@@ -277,10 +277,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                 );
                 const encodedKeys: Uint8Array[] = bEntryAccess.keyParams.map((name, keyIndex) => {
                   if (isSenderKey(bEntryAccess.keySources?.[keyIndex])) {
-                    if (!publicSelfAddress) {
-                      throw new Error(`External message-bus batch cannot resolve msg.sender key '${name}'`);
-                    }
-                    return publicSelfAddress;
+                    return callerAddress;
                   }
                   const source = bEntryAccess.keySources?.[keyIndex];
                   if (source?.kind === 'expression') {

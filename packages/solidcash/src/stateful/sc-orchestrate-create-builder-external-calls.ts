@@ -379,7 +379,7 @@ export async function orchestrateCreateBuilderExternalCalls(
           externalCategoryId,
           slotIndex,
           loopIdxRanges,
-          publicSelfAddress,
+          publicSelfIdentity,
         };
         await assembleCreateBuilderNestedCalleeBlockInputsImpl(
           {

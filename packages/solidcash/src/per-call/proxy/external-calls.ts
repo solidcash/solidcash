@@ -18,8 +18,8 @@
  * The occurrence the source publishes decides how many records the site fills: a `conditional` site fills one when
  * its published condition holds against the caller's own facts and none when it does not, and a `loop` site fills
  * as many as its iteration domain reaches against those facts — or, for a loop the artifact publishes no domain
- * for, as many as the caller's own arrays that the site's own sources walk. A site the caller's own facts give no
- * visits fills nothing and places no callee.
+ * for, as many as the caller's own arrays that the site's own sources walk. A loop turn its own guard rules out
+ * fills none. A site the caller's own facts give no visits fills nothing and places no callee.
  *
  * Each record a site fills runs on a master of its own, because a master carries one call data and the argument
  * pushes a call carries are the callee's call data. A composition gives a contract one block, and that block holds
@@ -93,6 +93,7 @@ import { readEntryNode } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import type { RecoverySideCars } from '../composer/recovery.js';
 import { decodeEntryCommitment } from '../../stateful/SortedList.js';
+import { chainsEnclosedRead } from './enclosed-reads.js';
 import { PerCallProxyDeployError } from './errors.js';
 
 /** One contract the caller names for a call an implementation entry makes, keyed by the interface it calls. */
@@ -621,6 +622,39 @@ function occurrenceCountOf(
   return count;
 }
 
+/**
+ * The turns of a site that make its call, out of the `count` its visits reach.
+ *
+ * A loop whose body guards its call (`if (parts[i] > 0) sink.take(parts[i])`) publishes that guard as the site's condition
+ * beside its iteration domain, and a turn the guard rules out makes no call and takes no record. Each turn's guard is
+ * evaluated with the turn's counter bound, against the results the settles learned (the planner stops before the site
+ * until it holds them); a turn it does not decide is stated, and the execution is what skips it. A guard over state
+ * the entry's own body rewrites before the site is not fixed by the incoming facts, so every turn is stated. Any
+ * other site's visits are all turns.
+ */
+function callingTurnsOf(
+  row: ExternalCallAbi, count: number, resolver: CallResolver, artifact: Artifact, writtenState: HopWrittenState,
+  siteIndex: number, routing: readonly ExternalCallAbi[],
+  producerResults: ReadonlyMap<number, FunctionArgument> | undefined,
+): readonly number[] {
+  const turns = Array.from({ length: count }, (_unused, turn) => turn);
+  const guard = row.occurrence === 'loop' ? row.condition ?? undefined : undefined;
+  if (guard === undefined || conditionReadsWrittenState(guard, artifact, writtenState, siteIndex)) return turns;
+  const domain = row.iterationDomain;
+  const valueOf = (expression: ExternalCallExpression): FunctionArgument | undefined =>
+    resolver.evaluate(expression, 0, undefined, conditionExternalReturns(expression, routing, producerResults));
+  const initial = domain === undefined ? undefined : valueOf(domain.initialValue);
+  const step = domain === undefined ? undefined : valueOf(domain.stepValue);
+  const returns = conditionExternalReturns(guard, routing, producerResults);
+  return turns.filter((turn) => {
+    // The counter as the body holds it on this turn, for a guard that names it rather than the turn's index.
+    const bindings = domain !== undefined && typeof initial === 'bigint' && typeof step === 'bigint'
+      ? new Map<string, FunctionArgument>([[domain.counterName, initial + step * BigInt(turn)]])
+      : undefined;
+    return resolver.evaluate(guard, turn, bindings, returns) !== false;
+  });
+}
+
 /** The most visits a derived loop width may reach before the caller's own facts are taken to leave it open. */
 const MAXIMUM_DERIVED_VISITS = 1 << 16;
 
@@ -1041,6 +1075,8 @@ interface ResolvedSite {
   readonly external: PerCallProxyExternal;
   readonly resolved: readonly ResolvedCall[];
   readonly where: string;
+  /** The turn each resolved call runs in, parallel to `resolved`: a guarded loop's skipped turns are left out. */
+  readonly turns: readonly number[];
 }
 
 /** Where a site's callee frames sit in the plan: the calling frame's path, the site and its callsite id. */
@@ -1048,6 +1084,8 @@ interface CalleeReach {
   readonly callerPath: string;
   readonly site: number;
   readonly callsiteId: number;
+  /** The turn each of the site's calls runs in, which names its frame; its place in the list takes a master. */
+  readonly turns: readonly number[];
 }
 
 /** The calls one entry's body makes as a plan states them, and whether the plan stopped inside them. */
@@ -1116,8 +1154,12 @@ async function planEntryCalls(
     }
     const where = `the call to "${row.interfaceName}.${row.functionName}"`;
     const domain = row.occurrence === 'loop' ? row.iterationDomain : undefined;
-    const boundWaits = domain === undefined ? [] : waitingProducers(
-      [domain.initialValue, domain.stepValue, domain.continueCondition], index, routing, sites, known);
+    // A loop's own guard decides which of its turns call, so it is read in execution order as its bound is.
+    const guard = row.occurrence === 'loop' ? row.condition ?? undefined : undefined;
+    const boundWaits = waitingProducers([
+      ...(domain === undefined ? [] : [domain.initialValue, domain.stepValue, domain.continueCondition]),
+      ...(guard === undefined ? [] : [guard]),
+    ], index, routing, sites, known);
     if (boundWaits.length > 0) {
       ownStop = { path, where, reads: 'loop-bound', producers: boundWaits };
       break;
@@ -1125,9 +1167,10 @@ async function planEntryCalls(
     const count = occurrenceCountOf(
       row, caller.args, resolver, where, caller.artifact, writtenState, index, routing, known,
     );
+    const turns = callingTurnsOf(row, count, resolver, caller.artifact, writtenState, index, routing, known);
     // A site the caller's own facts give no visits fills no record: it reaches no callee, so nothing is placed
     // for it and its target and arguments need not resolve.
-    if (count === 0) {
+    if (turns.length === 0) {
       sites.push(undefined);
       continue;
     }
@@ -1143,7 +1186,7 @@ async function planEntryCalls(
     const effective: ExternalCallAbi = row.addressLiteral === undefined && call.target.length > 0
       ? { ...row, addressLiteral: call.target }
       : row;
-    const target = resolveCallTarget(effective, caller, siteResolver, 0);
+    const target = resolveCallTarget(effective, caller, siteResolver, turns[0]!);
     // A target the source names as the zero address has no deployment to place a callee on. The hop states no
     // record for the site and lets the entry's own body decide: a body that guards the call never reaches it and
     // is settled on its own refusal, while one that does reach it stalls on the record the hop never filled rather
@@ -1164,8 +1207,8 @@ async function planEntryCalls(
         + refusal,
       );
     }
-    const resolved = Array.from({ length: count }, (_unused, occurrence) => (
-      resolvePublishedCall(effective, external.artifact, caller, siteResolver, occurrence)
+    const resolved = turns.map((turn) => (
+      resolvePublishedCall(effective, external.artifact, caller, siteResolver, turn)
     ));
     // A callee behind its own proxy is two contracts, and the hop's own implementation is one the composition
     // fixes; both are checked by name here, before any live record is read.
@@ -1180,7 +1223,7 @@ async function planEntryCalls(
         );
       }
     }
-    sites.push({ entry, external, resolved, where });
+    sites.push({ entry, external, resolved, where, turns });
   }
 
   // Pass two: read each callee's live deployment, take a master per reach from its pool, plan the callee's own
@@ -1198,8 +1241,8 @@ async function planEntryCalls(
       continue;
     }
     callBases.push(calls.length);
-    const { external, entry, resolved, where } = site;
-    const reach: CalleeReach = { callerPath: path, site: index, callsiteId };
+    const { external, entry, resolved, where, turns } = site;
+    const reach: CalleeReach = { callerPath: path, site: index, callsiteId, turns };
     // A callee whose address names a per-call proxy is placed as the same chain the root hop places for its own
     // proxy: the proxy's fallback frame, then the implementation entry it delegates to on the proxy's records.
     if (external.proxyArtifact !== undefined && external.implementationCategoryId !== undefined) {
@@ -1653,13 +1696,15 @@ async function placeCalleeMasters(
     ctx.rewrittenNodes.get(categoryId) ?? []);
   const readMappingValue = liveMappingValueReader(external.artifact, live, external.artifact.structs);
   const nodeIdOf = (collection: string, slot: Uint8Array): string => sharedNodeId(categoryId, collection, slot);
-  for (const [occurrence, call] of resolved.entries()) {
+  for (const [position, call] of resolved.entries()) {
     // A stop inside an earlier visit's own calls ends the plan there, so no later visit is placed.
     if (ctx.stop.blocked !== undefined) break;
+    // The turn the call runs in names the frame; its place among the site's calls takes the master.
+    const occurrence = reach.turns[position] ?? position;
     const calleeIndex = ctx.callees.length;
     const master = `callee-master-${calleeIndex + 1}`;
     const path = calleePath(reach.callerPath, reach.site, occurrence);
-    const masterUtxo = deployment.masters[base + occurrence]!;
+    const masterUtxo = deployment.masters[base + position]!;
     const deployed = deployMaster(external.artifact, category, ctx.validatorProgram);
     // The nodes the entry only reads, from the reach's own call data; they lead any batch's groups.
     const readNodes = calleeReadNodesOrNone({
@@ -1812,16 +1857,18 @@ async function placeProxiedCallee(
   const readMappingValue = liveMappingValueReader(external.artifact, live, external.artifact.structs);
   // Whether the entry the proxy forwards to returns a value, which the fallback frame records in its own `retval`.
   const returnsValue = (entry.outputs ?? []).length > 0;
-  for (const [occurrence, call] of resolved.entries()) {
+  for (const [position, call] of resolved.entries()) {
     // A stop inside an earlier visit's own calls ends the plan there, so no later visit is placed.
     if (ctx.stop.blocked !== undefined) break;
+    // The turn the call runs in names the pair; its place among the site's calls takes the masters.
+    const occurrence = reach.turns[position] ?? position;
     const proxyIndex = ctx.callees.length;
     const implementationIndex = proxyIndex + 1;
     const path = calleePath(reach.callerPath, reach.site, occurrence);
     const proxyMaster = `callee-master-${proxyIndex + 1}`;
     const implementationMaster = `callee-impl-master-${implementationIndex + 1}`;
-    const proxyMasterUtxo = proxyDeployment.masters[proxyBase + occurrence]!;
-    const implementationMasterUtxo = implementationDeployment.masters[implementationBase + occurrence]!;
+    const proxyMasterUtxo = proxyDeployment.masters[proxyBase + position]!;
+    const implementationMasterUtxo = implementationDeployment.masters[implementationBase + position]!;
     const proxyBaseFrame: HopCallee = {
       master: proxyMaster,
       contract: proxyContract,
@@ -2147,19 +2194,22 @@ function chunkingNode(touches: readonly NodeTouch[]): boolean {
  * rewrites it. That covers reads and updates of a fixed-width value in any order. Each remaining shape is refused by
  * name: a touch after an insert relinked the node, which reads a list the planner never saw; an insert through a node
  * an earlier reach wrote, which the master's insert does not chain; and two touches where one frame enters the other,
- * whose segments interleave in an order this hop does not settle.
+ * whose segments interleave in an order this hop does not settle, but for a read of the view the entering frame wrote
+ * before the call that leads there (`enclosed-reads.ts`).
  *
  * A node whose values chunk is chainable in the same way, except that the bytes a later reach continues from are
  * the ones the reach before it wrote: a reach whose chunkable write states no value leaves none, which
  * `requireSettledNodeChains` refuses once every frame has settled.
  */
 function requireChainableNodes(callees: readonly HopCallee[]): void {
-  for (const touches of nodeTouches(callees).values()) {
+  for (const [id, touches] of nodeTouches(callees)) {
     if (touches.length < 2) continue;
     const collection = touches[0]!.collection;
     for (const [at, outer] of touches.entries()) {
       for (const inner of touches.slice(at + 1)) {
         if (!entersFrame(callees, outer.frame, inner.frame) && !entersFrame(callees, inner.frame, outer.frame)) continue;
+        // A read of the view a frame it runs inside wrote before entering it chains (`enclosed-reads.ts`).
+        if (chainsEnclosedRead(callees, outer, inner, collection, id)) continue;
         throw new PerCallProxyDeployError(
           `the hop's reaches "${outer.functionName}" and "${inner.functionName}" touch one node of collection `
           + `"${collection}", and one of them enters the other, so their segments interleave in an order this hop `
@@ -2256,6 +2306,8 @@ export function sharedNodeWritersBefore(callees: readonly HopCallee[]): Readonly
     touches.forEach((touch, at) => {
       for (const earlier of touches.slice(0, at)) {
         if (earlier.kind === 'read') continue;
+        // A writer the frame runs inside settles after it; the frames it runs first are ordered by `reentry.ts`.
+        if (entersFrame(callees, earlier.frame, touch.frame)) continue;
         const writers = before.get(touch.frame) ?? [];
         if (!writers.includes(earlier.frame)) writers.push(earlier.frame);
         before.set(touch.frame, writers);

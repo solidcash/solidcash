@@ -8896,7 +8896,7 @@ function synthesizeMessageBusRoute(
       // A graph-context fixed entry can expose the route's existing two-lane tuple even when every handler
       // spells its key through the same ABI position. The entire key tuple selects one physical journal lane,
       // including its pending write cache, so a later row can observe an earlier write to the same identity.
-      // More than two concrete identities still fail closed in the encoder.
+      // More than the published number of complete tuple lanes still fails closed in the encoder.
       const repeatedEntryTuples = handlerTuples.filter(({ fn }) => {
         const handlerFootprint = analyseFunctionFootprint(fn, byName, footprintCache);
         const prefix = `collection:${collection}:`;
@@ -8920,9 +8920,15 @@ function synthesizeMessageBusRoute(
           binding.alternateRouteInput = alternateRouteInput;
           const witness = routeKeyWitnesses.get(binding.routeInput)?.[0];
           if (!witness) throw new Error(`Kernel tuple witness '${binding.routeInput}' is missing`);
-          routeKeyWitnesses.set(alternateRouteInput, [{ ...witness, name: alternateRouteInput }]);
-          routeKeyWitnessCoordinates.set(alternateRouteInput, {
-            collection, keyIndex: keyComponentIndex, alternativeIndex: 1,
+          const tuplePoolCapacity = Math.max(2, compilerOptions.messageBusEntryPoolCapacity ?? 2);
+          const keyPool = Array.from({ length: tuplePoolCapacity }, (_unused, lane) => lane === 0
+            ? binding.routeInput : lane === 1 ? alternateRouteInput : `${binding.routeInput}_pool${lane}`);
+          if (tuplePoolCapacity > 2) binding.keyPool = keyPool;
+          keyPool.slice(1).forEach((name, laneIndex) => {
+            routeKeyWitnesses.set(name, [{ ...witness, name }]);
+            routeKeyWitnessCoordinates.set(name, {
+              collection, keyIndex: keyComponentIndex, alternativeIndex: laneIndex + 1,
+            });
           });
         });
       }
@@ -10407,10 +10413,12 @@ function synthesizeMessageBusRoute(
       }
       const tupleSource = (binding: NonNullable<FunctionDefinitionNode['messageBusKeyWitnesses']>[number]): string =>
         binding.source === 'msgSender' ? logicalCaller : decodedName(binding.inputIndex);
+      const tupleLaneInput = (
+        binding: NonNullable<FunctionDefinitionNode['messageBusKeyWitnesses']>[number], lane: number,
+      ): string => binding.keyPool?.[lane] ?? (lane === 0 ? witnessName(binding) : binding.alternateRouteInput!);
       const tupleMatches = (
-        bindings: NonNullable<FunctionDefinitionNode['messageBusKeyWitnesses']>, alternate: boolean,
-      ): string => bindings.map((binding) => `${tupleSource(binding)} == ${alternate
-        ? binding.alternateRouteInput : witnessName(binding)}`).join(' && ');
+        bindings: NonNullable<FunctionDefinitionNode['messageBusKeyWitnesses']>, lane: number,
+      ): string => bindings.map((binding) => `${tupleSource(binding)} == ${tupleLaneInput(binding, lane)}`).join(' && ');
       const swappableBindings = (fn.messageBusKeyWitnesses ?? []).filter((binding) => binding.swappable);
       const swappableShared = swappableBindings.find((binding) => !binding.routeInput.endsWith('_row'));
       const swappableVarying = swappableShared && swappableBindings.find((binding) =>
@@ -10432,7 +10440,8 @@ function synthesizeMessageBusRoute(
           + `(${matchesKey(decodedName(swappableShared.inputIndex), swappableVarying)})));`
         : '';
       const tupleKeyChecks = [...tupleGroups.values()].map((bindings) =>
-        `require((${tupleMatches(bindings, false)}) || (${tupleMatches(bindings, true)}));`).join('\n');
+        `require(${Array.from({ length: bindings[0].keyPool?.length ?? 2 }, (_unused, lane) =>
+          `(${tupleMatches(bindings, lane)})`).join(' || ')});`).join('\n');
       const keyChecks = `${ordinaryKeyChecks}\n${swappableKeyCheck}\n${tupleKeyChecks}`;
       // Declared arguments come from the row; entry keys come from the canonical witnesses this row already
       // checked, so the journal sees one identity per physical entry however the handler names its parameters.
@@ -10650,7 +10659,8 @@ function synthesizeMessageBusRoute(
         }
         return dispatch;
       };
-      const pooledKey = fn.messageBusKeyWitnesses?.find((binding) => binding.keyPool !== undefined);
+      const pooledKey = fn.messageBusKeyWitnesses?.find((binding) =>
+        binding.keyPool !== undefined && binding.entryTupleGroup === undefined);
       const dispatchWithKeyPool = (baseArgs: string[]): string => {
         if (!pooledKey?.keyPool) return dispatchFor(baseArgs);
         const selectedKey = swappableShared && swappableVarying === pooledKey
@@ -10667,14 +10677,24 @@ function synthesizeMessageBusRoute(
       let dispatch = dispatchWithKeyPool(physicalEntryArgs);
       const fixedTupleGroup = [...tupleGroups.values()][0];
       if (fixedTupleGroup) {
-        const alternateByBase = new Map(fixedTupleGroup.map((binding) =>
-          [binding.routeInput, binding.alternateRouteInput!] as const));
-        const alternateEntryArgs = physicalEntryArgs.map((argument) => alternateByBase.get(argument) ?? argument);
-        // keyChecks has already authenticated that the source tuple is exactly one of these two complete lanes.
-        // Select every component together; choosing coordinates independently could authorize a nested key that
-        // no source row requested.
-        dispatch = `if (${tupleMatches(fixedTupleGroup, false)}) { ${dispatch} } else { `
-          + `${dispatchWithKeyPool(alternateEntryArgs)} }`;
+        const laneCount = fixedTupleGroup[0].keyPool?.length ?? 2;
+        const laneArgs = (lane: number): string[] => {
+          const byBase = new Map(fixedTupleGroup.map((binding) =>
+            [binding.routeInput, tupleLaneInput(binding, lane)] as const));
+          return physicalEntryArgs.map((argument) => byBase.get(argument) ?? argument);
+        };
+        // Select every component together; independent coordinate choices could authorize a nested key that
+        // no source row requested. Preserve the compact two-lane default dispatch.
+        if (laneCount === 2) {
+          dispatch = `if (${tupleMatches(fixedTupleGroup, 0)}) { ${dispatch} } else { `
+            + `${dispatchWithKeyPool(laneArgs(1))} }`;
+        } else {
+          dispatch = 'require(false);';
+          for (let lane = laneCount - 1; lane >= 0; lane -= 1) {
+            dispatch = `if (${tupleMatches(fixedTupleGroup, lane)}) { `
+              + `${dispatchWithKeyPool(laneArgs(lane))} } else { ${dispatch} }`;
+          }
+        }
       }
       if (rowIndex !== undefined && rowIndex > 0 && entryShape) {
         // A route row can write a collection entry which a later, different handler reads (ERC-20 approve ->
@@ -14997,6 +15017,22 @@ function compileResolvedAst(
               entry.collection === primary.collection && entry.keyParams.length === 1
               && routeKeyName(entry.keyParams[0]) === lane)?.slotIndex;
             if (slot === undefined) throw new Error(`Missing physical entry for kernel key-pool lane '${lane}'`);
+            return slot;
+          });
+        }
+        const pooledTupleGroup = bindings[0]?.entryTupleGroup;
+        if (bindings.length > 1 && pooledTupleGroup !== undefined
+          && bindings.every((binding) => binding?.entryTupleGroup === pooledTupleGroup && binding.keyPool)) {
+          const lanes = bindings[0]!.keyPool!;
+          if (bindings.some((binding) => binding!.keyPool!.length !== lanes.length)) {
+            throw new Error(`Inconsistent physical tuple pool for kernel collection '${primary.collection}'`);
+          }
+          return lanes.map((_name, lane) => {
+            const keys = bindings.map((binding) => binding!.keyPool![lane]);
+            const slot = messageBusRoute.entryAccesses?.find((entry) =>
+              entry.collection === primary.collection && entry.keyParams.length === keys.length
+              && entry.keyParams.every((key, index) => routeKeyName(key) === keys[index]))?.slotIndex;
+            if (slot === undefined) throw new Error(`Missing physical tuple lane ${lane} for '${primary.collection}'`);
             return slot;
           });
         }

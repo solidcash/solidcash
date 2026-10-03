@@ -742,6 +742,13 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   default, the explicit capacity, and invalid capacities; its immediately preceding title passes. The adjacent
   seven-escrow BCH-2026 title also passes with the unchanged default eight-lane artifact. This does not bypass
   SDK duplicate-input checks or alter the lean default. No comprehensive suite or 10 KB gate ran.
+- 2026-10-03 complete-tuple capacity follow-up: the same explicit capacity now extends a fixed nested-mapping
+  tuple as a unit, not as independently selectable key components. A focused compiler title went red on the
+  two-tuple ceiling and now publishes three physical alternatives. A BCH-2026 same-owner batch writes three
+  distinct composite keys and checks their separate persisted values; its immediately preceding default
+  two-tuple title passes. The encoder reuses a reached tuple lane, aliases unused lanes to an authenticated
+  tuple, and refuses a fourth distinct identity. Default two-tuple refusal wording remains unchanged. No
+  comprehensive suite or size gate ran.
 
 ## Gate before the next leap
 

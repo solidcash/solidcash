@@ -214,4 +214,26 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
       })).toThrow('messageBusEntryPoolCapacity must be an integer between 1 and 99');
     }
   });
+
+  it('reserves three complete nested-mapping tuple lanes when explicitly requested', () => {
+    const source = `contract NestedWriter {
+      mapping(uint => mapping(uint => uint)) private values;
+      function set(uint outer, uint inner, uint value) public {
+        values[outer][inner] = value;
+        require(true);
+      }
+    }`;
+    const options = {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    } as const;
+    const ordinary = compileString(source, options);
+    const expanded = compileString(source, { ...options, messageBusEntryPoolCapacity: 3 });
+    expect(ordinary.messageBus?.handlers.find((handler) => handler.name === 'set')
+      ?.physicalEntrySlotAlternatives).toEqual([[0, 1]]);
+    expect(expanded.messageBus?.handlers.find((handler) => handler.name === 'set')
+      ?.physicalEntrySlotAlternatives).toEqual([[0, 1, 2]]);
+    expect(expanded.messageBus?.route.entryAccesses).toHaveLength(3);
+  });
 });

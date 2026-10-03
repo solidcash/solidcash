@@ -143,10 +143,10 @@ export interface CompilerOptions {
   // Omitted preserves the compact local-caller route used by standalone batching.
   messageBusGraphContext?: boolean;
   /**
-   * Number of authenticated physical entry lanes reserved for a kernel route's one-key collection pool.
-   * Defaults to 8. Raise this for a graph that can touch more distinct keys in one transaction; each extra
-   * lane adds a real entry proof and increases compilation/runtime cost. Must be an integer in [1, 99],
-   * the v1 journal's global record ceiling (other collections share this budget).
+   * Authenticated physical entry-lane capacity for graph-context one-key pools and complete fixed-key tuples.
+   * Defaults to 8 for one-key graph pools and 2 for fixed tuples. Explicit values raise either capacity; fixed
+   * tuples retain a minimum of 2 lanes. Each extra lane adds a real entry proof and compilation/runtime cost.
+   * Must be an integer in [1, 99], the v1 journal's global record ceiling (other collections share this budget).
    */
   messageBusEntryPoolCapacity?: number;
   /** Opt in to the root-route envelope carrier; omitted preserves verifier-local V1–4 transport. */
@@ -2021,7 +2021,7 @@ export interface Artifact {
         keyComponentIndex?: number;
         /** Corresponding component in the fixed alternate physical tuple lane. */
         alternateRouteInput?: string;
-        /** Fixed physical key pool, selected by key identity rather than message-row position. */
+        /** Fixed physical key pool, selected by complete tuple identity when entryTupleGroup is present. */
         keyPool?: readonly string[];
       }[];
       /** Route entry-slot ordinals which can be consumed by this selected handler. Used by composers to leave

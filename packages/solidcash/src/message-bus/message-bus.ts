@@ -891,7 +891,7 @@ export function encodeMessageBatch(
     }
     keyWitnessValues.set(free, { value, encoded });
   };
-  const fixedTupleValues = new Map<number, { primary: string; alternate: string }>();
+  const fixedTupleValues = new Map<number, string[]>();
   const swappableGlobals = new Map<string, { value: FunctionArgument; encoded: Uint8Array; rowBase: string }>();
   // A resource route has one shared entry and one row-local alternative. The compiler can advertise the two as
   // swappable, allowing the batch to choose the value common to every relevant row rather than assuming the
@@ -1142,24 +1142,37 @@ export function encodeMessageBatch(
       });
       const identity = components.map(({ encoded: component }) => binToHex(component)).join(':');
       const prior = fixedTupleValues.get(groupId);
-      const lane = prior === undefined || prior.primary === identity
-        ? 'primary' : prior.alternate === prior.primary || prior.alternate === identity
-          ? 'alternate' : undefined;
-      if (lane === undefined) {
+      const laneInputs = (binding: (typeof bindings)[number]): readonly string[] => binding.keyPool
+        ?? [binding.routeInput, binding.alternateRouteInput!];
+      const laneCount = laneInputs(bindings[0]).length;
+      if (bindings.some((binding) => laneInputs(binding).length !== laneCount)) {
         throw new MessageBusDiagnosticError(
           'L3_RESOURCE_UNRESOLVED',
-          `message-bus fixed collection tuple group ${groupId} exceeds two physical entries`,
+          `message-bus fixed collection tuple group ${groupId} has inconsistent physical lanes`,
           { handler: handler.name, invocationIds: [rowIndex] },
         );
       }
-      if (!prior) fixedTupleValues.set(groupId, { primary: identity, alternate: identity });
-      else if (lane === 'alternate') fixedTupleValues.set(groupId, { ...prior, alternate: identity });
+      const reached = prior ?? [];
+      let lane = reached.indexOf(identity);
+      if (lane < 0) lane = reached.length;
+      if (lane >= laneCount) {
+        throw new MessageBusDiagnosticError(
+          'L3_RESOURCE_UNRESOLVED',
+          `message-bus fixed collection tuple group ${groupId} exceeds `
+            + `${laneCount === 2 ? 'two' : laneCount} physical entries`,
+          { handler: handler.name, invocationIds: [rowIndex] },
+        );
+      }
+      if (lane === reached.length) reached.push(identity);
+      if (!prior) fixedTupleValues.set(groupId, reached);
       for (const { binding, value, encoded: component } of components) {
-        const routeInput = lane === 'primary' ? binding.routeInput : binding.alternateRouteInput!;
+        const routeInput = laneInputs(binding)[lane];
         keyWitnessValues.set(routeInput, { value, encoded: component });
-        // Until a second distinct tuple is reached, alias the alternate lane to the primary. The compiler and
-        // SDK then collapse equal targets through runtimeAliasPriorSlots instead of funding a fictitious key.
-        if (!prior) keyWitnessValues.set(binding.alternateRouteInput!, { value, encoded: component });
+        // Unused complete tuple lanes alias the first authenticated identity. The compiler and SDK collapse
+        // equal targets through runtimeAliasPriorSlots instead of funding fictitious independent keys.
+        if (!prior) for (const name of laneInputs(binding).slice(1)) {
+          keyWitnessValues.set(name, { value, encoded: component });
+        }
       }
     }
     for (const binding of handler.batchKeyWitnesses ?? []) {

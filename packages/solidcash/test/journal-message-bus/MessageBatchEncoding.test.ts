@@ -543,6 +543,46 @@ describe('messageBus.encodeMessageBatch', () => {
     ])).toThrow(/exceeds two physical entries/);
   });
 
+  it('binds three complete nested tuples and refuses a fourth distinct identity', () => {
+    const routed = compileString(FIXED_TUPLE_COLLECTION_SOURCE, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      messageBusEntryPoolCapacity: 3, solidityImportCompat: true,
+      optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+    });
+    const caller = new Uint8Array(25).fill(0x11);
+    const spender = new Uint8Array(25).fill(0x22);
+    const owner = new Uint8Array(25).fill(0x33);
+    const otherOwner = new Uint8Array(25).fill(0x44);
+    const encoded = messageBus.encodeMessageBatch(routed, [
+      { function: 'grant', args: [spender, 80n], logicalCaller: caller },
+      { function: 'consume', args: [owner, 30n], logicalCaller: caller },
+      { function: 'consume', args: [otherOwner, 10n], logicalCaller: caller },
+      { function: 'grant', args: [spender, 5n], logicalCaller: caller },
+    ]);
+    const visible = routed.messageBus!.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const witness = (name: string): unknown => encoded.routeWitnesses[visible
+      .findIndex((input) => input.name === name)];
+    expect([
+      witness('__message_bus_key_credits_0'), witness('__message_bus_key_credits_1'),
+      witness('__message_bus_key_credits_0_alt'), witness('__message_bus_key_credits_1_alt'),
+      witness('__message_bus_key_credits_0_pool2'), witness('__message_bus_key_credits_1_pool2'),
+    ]).toEqual([caller, spender, owner, caller, otherOwner, caller]);
+    const only = messageBus.encodeMessageBatch(routed, [
+      { function: 'grant', args: [spender, 1n], logicalCaller: caller },
+    ]);
+    expect(only.routeWitnesses[visible.findIndex((input) =>
+      input.name === '__message_bus_key_credits_0_pool2')]).toEqual(caller);
+    expect(only.routeWitnesses[visible.findIndex((input) =>
+      input.name === '__message_bus_key_credits_1_pool2')]).toEqual(spender);
+    expect(() => messageBus.encodeMessageBatch(routed, [
+      { function: 'grant', args: [spender, 80n], logicalCaller: caller },
+      { function: 'consume', args: [owner, 30n], logicalCaller: caller },
+      { function: 'consume', args: [otherOwner, 10n], logicalCaller: caller },
+      { function: 'consume', args: [new Uint8Array(25).fill(0x55), 1n], logicalCaller: caller },
+    ])).toThrow(/exceeds 3 physical entries/);
+  });
+
   it('derives a literal witness when another handler owns the shared physical entry slot', () => {
     const shared = compileString(SHARED_LITERAL_COLLECTION_SOURCE, {
       forceStateful: true, messageBus: true, messageBusKernel: true,

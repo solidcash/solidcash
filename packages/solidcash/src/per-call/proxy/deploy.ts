@@ -1496,6 +1496,11 @@ async function settleCallees(options: {
           + 'so this hop cannot tell whether the write needs value chunks',
         );
       }
+      // The reporter judges each frame by evaluating the program this draft hands it, and a draft whose unstated
+      // views were never learned hands it placeholders: the body's close then fails against its own placeholder and
+      // a frame that would accept is read as the frame that refused. Learning first is what the evaluation below
+      // and the reporter alike are owed, exactly as the accepted path is.
+      candidate.draft.learnUnstatedViews();
       const refusal = reportCompositionRefusal({
         draft: candidate.draft, artifacts: options.artifacts, vm: options.vm, reached: [callee.master],
       });
@@ -1790,6 +1795,12 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
           FrameKind.DELEGATE)} n=${attempt} `
         + `refs-before=[${traceCallRefs(candidate.draft, IMPLEMENTATION_MASTER_ID)}]`);
     }
+    // A plan may leave a written view unstated - a value the frame's own body computes - and the composer declares a
+    // placeholder for it, which the body's close then fails against. The derivation above resumes a run at a site it
+    // reaches and learns there, but a draft it never got that far on hands the machine a placeholder, so a frame
+    // that would otherwise accept is read as a frame that refused. Learning here is what leaves the program this
+    // attempt is judged on with its declarations stated, exactly as a callee frame is treated before it is evaluated.
+    candidate.draft.learnUnstatedViews();
     const implementationProgram = candidate.draft.programFor(IMPLEMENTATION_MASTER_ID);
     const state = vm.evaluate({
       inputIndex: participant(candidate.draft.layout, IMPLEMENTATION_MASTER_ID).index,

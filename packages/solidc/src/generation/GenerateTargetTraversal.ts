@@ -8912,14 +8912,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // this body instead admits only the offset this body's own layout names, which is not the offset the delegated
       // output sits at, so an honest emit would be refused.
       const splitDelegateOwnsImmutableEvents = node.splitDelegateEventOffsets !== undefined;
-      // A forwarder whose one effect is an `L.f()` delegatecall to a library facet defers the event family too: the
-      // facet entry pinned at this block slot censuses its own events at the offsets its layout declares.
-      const libraryFacetOwnsImmutableEvents = !this.perCallMaster && this.functionHasDelegatecall
-        && node.pinsDelegateCoSpend === true && node.delegateIndexFromBlockSlot === true
-        && (node.libraryDelegateCalls?.length ?? 0) === 1 && (node.lowLevelCalls?.length ?? 0) === 1
-        && !hasEventEmits && !hasRuntimeLoopEvents && !hasReturnEventB && !hasExternalCalls && !hasDeploys;
+      // A forwarder with no local emit (a runtime-loop emit counts) leaves its events to the forced delegate's own
+      // pin, which knows their offsets. The pin stays where no delegate co-spend is forced (SECURITY-AUDIT C1) and on
+      // a per-call master.
+      const delegateOwnsAllEvents = !this.perCallMaster && this.functionHasDelegatecall
+        && node.pinsDelegateCoSpend === true && !hasEventEmits && !hasRuntimeLoopEvents;
       if (node.name !== '__construct' && isStatefulContract
-        && !splitDelegateOwnsImmutableEvents && !libraryFacetOwnsImmutableEvents
+        && !splitDelegateOwnsImmutableEvents && !delegateOwnsAllEvents
         && (declaresEvents || this.currentFunctionIsDelegate || proxyCanAdmitDelegateEvent)) {
         this.emitOwnCategoryImmutableNftOutputPin(node);
       }
@@ -40735,11 +40734,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * emitMasterInputIndex). The implementation's OWN category is not pinned here; no genuine log is ever written
    * there, so a reader has no reason to look.
    *
-   * Residual: a `delegatecall` proxy that declares no event, has no return slot and witnesses no call input is not
-   * pinned. Its honest own-category immutable outputs are the co-spent implementation's event NFTs, at an offset
-   * only that implementation's layout names, so the proxy cannot express the rule; the implementation's own pin
-   * covers them. A proxy that does not pin its delegate co-spend therefore keeps the residual - but that proxy
-   * already cedes its whole state (SECURITY-AUDIT C1).
+   * Residual: a `delegatecall` proxy is not pinned when it declares no event, has no return slot and witnesses no
+   * call input, nor (direct convention) when it forces its delegate co-spend and emits nothing itself. Its honest
+   * own-category immutable outputs are the co-spent implementation's event NFTs, at an offset only that
+   * implementation's layout names, so the proxy cannot express the rule; the implementation's own pin covers them.
+   * A proxy that does not pin its delegate co-spend therefore keeps the residual - but that proxy already cedes its
+   * whole state (SECURITY-AUDIT C1).
    */
   private emitOwnCategoryImmutableNftOutputPin(node: FunctionDefinitionNode): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };

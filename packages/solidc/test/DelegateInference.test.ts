@@ -18,6 +18,24 @@ const markedNames = (src: string): string[] => {
 };
 
 describe('delegate inference', () => {
+  it('infers proxy state writes from bare Solidity assignments without promoting shadowed locals', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract C {
+        uint256 value;
+        function setValue(uint256 next) public { value = next; require(true); }
+        function helper(uint256 next) internal { value = next; }
+        function setThroughHelper(uint256 next) public { helper(next); require(true); }
+        function localOnly() public {
+          uint256 value = 0;
+          value = 1;
+          require(value == 1);
+        }
+      }`, { solidityImportCompat: true, forceStateful: true, messageBus: true });
+    const delegated = artifact.delegateArtifact?.abi
+      .filter((fn) => fn.modifiers?.includes('delegate')).map((fn) => fn.name);
+    expect(delegated).toEqual(['setValue', 'setThroughHelper']);
+  });
+
   it('marks a state-writing entry point', () => {
     expect(markedNames(`contract C() {
       bigint counter;

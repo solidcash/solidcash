@@ -27,7 +27,7 @@
  */
 
 import type { Artifact, StateValue } from '@solidcash/utils';
-import type { FunctionArgument } from '../../Argument.js';
+import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js';
 import type { TransactionDetails, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type Signer from '../../Signer.js';
@@ -110,8 +110,27 @@ export class PerCallFunctionCall {
     return result.broadcast;
   }
 
+  /**
+   * Checks each argument against its ABI type as the encoder does in every convention (a `bytesN` value's length, an
+   * integer's range), so a value no call can carry is refused with the encoder's own message before anything is
+   * composed, as ethers refuses it before anything is sent.
+   */
+  private checkArguments(): void {
+    const { artifact } = this.contract;
+    const visible = (entry: Artifact['abi'][number]): Artifact['abi'][number]['inputs'] =>
+      entry.inputs.filter((input) => !input.name.startsWith('__internal__'));
+    const named = artifact.abi.filter((entry) => entry.name === this.functionName);
+    const entry = named.find((candidate) => visible(candidate).length === this.args.length) ?? named[0];
+    if (entry === undefined) return;
+    visible(entry).forEach((input, index) => {
+      const argument = this.args[index];
+      if (argument !== undefined) encodeFunctionArgument(argument, input.type, artifact.structs);
+    });
+  }
+
   /** Composes and derives the call without requiring it to be accepted, for a caller that wants the verdicts. */
   public async compose(): Promise<PerCallCallResult> {
+    this.checkArguments();
     const { provider, signer, categoryId, proxyImplementationCategoryId } = this.contract;
     if (signer === undefined) {
       throw new PerCallCallError(
@@ -192,6 +211,7 @@ export class PerCallFunctionCall {
    * runs there as the proxy's delegate frame, over the proxy's records, which is the frame the read composes.
    */
   public async staticCall(): Promise<PerCallReadResult> {
+    this.checkArguments();
     const { artifact, categoryId, provider } = this.contract;
     return readPerCallEntry({
       provider, artifact, categoryId, functionName: this.functionName, args: this.args,

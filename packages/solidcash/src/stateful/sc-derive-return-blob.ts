@@ -329,6 +329,7 @@ export function messageBusReturnBlobFromTransaction(
     resultTypes: readonly string[];
     resultTypeGroups: readonly (readonly string[])[];
     resultEncodings: readonly ExternalResultEncoding[];
+    protectTransientSeedOnFailedProbe?: boolean;
   },
 ): Uint8Array | undefined {
   const { transaction, sourceOutputs } = program;
@@ -384,6 +385,12 @@ export function messageBusReturnBlobFromTransaction(
   // replace a rediscovered seed with the weaker schema scan; a differing output expectation remains authoritative.
   const schemaFallback = extractSchemaFallback(trace);
   const traceFailed = trace.at(-1)?.error !== undefined;
+  if (traceFailed && resultSchema?.protectTransientSeedOnFailedProbe === true
+    && commitments?.[0] === undefined) {
+    // Without the return-output comparison, a failed route's schema-shaped stack word can be a provisional
+    // zero rather than the producer's result. Retain the independent view seed until a verified pin is reached.
+    return undefined;
+  }
   if (schemaFallback !== undefined
     && (commitment === undefined || (traceFailed && commitment === materializedReturnHex))) {
     commitment = schemaFallback;

@@ -253,8 +253,8 @@ export async function sendWithoutLogicalNonce(
           }));
         }
         host.retireSignerUtxos(signer, [feeUtxo]);
-        const { compose } = await import('../message-bus/compose.js');
-        receipt = await compose({
+        const { composeDiscoveredGraph } = await import('../message-bus/compose.js');
+        receipt = await composeDiscoveredGraph({
           preparedCalls: preparedAtomicCalls,
           funder: { ...feeUtxo, unlocker: signer.unlockP2PKH() },
           changeAddress: signer.getAddress(),

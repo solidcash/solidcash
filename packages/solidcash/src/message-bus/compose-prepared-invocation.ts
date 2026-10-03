@@ -153,6 +153,15 @@ export function hasTransientConvergenceResultSeed(call: PreparedAtomicMessageBus
   })[transientConvergenceResultSeed] === true;
 }
 
+/** Preserve SDK-owned seed provenance when its discovered graph is defensively snapshotted. */
+export function copyTransientConvergenceResultSeed(
+  source: PreparedAtomicMessageBusCall, target: PreparedAtomicMessageBusCall,
+): void {
+  if (hasTransientConvergenceResultSeed(source)) {
+    Object.defineProperty(target, transientConvergenceResultSeed, { value: true, enumerable: true });
+  }
+}
+
 export interface CallDescriptor extends PreparedAtomicMessageBusCall {
   artifact: Artifact;
 }

@@ -22,6 +22,7 @@ export interface DeriveReturnResultsContext {
   plan: CompiledGraphPlan;
   byLockingBytecode: Map<string, StatefulContract>;
   preparedResults: Readonly<Record<number, string>>;
+  protectedTransientResults: ReadonlySet<number>;
   participantReturnBlob: (
     participant: number, results: Readonly<Record<number, string>>,
   ) => Uint8Array | undefined;
@@ -62,6 +63,8 @@ export function deriveReturnResults(
         resultTypes: owned.flatMap((invocation) => ctx.plan.invocations[invocation].resultTypes),
         resultTypeGroups: owned.map((invocation) => ctx.plan.invocations[invocation].resultTypes),
         resultEncodings: owned.map((invocation) => ctx.plan.invocations[invocation].resultEncoding!),
+        protectTransientSeedOnFailedProbe: owned.some((invocation) =>
+          ctx.protectedTransientResults.has(invocation) && priorResults[invocation] !== undefined),
       },
     );
     if (!blob) {

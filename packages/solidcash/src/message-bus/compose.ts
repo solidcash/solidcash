@@ -31,6 +31,7 @@ export {
   applySemanticClaimObservationPass,
 } from './compose-prepared-invocation.js';
 import {
+  copyTransientConvergenceResultSeed,
   type ComposeAtomicMessageBusOptions,
   type PreparedAtomicMessageBusCall,
 } from './compose-prepared-invocation.js';
@@ -272,12 +273,17 @@ const snapshotCompositionValue = <T>(value: T): T => {
     .map(([key, child]) => [key, snapshotCompositionValue(child)]))) as T;
 };
 
-const snapshotPreparedCall = (call: PreparedAtomicMessageBusCall): PreparedAtomicMessageBusCall =>
-  Object.freeze(Object.fromEntries(Object.entries(call).map(([key, value]) =>
-    [key, snapshotCompositionValue(value)]))) as PreparedAtomicMessageBusCall;
+const snapshotPreparedCall = (
+  call: PreparedAtomicMessageBusCall, preserveSdkResultSeed = false,
+): PreparedAtomicMessageBusCall => {
+  const snapshot = Object.fromEntries(Object.entries(call).map(([key, value]) =>
+    [key, snapshotCompositionValue(value)])) as PreparedAtomicMessageBusCall;
+  if (preserveSdkResultSeed) copyTransientConvergenceResultSeed(call, snapshot);
+  return Object.freeze(snapshot);
+};
 
 const snapshotExternalCompositionOptions = (
-  options: ComposeAtomicMessageBusOptions,
+  options: ComposeAtomicMessageBusOptions, preserveSdkResultSeeds = false,
 ): ComposeAtomicMessageBusOptions => {
   const { calls, preparedCalls, ...rest } = options;
   if (!calls && !preparedCalls) {
@@ -288,9 +294,18 @@ const snapshotExternalCompositionOptions = (
   return Object.freeze({
     ...snapshotCompositionValue(rest),
     requirePreparedIdentity: preparedCalls !== undefined,
-    preparedCalls: Object.freeze(snapshotCalls.map(snapshotPreparedCall)),
+    preparedCalls: Object.freeze(snapshotCalls.map((call) =>
+      snapshotPreparedCall(call, preserveSdkResultSeeds))),
   });
 };
+
+/** @internal Preserve discovery-only result seeds across the SDK's own atomic-promotion boundary. */
+export function composeDiscoveredGraph(options: ComposeAtomicMessageBusOptions): AtomicMessageBusComposition {
+  clearComposeKernelAuthorityResults();
+  return new AtomicMessageBusComposition(
+    snapshotExternalCompositionOptions(options, true), 0, recursiveCompositionToken,
+  );
+}
 
 export function compose(options: ComposeAtomicMessageBusOptions): AtomicMessageBusComposition {
   // Capture StatefulFunctionCall descriptors immediately. A prepared call is a value-level graph statement;

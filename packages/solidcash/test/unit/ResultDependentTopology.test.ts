@@ -2,7 +2,7 @@ import { binToHex } from '@bitauth/libauth';
 import type { Artifact, ExternalCallAbi, ExternalCallExpression } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import {
-  AtomicMessageBusComposition, compose, type PreparedAtomicMessageBusCall,
+  AtomicMessageBusComposition, compose, composeDiscoveredGraph, type PreparedAtomicMessageBusCall,
 } from '../../src/message-bus/compose.js';
 import {
   propagateResultDependentArguments, type ResultPropagationContext,
@@ -217,6 +217,14 @@ describe('result-dependent topology propagation', () => {
     expect(wrapped).not.toBe(callerObject);
     expect(hasTransientConvergenceResultSeed(wrapped)).toBe(false);
     expect(wrapped.provisionalResultCommitment).toEqual(supplied);
+
+    const internal = preparedCall(composeDiscoveredGraph({
+      ...options, preparedCalls: [ctx.descriptors[0], transient],
+    }));
+    expect(internal).not.toBe(transient);
+    expect(internal.provisionalResultCommitment).toEqual(transient.provisionalResultCommitment);
+    expect(internal.provisionalResultCommitment).not.toBe(transient.provisionalResultCommitment);
+    expect(hasTransientConvergenceResultSeed(internal)).toBe(true);
   });
 
   it('keeps a speculative subtree while its guard producer is still unknown', async () => {

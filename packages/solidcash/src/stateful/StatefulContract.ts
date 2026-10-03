@@ -13148,6 +13148,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       resultTypes: readonly string[];
       resultTypeGroups: readonly (readonly string[])[];
       resultEncodings: readonly ExternalResultEncoding[];
+      protectTransientSeedOnFailedProbe?: boolean;
     },
   ): Uint8Array | undefined {
     const self = this;

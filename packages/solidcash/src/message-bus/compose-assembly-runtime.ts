@@ -15,6 +15,7 @@ import {
   deriveReturnResults as deriveComposeReturnResults,
   type DeriveReturnResultsContext,
 } from './compose-derive-return-results.js';
+import { hasTransientConvergenceResultSeed } from './compose-prepared-invocation.js';
 import {
   admitCompositionBuilder,
 } from './compose-admit.js';
@@ -234,6 +235,8 @@ export function createComposeAssemblyRuntime(
     plan: input.plan,
     byLockingBytecode: input.byLockingBytecode,
     preparedResults: input.preparedResults,
+    protectedTransientResults: new Set(input.descriptors.flatMap((descriptor, index) =>
+      hasTransientConvergenceResultSeed(descriptor) ? [index] : [])),
     participantReturnBlob,
     participantReturnCommitment,
     rebalanceFeeTail,

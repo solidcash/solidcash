@@ -671,4 +671,54 @@ describe('kernel complete nested-mapping tuple pool', () => {
     expect(audits).toHaveLength(1);
     expect(audits[0]?.value).toBe(231n);
   }, 180_000);
+
+  it('rejects a conditional entry driven by a reassigned row parameter', async () => {
+    const artifacts = compileStringMulti(GRAPH_SOURCE, GRAPH_OPTIONS);
+    const altArtifact = compileString(`pragma solidity ^0.8.0;
+      contract AuditedLedger {
+        mapping(uint => uint) audit;
+        mapping(uint => mapping(uint => uint)) values;
+        function set(uint outer, uint inner, uint value) public {
+          value = value + 1;
+          if (value == 31) { audit[outer] = value + 200; }
+          values[outer][inner] = value + 100;
+          require(true);
+        }
+      }`, GRAPH_OPTIONS);
+    expect(altArtifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x6c), provider);
+    for (let index = 0; index < 18; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const firstInner = new Contract(artifacts.Ledger, [], { provider });
+    const firstSetup = await setupStatefulUtxos(
+      provider, firstInner, artifacts.Ledger.stateLayout!, {}, { saltContract: true },
+    );
+    const first = StatefulContract.withCategory(firstInner, firstSetup.categoryId).connect(signer);
+    const secondInner = new Contract(altArtifact, [], { provider });
+    const secondSetup = await setupStatefulUtxos(
+      provider, secondInner, altArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const second = StatefulContract.withCategory(secondInner, secondSetup.categoryId).connect(signer);
+    registerDeployment(provider, {
+      contractName: altArtifact.contractName,
+      address: second.target,
+      lockingBytecode: second.inner.lockingBytecode,
+      contract: second,
+    });
+    const driverInner = new Contract(artifacts.Driver, [first.inner.lockingBytecode], { provider });
+    const driverSetup = await setupStatefulUtxos(
+      provider, driverInner, artifacts.Driver.stateLayout!, {}, { saltContract: true },
+    );
+    const driver = StatefulContract.withCategory(driverInner, driverSetup.categoryId).connect(signer);
+    driver._registerResolvedExternal('ILedger', first);
+    await expect(driver.call.runTargets([
+      hexToBin(first.inner.lockingBytecode), hexToBin(second.inner.lockingBytecode),
+      hexToBin(second.inner.lockingBytecode),
+    ]).send()).rejects.toThrow();
+    expect(await second.getEntries('values')).toHaveLength(0);
+    expect(await second.getEntries('audit')).toHaveLength(0);
+  }, 180_000);
 });

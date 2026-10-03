@@ -4444,6 +4444,7 @@ function fixedChunkableBoolParamActivation(
 /** Retain a conditional fixed entry only when its branch can be replayed from authenticated row arguments. */
 function stampKernelArgumentConditionalEntryActivations(fn: FunctionDefinitionNode): void {
   if (!fn.body || !fn.entryAccesses) return;
+  const mutableParameters = mutableFunctionParameterNames(fn);
   const conditionRecipe = (expression: ExpressionNode): ExternalCallExpression | undefined => {
     if (!(expression instanceof BinaryOpNode)
       || ![BinaryOperator.EQ, BinaryOperator.NE].includes(expression.operator)) return undefined;
@@ -4454,7 +4455,7 @@ function stampKernelArgumentConditionalEntryActivations(fn: FunctionDefinitionNo
       : expression.right instanceof IntLiteralNode ? expression.right : undefined;
     const index = fn.parameters.findIndex((candidate) => candidate.name === parameter?.name
       && !candidate.name.startsWith('__internal__'));
-    if (index < 0 || literal === undefined) return undefined;
+    if (index < 0 || literal === undefined || mutableParameters.has(parameter!.name)) return undefined;
     return {
       kind: 'binary', operator: expression.operator,
       left: { kind: 'source', source: { kind: 'forward', paramIndex: index } },
@@ -4491,6 +4492,50 @@ function stampKernelArgumentConditionalEntryActivations(fn: FunctionDefinitionNo
     const activation = byOrdinal.get(access.mutationEffectOrdinals[0]);
     if (activation !== undefined) access.activation = activation;
   }
+}
+
+/** Row arguments are authenticated at entry, not after a handler reassigns its own parameter. */
+function mutableFunctionParameterNames(fn: FunctionDefinitionNode): Set<string> {
+  const parameters = new Set(fn.parameters.map((parameter) => parameter.name));
+  const mutable = new Set<string>();
+  if (!fn.body) return mutable;
+  walkInvocationAst(fn.body, (node) => {
+    if ((node instanceof AssignNode || node instanceof DeleteLocalNode)
+      && parameters.has(node.identifier.name)) mutable.add(node.identifier.name);
+    if (node instanceof TupleAssignmentNode) {
+      for (const element of node.elements) {
+        if (element.existing && element.name && parameters.has(element.name)) mutable.add(element.name);
+      }
+    }
+  });
+  return mutable;
+}
+
+function hasMutableKernelArgumentConditionalEntryWrite(
+  fn: FunctionDefinitionNode, collectionNames: ReadonlySet<string>,
+): boolean {
+  const mutable = mutableFunctionParameterNames(fn);
+  if (!fn.body || mutable.size === 0) return false;
+  let unsupported = false;
+  walkInvocationAst(fn.body, (node) => {
+    if (!(node instanceof BranchNode) || !(node.condition instanceof BinaryOpNode)
+      || ![BinaryOperator.EQ, BinaryOperator.NE].includes(node.condition.operator)) return;
+    const condition = node.condition;
+    const parameter = condition.left instanceof IdentifierNode && condition.right instanceof IntLiteralNode
+      ? condition.left : condition.right instanceof IdentifierNode && condition.left instanceof IntLiteralNode
+        ? condition.right : undefined;
+    if (!parameter || !mutable.has(parameter.name)) return;
+    const hasEntryWrite = (arm: BlockNode | undefined): boolean => {
+      let found = false;
+      if (arm) walkInvocationAst(arm, (child) => {
+        if ((child instanceof MappingAssignNode || child instanceof ArrayAssignNode)
+          && collectionNames.has(child.name)) found = true;
+      });
+      return found;
+    };
+    if (hasEntryWrite(node.ifBlock) || hasEntryWrite(node.elseBlock)) unsupported = true;
+  });
+  return unsupported;
 }
 
 /**
@@ -6423,6 +6468,13 @@ function synthesizeMessageBusRoute(
       kernelAllOutputSignatureParameters.set(fn, allOutputParameters);
       fn.messageBusAllOutputSignatureParameters = allOutputParameters;
       fn.messageBusSignatureCoveredFunctionKeys = allOutputProof.coveredFunctionKeys;
+    }
+    if (compilerOptions.messageBusKernel === true
+      && hasMutableKernelArgumentConditionalEntryWrite(fn, new Set(collectionByName.keys()))) {
+      noteKernelLayoutGate(fn, 'mutable-argument-conditional-entry-write');
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
+      continue;
     }
     if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       fn.messageBusEligible = false;

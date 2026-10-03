@@ -63,8 +63,30 @@ function sourceOf(): string {
     + ' }';
 }
 
+/** The same guard, but on the proxied entry's own sites: three, the middle one unreachable this execution. */
+function sourceOfGuardedEntry(): string {
+  return 'pragma solidcash ^0.13.0;'
+    + ' interface IOuter { function run(uint x, uint mode) returns (uint); }'
+    + ' contract Outer {'
+    + '   uint public status;'
+    + '   function run(uint x, uint mode) returns (uint) { this.status = x + mode; return this.status; }'
+    + ' }'
+    + ' contract Ledger {'
+    + '   address public implementation;'
+    + '   uint public stored;'
+    + '   function initialize() { require(true); }'
+    + '   function run(uint x, uint mode) {'
+    + `     this.stored = IOuter(0x${binToHex(OUTER_ADDRESS)}).run(x, mode);`
+    + '     if (mode > 0) {'
+    + `       this.stored = IOuter(0x${binToHex(OUTER_ADDRESS)}).run(x + 1, mode);`
+    + '     }'
+    + `     this.stored = IOuter(0x${binToHex(OUTER_ADDRESS)}).run(x + 2, mode);`
+    + '   }'
+    + ' }';
+}
+
 /** Deploys the callee and its own callee, then the implementation behind its proxy. */
-async function deploy(): Promise<{
+async function deploy(source: string = sourceOf()): Promise<{
   readonly network: MockNetworkProvider;
   readonly artifacts: ReturnType<typeof compileStringMulti>;
   readonly callerUtxos: readonly { txid: string; vout: number; satoshis: bigint }[];
@@ -73,7 +95,7 @@ async function deploy(): Promise<{
   readonly signature: SignatureTemplate;
   readonly initialized: boolean;
 }> {
-  const artifacts = compileStringMulti(sourceOf(), { composition: 'per-call' });
+  const artifacts = compileStringMulti(source, { composition: 'per-call' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signature = new SignatureTemplate(alicePriv);
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -89,11 +111,11 @@ async function deploy(): Promise<{
   await network.addUtxo(funder.address, implFunding);
   await network.addUtxo(funder.address, proxyFunding);
   await network.addUtxo(funder.address, outerFunding);
-  await network.addUtxo(funder.address, innerFunding);
+  if (artifacts.Inner !== undefined) await network.addUtxo(funder.address, innerFunding);
   await fundShippedFacets(network);
   for (const coin of callerUtxos) await network.addUtxo(binToHex(deployerLock), coin);
   const funderUnlock = funder.unlock.spend(alicePub, signature);
-  await deployStatefulContract(artifacts.Inner as Artifact, [], {
+  if (artifacts.Inner !== undefined) await deployStatefulContract(artifacts.Inner as Artifact, [], {
     fundingUtxo: innerFunding, funder: funderUnlock, changeAddress: funder.address,
     provider: network, threadCount: 4,
   });
@@ -146,5 +168,44 @@ describe('a proxied entry whose callee guards one of its calls away', () => {
     });
     expect(result.verdicts.every((verdict) => verdict.accepted)).toBe(true);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+  }, 300_000);
+
+  /**
+   * Known wall: the guard on the entry's own body, which this hop cannot place yet.
+   *
+   * The compiled body fixes one call site and one segment close per site the entry's source names, so its witness tail
+   * must hold one call record for each of them, whether or not that execution fills them. The plan states a record
+   * only for the sites it places a callee for, and the assembler writes the tail's call section as
+   * `master.calls.map(...)` (`composer/assemble.ts`), so a site the entry guards away leaves the tail one record
+   * short of the body's own count: the run stops where the missing record's site is read, the derivation fills no
+   * witness there and the hop refuses after its attempts. Owner: the per-call planner's statement of a frame's
+   * calls. Traced from the failing case: `PER_CALL_DERIVATION_STALLED ... filled no witness at site 2 (call 2)` and
+   * `... at site 3 (close of segment 0)` alternating, with two callee masters placed for three published sites.
+   */
+  it('refuses the proxied entry itself when one of its own sites is guarded away, pinned', async () => {
+    const { network, artifacts, callerUtxos, deployerLock, changeAddress, signature, initialized } =
+      await deploy(sourceOfGuardedEntry());
+    expect(initialized).toBe(true);
+    const entry = artifacts.Ledger!.abi.find((candidate) => candidate.name === 'run')!;
+    expect((entry.externalCalls ?? []).map((call) => call.functionName))
+      .toStrictEqual(['run', 'run', 'run']);
+
+    const result = callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Ledger!,
+      proxyArtifact: buildProxyArtifact(artifacts.Ledger!),
+      proxyCategoryId: PROXY_CATEGORY,
+      implementationCategoryId: IMPL_CATEGORY,
+      functionName: 'run',
+      args: [3n, 0n] as never,
+      externals: { IOuter: { artifact: artifacts.Outer as Artifact, categoryId: OUTER_CATEGORY } },
+      callerUtxo: callerUtxos[1]!,
+      callerLockingBytecode: deployerLock,
+      funder: signature.unlockP2PKH(),
+      changeAddress,
+      vm: compositionMachine(),
+    });
+    await expect(result).rejects.toThrow(
+      /the implementation's "run" entry did not settle through the proxy in \d+ attempts/);
   }, 300_000);
 });

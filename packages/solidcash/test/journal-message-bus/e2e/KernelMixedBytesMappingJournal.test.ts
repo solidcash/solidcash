@@ -213,8 +213,9 @@ describe('kernel independently indexed dynamic scalar and mapping journals', () 
 });
 
 // token-container co-layout admits compile-time co-layout (tokenContainer slot + messageBus.tokenContainerCoLayout)
-// for bytes write + tokens[category] read. The BCH-2026 proofs and settled batch below exercise both families.
-describe('kernel dynamic scalar and token-container resources (token-container co-layout e2e settle follow-on)', () => {
+// for bytes write beside token-container reads and transfers. The BCH-2026 proofs and settled batches below
+// exercise both resource families.
+describe('kernel dynamic scalar and token-container resources', () => {
   const source = `contract ParallelTokenJournal() {
     bytes payload;
     function append(bytes32 category, bytes suffix) public {
@@ -281,6 +282,46 @@ describe('kernel dynamic scalar and token-container resources (token-container c
     const containers = await setup.provider.getUtxos(containerAddress);
     expect(containers.some((utxo) => utxo.token?.category === setup.tokenCategory
       && utxo.token.amount === 500n)).toBe(true);
+  }, 180_000);
+
+  it('settles bytes growth with two token-container payments', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract ParallelTokenPayments() {
+      bytes payload;
+      function appendAndPay(bytes32 category, bytes suffix, bytes recipient, bigint amount) public {
+        this.payload = bytes.concat(this.payload, suffix);
+        this.tokens[category].transfer(recipient, amount);
+        require(amount > 0);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'appendAndPay'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { payload: new Uint8Array() }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const token = await genesisFtContainer(provider, inner, categoryId, [500n]);
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const recipient = fee.unlocker.generateLockingBytecode();
+    const call = contract.batch([
+      { function: 'appendAndPay', args: [hexToBin(token.category), first, recipient, 7n] },
+      { function: 'appendAndPay', args: [hexToBin(token.category), second, recipient, 9n] },
+    ]);
+    call.addInput(fee.utxo, fee.unlocker);
+    const builder = await call.build();
+    expect(evaluate(provider, builder).every((result) => result === true)).toBe(true);
+    const outputs = builder.buildLibauthTransaction().outputs;
+    expect(outputs.filter((output) => output.token
+      && binToHex(output.token.category) === token.category
+      && binToHex(output.lockingBytecode) === binToHex(recipient))
+      .map((output) => output.token!.amount)).toEqual([7n, 9n]);
+    await expect(call.send()).resolves.toBeDefined();
+    const state = await contract.getState();
+    expect(binToHex(state.payload as Uint8Array)).toBe(binToHex(Uint8Array.from([...first, ...second])));
+    const containers = await provider.getUtxos(token.address);
+    expect(containers.some((utxo) => utxo.token?.category === token.category
+      && utxo.token.amount === 484n)).toBe(true);
   }, 180_000);
 
   it.each(['dynamic chunk', 'token container'] as const)(

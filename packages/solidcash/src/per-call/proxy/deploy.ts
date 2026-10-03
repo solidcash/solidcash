@@ -2925,19 +2925,41 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     ...(options.callBases === undefined ? {} : { callBases: options.callBases }),
     ...(options.truncated === true ? { truncated: true } : {}),
   }) : undefined));
-  // Each record the entry rewrites is kept at the commitment the proxy spent until the segments its write opens,
-  // written in those, and kept at the written commitment afterwards: its own code writes it exactly once, where its
-  // own calls put it, so any other segment declares it unchanged.
-  const implementationSegments: RecordEntry[][] = Array.from(    { length: calls.length + 1 },
+  // Each record the entry rewrites is kept at the commitment the proxy spent until the segments its writes open,
+  // written in those, and kept at the written commitment afterwards. A frame whose source writes one record in
+  // several segments declares it changed in every one of them, each change continuing from the last one's end: the
+  // body computes each change's end view, so all but the last are handed back for the derivation to learn and only
+  // the last carries the commitment the settle stated.
+  const recordLandings = new Map<number, number[]>();
+  for (const [nftIndex, published] of publishedRecordWrites(implementationArtifact, options.entry.functionName)) {
+    const landings = [...new Set(published.map((segment) => (segment === 'last' ? calls.length : segment)))]
+      .filter((segment) => segment >= 0 && segment <= calls.length)
+      .sort((left, right) => left - right);
+    if (landings.length > 0) recordLandings.set(nftIndex, landings);
+  }
+  const implementationSegments: DraftRecordEntry[][] = Array.from({ length: calls.length + 1 },
     (_unused, segmentIndex) => frameDataRecordIndices(implementationArtifact, options.entry.functionName)
-      .filter((nftIndex) => nftIndex < implementationRecords).map((nftIndex): RecordEntry => {
+      .filter((nftIndex) => nftIndex < implementationRecords).map((nftIndex): DraftRecordEntry => {
       const writeAt = recordWriteAt[nftIndex];
       if (writeAt === undefined) return recordKept[nftIndex]!;
-      // The frame's declarations are read as one chain, so the record is declared written in one segment of the
-      // landing and kept at what that write left in the rest: a landing whose every segment declared the write would
-      // state one record written several times, a shape no chain the execution produces accounts for.
-      if (segmentIndex < writeAt.least) return recordKept[nftIndex]!;
-      return segmentIndex === writeAt.least ? recordWritten[nftIndex]! : recordAfter[nftIndex]!;
+      // The frame's declarations are read as one chain, so each change continues from what the last one left. A
+      // record whose writes all land in one segment states that change and keeps its end view in the rest.
+      const landings = recordLandings.get(nftIndex);
+      if (landings === undefined || landings.length <= 1) {
+        if (segmentIndex < writeAt.least) return recordKept[nftIndex]!;
+        return segmentIndex === writeAt.least ? recordWritten[nftIndex]! : recordAfter[nftIndex]!;
+      }
+      const change = landings.indexOf(segmentIndex);
+      if (change < 0) {
+        return segmentIndex < landings[0]! ? recordKept[nftIndex]!
+          : { in: recordKept[nftIndex]!.in, out: recordKept[nftIndex]!.out, viewIn: 'carried', viewOut: 'carried' };
+      }
+      return {
+        in: recordWritten[nftIndex]!.in,
+        out: recordWritten[nftIndex]!.out,
+        viewIn: change === 0 ? recordKept[nftIndex]!.viewIn : 'carried',
+        ...(change === landings.length - 1 ? { viewOut: recordWritten[nftIndex]!.viewOut } : {}),
+      };
     }),
   );
   // The nodes the entry only reads follow its data records in every segment, kept, ahead of any write.

@@ -171,7 +171,7 @@ describe('a proxied entry whose callee guards one of its calls away', () => {
   }, 300_000);
 
   /**
-   * Known wall: the guard on the entry's own body, which this hop cannot place yet.
+   * Known wall: the guard on the entry's own body, which this hop cannot settle yet.
    *
    * The compiled body fixes one call site and one segment close per site the entry's source names, so its witness tail
    * must hold one call record for each of them, whether or not that execution fills them. The plan states a record
@@ -181,6 +181,12 @@ describe('a proxied entry whose callee guards one of its calls away', () => {
    * witness there and the hop refuses after its attempts. Owner: the per-call planner's statement of a frame's
    * calls. Traced from the failing case: `PER_CALL_DERIVATION_STALLED ... filled no witness at site 2 (call 2)` and
    * `... at site 3 (close of segment 0)` alternating, with two callee masters placed for three published sites.
+   *
+   * The entry's own record is written in two segments here, which the plan now declares as two changes chained
+   * through the segment between them (`proxy/deploy.ts`), so the derivation learns both and completes - the hop
+   * trace ends `stop entry=implementation-master reason=derived`. The refusal has moved to the assembled
+   * transaction: the validator's chain check reads the views the frames declare against the records the transaction
+   * carries and refuses (`A_CHAIN_IS_NOT_CONTIGUOUS`), which is the next thing to settle.
    */
   it('refuses the proxied entry itself when one of its own sites is guarded away, pinned', async () => {
     const { network, artifacts, callerUtxos, deployerLock, changeAddress, signature, initialized } =
@@ -205,7 +211,6 @@ describe('a proxied entry whose callee guards one of its calls away', () => {
       changeAddress,
       vm: compositionMachine(),
     });
-    await expect(result).rejects.toThrow(
-      /the implementation's "run" entry did not settle through the proxy in \d+ attempts/);
+    await expect(result).rejects.toThrow(/Program failed an OP_VERIFY operation/);
   }, 300_000);
 });

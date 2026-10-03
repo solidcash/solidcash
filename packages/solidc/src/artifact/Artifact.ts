@@ -27,6 +27,7 @@ import {
   EntryAccessInfo,
 } from '../ast/AST.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { GlobalFunction } from '../ast/Globals.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
@@ -654,6 +655,17 @@ const expressionSource = (
 };
 
 /**
+ * The global builtins a body may call by name.
+ *
+ * Each computes a value from its own operands (a blockhash read takes a co-spent oracle input, and a signature or
+ * recovery check answers from its arguments), so no call to one writes a state variable. The constructor replay
+ * charges every call it cannot resolve to a declared body as a possible mutation of any dynamic value, because an
+ * unknown callee may write through an alias; a builtin is known not to, so charging it would blank the write count
+ * of every dynamic value the body states — which is what a constructor that hashes its own arguments lost.
+ */
+const GLOBAL_BUILTIN_CALLS = new Set<string>(Object.values(GlobalFunction));
+
+/**
  * Publish finite replay programs for constructor-time dynamic state.
  *
  * This is intentionally a small symbolic interpreter rather than an AST pattern match. Constructors commonly
@@ -987,14 +999,16 @@ const dynamicWriteSourcesOf = (
       if (value instanceof FunctionCallNode) {
         // A call can mutate reference-like locals through aliases, so no local substitution survives it.
         for (const key of state.bindings.keys()) state.bindings.set(key, undefined);
-        if (!(value.resolvedFunction instanceof FunctionDefinitionNode) && !appendMode) {
+        if (!(value.resolvedFunction instanceof FunctionDefinitionNode) && !appendMode
+          && !GLOBAL_BUILTIN_CALLS.has(value.identifier.name)) {
           // The callee is not known, so it may write any dynamic value. A resolved callee is visited by this same
           // walk below, so the writes it really makes are counted from its own body rather than assumed.
           //
           // For an entry's append the blanket charge is dropped: an unresolved callee there is a value producer - a
           // construction or a builtin - which cannot write a dynamic value, and any write node its own operands
-          // carry is still charged by the walk below. The constructor replay keeps the blanket charge, because it
-          // has a VM-probe fallback and never sees this shape.
+          // carry is still charged by the walk below. The constructor replay keeps the charge for a callee whose
+          // name is not one of the global builtins: it has a VM-probe fallback, and a named builtin, which writes
+          // nothing, is the only unresolved callee whose writes this replay can rule out.
           for (const write of state.writes.values()) {
             write.maximum = Number.POSITIVE_INFINITY;
             write.value = undefined;

@@ -118,4 +118,40 @@ describe('explicit constructor dynamic-write replay metadata', () => {
     `);
     expect(localDependent?.selected).toBeUndefined();
   });
+
+  it('keeps a write a call to a global builtin precedes, which writes no state', () => {
+    // A constructor that hashes its arguments before it stores them: a call to a global builtin computes a value
+    // from its own operands and writes nothing, so it is not the unknown mutation the replay charges an unresolved
+    // callee with. The charge used to blank the write count for the whole body, so the source of every dynamic
+    // value such a constructor wrote went unpublished.
+    const hashing = constructorSources(`
+      contract C() {
+        bytes32 digest;
+        string label;
+        constructor(bytes32 seed, string name) {
+          this.digest = keccak256(seed);
+          this.label = name;
+        }
+      }
+    `);
+
+    expect(hashing?.label).toMatchObject({ kind: 'source', source: { kind: 'forward', paramIndex: 1 } });
+  });
+
+  it('still omits a write a call the replay cannot rule out produces', () => {
+    // The control: `string.concat` is not a global builtin, so the replay keeps charging the call as a possible
+    // mutation of any dynamic value and the write stays unstated rather than approximated.
+    const concatenated = constructorSources(`
+      contract C() {
+        bytes32 digest;
+        string label;
+        constructor(bytes32 seed, string left, string right) {
+          this.digest = keccak256(seed);
+          this.label = string.concat(left, right);
+        }
+      }
+    `);
+
+    expect(concatenated?.label).toBeUndefined();
+  });
 });

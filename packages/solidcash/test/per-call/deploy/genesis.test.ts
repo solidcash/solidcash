@@ -966,6 +966,103 @@ describe('a per-call genesis whose constructor hashes a runtime value', () => {
 });
 
 /**
+ * A constructor that hashes a runtime value beside a dynamic write.
+ *
+ * The compiler publishes the source of a dynamic value a constructor writes only when it can state the value on
+ * every completing path. A call it cannot resolve to a declared body is charged as a possible mutation of any
+ * dynamic value, and a call to a global builtin — which computes from its own operands and writes nothing — used to
+ * carry that charge too, so a constructor that hashed before it stored lost the source of what it stored and no
+ * genesis could state the run its write creates. With the builtin ruled out, the source is published and the frame
+ * settles through the shipped deploy path: the record carries the hash the body read back and the chunk the shipped
+ * encoder sizes. The control is a value a call the replay cannot rule out produces, which stays unstated and is
+ * refused by name.
+ */
+const HASHED_DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Tag {'
+  + '   bytes32 public digest;'
+  + '   string public label;'
+  + '   constructor(bytes32 seed, string text) { this.digest = keccak256(seed); this.label = text; }'
+  + '   function peek() returns (bytes32) { return this.digest; }'
+  + ' }';
+
+const hashedDynamicArtifact = compileString(HASHED_DYNAMIC_SOURCE, { composition: 'per-call' });
+const hashedDynamicLayout = hashedDynamicArtifact.stateLayout!;
+const HASHED_SEED = new Uint8Array(32).map((_unused, index) => (index * 13 + 7) & 0xff);
+const HASHED_TEXT = 'tagged';
+
+/** The commitment the constructor's own writes produce, through the shipped pushdata encoder. */
+const hashedDynamicCommitment = (layout = hashedDynamicLayout): string =>
+  buildPushdataCommitment(layout, { digest: Uint8Array.from(keccak_256(HASHED_SEED)), label: HASHED_TEXT }, 0);
+
+const hashedDynamicGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+  artifact: hashedDynamicArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+  provider: compositionProvider(), constructorArgs: [HASHED_SEED, HASHED_TEXT], senderLockingBytecode: OWNER_LOCK,
+});
+
+describe('a per-call genesis whose constructor hashes beside a dynamic write', () => {
+  it('publishes the dynamic source and settles the frame the shipped encoders describe', () => {
+    const constructorAbi = hashedDynamicArtifact.abi.find((row) => row.name === '__construct')!;
+    expect(constructorAbi.keccakCompute).toBe(true);
+    expect(constructorAbi.dynamicWriteSources?.label)
+      .toMatchObject({ kind: 'source', source: { kind: 'forward', paramIndex: 1 } });
+
+    const genesis = hashedDynamicGenesis();
+    expect(accepted(genesis.program)).toBe(true);
+    expect(genesis.commitments).toStrictEqual([hashedDynamicCommitment()]);
+    const run = planChunkRun({
+      layout: hashedDynamicLayout, variable: 'label', spent: new Uint8Array(0), written: utf8(HASHED_TEXT),
+    });
+    expect(genesis.chunks.map((chunk) => chunk.commitment))
+      .toStrictEqual(run.written.chunks.map((commitment) => Buffer.from(commitment).toString('hex')));
+  });
+
+  it('mints the hash and the chunk in the deployment transaction the SDK builds', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = {
+      txid: Buffer.from(sha256(new TextEncoder().encode('a hashed dynamic genesis'))).toString('hex'),
+      vout: 0, satoshis: 500_000n,
+    };
+    await provider.addUtxo(funding.address, fundingUtxo);
+
+    const { tx } = await StatefulContract.deploy(hashedDynamicArtifact, [HASHED_SEED, HASHED_TEXT], {
+      provider,
+      fundingUtxo,
+      funder: funding.unlock.spend(alicePub, signature),
+      changeAddress: funding.address,
+    });
+    const outputs = (tx as unknown as DeployedTransaction).outputs;
+    expect(outputs.some((output) => output.token?.nft?.commitment !== undefined
+      && Buffer.from(output.token.nft.commitment).toString('hex') === hashedDynamicCommitment())).toBe(true);
+    const chunk = outputs.find(
+      (output) => bytesEqual(output.lockingBytecode, chunkRecordLockingBytecode(fundingUtxo.txid, 'label', 'string')),
+    );
+    expect(chunk).toBeDefined();
+    expect(chunk!.token?.nft?.capability).toBe('mutable');
+  });
+
+  it('refuses a dynamic value a call the replay cannot rule out produces, by name', () => {
+    const concatenated = compileString('pragma solidcash ^0.13.0;'
+      + ' contract Tag {'
+      + '   bytes32 public digest;'
+      + '   string public label;'
+      + '   constructor(bytes32 seed, string left, string right) {'
+      + '     this.digest = keccak256(seed);'
+      + '     this.label = string.concat(left, right);'
+      + '   }'
+      + '   function peek() returns (bytes32) { return this.digest; }'
+      + ' }', { composition: 'per-call' });
+
+    expect(concatenated.abi.find((row) => row.name === '__construct')?.dynamicWriteSources?.label).toBeUndefined();
+    expect(() => derivePerCallGenesis({
+      artifact: concatenated, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+      provider: compositionProvider(), constructorArgs: [HASHED_SEED, 'left', 'right'], senderLockingBytecode: OWNER_LOCK,
+    })).toThrow(/writes dynamic "label", which the artifact publishes no value source for/);
+  });
+});
+
+/**
  * A constructor that hashes three runtime values, two named by the artifact and one the body computes.
  *
  * The frame reads one compute side-car per call, in the order the body makes them, so the genesis co-spends three

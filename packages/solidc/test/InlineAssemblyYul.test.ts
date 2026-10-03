@@ -276,6 +276,17 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
     expect(yul.bytecode).toBe(hand.bytecode);
   });
 
+  it('drops the statements after return(p, 32), in its assembly block and after it, as it halts the call', () => {
+    // The dead `pc()` would leave the block unlowered, and the dead require would run, if either were kept.
+    const yul = compileString('contract C() { function f(uint a) returns (uint) {'
+      + ' assembly { mstore(0, a) return(0, 32) let x := pc() } require(a > 1); } }',
+    { solidityImportCompat: true, messageBus: false });
+    const hand = compileString('contract C() { function f(uint a) returns (uint) { return a; } }', {
+      solidityImportCompat: true, messageBus: false,
+    });
+    expect(yul.bytecode).toBe(hand.bytecode);
+  });
+
   it('constant-folds clz(x) (leading-zero count of a 256-bit word)', () => {
     // clz(0)=256, clz(1)=255, clz(0x4000..0)=1 (bit 254 is the top set bit). Byte-identical to the folded literal.
     const asm = (yul: string): string =>

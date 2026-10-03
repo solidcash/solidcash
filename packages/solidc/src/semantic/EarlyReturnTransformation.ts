@@ -155,8 +155,8 @@ export function firstUnconfinedReturn(statements: StatementNode[], last = true):
   for (const [index, statement] of statements.entries()) {
     const ends = last && index >= lastIndex;
     if (statement instanceof ReturnNode) {
-      // An assembly `return(ptr, size)` halts the call: nothing after it runs, so none of the function runs after it.
-      if (!ends && !statement.isYulReturn) return statement;
+      // An assembly `return(ptr, size)` counts as well: it halts the call, but code generation emits no jump for it.
+      if (!ends) return statement;
       continue;
     }
     const loop = statement instanceof WhileNode || statement instanceof DoWhileNode

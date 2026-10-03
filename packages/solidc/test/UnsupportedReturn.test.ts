@@ -31,4 +31,21 @@ describe('a return no lowering can end a path at', () => {
       'Unsupported return: a return inside an unchecked block, a try or a switch in a loop cannot leave the loop',
     );
   });
+
+  it('refuses an assembly return of raw bytes that statements would still run after', () => {
+    // A word is a value of the function's result, kept for its end like any return's; raw bytes are not.
+    const source = `${SOL} contract C { uint256 public x; function f(uint256 n, uint256 c) public returns (uint256) {
+      assembly { if c { return(0, n) } } x = 1; return 5; } }`;
+    expect(() => compile(source)).toThrow(UnsupportedReturnError);
+    expect(() => compile(source)).toThrow(
+      "Unsupported return: statements of 'f' after this assembly return would still run",
+    );
+  });
+
+  it('refuses an assembly return inside a loop', () => {
+    const source = `${SOL} contract C { uint256 public x; function f(uint256 n) public returns (uint256) {
+      assembly { for { let i := 0 } lt(i, n) { i := add(i, 1) } { if eq(i, 3) { mstore(0, i) return(0, 32) } } }
+      x = 1; return 5; } }`;
+    expect(() => compile(source)).toThrow("Unsupported return: statements of 'f' after this return would still run");
+  });
 });

@@ -1126,6 +1126,21 @@ function runtimeReturn(ptrArg: YulExpressionNode, sizeArg: YulExpressionNode, sr
   return ret;
 }
 
+/**
+ * The word a single-word `return(p, 32)` gives, read as a value of `type` the way a Yul assignment to a variable of
+ * that type reads a word. Undefined unless `type` is a one-word value type.
+ */
+export function yulWordAs(type: Type, word: ExpressionNode): ExpressionNode | undefined {
+  const underlying = type instanceof ValueType ? type.underlyingType : type;
+  const oneWord = underlying === PrimitiveType.BOOL || underlying === PrimitiveType.BIGINT
+    || underlying instanceof IntType || underlying instanceof AddressType || underlying instanceof EnumType
+    || (underlying instanceof BytesType && underlying.bound !== undefined && underlying.bound <= 32);
+  if (!oneWord) return undefined;
+  if (type instanceof IntType && !type.signed && type.bits === 256) return word;
+  const cast = (to: Type, value: ExpressionNode): ExpressionNode => loc(new CastNode(to, value, false), word);
+  return type instanceof ValueType ? cast(type, cast(underlying, word)) : cast(type, word);
+}
+
 // Copy srcBytes[srcOff : srcOff+len] into __yulmem[dst : dst+len], growing the buffer to cover it. Shared by
 // codecopy (src = own bytecode), extcodecopy (src = addr.code) and calldatacopy (src = synthesized EVM calldata /
 // a bytes calldata param). dst/srcOff/len are ALREADY-LOWERED expressions (bound to temps here, so any complexity
@@ -2919,6 +2934,7 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
             if (word !== undefined) {
               const ret = loc(new ReturnNode([lowerValue(word)]), stmt);
               ret.isYulReturn = true;
+              ret.yulWord = true;
               return ret;
             }
           }
@@ -3344,6 +3360,8 @@ function lowerBlock(block: YulBlockNode): BlockNode {
     // (YulBlockNode) stays a scoped BlockNode.
     if (lowered instanceof BlockNode && !(s instanceof YulBlockNode)) out.push(...(lowered.statements ?? []));
     else out.push(lowered);
+    // `return(ptr, size)` halts the call: the statements after it never run, so they are not lowered.
+    if (lowered instanceof ReturnNode && lowered.isYulReturn) break;
   }
   return loc(new BlockNode(out), block);
 }
@@ -3672,16 +3690,19 @@ export default class LowerInlineAssembly extends AstTraversal {
 
   // Splice a lowered assembly block that ends in `return` into the parent block so the return sits at the
   // function-body tail. Left nested, it hides the return from the terminal-return codegen, which then also emits
-  // the function's trailing covenant - duplicating it. A return-terminated block has nothing after it, so its
-  // lowered locals cannot collide with later statements; other assembly blocks stay nested (scoped).
+  // the function's trailing covenant - duplicating it. A Yul `return(ptr, size)` halts the call, so nothing after
+  // its block runs: those statements are dropped, and its lowered locals cannot collide with them. Other assembly
+  // blocks stay nested (scoped).
   visitBlock(node: BlockNode): Node {
     const out: StatementNode[] = [];
     for (const stmt of node.statements ?? []) {
       const wasAssembly = stmt instanceof AssemblyStatementNode;
       const visited = this.visit(stmt) as StatementNode;
-      const inner = visited instanceof BlockNode ? visited.statements ?? [] : undefined;
-      if (wasAssembly && inner && inner.length > 0 && inner[inner.length - 1] instanceof ReturnNode) {
+      const inner = visited instanceof BlockNode ? visited.statements ?? [] : [];
+      const last = inner[inner.length - 1];
+      if (wasAssembly && last instanceof ReturnNode) {
         out.push(...inner);
+        if (last.isYulReturn) break;
       } else {
         out.push(visited);
       }

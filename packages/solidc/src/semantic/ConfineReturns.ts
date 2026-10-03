@@ -28,6 +28,7 @@ import {
   firstUnconfinedReturn, holdsReturn, nestedStatementLists, nestsReturnsToTail,
 } from './EarlyReturnTransformation.js';
 import { fixedForMaximum } from './FixedForLoop.js';
+import { yulWordAs } from './LowerInlineAssembly.js';
 
 /**
  * Lowers the returns EarlyReturnTransformation cannot end a path at into a flag. Code generation has no jump: a void
@@ -134,22 +135,33 @@ function confineFunction(fn: FunctionDefinitionNode, lenient: boolean): void {
   const stashes = fn.returnTypes.map((type, k) => located(new VariableDefinitionNode(type, [], values[k])));
   const lowered = lowerReturns(statements, {
     flag: flag.name,
-    values: (ret) => (ret.expressions.length === 0 && values.length === 0 ? []
-      : stashReturnValues(ret, values, fn.name)),
+    values: (ret) => (ret.isYulReturn ? stashYulReturn(ret, values, fn)
+      : ret.expressions.length === 0 && values.length === 0 ? []
+        : stashReturnValues(ret, values, fn.name)),
     breaks: false,
   });
   const result = values.map((name) => located(new IdentifierNode(name)));
   fn.body.statements = [flag, ...stashes, ...lowered, ...(values.length > 0 ? [located(new ReturnNode(result))] : [])];
 }
 
+/**
+ * The assignment that keeps what an assembly `return(ptr, size)` gives in `names`. It halts the call, so a void
+ * function keeps nothing. A word is a value of a single one-word result, read as a Yul assignment to it reads a word.
+ * Any other data is no value of the declared results, so such a return is refused: statements after it would run.
+ */
+function stashYulReturn(ret: ReturnNode, names: readonly string[], fn: FunctionDefinitionNode): StatementNode[] {
+  if (names.length === 0) return [];
+  const value = ret.yulWord && names.length === 1 ? yulWordAs(fn.returnTypes[0], ret.expressions[0]) : undefined;
+  if (!value) {
+    throw new UnsupportedReturnError(ret, `statements of '${fn.name}' after this assembly return would still run: `
+      + 'the data it returns is not a value of the declared results');
+  }
+  return [locatedAt(new AssignNode(locatedAt(new IdentifierNode(names[0]), ret), value), ret)];
+}
+
 function lowerList(statements: StatementNode[], exit: ReturnExit, loops: number): StatementNode[] {
   const lowered: StatementNode[] = [];
   for (const [index, statement] of statements.entries()) {
-    // An assembly `return(ptr, size)` halts the call with raw bytes, not the function's values: nothing after it runs.
-    if (statement instanceof ReturnNode && statement.isYulReturn) {
-      lowered.push(statement);
-      return lowered;
-    }
     if (statement instanceof ReturnNode) {
       lowered.push(...exit.values(statement), setFlag(exit.flag, statement));
       // Outside a loop nothing after a return runs. Inside one, the break lowering skips the rest of the body.

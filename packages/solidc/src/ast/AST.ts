@@ -3319,6 +3319,9 @@ export class ReturnNode extends StatementNode {
   // Set by Yul lowering for `return(ptr, size)`: this is an EVM halt with a raw byte region, not a Solidity
   // source-level return whose expressions must match the enclosing function's declared ABI returns.
   isYulReturn: boolean = false;
+  // With isYulReturn: the region is one word the lowering resolved at compile time, returned as that word's value
+  // rather than as raw bytes.
+  yulWord: boolean = false;
   // A bare `return;` in a modifier is valid regardless of the decorated function's return tuple: it exits the
   // modifier continuation while preserving the function result produced by `_`.
   fromModifier?: string;

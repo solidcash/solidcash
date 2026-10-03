@@ -20,6 +20,17 @@ import { fixtures } from './fixtures/bitauth-script.fixture.js';
  * honest and leaves compiler-output pinning in the one package that owns it.
  */
 describe('Libauth Script formatting', () => {
+  it('keeps large compiler-route debug scripts bounded without dropping opcodes', () => {
+    const opcodeCount = 300;
+    const bytecode = asmToScript(Array(opcodeCount).fill('OP_1').join(' '));
+    const sourceMap = `1:0:1:1${';'.repeat(opcodeCount - 1)}`;
+    const sourceCode = Array(opcodeCount).fill('// generated body').join('\n');
+    const formatted = formatBitAuthScript(bytecode, sourceMap, sourceCode);
+    expect(formatted.length).toBeLessThan(200_000);
+    expect(formatted.split('\n')).toHaveLength(opcodeCount);
+    expect(formatted.split('\n')[0].split('OP_1')).toHaveLength(opcodeCount + 1);
+  });
+
   fixtures.forEach((fixture) => {
     describe(fixture.name, () => {
       const scriptBytecode = asmToScript(fixture.asmBytecode);

@@ -4563,9 +4563,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const stateNames = new Set((this.inner.stateLayout?.variables ?? []).map((v) => v.name));
     // Mapping collections also dispatch as bare-name getters (`sc.<mapping>(key)`); both resolve via `this.state`.
     for (const c of this.inner.stateLayout?.collections ?? []) if (c.kind === 'mapping') stateNames.add(c.name);
+    const solidityStateGetters = this.inner.artifact.compiler?.options?.solidityImportCompat === true;
     return new Proxy(this, {
       get(target, prop, receiver) {
         if (typeof prop === 'string' && !(prop in target)) {
+          // Solidity's generated public getters share their state variable's name. The authenticated state
+          // accessor preserves the declared struct/array shape; the ABI route is a flattened multi-return.
+          if (solidityStateGetters && stateNames.has(prop)) return (target.state as any)[prop];
           if (abiNames.has(prop)) return (target.call as any)[prop];
           if (stateNames.has(prop)) return (target.state as any)[prop];
         }

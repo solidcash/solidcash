@@ -32,7 +32,9 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { Location } from '../ast/Location.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
-import { kernelArgumentComparisonActivation, stableKernelArgumentIndices } from './KernelEntryActivation.js';
+import {
+  kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
+} from './KernelEntryActivation.js';
 
 // A conditional mapping op normalized to its target + taken-path value.
 interface EntryOp {
@@ -91,6 +93,7 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
   // Mappings are CollectionNodes (node.collections), not stateVariables, pre-semantic.
   private mappings: Map<string, CollectionNode> = new Map();
   private stableArgumentIndices: ReadonlyMap<string, number> = new Map();
+  private booleanArgumentIndices: ReadonlySet<number> = new Set();
 
   // Names the hoisted condition locals uniquely per converted if/else branch.
   private condCounter = 0;
@@ -115,14 +118,19 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const previousIndices = this.stableArgumentIndices;
+    const previousBooleanIndices = this.booleanArgumentIndices;
     this.stableArgumentIndices = stableKernelArgumentIndices(node);
+    this.booleanArgumentIndices = kernelBooleanArgumentIndices(node);
     const result = super.visitFunctionDefinition(node);
     this.stableArgumentIndices = previousIndices;
+    this.booleanArgumentIndices = previousBooleanIndices;
     return result;
   }
 
-  private isArgumentLiteralCondition(expression: ExpressionNode): boolean {
-    return kernelArgumentComparisonActivation(expression, this.stableArgumentIndices) !== undefined;
+  private isReplayableKernelCondition(expression: ExpressionNode): boolean {
+    return kernelArgumentConditionActivation(
+      expression, this.stableArgumentIndices, this.booleanArgumentIndices,
+    ) !== undefined;
   }
 
   visitWhile(node: WhileNode): Node {
@@ -181,7 +189,7 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
       const elseSignature = elseTarget && this.targetSig(elseTarget.name, elseTarget.keys);
       // Distinct mapping targets have independent entry slots. Preserve both guarded mutations when the kernel can
       // replay the branch from its row arguments; predicating either arm would mint a zero-valued phantom node.
-      if (this.preserveKernelArgumentConditionalWrites && this.isArgumentLiteralCondition(node.condition)
+      if (this.preserveKernelArgumentConditionalWrites && this.isReplayableKernelCondition(node.condition)
         && ifTarget !== undefined && elseTarget !== undefined
         && ifSignature !== undefined && elseSignature !== undefined && ifSignature !== elseSignature) return undefined;
       return this.tryConvertIfElse(node);
@@ -199,7 +207,7 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
     // The kernel can publish an argument-authenticated activation for this bounded conditional write. Keep the
     // source branch so a false row owns no mapping mutation; if-converting it would insert an enumerable zero
     // node for an absent key even though the source never executed the write.
-    if (this.preserveKernelArgumentConditionalWrites && this.isArgumentLiteralCondition(node.condition)
+    if (this.preserveKernelArgumentConditionalWrites && this.isReplayableKernelCondition(node.condition)
       && stmts.every((statement) => statement instanceof MappingAssignNode
         || statement instanceof ArrayAssignNode || statement instanceof MappingDeleteNode)) return undefined;
 

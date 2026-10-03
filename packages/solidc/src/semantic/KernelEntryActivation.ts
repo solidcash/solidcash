@@ -1,8 +1,9 @@
 import {
-  AssignNode, BinaryOpNode, DeleteLocalNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode,
+  AssignNode, BinaryOpNode, DeleteLocalNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode, UnaryOpNode,
   Node, TupleAssignmentNode, VariableDefinitionNode, type ExpressionNode, type ExternalCallExpression,
 } from '../ast/AST.js';
-import { BinaryOperator } from '../ast/Operator.js';
+import { PrimitiveType } from '@solidcash/utils';
+import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 
 const COMPARISON_OPERATORS = new Set<BinaryOperator>([
   BinaryOperator.EQ, BinaryOperator.NE, BinaryOperator.LT, BinaryOperator.LE,
@@ -57,9 +58,23 @@ export function stableKernelArgumentIndices(fn: FunctionDefinitionNode): Readonl
   return resolved;
 }
 
-export function kernelArgumentComparisonActivation(
+export function kernelBooleanArgumentIndices(fn: FunctionDefinitionNode): ReadonlySet<number> {
+  return new Set(fn.parameters.flatMap((parameter, index) => parameter.type === PrimitiveType.BOOL ? [index] : []));
+}
+
+export function kernelArgumentConditionActivation(
   expression: ExpressionNode, argumentIndices: ReadonlyMap<string, number>,
+  booleanArgumentIndices: ReadonlySet<number>,
 ): ExternalCallExpression | undefined {
+  if (expression instanceof IdentifierNode) {
+    const index = argumentIndices.get(expression.name);
+    return index !== undefined && booleanArgumentIndices.has(index)
+      ? { kind: 'source', source: { kind: 'forward', paramIndex: index } } : undefined;
+  }
+  if (expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT) {
+    const inner = kernelArgumentConditionActivation(expression.expression, argumentIndices, booleanArgumentIndices);
+    return inner === undefined ? undefined : { kind: 'unary', operator: '!', expression: inner };
+  }
   if (!(expression instanceof BinaryOpNode) || !COMPARISON_OPERATORS.has(expression.operator)) return undefined;
   const operand = (node: ExpressionNode): ExternalCallExpression | undefined => {
     if (node instanceof IdentifierNode) {

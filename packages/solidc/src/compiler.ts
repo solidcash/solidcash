@@ -198,7 +198,9 @@ import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import CacheMappingEntryInLoop from './semantic/CacheMappingEntryInLoop.js';
 import DesugarDynamicArrayCopyCast from './semantic/DesugarDynamicArrayCopyCast.js';
 import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
-import { kernelArgumentComparisonActivation, stableKernelArgumentIndices } from './semantic/KernelEntryActivation.js';
+import {
+  kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
+} from './semantic/KernelEntryActivation.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import detectMappingArrayPagination from './semantic/DetectMappingArrayPagination.js';
 import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFunctions.js';
@@ -4446,8 +4448,9 @@ function fixedChunkableBoolParamActivation(
 function stampKernelArgumentConditionalEntryActivations(fn: FunctionDefinitionNode): void {
   if (!fn.body || !fn.entryAccesses) return;
   const stableArguments = stableKernelArgumentIndices(fn);
+  const booleanArguments = kernelBooleanArgumentIndices(fn);
   const conditionRecipe = (expression: ExpressionNode): ExternalCallExpression | undefined =>
-    kernelArgumentComparisonActivation(expression, stableArguments);
+    kernelArgumentConditionActivation(expression, stableArguments, booleanArguments);
   const byOrdinal = new Map<number, ExternalCallExpression>();
   const combine = (outer: ExternalCallExpression | undefined, inner: ExternalCallExpression): ExternalCallExpression =>
     outer === undefined ? inner : { kind: 'binary', operator: '&&', left: outer, right: inner };

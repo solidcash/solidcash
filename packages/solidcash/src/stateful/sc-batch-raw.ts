@@ -747,6 +747,9 @@ export function batchRaw(
   const activeRouteEntryOperations = new Map<number, readonly string[]>();
   const activeRouteSortedBatchSlots = new Set<number>();
   const activeRouteSortedBatches = new Map<string, { slots: Set<number>; linear: boolean }>();
+  // A standalone batch owns its fixed entry proof. Graph composition supplies its own authenticated
+  // physical entry plan; projecting a skipped graph effect into a second read lane duplicates that proof.
+  const standaloneEntryProofs = Object.keys(internalRouteWitnesses).length === 0;
   const activeRouteEntryRecipes = new Map<number, Array<{
     rowIndex: number;
     access: EntryAccessAbi;
@@ -760,9 +763,14 @@ export function batchRaw(
     handler.physicalEntrySlots?.forEach((physicalSlot, directIndex) => {
       const directAccess = selected?.entryAccesses?.[directIndex];
       if (!directAccess) return;
-      const operations = fixedEntryAccessActive(directAccess, rowIndex)
+      const entryActive = fixedEntryAccessActive(directAccess, rowIndex);
+      const guardedRead = standaloneEntryProofs && !entryActive && directAccess.activation !== undefined;
+      const operations = entryActive
         ? directAccess.operations
-        : directAccess.operations.filter((operation) => operation !== 'write' && operation !== 'delete');
+        : [...new Set([
+          ...directAccess.operations.filter((operation) => operation !== 'write' && operation !== 'delete'),
+          ...(guardedRead ? ['read'] : []),
+        ])];
       if (operations.length === 0) return;
       const physicalAlternatives = handler.physicalEntrySlotAlternatives?.[directIndex]
         ?? [physicalSlot];
@@ -811,8 +819,9 @@ export function batchRaw(
           ?? capability.route.entryAccesses!.indexOf(selectedAccess);
         const directSlot = directAccess.slotIndex ?? directIndex;
         const selectedBatch = selected?.sortedBatchInfo?.find((batch) => batch.slotIndices.includes(directSlot));
-        if ((operations.includes('write') || operations.includes('delete')) && selectedBatch !== undefined) {
-          activeRouteSortedBatchSlots.add(selectedSlot);
+        if (selectedBatch !== undefined
+          && (operations.includes('write') || operations.includes('delete') || guardedRead)) {
+          if (!guardedRead) activeRouteSortedBatchSlots.add(selectedSlot);
           const publishedBatch = capability.route.sortedBatchInfo?.find((batch) =>
             batch.collection === selectedBatch.collection);
           const activeBatch = activeRouteSortedBatches.get(selectedBatch.collection)

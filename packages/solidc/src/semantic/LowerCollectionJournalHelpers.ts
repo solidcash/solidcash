@@ -3,8 +3,10 @@ import {
   BinaryOpNode,
   BranchNode,
   AssignNode,
+  CollectionIterationNode,
   DoWhileNode,
   SwitchNode,
+  TryCatchNode,
   UncheckedNode,
   WhileNode,
   ArrayAccessNode,
@@ -42,12 +44,17 @@ import {
   StateAssignNode,
   StatementNode,
   TupleAssignmentNode,
+  UnaryOpNode,
   VariableDefinitionNode,
+  type ExternalCallExpression,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
-import { BinaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
+import {
+  kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
+} from './KernelEntryActivation.js';
 import {
   ArrayType, IntType, MappingType, Type,
 } from '@solidcash/utils';
@@ -68,6 +75,8 @@ interface JournalEntry {
   valueType: Type;
   /** The helper can change this entry; read-only journal values never require a physical write-back. */
   mutates: boolean;
+  /** Exact source-argument guard for one conditional mutation; a skipped call must not dirty this cache. */
+  activation?: ExternalCallExpression;
   /** Scope in which the source helper legally accessed an inherited private collection. */
   sourceScope?: string;
 }
@@ -198,6 +207,68 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   private lazyMultiCaches = true;
 
   constructor(private readonly enablePooledDynamicArrays = false) { super(); }
+
+  private journalMutationActivations(fn: FunctionDefinitionNode): ReadonlyMap<Node, ExternalCallExpression> {
+    const activations = new Map<Node, ExternalCallExpression>();
+    if (!this.enablePooledDynamicArrays || !fn.body) return activations;
+    const argumentsByName = stableKernelArgumentIndices(fn);
+    const booleanArguments = kernelBooleanArgumentIndices(fn);
+    const combine = (outer: ExternalCallExpression | undefined, inner: ExternalCallExpression): ExternalCallExpression =>
+      outer === undefined ? inner : { kind: 'binary', operator: '&&', left: outer, right: inner };
+    const scan = (node: Node, activation?: ExternalCallExpression, representable = true): void => {
+      if (node instanceof BranchNode) {
+        const condition = kernelArgumentConditionActivation(node.condition, argumentsByName, booleanArguments);
+        const supported = representable && condition !== undefined;
+        scan(node.ifBlock, supported ? combine(activation, condition!) : undefined, supported);
+        if (node.elseBlock) scan(node.elseBlock, supported ? combine(activation, {
+          kind: 'unary', operator: '!', expression: condition,
+        }) : undefined, supported);
+        return;
+      }
+      if (representable && (node instanceof MappingAssignNode || node instanceof MappingDeleteNode)) {
+        if (activation !== undefined) activations.set(node, activation);
+      }
+      // These scopes can skip or repeat a write independently of the surrounding replayable argument guard.
+      if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
+        || node instanceof SwitchNode || node instanceof TryCatchNode) return;
+      for (const [field, value] of Object.entries(node)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+          'stateVariable', 'type'].includes(field)) continue;
+        if (value instanceof Node) scan(value, activation, representable);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
+          scan(item, activation, representable);
+        }
+      }
+    };
+    scan(fn.body);
+    return activations;
+  }
+
+  private journalActivationAtCall(
+    activation: ExternalCallExpression, args: readonly ExpressionNode[], source: Node,
+  ): ExpressionNode {
+    if (activation.kind === 'source' && activation.source?.kind === 'forward'
+      && activation.source.paramIndex !== undefined && args[activation.source.paramIndex]) {
+      return cloneNode(args[activation.source.paramIndex]) as ExpressionNode;
+    }
+    if (activation.kind === 'literal' && activation.type === 'bigint' && activation.value !== undefined) {
+      return this.at(new IntLiteralNode(BigInt(activation.value)), source);
+    }
+    if (activation.kind === 'unary' && activation.operator === '!' && activation.expression) {
+      return this.at(new UnaryOpNode(
+        UnaryOperator.NOT, this.journalActivationAtCall(activation.expression, args, source),
+      ), source);
+    }
+    if (activation.kind === 'binary' && activation.left && activation.right
+      && Object.values(BinaryOperator).includes(activation.operator as BinaryOperator)) {
+      return this.at(new BinaryOpNode(
+        this.journalActivationAtCall(activation.left, args, source),
+        activation.operator as BinaryOperator,
+        this.journalActivationAtCall(activation.right, args, source),
+      ), source);
+    }
+    throw new Error('Unsupported replayable collection-journal activation');
+  }
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -428,6 +499,13 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         && other.name === access.name
         && other.keyParameters.length > access.keyParameters.length
         && access.keyParameters.every((key, index) => key === other.keyParameters[index]))) : [];
+      const mutationActivations = this.journalMutationActivations(fn);
+      const mutationCounts = new Map<string, number>();
+      for (const access of leafAccesses) {
+        if (access.node instanceof MappingAccessNode || access.node instanceof ArrayAccessNode) continue;
+        const identity = `${access.name}[${access.keyParameters.join(',')}]`;
+        mutationCounts.set(identity, (mutationCounts.get(identity) ?? 0) + 1);
+      }
       const distinct = new Map<string, JournalEntry>();
       for (const access of leafAccesses) {
         const collection = collections.get(access.name);
@@ -449,6 +527,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
             journalName: `__cj_${fn.name}_${distinct.size}`,
             valueType: collection.innermostValueType,
             mutates,
+            ...(mutates && mutationCounts.get(identity) === 1
+              && mutationActivations.get(access.node) !== undefined
+              && { activation: mutationActivations.get(access.node) }),
             sourceScope: fn.inheritedFrom,
           });
         }
@@ -1232,29 +1313,49 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         true,
       ), call);
     }
-    const ordinaryDirties = [...new Map(callLocals
-      .filter(({ mutates, runtimeValueName }) => mutates && !runtimeValueName)
-      .map(({ local }) => [local.name, local])).values()]
-      .map((local) => this.setCacheMaskBit(COLLECTION_CACHE_DIRTY_MASK, local.index, call));
+    const ordinaryDirtyBindings = new Map<string, ActiveMultiCacheBinding[]>();
+    for (const binding of callLocals) {
+      if (!binding.mutates || binding.runtimeValueName) continue;
+      const group = ordinaryDirtyBindings.get(binding.local.name) ?? [];
+      group.push(binding);
+      ordinaryDirtyBindings.set(binding.local.name, group);
+    }
+    const ordinaryDirties = [...ordinaryDirtyBindings.values()].map((bindings): StatementNode => {
+      const { local } = bindings[0];
+      const mark = this.setCacheMaskBit(COLLECTION_CACHE_DIRTY_MASK, local.index, call);
+      const activation = bindings.length === 1 ? bindings[0].entry.activation : undefined;
+      return activation === undefined ? mark : this.at(new BranchNode(
+        this.journalActivationAtCall(activation, originalArgs, call),
+        this.at(new BlockNode([mark]), call),
+      ), call);
+    });
     const runtimeDirties = callLocals.flatMap((binding): StatementNode[] => {
       if (!binding.mutates || !binding.runtimeValueName || !binding.runtimeOwnerName) return [];
       const owners = [...new Map([
         binding.local, ...(binding.runtimeAliases ?? []),
       ].map((local) => [local.index, local])).values()];
-      return owners.map((owner) => this.at(new BranchNode(
-        this.at(new BinaryOpNode(
+      return owners.map((owner) => {
+        const ownerCondition = this.at(new BinaryOpNode(
           this.at(new IdentifierNode(binding.runtimeOwnerName!), call),
           BinaryOperator.EQ,
           this.at(new IntLiteralNode(BigInt(owner.index)), call),
-        ), call),
-        this.at(new BlockNode([
-          this.at(new AssignNode(
-            this.at(new IdentifierNode(owner.name), call),
-            this.at(new IdentifierNode(binding.runtimeValueName!), call),
-          ), call),
-          this.setCacheMaskBit(COLLECTION_CACHE_DIRTY_MASK, owner.index, call),
-        ]), call),
-      ), call));
+        ), call);
+        const condition = binding.entry.activation === undefined ? ownerCondition
+          : this.at(new BinaryOpNode(
+            this.journalActivationAtCall(binding.entry.activation, originalArgs, call),
+            BinaryOperator.AND, ownerCondition,
+          ), call);
+        return this.at(new BranchNode(
+          condition,
+          this.at(new BlockNode([
+            this.at(new AssignNode(
+              this.at(new IdentifierNode(owner.name), call),
+              this.at(new IdentifierNode(binding.runtimeValueName!), call),
+            ), call),
+            this.setCacheMaskBit(COLLECTION_CACHE_DIRTY_MASK, owner.index, call),
+          ]), call),
+        ), call);
+      });
     });
     return this.at(new BlockNode([
       ...runtimeDeclarations, ...loads, ...runtimeSelections, capture,

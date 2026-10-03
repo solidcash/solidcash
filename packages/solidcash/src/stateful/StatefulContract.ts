@@ -9017,10 +9017,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (predOutputs.length > 0) {
           batchPredCommitments.set(batch.collection, predOutputs.map((o) => binToHex(o.commitment)));
         }
-        // Only a physical one-slot, one-row insert places its predecessor at the fixed entry coordinate and
-        // its NEW target in the trailing lane. A multi-slot batch covenant reserves fixed TARGET coordinates
-        // and requires P' to trail, even if inactive/alias lanes leave just one unique key at runtime. Several
-        // source rows likewise keep the trailing-predecessor model when their keys happen to alias.
+        // A standalone route with one physical slot keeps the scalar insertion layout even when several
+        // source rows update that same cached key: P' occupies the fixed entry coordinate and NEW trails.
+        // Graph-owned rows retain their complete batch topology; their predecessor trails unless the source
+        // itself has one row. Multi-slot batches always reserve fixed TARGET coordinates.
         const batchSourceRows = ((entryAbiFunction as { messageBusRowArguments?: readonly {
           handler: { entryAccesses?: readonly { collection: string }[] };
         }[] }).messageBusRowArguments ?? []).filter((row) =>
@@ -9034,7 +9034,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // union with inactive reserve lanes still has a multi-slot batch covenant: it requires the target
         // in the fixed slot and the rewritten predecessor in a separate trailing slot, even when one row ran.
         const singleTargetRowBatch = batch.slotIndices.length === 1 && predOutputs.length > 0
-          && batchSourceRows.length === 1
+          && (batchSourceRows.length === 1
+            || (batchSourceRows.length > 1 && overrides?.omitLocalFeeTail !== true))
           && uniqueBatchTargets.size === 1;
         const linearRows = batch.linear ? batch.slotIndices
           .filter((slotIndex) => !batchAliasSkips.has(slotIndex))

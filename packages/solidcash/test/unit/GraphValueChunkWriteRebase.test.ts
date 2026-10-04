@@ -2,7 +2,10 @@ import { binToHex } from '@bitauth/libauth';
 import { computeCollectionHash } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import type { ExternalCallUtxoGroup } from '../../src/stateful/external-call-utxo-group.js';
-import { rebaseGraphValueChunkWrites } from '../../src/stateful/sc-run-create-builder-derive-pass.js';
+import {
+  hasMaterializedValueChunkWitness,
+  rebaseGraphValueChunkWrites,
+} from '../../src/stateful/sc-run-create-builder-derive-pass.js';
 import type { ValueChunkWriteDescriptor } from '../../src/stateful/value-chunk-persist.js';
 import { valueChunkWriteResourceIdentity } from '../../src/stateful/value-chunk-persist.js';
 import {
@@ -68,6 +71,25 @@ const group = (writes: ValueChunkWriteDescriptor[]): ExternalCallUtxoGroup => ({
 } as ExternalCallUtxoGroup);
 
 describe('graph value-chunk write rebasing', () => {
+  it('keeps an inline chunkable writer inactive despite a provisional chunk seed', () => {
+    const witnessBuilder = {
+      hasStagedValueChunkOutputs: () => false,
+      getValueChunkRawCommitments: () => ['00'],
+      getDerivedChunkOutputs: () => new Map(),
+    } as unknown as Parameters<typeof hasMaterializedValueChunkWitness>[0];
+    expect(hasMaterializedValueChunkWitness(witnessBuilder, [{ id: 'escrowArbitrator' }])).toBe(false);
+  });
+
+  it('activates only a concretely encoded continuation chunk', () => {
+    const witnessBuilder = {
+      hasStagedValueChunkOutputs: () => false,
+      getValueChunkRawCommitments: (id: string) => id === 'escrowArbitrator' ? ['0000aa'] : [],
+      getDerivedChunkOutputs: () => new Map(),
+    } as unknown as Parameters<typeof hasMaterializedValueChunkWitness>[0];
+    expect(hasMaterializedValueChunkWitness(witnessBuilder, [{ id: 'escrowArbitrator' }])).toBe(true);
+    expect(hasMaterializedValueChunkWitness(witnessBuilder, [{ id: 'other' }])).toBe(false);
+  });
+
   it('retains the existing single-resource count when moving its scalar witness', () => {
     const carrier = group([write('records', '42'.repeat(32), 10, 2)]);
     rebaseGraphValueChunkWrites(carrier, 50, 5);

@@ -6,6 +6,7 @@
 
 import { binToHex } from '@bitauth/libauth';
 import type { AbiFunction } from '@solidcash/utils';
+import { isValidComputedValueChunkCommitmentEncoding } from './computed-value-chunk-pin.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import { resolveKernelValueChunkResourceLanes } from './kernel-value-chunk-lanes.js';
@@ -29,6 +30,20 @@ import {
 export type RunCreateBuilderDerivePassHost = {
   deriveFullTransactionState: (...args: any[]) => Promise<any>;
 };
+
+/** A route can publish a continuation witness for a chunkable-capable writer whose selected value stays inline. */
+export function hasMaterializedValueChunkWitness(
+  builder: Pick<StatefulTransactionBuilder,
+  'hasStagedValueChunkOutputs' | 'getValueChunkRawCommitments' | 'getDerivedChunkOutputs'>,
+  runs: readonly { id: string }[],
+): boolean {
+  if (builder.hasStagedValueChunkOutputs()) return true;
+  if (runs.some((run) => builder.getValueChunkRawCommitments(run.id)
+    .some(isValidComputedValueChunkCommitmentEncoding))) return true;
+  return [...builder.getDerivedChunkOutputs().values()].some((chunk) =>
+    chunk.semanticKind === 'valueChunk'
+      && isValidComputedValueChunkCommitmentEncoding(chunk.commitment));
+}
 
 /** Rebase graph write descriptors without flattening authenticated, separately placed resources. */
 export function rebaseGraphValueChunkWrites(
@@ -395,7 +410,11 @@ export async function runCreateBuilderDerivePass(
       // transaction geometry is known, publish the absolute coordinate on the executing input too. This is
       // required for standalone kernel rows as well as atomic graphs: runtime mapping entries precede their
       // computed value chunks, so the layout-relative base is no longer the materialized coordinate.
-        finalArgs[topLevelValueChunkBase] = BigInt(resolvedGraphValueChunkOutputBase());
+        // A chunkable-capable route can select an inline write: its reserved continuation band has
+        // zero physical chunks. The provisional positive base used during derivation is not a witness
+        // until a concrete chunk has materialized; preserve the compiler's absent sentinel otherwise.
+        finalArgs[topLevelValueChunkBase] = hasMaterializedValueChunkWitness(builder, computedValueChunkRuns)
+          ? BigInt(resolvedGraphValueChunkOutputBase()) : -1n;
         bag.stateInputUnlocker = buildStateInputUnlocker();
         builder._setMasterUnlocker(bag.stateInputUnlocker);
       }

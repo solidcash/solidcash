@@ -501,7 +501,10 @@ for two reads; not covered by N1 as assigned (N1 is two reads).
 
 ### 2.11 An enumerable set's swap-and-pop removal (rank 11)
 
-**Scoped, not served** (agent SP1). OpenZeppelin's `EnumerableSet` keeps an array of members and a mapping of
+**Served for the group form** (agent SP2, `78de5b68e`): the moved member's write is admitted as a target its frame
+may skip where its key meets the delete's, and removal of a middle member and of the last member settles behind the
+generated proxy (`call/enumerable-set.test.ts`, `master/swap-remove-alias.test.ts`); the state form stays refused at
+its key, the array's last element. Scoped first by agent SP1. OpenZeppelin's `EnumerableSet` keeps an array of members and a mapping of
 one-based positions. `add` (push, then record the pushed length) and the views `contains`, `at` and `length` settle
 behind the generated proxy in both forms: the set as contract state (one sorted batch beside one dynamic run) and per
 group id (an array per key beside a two-key mapping, two batches); `call/enumerable-set.test.ts`. `remove`
@@ -621,7 +624,7 @@ today and its title says what should settle once served.
 | `root-reentry-receiver-hook.test.ts` | 3 | 2.8, retired: served (`call/root-reentry.test.ts`) |
 | `two-deployments-one-artifact.test.ts` | 3 | 2.9 (control: one token) |
 | `read-node-spent-by-insert.test.ts` | 2 | 2.10 (control: head predecessor) |
-| `enumerable-set.test.ts` | 4 | 2.11 (adding and the views served in `call/enumerable-set.test.ts`) |
+| `enumerable-set.test.ts` | 2 | 2.11: the state form's key (group-form removal served in `call/enumerable-set`) |
 | `field-before-call-beside-runs.test.ts` | 1 | section 3, retired: served (`call/dynamic-run-order.test.ts`) |
 
 Run: `PER_CALL_AHEAD=1 yarn workspace solidcash vitest run --config vitest.per-call.config.ts test/per-call/ahead/<file>`.
@@ -630,58 +633,82 @@ Run: `PER_CALL_AHEAD=1 yarn workspace solidcash vitest run --config vitest.per-c
 ## 5. NOT-YET-SERVED census, ranked
 
 H = most ordinary contracts with the shape's feature meet it; M = a common pattern; L = specialised. "conf." = a
-replica above confirms it. The full table with every row and class is the appendix.
+replica above confirms it. Refreshed against `403683a74` (agent CS1, read from the code, not run): sites are
+`solidc/src/per-call/master/` (`support.ts`, `lifecycle.ts`) and `solidcash/src/per-call/` by base name, with
+`proxy/deploy.ts` for the hop. Open rows first, by likelihood in real contracts; served rows after them. The
+appendix keeps the census's original lines.
 
 | Rank | Site | Shape refused | Lik. | Status |
 | --- | --- | --- | --- | --- |
-| 1 | solidcash `call/call.ts` 584, 707 | plain root: mapping write beside a call | H | 584 served (PL2); 707, beside a value call into a contract, stands |
-| 1 | solidcash `call/callees.ts` 339 | plain root: one callee entered twice, a frame writing nodes | H | served (PL3) |
-| 1 | solidcash `call/callees.ts` 318, 321 | plain root: argument from, or call guarded on, an earlier result | H | served (PL4, PL5) |
-| 1 | solidcash `call/entry-records.ts` 762, 786 | plain root: two collections; chunked mapping value | H | served (PL1) |
-| 1 | solidcash `deploy/genesis.ts` 548 | constructor writing two collections | H | conf. 2.1 |
-| 1 | solidcash `call/callees.ts` 258-271 | plain root: callee behind a proxy / delegate / sending value / touching chunks / side-car / unfixed segment | H | code |
-| 1 | solidcash `call/entry-records.ts` 271, 818, 884, 897, 911, 947, 346-421, 582, 879 | plain root: key not from arguments; several writes per target; reads; loop writes | M-H | 271 conf. 2.4; a key read out of another mapping served (MK1) |
-| 1 | solidcash `call/call.ts` 516, 622, 633, 661, 700, 717, 738, 742, 789, 991 | plain root: single-body contract; value-send combinations | M | code |
-| 2 | solidcash `proxy/deploy.ts` 2113 | hop root: a record restored to its start across a call (nonReentrant) | H | conf. 2.2 (no named refusal) |
-| 3 | solidc `master/support.ts` 353 | key reads a scalar state value / an unaddressed mapping entry / a computed value | H | scalar state served (SK1); the rest stands |
-| 4 | solidc `GenerateTargetTraversal.emitPerCallBatchWitnessDerivation` | key through a local copy of a mapping entry: codegen crash | H | compiles (SK1); served (MK1) |
-| 4 | solidcash `proxy/entry-writes.ts` 977 | hop root: key from another mapping's value | H | served (MK1); a key from a node the body writes served (NF1) |
-| 5 | solidcash `call/handle.ts` 182 | value through a proxy | H | conf. 2.5 |
-| 5 | solidcash `proxy/deploy.ts` 3414, 3429 | hop: implementation frame sends (no named refusal) | H | conf. 2.5 |
-| 6 | solidc `master/support.ts` 345 | key is a contract constant (bare identifier) | H | conf. 2.6 |
-| 6 | solidcash `stateful/route-expression-key.ts` `evalComputedKey` | `bytesN` literal key encoded as a number (no named refusal) | H | conf. symptom 2.6 |
-| 6 | solidcash `proxy/entry-writes.ts` 920 (via `external-calls.ts` 1754) | hop root: a read the planner cannot key drops every read node | H | conf. 2.6 |
-| 7 | solidc `master/support.ts` 1972, 1985, 2404, 1991 | events, keccak, sends, ecrecover per loop turn | M-H | conf. 2.7 (not 1991) |
-| 7 | solidcash `deploy/genesis.ts` 336, 341, 348, 354, 362 | constructor: loop events, value send, loop hashing/recovery | M | code |
-| 8 | solidcash `proxy/external-calls.ts` 1297 | root re-entered below a callee | M-H | conf. 2.8 |
-| 9 | solidcash hop bookkeeping (`external-calls.ts` 1820, `calleeRecordSet`; `deploy.ts` 3149) | two deployments of one contract (no named refusal) | M-H | conf. 2.9 |
-| 9 | solidcash `call/callees.ts` 335 | plain: two deployments of one contract | M-H | conf. 2.9 |
-| 10 | solidcash `proxy/deploy.ts` 4579; `external-calls.ts` 1521; `call/entry-records.ts` 947 | a read node the batch also spends | M | conf. 2.10 (root) |
-| 11 | solidc `master/support.ts` 3030 | typed call with value / opaque return | M | code |
-| 11 | solidc `master/support.ts` 2840 | low-level call other than the forwarding delegatecall | M | pinned (conformance) |
-| 11 | solidc `master/support.ts` 1909 | CREATE | M | known, pinned |
-| 12 | solidc `master/support.ts` 3095, 3101, 3022, 3013, 3135, 3148 | call target is `msg.sender` / not one held value; run-time selector; switch-counted calls; unrecoverable or unencodable arguments | M-L | code; 3101 R12-adjacent |
-| 12 | solidc `master/support.ts` 662, 667, 678, 682 | mapping write shapes: several ops per target, in a loop, touched outside the batch | M | code |
-| 12 | solidc `master/support.ts` 1953 | a long mapping value read per loop turn | M | code |
-| 12 | solidc `master/support.ts` 1995, 2006, 2074, 2091, 2110, 2985 | subroutine calls/balances; a write the source does not place relative to calls | M-L | code (2.x refuted one form) |
-| 13 | solidcash `proxy/entry-writes.ts` 905, 1029, 1094, 1503, 1516, 1623, 1658, 1680, 1686, 1780, 1789, 1964, 1988 | hop root: loop batches with chunks, several ops per target, array element mutation, dynamic runs beside batches | M | code |
-| 13 | solidcash `proxy/entry-writes.ts` 769, 788, 1157 | hop root: a field read at an unresolvable key / unreassemblable value | M | code |
-| 13 | solidcash `proxy/external-calls.ts` 605, 618, 710 | a loop whose bound or counter the caller's facts do not fix | M | code |
-| 13 | solidcash `proxy/call-resolution.ts` 301, 311, 370, 384 | a target or argument the hop cannot resolve | M | code; R12-adjacent |
-| 13 | solidcash `proxy/external-calls.ts` 1514, 1645, 1669, 1704 | callee writes/reads the hop cannot declare | M | code |
-| 14 | solidcash `proxy/external-calls.ts` 2220, 2324, 2338-2378; `enclosed-reads.ts` 110 | node sharing across reaches (inserts, enclosing frames, chunked relinks) | M | known (NEXT_BRANCH) |
-| 14 | solidcash `proxy/external-calls.ts` 1823, 1966 | re-entry beyond the callee's master pool | L (operational) | split the pool |
-| 14 | solidcash `proxy/deploy.ts` 472, 686, 737, 1366, 1636, 2041, 2139, 2515, 2531, 2601, 2649, 2874, 3585 | hop segment placement, settle order, learned values, closure-proxy returns | M-L | code |
-| 15 | solidcash `read/read.ts` 456, 651, 1195, 1213, 1978 | read path: arguments, re-entry, chunk turns, keys, loop bounds | M-L | code |
-| 15 | solidcash `composer/refusals.ts` 107, 119, 151 | composer: a slot written twice in a batch; a node rewritten in its creating segment; chunk plan | L | code |
-| 15 | solidc `master/support.ts` 1943, 1966, 1980, 2015, 2329, 2354, 2459; `master/lifecycle.ts` 174 | assembly left in a body, hidden parameters, blockhash, loop guards, constructor calls/sends, composite returns, unattributed events | L | code |
+| 1 | `callees.ts` 294-311 | plain root: callee behind a proxy, delegate, value, chunks, side-car | H | open |
+| 2 | `call.ts` 930, 940 | plain root: a mapping write, or a typed call, beside a value call | M-H | open |
+| 3 | `support.ts` 390, 399 | key reads an unaddressed mapping entry, a computed value, a dynamic element | M-H | open |
+| 3 | `support.ts` 383 | key is a local bound to no single compile-time value | M-H | open |
+| 4 | `support.ts` 386 | swap-and-pop, state form: key is the array's last element | M-H | conf. 2.11; group form: SP2 |
+| 5 | `support.ts` 3312 | a low-level call but the forwarding delegatecall (Multicall) | M | pinned |
+| 6 | `support.ts` 2465, 2468 | CREATE (factories); a function pointer | M | known, pinned |
+| 7 | `support.ts` 3586, 3592 | call target is `msg.sender`, or an address not held as one value | M | open |
+| 8 | `support.ts` 1186, 1191 | mapping write: several ops per target; in a loop | M | open |
+| 8 | `support.ts` 1202, 1208 | mapping touched outside the batch; a record the frame cannot read back | M | open |
+| 9 | `external-calls.ts` 669, 682, 774 | a loop whose counter or bound the caller's facts do not fix | M | open |
+| 10 | `entry-writes.ts` 1598, 1611, 1776 | hop: a mapping value's element mutated; a dynamic value shortened | M | open |
+| 11 | `entry-writes.ts` 1802, 1808, 1893, 1902 | hop: a run no fact sizes; appends per turn of an unpinned loop | M | open |
+| 12 | `call.ts` 854, 857, 886 | plain root: a paid contract that calls, loops or sends | M | open |
+| 12 | `call.ts` 961, 965, 1016 | plain root: a paid body that writes, or shares records with callees | M | open |
+| 13 | `external-calls.ts` 1754, 1888, 1916, 1952 | callee: writes or reads the hop cannot declare | M | open |
+| 14 | `external-calls.ts` 2508, 2612, 2666 | one node across reaches: two inserts, interleaving, chunks | M | known |
+| 14 | `enclosed-reads.ts` 111 | one node read or rewritten by an enclosing and an enclosed reach | M | known |
+| 15 | `entry-records.ts` 208, 300-385 | plain root: a key or a loop's array the arguments do not fix | M | open |
+| 15 | `entry-records.ts` 441, 451, 603 | plain root: a guarded loop; turns touching one node twice | M | open |
+| 15 | `entry-records.ts` 804-836 | plain root: loop records, writes outside a batch, chunked reads | M | open |
+| 16 | `external-calls.ts` 1761 | callee: a read at a node its batch spends | M | hop root served |
+| 16 | `entry-records.ts` 872 | plain root: a read at a node its batch spends | M | hop root served |
+| 17 | `support.ts` 2511 | a long mapping value read per loop turn | M | open |
+| 18 | `call-resolution.ts` 292-385 | a call target or argument the hop cannot resolve | M | R12-adjacent |
+| 19 | `support.ts` 3512, 3516, 3520 | value into a read; value from a call; value beside a send | L-M | VC2 refusals |
+| 20 | `support.ts` 3501, 3484, 3493 | opaque return; switch-counted calls; run-time callee | L-M | open |
+| 21 | `proxy/deploy.ts` 3419 | hop root called back by a frame touching its state | L-M | RE1 refusal |
+| 22 | `support.ts` 2635 | a sorted-mapping writer run by a self-call | L-M | FL2, `d531464a7` |
+| 23 | `genesis.ts` 344-370 | constructor: loop events, a value send, loop hashing | L-M | open |
+| 23 | `genesis.ts` 596, 741-779 | constructor: unpaired batches; loops beside batches or calling | L-M | open |
+| 23 | `support.ts` 2836, 2839, 2843 | constructor: hidden parameter, external call, value send | L-M | open |
+| 24 | `proxy/deploy.ts` 2320 | a returning entry through the generated proxy | L-M | open |
+| 25 | `support.ts` 2555 | ecrecover per loop turn | L-M | open |
+| 25 | `support.ts` 2533-2546 | looped effect on a branch, nested, uncounted, through a call | L-M | open (LP1) |
+| 26 | `call.ts` 723, 843, 923 | plain root: single-body contract; unnamed payee; payee twice | L-M | open |
+| 26 | `call.ts` 1686, 1706 | plain root: earlier results that settle to nothing | L-M | PL4, PL5 |
+| 26 | `callees.ts` 368 | plain root: a read of a node another frame created | L-M | open |
+| 27 | `proxy/deploy.ts` 487-2209 | hop: segment placement, settle order, unpublished values | M-L | open |
+| 27 | `proxy/deploy.ts` 2739-3980 | hop: learned values, stops, callee loop effects | M-L | open |
+| 28 | `external-calls.ts` 2090, 2239 | re-entry beyond a contract's master pool | L | operational |
+| 29 | `read.ts` 457-1979 | read path: arguments, re-entry, chunk turns, keys, bounds | M-L | open |
+| 30 | `refusals.ts` 108, 120, 152 | composer: a slot written twice; a node rewritten | L | open |
+| 31 | `support.ts` 2501-2576 | assembly, hidden parameter, blockhash, loop guard | L | open |
+| 31 | `support.ts` 2559-2668 | subroutine calls or balance; closure; write segment | L | open |
+| 31 | `support.ts` 2868, 2944; `lifecycle.ts` 176 | composite return; an unattributed event | L | open |
+| - | `call.ts` 584 | plain root: mapping write beside a call | H | served (PL2) |
+| - | `callees.ts` 318, 321, 339 | plain root: earlier results; one callee twice | H | served (PL3-PL5) |
+| - | `entry-records.ts` 762, 786 | plain root: two collections; a chunked value | H | served (PL1) |
+| - | `genesis.ts` 548 | constructor writing two collections | H | served |
+| - | `proxy/deploy.ts` 2113 | hop root: a guard restored across a call | H | served (RG1) |
+| - | `support.ts` 345, 353 | key: a constant; scalar state; a mapping copy | H | served (AC1, SK1) |
+| - | `entry-writes.ts` 977, 920 | hop key from another mapping; reads beside | H | served (MK1, NF1) |
+| - | `route-expression-key.ts` | a `bytesN` literal key | H | served (AC1) |
+| - | `handle.ts` 182 | value through a proxy, in and out | H | served (NV1) |
+| - | `support.ts` 1972, 1985, 2404 | events, keccak, sends per loop turn | M-H | served (LP1) |
+| - | `external-calls.ts` 1297 | hop root re-entered below a callee | M-H | served (RE1) |
+| - | `callees.ts` 335 | two deployments of one contract | M-H | served (TD1) |
+| - | `proxy/deploy.ts` 4579 | hop root: a read node the batch spends | M | served (RB1) |
+| - | `support.ts` 3030 | typed call with value | M | served (VC2) |
+| - | `entry-writes.ts` 1623, 1988 | several runs; a run beside batches | M | served (DV1-DV3) |
 
-Must stay (by design): the balance of another address (`support.ts` 2002, 2029, 2032), the root caller is a
-25-byte P2PKH lock and signs SIGHASH_ALL (`call.ts` 479, `deploy.ts` 961/4467, `genesis.ts` 976), a master calling
-itself (`assemble.ts` 379/468: `this.f()` runs inline), the zero-address target, value rules (not payable, negative
-value, no `receive()`), a signature as a call argument (`call-resolution.ts` 395), a loop counter that never
-advances, insufficient container funds (`call.ts` 902/918/948: a real revert), the funder signing a different lock
-than `msg.sender` (`deploy.ts` 4256), and every integrity check over artifacts, deployments, drafts and txids.
+Must stay (by design): the balance of another address (`support.ts` 2566), the root caller is a 25-byte P2PKH lock
+and signs SIGHASH_ALL (`call.ts` 686, `proxy/deploy.ts` 1035/4906, `genesis.ts` 1166), a master calling itself
+(`assemble.ts` 379/468: `this.f()` runs inline), the zero-address target (`call-resolution.ts` 425), value rules (not
+payable, negative value, no `receive()`), a signature as a call argument (`call-resolution.ts` 396), a loop counter
+that never advances, insufficient container funds (`call.ts` 1140/1156/1186: a real revert), the funder signing a
+different lock than `msg.sender` (`call.ts` 2033, `proxy/deploy.ts` 4677), and every integrity check over
+artifacts, deployments, drafts and txids.
 
 ## Appendix: the full census
 

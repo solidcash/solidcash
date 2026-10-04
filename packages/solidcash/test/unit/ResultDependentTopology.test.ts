@@ -255,6 +255,81 @@ describe('result-dependent topology propagation', () => {
       .rejects.toThrow(/cannot select among 2 authenticated producer occurrences at lane 0:1/);
   });
 
+  it('maps a conditional producer guard through an earlier skipped source iteration', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0];
+    const literal = (value: number): ExternalCallExpression => ({
+      kind: 'literal', type: 'bigint', value: String(value),
+    });
+    const outer: NonNullable<ExternalCallAbi['iterationDomain']> = {
+      sourceLoopId: 7, counterName: 'i', initialValue: literal(0), stepValue: literal(1),
+      maximumIterations: 3,
+      continueCondition: { kind: 'binary', operator: '<',
+        left: { kind: 'identifier', name: 'i' }, right: literal(3) },
+    };
+    const inner: NonNullable<ExternalCallAbi['iterationDomain']> = {
+      sourceLoopId: 8, counterName: 'j', initialValue: literal(0), stepValue: literal(1),
+      maximumIterations: 1,
+      continueCondition: { kind: 'binary', operator: '<',
+        left: { kind: 'identifier', name: 'j' }, right: literal(1) },
+    };
+    const firstResult: ExternalCallExpression = {
+      kind: 'producerResult', callsiteId: 0, resultIndex: 0, type: 'bool',
+    };
+    const secondResult: ExternalCallExpression = {
+      kind: 'producerResult', callsiteId: 1, resultIndex: 0, type: 'bool',
+    };
+    const firstReached: ExternalCallExpression = { kind: 'binary', operator: '!=',
+      left: { kind: 'source', source: { kind: 'loopIndex', counterName: 'i',
+        initialValue: '0', stepValue: '1' } }, right: literal(1) };
+    const secondReached: ExternalCallExpression = { kind: 'binary', operator: '&&', left: firstReached,
+      right: { kind: 'unary', operator: '!', expression: firstResult } };
+    root.artifact.abi[0]!.externalCalls = [
+      { callsiteId: 0, interfaceName: 'ISource', functionName: 'read',
+        requiredDataNftIndices: [], hasReturnValues: true, returnTypes: ['bool'],
+        sourceEffectOrdinal: 0, occurrence: 'loop', maximumOccurrences: 3,
+        iterationDomain: outer, condition: firstReached, argSources: [] },
+      { callsiteId: 1, interfaceName: 'ISource', functionName: 'read',
+        requiredDataNftIndices: [], hasReturnValues: true, returnTypes: ['bool'],
+        sourceEffectOrdinal: 1, occurrence: 'loop', maximumOccurrences: 3,
+        iterationDomain: outer, condition: secondReached,
+        argSources: [] },
+      { callsiteId: 2, interfaceName: 'IGood', functionName: 'run',
+        requiredDataNftIndices: [], sourceEffectOrdinal: 2, occurrence: 'loop',
+        maximumOccurrences: 3, nestedIterationDomains: [outer, inner], condition: secondReached,
+        argSources: [{ kind: 'expression', expression: secondResult }] },
+    ];
+    root.artifact.abi[0]!.resultConsumers = [
+      { consumerCallsiteId: 1, producerCallsiteId: 0, resultIndex: 0, condition: true },
+      { consumerCallsiteId: 2, producerCallsiteId: 0, resultIndex: 0, condition: true },
+      { consumerCallsiteId: 2, producerCallsiteId: 1, resultIndex: 0, argument: 0 },
+    ];
+    (root.contract as unknown as { _resolveExternalArgs: unknown })._resolveExternalArgs = (
+      argSources: readonly { kind: string; expression?: ExternalCallExpression;
+        initialValue?: string; stepValue?: string }[],
+      _args: readonly unknown[], _artifact: Artifact, _state: unknown, _inputs: unknown,
+      returns: ReadonlyMap<string, unknown>, iteration = 0,
+    ) => argSources.map((source) => source.kind === 'loopIndex'
+      ? BigInt(source.initialValue!) + BigInt(source.stepValue!) * BigInt(iteration)
+      : source.expression ? returns.get(JSON.stringify(source.expression)) : undefined);
+
+    const discovered = await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf);
+    expect(discovered.calls.filter((call) => call.callsiteId === 0)
+      .map((call) => call.topologyOuterIteration)).toEqual([0, 2]);
+    expect(discovered.calls.filter((call) => call.callsiteId === 1)
+      .map((call) => call.topologyOuterIteration)).toEqual([0, 2]);
+    expect(discovered.calls.filter((call) => call.callsiteId === 2)
+      .map((call) => call.topologyOuterIteration)).toEqual([0, 2]);
+    expect(discovered.calls.filter((call) => call.callsiteId === 2)
+      .map((call) => call.args)).toEqual([[false], [false]]);
+
+    // A different lexical loop cannot borrow the coincidentally equal `i` coordinate as proof of which
+    // compact producer occurrence supplied its result; the two reached lanes remain scalar-ambiguous.
+    root.artifact.abi[0]!.externalCalls![0]!.iterationDomain = { ...outer, sourceLoopId: 6 };
+    await expect(discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf))
+      .rejects.toThrow(/cannot select among 2 authenticated producer occurrences at lane 0:0/);
+  });
+
   it('does not seed a view after an earlier write to its participant', async () => {
     const ctx = fixture();
     const root = ctx.descriptors[0];

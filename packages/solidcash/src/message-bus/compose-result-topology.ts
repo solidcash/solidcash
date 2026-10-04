@@ -455,7 +455,7 @@ async function rebuildCallTopology(
                   // any nested consumer result; a skipped source index has no result lane.
                   const reached = new Map<number, number>();
                   for (const outerIndex of outer) {
-                    const guardReturns = returnsFor([{
+                    const guardReturns = returnsForOuter([{
                       kind: 'expression', expression: producer.condition,
                     }], producer, outerIndex);
                     await hydrate([producer.condition], [outerIndex], guardReturns);

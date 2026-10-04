@@ -27,9 +27,12 @@
  * its live pool for each reach and all of them sit in its one block, while two deployments of one contract are two
  * blocks with their own pools and records, told apart by category. A callee behind its own proxy is two
  * contracts, so each reach takes a master of each: the proxy's fallback is what the caller records, and the
- * implementation's delegate frame is what carries that reach's call data. A reach either pool cannot serve — more
- * reaches than the deployment holds masters — is refused by name, as is a call that reaches the hop's own
- * implementation below itself.
+ * implementation's delegate frame is what carries that reach's call data. A reach either pool cannot serve (more
+ * reaches than the deployment holds masters) is refused by name. A call back to the hop's own root (a receiver's
+ * hook, a flash loan's repayment) enters the root's contract again: the root's deployment is one more callee behind
+ * its proxy, whose masters come from the root's pools after the ones the root runs on, whose frames sit in the root's
+ * own blocks and run on the root's own records (`HopExternalPlanOptions.reentrantRoot`). Without that root, and at
+ * any other deployment of the root's implementation, a call that reaches it below itself is refused by name.
  *
  * A site whose argument or loop bound reads what an earlier call of the same frame returned is planned in execution
  * order: the plan stops before it, the hop settles the earlier calls and learns their results, and the plan is made
@@ -1102,6 +1105,16 @@ interface ReachedLink {
   readonly next: Uint8Array;
 }
 
+/** The hop's own root as a frame below it reaches it again (`HopExternalPlanOptions.reentrantRoot`). */
+interface ReentrantRoot {
+  /** The address the root runs as, its proxy's, which a call back to it targets. */
+  readonly address: Uint8Array;
+  /** The root's deployment as a callee behind its proxy. */
+  readonly external: PerCallProxyExternal;
+  /** The entry the root runs. */
+  readonly functionName: string;
+}
+
 /** The planner's running state: the live deployments it resolves against and the frames it has placed. */
 interface PlanContext {
   readonly provider: NetworkProvider;
@@ -1109,6 +1122,8 @@ interface PlanContext {
   readonly validatorProgram: Uint8Array;
   /** The contracts the hop's own root fixes at one master: its implementation, entered by its proxy. */
   readonly fixed: Set<string>;
+  /** The hop's own root, when a frame below it may call back into it; absent, such a call is refused by name. */
+  readonly root?: ReentrantRoot;
   /** How many masters of each callee category the hop has taken from that deployment's live pool. */
   readonly masterSlots: Map<string, number>;
   /** The block each callee category's frames and records sit in, by category id (`deploymentBlockId`). */
@@ -1221,6 +1236,30 @@ function resolveExternal(ctx: PlanContext, row: ExternalCallAbi, target: Uint8Ar
     );
   }
   return external;
+}
+
+/** True when a call's target is the hop's own root: its address, or the 20-byte identity that address projects to. */
+function targetsRoot(root: ReentrantRoot | undefined, target: Uint8Array): boolean {
+  if (root === undefined) return false;
+  return bytesEqual(target, root.address)
+    || (target.length === 20 && bytesEqual(lockOfIdentity(target, [root.address]), root.address));
+}
+
+/**
+ * How many frames on the path down to frame `enteredBy` run the root's entry `entry`, the root's own frame included.
+ *
+ * A call back to the root that runs an entry two of them already run repeats a re-entry: the execution gets past it
+ * only when a frame refuses first, as a reentrancy guard does, or runs out of what it can spend, so such a frame is
+ * placed without its own calls and the frames above it are the ones the settle judges.
+ */
+function rootEntryRuns(ctx: PlanContext, enteredBy: number | null, entry: string): number {
+  const root = ctx.root!;
+  let runs = root.functionName === entry ? 1 : 0;
+  for (let at = enteredBy; at !== null; at = ctx.callees[at]!.enteredBy) {
+    const frame = ctx.callees[at]!;
+    if (frame.categoryId === root.external.implementationCategoryId && frame.entry === entry) runs += 1;
+  }
+  return runs;
 }
 
 /**
@@ -1436,7 +1475,9 @@ async function planEntryCalls(
       sites.push(undefined);
       continue;
     }
-    const external = resolveExternal(ctx, row, target);
+    // A call back to the hop's own root enters the root's deployment again, as a callee behind its proxy.
+    const reentry = targetsRoot(ctx.root, target);
+    const external = reentry ? ctx.root!.external : resolveExternal(ctx, row, target);
     const entry = entryRowOf(external.artifact, row.functionName);
     // A body the compiler refused publishes no call sites, so the hop could declare no record for it and would
     // settle its frame against a program whose calls stay unbound. The refusal is named here, before any frame is
@@ -1454,12 +1495,13 @@ async function planEntryCalls(
       resolvePublishedCall(effective, external.artifact, siteCaller, siteResolver, turn, lockOf)
     ));
     // A callee behind its own proxy is two contracts, and the hop's own implementation is one the composition
-    // fixes; both are checked by name here, before any live record is read.
+    // fixes: a call back to the root itself is placed on the root's own deployment, and any other reach of the
+    // implementation is refused by name here, before any live record is read.
     const placedNames = external.proxyArtifact === undefined
       ? [external.artifact.contractName]
       : [external.proxyArtifact.contractName, external.artifact.contractName];
     for (const name of placedNames) {
-      if (ctx.fixed.has(name)) {
+      if (ctx.fixed.has(name) && !reentry) {
         throw new PerCallProxyDeployError(
           `${where} reaches "${name}", which this hop already places; a contract that reaches itself below `
           + 'itself cannot be given a second block in the hop',
@@ -2325,18 +2367,23 @@ async function placeProxiedCallee(
       ...reachSkippedEmits(external.artifact, entry.name, call.argumentValues, caller.selfAddress,
         { stateValues, selfAddress: proxyDeployed.address, readMappingValue }),
     };
+    // A call back to the root that repeats a re-entry is placed without its own calls (`rootEntryRuns`).
+    const repeated = ctx.root !== undefined && external.categoryId === ctx.root.external.categoryId
+      && rootEntryRuns(ctx, enteredBy, entry.name) >= 2;
     // Reserve the pair before planning the entry's own calls, so a frame it reaches names its own reach's
     // implementation master as its caller and sits after it.
     ctx.callees.push(proxyBaseFrame, implementationBaseFrame);
-    const nested = await planEntryCalls(ctx, {
-      artifact: external.artifact,
-      functionName: entry.name,
-      args: call.argumentValues,
-      stateValues,
-      selfAddress: proxyDeployed.address,
-      readMappingValue,
-      ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
-    }, implementationIndex, path);
+    const nested: PlannedEntryCalls = repeated
+      ? { calls: [], callBases: [], callsiteIds: [], truncated: true }
+      : await planEntryCalls(ctx, {
+        artifact: external.artifact,
+        functionName: entry.name,
+        args: call.argumentValues,
+        stateValues,
+        selfAddress: proxyDeployed.address,
+        readMappingValue,
+        ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
+      }, implementationIndex, path);
     ctx.callees[implementationIndex] = {
       ...implementationBaseFrame, calls: nested.calls, callBases: nested.callBases,
       ...(nested.truncated ? { truncated: true } : {}),
@@ -2725,6 +2772,20 @@ export interface HopExternalPlanOptions {
     readonly deployment: PerCallDeploymentSet;
     readonly layout: StateLayout;
   };
+  /**
+   * The root's own deployment behind its proxy, which a frame below the root may call back into: the proxy, the
+   * implementation's category, and the root's records as the root's own frames name them.
+   *
+   * A call that reaches the root's address (`selfAddress`) enters the root's contract again, as a callee behind its
+   * proxy whose masters are the ones of the root's pools after the root's own (`entryDeployment` is the proxy's), whose
+   * frames sit in the root's own blocks, and which runs on the root's own records. Absent, such a call is refused by
+   * name.
+   */
+  readonly reentrantRoot?: {
+    readonly proxyArtifact: Artifact;
+    readonly implementationCategoryId: string;
+    readonly records: readonly HopCalleeRecord[];
+  };
   /** The caller's own locking bytecode, i.e. `address(this)`. */
   readonly selfAddress?: Uint8Array;
   /** The frame's own `msg.sender`. */
@@ -2787,6 +2848,22 @@ export interface HopExternalPlanOptions {
   readonly stopBefore?: number;
 }
 
+/** The hop's own root as a call back to it reaches it, or undefined for a plan that admits no such call. */
+function reentrantRootOf(options: HopExternalPlanOptions): ReentrantRoot | undefined {
+  const { reentrantRoot, entryDeployment, selfAddress } = options;
+  if (reentrantRoot === undefined || entryDeployment === undefined || selfAddress === undefined) return undefined;
+  return {
+    address: selfAddress,
+    external: {
+      artifact: options.artifact,
+      categoryId: entryDeployment.categoryId,
+      proxyArtifact: reentrantRoot.proxyArtifact,
+      implementationCategoryId: reentrantRoot.implementationCategoryId,
+    },
+    functionName: options.functionName,
+  };
+}
+
 /** The callsite ids an entry's own conditions read a result from, in published order. */
 function conditionalProducerCallsites(artifact: Artifact, functionName: string): readonly number[] {
   const found = new Set<number>();
@@ -2810,11 +2887,13 @@ function conditionalProducerCallsites(artifact: Artifact, functionName: string):
 export async function planHopExternalCalls(
   options: HopExternalPlanOptions,
 ): Promise<HopExternalPlan> {
+  const reentrant = reentrantRootOf(options);
   const ctx: PlanContext = {
     provider: options.provider,
     externals: options.externals,
     validatorProgram: options.validatorProgram,
     fixed: new Set([options.artifact.contractName]),
+    ...(reentrant === undefined ? {} : { root: reentrant }),
     masterSlots: new Map(),
     blocks: new Map(),
     deployments: new Map(),
@@ -2835,6 +2914,18 @@ export async function planHopExternalCalls(
   };
   for (const sideCars of ctx.sideCars.values()) {
     for (const [id, utxo] of Object.entries(sideCars.utxos)) ctx.utxos.set(id, utxo);
+  }
+  // A call back to the root is a callee of the root's own deployment: its frames sit in the blocks the root's own
+  // frames sit in, its masters are the ones of the root's pools after the root's own, and its records are the root's.
+  if (reentrant !== undefined) {
+    const proxyCategoryId = reentrant.external.categoryId;
+    const implementationCategoryId = reentrant.external.implementationCategoryId!;
+    ctx.blocks.set(proxyCategoryId, reentrant.external.proxyArtifact!.contractName);
+    ctx.blocks.set(implementationCategoryId, options.artifact.contractName);
+    ctx.masterSlots.set(proxyCategoryId, 1);
+    ctx.masterSlots.set(implementationCategoryId, 1);
+    ctx.records.set(proxyCategoryId, options.reentrantRoot!.records);
+    ctx.deployments.set(proxyCategoryId, options.entryDeployment!.deployment);
   }
   // The entry's own mapping values are read from its deployment's nodes, as a callee frame reads its own.
   const own = options.entryDeployment;

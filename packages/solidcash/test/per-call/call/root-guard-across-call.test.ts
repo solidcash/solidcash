@@ -33,10 +33,11 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * the first leaves, and the settle states the one the second ends at. Each guarded entry settles, and the pull, the
  * credit and the restored guard are read back from the chain.
  *
- * A token that calls back into the guarded entry re-enters the root's own contract below its callee, which the hop
- * places no second frame for: it is refused by name before anything is broadcast. The transaction-level guarantee,
- * that no declaration can show the guard clear while the call runs and that a re-entered frame meets the guard's own
- * reason, is pinned in `hostile/guard-view-across-call`.
+ * A token that calls back into the guarded entry re-enters the root's own contract below its callee, on a further
+ * master of the root's pools: the re-entered frame starts from the record the root's frame left at its call, reads
+ * the guard set and is refused by the guard's own reason, before anything is broadcast. The transaction-level
+ * guarantee, that no declaration can show the guard clear while the call runs, is pinned in
+ * `hostile/guard-view-across-call`.
  */
 
 const SOURCE = [
@@ -98,8 +99,6 @@ const vaultProxy = buildProxyArtifact(vaultArtifact);
 const USER_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
 const AMOUNT = 10n;
 const MINTED = 100n;
-const REENTRY = 'the call to "IVault.pullGuarded" reaches "Vault", which this hop already places; a contract that '
-  + 'reaches itself below itself cannot be given a second block in the hop';
 
 /** A 32-byte id, used both as a coin's txid and as the category its genesis mints. */
 function idOf(label: string): string {
@@ -304,11 +303,12 @@ describe('a proxied root whose reentrancy guard is set before its call and clear
     expect(await ledger(run, run.vault)).toStrictEqual([user - AMOUNT, held + AMOUNT, credit + AMOUNT, 1n]);
   });
 
-  it('refuses a token that calls back into the guarded entry by name, and nothing is broadcast', async () => {
+  it('refuses a token that calls back into the guarded entry by the guard\'s own reason, nothing broadcast', async () => {
     const run = await chain();
     const before = await ledger(run, run.calledBack);
     const outcome = await enter(run, run.calledBack, 'pullGuarded');
-    expect(outcome.error?.message).toBe(REENTRY);
+    expect(outcome.error?.message).toContain('"Vault.pullGuarded()"');
+    expect(outcome.error?.message).toContain('reentrant');
     expect(outcome.coinLive).toBe(true);
     expect(await ledger(run, run.calledBack)).toStrictEqual(before);
   });

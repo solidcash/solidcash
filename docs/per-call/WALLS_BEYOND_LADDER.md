@@ -367,6 +367,18 @@ hits the same in `deploy/genesis.ts` 336-354.
 
 ### 2.8 The root re-entered by a callback (rank 8)
 
+**Served** on the hop (agent RE1): a call that reaches the hop's own root address places the root's deployment as
+one more callee behind its proxy (`HopExternalPlanOptions.reentrantRoot`), on the masters of the root's pools after
+the root's own, in the root's own blocks and on the root's own records. The records chain through the root's frames
+and the re-entered ones in the validator's order: the root frame's writes before the last call that leads to a
+re-entry are left for its own close to state (learned by deriving the root up to that call, `deriveReentryWriters`),
+its writes after it continue from what the re-entered frames left, and a record's output is its chain's end (the
+composer reads the end in the validator's walk order). A re-entry that repeats an entry two enclosing frames of the
+root already run is placed without its own calls, so a reentrancy guard refuses by its own reason. Refused by name:
+a re-entered frame that touches a mapping or dynamic value the root's own frame touches. The plain call path still
+refuses the bare form. Served in `call/root-reentry.test.ts` (hook, ERC-721 spelling, flash loan repaid and repaid
+short, a forged view of the re-entered frame) and `call/root-guard-across-call.test.ts` (the guard's own reason).
+
 Replica: `root-reentry-receiver-hook.test.ts` (3 cases). Setup (mint two deeds, approve the locker; plain roots)
 settles. Both spellings, the unconditional hook and the ERC-721 one behind `to.code.length > 0`, meet the same
 refusal; the code-length check is not an earlier wall (a P2SH32 address is code-bearing on both sides):
@@ -473,7 +485,7 @@ today and its title says what should settle once served.
 | `proxied-native-value.test.ts` | 1 | 2.5 served (`call/proxied-native-value.test.ts`); repointed: a send to a contract |
 | `role-admin-read-key.test.ts` | 2 | 2.6 served, and the walls past it (`call/role-helpers-return-and-emit`, `call/guarded-event`): both cases settle |
 | `loop-counted-tail.test.ts` | 4 | 2.7, retired: served (`call/loop-turn-effects`, `call/proxied-native-value`) |
-| `root-reentry-receiver-hook.test.ts` | 3 | 2.8 |
+| `root-reentry-receiver-hook.test.ts` | 3 | 2.8, retired: served (`call/root-reentry.test.ts`) |
 | `two-deployments-one-artifact.test.ts` | 3 | 2.9 (control: one token) |
 | `read-node-spent-by-insert.test.ts` | 2 | 2.10 (control: head predecessor) |
 

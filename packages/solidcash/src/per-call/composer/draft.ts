@@ -589,18 +589,45 @@ export function composeDraft(
   );
 
   /**
+   * Every segment the masters declare, in the order the validator walks them (spec V6): a root's segment, then every
+   * frame its call there enters, then its next segment, the roots in input order. A master no walk reaches follows,
+   * in plan order.
+   */
+  const segmentsInWalkOrder = (): readonly (readonly RecordEntry[])[] => {
+    const walked: (readonly RecordEntry[])[] = [];
+    const visited = new Set<string>();
+    const visit = (id: string): void => {
+      const master = mastersById.get(id);
+      const block = blocks.get(id);
+      if (master === undefined || block === undefined || visited.has(id)) return;
+      visited.add(id);
+      block.segments.forEach((segment, at) => {
+        walked.push(segment);
+        const call = master.calls[at];
+        if (call !== undefined) visit(call.callee);
+      });
+    };
+    const roots = plan.masters.filter((master) => !mastersById.has(master.enteredBy))
+      .sort((left, right) => (indices.get(left.master) ?? 0) - (indices.get(right.master) ?? 0));
+    for (const master of [...roots, ...plan.masters]) visit(master.master);
+    return walked;
+  };
+
+  /**
    * The commitment a record's declaration chain ends at, across every block as it currently stands.
    *
-   * The chain is linear, so the end is the declaration no other one carries on from. Reading it from the blocks
-   * rather than from the plan is what lets a record's own output follow a written view the derivation learned.
+   * The chain is linear in the order the validator walks the frames, so the end is the declaration no other one
+   * carries on from, and the last one walked where several hold the view it ends at: a frame that calls back into a
+   * contract leaves the record where the frame it called back ended it. Reading it from the blocks rather than from
+   * the plan is what lets a record's own output follow a written view the derivation learned.
    */
-  const declaredChainEnd = (recordIndex: number): Uint8Array | undefined => {
+  const declaredChainEnd = (
+    recordIndex: number, walked: readonly (readonly RecordEntry[])[],
+  ): Uint8Array | undefined => {
     const entries: RecordEntry[] = [];
-    for (const block of blocks.values()) {
-      for (const segment of block.segments) {
-        for (const entry of segment) {
-          if (entry.in === recordIndex || entry.out === recordIndex) entries.push(entry);
-        }
+    for (const segment of walked) {
+      for (const entry of segment) {
+        if (entry.in === recordIndex || entry.out === recordIndex) entries.push(entry);
       }
     }
     const written = entries.filter((entry) => entry.out !== INDEX_NONE);
@@ -617,12 +644,12 @@ export function composeDraft(
    * segment declares, and an input that is not a state record, recreate unchanged. A side-car a learned witness
    * settled recreates what the settling built.
    */
-  const participantOutput = (id: string): DraftSourceOutput => {
+  const participantOutput = (id: string, walked: readonly (readonly RecordEntry[])[]): DraftSourceOutput => {
     const stated = settled.get(id)?.output ?? plan.inputs[id]?.output;
     if (stated !== undefined) return stated;
     const source = sourceOf(id);
     const recordIndex = stateIds.has(id) ? indices.get(id) : undefined;
-    const end = recordIndex === undefined ? undefined : declaredChainEnd(recordIndex);
+    const end = recordIndex === undefined ? undefined : declaredChainEnd(recordIndex, walked);
     const token = source.token;
     if (end === undefined || token?.nft === undefined) return source;
     return { ...source, token: { ...token, nft: { ...token.nft, commitment: end } } };
@@ -637,11 +664,14 @@ export function composeDraft(
   const sourceOutputs = orderedIds.map(sourceOf) as unknown as ShippedVmProgram['sourceOutputs'];
   // Rebuilt on every run, so a record's output follows a written view the derivation learned, and a side-car's the
   // witness it learned.
-  const transactionOutputs = (): ShippedVmProgram['transaction']['outputs'] => [
-    ...participantIds.map(participantOutput),
-    ...trailing.map((placed) => placed.output),
-    ...funderIds.filter((id) => plan.inputs[id]?.consumed !== true).map(outputOf),
-  ] as unknown as ShippedVmProgram['transaction']['outputs'];
+  const transactionOutputs = (): ShippedVmProgram['transaction']['outputs'] => {
+    const walked = segmentsInWalkOrder();
+    return [
+      ...participantIds.map((id) => participantOutput(id, walked)),
+      ...trailing.map((placed) => placed.output),
+      ...funderIds.filter((id) => plan.inputs[id]?.consumed !== true).map(outputOf),
+    ] as unknown as ShippedVmProgram['transaction']['outputs'];
+  };
 
   /** The unlocking bytecode of an input, with a master's block overridable by the one under evaluation. */
   const unlockingFor = (id: string, block?: WitnessBlock): Uint8Array => {

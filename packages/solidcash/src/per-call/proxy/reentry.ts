@@ -18,12 +18,17 @@
  * stopped plan settles only the frames its waiting site reads. `reentrySettleBefore` names the frames to settle
  * before each frame so the views it starts from can be learned, and `deriveReentryWriters` derives the writers a
  * settle needs before it judges the frame.
+ *
+ * A frame that calls back into the hop's own root runs on the root's records, so the root's implementation frame is
+ * a writer every callee runs inside: a write it makes before the call that leads to the frame is one the plan leaves
+ * for its own close to state, and that close is learned by deriving the root up to that call, before any callee
+ * writer, since the root encloses them all.
  */
 
 import { bytesToHex } from '@solidcash/utils';
 import {
   UNFILLED_CALLEE_REF, deriveComposition, unstatedViewPlaceholder,
-  type CompositionDraft, type DerivationHost, type DraftRecordEntry, type FrameRequest,
+  type CompositionDraft, type DerivationHost, type DraftCall, type DraftRecordEntry, type FrameRequest,
 } from '../composer/index.js';
 import { hopTrace, hopTraceError, hopTraceOn } from './hop-trace.js';
 import type { HopCallee } from './external-calls.js';
@@ -167,6 +172,35 @@ function stoppingAt(
   };
 }
 
+/** The hop's own implementation frame, inside one of whose calls every callee frame runs. */
+export interface EnclosingRoot {
+  readonly request: FrameRequest;
+  /** The frame's own calls, in the order it makes them. */
+  readonly calls: readonly DraftCall[];
+  /** The category of the records the root runs on, its proxy's, as hex. */
+  readonly recordCategory: string;
+}
+
+/** Derives the root frame up to the call through which it enters frame `index`, learning its closes before it. */
+function deriveRootUpToEntering(
+  candidate: { readonly draft: CompositionDraft; readonly host: DerivationHost },
+  callees: readonly HopCallee[],
+  index: number,
+  root: EnclosingRoot,
+): void {
+  let top = index;
+  for (let above = callees[top]!.enteredBy; above !== null; above = callees[top]!.enteredBy) top = above;
+  const callIndex = root.calls.findIndex((call) => call.callee === callees[top]!.master);
+  if (callIndex < 0) return;
+  try {
+    deriveComposition([root.request], stoppingAt(candidate, root.request.master, callIndex));
+  } catch (error) {
+    if (hopTraceOn() && !(error instanceof ReachedSettledFrame)) {
+      hopTrace(`reentry-stop writer=${root.request.master} reason=${hopTraceError(error)}`);
+    }
+  }
+}
+
 /**
  * Derives the writers of the views a callee frame's subtree starts from, before the frame is judged.
  *
@@ -176,11 +210,16 @@ function stoppingAt(
  * closes, and leaves the frame's subtree to the settle. A writer it does not run inside is derived whole, unless one
  * of those derivations already runs it. A derivation that stops past the close it was run for has done its work, so
  * its stall is not the frame's verdict.
+ *
+ * A subtree that calls back into the hop's own root runs on the root's records, and the root encloses every frame:
+ * when its own close is still to state a view, the root is derived first, up to the call that leads to the frame, so
+ * the subtree and every writer between them start from what the root left there.
  */
 export function deriveReentryWriters(
   candidate: { readonly draft: CompositionDraft; readonly host: DerivationHost },
   callees: readonly HopCallee[],
   index: number,
+  root?: EnclosingRoot,
 ): void {
   const subtree = subtreeOf(callees, index);
   const inside = new Set(subtree.map((at) => callees[at]!.master));
@@ -190,6 +229,10 @@ export function deriveReentryWriters(
     writerOf.set(bytesToHex(unstatedViewPlaceholder(view.master, view.segmentIndex, view.entryIndex)), view.master);
   }
   if (writerOf.size === 0) return;
+  if (root !== undefined && [...writerOf.values()].includes(root.request.master)
+    && subtree.some((at) => recordCategoryOf(callees, at) === root.recordCategory)) {
+    deriveRootUpToEntering(candidate, callees, index, root);
+  }
   const named = new Set<string>();
   for (const at of subtree) {
     for (const segment of candidate.draft.blockOf(callees[at]!.master).segments) {

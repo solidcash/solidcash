@@ -372,11 +372,11 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   (a send to a contract from a proxied root's body; value in and sends out through the proxy are served in
   `call/proxied-native-value`),
   `role-admin-read-key` (every wall served: the helpers that return and emit, the keys in `call/role-admin-read-key`,
-  and a role write and its event the body skips in `call/guarded-event`), `root-reentry-receiver-hook` and
-  `two-deployments-one-artifact`, with
+  and a role write and its event the body skips in `call/guarded-event`) and `two-deployments-one-artifact`, with
   `composition-world.ts` as their shared harness; the reentrancy guard on a root that calls out
-  (`guarded-vault-root`) is served and moved to `call/root-guard-across-call.test.ts`, a mapping key read from the
-  contract's own scalar state (`state-keyed-mapping-write`) to `call/state-keyed-mapping-write.test.ts`, an event,
+  (`guarded-vault-root`) is served and moved to `call/root-guard-across-call.test.ts`, a call back into the hop's own
+  root (`root-reentry-receiver-hook`, a receiver's hook and a flash loan's repayment) to `call/root-reentry.test.ts`,
+  a mapping key read from the contract's own scalar state (`state-keyed-mapping-write`) to `call/state-keyed-mapping-write.test.ts`, an event,
   hash or send per loop turn (`loop-counted-tail`) to `call/loop-turn-effects.test.ts` and
   `call/proxied-native-value.test.ts`, and a read of the node an insert splices through
   (`read-node-spent-by-insert`) to `call/read-node-spent-by-insert.test.ts`. The directory runs only under

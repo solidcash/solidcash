@@ -303,6 +303,7 @@ export function derivePerCallGenesis(options: PerCallGenesisOptions): PerCallGen
   }
 
   refuseUnservedShape(artifact, constructorAbi);
+  refuseConstructorArguments(artifact, constructorAbi, options.constructorArgs);
   const mappings = planConstructorMapping(artifact, constructorAbi, options);
   const dynamic = planConstructorDynamicWrites(artifact, constructorAbi, options);
   return deriveConstructorFrame(options, master, zeroCommitments, constructorAbi, mappings, dynamic);
@@ -326,6 +327,44 @@ function headSentinelEntries(
       signature: collection.signature,
       commitment: binToHex(headSentinelCommitment()),
     }));
+}
+
+/**
+ * Refuses constructor arguments that do not fit the constructor's declared parameters, before any frame runs.
+ *
+ * A per-call artifact publishes no `constructorInputs`: the constructor's parameter list is its `__construct` ABI
+ * entry, the list the frame encodes the arguments against. Too few arguments would run the frame with words missing,
+ * and it would stop on a stack read the caller cannot trace back to its call (a stale deployment script's); a
+ * surplus one would be pushed into a frame that never reads it. ethers refuses both up front, and so does this. Each
+ * argument is then encoded against its parameter's type, as the frame encodes it, so a value of the wrong kind names
+ * the parameter it was given for.
+ */
+function refuseConstructorArguments(
+  artifact: Artifact,
+  constructorAbi: Artifact['abi'][number],
+  constructorArgs: readonly FunctionArgument[],
+): void {
+  const { inputs } = constructorAbi;
+  const parameterText = (input: (typeof inputs)[number]): string => [input.type, input.name].filter(Boolean).join(' ');
+  if (constructorArgs.length !== inputs.length) {
+    const expected = inputs.length === 0 ? 'no parameters' : inputs.map(parameterText).join(', ');
+    throw new PerCallGenesisError(
+      `incorrect number of arguments to constructor of "${artifact.contractName}": expected ${inputs.length} `
+      + `(${expected}) but got ${constructorArgs.length}`,
+    );
+  }
+  const structs = artifact.structs ?? artifact.stateLayout?.structs;
+  inputs.forEach((input, index) => {
+    try {
+      encodeFunctionArgument(constructorArgs[index]!, input.type, structs);
+    } catch (error) {
+      if (error instanceof Error) {
+        error.message = `argument ${index + 1} to constructor of "${artifact.contractName}" (${parameterText(input)}) `
+          + `does not fit its type: ${error.message}`;
+      }
+      throw error;
+    }
+  });
 }
 
 /** The constructor ABI fields this module has no plan for; each is refused by the shape it names. */

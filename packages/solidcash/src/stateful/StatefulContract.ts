@@ -490,6 +490,7 @@ import {
   encodeStoredElementSource as encodeStoredElementSourceImpl,
   encodeStoredValueSource as encodeStoredValueSourceImpl,
 } from './sc-encode-stored-element-source.js';
+import { foldRouteStoredValues } from './fold-route-stored-values.js';
 import {
   replaceRepeatedExternalBatchRow as replaceRepeatedExternalBatchRowImpl,
 } from './sc-replace-repeated-external-batch-row.js';
@@ -8533,6 +8534,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // authenticated old value here was what kept the deterministic derivation inert for those rows (the
               // trace-discovery alternative deadlocks on the unpublised chunk slot).
               if (selectedRows && (authenticatedChunkableValue || !list.has(slot))) {
+                if (structuredValue) {
+                  const writes = selectedRows.flatMap((row) => (
+                    (row.handler.entryAccesses ?? []).filter((rowAccess) => (
+                      rowAccess.collection === access.collection && rowAccess.operations.includes('write')
+                    )).map((rowAccess) => ({ row, access: rowAccess }))
+                  ));
+                  const incomingEntries = authenticatedChunkableValue && list.has(slot)
+                    ? [{ collection: collection.signature, slot, value: authenticatedChunkableValue }]
+                    : [];
+                  if (writes.length > 0) {
+                    kernelEncodedValue = foldRouteStoredValues({
+                      writes, collection, targetSlot: slot, incomingEntries, artifact: entryArtifact,
+                      state: onChainState.state as Record<string, StateValue>,
+                      encode: ({ row, access: rowAccess }, entries) => this._encodeStoredValueSource(
+                        rowAccess, collection.valueType, [...row.args], row.handler, entryArtifact,
+                        onChainState.state as Record<string, unknown>, undefined, entries,
+                      ),
+                    });
+                  }
+                }
                 const legacyCompatibility = usesLegacyJobEventCompatibility(
                   entryArtifact, collection.valueType, stateLayout.structs,
                 );
@@ -8565,12 +8586,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 // Fold witnesses contain only this route's mutations. The handler appends them to
                 // the authenticated old array, so persistence must retain that same prefix too.
                 // Keep the ABI witnesses as mutation-only payloads to avoid replaying old elements.
-                kernelEncodedValue = completeValue
-                  ? concatenateEncodedArrays(
-                    authenticatedChunkableValue
-                      ?? encodePushdataValue([], collection.valueType, stateLayout.structs),
-                    completeValue,
-                  ) : undefined;
+                if (!structuredValue) {
+                  kernelEncodedValue = completeValue
+                    ? concatenateEncodedArrays(
+                      authenticatedChunkableValue
+                        ?? encodePushdataValue([], collection.valueType, stateLayout.structs),
+                      completeValue,
+                    ) : undefined;
+                }
                 if (leadingValue && leadingIndex >= 0) {
                   entryArgs[leadingIndex] = leadingValue;
                   if (entryAbiFunction === abiFunction) finalArgs[leadingIndex] = leadingValue;
@@ -8595,9 +8618,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   };
                 }
               }
-              // A fixed message-bus route CAN reproduce its handler-computed value from the authenticated row
-              // arguments (`leadingValue` above is exactly that encoding), so derive the pinned continuations
-              // deterministically. Trace discovery needs the probe to reach the pin, and an unpublised chunk slot
+              // A fixed message-bus route can reproduce a typed struct update or array append from the
+              // authenticated row arguments, so derive the pinned continuations deterministically. Trace
+              // discovery needs the probe to reach the pin, and an unpublished chunk slot
               // halts the probe first - a deadlock this branch breaks.
               if (kernelEncodedValue && kernelEncodedValue.length > 60) {
                 valueChunkMints.push({

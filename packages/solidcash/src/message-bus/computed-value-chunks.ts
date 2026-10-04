@@ -16,7 +16,9 @@ import {
   freezeGeometry,
   recordMonotonePass,
 } from './monotone-lattice.js';
-import { preflightMessageBusBlockAssembly } from './preflight.js';
+import {
+  preflightMessageBusBlockAssembly, provenSourceRevertIndependentOfRepair, type RefusedOutputRepair,
+} from './preflight.js';
 import { selectActiveConstraintCandidate } from '../stateful/value-chunk-persist.js';
 import { builderConstraintFixpoint } from './constraint-fixpoint-session.js';
 import {
@@ -301,23 +303,30 @@ export function countWouldApplyValueChunkRepairs(
   lockingBytecodeProposals: ReadonlyMap<number, Uint8Array>,
   commitmentProposals: ReadonlyMap<number, Uint8Array>,
 ): number {
-  let wouldApply = 0;
+  const repair = wouldApplyValueChunkRepairOutputs(builder, lockingBytecodeProposals, commitmentProposals);
+  return repair.lockingBytecodes.length + repair.commitments.length;
+}
+
+/** Outputs whose locking bytecode or commitment a value-chunk repair would rewrite. */
+export function wouldApplyValueChunkRepairOutputs(
+  builder: ValueChunkRepairBuilder,
+  lockingBytecodeProposals: ReadonlyMap<number, Uint8Array>,
+  commitmentProposals: ReadonlyMap<number, Uint8Array>,
+): { lockingBytecodes: number[]; commitments: number[] } {
+  const lockingBytecodes: number[] = [];
+  const commitments: number[] = [];
   for (const [outputIndex, expected] of lockingBytecodeProposals) {
     const output = builder.outputs[outputIndex];
     if (!output) continue;
     const current = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
-    if (current === undefined) {
-      wouldApply += 1;
-      continue;
-    }
-    if (binToHex(current) !== binToHex(expected)) wouldApply += 1;
+    if (current === undefined || binToHex(current) !== binToHex(expected)) lockingBytecodes.push(outputIndex);
   }
   for (const [outputIndex, expected] of commitmentProposals) {
     const output = builder.outputs[outputIndex];
     if (!output?.token?.nft || output.token.nft.capability !== 'mutable') continue;
-    if (output.token.nft.commitment !== binToHex(expected)) wouldApply += 1;
+    if (output.token.nft.commitment !== binToHex(expected)) commitments.push(outputIndex);
   }
-  return wouldApply;
+  return { lockingBytecodes, commitments };
 }
 
 /** Refuse VM-mined value-chunk repairs that would change state under recipe. */
@@ -325,10 +334,13 @@ export function gateWouldApplyValueChunkRepairsIfRecipe(
   builder: ValueChunkRepairBuilder,
   lockingBytecodeProposals: ReadonlyMap<number, Uint8Array>,
   commitmentProposals: ReadonlyMap<number, Uint8Array>,
+  provenRevert?: (repair: RefusedOutputRepair) => Error | undefined,
 ): number {
-  return gateWouldApplyRepairsIfRecipe(countWouldApplyValueChunkRepairs(
-    builder, lockingBytecodeProposals, commitmentProposals,
-  ));
+  const repair = wouldApplyValueChunkRepairOutputs(builder, lockingBytecodeProposals, commitmentProposals);
+  return gateWouldApplyRepairsIfRecipe(
+    repair.lockingBytecodes.length + repair.commitments.length,
+    provenRevert && ((): Error | undefined => provenRevert(repair)),
+  );
 }
 
 /**
@@ -547,6 +559,7 @@ export function convergeMessageBusComputedValueChunkOutputs(
     }
     gateWouldApplyValueChunkRepairsIfRecipe(
       builder, lockingBytecodeProposals, commitmentProposals,
+      (repair) => provenSourceRevertIndependentOfRepair(builder, repair),
     );
     let changed = false;
     for (const [outputIndex, expected] of lockingBytecodeProposals) {

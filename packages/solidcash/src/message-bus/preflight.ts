@@ -538,6 +538,7 @@ const convergeMessageBusMutableResourceOutputs = (
       proposals,
       fixedStateOutputs,
       maximumCommitmentBytes,
+      (repair) => provenSourceRevertIndependentOfRepair(builder, repair),
     );
     let changed = false;
     for (const [outputIndex, { commitment: proposed }] of proposals) {
@@ -599,7 +600,17 @@ export function countWouldApplyResourceRepairs(
   fixedStateOutputs: ReadonlySet<number>,
   maximumCommitmentBytes = 128,
 ): number {
-  let wouldApply = 0;
+  return wouldApplyResourceRepairOutputs(builder, proposals, fixedStateOutputs, maximumCommitmentBytes).length;
+}
+
+/** Outputs whose commitment a resource repair would rewrite. */
+export function wouldApplyResourceRepairOutputs(
+  builder: ResourceRepairBuilder,
+  proposals: ReadonlyMap<number, ResourceCommitmentProposal>,
+  fixedStateOutputs: ReadonlySet<number>,
+  maximumCommitmentBytes = 128,
+): number[] {
+  const wouldApply: number[] = [];
   for (const [outputIndex, { commitment: proposed }] of proposals) {
     const output = builder.outputs[outputIndex];
     if (!output?.token?.nft) continue;
@@ -614,7 +625,7 @@ export function countWouldApplyResourceRepairs(
       inputCommitmentHex: inputCommitment === undefined ? undefined
         : typeof inputCommitment === 'string' ? inputCommitment : binToHex(inputCommitment),
     });
-    if (action !== 'skip') wouldApply += 1;
+    if (action !== 'skip') wouldApply.push(outputIndex);
   }
   return wouldApply;
 }
@@ -661,10 +672,14 @@ export function gateWouldApplyResourceRepairsIfRecipe(
   proposals: ReadonlyMap<number, ResourceCommitmentProposal>,
   fixedStateOutputs: ReadonlySet<number>,
   maximumCommitmentBytes = 128,
+  provenRevert?: (repair: RefusedOutputRepair) => Error | undefined,
 ): number {
-  return gateWouldApplyRepairsIfRecipe(countWouldApplyResourceRepairs(
+  const commitments = wouldApplyResourceRepairOutputs(
     builder, proposals, fixedStateOutputs, maximumCommitmentBytes,
-  ));
+  );
+  return gateWouldApplyRepairsIfRecipe(
+    commitments.length, provenRevert && ((): Error | undefined => provenRevert({ commitments })),
+  );
 }
 
 /** Complete-graph convergence for fixed state and compiler-declared sorted-entry targets. */
@@ -3563,6 +3578,74 @@ export function mapMessageBusVmFailure(
     Object.assign(mapped, { requireStatement: exactRequire.requireStatement, inputIndex });
   }
   return mapped;
+}
+
+/** Outputs a refused recipe repair would rewrite, by the field it rewrites. */
+export interface RefusedOutputRepair {
+  commitments: readonly number[];
+  lockingBytecodes?: readonly number[];
+}
+
+const repairedOutputReads = new Set<number>([Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTTOKENCOMMITMENT]);
+
+/**
+ * Find a source revert that a refused output repair cannot change. A frame that fails at the exact verify of a
+ * uniquely attributed source require, without reading a field the repair rewrites, fails identically on every
+ * repaired transaction. Rejection only: nothing observed here is promoted into the transaction.
+ */
+export function provenSourceRevertIndependentOfRepair(
+  builder: TransactionBuilder,
+  repair: RefusedOutputRepair,
+): Error | undefined {
+  const commitments = new Set(repair.commitments);
+  const lockingBytecodes = new Set(repair.lockingBytecodes ?? []);
+  if (commitments.size === 0 && lockingBytecodes.size === 0) return undefined;
+  let program: ReturnType<TransactionBuilder['buildLibauthProgram']>;
+  try {
+    program = builder.buildLibauthProgram();
+  } catch {
+    return undefined;
+  }
+  const { transaction, sourceOutputs } = program;
+  let dependent = false;
+  const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
+    opcodes: repairedOutputReads,
+    beforeOperation: (unknownState) => {
+      const state = unknownState as AuthenticationProgramStateCommon;
+      if (state.controlStack?.some((frame) => frame === false)) return;
+      const operand = state.stack.at(-1);
+      const index = operand === undefined ? undefined : vmNumberToBigInt(operand);
+      const rewritten = state.instructions[state.ip]?.opcode === Op.OP_OUTPUTBYTECODE ? lockingBytecodes : commitments;
+      if (typeof index !== 'bigint' || rewritten.has(Number(index))) dependent = true;
+    },
+  });
+  for (let inputIndex = 0; inputIndex < builder.inputs.length; inputIndex += 1) {
+    const unlocker = builder.inputs[inputIndex]?.unlocker;
+    if (!unlocker || !isContractUnlocker(unlocker)) continue;
+    dependent = false;
+    let state: AuthenticationProgramStateCommon;
+    try {
+      state = vm.evaluate({ inputIndex, sourceOutputs, transaction });
+    } catch {
+      continue;
+    }
+    if (dependent || state.error === undefined || !state.error.includes('OP_VERIFY')) continue;
+    const failingIp = state.ip - 1;
+    const failingOpcode = state.instructions[failingIp]?.opcode;
+    const mapped = mapMessageBusVmFailure(builder, transaction, inputIndex, state.error, {
+      ip: state.ip,
+      instructions: state.instructions,
+      programLength: state.instructions.length,
+      opcode: state.instructions[state.ip]?.opcode,
+      previousOpcode: failingOpcode,
+    });
+    const require = (mapped as { requireStatement?: { ip: number; message?: string } }).requireStatement;
+    // Compiler-internal guards share the require table without a reason: a folded verify needs a source reason.
+    if (require?.ip === failingIp && (failingOpcode === Op.OP_VERIFY || require.message !== undefined)) {
+      return mapped;
+    }
+  }
+  return undefined;
 }
 
 /** Refuse any covenant failure in an exact, fully assembled transaction. */

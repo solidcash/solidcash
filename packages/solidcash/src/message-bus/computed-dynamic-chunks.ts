@@ -14,7 +14,9 @@ import {
   freezeGeometry,
   recordMonotonePass,
 } from './monotone-lattice.js';
-import { preflightMessageBusBlockAssembly } from './preflight.js';
+import {
+  preflightMessageBusBlockAssembly, provenSourceRevertIndependentOfRepair, type RefusedOutputRepair,
+} from './preflight.js';
 import { selectActiveConstraintCandidate } from '../stateful/value-chunk-persist.js';
 import { builderConstraintFixpoint } from './constraint-fixpoint-session.js';
 
@@ -53,11 +55,19 @@ export function countWouldApplyDynamicChunkRepairs(
   builder: DynamicChunkRepairBuilder,
   commitmentProposals: ReadonlyMap<number, Uint8Array>,
 ): number {
-  let wouldApply = 0;
+  return wouldApplyDynamicChunkRepairOutputs(builder, commitmentProposals).length;
+}
+
+/** Outputs whose commitment a dynamic-chunk repair would rewrite. */
+export function wouldApplyDynamicChunkRepairOutputs(
+  builder: DynamicChunkRepairBuilder,
+  commitmentProposals: ReadonlyMap<number, Uint8Array>,
+): number[] {
+  const wouldApply: number[] = [];
   for (const [outputIndex, expected] of commitmentProposals) {
     const output = builder.outputs[outputIndex];
     if (!output?.token?.nft || output.token.nft.capability !== 'mutable') continue;
-    if (output.token.nft.commitment !== binToHex(expected)) wouldApply += 1;
+    if (output.token.nft.commitment !== binToHex(expected)) wouldApply.push(outputIndex);
   }
   return wouldApply;
 }
@@ -66,9 +76,11 @@ export function countWouldApplyDynamicChunkRepairs(
 export function gateWouldApplyDynamicChunkRepairsIfRecipe(
   builder: DynamicChunkRepairBuilder,
   commitmentProposals: ReadonlyMap<number, Uint8Array>,
+  provenRevert?: (repair: RefusedOutputRepair) => Error | undefined,
 ): number {
+  const commitments = wouldApplyDynamicChunkRepairOutputs(builder, commitmentProposals);
   return gateWouldApplyRepairsIfRecipe(
-    countWouldApplyDynamicChunkRepairs(builder, commitmentProposals),
+    commitments.length, provenRevert && ((): Error | undefined => provenRevert({ commitments })),
   );
 }
 
@@ -237,7 +249,9 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
     }
     for (const outputIndex of commitmentProposals.keys()) authenticatedOutputs.add(outputIndex);
 
-    gateWouldApplyDynamicChunkRepairsIfRecipe(builder, commitmentProposals);
+    gateWouldApplyDynamicChunkRepairsIfRecipe(
+      builder, commitmentProposals, (repair) => provenSourceRevertIndependentOfRepair(builder, repair),
+    );
     let changed = false;
     for (const [outputIndex, expected] of commitmentProposals) {
       const output = builder.outputs[outputIndex];

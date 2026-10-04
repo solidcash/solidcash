@@ -253,10 +253,12 @@ async function rebuildCallTopology(
               : ctx?.plan.invocations[child.previous]?.sourceLogicalIndex
                 ?? child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex
           ) === template.sourceLogicalIndex);
-          // A root source require can reject before any child resource exists. Only the root can use the
-          // topology resolver for this proof: at a nested call, msg.sender and tx.origin differ but older
-          // expression metadata records both as msgSender. Preserve nested children for VM validation.
-          if (depth === 0 && template.preCallRequires?.length) {
+          // A false require before the first unconditional root call leaves no reachable child. Later
+          // requires may follow an already executed getter: pruning just their descendants can leave its
+          // prepared return commitment in a partially aborted graph. Only the root can use this proof:
+          // nested msg.sender and tx.origin differ, but older metadata records both as msgSender.
+          if (depth === 0 && source === sources[0] && source.condition === undefined
+            && template.preCallRequires?.length) {
             let rejected = false;
             for (const guard of template.preCallRequires) {
               try {
@@ -273,7 +275,7 @@ async function rebuildCallTopology(
             }
             if (rejected) {
               prunedByPreCallRequire = true;
-              continue;
+              return;
             }
           }
           if (previous !== undefined && ctx !== undefined && !hasChangedDependency(

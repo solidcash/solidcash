@@ -38,6 +38,14 @@ export interface SendWithoutLogicalNonceHost {
   retireSignerUtxos(signer: Signer, utxos: readonly Utxo[]): void;
 }
 
+/** Local VM diagnostics may model the caller, but this outpoint must never reach a send. */
+function diagnosticFeeInput(signer: Signer) {
+  return {
+    txid: '00'.repeat(32), vout: 0, satoshis: 100_000_000n,
+    unlocker: signer.unlockP2PKH(),
+  };
+}
+
 /** Close compiler-described typed edges before the legacy builder aliases a repeated state owner. */
 async function prepareTypedCallbackGraph(
   host: SendWithoutLogicalNonceHost,
@@ -257,6 +265,14 @@ export async function sendWithoutLogicalNonce(
           .sort((left, right) => Number(right.satoshis - left.satoshis));
         const feeUtxo = available[0];
         if (!feeUtxo) {
+          // Without a real fee input, the call cannot be sent. A local composition can still execute an
+          // earlier source require against the correct tx.origin and report its exact VM failure.
+          const { compose } = await import('../message-bus/compose.js');
+          await compose({
+            preparedCalls: preparedAtomicCalls,
+            funder: diagnosticFeeInput(signer),
+            changeAddress: signer.getAddress(),
+          }).build();
           throw new Error('messageBus: transparent atomic promotion requires one token-free fee UTXO');
         }
         // The fee input is this transaction's first P2PKH input, and the platform derives `tx.origin` - and
@@ -289,6 +305,23 @@ export async function sendWithoutLogicalNonce(
         }).send();
       } else {
         if (host.requiresRecursivePreflight()) stb!.enableStrictVmPreflight();
+        const signer = host.parentContract?._logicalNonceSigner ?? host.parentContract?._signer;
+        if (signer && (await host.signerUtxoSnapshot(signer)).every((utxo) => utxo.token !== undefined)) {
+          const assembled = stb!.build();
+          const callerLock = binToHex(signer.getLockingBytecode());
+          const hasAuthenticatedCallerInput = assembled.inputs.some((input) => input.token === undefined
+            && binToHex(input.unlocker.generateLockingBytecode()) === callerLock);
+          if (!hasAuthenticatedCallerInput) {
+            // Other fee inputs do not authenticate the connected caller. Supply its P2PKH input only
+            // for a local VM diagnosis, then refuse to submit even if every source require succeeds.
+            const feeProbe = diagnosticFeeInput(signer);
+            stb!.addInput(feeProbe, feeProbe.unlocker);
+            const probe = stb!.build();
+            const { assertFinalizedTransactionCovenants } = await import('../message-bus/preflight.js');
+            assertFinalizedTransactionCovenants(probe, probe.buildLibauthTransaction());
+            throw new Error('Cannot send stateful transaction without a token-free fee UTXO');
+          }
+        }
         receipt = await stb!.send();
       }
       if (host.parentContract?._signer) host.invalidateSignerUtxos(host.parentContract._signer);

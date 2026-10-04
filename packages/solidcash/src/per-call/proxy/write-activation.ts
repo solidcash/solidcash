@@ -9,7 +9,8 @@
  * body does.
  *
  * An emit a branch guards publishes its condition on its `emits` row, and the frame lists the event's output whether
- * or not the body reaches the emit: a skipped emit's output carries the empty commitment.
+ * or not the body reaches the emit: a skipped emit's output carries the empty commitment. A value send a branch
+ * guards publishes its condition on its `transfers` row, decided the same way: a skipped send pays no output.
  */
 
 import type { Artifact, ExternalCallExpression } from '@solidcash/utils';
@@ -74,4 +75,15 @@ export function writeRuns(
 export function skippedEmits(frame: WriteActivationFrame): readonly number[] {
   const emits = frame.artifact.abi.find((candidate) => candidate.name === frame.functionName)?.emits ?? [];
   return emits.filter((emit) => writeRuns(frame, emit.activation) === false).map((emit) => emit.emitIndex);
+}
+
+/**
+ * The transfer indices of the frame's entry whose condition its facts decide the body skips, as an emit's is decided
+ * (`skippedEmits`). A send no branch guards runs whenever the body does, and one whose condition its artifact does
+ * not reproduce (`condition: null`) is never decided here.
+ */
+export function skippedSends(frame: WriteActivationFrame): readonly number[] {
+  const transfers = frame.artifact.abi.find((candidate) => candidate.name === frame.functionName)?.transfers ?? [];
+  return transfers.filter((transfer) => transfer.condition !== null && writeRuns(frame, transfer.condition) === false)
+    .map((transfer) => transfer.transferIndex);
 }

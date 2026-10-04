@@ -23,9 +23,8 @@
  * block, as the hop lists it (`calleeValueWitnesses`). A chunking value its artifact does not state is read from the
  * frame's own close, and the call is planned again from it, as the hop plans its callee's (`planCalleeWrites`).
  *
- * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that sends value,
- * or co-spends a side-car; a
- * frame that only reads a node an earlier frame created; reaches of one collection one transaction cannot carry; and
+ * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that sends value the call
+ * reaches or co-spends a side-car; reaches of one collection one transaction cannot carry; and
  * a deployment entered twice whose frames name data records that no order of its block keeps side by side. A site,
  * of the entry or of a callee frame, whose argument reads an earlier call's result stops the plan before it
  * (`blocked`), and a call the entry guards on one is stated from the results the plan was made from
@@ -333,7 +332,12 @@ function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefine
     return `${label} sits behind a proxy, whose delegate frame this call path does not plan yet`;
   }
   const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
-  if ((abi?.transferCount ?? 0) > 0) return `${label} sends value, which this call path does not plan yet`;
+  // A send on a branch the reach's facts decide the body skips pays no output, so the frame lists no send for it, as
+  // the hop's callee frames list none (`skippedSends`). A send the call reaches, or one those facts do not decide,
+  // pays from the callee's containers, which this path does not plan for a callee.
+  if ((abi?.transferCount ?? 0) > new Set(callee.skippedSends ?? []).size) {
+    return `${label} sends value on a path the call reaches, which this call path does not plan for a callee yet`;
+  }
   if (sideCars) return `${label} co-spends a side-car, which this call path does not plan yet`;
   if (publishedLoopEffects(callee.artifact, callee.entry) !== undefined) {
     return `${label} emits, sends or hashes once per turn of a loop, which this call path does not plan for a callee `

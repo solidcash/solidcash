@@ -108,7 +108,9 @@ import {
   chainSharedNodeViews, placeOwnWrites, producedCallResults, reachedCallResults, samePlannedSites, withChainEnds,
   withCreatedChainEnds, type PlacedLaidWrite,
 } from '../proxy/deploy.js';
-import { hopEntryWrites, type HopEntryWrites, type LaidHopEntryWrites } from '../proxy/entry-writes.js';
+import {
+  declaredRunWidth, hopEntryWrites, type HopEntryWrites, type LaidHopEntryWrites,
+} from '../proxy/entry-writes.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
 import { declareUnstatedCalls } from '../proxy/planning-refusal.js';
 import { skippedEmits, type WriteActivationFacts } from '../proxy/write-activation.js';
@@ -499,6 +501,8 @@ interface EntryMapping {
   readonly spentUtxos: ReadonlyMap<string, Utxo>;
   /** The run-time loops that write the collection, in the order the body runs them, when loops write it. */
   readonly loopRun?: readonly CallLoopWritePlan[];
+  /** The dynamic run whose width a record's length or the entry's growth fixed, and that width (`hopEntryWrites`). */
+  readonly sizedRun?: HopEntryWrites['sizedRun'];
   lay(context: EntryMappingContext): LaidEntryMapping;
 }
 
@@ -515,6 +519,12 @@ interface EntryMappingRequest {
   readonly facts: WriteActivationFacts;
   /** The lock the chunks a write leaves past its value's width are paid to: the user's, whose coin enters. */
   readonly releasedLock: Uint8Array;
+  /**
+   * The commitment each of the frame's records is planned to end at, in data-NFT order: the length one states for a
+   * dynamic value sizes the run of a write the artifact states no element for, as the hop sizes it. Absent leaves
+   * such a write refused.
+   */
+  readonly writtenCommitments?: readonly Uint8Array[];
 }
 
 /**
@@ -547,7 +557,8 @@ function asCallRefusal(error: unknown, functionName: string): unknown {
  * run of chunk records. A value-dependent record starts from a candidate the body's close hands the value back
  * against. The nodes read apart are declared kept ahead of the writes, and the planner takes a read at their slots as
  * declared. A chunkable value the artifact does not state is sized only from the body's own close, which this path
- * does not plan again from, so it is refused by name.
+ * does not plan again from, so it is refused by name. A dynamic value's run whose element the artifact does not state
+ * is laid at the width the length `writtenCommitments` states for it, as the hop lays a frame's own.
  */
 function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
   const { artifact, functionName, args, categoryId, deployment, facts } = request;
@@ -581,6 +592,7 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
       nodeIdOf: (collection, slot) => writtenNodeId(slot, several ? collection : undefined),
       activationFacts: facts,
       ...valueReader,
+      ...(request.writtenCommitments === undefined ? {} : { writtenCommitments: request.writtenCommitments }),
     });
   } catch (error) {
     throw asCallRefusal(error, functionName);
@@ -602,6 +614,7 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
     participantIds: [...reads.nodes.map((node) => node.id), ...(writes?.participantIds ?? [])],
     spentUtxos: new Map([...reads.nodes.map((node) => [node.id, node.utxo] as const), ...(writes?.spentUtxos ?? [])]),
     ...(writes?.loopRun === undefined ? {} : { loopRun: writes.loopRun }),
+    ...(writes?.sizedRun === undefined ? {} : { sizedRun: writes.sizedRun }),
     lay: (context: EntryMappingContext): LaidEntryMapping => {
       const read = reads.lay(context.indexOf);
       let laid: LaidHopEntryWrites | undefined;
@@ -696,6 +709,11 @@ interface EarlierResults {
   readonly passes: number;
   /** The whole values callee frames' chunkable writes stored, by master, as their closes exposed them. */
   readonly writeValues: ReadonlyMap<string, Uint8Array>;
+  /**
+   * The commitments the entry's own records end at, in data-NFT order, as the draft learned them from the body's
+   * closes: the length each states sizes a run the artifact states no element for. Absent until learned.
+   */
+  readonly writtenRecords?: readonly Uint8Array[];
 }
 
 /** No earlier result learned: a call's first plan. */
@@ -802,10 +820,14 @@ async function callInShape(
   // proxy hop plans its frames' own (`entryMapping`): the frame declares the node a held key sits at, or the node a
   // new key is spliced beside, one sorted batch per collection, with a value's run of chunk records. A key the body
   // reads out of its own records, or out of another mapping, resolves against the records and nodes it spends.
+  // A run whose element the artifact does not state, such as one an entry rewrites an element of in place, is sized
+  // from the length the records state for its value: the live records until the body's close states the ones it
+  // writes, as the hop sizes a frame's own run (`planHopDynamicRun`).
   const activationFacts = deploymentActivationFacts(artifact, categoryId, deployment, deployed.address);
   const mappingRecords = entryMapping({
     artifact, functionName, args, senderLockingBytecode: options.callerLockingBytecode, categoryId, deployment,
     facts: activationFacts, releasedLock: options.callerLockingBytecode,
+    writtenCommitments: prior.writtenRecords ?? records.map((record) => record.commitment),
   });
   const mappingIds = mappingRecords?.participantIds ?? [];
 
@@ -1813,9 +1835,27 @@ async function callInShape(
     // here, never resumed at a site, so the draft first learns the views it left unstated, as the hop does before it
     // judges its own frame: otherwise the run stops on an unstated view's placeholder, a close this call cannot name.
     candidate.learnUnstatedViews();
+    const rootProgram = candidate.programFor(MASTER_ID);
+    // A run the records' lengths size was laid at the width the live records state, and the body's close, which
+    // precedes the run's pin, has now stated the length it writes. A length that lays the run at another width plans
+    // the call again from the records as written, as the hop plans its entry's writes again from a learned record.
+    // The body computes that length from the live run and the call alone, so the plan made from it states it, and the
+    // call is planned again at most once.
+    const sizedRun = mappingRecords?.sizedRun;
+    if (sizedRun !== undefined && prior.writtenRecords === undefined) {
+      const ends = rootProgram.transaction?.outputs;
+      const writtenRecords = records.map((record) => {
+        const end = declared.includes(record) ? ends?.[recordIndex(record.id)]?.token?.nft?.commitment : undefined;
+        return end === undefined ? record.commitment : Uint8Array.from(end);
+      });
+      const width = declaredRunWidth(artifact, sizedRun.variable, writtenRecords);
+      if (width !== undefined && width !== sizedRun.chunks) {
+        return callInShape(options, shape, { ...prior, writtenRecords });
+      }
+    }
     const reading = readComputedDeclaration({
       vm: machine,
-      program: candidate.programFor(MASTER_ID),
+      program: rootProgram,
       maximumCommitmentBytes,
     });
     if (reading.ok) {
@@ -2152,8 +2192,16 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
 
   const { TransactionBuilder } = await import('../../TransactionBuilder.js');
   // The call's shape is fixed - the composer assembled every contract input, its side-cars included, and there is no
-  // oracle to co-spend - so the builder must not append anything.
-  const builder = new TransactionBuilder({ provider, skipAutomaticCoSpends: true });
+  // oracle to co-spend - so the builder must not append anything. A chunk a shorter value drops is consumed with no
+  // successor and leaves its index without its token, which the builder would take for an accidental burn, so it is
+  // allowed as the hop's builder allows it; the check stays on for a caller's coin that carries a token, which no
+  // chunk's burn explains.
+  const consumesRecord = options.callerUtxo.token === undefined && draft.layout.participants.some((placed) =>
+    program.sourceOutputs[placed.index]?.token?.nft !== undefined
+    && program.transaction?.outputs[placed.index]?.token === undefined);
+  const builder = new TransactionBuilder({
+    provider, skipAutomaticCoSpends: true, ...(consumesRecord ? { allowImplicitNftBurn: true } : {}),
+  });
   // The derived locktime is what every frame that reads `block.timestamp` was evaluated against, so the broadcast
   // carries that same one.
   builder.setLocktime(program.transaction?.locktime ?? 0);

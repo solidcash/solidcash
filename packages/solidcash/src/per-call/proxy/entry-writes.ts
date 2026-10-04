@@ -1924,7 +1924,7 @@ function growthElementCount(
  * record states nothing here, and the run stays unsized rather than being planned from a guess.
  */
 function declaredRunLength(
-  request: HopEntryWritesRequest,
+  request: Pick<HopEntryWritesRequest, 'artifact' | 'writtenCommitments'>,
   variable: string,
   nftIndex: number,
 ): number | undefined {
@@ -1938,6 +1938,20 @@ function declaredRunLength(
     return undefined;
   }
   return typeof length === 'bigint' ? Number(length) : undefined;
+}
+
+/**
+ * The number of chunk records a run is laid at for the length the records `writtenCommitments` state declare for
+ * dynamic `variable`, as the hop sizes a run from the record's own declaration, or `undefined` when they state no
+ * record that decodes for it.
+ */
+export function declaredRunWidth(
+  artifact: Artifact, variable: string, writtenCommitments: readonly Uint8Array[],
+): number | undefined {
+  const declared = artifact.stateLayout?.variables.find((candidate) => candidate.name === variable);
+  if (declared === undefined || declared.dynamic !== true) return undefined;
+  const length = declaredRunLength({ artifact, writtenCommitments }, variable, declared.nftIndex);
+  return length === undefined ? undefined : chunkCountForLength(length);
 }
 
 /**

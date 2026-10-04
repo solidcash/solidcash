@@ -372,6 +372,15 @@ export class ConditionalDeployError extends SolidCashError {
   }
 }
 
+export class DirectHeterogeneousDeployError extends SolidCashError {
+  constructor(public node: InstantiationNode) {
+    super(node,
+      'conditional deployment of different child contract types is not SDK-derivable in the direct route: '
+      + 'deployFrom accepts one child artifact for every fired site. Use the message-bus route with '
+      + 'per-site child descriptors, or split the child types into separate entry points');
+  }
+}
+
 export class EmptyFunctionError extends SolidCashError {
   constructor(
     public node: FunctionDefinitionNode,

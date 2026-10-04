@@ -39,11 +39,11 @@ describe('conditional deploy (new C() inside a branch/loop)', () => {
     expect(compileString(cc('function f(uint c) external { if (c==1) { Child a = new Child(); } if (c==2) { Child b = new Child(); }'
       + ' require(true); }'), compat).contractName).toBe('C');
   });
-  it('multi-site with DIFFERENT child contracts still throws (heterogeneous stride not SDK-derivable)', () => {
+  it('refuses different child contract types when direct deployFrom cannot derive them', () => {
     const two = 'contract Child { int x; constructor() { x = 1; } } contract Other { int y; constructor() { y = 2; } }';
     expect(() => compileString(`${two} contract C { function f(uint c) external { Child a = new Child();`
       + ' if (c==1) { Other b = new Other(); } require(true); } }', compat))
-      .toThrow(/inside a conditional branch or loop is not yet implemented/);
+      .toThrow(/different child contract types.*not SDK-derivable in the direct route/);
   });
   it('an unconditional deploy still compiles', () => {
     expect(compileString(cc('function f() external { Child ch = new Child(); require(true); }'), compat).contractName)

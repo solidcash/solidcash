@@ -272,7 +272,8 @@ import { getLiteralIfDupEffect, getStackEffect } from '../asmStackEffects.js';
 import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
   SortedMappingCodegenPendingError, PerCallStaleReadError,
-  ChainedEntryElementReadError, ConditionalDeployError, NegativeExponentError, SolidCashError,
+  ChainedEntryElementReadError, ConditionalDeployError, DirectHeterogeneousDeployError,
+  NegativeExponentError, SolidCashError,
   RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
   BlockLayoutUnavailableError, StackVariableUnavailableError, SolidcDiagnosticError,
   DirectStaleReadError, ConstructorStaleReadError, UnpublishableLoopGuardError, importedFileCaveat,
@@ -7648,6 +7649,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         count: 0, hasConditional: false, hasLoopValue: false, sites: [],
       }
       : surveyFunctionDeploys(node.body);
+    // The direct route's deployFrom derives every fired site from one child artifact, so a conditional multi-site
+    // deploy of different contract types is refused rather than emitted underivable.
+    if (!this.compilerOptions.messageBus && deploySurvey.count > 1 && deploySurvey.hasConditional) {
+      const firstChild = deploySurvey.sites[0].node.referencedContract?.name;
+      const differentChild = deploySurvey.sites.find((site) =>
+        site.node.referencedContract?.name !== firstChild);
+      if (differentChild) throw new DirectHeterogeneousDeployError(differentChild.node);
+    }
     // A loop `new C{value: V}()` has transfer metadata because it spends the satoshi container, but it has no
     // fixed transfer region: each runtime iteration verifies its value output inline in the child deploy group.
     // Do not pre-allocate an ordinary transfer that the epilogue would try to settle at a nonexistent slot. The

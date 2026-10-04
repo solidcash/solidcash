@@ -555,8 +555,9 @@ bareTypeExpressionStatement
 
 // Applying `{gas: ...}` / `{value: ...}` to a function value does not perform a call. Solidity accepts the
 // resulting function reference as a discarded expression statement (`a.call{value: 42};`, `this.f{gas: 42};`).
+// The base is a name or `this`: a leading `expression` would take the member and its options as its own postfix.
 bareCallOptionsStatement
-    : expression '.' Identifier callOptions callOptionsFunctionMember? ';'
+    : (Identifier | 'this') '.' Identifier callOptions callOptionsFunctionMember? ';'
     ;
 
 callOptionsFunctionMember
@@ -626,6 +627,8 @@ returnStatement
 // the selfdestruct modifier). Implies the modifier on the enclosing function.
 selfdestructStatement
     : 'selfdestruct' '(' expression ')' ';'
+    // A bare reference to the builtin is a discarded no-op; it destroys nothing.
+    | 'selfdestruct' ';'
     ;
 
 emitStatement
@@ -916,6 +919,8 @@ revertStatement
 
 assertStatement
     : 'assert' '(' expression ')' ';'
+    // A bare reference to the builtin is a discarded no-op; it asserts nothing.
+    | 'assert' ';'
     ;
 
 consoleParameter

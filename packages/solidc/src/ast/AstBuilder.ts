@@ -7870,8 +7870,15 @@ export default class AstBuilder
     return true;
   }
 
-  visitSelfdestructStatement(ctx: SelfdestructStatementContext): SelfdestructStatementNode {
-    const recipient = this.visit(ctx.expression()) as ExpressionNode;
+  visitSelfdestructStatement(ctx: SelfdestructStatementContext): StatementNode {
+    const recipientCtx = ctx.expression();
+    if (!recipientCtx) {
+      // A discarded reference to the builtin does not invoke the lifecycle operation.
+      const node = new BlockNode([]);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    const recipient = this.visit(recipientCtx) as ExpressionNode;
     const node = new SelfdestructStatementNode(recipient);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -7911,8 +7918,15 @@ export default class AstBuilder
     return node;
   }
 
-  visitAssertStatement(ctx: AssertStatementContext): AssertNode {
-    const expression = this.visit(ctx.expression()) as ExpressionNode;
+  visitAssertStatement(ctx: AssertStatementContext): StatementNode {
+    const expressionCtx = ctx.expression();
+    if (!expressionCtx) {
+      // A discarded reference to the builtin asserts nothing.
+      const node = new BlockNode([]);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    const expression = this.visit(expressionCtx) as ExpressionNode;
     const node = new AssertNode(expression);
     node.location = Location.fromCtx(ctx);
     return node;

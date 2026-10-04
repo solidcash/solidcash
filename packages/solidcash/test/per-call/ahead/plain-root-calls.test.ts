@@ -7,14 +7,12 @@ import {
 /**
  * Walls ahead: a contract deployed WITHOUT a proxy, entered through the plain call path (`callPerCallEntry`), which
  * is what a project's handle uses for every contract `deployContract` deployed. The hop serves each of these shapes
- * for a proxied root (the ladder's roots are all proxied); the plain path refuses them by name before anything is
- * built:
+ * for a proxied root (the ladder's roots are all proxied); the plain path refuses a sweep that transfers what an
+ * earlier `balanceOf` returned (an argument from an earlier call's result) by name before anything is built.
  *
- * - a payout that pays two parties through one token (one callee entered twice, each frame writing its nodes),
- * - a sweep that transfers what an earlier `balanceOf` returned (an argument from an earlier call's result).
- *
- * A vault that pulls a token and credits the depositor (a mapping write beside a call) is served
- * (`call/plain-root-calls.test.ts`). Each case pins the refusal met today; its title says what should settle once the
+ * A vault that pulls a token and credits the depositor (a mapping write beside a call) and a payout that pays two
+ * parties through one token (one callee entered twice, each frame writing its nodes) are served
+ * (`call/plain-root-calls.test.ts`). The case pins the refusal met today; its title says what should settle once the
  * plain path plans what the hop plans. The file runs only under `PER_CALL_AHEAD=1`.
  */
 
@@ -87,15 +85,6 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a plain root whose en
   it('compiles every entry: the walls below are the plain path\'s, not the compiler\'s', async () => {
     const c = await chain();
     expect(c.vault.artifact.composition?.refusedEntries ?? []).toStrictEqual([]);
-  }, 300_000);
-
-  it('refuses a payout through one token twice (should settle once served)', async () => {
-    const c = await chain();
-    const outcome = await enterPlain(c.world, c.vault, 'payout', [USER_LOCK, 7n, 1n], externalsOf(c));
-    expect(outcome.error).toBeInstanceOf(PerCallCallError);
-    expect(outcome.error!.message).toBe('entry "payout" makes 2 external call(s): it enters "Token" 2 times and a '
-      + 'frame of it writes its mapping nodes, whose views across the frames this call path does not chain yet');
-    expect(outcome.coinSpent).toBe(false);
   }, 300_000);
 
   it('refuses a sweep whose transfer amount is an earlier call\'s result (should settle once served)', async () => {

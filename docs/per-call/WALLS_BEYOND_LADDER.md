@@ -82,26 +82,27 @@ struct record per id settle (`call/plain-root-writes.test.ts`; the replica `plai
 in the segment the artifact publishes for each, kept on either side, by the hop's own placement (`proxy/deploy.ts`
 `placeOwnWrites`), so a deposit credited past the token pull or ahead of it settles (`call/plain-root-calls.test.ts`).
 Routing the plain root through the hop's settle whole is more than that: `buildHopPlan` (`proxy/deploy.ts` 3423)
-builds a proxy master and a delegate master over the proxy's records, which a plain root does not have. Two shapes
-stand, pinned in `ahead/plain-root-calls.test.ts`:
+builds a proxy master and a delegate master over the proxy's records, which a plain root does not have. A token
+entered twice, each frame writing its nodes (agent PL3): `calleeFrames` lays a node an earlier frame created at that
+frame's output (the hop's `continuedOutputOf`), its settlement lists the outputs the frames create, and `call.ts`
+chains every node's views over the frames of the call in the validator's order with the hop's own
+`chainSharedNodeViews`, the node's input and output carrying where the chain ends; `learnCalleeValue` reads the
+frames in the hop's settle order (`calleeSettleOrder`) and no frame while an earlier writer of a node it declares
+still owes that node's view, so no frame is learned from a stale view and none needs learning again. Reaches one
+transaction cannot carry are refused as the hop refuses them (`requireSatisfiableReachWrites`), and a frame that only
+reads a node an earlier frame created is refused by name. A payout to a payee and to the fee recipient settles,
+whether the fee recipient is the payee or not (`call/plain-root-calls.test.ts`). One shape stands, pinned in
+`ahead/plain-root-calls.test.ts`:
 
-- **payout** (one token entered twice, each frame writing its nodes; refused at `call/callees.ts` 343). The planner
-  already plans the second reach against the first (`proxy/external-calls.ts` 1562-1592: `continuedNodes`,
-  `rewrittenNodes`, `reachedLinks`). What `calleeFrames` (`call/callees.ts` 410) lacks: a node an earlier frame
-  created is laid at that frame's output (the hop's `continuedOutputOf`, `proxy/deploy.ts` 3887); node views are
-  chained across the frames in the validator's order (`chainSharedNodeViews`, `proxy/deploy.ts` 3202, applied at
-  4183), where `calleeFrames` chains data records only (`chainEnds`, `callees.ts` 449); and a later frame is learned
-  again once an earlier frame's view changes (`settleCallees` and `calleeSettleOrder`, `proxy/deploy.ts` 1539 and
-  1498), where `learnCalleeValue` (`callees.ts` 646) matches a view against its candidate only.
-- **sweep** (an argument from an earlier call's result; refused at `call/callees.ts` 326). The hop stops its plan
+- **sweep** (an argument from an earlier call's result; refused at `call/callees.ts` 332). The hop stops its plan
   before the site that reads the result and settles what precedes it (`planAndSettleHop`, `proxy/deploy.ts` 2577,
   with `declareUnstatedCalls`, `proxy/planning-refusal.ts` 103). It reads the produced results back
   (`producedCallResults` 2376, `reachedCallResults` 2524) and plans again with them (`planHopExternalCalls`'s
   `externalReturns` and `reachedResults`, `proxy/external-calls.ts` 2801-2809). The plain path plans its calls once
-  (`planEntryCallees`, `callees.ts` 309), so it needs the same stop-and-replan loop in `callInShape`.
+  (`planEntryCallees`, `callees.ts` 315), so it needs the same stop-and-replan loop in `callInShape`.
 
-Replicas: `plain-root-calls.test.ts` (4 cases, 3 since the deposit is served), `plain-root-writes.test.ts` (3,
-retired); `plain-genesis-writes.test.ts`
+Replicas: `plain-root-calls.test.ts` (4 cases, 2 since the deposit and the payout are served),
+`plain-root-writes.test.ts` (3, retired); `plain-genesis-writes.test.ts`
 retired: **the constructor half is served** (agent C2: genesis learns each created node from the body's close and
 plans run-time loops and several collections; `deploy/constructor-loop-writes.test.ts`).
 A per-call artifact deployed without a proxy is entered by the SDK's handle through `callPerCallEntry`
@@ -550,7 +551,7 @@ today and its title says what should settle once served.
 | File | Cases | Pins |
 | --- | --- | --- |
 | `composition-world.ts` | - | shared harness: project/per-call compile, plain and proxied deploy, both call paths, `recordMet` |
-| `plain-root-calls.test.ts` | 3 | 2.1: payout, sweep; the deposit served (`call/plain-root-calls.test.ts`) |
+| `plain-root-calls.test.ts` | 2 | 2.1: sweep; the deposit and the payout served (`call/plain-root-calls.test.ts`) |
 | `plain-root-writes.test.ts` | 3 | 2.1, retired: served (`call/plain-root-writes.test.ts`) |
 | `plain-genesis-writes.test.ts` | 2 | 2.1, retired: served (`deploy/constructor-loop-writes.test.ts`) |
 | `guarded-vault-root.test.ts` | 5 | 2.2, retired: served (`call/root-guard-across-call.test.ts`) |
@@ -575,7 +576,7 @@ replica above confirms it. The full table with every row and class is the append
 | Rank | Site | Shape refused | Lik. | Status |
 | --- | --- | --- | --- | --- |
 | 1 | solidcash `call/call.ts` 584, 707 | plain root: mapping write beside a call | H | 584 served (PL2); 707, beside a value call into a contract, stands |
-| 1 | solidcash `call/callees.ts` 339 | plain root: one callee entered twice, a frame writing nodes | H | conf. 2.1 |
+| 1 | solidcash `call/callees.ts` 339 | plain root: one callee entered twice, a frame writing nodes | H | served (PL3) |
 | 1 | solidcash `call/callees.ts` 318, 321 | plain root: argument from, or call guarded on, an earlier result | H | 318 conf. 2.1 |
 | 1 | solidcash `call/entry-records.ts` 762, 786 | plain root: two collections; chunked mapping value | H | served (PL1) |
 | 1 | solidcash `deploy/genesis.ts` 548 | constructor writing two collections | H | conf. 2.1 |

@@ -38,7 +38,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 211 |
-| `packages/solidcash/test/per-call/call/` | `solidcash` | 322 (318 by default, 4 skipped) |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 324 (320 by default, 4 skipped) |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 12 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 171 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 93 |
@@ -47,25 +47,25 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 81 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | 137 (135 by default, 2 under `PER_CALL_FULL=1`) |
 | `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2, under `PER_CALL_FULL=1` |
-| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 177, under `PER_CALL_AHEAD=1` |
+| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 176, under `PER_CALL_AHEAD=1` |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 11 |
 
-Total: 2741 checks (119 + 1054 + 1557 + 11). Twelve cases in a default `solidcash` run are skipped and run under
+Total: 2743 checks (119 + 1054 + 1559 + 11). Twelve cases in a default `solidcash` run are skipped and run under
 `PER_CALL_FULL=1` instead: three in `primitives/many-masters.test.ts` (the nine-entry composition and its refusal,
 which `shapes/deep-arbitration.test.ts` covers by default, and the twenty-four-master composition, which takes about
 twenty-eight seconds to derive), the shipped data contract's clock-stamped append
 (`call/proxy-proxied-callee-element-clock.test.ts`), which deploys the project's compiled `MarketplaceDataV1`
 behind its proxy and takes about three and a half minutes, `pw7-measure.test.ts`'s two, and the full-width samplers
-the `validator/`, `conformance/` and `call/` rows show. The `ahead/` row's 177 run under `PER_CALL_AHEAD=1`. The
+the `validator/`, `conformance/` and `call/` rows show. The `ahead/` row's 176 run under `PER_CALL_AHEAD=1`. The
 package totals are full-config runs of
 `vitest.per-call.config.ts`: `solidc` 1054 is the four rows above it (122 files),
-`solidcash` 1557 is the rows above it from `validator/` down, `ahead/` excepted (284 files), every row above
+`solidcash` 1559 is the rows above it from `validator/` down, `ahead/` excepted (284 files), every row above
 re-measured 2026-10-03 by rerunning its own directory in the same sweep (the `call/` and `conformance/` rows then
-counted forward by the cases PL1 and PL2 added and merged), and `@solidcash/testing` is its own row
+counted forward by the cases PL1 to PL3 added and merged), and `@solidcash/testing` is its own row
 and drives the layer's public entry points rather than the SDK's.
 The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`. It was refreshed
-2026-10-03 by rerunning the directory (28 files / 184 cases, all green), and counted forward by the seven cases
-PL1 and PL2 served out of it (two files retired).
+2026-10-03 by rerunning the directory (28 files / 184 cases, all green), and counted forward by the eight cases
+PL1 to PL3 served out of it (two files retired).
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.
@@ -367,9 +367,9 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   with no guarded write) and `push-length-keyed-mapping-write.test.ts` (a loop write whose key the entry's own push
   computes). The walls beyond the ladder (`docs/per-call/WALLS_BEYOND_LADDER.md`, agent W2) each pin today's
   refusal, titled with what should settle once served: `plain-root-calls` (a contract deployed without a proxy whose
-  entry enters one token twice, each frame writing its nodes, or passes an earlier call's result on; its two-mapping
-  constructor deploys since `deploy/constructor-loop-writes`, its own writes settle in `call/plain-root-writes`, and
-  a write beside its call in `call/plain-root-calls`), `proxied-native-value`
+  entry passes an earlier call's result on; its two-mapping constructor deploys since
+  `deploy/constructor-loop-writes`, its own writes settle in `call/plain-root-writes`, and a write beside its call
+  and a token entered twice, each frame writing its nodes, in `call/plain-root-calls`), `proxied-native-value`
   (a send to a contract from a proxied root's body; value in and sends out through the proxy are served in
   `call/proxied-native-value`), `enumerable-set` (a member set's swap and pop removal, as contract state and per
   group id, refused at compile as the swap-remove alias, beside the next wall of each form; adding members and the

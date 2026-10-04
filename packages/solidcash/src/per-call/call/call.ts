@@ -97,7 +97,7 @@ import {
   stateRecordUnlockingBytecode,
   type PerCallDeploymentSet,
 } from '../deploy/index.js';
-import { placeOwnWrites } from '../proxy/deploy.js';
+import { chainSharedNodeViews, placeOwnWrites, withChainEnds, withCreatedChainEnds } from '../proxy/deploy.js';
 import { hopEntryWrites, type HopEntryWrites, type LaidHopEntryWrites } from '../proxy/entry-writes.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
 import { skippedEmits, type WriteActivationFacts } from '../proxy/write-activation.js';
@@ -1293,10 +1293,11 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       ...(mappingSegments?.[position] ?? laid?.entries ?? []),
     ];
     // The callees' events follow the entry's own, and the records their writes create follow the entry's.
+    const calleeCreatedBase = createdBase + (laid?.trailingOutputs.length ?? 0);
     const callees = sharedPlan === undefined ? undefined : calleeFrames({
       planned: sharedPlan, layout, rootMaster: MASTER_ID, rootAddress: deployed.address, origin: CALLER_ID,
       values: learnedCallees, eventBase: layout.participantCount + emits.length,
-      createdBase: createdBase + (laid?.trailingOutputs.length ?? 0), recordAmount: validator.satoshis,
+      createdBase: calleeCreatedBase, recordAmount: validator.satoshis,
       maximumCommitmentBytes, beside: besideCallees,
     });
     // The calls its body makes, each value call into a contract where the body sends.
@@ -1462,6 +1463,20 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         consumed: true,
       };
     }
+    // A contract the calls enter more than once, a frame of which writes its nodes, spends each node once while each
+    // frame declares it as its own plan saw it: the declarations are chained in the order the validator walks the
+    // frames, as the hop chains them, and a node's input, or the output an earlier frame created it at, carries the
+    // view its chain ends at. A record the entry or a contract it pays creates is that frame's own write, so the walk
+    // keeps the view it declares.
+    const ownCreated = [masterDraft, ...payeeDrafts].flatMap((frame) => frame.segments.flat())
+      .filter((declaration) => declaration.in === INDEX_NONE);
+    const chain = callees?.chain === undefined ? undefined : chainSharedNodeViews(
+      [masterDraft, ...callees.masters, ...payeeDrafts], MASTER_ID, callees.chain.nodes,
+      new Set([...callees.chain.writes, ...ownCreated]), new Map(), false, callees.chain.relinks,
+    );
+    if (chain !== undefined) withChainEnds(layout.participants, chain.ends, inputs);
+    const calleeCreated = chain === undefined
+      ? callees?.createdOutputs ?? [] : withCreatedChainEnds(callees!.createdOutputs, calleeCreatedBase, chain.createdEnds);
 
     return {
       blocks,
@@ -1479,14 +1494,14 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
           id: spent.id, index: layout.participantCount + 1 + paying.spent.length + position,
         })),
       ],
-      masters: [masterDraft, ...(callees?.masters ?? []), ...payeeDrafts],
+      masters: chain?.masters ?? [masterDraft, ...(callees?.masters ?? []), ...payeeDrafts],
       inputs,
       ...(sideCars.computedWitnesses.length === 0 ? {} : { computedWitnesses: sideCars.computedWitnesses }),
       trailingOutputs: [
         ...eventOutputs(learnedEvents), ...(callees?.eventOutputs ?? []),
         ...payeeLaid.flatMap((payeeLaidOut) => payeeLaidOut.eventOutputs),
         ...sendOutputs, ...payeeRuns,
-        ...(laid?.trailingOutputs ?? []), ...(callees?.createdOutputs ?? []),
+        ...(laid?.trailingOutputs ?? []), ...calleeCreated,
         ...payeeLaid.flatMap((payeeLaidOut) => payeeLaidOut.mapping?.trailingOutputs ?? []),
         // The contract's own container, when no send precedes it: the change its calls leave, or the value it takes.
         ...(sendCount === 0 ? ownContainer : []),

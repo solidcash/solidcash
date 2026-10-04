@@ -1495,7 +1495,7 @@ interface CalleeSettlement {
  * A frame that starts from a view an earlier frame of its contract left follows the frames that view's learning
  * needs (`reentrySettleBefore`).
  */
-function calleeSettleOrder(callees: readonly HopCallee[], deepestFirst: readonly number[]): readonly number[] {
+export function calleeSettleOrder(callees: readonly HopCallee[], deepestFirst: readonly number[]): readonly number[] {
   const writersBefore = sharedNodeWritersBefore(callees);
   const reentryBefore = reentrySettleBefore(callees);
   const inScope = new Set(deepestFirst);
@@ -3199,7 +3199,7 @@ function calleeDeclaredRecordsOfCategory(
  * successor its plan states, since a value an earlier frame wrote is that frame's to compute. `ends` is the view
  * each written node's chain ends at, which its output carries.
  */
-function chainSharedNodeViews(
+export function chainSharedNodeViews(
   masters: readonly DraftMaster[],
   root: string,
   nodes: ReadonlySet<number>,
@@ -3316,7 +3316,7 @@ function relinkedView(view: Uint8Array, planned: Uint8Array): Uint8Array {
 }
 
 /** The created outputs, each carrying the view the chain of declarations of the node it holds ends at. */
-function withCreatedChainEnds(
+export function withCreatedChainEnds(
   trailings: readonly DraftSourceOutput[],
   base: number,
   createdEnds: ReadonlyMap<number, Uint8Array>,
@@ -3330,7 +3330,7 @@ function withCreatedChainEnds(
 }
 
 /** The inputs, each shared node a write touched recreated at the view its chain ends at. */
-function withChainEnds(
+export function withChainEnds(
   participants: readonly { readonly id: string; readonly index: number }[],
   ends: ReadonlyMap<number, Uint8Array>,
   inputs: Record<string, DraftInput>,

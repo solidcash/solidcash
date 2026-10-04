@@ -14,25 +14,28 @@
  * or the one a new key is spliced beside, declared in the segment its artifact publishes for the write, with the node
  * an insert creates as a trailing output. Each event's payload and each written node's end view are its body's to
  * compute, so they are learned from its own close, as its return is. A contract entered more than once chains its
- * data records across its frames in the order the validator walks them: a frame starts from the view the last write
- * before it leaves, which is learned from that frame's own close.
+ * data records and its nodes across its frames in the order the validator walks them: a frame starts from the view
+ * the last write before it leaves, which is learned from that frame's own close before the frame is read, and names a
+ * node an earlier frame created at that frame's output. The nodes are chained as the hop chains them.
  *
  * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that touches a dynamic
- * value's or a mapping value's chunks, sends value or co-spends a side-car; a deployment entered twice whose frames
- * write its mapping nodes or name data records that no order of its block keeps side by side; and a site that waits
- * on an earlier call's result. Two deployments of one contract are two blocks, each its own category's. A frame the
- * plan runs beside the callees on one of their contracts, a value send's `receive()`, counts among the contract's
- * masters, and a callee that runs after it starts from the views it left.
+ * value's or a mapping value's chunks, sends value or co-spends a side-car; a frame that only reads a node an
+ * earlier frame created; reaches of one collection one transaction cannot carry; a deployment entered twice whose
+ * frames name data records that no order of its block keeps side by side; and a site that waits on an earlier call's
+ * result. Two deployments of one contract are two blocks, each its own category's. A frame the plan runs beside the
+ * callees on one of their contracts, a value send's `receive()`, counts among the contract's masters, and a callee
+ * that runs after it starts from the views it left.
  */
 
 import { hexToBin } from '@bitauth/libauth';
 import {
-  bytesEqual, FrameKind, INDEX_NONE, sha256, type Artifact, type PublishedWriteSegment, type RecordEntry,
+  bytesEqual, bytesToHex, FrameKind, INDEX_NONE, sha256, type Artifact, type PublishedWriteSegment, type RecordEntry,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import {
+  findParticipant,
   participant,
   readPublishedStopSites,
   unstatedViewPlaceholder,
@@ -50,9 +53,12 @@ import {
   entryRecordReadUnlock, eventCloseOf, eventLockingBytecode, eventSentinel, readComputedDeclaration,
   stateRecordUnlockingBytecode, type PerCallDeploymentSet,
 } from '../deploy/index.js';
+import { calleeSettleOrder } from '../proxy/deploy.js';
+import { sharedNodeId } from '../proxy/entry-writes.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
 import {
-  deploymentStateValues, planHopExternalCalls, routingOf,
+  chainedNodeIds, deploymentStateValues, planHopExternalCalls, requireSatisfiableReachWrites, routingOf,
+  sharedNodeWritersBefore,
   type HopCallee, type HopCalleeRecord, type HopExternalPlan, type PerCallProxyExternal,
 } from '../proxy/external-calls.js';
 import { adjacentRecordOrder, frameDataRecordIndices, namedDataRecordIndices } from './entry-records.js';
@@ -333,18 +339,25 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
     const why = unservedCallee(callee, plan.sideCars.has(callee.master));
     if (why !== undefined) refuse(why);
   }
+  // A frame that only reads a node an earlier frame of its contract created names it at that frame's output.
+  const createdRead = plan.callees.find((callee) => callee.readNodes.some((node) => node.createdSlot !== undefined));
+  if (createdRead !== undefined) {
+    refuse(`the callee "${createdRead.functionName}" reads a mapping node an earlier frame of its contract created, `
+      + 'which this call path does not declare yet');
+  }
   // A deployment entered more than once is settled by the validator, which chains its records' views across its
-  // frames. Its data records are chained here (`calleeFrames`); a frame that writes its mapping nodes would need
-  // those chains stated too, which this path does not do yet. A block is a deployment's, so two deployments of one
-  // contract are two blocks, each with its own masters and records (`HopCallee.block`).
+  // frames: its data records here (`calleeFrames`), and the nodes its frames write over every frame of the call, as
+  // the hop chains them (`call.ts`). Reaches of one collection one transaction cannot carry are refused by name, as
+  // the hop refuses them. A block is a deployment's, so two deployments of one contract are two blocks, each with its
+  // own masters and records (`HopCallee.block`).
+  try {
+    requireSatisfiableReachWrites(plan.callees);
+  } catch (error) {
+    if (!(error instanceof PerCallProxyDeployError)) throw error;
+    refuse(error.message);
+  }
   const byBlock = new Map<string, HopCallee[]>();
   for (const callee of plan.callees) byBlock.set(callee.block, [...(byBlock.get(callee.block) ?? []), callee]);
-  for (const [block, frames] of byBlock) {
-    if (frames.length > 1 && frames.some((frame) => frame.entryWrites !== undefined)) {
-      refuse(`it enters "${block}" ${frames.length} times and a frame of it writes its mapping nodes, whose views `
-        + 'across the frames this call path does not chain yet');
-    }
-  }
   // A contract's block holds the records its frames declare, then the nodes they only read, then the nodes their
   // writes spend, each once: the order each frame's own body reads them in. A frame reads the records its layout
   // names from one base, so they are placed side by side for every frame, or the call is refused by name.
@@ -395,6 +408,17 @@ export interface CalleeFrames {
   readonly eventOutputs: readonly DraftSourceOutput[];
   /** The records the frames' writes create, in master order, from `createdBase` on. */
   readonly createdOutputs: readonly DraftSourceOutput[];
+  /**
+   * For a contract the calls enter more than once whose frames write its nodes, what the views of those nodes are
+   * chained from in the order the validator walks every frame of the call (`chainSharedNodeViews`): the input index
+   * of each node the frames touch, the declarations their writes transition a node with, and those that only relink
+   * one.
+   */
+  readonly chain?: {
+    readonly nodes: ReadonlySet<number>;
+    readonly writes: ReadonlySet<DraftRecordEntry>;
+    readonly relinks: ReadonlySet<DraftRecordEntry>;
+  };
 }
 
 /**
@@ -450,6 +474,17 @@ export function calleeFrames(options: {
   const inputs: Record<string, DraftInput> = {};
   const eventOutputs: DraftSourceOutput[] = [];
   const createdOutputs: DraftSourceOutput[] = [];
+  // The output each node an earlier frame created sits at, by the node's own identity: a later frame of its contract
+  // names a node it does not spend by that output, as the hop names it, so its declaration chains onto the creator's.
+  const createdElsewhere = new Map<string, number>();
+  const createdNodeKey = (category: Uint8Array, collection: string, slot: Uint8Array): string =>
+    sharedNodeId(bytesToHex(category), collection, slot);
+  // The declarations each frame's own write transitions a node with, and those that only relink one; the copies kept
+  // on either side of a write's segment are not. And the outputs each contract's writes create, which its
+  // settlement lists.
+  const writeTransitions = new Set<DraftRecordEntry>();
+  const relinkTransitions = new Set<DraftRecordEntry>();
+  const createdOf = new Map<string, number[]>();
   const masters = callees.map((callee): DraftMaster => {
     const caller = callee.enteredBy === null ? undefined : callees[callee.enteredBy];
     const positions = callee.calls.length + 1;
@@ -481,7 +516,12 @@ export function calleeFrames(options: {
       recordAmount: callee.records[0]?.satoshis ?? options.recordAmount,
       category: callee.category,
       learnedViews: values.views.get(callee.master) ?? [],
+      continuedOutputOf: (collection, slot) => createdElsewhere.get(createdNodeKey(callee.category, collection, slot)),
     });
+    for (const node of laid?.createdNodes ?? []) {
+      createdElsewhere.set(createdNodeKey(callee.category, node.collection, node.slot), node.out);
+    }
+    createdOf.set(callee.block, [...(createdOf.get(callee.block) ?? []), ...(laid?.createdOutputs ?? [])]);
     createdOutputs.push(...(laid?.trailingOutputs ?? []));
     Object.assign(inputs, laid?.inputs ?? {});
     const landing = mappingWriteSegment(callee) ?? 0;
@@ -492,6 +532,11 @@ export function calleeFrames(options: {
     const writeEntries = (laid?.entries ?? []).map((entry): RecordEntry => {
       const learned = learnedViews[candidates.findIndex((candidate) => bytesEqual(candidate, entry.viewIn))];
       return learned === undefined ? entry : { ...entry, viewIn: learned };
+    });
+    const relinked = new Set(laid?.relinked ?? []);
+    (laid?.entries ?? []).forEach((entry, at) => {
+      writeTransitions.add(writeEntries[at]!);
+      if (relinked.has(entry)) relinkTransitions.add(writeEntries[at]!);
     });
     // Each node the write spends is kept on either side of the segment it lands in: at the view it was spent with
     // before, and at the view the write left after.
@@ -609,11 +654,31 @@ export function calleeFrames(options: {
   }
   const settles = planned.blocks
     .filter((block) => (mastersOf.get(block.contract) ?? 0) > 1)
-    .map((block): PlannedSettlement => ({
-      category: callees.find((callee) => callee.block === block.contract)!.category,
-      stateInputs: block.state,
-    }));
-  return { masters, inputs, settles, eventOutputs, createdOutputs };
+    .map((block): PlannedSettlement => {
+      const created = [...new Set(createdOf.get(block.contract) ?? [])];
+      return {
+        category: callees.find((callee) => callee.block === block.contract)!.category,
+        stateInputs: block.state,
+        ...(created.length === 0 ? {} : { createdOutputs: created }),
+      };
+    });
+  // A contract several frames enter, one of which writes its nodes, declares each node's views as one chain in the
+  // order the validator walks the frames, which its caller states over every frame of the call.
+  const chained = planned.blocks.some((block) => {
+    const frames = callees.filter((callee) => callee.block === block.contract);
+    return frames.length > 1 && frames.some((frame) => frame.entryWrites !== undefined);
+  });
+  const nodes = new Set<number>();
+  if (chained) {
+    for (const id of chainedNodeIds(callees)) {
+      const placed = findParticipant(layout, id);
+      if (placed !== undefined) nodes.add(placed.index);
+    }
+  }
+  return {
+    masters, inputs, settles, eventOutputs, createdOutputs,
+    ...(chained ? { chain: { nodes, writes: writeTransitions, relinks: relinkTransitions } } : {}),
+  };
 }
 
 /** How deep a callee sits below the root: `1` for a frame the root calls. */
@@ -641,7 +706,9 @@ function owesValue(callee: HopCallee, values: CalleeValues): boolean {
  * `retval`, a written node's end view against the view its segment declares, an event's payload against its output's
  * commitment. Each starts from a candidate until learned, so the failing close leaves the candidate beside the value
  * the body computed. A frame is read once every frame below it has answered its return, so what it computes is
- * computed from its callees' real results.
+ * computed from its callees' real results, and after every earlier frame that writes a node or a record it starts
+ * from, in the order the hop settles its frames (`calleeSettleOrder`), so the view it starts from is the one the
+ * writer's own close handed back.
  */
 export function learnCalleeValue(options: {
   readonly planned: PlannedCallees;
@@ -659,11 +726,15 @@ export function learnCalleeValue(options: {
     for (let at = callees[inner]!.enteredBy; at !== null; at = callees[at]!.enteredBy) if (at === outer) return true;
     return false;
   };
-  // A frame whose callee still owes its return computed from a candidate, so it is not read yet.
-  const ready = callees.map((_callee, index) => index)
+  // A frame whose callee still owes its return computed from a candidate, so it is not read yet; nor is one that
+  // starts from the view an earlier frame's write of a node leaves while that frame still owes it. The rest are read
+  // in the order the hop settles its frames.
+  const writersBefore = sharedNodeWritersBefore(callees);
+  const ready = calleeSettleOrder(callees, callees.map((_callee, index) => index)
     .filter((index) => owesValue(callees[index]!, values)
       && !callees.some((_other, other) => owesReturn(other) && below(other, index)))
-    .sort((left, right) => depthOf(callees, right) - depthOf(callees, left));
+    .sort((left, right) => depthOf(callees, right) - depthOf(callees, left)))
+    .filter((index) => !(writersBefore.get(index) ?? []).some((writer) => owesValue(callees[writer]!, values)));
   if (ready.length === 0) return undefined;
   options.draft.learnUnstatedViews();
   for (const index of ready) {

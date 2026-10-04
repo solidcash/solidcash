@@ -1304,8 +1304,26 @@ export async function assembleAtomicComposition(
       ) ?? -1;
       const witness = witnessIndex < 0 ? undefined : unlocker?.params?.[witnessIndex];
       if (layoutWitnessIsActiveCoordinate(witness)) {
+        // A pooled row can grow past the inline value limit only after its second invocation. Its local
+        // builder then publishes the concrete chunk (including resource identity, lock, category and
+        // commitment), while the route's provisional base still names the pre-growth placeholder. Accept
+        // that exact materialization as another candidate coordinate; the physical run check below remains
+        // the authority and rejects competing bands.
+        const materializedStarts = (localComputedChunkMetadata.__messageBusComputedValueChunks ?? [])
+          .flatMap((claim) => {
+            if (claim.resourcePart !== 'chunk:0' || claim.categoryId === undefined
+              || claim.commitment === undefined || claim.lockingBytecode === undefined) return [];
+            const offset = claim.offset - participantInputBase;
+            const output = local.outputs[offset];
+            const lock = output === undefined ? undefined
+              : typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+            return output?.token?.category?.toLowerCase() === claim.categoryId.toLowerCase()
+              && output.token.nft?.commitment?.toLowerCase() === claim.commitment.toLowerCase()
+              && lock !== undefined && binToHex(lock) === binToHex(claim.lockingBytecode)
+              ? [offset] : [];
+          });
         const startCandidates = [...new Set([
-          Number(witness), Number(witness) - participantInputBase,
+          Number(witness), Number(witness) - participantInputBase, ...materializedStarts,
         ])].filter((offset) => Number.isSafeInteger(offset)
           && offset >= fixedSize && offset < blockSize && valueChunkSlots.some((slot) => slot.offset === offset));
         const category = local.inputs[0]?.token?.category?.toLowerCase();

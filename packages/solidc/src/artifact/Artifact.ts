@@ -207,6 +207,20 @@ const computeSideCarRecipesOf = (
   func: FunctionDefinitionNode, compilerOptions: CompilerOptions,
 ): ComputeSideCarRecipesAbi | undefined => {
   type ComputeExpression = ComputeSideCarRecipesAbi['keccak'][number];
+  const packedEvm = compilerOptions.evmCompat || compilerOptions.solidityImportCompat;
+  // eslint-disable-next-line max-len
+  const packedInteger = /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?$/;
+  const packedBytes = /^bytes(?:[1-9]|[12][0-9]|3[0-2])?$/;
+  const supportedPackedType = (type: string): boolean => {
+    if (packedInteger.test(type) || packedBytes.test(type) || type === 'bool' || type === 'string') return true;
+    if (type === 'address' || type === 'address payable') return true;
+    if (!packedEvm && type === 'bigint') return true;
+    // EVM packed dynamic arrays omit the length but pad each scalar element to one ABI word. The codegen's
+    // packed-array lowering does not admit fixed arrays or dynamic/composite elements.
+    const array = packedEvm ? /^(.+)\[\]$/.exec(type) : undefined;
+    return array !== undefined && array !== null && (packedInteger.test(array[1])
+      || /^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(array[1]) || array[1] === 'bool');
+  };
   const keccakCount = func.keccakPreimageParams?.length ?? 0;
   const recoveryCount = func.ecrecoverCallCount ?? 0;
   if ((keccakCount === 0 && recoveryCount === 0) || func.keccakInLoop || func.ecrecoverLoopReads) {
@@ -216,18 +230,43 @@ const computeSideCarRecipesOf = (
     || new Set(func.keccakComputeSites).size !== keccakCount)) return undefined;
   const replayable = (node: ComputeExpression | undefined): node is ComputeExpression => {
     if (!node) return false;
-    if (node.kind === 'literal') return node.type !== undefined && node.value !== undefined;
+    if (node.kind === 'literal') return node.type !== undefined
+      && (typeof node.value === 'string' || typeof node.value === 'boolean');
     if (node.kind === 'source') return node.source?.kind === 'forward'
       && Number.isSafeInteger(node.source.paramIndex) && node.source.paramIndex! >= 0;
     if (node.kind === 'producerResult') return Number.isSafeInteger(node.callsiteId)
       && node.callsiteId! >= 0 && Number.isSafeInteger(node.resultIndex)
       && node.resultIndex! >= 0;
-    if (node.kind === 'cast') return node.type !== undefined && replayable(node.expression);
-    if (node.kind === 'bytesConcat' || node.kind === 'abiEncode' || node.kind === 'abiEncodePacked') {
+    if (node.kind === 'cast') return node.type !== undefined
+      && (packedInteger.test(node.type) || packedBytes.test(node.type)
+        || ['bigint', 'bool', 'string', 'address', 'address payable'].includes(node.type))
+      && replayable(node.expression);
+    if (node.kind === 'abiEncodePacked') return node.args !== undefined
+      && node.fields?.length === node.args.length
+      && node.fields.every((type) => supportedPackedType(type))
+      && node.args.every(replayable);
+    if (node.kind === 'bytesConcat' || node.kind === 'abiEncode') {
       return node.args !== undefined && node.args.every(replayable);
     }
     return node.kind === 'call' && node.name === 'keccak256'
       && node.args?.length === 1 && replayable(node.args[0]);
+  };
+  const visibleTypes = func.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+    .map((parameter) => abiTypeString(parameter.type));
+  // A packed operand naming a handler argument has no AST type before type checking: publish the argument's ABI
+  // type so the recipe is self-describing. Copies, so the shared pre-call predicate is left as published.
+  const typed = (node: ComputeExpression): ComputeExpression => {
+    const args = node.args?.map(typed);
+    const operandType = (operand: ComputeExpression): string => operand.type
+      ?? (operand.kind === 'source' && operand.source?.kind === 'forward'
+        ? visibleTypes[operand.source.paramIndex ?? -1] ?? '' : '');
+    return {
+      ...node,
+      ...(node.expression && { expression: typed(node.expression) }),
+      ...(args && { args }),
+      ...(node.kind === 'abiEncodePacked' && args && node.fields
+        && { fields: node.fields.map((field, index) => field || operandType(args[index])) }),
+    };
   };
   const candidates: ComputeSideCarRecipesAbi[] = [];
   const seenPredicates = new Set<string>();
@@ -241,17 +280,17 @@ const computeSideCarRecipesOf = (
       const ecrecover: ComputeSideCarRecipesAbi['ecrecover'][number][] = [];
       const visit = (node: ComputeExpression): void => {
         if (node.kind === 'call' && node.name === 'keccak256' && node.args?.length === 1) {
-          keccak.push(node.args[0]);
+          keccak.push(typed(node.args[0]));
           keccakSites.push(node.computeSourceSite ?? '');
         }
         if ((compilerOptions.evmCompat || compilerOptions.solidityImportCompat)
           && node.kind === 'call' && node.name === 'ECDSA.recover' && node.args?.length === 2
           && node.computeSourceSite && reachedSignature65Recovery(func, node.computeSourceSite)) {
-          ecrecover.push({ kind: 'signature65', hash: node.args[0], signature: node.args[1] });
+          ecrecover.push({ kind: 'signature65', hash: typed(node.args[0]), signature: typed(node.args[1]) });
         }
         if (node.kind === 'call' && ['ecrecoverPubKey', 'ecrecoverP2pkh', 'ecrecoverEvm']
           .includes(node.name ?? '') && node.args?.length === 4) {
-          ecrecover.push({ kind: 'args4', args: node.args as [ComputeExpression, ComputeExpression,
+          ecrecover.push({ kind: 'args4', args: node.args.map(typed) as [ComputeExpression, ComputeExpression,
             ComputeExpression, ComputeExpression] });
         }
         for (const child of [node.expression, node.left, node.right, node.condition,

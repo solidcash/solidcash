@@ -37,6 +37,28 @@ describe('authenticated compute side-car recipes', () => {
       .toEqual(recipe);
   });
 
+  it('publishes typed packed-ABI and cast operands used by a pre-call hash', () => {
+    const source = compileStringMulti(`pragma solidity ^0.8.20;
+      interface ISink { function ping() external; }
+      contract PackedRecipeFixture(ISink sink) {
+        uint256 marker;
+        function run(uint16 x, bytes2 y) public {
+          require(keccak256(abi.encodePacked(uint16(2), x, y, true)) != bytes32(0));
+          sink.ping();
+        }
+      }`, {
+      solidityImportCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+      maximumInputBytes: 1_000_000, suppressWarnings: true, optimizeForCompilationSpeed: true,
+    });
+    const recipe = source.PackedRecipeFixture.abi.find((fn) => fn.name === 'run')?.computeSideCarRecipes;
+    expect(recipe?.keccak).toMatchObject([{ kind: 'abiEncodePacked', fields: ['uint16', 'uint16', 'bytes2', 'bool'], args: [
+      { kind: 'cast', type: 'uint16', expression: { kind: 'literal', value: '2' } },
+      { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+      { kind: 'literal', type: 'bool', value: true },
+    ] }]);
+  });
+
   it('proves only an exact collection-array length return', () => {
     const source = compileStringMulti(`pragma solidity ^0.8.20;
       contract Lengths {

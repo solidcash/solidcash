@@ -102,4 +102,21 @@ describe('compute side-car recipe replay', () => {
     const concat: ExternalCallExpression = { kind: 'bytesConcat', args: [literal, literal] };
     expect(binToHex(evaluateComputeRecipeExpression(concat, ctx) as Uint8Array)).toBe('ffff');
   });
+
+  it('replays typed packed-ABI operands and numeric casts before Keccak', () => {
+    const packed: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: ['uint16', 'uint16', 'bytes2', 'bool'], args: [
+        { kind: 'cast', type: 'uint16', expression: { kind: 'literal', type: 'uint256', value: '2' } },
+        { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+        { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+        { kind: 'literal', type: 'bool', value: true },
+      ],
+    };
+    const packedCtx = {
+      ...ctx, args: [3n, Uint8Array.of(0xab, 0xcd)], inputTypes: ['uint16', 'bytes2'],
+    };
+    expect(binToHex(evaluateComputeRecipeExpression(packed, packedCtx))).toBe('00020003abcd01');
+    expect(binToHex(evaluateComputeRecipeExpression({ kind: 'call', name: 'keccak256', args: [packed] },
+      packedCtx))).toBe(binToHex(keccak_256(Uint8Array.of(0, 2, 0, 3, 0xab, 0xcd, 1))));
+  });
 });

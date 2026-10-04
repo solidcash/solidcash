@@ -128,6 +128,10 @@ export function evaluateSignature65RecoveryArgument(
   signature: ExternalCallExpression,
   ctx: ComputeRecipeContext,
 ): Uint8Array {
+  if (ctx.artifact.compiler?.options?.solidityImportCompat !== true
+    && ctx.artifact.compiler?.options?.evmCompat !== true) {
+    throw new Error('messageBus: signature65 compute recipe requires EVM-compatible scalar encoding');
+  }
   const digest = bytesOf(evaluateComputeRecipeExpression(hash, ctx), expressionType(hash, ctx));
   const sig = bytesOf(evaluateComputeRecipeExpression(signature, ctx), expressionType(signature, ctx));
   if (digest.length !== 32 || sig.length !== 65 || (sig[64] !== 27 && sig[64] !== 28)) {
@@ -154,9 +158,11 @@ export function evaluateArgs4RecoveryArgument(
     || (recoveryId !== 27n && recoveryId !== 28n)) {
     throw new Error('messageBus: compute recipe recovery arguments are non-canonical');
   }
-  const solidity = ctx.artifact.compiler?.options?.solidityImportCompat === true;
+  const reverseEvmScalars = ctx.artifact.compiler?.options?.solidityImportCompat === true
+    || ctx.artifact.compiler?.options?.evmCompat === true;
   return Uint8Array.from([
-    ...(solidity ? hashBytes.reverse() : hashBytes), Number(recoveryId),
-    ...(solidity ? rBytes.reverse() : rBytes), ...(solidity ? sBytes.reverse() : sBytes),
+    ...(reverseEvmScalars ? hashBytes.reverse() : hashBytes), Number(recoveryId),
+    ...(reverseEvmScalars ? rBytes.reverse() : rBytes),
+    ...(reverseEvmScalars ? sBytes.reverse() : sBytes),
   ]);
 }

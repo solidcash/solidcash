@@ -3,6 +3,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { describe, expect, it } from 'vitest';
 import type { Artifact, ExternalCallExpression } from '@solidcash/utils';
 import {
+  evaluateArgs4RecoveryArgument,
   evaluateComputeRecipeExpression,
   evaluateSignature65RecoveryArgument,
   PendingComputeProducerResult,
@@ -52,6 +53,29 @@ describe('compute side-car recipe replay', () => {
     expect(blob[32]).toBe(27);
     expect(blob[33]).toBe(1);
     expect(blob[65]).toBe(2);
+  });
+
+  it('reverses args4 scalar words under evmCompat without Solidity import mode', () => {
+    const evm = { compiler: { options: { evmCompat: true } } } as Artifact;
+    const words = [
+      Uint8Array.from([...new Uint8Array(31), 3]), 27n,
+      Uint8Array.from([...new Uint8Array(31), 4]),
+      Uint8Array.from([...new Uint8Array(31), 5]),
+    ] as const;
+    const args4 = words.map((_value, index) => ({
+      kind: 'source', source: { kind: 'forward', paramIndex: index },
+    })) as [ExternalCallExpression, ExternalCallExpression,
+      ExternalCallExpression, ExternalCallExpression];
+    const blob = evaluateArgs4RecoveryArgument(args4, {
+      artifact: evm, args: words as unknown as (bigint | Uint8Array)[],
+      inputTypes: ['bytes32', 'uint8', 'bytes32', 'bytes32'],
+      producerResult: () => undefined,
+    });
+    expect(blob.length).toBe(97);
+    expect(blob[0]).toBe(3);
+    expect(blob[32]).toBe(27);
+    expect(blob[33]).toBe(4);
+    expect(blob[65]).toBe(5);
   });
 
   it('refuses absent producer values instead of treating a zero-shaped seed as authority', () => {

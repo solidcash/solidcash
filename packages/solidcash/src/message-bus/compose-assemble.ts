@@ -1205,7 +1205,8 @@ export async function assembleAtomicComposition(
       if (controller?.hasUnresolved()) {
         // The route carries a selected handler per logical row, while its compute slots are physical and
         // ordered across those rows. Replay only compiler-published operands. A producer leaf can use a
-        // caller-prepared exact candidate or a compiler-proven read of selected pre-state; schema-shaped
+        // caller-prepared exact candidate or a provider read shaped by a compiler-proven pre-state expression;
+        // the final graph VM proves that candidate against the exact selected producer. Schema-shaped
         // provisional graph results and failed aggregate traces never become compute operands.
         const keccakPreimages: Array<Uint8Array | null> = [];
         const recoveryArguments: Array<Uint8Array | null> = [];

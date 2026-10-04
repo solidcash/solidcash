@@ -373,6 +373,20 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toEqual(new Uint8Array(20));
   });
 
+  it('counts hex encoded bytes arguments by bytes while preserving string lengths', () => {
+    const length: ExternalCallExpression = {
+      kind: 'unary', operator: '.length', expression: source(0),
+    };
+    const hexArgument = `0x${'ab'.repeat(72)}`;
+
+    expect(evaluator._evaluateExternalExpression(
+      length, [hexArgument], artifact, undefined, [{ type: 'bytes' }],
+    )).toBe(72n);
+    expect(evaluator._evaluateExternalExpression(
+      length, [hexArgument], artifact, undefined, [{ type: 'string' }],
+    )).toBe(146n);
+  });
+
   it('evaluates compiler-published pure helper programs without helper-name knowledge', () => {
     const helperArtifact = compileString(`
       pragma solidity >=0.8.0;
@@ -579,14 +593,14 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(JSON.stringify(sources)).not.toContain('"name":"Record"');
   });
 
-  it('packs a zero address cast to uint160 as the compiler zero value', () => {
+  it('packs a zero address cast to uint160 at its declared Solidity width', () => {
     const expression: ExternalCallExpression = {
       kind: 'abiEncodePacked', fields: ['uint160'], args: [source(0)],
     };
 
     expect(evaluator._evaluateExternalExpression(
       expression, [`0x${'00'.repeat(20)}`], artifact, undefined, [{ type: 'address' }],
-    )).toEqual(new Uint8Array());
+    )).toEqual(new Uint8Array(20));
   });
 
   it.each([0, 0x47])('strips ABI framing from a packed uint160 address word (byte %s)', (byte) => {
@@ -674,6 +688,86 @@ describe('conditional external-call topology', () => {
     }, fn, [], artifact, undefined, undefined);
     expect(resolved.resolvedExternalCalls).toEqual([{
       externalContract: callee, functionName: 'ping', args: [],
+    }]);
+  });
+
+  it('retains earlier callees when a later require proves its unresolved call unreachable', async () => {
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const guard: ExternalCallExpression = {
+      kind: 'binary', operator: '&&',
+      left: { kind: 'binary', operator: '>', left: {
+        kind: 'addressCodeLength', expression: source(0),
+      }, right: { kind: 'literal', type: 'bigint', value: '0' } },
+      right: { kind: 'producerResult', callsiteId: 0, resultIndex: 0, type: 'bool' },
+    };
+    const fn = {
+      name: 'run', inputs: [{ name: 'target', type: 'address' }], externalCalls: [
+        { interfaceName: 'IReached', functionName: 'read', requiredDataNftIndices: [], argSources: [] },
+        { interfaceName: 'IUnregistered', functionName: 'write', requiredDataNftIndices: [],
+          argSources: [], preCallRequires: [guard] },
+      ],
+    } as unknown as Artifact['abi'][number];
+    const host = {
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: (name: string) => name === 'IReached' ? callee : undefined,
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+    };
+    const zero = await expandResolveCreateBuilderExternalCalls(
+      host, fn, [new Uint8Array()], artifact, undefined, undefined,
+    );
+    expect(zero.externalCalls?.map((call) => call.functionName)).toEqual(['read']);
+    expect(zero.resolvedExternalCalls).toEqual([{ externalContract: callee, functionName: 'read', args: [] }]);
+
+    const live = await expandResolveCreateBuilderExternalCalls(
+      host, fn, [Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32), 0x87)],
+      artifact, undefined, undefined,
+    );
+    expect(live.externalCalls?.map((call) => call.functionName)).toEqual(['read', 'write']);
+    expect(live.resolvedExternalCalls).toBeUndefined();
+  });
+
+  it('omits an empty loop without dropping a sibling loop that reaches its callee', async () => {
+    const callee = { categoryId: 'ab'.repeat(32) };
+    const loop = (paramIndex: number): ExternalCallAbi => ({
+      interfaceName: paramIndex === 0 ? 'IReached' : 'IUnregistered',
+      functionName: 'record', requiredDataNftIndices: [], occurrence: 'loop',
+      argSources: [{ kind: 'arrayElement', paramIndex, indexValue: 0, indexStepValue: 1 }],
+      iterationDomain: {
+        counterName: 'i', initialValue: { kind: 'literal', type: 'bigint', value: '0' },
+        stepValue: { kind: 'literal', type: 'bigint', value: '1' },
+        continueCondition: {
+          kind: 'binary', operator: '<', left: { kind: 'identifier', name: 'i' },
+          right: { kind: 'unary', operator: '.length', expression: source(paramIndex) },
+        },
+        maximumIterations: 10,
+      },
+    } as ExternalCallAbi);
+    const fn = {
+      name: 'run', inputs: [{ name: 'reached', type: 'string[]' }, { name: 'empty', type: 'string[]' }],
+      externalCalls: [loop(0), loop(1)],
+    } as unknown as Artifact['abi'][number];
+    const result = await expandResolveCreateBuilderExternalCalls({
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: (name: string) => name === 'IReached' ? callee : undefined,
+      getExternalDeploymentByAddressValue: () => undefined,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+    }, fn, [['worker'], []], artifact, undefined, undefined);
+    expect(result.externalCalls?.map((call) => call.interfaceName)).toEqual(['IReached']);
+    expect(result.resolvedExternalCalls).toEqual([{
+      externalContract: callee, functionName: 'record', args: ['worker'],
     }]);
   });
 
@@ -866,6 +960,40 @@ describe('conditional external-call topology', () => {
     });
     expect(finalArgs).toEqual([new Uint8Array(4), -1n, 8n, -1n, -1n, -1n, 12n]);
     expect(returnGroups).toEqual([-1, 0]);
+  });
+
+  it('fills a trailing omitted callsite with ABI-valid direct-call witnesses', async () => {
+    const calls = [
+      { callsiteId: 4, occurrence: 'loop', needsSelectorVerification: true },
+      { callsiteId: 7, occurrence: 'loop', needsSelectorVerification: true },
+    ];
+    const inputs = [
+      { name: '__internal__externalCallSelector0', type: 'bytes4' },
+      { name: '__internal__externalCallSelector1', type: 'bytes4' },
+      { name: '__internal__extcallMasterIdx0', type: 'bigint' },
+      { name: '__internal__extcallMasterIdx1', type: 'bigint' },
+    ];
+    const finalArgs = await fillCreateBuilderDirectCallArgWitnesses({
+      inner: { provider: createTestProvider(), artifact },
+      resolveExternalArgs: () => undefined,
+    }, {
+      abiFunction: { inputs, externalCalls: calls } as unknown as Artifact['abi'][number],
+      args: [], finalArgs: [],
+      externalCallUtxoGroups: [{
+        functionName: 'record', externalContract: {
+          inner: { artifact: { abi: [{ name: 'record', selector: '4b6685e7' }] } },
+        },
+      }] as any,
+      groupMetas: [{ ecSlot: calls[0], callerCategoryId: 'ab'.repeat(32), parentGroupIndex: -1 }] as any,
+      directGroupCount: 1, loopIdxRanges: [], groupMasterIndices: [8],
+      externalCalls: [calls[0]] as any, returnEventOutputBase: 0,
+      returnEventIndexMap: new Map(), callerStateSnapshot: undefined,
+      onChainState: { state: {} }, publicSelfAddress: new Uint8Array(),
+      identityAnchors: [], identityAnchorBandByAddress: new Map(),
+      externalCallAnchorIndices: new Map(), topLevelAnchorFillPositions: [],
+      topLevelReturnWitnessPlan: [], topLevelReturnWitnessGroups: [],
+    });
+    expect(finalArgs).toEqual([hexToBin('4b6685e7'), new Uint8Array(4), 8n, -1n]);
   });
 
   it('omits direct callees when every published affine loop has zero iterations', async () => {

@@ -185,8 +185,8 @@ export async function discoverInitialCallTopology(
   root: Prepared,
   rootCaller: Uint8Array,
   stateOf: (contract: StatefulContract) => Promise<Record<string, unknown>>,
-): Promise<Prepared[]> {
-  return (await rebuildCallTopology(rootCaller, stateOf, [root])).calls;
+): Promise<{ calls: Prepared[]; prunedByPreCallRequire: boolean }> {
+  return rebuildCallTopology(rootCaller, stateOf, [root]);
 }
 
 async function rebuildCallTopology(
@@ -195,7 +195,7 @@ async function rebuildCallTopology(
   prepared: readonly Prepared[],
   ctx?: ResultPropagationContext,
   results: Readonly<Record<number, string>> = {},
-): Promise<{ propagated: boolean; calls: Prepared[] }> {
+): Promise<{ propagated: boolean; calls: Prepared[]; prunedByPreCallRequire: boolean }> {
   const resultsByParent: ReturnType<typeof decodeResultsByParent> = ctx
     ? decodeResultsByParent(ctx, results) : new Map();
   const childrenByParent = new Map<number, Child[]>();
@@ -207,6 +207,7 @@ async function rebuildCallTopology(
   }
   const calls: Prepared[] = [];
   let propagated = false;
+  let prunedByPreCallRequire = false;
   const visit = async (entry: Child, incoming: Uint8Array, depth: number): Promise<void> => {
     if (depth > 7) throw new Error('messageBus: result-dependent call topology exceeds the graph depth limit');
     const { call, previous } = entry;
@@ -328,12 +329,40 @@ async function rebuildCallTopology(
               : ctx?.plan.invocations[child.previous]?.sourceLogicalIndex
                 ?? child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex
           ) === sourceTemplate.sourceLogicalIndex);
+          // A false require before the first unconditional root call leaves no reachable child. Later
+          // requires may follow an already executed getter: pruning just their descendants can leave its
+          // prepared return commitment in a partially aborted graph. Only the root can use this proof:
+          // nested msg.sender and tx.origin differ, but older metadata records both as msgSender.
+          if (depth === 0 && source === sources[0] && source.condition === undefined
+            && sourceTemplate.preCallRequires?.length) {
+            let rejected = false;
+            for (const guard of sourceTemplate.preCallRequires) {
+              try {
+                const returns = returnsFor([{ kind: 'expression', expression: guard }], sourceTemplate);
+                await hydrate([guard], [0], returns);
+                if (evaluate(guard, 0, returns) === false) {
+                  rejected = true;
+                  break;
+                }
+              } catch {
+                // An unresolved producer lane cannot prove this guard false. Other independent guards may still
+                // reject it; otherwise retain the call for final VM validation.
+              }
+            }
+            if (rejected) {
+              prunedByPreCallRequire = true;
+              return;
+            }
+          }
           if (previous !== undefined && ctx !== undefined && !hasChangedDependency(
             [sourceTemplate.condition, sourceTemplate.iterationDomain, sourceTemplate.nestedIterationDomains,
               sourceTemplate.preCallRequires, sourceTemplate.argSources, sourceTemplate.rawArgSources,
               sourceTemplate.addressSource], childResults,
             ctx.descriptors[previous].args, call.args,
-          )) {
+          ) && (existing.length > 0 || !hasChangedDependency(
+            sourceTemplate.rawArgSources ?? sourceTemplate.argSources, childResults,
+            ctx.descriptors[previous].args, call.args,
+          ))) {
             // Argument propagation already refreshed existing rows. A result unrelated to this edge's
             // reachability must not reinterpret an independently prepared loop or its occurrence domain.
             // Later sibling guards may still consume this unchanged producer by source iteration. Preserve its
@@ -778,5 +807,5 @@ async function rebuildCallTopology(
   await visit({ call: prepared[0], ...(ctx && { previous: 0 }) }, rootCaller, 0);
   // Results are already carried by `prepared` at their original invocation identity; never remap the old
   // numeric result table over the new DFS indices (insertion/removal would cross-wire unrelated producers).
-  return { propagated, calls };
+  return { propagated, calls, prunedByPreCallRequire };
 }

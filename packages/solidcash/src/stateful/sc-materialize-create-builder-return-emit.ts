@@ -124,6 +124,13 @@ export async function materializeCreateBuilderReturnEmit(
     ?? (builder as any).__derivedReturnBlob as Uint8Array | undefined
     ?? host.deriveReturnBlob(builder, returnMaterializationOutputIndex, delegatecallInputIndex ?? 0);
     if (!blob) {
+      // A require that rejects the read produces no return commitment. Preserve the VM/source-mapped error
+      // recorded by the derivation pass; the generic missing-return diagnostic masks the actual contract
+      // failure and makes a precise revert assertion impossible. Never substitute a speculative reason.
+      if ((builder as { __vmErrored?: boolean }).__vmErrored) {
+        const executedFailure = (builder as { __derivationError?: Error }).__derivationError;
+        if (executedFailure) throw executedFailure;
+      }
       throw new Error(
         `Could not derive the return value of '${functionName}' for .emitReturn(). `
       + 'The covenant trace did not expose an authenticated return commitment.'

@@ -99,8 +99,8 @@ export const evmStaticResultBytes = (types: readonly Type[]): number | undefined
   return total;
 };
 
-/** Dynamic ABI results may exceed an NFT commitment even when their runtime value is short. */
-export const evmResultNeedsPreimage = (types: readonly Type[]): boolean => {
+/** A dynamic ABI result can cross the NFT commitment limit at runtime. */
+export const evmResultMayNeedPreimage = (types: readonly Type[]): boolean => {
   const staticBytes = evmStaticResultBytes(types);
   return staticBytes === undefined || staticBytes > 128;
 };

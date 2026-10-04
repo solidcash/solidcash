@@ -219,6 +219,26 @@ describe('TypeChain-compatible generation', () => {
     expect(fs.readFileSync(path.join(options.targets[0].outDir, 'contracts', 'nested', 'Counter.ts'), 'utf8'))
       .toContain('Ethers 5-compatible layout');
   });
+  it('regenerates cached bindings when an obsolete generated contract remains', () => {
+    const root = project();
+    writeFixture(root, artifact());
+    const outDir = path.join(root, 'typechain-types');
+    const options = {
+      artifactsDir: path.join(root, 'artifacts', 'solidcash'),
+      contractsDir: path.join(root, 'contracts'),
+      cacheDir: path.join(root, 'cache', 'solidcash'),
+      targets: [{ target: 'ethers6' as const, outDir }],
+    };
+    expect(generateTypechainTargets(options)[0].skipped).toBe(false);
+    const stale = path.join(outDir, 'contracts', 'Removed.ts');
+    fs.writeFileSync(stale, "import RemovedArtifact from '../../artifacts/solidcash/Removed.artifact.js';\n");
+    fs.appendFileSync(path.join(outDir, 'index.ts'), "export * from './contracts/Removed.js';\n");
+
+    expect(generateTypechainTargets(options)[0].skipped).toBe(false);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.readFileSync(path.join(outDir, 'index.ts'), 'utf8'))
+      .not.toContain("export * from './contracts/Removed.js';");
+  });
   it('can preserve a compatibility source tree independently of compiled sources', () => {
     const root = project();
     writeFixture(root, artifact());

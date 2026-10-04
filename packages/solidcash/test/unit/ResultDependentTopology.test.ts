@@ -97,7 +97,7 @@ describe('result-dependent topology propagation', () => {
       argSources: readonly { kind: string; paramIndex?: number }[], args: readonly unknown[],
     ) => argSources.map((source) => source.kind === 'forward' ? args[source.paramIndex!] : undefined);
     root.args = [`0x${'00'.repeat(20)}`];
-    expect(await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf)).toEqual([root]);
+    expect((await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf)).calls).toEqual([root]);
     root.args = [`0xaa20${'01'.repeat(32)}87`];
     await expect(discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf))
       .rejects.toThrow(/cannot resolve newly reached callsite 0/);
@@ -232,6 +232,37 @@ describe('result-dependent topology propagation', () => {
     expect(failedProbeCannotReplaceTransientSeed(true, 'aa', 'aa')).toBe(true);
     expect(failedProbeCannotReplaceTransientSeed(true, 'bb', 'aa')).toBe(false);
     expect(failedProbeCannotReplaceTransientSeed(false, 'aa', 'aa')).toBe(false);
+  });
+
+  it('discovers a missing void child after its argument producer returns', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0].contract;
+    const fn = root.inner.artifact.abi[0];
+    fn.externalCalls = [
+      sources[0],
+      { ...sources[1], condition: undefined, argSources: [{ kind: 'expression', expression: producer }] },
+      sources[3],
+    ];
+    fn.resultConsumers = [{ consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0, resultIndex: 0 }];
+    Object.assign(root, {
+      _resolveExternalArgs: (argSources: readonly { expression?: ExternalCallExpression }[], ...rest: unknown[]) => {
+        const returns = rest[4] as ReadonlyMap<string, boolean> | undefined;
+        return argSources.map((source) => source.expression
+          ? returns?.get(JSON.stringify(source.expression)) : undefined);
+      },
+    });
+    const rows = [ctx.plan.invocations[0], ctx.plan.invocations[1],
+      { ...ctx.plan.invocations[4], index: 2 }];
+    ctx.plan = { ...ctx.plan, invocations: rows };
+    ctx.descriptors = [ctx.descriptors[0], ctx.descriptors[1], ctx.descriptors[4]];
+    ctx.returning = [rows[1], rows[2]];
+
+    const results = { 1: '01'.padStart(64, '0') };
+    const argumentsResult = propagateResultDependentArguments(ctx, results);
+    const changed = await propagateResultDependentCallTopology(ctx, argumentsResult.calls, results);
+    expect(changed.propagated).toBe(true);
+    expect(changed.calls.map((call) => call.callsiteId)).toEqual([undefined, 0, 1, 3]);
+    expect(changed.calls[2].args).toEqual([true]);
   });
 
   it('replaces the selected subtree without moving a later producer seed to the new branch', async () => {

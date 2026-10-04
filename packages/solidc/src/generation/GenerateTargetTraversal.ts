@@ -267,7 +267,8 @@ import {
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
 import {
-  evmResultNeedsPreimage, externalResultEncoding, isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
+  evmStaticResultBytes, evmResultMayNeedPreimage, externalResultEncoding,
+  isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
 } from '../semantic/ExternalResultEncoding.js';
 import { analyseContractInvocations, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
@@ -1642,6 +1643,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopInputCountParam: string | undefined;
   private sortedUpsertLoopOutputCountParam: string | undefined;
   private sortedUpsertGrouped = false;
+  private repeatedSortedUpsertLoopTotals = new Map<string, {
+    inputName: string; outputName: string;
+  }>();
   private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
   private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
   private ecrecoverLoopCounterName: string = '(loop_ecrecover_counter)'; // recovery pairs read-so-far (dynamic loop)
@@ -6325,6 +6329,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Delegate tracking
     this.functionHasDelegatecall = node.lowLevelCalls?.some((c) => c.callMode === 'delegatecall') ?? false;
     this.currentFunctionIsDelegate = node.modifiers.includes(FunctionModifier.DELEGATE);
+    this.repeatedSortedUpsertLoopTotals = !this.isDefineSubTraversal && !this.currentFunctionIsDelegate
+      && !this.currentFunctionIsMessageBusRoute
+      ? this.findRepeatedSortedUpsertLoopTotals(node.body) : new Map();
 
     // Fallback with bytes parameter: compute msg.data and bind it as the parameter value.
     // The parameter is NOT passed by the SDK - it's computed inline from OP_INPUTBYTECODE.
@@ -6800,6 +6807,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.vmapWitnessSnapshotNames = null;
     this.vmapUpsertWitnessSnapshotNames = null;
     this.emitRuntimeAliasWitnessPreflight(node);
+    // Source loops over the same collection share one physical entry run. Retain their proved widths until the
+    // function exit, where one address census also covers paths which skip a later loop entirely.
+    for (const total of this.repeatedSortedUpsertLoopTotals.values()) {
+      this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(total.inputName);
+      this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(total.outputName);
+    }
     if (!this.isDefineSubTraversal) {
       for (const collection of this.vmapRuntimeCollections(node)) {
         for (const name of [
@@ -6933,6 +6948,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (box) box.codegenMatchedKernelJournalDispositionCommitment = dispositionDigest;
     }
     node.body = this.visit(node.body) as BlockNode;
+    this.emitRepeatedSortedUpsertLoopCensuses(node);
     // After Instantiation visits, deployTargets carries the true child dataNftCount (including oracle
     // fields packed after semantic Instantiation). Expand deployDataNft layout slots so vmap tails and
     // child genesis data NFTs no longer share the first post-blockSize index.
@@ -19518,39 +19534,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       if (!node.opaqueReturn
         && externalResultEncoding(returnTypes, this.compilerOptions) === 'evm-abi-v1'
-        && evmResultNeedsPreimage(returnTypes)) {
+        && evmResultMayNeedPreimage(returnTypes)) {
+        const dynamicResult = evmStaticResultBytes(returnTypes) === undefined;
+        if (dynamicResult) {
+          // A dynamic ABI return is stored raw when it fits the NFT commitment and by SHA256 when
+          // it does not. Canonical dynamic ABI encodings are at least two words, so a 32-byte
+          // commitment is the hashed case. The preimage branch authenticates its full value.
+          this.emit(Op.OP_SIZE, locationData); // [commitment, length]
+          this.emit(encodeInt(32n), locationData);
+          this.emit(Op.OP_EQUAL, locationData);
+          this.emit(Op.OP_IF, locationData); // [commitment]
+        }
         const preimageParamName = returningSlotCount === 1
           ? '__internal__externalReturnPreimage'
           : `__internal__externalReturnPreimage${returnSlotIndex}`;
-        // A long result is committed by SHA256(raw); a short dynamic result can be stored raw. Authenticate
-        // a supplied preimage against either representation before ABI decoding. An absent preimage is valid
-        // only when the output itself is longer than a digest, so a hashed result cannot be decoded as data.
+        // A long result is committed by SHA256(raw); a short dynamic result is decoded directly from its
+        // raw commitment. Authenticate the supplied preimage only on the digest branch.
         // One untracked output commitment is above the tracked parameters at this point.
         this.emit(encodeInt(BigInt(this.getStackIndex(preimageParamName) + 1)), locationData);
-        this.emit(Op.OP_PICK, locationData); // [commitment, raw]
+        this.emit(Op.OP_PICK, locationData); // [digest, raw]
+        if (dynamicResult) {
+          this.emit(Op.OP_SIZE, locationData);
+          this.emit(encodeInt(128n), locationData);
+          this.emit(Op.OP_GREATERTHAN, locationData);
+          this.emit(Op.OP_VERIFY, locationData); // only an oversized return may use a digest
+        }
         this.emit(Op.OP_DUP, locationData);
-        this.emit(Op.OP_SIZE, locationData);
-        this.emit(Op.OP_NIP, locationData);
-        this.emit(Op.OP_IF, locationData);
-        this.emit(Op.OP_2DUP, locationData);
-        this.emit(Op.OP_EQUAL, locationData);
-        this.emit(Op.OP_TOALTSTACK, locationData); // [commitment, raw]; alt: [exact]
-        this.emit(Op.OP_DUP, locationData);
-        this.emit(Op.OP_SHA256, locationData);
-        this.emit(Op.OP_ROT, locationData); // [raw, SHA256(raw), commitment]
-        this.emit(Op.OP_EQUAL, locationData);
-        this.emit(Op.OP_FROMALTSTACK, locationData);
-        this.emit(Op.OP_BOOLOR, locationData);
-        this.emit(Op.OP_VERIFY, locationData); // [raw]
-        this.emit(Op.OP_ELSE, locationData);
-        this.emit(Op.OP_DROP, locationData); // [commitment]
-        this.emit(Op.OP_DUP, locationData);
-        this.emit(Op.OP_SIZE, locationData);
-        this.emit(Op.OP_NIP, locationData);
-        this.emit(encodeInt(32n), locationData);
-        this.emit(Op.OP_GREATERTHAN, locationData);
-        this.emit(Op.OP_VERIFY, locationData); // [raw commitment]
-        this.emit(Op.OP_ENDIF, locationData);
+        this.emit(Op.OP_SHA256, locationData); // [digest, raw, SHA256(raw)]
+        this.emit(Op.OP_ROT, locationData); // [raw, SHA256(raw), digest]
+        this.emit(Op.OP_EQUALVERIFY, locationData); // [raw]
+        if (dynamicResult) this.emit(Op.OP_ENDIF, locationData);
       }
 
       if (node.opaqueReturn) {
@@ -26449,6 +26462,78 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return true;
   }
 
+  private findRepeatedSortedUpsertLoopTotals(root: Node | undefined): Map<string, {
+    inputName: string; outputName: string;
+  }> {
+    const counts = new Map<string, number>();
+    const seen = new WeakSet<object>();
+    const walk = (node: Node | undefined): void => {
+      if (!node || seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof WhileNode || node instanceof DoWhileNode) {
+        const streams = new Set<string>();
+        const collections = new Set<string>();
+        for (;;) {
+          const write = this.findSortedUpsertLoopWrite(node.block, streams);
+          if (!write?.collection) break;
+          const stream = this.sortedUpsertStreamKey(write);
+          if (streams.has(stream)) break;
+          streams.add(stream);
+          collections.add(write.collection.name);
+        }
+        for (const collection of collections) {
+          counts.set(collection, (counts.get(collection) ?? 0) + 1);
+        }
+        // The outer loop's context owns nested writes too.
+        return;
+      }
+      for (const [key, value] of Object.entries(node as unknown as Record<string, unknown>)) {
+        if (key === 'location' || key === 'collection' || key === 'symbol' || key === 'type') continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(root);
+    const threaded = new Set(this.vmapRuntimeCollections(this.currentFunction));
+    return new Map([...counts]
+      .filter(([collection, count]) => count > 1 && !threaded.has(collection))
+      .map(([collection]) => {
+        const suffix = collection.replace(/[^A-Za-z0-9_]/g, '_');
+        return [collection, {
+          inputName: `(sorted_upsert_total_in_${suffix})`,
+          outputName: `(sorted_upsert_total_out_${suffix})`,
+        }];
+      }));
+  }
+
+  private emitRepeatedSortedUpsertLoopCensuses(node: FunctionDefinitionNode): void {
+    const loc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
+    for (const [collection, total] of this.repeatedSortedUpsertLoopTotals) {
+      const signature = this.vmapCollectionSignature(collection);
+      if (!signature) throw new Error(`Missing sorted-upsert collection signature for '${collection}'`);
+      this.emitMasterInputIndex(loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emitTakeFirst32(loc);
+      this.pushToStack('(ul_scan_addr)');
+      this.emitSortedEntryAddress(computeCollectionHash(signature), loc);
+      this.stack[0] = '(ul_scan_addr)';
+      const nFixed = this.entrySlots.filter(
+        (slot, index) => slot.collection === collection && this.ownsFixedEntrySlot(index),
+      ).length;
+      for (const [countName, output] of [[total.inputName, false], [total.outputName, true]] as const) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(countName))), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_TOALTSTACK, loc);
+        this.emitVerifyAdjacentUtxoCount(output, loc, nFixed);
+      }
+      for (const name of ['(ul_scan_addr)', total.outputName, total.inputName]) {
+        const index = this.getStackIndex(name);
+        this.emit(encodeInt(BigInt(index)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+        this.removeFromStack(index);
+      }
+    }
+  }
+
   private emitSortedUpsertLoopSetups(block: Node, loc: SingleLocationData): SortedUpsertLoopContext[] {
     const contexts: SortedUpsertLoopContext[] = [];
     const executionGroup = this.nextKernelJournalExecutionGroup++;
@@ -28614,6 +28699,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.sortedUpsertPendActive) this.emitSortedFlushPendingNormal(loc);
     const collection = this.sortedUpsertLoopCollection;
     if (collection === null) throw new Error('Missing runtime-loop collection while settling cardinality');
+    const repeated = this.repeatedSortedUpsertLoopTotals.get(collection);
+    if (repeated) {
+      for (const [source, target] of [[this.sortedUpsertLoopCounterName, repeated.inputName],
+        [this.sortedUpsertLoopOutCounterName, repeated.outputName]] as const) {
+        this.emitPickCompilerRouteFrameValue(source, loc);
+        this.pushToStack('(sorted_upsert_site_total)');
+        this.emitPickCompilerRouteFrameValue(target, loc);
+        this.pushToStack('(sorted_upsert_prior_total)');
+        this.emit(Op.OP_ADD, loc);
+        this.popFromStack(2);
+        this.pushToStack('(sorted_upsert_combined_total)');
+        this.emitReplaceCompilerRouteFrameValue(target, this.currentFunction);
+        this.popFromStack();
+      }
+    }
     for (const [counterName, exactName] of [
       [this.sortedUpsertLoopCounterName, this.sortedUpsertLoopInputCountParam],
       [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopOutputCountParam],
@@ -28629,7 +28729,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (hasThreadedCardinality) {
       this.emitConsumeVMapRuntimeCardinality(this.sortedUpsertLoopCounterName, false, loc);
       this.emitConsumeVMapRuntimeCardinality(this.sortedUpsertLoopOutCounterName, true, loc);
-    } else if (!this.currentFunctionIsDelegate && !this.homogeneousRuntimeLoopCollection(this.currentFunction)) {
+    } else if (!this.currentFunctionIsDelegate && !repeated
+      && !this.homogeneousRuntimeLoopCollection(this.currentFunction)) {
       // Non-counter runtime loop lowerings retain their established local count pin. They have no route-threaded
       // cardinality ABI, so each direct invocation remains independently orphan-bound.
       const nFixed = this.entrySlots.filter(

@@ -184,13 +184,11 @@ export function evaluateExternalExpression(
     // else (including a user string that merely starts with malformed hex) keeps the text encoding.
     if (typeof value === 'string') {
       const canonicalHex = /^0x(?:[0-9a-fA-F]{2})*$/.test(value);
-      if (!solidityImportCompat && typeHint === 'uint160' && isZeroAddressValue(value)) {
-        return new Uint8Array();
-      }
       if (solidityImportCompat && typeHint === 'uint160') {
         const locking = addressBytes(value);
         return locking === undefined ? undefined : narrowAddress(locking);
       }
+      if (typeHint === 'uint160' && isZeroAddressValue(value)) return new Uint8Array();
       if (canonicalHex && typeHint === 'uint160' && value.length === 42) {
         return concat([hexToBin(value.slice(2)), new Uint8Array([0])]);
       }
@@ -358,6 +356,13 @@ export function evaluateExternalExpression(
     if (value === undefined) return undefined;
     if (expression.operator === '.length') {
       if (typeof value === 'string' || Array.isArray(value) || value instanceof Uint8Array) {
+        // Ethers passes `bytes` arguments as 0x-prefixed hex strings. Their Solidity length is the decoded
+        // byte count, while a real `string` still counts its characters. Use the published operand type so
+        // a text value that happens to look like hex keeps its string semantics.
+        const byteLength = typeof value === 'string'
+          && inferredType(expression.expression).startsWith('bytes')
+          && /^0x(?:[0-9a-fA-F]{2})*$/.test(value)
+          ? (value.length - 2) / 2 : value.length;
         // Same-function dynamic writes (values.push then w[values.length-1]) must see the post-write
         // length. fixedKeySources already apply stateLengthDeltas via evalComputedKey; varyingKeyExpressions
         // must match or a later constructed key resolves to -1 against empty pre-state.
@@ -365,12 +370,7 @@ export function evaluateExternalExpression(
         const writeDelta = stateName ? stateLengthDeltas?.[stateName] ?? 0n : 0n;
         const legacyDelta = !stateIncludesPriorWrites && typeof expression.value === 'string'
           ? BigInt(expression.value) : 0n;
-        // SDK `bytes` arguments may be represented as canonical hex strings, but the VM observes
-        // their decoded byte length. A Solidity string still uses its ordinary text length here.
-        const length = typeof value === 'string' && inferredType(expression.expression).startsWith('bytes')
-          && /^0x(?:[0-9a-fA-F]{2})*$/.test(value)
-          ? (value.length - 2) / 2 : value.length;
-        return BigInt(length) + writeDelta + legacyDelta;
+        return BigInt(byteLength) + writeDelta + legacyDelta;
       }
     }
     if (expression.operator === '!') return !value;

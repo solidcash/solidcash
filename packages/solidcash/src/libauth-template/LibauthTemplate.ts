@@ -814,10 +814,12 @@ const BODY_VARIABLE_PREFIX = 'body_';
 const generateDefinedFunctionBodyScripts = (contract: Contract): WalletTemplate['scripts'] =>
   Object.fromEntries(Object.keys(contract.artifact.functionBodies ?? {}).flatMap((selector) => {
     const abiFunction = contract.artifact.abi.find((candidate) => candidate.selector === selector);
-    if (!abiFunction || !contract.artifact.debug?.functionDebug?.[selector]) return [];
+    // Compiler routes (including SCB1) have defined bodies and source maps but no public ABI entry. The main
+    // debug script references these bodies too, so every referenced definition needs a template script.
+    if (!contract.artifact.debug?.functionDebug?.[selector]) return [];
     return [[getDefinedFunctionBodyLockScriptName(contract.artifact.contractName, selector), {
       lockingType: 'standard' as const,
-      name: `${contract.artifact.contractName} ${abiFunction.name} (${selector}) defined body`,
+      name: `${contract.artifact.contractName} ${abiFunction?.name ?? 'compiler route'} (${selector}) defined body`,
       script: formatFunctionBodyForDebugging(contract.artifact, selector),
     }]];
   }));

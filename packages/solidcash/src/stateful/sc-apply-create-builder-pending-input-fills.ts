@@ -108,9 +108,13 @@ export function applyCreateBuilderPendingInputFills(params: {
       let fillChanged = false;
       const updates: Record<string, FunctionArgument> = {};
       for (const position of fill.positions) {
-        const next = BigInt(position.categoryId === undefined
+        const inputIndex = position.categoryId === undefined
           ? builder.getIdentityAnchorInputIndex(position.band)
-          : builder.getIdentityAnchorInputIndexByCategory(position.categoryId))
+          : builder.getIdentityAnchorInputIndexByCategory(position.categoryId);
+        if (position.required === true && inputIndex < 0) {
+          throw new Error(`Nested caller CREATE identity anchor is missing for ${position.categoryId}`);
+        }
+        const next = BigInt(inputIndex)
         + (position.proxyRoute ? 1_000_000n : 0n);
         if (fill.encodedArgs[position.argIndex] === next) continue;
         fill.encodedArgs[position.argIndex] = next;

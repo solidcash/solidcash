@@ -8,12 +8,14 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   encodePushdataValue,
+  parseChunkCommitment,
   type AbiFunction,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
+import { createReadOnlyDynamicChunkUnlocker, getDynamicChunkAddress } from './covenant-helpers.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import type { ExternalCallInfo } from './StatefulContract.js';
@@ -120,6 +122,8 @@ export async function orchestrateCreateBuilderExternalCalls(
     earlySignerUtxos: Utxo[] | undefined;
     publicSelfAddress: any;
     publicSelfIdentity: any;
+    physicalSelfAddress: Uint8Array;
+    rootLogicalAddress?: string;
     timing: (label: string) => void;
     valueChunkWriteStagingSession: any;
     iterationEntryInputs: readonly any[];
@@ -375,7 +379,7 @@ export async function orchestrateCreateBuilderExternalCalls(
           externalCategoryId,
           slotIndex,
           loopIdxRanges,
-          publicSelfAddress,
+          publicSelfIdentity,
         };
         await assembleCreateBuilderNestedCalleeBlockInputsImpl(
           {
@@ -398,6 +402,41 @@ export async function orchestrateCreateBuilderExternalCalls(
         );
         bBlockInputs = nestedBlockCtx.bBlockInputs;
         bReturnEventInBlock = nestedBlockCtx.bReturnEventInBlock;
+      }
+
+      // A direct view callee must co-spend the chunks it reads after its published block. The
+      // callee covenant authenticates their address and order; omitting them leaves its hidden
+      // dynamic-input base pointing into another participant's inputs.
+      const bDynamicChunkResources: NonNullable<ExternalCallUtxoGroup['dynamicChunkResources']> = [];
+      if (bBlockInputs !== undefined && bAbiFunc !== undefined && compilerRoute === undefined) {
+        const written = new Set(bAbiFunc.dynamicWrites ?? []);
+        for (const name of bAbiFunc.dynamicReads ?? []) {
+          if (written.has(name)) continue;
+          const variable = bStatelayout.variables.find((candidate) => candidate.name === name && candidate.dynamic);
+          if (variable === undefined) continue;
+          const address = getDynamicChunkAddress(
+            callInfo!.externalContract.inner, externalCategoryId, name, variable.type,
+          );
+          const chunks = (await host.inner.provider.getUtxos(address))
+            .filter((utxo: Utxo) => utxo.token?.category === externalCategoryId
+              && utxo.token.nft?.capability === 'mutable'
+              && utxo.token.nft.commitment.length > 0)
+            .map((utxo: Utxo) => ({
+              utxo, index: parseChunkCommitment(utxo.token!.nft!.commitment).chunkIndex,
+            }))
+            .sort((left: { index: number }, right: { index: number }) => left.index - right.index);
+          for (const { utxo } of chunks) {
+            bBlockInputs.push({
+              ...utxo,
+              unlocker: createReadOnlyDynamicChunkUnlocker(
+                callInfo!.externalContract.inner, 0, externalCategoryId, name, variable.type,
+              ),
+            });
+            bDynamicChunkResources.push({
+              blockSlot: bBlockInputs.length - 1, name, type: variable.type, write: false,
+            });
+          }
+        }
       }
 
       // Cross-contract callee LOOP write (docs/deferrals.md #1): B's function loops `for(i) this.m[ks[i]] (+)= vs[i]`
@@ -454,6 +493,7 @@ export async function orchestrateCreateBuilderExternalCalls(
             bGraphBlockhashSelections,
             bKeccak,
             bDynamicChunkInputs,
+            bDynamicChunkResources,
             bEntryLoopCommitments,
             bEntryLoopStart,
             bEntryLoopCollection,
@@ -467,6 +507,14 @@ export async function orchestrateCreateBuilderExternalCalls(
             returnProbeOnly: overrides?.returnProbeOnly,
           } as any,
         );
+        if (bDynamicChunkResources.length > 0 && bBlockInputs !== undefined) {
+          const first = [...bDynamicChunkResources].sort((left, right) => left.blockSlot - right.blockSlot)[0]!;
+          pendingDynamicChunkInputFills.push({
+            group: externalCallUtxoGroups[externalCallUtxoGroups.length - 1],
+            root: false,
+            target: bBlockInputs[first.blockSlot],
+          });
+        }
       }
     }
 
@@ -637,6 +685,9 @@ export async function orchestrateCreateBuilderExternalCalls(
     const nestedBasesUnlockers = await finalizeCreateBuilderNestedBasesUnlockersImpl(
       {
         provider: host.inner.provider,
+        physicalRootLockingBytecode: params.physicalSelfAddress,
+        rootLogicalAddress: params.rootLogicalAddress,
+        pendingAnchorFills,
         selectorParamSlot,
         isComputedBlockhashKey,
         noteBhLocktime: (locktime) => { maxBhLocktime = Math.max(maxBhLocktime, locktime); },

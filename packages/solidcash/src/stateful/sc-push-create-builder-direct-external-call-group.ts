@@ -44,6 +44,7 @@ export interface PushCreateBuilderDirectExternalCallGroupInput {
   bGraphBlockhashSelections: NonNullable<ExternalCallUtxoGroup['graphBlockhashSelections']> | [];
   bKeccak: { recreates: NonNullable<ExternalCallUtxoGroup['keccakRecreates']> };
   bDynamicChunkInputs: NonNullable<ExternalCallUtxoGroup['ordinaryDynamicChunkInputs']>;
+  bDynamicChunkResources: NonNullable<ExternalCallUtxoGroup['dynamicChunkResources']>;
   bEntryLoopCommitments: string[] | undefined;
   bEntryLoopStart: number | undefined;
   bEntryLoopCollection: string | undefined;
@@ -86,6 +87,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     bGraphBlockhashSelections,
     bKeccak,
     bDynamicChunkInputs,
+    bDynamicChunkResources,
     bEntryLoopCommitments,
     bEntryLoopStart,
     bEntryLoopCollection,
@@ -274,6 +276,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     ...(ec.callMode && { callMode: ec.callMode }),
     ...(bPlannedEntryInserts.length > 0 && { plannedEntryInserts: bPlannedEntryInserts }),
     ...(bBlockInputs && { blockInputs: bBlockInputs, blockLayout: bBlockLayout }),
+    ...(bDynamicChunkResources.length > 0 && { dynamicChunkResources: bDynamicChunkResources }),
     ...(directSharedGroupIndex >= 0 && {
       sharedGroupIndex: directSharedGroupIndex,
       // An explicit empty block makes all input-count/layout reducers consume zero physical slots for

@@ -380,9 +380,11 @@ describe('external-call witness frame access', () => {
 describe('address.code with an authenticated external-call slot', () => {
   it('checks the requested address before using the authenticated slot as a code marker', () => {
     const artifact = compileMessageBus(
-      'interface IERC20 { function balanceOf(address a) external returns (int); }'
+      'interface IERC20 { function balanceOf(address a) external returns (int);'
+      + ' function approve(address a, int n) external returns (bool); }'
       + ' contract C() { function f(address token) {'
       + ' require(token.code.length > 0 && IERC20(token).balanceOf(msg.sender) > 0, "invalid token");'
+      + ' IERC20(token).approve(msg.sender, 1);'
       + ' require(true); } }',
     );
     expect(artifact.abi.find((candidate) => candidate.name === 'f')?.externalCalls?.[0]?.addressParam)
@@ -397,6 +399,12 @@ describe('address.code with an authenticated external-call slot', () => {
         },
         right: { kind: 'literal', type: 'bigint', value: '0' },
       });
+    expect(artifact.abi.find((candidate) => candidate.name === 'f')?.externalCalls?.[1]?.preCallRequires)
+      .toContainEqual(expect.objectContaining({
+        kind: 'binary', operator: '&&', left: expect.objectContaining({
+          kind: 'binary', operator: '>', left: expect.objectContaining({ kind: 'addressCodeLength' }),
+        }),
+      }));
     // Preserve address(0) as empty `.code`; only a non-empty address may select the authenticated slot marker.
     expect(artifact.bytecode).toContain('OP_DUP OP_SIZE OP_0 OP_NUMEQUAL OP_IF OP_ELSE OP_DROP');
   });

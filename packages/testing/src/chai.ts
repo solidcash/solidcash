@@ -72,13 +72,20 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
   if (actualBytes && isCashAddr(expected)) {
     const lockingBytecode = decode(expected);
     if (lockingBytecode) {
-      return [binToHex(actualBytes), binToHex(payload(lockingBytecode, actualBytes.length) ?? lockingBytecode)];
+      // Solidity event decoders return an EVM address string, while deployed BCH contracts expose a CashAddress.
+      // A P2SH32 script has no direct 20-byte payload: its Solidity identity is hash160(full script).
+      // Keep raw byte arrays exact unless they carry ABI address typing (handled above).
+      const projected = typeof actual === 'string' && actualBytes.length === 20
+        ? decodedSolidityAddressIdentity(lockingBytecode) : undefined;
+      return [binToHex(actualBytes), binToHex(projected ?? payload(lockingBytecode, actualBytes.length) ?? lockingBytecode)];
     }
   }
   if (isCashAddr(actual) && expectedBytes) {
     const lockingBytecode = decode(actual);
     if (lockingBytecode) {
-      return [binToHex(payload(lockingBytecode, expectedBytes.length) ?? lockingBytecode), binToHex(expectedBytes)];
+      const projected = typeof expected === 'string' && expectedBytes.length === 20
+        ? decodedSolidityAddressIdentity(lockingBytecode) : undefined;
+      return [binToHex(projected ?? payload(lockingBytecode, expectedBytes.length) ?? lockingBytecode), binToHex(expectedBytes)];
     }
   }
   return [actual, expected];

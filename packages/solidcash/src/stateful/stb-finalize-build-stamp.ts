@@ -28,6 +28,7 @@ export interface FinalizeBuildStampHost {
   readonly authenticatedViewReturnByGroup: ReadonlyMap<number, { categoryId: string; commitment: string }>;
   applyDerivedValueChunks(builder: TransactionBuilder): boolean | void;
   reassertStagedValueChunkOutputs(builder: TransactionBuilder): void;
+  stripSurplusDerivedValueChunkLocks(builder: TransactionBuilder): void;
   stripEmptyDuplicateEntryLocks(builder: TransactionBuilder): void;
   syncBuilderUnlockers(builder: TransactionBuilder): void;
   dynamicChunkOutputCount(): number;
@@ -47,6 +48,7 @@ export function finalizeBuildStamp(
 // earlier derived-chunk pass. Re-apply once at the end so OUTPUTBYTECODE pins stay authoritative.
   host.applyDerivedValueChunks(builder);
   host.reassertStagedValueChunkOutputs(builder);
+  host.stripSurplusDerivedValueChunkLocks(builder);
   host.stripEmptyDuplicateEntryLocks(builder);
   // The final output passes above can relocate the balanced input twins which carry dynamic storage chunks.
   // Rebuild the master unlocker against that settled physical input order even when no other witness changed.

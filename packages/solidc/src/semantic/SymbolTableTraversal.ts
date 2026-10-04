@@ -125,7 +125,7 @@ import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
-import { evmResultNeedsPreimage, externalResultEncoding } from './ExternalResultEncoding.js';
+import { evmResultMayNeedPreimage, externalResultEncoding } from './ExternalResultEncoding.js';
 import { cloneNode } from '../ast/clone.js';
 import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 import {
@@ -4210,10 +4210,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           returnOutputIdxSymbol.references.push({ name: paramName } as IdentifierNode);
         }
         this.pushToStack(returnOutputIdxParam);
-        // A CashTokens NFT cannot carry more than 128 return bytes. A statically long or dynamically sized
-        // ABI result can be carried as a caller witness checked against the callee's return NFT before decode.
+        // A CashTokens NFT cannot carry more than 128 return bytes. Static and dynamic ABI results
+        // that may exceed this limit need a caller preimage witness authenticated by the return NFT.
         if (slot.returnTypes && externalResultEncoding(slot.returnTypes, this.compilerOptions) === 'evm-abi-v1'
-          && evmResultNeedsPreimage(slot.returnTypes)) {
+          && evmResultMayNeedPreimage(slot.returnTypes)) {
           const preimageName = returningSlots.length === 1
             ? '__internal__externalReturnPreimage'
             : `__internal__externalReturnPreimage${slot.returnSlotIndex}`;
@@ -7658,7 +7658,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   private collectExternalCalls(
     node: Node,
     slots: ExternalCallSlot[],
-    enclosingConditions: readonly { expression: ExpressionNode; negated: boolean }[] = [],
+    enclosingConditions: readonly {
+      expression: ExpressionNode; negated: boolean; shortCircuit?: boolean;
+    }[] = [],
   ): void {
     if (this.compilerOptions.messageBus === false
       && node instanceof BranchNode && node.condition instanceof BoolLiteralNode) {
@@ -9109,12 +9111,29 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Returning-helper normalization may nest a straight-line continuation under a callee postcondition, so
       // discard any lowered suffix beyond the source depth. Conversely, retain the source expressions only when
       // lowering no longer exposes enough corresponding predicates to serialize.
+      const branchConditions = loweredConditions?.filter((candidate) => !('shortCircuit' in candidate));
       const sourceConditions = node.sourceActivationConditions === undefined
-        ? loweredConditions
-        : loweredConditions && loweredConditions.length >= node.sourceActivationConditions.length
-          ? loweredConditions.slice(0, node.sourceActivationConditions.length)
+        ? branchConditions
+        : branchConditions && branchConditions.length >= node.sourceActivationConditions.length
+          ? branchConditions.slice(0, node.sourceActivationConditions.length)
           : node.sourceActivationConditions;
-      const serializedConditions = (sourceConditions ?? []).map(({ expression, negated }) => {
+      // A short-circuit RHS is reached only after its LHS succeeds (&&) or fails (||). Source activation
+      // snapshots count enclosing statements, so preserve this expression-local predicate separately.
+      // Lowering can also clone that same predicate into the source snapshot. Deduplicate only an
+      // identical source point and polarity; two checks at different points must remain distinct.
+      const activeConditions = [...(sourceConditions ?? []),
+        ...enclosingConditions.filter((candidate) => {
+          if (candidate.shortCircuit !== true) return false;
+          const right = candidate.expression.location;
+          return !(sourceConditions ?? []).some((source) => {
+            const left = source.expression.location;
+            return source.negated === candidate.negated
+              && left.sourceFileId === right.sourceFileId
+              && left.start.line === right.start.line && left.start.column === right.start.column
+              && left.end.line === right.end.line && left.end.column === right.end.column;
+          });
+        })];
+      const serializedConditions = activeConditions.map(({ expression, negated }) => {
         // A branch predicate observes writes before branch entry, not later writes before this call. Reusing
         // the call's prefix can turn an already-entered `if (entry.status == 1)` into `0 == 1` after its body
         // assigns status = 0, dropping subsequent calls. Each nested predicate owns its own evaluation prefix.
@@ -9139,7 +9158,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           .some((child) => child !== undefined && containsUnresolvedConditionNode(child));
       };
       const containsUnresolvedPreCallRequireNode = (expression: ExternalCallExpression): boolean => {
-        if (['unsupported', 'missing', 'identifier', 'reference', 'externalCall', 'producerResult']
+        if (['unsupported', 'missing', 'identifier', 'reference']
           .includes(expression.kind)) return true;
         return [expression.expression, expression.left, expression.right, expression.condition,
           expression.ifTrue, expression.ifFalse, expression.source?.expression,
@@ -9157,6 +9176,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const dependsOnRuntimeValue = (expression: ExternalCallExpression): boolean => (
         (expression.kind === 'source' && expression.source?.kind !== 'literal')
         || expression.kind === 'state' || expression.kind === 'stateAccess'
+        || expression.kind === 'externalCall' || expression.kind === 'producerResult'
         || [expression.expression, expression.left, expression.right, expression.condition,
           expression.ifTrue, expression.ifFalse, expression.source?.expression,
           ...(expression.args ?? [])]
@@ -9172,7 +9192,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           const serialized = serializeExpression(statement.expression);
           // Lowered return-carrier checks can leave a literal `0 == 1` placeholder before their producer
           // call. A constant-only predicate cannot safely prove source reachability at this callsite.
-          if (serialized && !containsUnresolvedPreCallRequireNode(serialized)
+          if (serialized && dependsOnRuntimeValue(serialized)
+            && !containsUnresolvedPreCallRequireNode(serialized)) return [serialized];
+          // A resolvable false left operand proves an AND require reverted even when its right operand
+          // depends on a producer result that cannot be known during graph discovery.
+          if (serialized?.kind === 'binary' && serialized.operator === '&&'
+            && serialized.left !== undefined
+            && !containsUnresolvedPreCallRequireNode(serialized.left)
             && dependsOnRuntimeValue(serialized)) return [serialized];
           // A conjunction may contain an external result that is not available during initial graph
           // discovery. Each replayable conjunct is still a necessary condition for reaching a later call:
@@ -9304,6 +9330,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // Generic recursion
+    if (node instanceof BinaryOpNode
+      && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR)) {
+      this.collectExternalCalls(node.left, slots, enclosingConditions);
+      this.collectExternalCalls(node.right, slots, [...enclosingConditions, {
+        expression: node.left,
+        negated: node.operator === BinaryOperator.OR,
+        shortCircuit: true,
+      }]);
+      return;
+    }
     if ('statements' in node && Array.isArray((node as any).statements)) {
       for (const stmt of (node as any).statements) {
         this.collectExternalCalls(stmt, slots, enclosingConditions);

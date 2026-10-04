@@ -3,7 +3,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth';
-import type { FunctionBlockLayout } from '@solidcash/utils';
+import { parseChunkCommitment, type FunctionBlockLayout } from '@solidcash/utils';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, calculateDust } from '../utils.js';
@@ -157,19 +157,35 @@ export function appendDynamicChunks(
       input.token?.category === host.categoryId
       && binToHex(input.unlocker.generateLockingBytecode()) === chunkLock
     ));
-    // A read-modify-write can co-spend its old chunks before an external callee. Those inputs already have
-    // 1:1 preservation outputs at their absolute coordinates, and the compiler's published dynamic base points
-    // there. Replace those recreations when the width is unchanged; appending another run after the callee
-    // would duplicate the collection's chunk index and violate its exact-output-count covenant.
+    // A read-modify-write can co-spend its old chunks before an external callee. Its published dynamic base
+    // points to those inputs. Replace the old prefix there; growth uses balanced pads immediately after it.
+    // Appending the entire new run after the callee leaves stale chunks at the authenticated output base.
     const inPlaceIndices = oldChunks.map((input) => host.allInputs.findIndex((candidate) => (
       candidate.txid === input.txid && candidate.vout === input.vout
     )));
-    const inPlace = commitments.length > 0 && commitments.length === oldChunks.length
-      && inPlaceIndices.every((index) => index >= 0 && index < builder.outputs.length
+    const base = inPlaceIndices[0] ?? -1;
+    const hasCanonicalIndex = (commitment: string, index: number): boolean => {
+      try { return parseChunkCommitment(commitment).chunkIndex === index; } catch { return false; }
+    };
+    const inPlace = oldChunks.length > 0
+      && commitments.every(hasCanonicalIndex)
+      && oldChunks.every((input, index) => hasCanonicalIndex(input.token?.nft?.commitment ?? '', index))
+      && inPlaceIndices.every((index, ordinal) => index === base + ordinal
+        && index < builder.outputs.length
         && builder.outputs[index]?.token?.category === host.categoryId
         && binToHex(builder.outputs[index]!.to instanceof Uint8Array
           ? builder.outputs[index]!.to as Uint8Array : addressToLockScript(builder.outputs[index]!.to as string))
-          === chunkLock);
+          === chunkLock)
+      && commitments.slice(oldChunks.length).every((_, offset) => {
+        const index = base + oldChunks.length + offset;
+        const occupant = builder.outputs[index];
+        const neutralInput = host.allInputs[index];
+        const occupantLock = occupant?.to instanceof Uint8Array ? occupant.to
+          : occupant?.to !== undefined ? addressToLockScript(occupant.to) : undefined;
+        return occupant?.token === undefined && neutralInput?.token === undefined
+          && occupantLock !== undefined
+          && binToHex(occupantLock) === binToHex(neutralInput.unlocker.generateLockingBytecode());
+      });
     const debugChunkLayout = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_CHUNK_LAYOUT === '1';
     const computedBase = host.getChunkOutputBase();
@@ -217,8 +233,18 @@ export function appendDynamicChunks(
         },
       };
       chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
-      if (inPlace) builder.outputs[inPlaceIndices[chunkIndex]!] = chunkOutput;
+      if (inPlace) builder.outputs[base + chunkIndex] = chunkOutput;
       else builder.addOutput(chunkOutput);
+    }
+    if (inPlace) {
+      // A shrinking write consumes every old chunk, but only the new prefix may remain at this
+      // collection address. Keep the balanced output coordinates for later participants while
+      // removing the retired NFTs from the chunk namespace.
+      for (let chunkIndex = commitments.length; chunkIndex < oldChunks.length; chunkIndex++) {
+        builder.outputs[base + chunkIndex] = {
+          to: Uint8Array.of(0x51), amount: oldChunks[chunkIndex].satoshis,
+        };
+      }
     }
   }
 }

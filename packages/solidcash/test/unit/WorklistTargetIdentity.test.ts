@@ -1,4 +1,5 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { addressToGraphEmissionBytes } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { ownerParticipantArtifact } from '../../src/message-bus/compose-participant-helpers.js';
@@ -78,6 +79,38 @@ describe('worklist Solidity target identity projection', () => {
     const ambiguous = { physical: `a914${sharedPayload}87`, logical: `76a914${sharedPayload}88ac` };
     expect(() => plan('00'.repeat(12) + sharedPayload, ambiguous)).toThrow(/target proof disagrees/);
     expect(plan(ambiguous.logical, ambiguous).invocations[1].targetLockingBytecode).toBe(ambiguous.logical);
+  });
+
+  it('forwards a Solidity value address as the word seen by its caller handler', () => {
+    const receiving = ownerParticipantArtifact(compileString(`pragma solidity ^0.8.0;
+      contract Receiver { function accept(address value) public { require(value != address(0)); } }
+    `, KERNEL), 1);
+    const forwarding = compileString(`pragma solidity ^0.8.0;
+      interface IReceiver { function accept(address value) external; }
+      contract ForwardValue(address receiver) {
+        function run(address value) public {
+          IReceiver(receiver).accept(value);
+          require(true);
+        }
+      }
+    `, KERNEL);
+    const receiverLock = `aa20${'44'.repeat(32)}87`;
+    const valueLock = hexToBin(`76a914${'55'.repeat(20)}88ac`);
+    const valueAddress = lockingBytecodeToCashAddress({ bytecode: valueLock, prefix: 'bchtest' });
+    if (typeof valueAddress === 'string') throw new Error(valueAddress);
+    const deriveValue = (solidityImportCompat: boolean): ReturnType<typeof deriveCompiledGraphPlan> =>
+      deriveCompiledGraphPlan({
+        root: { artifact: { ...forwarding, compiler: { ...forwarding.compiler,
+          options: { ...forwarding.compiler?.options, solidityImportCompat } } },
+        lockingBytecode: `aa20${'11'.repeat(32)}87`, constructorArgs: [hexToBin(receiverLock)] },
+        function: 'run', args: [valueAddress.address], targets: {},
+        target: () => ({ participant: { artifact: receiving, lockingBytecode: receiverLock },
+          targetLockingBytecode: receiverLock }),
+      });
+    const compatible = deriveValue(true);
+    expect(compatible.invocations[0].args[0]).toEqual(valueAddress.address);
+    expect(compatible.invocations[1].args[0]).toEqual(addressToGraphEmissionBytes(valueLock));
+    expect(deriveValue(false).invocations[1].args[0]).toEqual(valueAddress.address);
   });
 
   it('attributes a missing resource-derived target proof without accepting a registry fallback', () => {

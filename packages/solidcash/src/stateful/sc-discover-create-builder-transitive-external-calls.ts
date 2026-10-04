@@ -3,10 +3,12 @@
  */
 
 import { hexToBin } from '@bitauth/libauth';
-import type { Artifact, StateLayout, StateValue } from '@solidcash/utils';
+import type { AbiFunction, Artifact, ExternalCallAbi, StateLayout, StateValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
+import { findDeploymentByAddressValue } from './deployment-registry.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
@@ -18,12 +20,15 @@ export type TransitiveExternalContract = {
     masterUtxo: UnlockableUtxo | undefined;
     dataNftUtxos: UnlockableUtxo[];
   }>;
+  getState(): Promise<Record<string, unknown>>;
   inner: {
     artifact: Artifact;
     stateLayout?: StateLayout;
     lockingBytecode: string;
+    provider: NetworkProvider;
   };
   _externalRegistry: Map<string, unknown>;
+  _hydrateExternalPredicateState(...args: any[]): Promise<Record<string, unknown>>;
   _resolveExternalArgs(...args: any[]): FunctionArgument[] | undefined;
   _deriveReturnValue(...args: any[]): Promise<StateValue>;
 };
@@ -34,6 +39,32 @@ export class DeferredTransitiveReturnProbeError extends Error {
     super(message);
     this.name = 'DeferredTransitiveReturnProbeError';
   }
+}
+
+/** Resolve an unconnected transitive callee from the compiler's exact typed address source. */
+export async function resolveTransitiveExternalContract(
+  caller: TransitiveExternalContract,
+  edge: ExternalCallAbi,
+  args: readonly FunctionArgument[],
+  abi: AbiFunction,
+): Promise<TransitiveExternalContract | undefined> {
+  const connected = edge.interfaceName === '__raw__' ? undefined
+    : caller._externalRegistry.get(edge.interfaceName);
+  if (!edge.addressSource) return connected as TransitiveExternalContract | undefined;
+  const state = await caller.getState();
+  const selfAddress = hexToBin(caller.inner.lockingBytecode);
+  const hydrated = edge.addressSource.kind === 'expression' && edge.addressSource.expression
+    ? await caller._hydrateExternalPredicateState(
+      [edge.addressSource.expression], [...args], caller.inner.artifact, state, abi.inputs,
+      selfAddress,
+    ) : state;
+  const target = caller._resolveExternalArgs(
+    [edge.addressSource], [...args], caller.inner.artifact, hydrated, abi.inputs,
+    undefined, 0, false, selfAddress,
+  )?.[0];
+  if (typeof target !== 'string' && !(target instanceof Uint8Array)) return undefined;
+  const deployment = findDeploymentByAddressValue(caller.inner.provider, target);
+  return deployment?.contract as TransitiveExternalContract | undefined;
 }
 
 /**
@@ -56,8 +87,10 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
     if (!bAbiFunc?.externalCalls?.length) continue;
 
     for (const bEc of bAbiFunc.externalCalls) {
-      // Resolve C from B's external registry
-      const cRegistered = bContract._externalRegistry.get(bEc.interfaceName);
+      // Resolve C from the exact compiler-published address when B has no connect-time interface binding.
+      const cRegistered = await resolveTransitiveExternalContract(
+        bContract, bEc, directGroup.functionArgs, bAbiFunc,
+      );
       if (!cRegistered) {
         throw new DeferredTransitiveReturnProbeError(
           `Transitive external call: ${bEc.interfaceName}.${bEc.functionName} not found `
@@ -78,11 +111,33 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
         );
       }
 
-      // Resolve C's args from B's argSources
+      // A lowered Address/SafeERC20 call has no source interface. Its authenticated target
+      // determines the concrete ABI; a selector must identify exactly one function there.
+      const cAbi = cContract.inner.artifact.abi as readonly AbiFunction[];
+      const rawMatches = bEc.interfaceName === '__raw__'
+        ? cAbi.filter((candidate) => bEc.rawSelector !== undefined
+          && candidate.selector?.toLowerCase() === bEc.rawSelector.toLowerCase()) : [];
+      if (bEc.interfaceName === '__raw__' && rawMatches.length !== 1) {
+        throw new Error(`Raw transitive call selector '${bEc.rawSelector ?? '<unknown>'}' has no unique pinned callee`);
+      }
+      const cFunctionName = rawMatches[0]?.name ?? bEc.functionName;
+      const cArgSources = bEc.interfaceName === '__raw__'
+        ? bEc.rawArgSources ?? bEc.argSources : bEc.argSources;
+      let bState = await bContract.getState();
+      const argumentExpressions = cArgSources?.flatMap((source) => source.kind === 'expression'
+        && source.expression ? [source.expression] : []) ?? [];
+      if (argumentExpressions.length > 0) {
+        bState = await bContract._hydrateExternalPredicateState(
+          argumentExpressions, directGroup.functionArgs, bContract.inner.artifact, bState,
+          bAbiFunc.inputs, hexToBin(bContract.inner.lockingBytecode),
+        );
+      }
+      // Resolve C's args from B's compiler-published sources.
       const cArgs = bContract._resolveExternalArgs(
-        bEc.argSources, directGroup.functionArgs, bContract.inner.artifact, undefined, bAbiFunc.inputs,
+        cArgSources, directGroup.functionArgs, bContract.inner.artifact, bState, bAbiFunc.inputs,
+        undefined, 0, false, hexToBin(bContract.inner.lockingBytecode),
       );
-      if (cArgs === undefined && bEc.argSources?.some((s: any) => s.kind === 'expression')) {
+      if (cArgs === undefined && cArgSources?.some((s) => s.kind === 'expression')) {
         throw new Error(
           `Transitive external call to ${bEc.interfaceName}.${bEc.functionName} has expression-based `
           + 'argSources that cannot be auto-resolved. Use withExternalCall() to provide args explicitly.',
@@ -104,7 +159,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       const cStateLayout = cContract.inner.stateLayout!;
       const cRequiredNftIndices = bEc.requiredDataNftIndices;
       const cAbiFunction = cContract.inner.artifact.abi.find((candidate) =>
-        candidate.name === bEc.functionName);
+        candidate.name === cFunctionName);
       // The ordinary transitive A→B→C discovery path does not pass through nested graph expansion. Seed a
       // read-only C result here so B can decode it while its own return is derived. This is an advancing seed,
       // never a substitute for final transaction validation: state-writing/unknown callees still use VM proof.
@@ -113,7 +168,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
         && cAbiFunction.outputs?.length === 1) {
         try {
           const value = await cContract._deriveReturnValue(
-            bEc.functionName, cArgs ?? [], undefined, cAbiFunction, undefined,
+            cFunctionName, cArgs ?? [], undefined, cAbiFunction, undefined,
             hexToBin(bContract.inner.lockingBytecode), bContract.categoryId,
           );
           const returnEncoding = resolveExternalResultEncoding(
@@ -153,14 +208,14 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
         masterUtxo: cState.masterUtxo,
         dataNftUtxos: cDataNfts,
         requiredDataNftIndices: cRequiredNftIndices,
-        functionName: bEc.functionName,
+        functionName: cFunctionName,
         functionArgs: cArgs ?? [],
         externalContract: cContract as any,
         callerIdentity: {
           categoryId: bContract.categoryId,
           lockingBytecode: bContract.inner.lockingBytecode,
         },
-        logicalFunctionName: bEc.functionName,
+        logicalFunctionName: cFunctionName,
         ...(precomputedReturnCommitment && { precomputedReturnCommitment }),
         ...(bEc.callMode && { callMode: bEc.callMode }),
       });

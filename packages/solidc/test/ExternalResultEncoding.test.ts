@@ -52,4 +52,29 @@ describe('external result encoding metadata', () => {
       'evm-abi-v1', 'compact-pushdata-v1',
     ]);
   });
+
+  it('publishes an authenticated preimage slot for a dynamic struct return', () => {
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
+      struct Record { uint256 id; string label; }
+      interface ISource { function read() external view returns (Record memory); }
+      contract Source {
+        function read() public pure returns (Record memory) { return Record(7, "a long label"); }
+      }
+      contract Consumer {
+        function copy(address source) public view returns (Record memory) {
+          return ISource(source).read();
+        }
+      }`, {
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      suppressWarnings: true,
+      __artifactCache: false,
+    });
+    const copy = artifacts.Consumer.abi.find((fn) => fn.name === 'copy')!;
+    expect(copy.externalCalls?.[0]?.resultEncoding).toBe('evm-abi-v1');
+    expect(copy.inputs.map((input) => input.name)).toContain('__internal__externalReturnPreimage');
+  });
 });

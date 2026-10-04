@@ -197,7 +197,25 @@ function writeTarget(records: ArtifactFile[], target: TypegenTargetConfig, cache
   const outDir = path.resolve(target.outDir);
   const cacheFile = path.join(cacheDir, `typegen-${target.target}.json`);
   const fingerprint = hashInputs(records, target);
-  if (fs.existsSync(outDir) && fs.existsSync(cacheFile)) {
+  const expectedModules = [...new Set(records.map((record) => record.sourceModule))];
+  const expectedModuleSet = new Set(expectedModules);
+  const contractsOutputDir = path.join(outDir, 'contracts');
+  const existingIndex = path.join(outDir, 'index.ts');
+  const actualModules = walk(contractsOutputDir, (candidate) => candidate.endsWith('.ts'))
+    .map((file) => path.relative(contractsOutputDir, file).replace(/\\/g, '/').replace(/\.ts$/, ''));
+  const actualExports = fs.existsSync(existingIndex)
+    ? fs.readFileSync(existingIndex, 'utf8').split('\n')
+      .filter((line) => line.startsWith("export * from './contracts/"))
+    : [];
+  const generatedOutputExists = fs.existsSync(existingIndex)
+    && fs.existsSync(path.join(outDir, 'registry.ts'))
+    && actualModules.length === expectedModules.length
+    && actualModules.every((module) => expectedModuleSet.has(module))
+    && actualExports.length === expectedModules.length
+    && actualExports.every((line) => expectedModuleSet.has(
+      line.slice("export * from './contracts/".length, -".js';".length),
+    ));
+  if (generatedOutputExists && fs.existsSync(cacheFile)) {
     try {
       if (JSON.parse(fs.readFileSync(cacheFile, 'utf8')).fingerprint === fingerprint) {
         return { target: target.target, outDir, files: records.length, skipped: true };

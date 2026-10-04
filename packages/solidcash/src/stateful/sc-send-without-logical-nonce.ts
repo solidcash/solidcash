@@ -7,12 +7,15 @@ import type { StateValue } from '@solidcash/utils';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import { discoverInitialCallTopology } from '../message-bus/compose-result-topology.js';
+import { rebuildPreparedInvocation } from '../message-bus/compose-prepared-invocation.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type Signer from '../Signer.js';
 import {
   legacyStatefulSimulationEnabled,
   softOracleRate,
 } from './soft-state-overlays.js';
+import { encodeExternalReturnValue } from './external-return-encoding.js';
+import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { StatefulContract } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 
@@ -33,6 +36,14 @@ export interface SendWithoutLogicalNonceHost {
   invalidateSignerUtxos(signer: Signer): void;
   signerUtxoSnapshot(signer: Signer): Promise<Utxo[]>;
   retireSignerUtxos(signer: Signer, utxos: readonly Utxo[]): void;
+}
+
+/** Local VM diagnostics may model the caller, but this outpoint must never reach a send. */
+function diagnosticFeeInput(signer: Signer) {
+  return {
+    txid: '00'.repeat(32), vout: 0, satoshis: 100_000_000n,
+    unlocker: signer.unlockP2PKH(),
+  };
 }
 
 /** Close compiler-described typed edges before the legacy builder duplicates an owner or meets a proxy route. */
@@ -150,11 +161,12 @@ async function prepareTypedCallbackGraph(
     return pending;
   };
   let calls: PreparedAtomicMessageBusCall[];
+  let prunedByPreCallRequire: boolean;
   try {
-    calls = await discoverInitialCallTopology({
+    ({ calls, prunedByPreCallRequire } = await discoverInitialCallTopology({
       ...root,
       producerPath: { status: 'complete', context: { version: 1, sourcePath: [] } },
-    }, signer.getLockingBytecode(), stateOf);
+    }, signer.getLockingBytecode(), stateOf));
   } catch (error) {
     // If a registered callback or repeated owner cannot be fully discovered, the legacy builder can
     // broadcast a prefix of its state effects. Keep these compiler-described shapes fail-closed; only
@@ -172,18 +184,71 @@ async function prepareTypedCallbackGraph(
   // bound is known. Retain the atomic graph for every compiler-published result-dependent domain.
   const deferredResultDomain = entry.resultConsumers?.some((lane) => 'iterationDomain' in lane
     && lane.iterationDomain === true) === true;
-  // The composer needs a callee row. If exact discovery finds only the root, let the legacy builder run its
-  // independent all-zero-trip proof; it will send the root alone only when every published loop pre-test is
-  // false, and the repeated-loop guard otherwise refuses it. Never synthesize an absent callee row here.
-  if (calls.length === 1 && entry.externalCalls.every((edge) => edge.occurrence === 'loop'
-    && edge.iterationDomain !== undefined)) return undefined;
+  // A rejected root reaches no child. The ordinary builder can execute that source require directly; the
+  // atomic graph format starts at two invocations and must not fabricate a participant to fill the gap.
+  // A result-bound producer is different: an unresolved later loop must never broadcast a prefix.
+  if (calls.length === 1) {
+    if (deferredResultDomain && !prunedByPreCallRequire
+      && !entry.externalCalls.every((edge) => edge.occurrence === 'loop'
+        && edge.iterationDomain !== undefined)) {
+      throw new Error('messageBus: result-dependent call topology has no resolved child; refusing a prefix send');
+    }
+    return undefined;
+  }
   // A typed address can select a different deployed owner than the interface registry suggests. If the
   // registered path is a callback, compose the runtime-resolved finite graph even when that choice removes
   // the repeated owner; falling back to the legacy registry-only guard would pin the callee incorrectly.
-  return registeredCallback || deferredResultDomain || requiresAtomicLoop || requiresProxyRoute
-    || calls.some((call) => call.executor !== undefined)
-    || [...ownerCounts.values()].some((count) => count > 1)
-    ? calls : undefined;
+  // A proven false pre-call require can change which siblings share an owner. Keep the remaining multi-call
+  // graph on the atomic path so the root VM can execute the require against the selected caller and returns.
+  if (!registeredCallback && !deferredResultDomain && !requiresAtomicLoop && !requiresProxyRoute
+    && !prunedByPreCallRequire && !calls.some((call) => call.executor !== undefined)
+    && ![...ownerCounts.values()].some((count) => count > 1)) return undefined;
+
+  // A later write on a repeated participant can abort its aggregate route before an earlier getter publishes
+  // its result. Seed that earlier read from the exact on-chain getter, then let the completed graph VM either
+  // confirm the result or reject the transaction. A seed is never a prepared, caller-supplied commitment.
+  const writtenOwners = new Set<string>();
+  const seededCalls: PreparedAtomicMessageBusCall[] = [];
+  for (const call of calls) {
+    const owner = `${call.contract.categoryId.toLowerCase()}:${call.contract.inner.lockingBytecode.toLowerCase()}`;
+    const callee = call.executor ?? call.contract;
+    const calleeArtifact = call.executionArtifact ?? callee.inner.artifact;
+    const matches = calleeArtifact.abi.filter((candidate) => call.selector !== undefined
+      ? candidate.selector?.toLowerCase() === call.selector.toLowerCase()
+      : candidate.name === call.functionName);
+    const fn = matches.length === 1 ? matches[0] : undefined;
+    const collection = calleeArtifact.stateLayout?.collections?.find((candidate) =>
+      candidate.name === fn?.directMappingReturn?.collection);
+    const access = fn?.entryAccesses?.[0];
+    const directGetter = call.executor === undefined && fn?.writesState === false
+      && fn.outputs?.length === 1 && fn.directMappingReturn !== undefined
+      && !fn.externalCalls?.length
+      && fn.entryAccesses?.length === 1 && access?.collection === collection?.name
+      && access?.operations.length === 1 && access.operations[0] === 'read'
+      && access.keyParams.length === fn.directMappingReturn.keyParams.length
+      && access.keyParams.every((name, index) => name === fn.directMappingReturn?.keyParams[index])
+      && collection?.kind === 'mapping' && collection.valueType === fn.outputs[0]?.type;
+    let seeded = call;
+    if (directGetter && !writtenOwners.has(owner)) {
+      try {
+        const value = await callee._deriveReturnValue(call.functionName, [...call.args], undefined, fn);
+        const encoding = resolveExternalResultEncoding(
+          fn.resultEncoding, calleeArtifact, [fn.outputs![0]!.type], `function '${fn.name}' result`,
+        );
+        const result = encodeExternalReturnValue(
+          value, fn.outputs![0]!.type,
+          calleeArtifact.structs ?? calleeArtifact.stateLayout?.structs,
+          encoding === 'evm-abi-v1', calleeArtifact.enums,
+        );
+        seeded = rebuildPreparedInvocation(call, call.args, binToHex(result));
+      } catch {
+        // An unavailable pre-state read is unknown. The aggregate VM remains the only authority.
+      }
+    }
+    seededCalls.push(seeded);
+    if (fn?.writesState !== false) writtenOwners.add(owner);
+  }
+  return seededCalls;
 }
 
 export async function sendWithoutLogicalNonce(
@@ -229,6 +294,14 @@ export async function sendWithoutLogicalNonce(
           .sort((left, right) => Number(right.satoshis - left.satoshis));
         const feeUtxo = available[0];
         if (!feeUtxo) {
+          // Without a real fee input, the call cannot be sent. A local composition can still execute an
+          // earlier source require against the correct tx.origin and report its exact VM failure.
+          const { compose } = await import('../message-bus/compose.js');
+          await compose({
+            preparedCalls: preparedAtomicCalls,
+            funder: diagnosticFeeInput(signer),
+            changeAddress: signer.getAddress(),
+          }).build();
           throw new Error('messageBus: transparent atomic promotion requires one token-free fee UTXO');
         }
         // The fee input is this transaction's first P2PKH input, and the platform derives `tx.origin` - and
@@ -261,6 +334,23 @@ export async function sendWithoutLogicalNonce(
         }).send();
       } else {
         if (host.requiresRecursivePreflight()) stb!.enableStrictVmPreflight();
+        const signer = host.parentContract?._logicalNonceSigner ?? host.parentContract?._signer;
+        if (signer && (await host.signerUtxoSnapshot(signer)).every((utxo) => utxo.token !== undefined)) {
+          const assembled = stb!.build();
+          const callerLock = binToHex(signer.getLockingBytecode());
+          const hasAuthenticatedCallerInput = assembled.inputs.some((input) => input.token === undefined
+            && binToHex(input.unlocker.generateLockingBytecode()) === callerLock);
+          if (!hasAuthenticatedCallerInput) {
+            // Other fee inputs do not authenticate the connected caller. Supply its P2PKH input only
+            // for a local VM diagnosis, then refuse to submit even if every source require succeeds.
+            const feeProbe = diagnosticFeeInput(signer);
+            stb!.addInput(feeProbe, feeProbe.unlocker);
+            const probe = stb!.build();
+            const { assertFinalizedTransactionCovenants } = await import('../message-bus/preflight.js');
+            assertFinalizedTransactionCovenants(probe, probe.buildLibauthTransaction());
+            throw new Error('Cannot send stateful transaction without a token-free fee UTXO');
+          }
+        }
         receipt = await stb!.send();
       }
       if (host.parentContract?._signer) host.invalidateSignerUtxos(host.parentContract._signer);

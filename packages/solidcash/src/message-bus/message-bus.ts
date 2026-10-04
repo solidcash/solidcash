@@ -10,8 +10,8 @@ import {
   encodeFunctionArgument, isSignatureTemplateArgumentForType, type ConstructorArgument, type FunctionArgument,
   type SignatureTemplateArgument,
 } from '../Argument.js';
-import { MessageBusDiagnosticError } from './diagnostics.js';
 import { tryCashAddressToLockScript } from '../utils.js';
+import { MessageBusDiagnosticError } from './diagnostics.js';
 import {
   findKernelAbiFunctionBySelector,
   findKernelHandlerBySelector,

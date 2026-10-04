@@ -13,6 +13,7 @@ import type {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { tryCashAddressToLockScript } from '../utils.js';
+import { ExternalExpressionUnresolvedConditionError } from '../message-bus/result-evaluation-path.js';
 
 /** Structural ExternalCallInfo to avoid importing StatefulContract through lifecycle types. */
 export type CreateBuilderResolvedExternalCall = {
@@ -100,24 +101,25 @@ export async function expandResolveCreateBuilderExternalCalls(
   const loopIdxRanges: CreateBuilderLoopIdxRange[] = [];
   let callerStateSnapshot: Record<string, StateValue> | undefined;
 
-  // A zero-trip affine loop reaches none of its nested callees. Prove this from the published pre-test for
-  // EVERY callsite before registry lookup or argument evaluation; a later loop call may depend on a producer
-  // result from an earlier iteration and cannot be resolved eagerly when no iteration exists.
-  if (!overrideExternalCalls && externalCalls?.length
-    && externalCalls.every((call) => call.occurrence === 'loop' && call.iterationDomain)) {
+  // A zero-trip affine loop reaches none of its nested callees. Check each published pre-test before registry
+  // lookup or argument evaluation: two loops in one handler may have different argument-array lengths.
+  // Unknown pre-tests remain candidates; the completed covenant is authoritative if earlier writes change one.
+  if (!overrideExternalCalls && externalCalls?.some((call) =>
+    call.occurrence === 'loop' && call.iterationDomain)) {
     callerStateSnapshot = (await host.getFullState()).state;
     const evaluate = (expression: ExternalCallExpression,
       bindings?: ReadonlyMap<string, FunctionArgument>): FunctionArgument | undefined =>
       host.evaluateExternalExpression(expression, args, artifact, callerStateSnapshot,
         abiFunction?.inputs, undefined, 0, false, publicSelfAddress, bindings);
-    const allZeroTrip = externalCalls.every((call) => {
-      const domain = call.iterationDomain!;
+    externalCalls = externalCalls.filter((call) => {
+      if (call.occurrence !== 'loop' || !call.iterationDomain) return true;
+      const domain = call.iterationDomain;
       const initial = evaluate(domain.initialValue);
-      if (typeof initial !== 'bigint') return false;
+      if (typeof initial !== 'bigint') return true;
       const pretest = evaluate(domain.continueCondition, new Map([[domain.counterName, initial]]));
-      return pretest === false;
+      return pretest !== false;
     });
-    if (allZeroTrip) {
+    if (externalCalls.length === 0) {
       return {
         externalCalls: [], presetResolved: [], loopIdxRanges: [], resolvedExternalCalls: [],
         callerStateSnapshot,
@@ -140,6 +142,51 @@ export async function expandResolveCreateBuilderExternalCalls(
     externalCalls = externalCalls.filter((call) => call.occurrence !== 'conditional' || !call.condition
       || host.evaluateExternalExpression(call.condition, args, artifact, callerStateSnapshot,
         abiFunction?.inputs, undefined, 0, false, publicSelfAddress) !== false);
+    if (externalCalls.length === 0) {
+      return {
+        externalCalls: [], presetResolved: [], loopIdxRanges: [], resolvedExternalCalls: [],
+        callerStateSnapshot,
+      };
+    }
+  }
+
+  // A source `require` that dominates a call can prove the call unreachable even if its later operands depend
+  // on an external return: `false && unresolved` is false. Keep any unknown guard and let the VM decide. This
+  // proof runs before all-or-nothing registry resolution, so an unreachable zero-address call cannot erase the
+  // earlier, reached callees needed to execute the require itself.
+  if (!overrideExternalCalls && externalCalls?.some((call) => call.preCallRequires?.length)) {
+    callerStateSnapshot ??= (await host.getFullState()).state;
+    const guards = externalCalls.flatMap((call) => call.preCallRequires ?? []);
+    if (host.hydrateExternalPredicateState) {
+      callerStateSnapshot = await host.hydrateExternalPredicateState(
+        guards, args, artifact, callerStateSnapshot, abiFunction?.inputs, publicSelfAddress,
+      ) as Record<string, StateValue>;
+    }
+    const guardVerdict = (call: ExternalCallAbi, returns?: ReadonlyMap<string, FunctionArgument>): boolean =>
+      call.preCallRequires?.some((guard) => host.evaluateExternalExpression(
+        guard, args, artifact, callerStateSnapshot, abiFunction?.inputs,
+        returns, 0, false, publicSelfAddress,
+      ) === false) ?? false;
+    externalCalls = externalCalls.filter((call) => !guardVerdict(call));
+    const returningGuards = externalCalls.flatMap((call) => call.preCallRequires ?? [])
+      .filter((guard) => containsReturningExpression(guard));
+    if (returningGuards.length > 0 && host.resolveExternalExpressionReturns) {
+      // A source require can stop before a later external call after an earlier producer returned false.
+      // Resolve only the referenced producer results through the callee VM; if a predicate remains unknown,
+      // retain its call so the final covenant remains the authority for a successful transaction.
+      try {
+        const returns = await host.resolveExternalExpressionReturns(
+          returningGuards.map((expression) => ({ kind: 'expression', expression })),
+          args, callerStateSnapshot, abiFunction?.inputs, publicSelfAddress,
+          abiFunction?.externalCalls ?? [],
+        );
+        externalCalls = externalCalls.filter((call) => !guardVerdict(call, returns));
+      } catch (error) {
+        // This is only a negative reachability proof. An unresolved branch cannot prove a require false,
+        // so keep every call and let the authenticated transaction execute the original require.
+        if (!(error instanceof ExternalExpressionUnresolvedConditionError)) throw error;
+      }
+    }
     if (externalCalls.length === 0) {
       return {
         externalCalls: [], presetResolved: [], loopIdxRanges: [], resolvedExternalCalls: [],

@@ -95,8 +95,52 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
     const id = groupMetas[groupIndex]?.ecSlot.callsiteId;
     return id === undefined ? groupIndex : slotByCallsite.get(id) ?? groupIndex;
   };
-  const sparse = Array.from({ length: directGroupCount }, (_, index) => physicalSlot(index))
-    .some((slot, index) => slot !== index);
+  const resolveAnchorBand = async (groupIndex: number, slot: number): Promise<number | undefined> => {
+    const anchorSlot = publishedCalls[slot] as {
+      addressParam?: string; addressLiteral?: string; addressIsMsgSender?: boolean;
+      addressSource?: unknown; addressStateVar?: string;
+    } | undefined;
+    if (!anchorSlot?.addressParam || anchorSlot.addressLiteral !== undefined
+      || anchorSlot.addressIsMsgSender) return undefined;
+    const group = externalCallUtxoGroups[groupIndex];
+    const callee = group?.externalContract as CreateBuilderCalleeContract | undefined;
+    const logicalAddress = callee?._logicalAddress ?? callee?.target ?? callee?.address;
+    if (!logicalAddress) return undefined;
+    const logicalLbc = binToHex(addressToLockScript(logicalAddress));
+    const spentUnlocker = group?.masterUtxo && 'unlocker' in group.masterUtxo
+      ? group.masterUtxo.unlocker : undefined;
+    const spentLock = spentUnlocker
+      ? binToHex(spentUnlocker.generateLockingBytecode()) : callee!.inner.lockingBytecode;
+    const call = abiFunction.externalCalls?.[slot];
+    const resolvedAddressSource = call?.addressSource
+      ? host.resolveExternalArgs(
+        [call.addressSource], args, host.inner.artifact,
+        callerStateSnapshot ?? onChainState.state, abiFunction.inputs,
+        undefined, 0, false, publicSelfAddress,
+      )?.[0]
+      : call?.addressStateVar
+        ? (callerStateSnapshot ?? onChainState.state)[call.addressStateVar] as FunctionArgument | undefined
+        : undefined;
+    if (externalCallTargetSourceLockingBytecodeHex(
+      abiFunction, slot, args, resolvedAddressSource,
+    ) === spentLock || logicalLbc === spentLock) return undefined;
+    const bandKey = logicalIdentityBandKey(logicalAddress);
+    let band = identityAnchorBandByAddress.get(bandKey);
+    if (band !== undefined) return band;
+    try {
+      const resolved = await resolveLogicalIdentity(host.inner.provider, logicalAddress);
+      band = identityAnchors.length;
+      identityAnchors.push({ ...resolved.anchor, unlocker: resolved.unlocker } as UnlockableUtxo);
+      identityAnchorBandByAddress.set(bandKey, band);
+      return band;
+    } catch (error) {
+      if (!/missing or invalid/.test(error instanceof Error ? error.message : String(error))) throw error;
+      return undefined;
+    }
+  };
+  const sparse = (loopIdxRanges.length === 0 && directGroupCount < publishedCalls.length)
+    || Array.from({ length: directGroupCount }, (_, index) => physicalSlot(index))
+      .some((slot, index) => slot !== index);
   if (sparse) {
     if (loopIdxRanges.length > 0) {
       throw new Error('Sparse direct-call witnesses cannot include an expanded loop slot');
@@ -125,7 +169,17 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
           if (selected === undefined) throw new Error(`No selector for direct callee '${group.functionName}'`);
           value = typeof selected === 'string' ? hexToBin(selected) : selected;
         } else if (master) value = BigInt(groupMasterIndices[groupIndex]);
-        else if (anchor) value = externalCallAnchorIndices.get(groupIndex) ?? -1n;
+        else if (anchor) {
+          const band = await resolveAnchorBand(groupIndex, slot);
+          if (band !== undefined) {
+            topLevelAnchorFillPositions.push({
+              argIndex: abiFunction.inputs.findIndex((candidate) => candidate.name === input.name),
+              band,
+              proxyRoute: group.functionName === '__forward' || group.delegateCallGroupIndex !== undefined,
+            });
+          }
+          value = externalCallAnchorIndices.get(groupIndex) ?? -1n;
+        }
         else if (returned) {
           const outputIndex = returnEventIndexMap.get(groupIndex);
           if (outputIndex !== undefined) value = BigInt(outputIndex);
@@ -222,44 +276,7 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
     if (!anchorSlot.addressParam || anchorSlot.addressLiteral !== undefined
       || anchorSlot.addressIsMsgSender) continue;
     const group = externalCallUtxoGroups[i];
-    const callee = group?.externalContract as CreateBuilderCalleeContract | undefined;
-    const logicalAddress = callee?._logicalAddress ?? callee?.target ?? callee?.address;
-    let band: number | undefined;
-    if (logicalAddress) {
-      const logicalLbc = binToHex(addressToLockScript(logicalAddress));
-      const spentUnlocker = group?.masterUtxo && 'unlocker' in group.masterUtxo
-        ? group.masterUtxo.unlocker : undefined;
-      const spentLock = spentUnlocker
-        ? binToHex(spentUnlocker.generateLockingBytecode())
-        : callee!.inner.lockingBytecode;
-      const call = abiFunction.externalCalls?.[i];
-      const resolvedAddressSource = call?.addressSource
-        ? host.resolveExternalArgs(
-          [call.addressSource], args, host.inner.artifact,
-          callerStateSnapshot ?? onChainState.state, abiFunction.inputs,
-          undefined, 0, false, publicSelfAddress,
-        )?.[0]
-        : call?.addressStateVar
-          ? (callerStateSnapshot ?? onChainState.state)[call.addressStateVar] as FunctionArgument | undefined
-          : undefined;
-      const directArgument = externalCallTargetSourceLockingBytecodeHex(
-        abiFunction, i, args, resolvedAddressSource,
-      ) === spentLock;
-      if (!directArgument && logicalLbc !== spentLock) {
-        const bandKey = logicalIdentityBandKey(logicalAddress);
-        band = identityAnchorBandByAddress.get(bandKey);
-        if (band === undefined) {
-          try {
-            const resolved = await resolveLogicalIdentity(host.inner.provider, logicalAddress);
-            band = identityAnchors.length;
-            identityAnchors.push({ ...resolved.anchor, unlocker: resolved.unlocker } as UnlockableUtxo);
-            identityAnchorBandByAddress.set(bandKey, band);
-          } catch (error) {
-            if (!/missing or invalid/.test(error instanceof Error ? error.message : String(error))) throw error;
-          }
-        }
-      }
-    }
+    const band = await resolveAnchorBand(i, i);
     if (band === undefined) {
       // -2 selects the authenticated compiler-route selector witness while
       // retaining ordinary direct locking-bytecode identity. -1 is the

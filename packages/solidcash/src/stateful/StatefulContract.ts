@@ -490,6 +490,7 @@ import {
   encodeStoredElementSource as encodeStoredElementSourceImpl,
   encodeStoredValueSource as encodeStoredValueSourceImpl,
 } from './sc-encode-stored-element-source.js';
+import { foldRouteStoredValues } from './fold-route-stored-values.js';
 import {
   replaceRepeatedExternalBatchRow as replaceRepeatedExternalBatchRowImpl,
 } from './sc-replace-repeated-external-batch-row.js';
@@ -4581,9 +4582,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const stateNames = new Set((this.inner.stateLayout?.variables ?? []).map((v) => v.name));
     // Mapping collections also dispatch as bare-name getters (`sc.<mapping>(key)`); both resolve via `this.state`.
     for (const c of this.inner.stateLayout?.collections ?? []) if (c.kind === 'mapping') stateNames.add(c.name);
+    const solidityStateGetters = this.inner.artifact.compiler?.options?.solidityImportCompat === true;
     return new Proxy(this, {
       get(target, prop, receiver) {
         if (typeof prop === 'string' && !(prop in target)) {
+          // Solidity's generated public getters share their state variable's name. The authenticated state
+          // accessor preserves the declared struct/array shape; the ABI route is a flattened multi-return.
+          if (solidityStateGetters && stateNames.has(prop)) return (target.state as any)[prop];
           if (abiNames.has(prop)) return (target.call as any)[prop];
           if (stateNames.has(prop)) return (target.state as any)[prop];
         }
@@ -7191,13 +7196,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Local delegate resources execute at the implementation input, while an outgoing CALL is made in the
     // authenticated proxy/state-owner context. Keep that edge identity as one category+bytecode pair and use it
     // for both call arguments derived from address(this) and the callee's msg.sender.
-    const publicSelfAddress = registeredSelf?.lockingBytecode
+    const registeredSelfAddress = registeredSelf?.lockingBytecode
       ? hexToBin(registeredSelf.lockingBytecode) : hexToBin(this.inner.lockingBytecode);
     const authenticatedSelfAddress = this._logicalAddress === undefined
-      ? publicSelfAddress : addressToLockScript(this._logicalAddress);
+      ? registeredSelfAddress : addressToLockScript(this._logicalAddress);
+    const publicSelfAddress = authenticatedSelfAddress;
     const publicSelfIdentity = Object.freeze({
       categoryId: this.categoryId,
-      lockingBytecode: binToHex(publicSelfAddress),
+      lockingBytecode: binToHex(authenticatedSelfAddress),
     });
     const requiredNftIndices = abiFunction?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
@@ -8623,6 +8629,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // authenticated old value here was what kept the deterministic derivation inert for those rows (the
               // trace-discovery alternative deadlocks on the unpublised chunk slot).
               if (selectedRows && (authenticatedChunkableValue || !list.has(slot))) {
+                if (structuredValue) {
+                  const writes = selectedRows.flatMap((row) => (
+                    (row.handler.entryAccesses ?? []).filter((rowAccess) => (
+                      rowAccess.collection === access.collection && rowAccess.operations.includes('write')
+                    )).map((rowAccess) => ({ row, access: rowAccess }))
+                  ));
+                  const incomingEntries = authenticatedChunkableValue && list.has(slot)
+                    ? [{ collection: collection.signature, slot, value: authenticatedChunkableValue }]
+                    : [];
+                  if (writes.length > 0) {
+                    kernelEncodedValue = foldRouteStoredValues({
+                      writes, collection, targetSlot: slot, incomingEntries, artifact: entryArtifact,
+                      state: onChainState.state as Record<string, StateValue>,
+                      encode: ({ row, access: rowAccess }, entries) => this._encodeStoredValueSource(
+                        rowAccess, collection.valueType, [...row.args], row.handler, entryArtifact,
+                        onChainState.state as Record<string, unknown>, undefined, entries,
+                      ),
+                    });
+                  }
+                }
                 const legacyCompatibility = usesLegacyJobEventCompatibility(
                   entryArtifact, collection.valueType, stateLayout.structs,
                 );
@@ -8655,12 +8681,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 // Fold witnesses contain only this route's mutations. The handler appends them to
                 // the authenticated old array, so persistence must retain that same prefix too.
                 // Keep the ABI witnesses as mutation-only payloads to avoid replaying old elements.
-                kernelEncodedValue = completeValue
-                  ? concatenateEncodedArrays(
-                    authenticatedChunkableValue
-                      ?? encodePushdataValue([], collection.valueType, stateLayout.structs),
-                    completeValue,
-                  ) : undefined;
+                if (!structuredValue) {
+                  kernelEncodedValue = completeValue
+                    ? concatenateEncodedArrays(
+                      authenticatedChunkableValue
+                        ?? encodePushdataValue([], collection.valueType, stateLayout.structs),
+                      completeValue,
+                    ) : undefined;
+                }
                 if (leadingValue && leadingIndex >= 0) {
                   entryArgs[leadingIndex] = leadingValue;
                   if (entryAbiFunction === abiFunction) finalArgs[leadingIndex] = leadingValue;
@@ -8685,9 +8713,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   };
                 }
               }
-              // A fixed message-bus route CAN reproduce its handler-computed value from the authenticated row
-              // arguments (`leadingValue` above is exactly that encoding), so derive the pinned continuations
-              // deterministically. Trace discovery needs the probe to reach the pin, and an unpublised chunk slot
+              // A fixed message-bus route can reproduce a typed struct update or array append from the
+              // authenticated row arguments, so derive the pinned continuations deterministically. Trace
+              // discovery needs the probe to reach the pin, and an unpublished chunk slot
               // halts the probe first - a deadlock this branch breaks.
               if (kernelEncodedValue && kernelEncodedValue.length > 60) {
                 valueChunkMints.push({
@@ -11690,6 +11718,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         earlySignerUtxos,
         publicSelfAddress,
         publicSelfIdentity,
+        physicalSelfAddress: executionSelfAddress,
+        rootLogicalAddress: this._logicalAddress,
         timing,
         valueChunkWriteStagingSession,
         iterationEntryInputs,
@@ -14458,7 +14488,7 @@ export class StatefulFunctionCall {
   /**
    * True when awaiting this call should READ the return value (ethers `view`/`pure` semantics) instead of SENDing
    * a transaction: a single-output function that provably writes no state (`writesState === false`, which fails
-   * closed to `true`), is not a deploy/external-call view, and has no send-intent config attached (transfers,
+   * closed to `true`), is not a deploy, and has no send-intent config attached (transfers,
    * emitReturn, state/entry overrides, split/merge, container ops). Multi-value returns still SEND (their packed
    * encoding is not decodable yet). `.staticCall()` / `.send()` remain the explicit, typed escapes.
    */
@@ -14468,7 +14498,10 @@ export class StatefulFunctionCall {
     if (!abiFn || abiFn.writesState !== false) return false;
     if ((abiFn.outputs?.length ?? 0) !== 1) return false;
     if (abiFn.modifiers?.includes('deploy')) return false;
-    if ((abiFn.externalCalls?.length ?? 0) > 0) return false;
+    // The Solidity import pass checks external callee mutability in view/pure functions. A native
+    // artifact has no equivalent proof, so retain the send path for its external calls.
+    if ((abiFn.externalCalls?.length ?? 0) > 0
+      && this.parentContract.inner.artifact.compiler?.options?.solidityImportCompat !== true) return false;
     return this.transfers.length === 0 && !this.emitReturnFlag
       && this.stateOverrides.length === 0 && this.entryOverrides.length === 0
       && this.entryKeyOverrides.size === 0 && this.externalEntryKeyOverrides.size === 0

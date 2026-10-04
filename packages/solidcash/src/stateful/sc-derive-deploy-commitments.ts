@@ -185,6 +185,13 @@ export async function deriveDeployCommitments<T extends Artifact>(
   for (const input of constructorAbi?.inputs.slice(visibleInputs.length) ?? []) {
     if (input.name === '__internal__msgSenderCategory') internalInitArgs.push(new Uint8Array(32));
     else if (input.name === '__internal__msgSenderAnchorIdx') internalInitArgs.push(-1n);
+    else if (input.name === '__internal__valueChunkOutputBase') internalInitArgs.push(-1n);
+    else if (input.name.startsWith('__internal__valueWitness_')
+      || input.name.startsWith('__internal__leadingPushValue_')) {
+      // Genesis has no prior chunked mapping value or earlier same-transaction array push. The constructor
+      // probe learns any newly published continuation outputs from the layout-relative sentinel above.
+      internalInitArgs.push(new Uint8Array());
+    }
     else {
       const match = input.name.match(/^__internal__vmapBatch(Slot|Proof|Next|PredOut|Rank)_(\d+)$/);
       if (match) {
@@ -255,9 +262,19 @@ export async function deriveDeployCommitments<T extends Artifact>(
   const useSparseProbe = !(globalThis as any).process?.env?.SOLIDCASH_FAITHFUL_DEPLOY_PROBE
     && (options.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
   const allEventDefs = artifact.events ?? [];
-  // A failing commitment equality stops VM execution, so one probe may reveal only the prefix through the
-  // first mismatched data NFT. Allow every state NFT to be learned progressively plus a final convergence run.
-  const maxDeployIterations = Math.max(5, requiredIndices.length + 2);
+  // A failing commitment equality stops VM execution, so one probe may reveal only the next unresolved
+  // constructor output. Bound the work by every output family that can be learned in sequence, plus a final
+  // validation run. Repeated-state detection below still refuses an oscillating derivation.
+  const maxDeployIterations = Math.max(
+    5,
+    constructorKeccakPreimages.filter((preimage) => preimage === null).length
+      + entryOutputCount
+      + sortedCollections.length
+      + emitCount
+      + (constructorAbi?.dynamicWrites?.length ?? 0)
+      + requiredIndices.length
+      + 2,
+  );
   const seenDeployKeys = new Set<string>();
 
   let deployConverged = false;

@@ -9,6 +9,7 @@ import {
   type Artifact,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
 
 /** Minimal stateful call shape needed for delegated return-ABI discovery. */
 export type CreateBuilderEarlyArgsStatefulCall = {
@@ -135,9 +136,8 @@ export async function materializeCreateBuilderEarlyArgs(
   // at ip 115 with a 33-byte `ff…ff` against the caller's real category).
   const usesMsgSenderMappingKey = (abiFunction?.entryAccesses ?? []).some((access) =>
     (access.keySources ?? []).some((source) => source.kind === 'msgSender'));
-  // Hidden arguments are APPENDED, so a build that skips one of the earlier blocks shifts every later witness
-  // into the wrong ABI slot - the compiler then reads a default where a real identity belongs. Keep the value
-  // here and re-materialize it BY NAME before the builder is constructed.
+  // Other hidden witnesses may precede the caller category in the ABI. Place it by name so an earlier batch
+  // count keeps its declared scalar slot; the late builder pass reasserts this identity after other planning.
   let resolvedMsgSenderCategory: Uint8Array | undefined;
   if (abiFunction !== undefined && (abiFunction.usesMsgSender || usesMsgSenderMappingKey)
     && abiFunction.inputs.some((input) => input.name === '__internal__msgSenderCategory')) {
@@ -167,7 +167,9 @@ export async function materializeCreateBuilderEarlyArgs(
       if (info) msgSenderCategory = hexToBin(info.externalContract.categoryId).reverse();
     }
     resolvedMsgSenderCategory = msgSenderCategory ?? new Uint8Array(32);
-    nextFinalArgs = [...nextFinalArgs, resolvedMsgSenderCategory];
+    nextFinalArgs = materializeInternalFunctionArgument(
+      nextFinalArgs, abiFunction.inputs, '__internal__msgSenderCategory', resolvedMsgSenderCategory,
+    );
     if (zeroFallback && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
       // Which build ends up publishing a ZERO caller category: that frame's `msg.sender` comparisons read a
@@ -190,10 +192,13 @@ export async function materializeCreateBuilderEarlyArgs(
   }
 
   // __internal__blockhashInputIndex: the (n->hash) co-spend's absolute input index = master(0) + the slot
-  // offset (the SymbolTable injects this param right after msgSender, so it is pushed here in order).
+  // offset. Other hidden witnesses can precede it, so resolve its exact published ABI position.
   const bhSlot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'blockhashOracle');
-  if (bhSlot && nextFinalArgs.length < (abiFunction?.inputs.length ?? 0)) {
-    nextFinalArgs = [...nextFinalArgs, BigInt((overrides?.blockBase ?? 0) + bhSlot.offset)];
+  if (bhSlot && abiFunction?.inputs.some((input) => input.name === '__internal__blockhashInputIndex')) {
+    nextFinalArgs = materializeInternalFunctionArgument(
+      nextFinalArgs, abiFunction.inputs, '__internal__blockhashInputIndex',
+      BigInt((overrides?.blockBase ?? 0) + bhSlot.offset),
+    );
   }
 
   return {

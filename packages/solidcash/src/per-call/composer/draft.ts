@@ -853,6 +853,7 @@ export function composeDraft(
         };
         return { callee: frame };
       },
+      learnReached: (current) => learnComputedValues(master.master, current),
     };
   });
 

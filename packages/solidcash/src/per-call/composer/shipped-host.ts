@@ -117,6 +117,11 @@ export interface ShippedMasterRun {
   programFor(block: WitnessBlock): ShippedVmProgram;
   /** Writes `site`'s witness into `block`, naming the callee a call site reaches. */
   fill(site: StopSite, block: WitnessBlock): { readonly callee?: FrameRequest };
+  /**
+   * Learns into `block` the values the program computes where the draft left a placeholder, up to the first stop
+   * that is not one, as `fill` does before a site. Absent, a run is judged as it stands.
+   */
+  learnReached?(block: WitnessBlock): void;
 }
 
 /** What one real run of a master ended with. */
@@ -324,7 +329,16 @@ export function createShippedDerivationHost(options: ShippedHostOptions): Deriva
       options.onRun?.(run.master, site, before);
       const { callee } = run.fill(site, block);
       // The run after the fill: does the real program move?
-      const after = runOnce(vm, run.programFor(block));
+      let after = runOnce(vm, run.programFor(block));
+      if (!reachedFurther(before, after) && callee !== undefined && site.kind === 'call' && site.repeated === true
+        && run.learnReached !== undefined) {
+        // A loop's next turn first closes the segment this visit's call ended, and the body makes that close before
+        // the site reads its record: a visit that moved the run a whole turn can stop at an earlier instruction than
+        // the one it started from. Learning what the draft left for that close puts the stop back on the site's own
+        // record read, a turn on, which is how a loop's visits are compared.
+        run.learnReached(block);
+        after = runOnce(vm, run.programFor(block));
+      }
       lastStop.set(run.master, after);
       options.onRun?.(run.master, site, after);
 

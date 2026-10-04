@@ -109,6 +109,11 @@ export function applyDerivedValueChunks(
     }
     const existing = builder.outputs[outputIndex];
     if (existing) {
+      // A provisional empty entry witness cannot replace a populated NEW
+      // commitment later learned from an authenticated fixed output read.
+      if (chunk.semanticKind === 'entryPin' && chunk.commitment === '00'
+        && existing.token?.nft?.commitment
+        && existing.token.nft.commitment !== '00') continue;
       // A minting 1:1 recreation is not an old value-chunk digest. Every
       // P2SH32 used to match `existingIsChunkAddress`, so a participant minting
       // lock could be replaced by a value chunk.

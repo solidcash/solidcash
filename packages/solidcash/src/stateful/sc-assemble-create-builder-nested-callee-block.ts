@@ -551,8 +551,42 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
           }
         }
       }
+      // Two cold keys can share one authenticated predecessor. The lower NEW
+      // links to the higher NEW, while only the lower key recreates P'. The
+      // independent per-slot insert seeds above cannot express this topology.
+      for (const batch of bAbiFunc?.sortedBatchInfo ?? []) {
+        if (!batch.linear || batch.slotIndices.length !== 2) continue;
+        const inserts = batch.slotIndices.map((index) => ctx.bPlannedEntryInserts.find(
+          (planned) => planned.slotIndex === index,
+        ));
+        if (!inserts[0] || !inserts[1]) continue;
+        const [firstSlot, secondSlot] = batch.slotIndices;
+        const firstProof = ctx.bCompilerInternalArgs[`__internal__vmapBatchProof_${firstSlot}`];
+        const secondProof = ctx.bCompilerInternalArgs[`__internal__vmapBatchProof_${secondSlot}`];
+        if (typeof firstProof !== 'bigint' || firstProof !== secondProof) continue;
+        const firstKey = ctx.bCompilerInternalArgs[`__internal__vmapBatchSlot_${firstSlot}`];
+        const secondKey = ctx.bCompilerInternalArgs[`__internal__vmapBatchSlot_${secondSlot}`];
+        if (!(firstKey instanceof Uint8Array) || !(secondKey instanceof Uint8Array)
+          || bytesToSlotValue(firstKey) === bytesToSlotValue(secondKey)) continue;
+        const firstIsLower = bytesToSlotValue(firstKey) < bytesToSlotValue(secondKey);
+        const lower = inserts[firstIsLower ? 0 : 1];
+        const higher = inserts[firstIsLower ? 1 : 0];
+        if (!lower || !higher) continue;
+        const higherKey = firstIsLower ? secondKey : firstKey;
+        const higherSlot = firstIsLower ? secondSlot : firstSlot;
+        const lowerSlot = firstIsLower ? firstSlot : secondSlot;
+        lower.newCommitment = `${lower.newCommitment.slice(0, 64)}${binToHex(higherKey)}`
+          + lower.newCommitment.slice(128);
+        ctx.bCompilerInternalArgs[`__internal__vmapBatchNext_${lowerSlot}`] = higherKey;
+        ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${higherSlot}`] = -1n;
+        ctx.bRelativeOutputInternalArgs.delete(`__internal__vmapBatchPredOut_${higherSlot}`);
+      }
       if (ctx.bBlockInputs) {
         for (const planned of ctx.bPlannedEntryInserts) {
+          if (ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${planned.slotIndex}`] === -1n) {
+            planned.outputBlockSlot = -1;
+            continue;
+          }
           planned.outputBlockSlot = Math.max(ctx.bBlockInputs.length, bBlockLayout?.blockSize ?? 0);
           ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${planned.slotIndex}`] =
             BigInt(planned.outputBlockSlot);

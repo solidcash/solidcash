@@ -369,10 +369,20 @@ export function materializeExternalCallOutputs(
           const handle = group.plannedEntryInsertHandles?.[plannedInsertIndex];
           const insert = handle === undefined ? undefined : host.externalCallEntryInserts[handle];
           const commitment = insert?.commitment || plannedInsert.commitment;
-          const predecessor = group.blockInputs[plannedInsert.blockSlot];
+          // Multiple cold keys may share one proof input. The later entry slot is
+          // then backed by a funder, while its proof witness still names the
+          // original collection entry whose lock P' must recreate.
+          const proofOffset = plannedInsert.slotIndex === undefined ? undefined
+            : (group.internalArgs?.[`__internal__vmapBatchProof_${plannedInsert.slotIndex}`]
+              ?? group.compilerRoute?.internalArgs?.[`__internal__vmapBatchProof_${plannedInsert.slotIndex}`]);
+          const predecessor = typeof proofOffset === 'bigint' && proofOffset >= 0n
+            ? group.blockInputs[Number(proofOffset)]
+            : group.blockInputs[plannedInsert.blockSlot];
           builder.addOutput(commitment && predecessor
             ? {
-              to: insert?.to ?? predecessor.unlocker.generateLockingBytecode(),
+              to: typeof proofOffset === 'bigint' && proofOffset >= 0n
+                ? predecessor.unlocker.generateLockingBytecode()
+                : insert?.to ?? predecessor.unlocker.generateLockingBytecode(),
               amount: 1000n,
               token: {
                 amount: 0n,

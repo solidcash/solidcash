@@ -410,6 +410,63 @@ export function extractAllRouteValueChunks(
   }));
 }
 
+function deriveFixedEntryLockPin(
+  group: ExternalCallUtxoGroup,
+  bOutputBase: number,
+  trace: AuthenticationProgramStateCommon[],
+  stb: StatefulTransactionBuilder,
+  observations: RouteProbeObservationHistory,
+  convention?: 'legacy-unroll' | 'kernel-row-loop',
+  fixedIndex = false,
+): RouteValueChunkProgress {
+  // A cold fixed entry may fail its bytecode check before the VM exposes its new commitment. Bind the
+  // expected lock to an actual OUTPUTBYTECODE read of a compiler-published entry slot, then probe again.
+  for (let i = trace.length - 1; i >= 0; i--) {
+    const equal = trace[i];
+    if (equal.instructions[equal.ip]?.opcode !== Op.OP_EQUALVERIFY || equal.stack.length < 2) continue;
+    const expected = equal.stack[equal.stack.length - 1];
+    const actual = equal.stack[equal.stack.length - 2];
+    if (expected.length !== 35 || expected[0] !== 0xaa || expected[1] !== 0x20 || expected[34] !== 0x87
+      || binToHex(expected) === binToHex(actual)) continue;
+    let outputRead: AuthenticationProgramStateCommon | undefined;
+    for (let j = i - 1; j >= Math.max(0, i - 12); j--) {
+      const candidate = trace[j];
+      if (candidate.instructions !== equal.instructions
+        || candidate.instructions[candidate.ip]?.opcode !== Op.OP_OUTPUTBYTECODE
+        || candidate.stack.length === 0) continue;
+      const after = trace[j + 1];
+      const exactRead = after?.instructions === candidate.instructions
+        && after.ip === candidate.ip + 1 && after.stack.length > 0
+        && binToHex(after.stack[after.stack.length - 1]) === binToHex(actual);
+      // The sparse probe captures OUTPUTBYTECODE and EQUALVERIFY, but not necessarily the intermediate
+      // post-read state. This compiler fixed-entry shape keeps the read value on stack and picks the expected
+      // address immediately before comparing them.
+      const pickedExpected = candidate.ip + 3 === equal.ip
+        && (candidate.instructions[candidate.ip + 1]?.opcode ?? 0) >= Op.OP_1
+        && (candidate.instructions[candidate.ip + 1]?.opcode ?? 0) <= Op.OP_16
+        && candidate.instructions[candidate.ip + 2]?.opcode === Op.OP_PICK;
+      const legacySwap = candidate.instructions[candidate.ip - 1]?.opcode === Op.OP_SWAP
+        && candidate.stack.length > 1;
+      if (exactRead || pickedExpected || legacySwap) { outputRead = candidate; break; }
+    }
+    if (!outputRead) continue;
+    const outputIndex = Number(decodeScriptNumber(outputRead.stack[outputRead.stack.length - 1]));
+    const entryBlockSlot = outputIndex - bOutputBase;
+    if (group.blockLayout?.slots[entryBlockSlot]?.kind !== 'entry') continue;
+    if (stb.setDerivedChunkOutput(outputIndex, {
+      commitment: '00', lockingBytecode: expected, categoryId: group.categoryId,
+      fixedIndex, semanticKind: 'entryPin',
+    })) {
+      const identity = `entry-lock:${group.categoryId}:${entryBlockSlot}`;
+      const discovered = recordRouteProbeObservation(observations, {
+        identity, fingerprint: binToHex(expected),
+      }, convention) !== 'same';
+      return { changed: true, discovered };
+    }
+  }
+  return { changed: false, discovered: false };
+}
+
 export function deriveRouteValueChunks(
   group: ExternalCallUtxoGroup, bOutputBase: number, trace: AuthenticationProgramStateCommon[],
   stb: StatefulTransactionBuilder,
@@ -442,7 +499,10 @@ export function deriveRouteValueChunks(
   const positionalPin = scanPin ? undefined : (extractRouteChunkPin(trace)
     ?? extractFailingP2sh32OutputPin(trace, pinBand));
   const pin = scanPin ?? positionalPin;
-  if (!pin) return { changed: false, discovered: false };
+  if (!pin) return deriveFixedEntryLockPin(
+    group, bOutputBase, trace, stb, observations, convention,
+    explicitBase !== undefined && !usesSharedBand,
+  );
   if (usesSharedBand && isP2sh32LockingBytecode(pin.lockingBytecode)) {
     stb.setValueChunkRedeemLock(pin.lockingBytecode);
   }
@@ -695,39 +755,10 @@ export function deriveRouteValueChunks(
     }
   }
 
-  // After computed chunks converge, the route can reach an active fixed entry whose balanced input was a plain
-  // funder (an absent sorted-batch target). Its outlined address helper fails before the commitment is visible.
-  // Seed that exact physical output with the authenticated entry address; the next pass reveals its commitment.
-  for (let i = trace.length - 1; i >= 0; i--) {
-    const equal = trace[i];
-    if (equal.instructions[equal.ip]?.opcode !== Op.OP_EQUALVERIFY || equal.stack.length < 2) continue;
-    const expected = equal.stack[equal.stack.length - 1];
-    const actual = equal.stack[equal.stack.length - 2];
-    if (expected.length !== 35 || expected[0] !== 0xaa || expected[1] !== 0x20 || expected[34] !== 0x87
-      || binToHex(expected) === binToHex(actual)) continue;
-    const outputRead = trace.slice(Math.max(0, i - 12), i).reverse().find((candidate) =>
-      candidate.instructions === equal.instructions
-      && candidate.instructions[candidate.ip]?.opcode === Op.OP_OUTPUTBYTECODE
-      && candidate.instructions[candidate.ip - 1]?.opcode === Op.OP_SWAP
-      && candidate.stack.length > 1);
-    if (!outputRead) continue;
-    const outputIndex = Number(decodeScriptNumber(outputRead.stack[outputRead.stack.length - 1]));
-    const entryBlockSlot = outputIndex - bOutputBase;
-    if (group.blockLayout.slots[entryBlockSlot]?.kind !== 'entry') continue;
-    if (stb.setDerivedChunkOutput(outputIndex, {
-      commitment: '00', lockingBytecode: expected, categoryId: group.categoryId,
-      fixedIndex: explicitBase !== undefined && !usesSharedBand,
-      semanticKind: 'entryPin',
-    })) {
-      const identity = `entry-lock:${group.categoryId}:${entryBlockSlot}`;
-      discovered = recordRouteProbeObservation(observations, {
-        identity,
-        fingerprint: binToHex(expected),
-      }, convention) !== 'same';
-      return { changed: true, discovered };
-    }
-  }
-  return { changed: false, discovered: false };
+  return deriveFixedEntryLockPin(
+    group, bOutputBase, trace, stb, observations, convention,
+    explicitBase !== undefined && !usesSharedBand,
+  );
 }
 
 export function valueChunkOutputWitnessCarrier(

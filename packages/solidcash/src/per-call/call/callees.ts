@@ -16,17 +16,21 @@
  * compute, so they are learned from its own close, as its return is. A contract entered more than once chains its
  * data records and its nodes across its frames in the order the validator walks them: a frame starts from the view
  * the last write before it leaves, which is learned from that frame's own close before the frame is read, and names a
- * node an earlier frame created at that frame's output. The nodes are chained as the hop chains them.
+ * node an earlier frame created at that frame's output. The nodes are chained as the hop chains them. A write that
+ * lays chunk records, a dynamic value's run or the chunks a long mapping value takes, is declared in the segment its
+ * artifact publishes for that write, as the hop places its callee's (`placeOwnWrites`), and a long value the body
+ * reads from its frame is listed in the frame's block, as the hop lists it (`calleeValueWitnesses`).
  *
- * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that touches a dynamic
- * value's or a mapping value's chunks, sends value or co-spends a side-car; a frame that only reads a node an
- * earlier frame created; reaches of one collection one transaction cannot carry; and a deployment entered twice whose
- * frames name data records that no order of its block keeps side by side. A site, of the entry or of a callee frame,
- * whose argument reads an earlier call's result stops the plan before it (`blocked`), and a call the entry guards on
- * one is stated from the results the plan was made from (`conditionalProducers`): the call plans again once the
- * frames of the earlier calls answered. Two deployments of one contract are two blocks, each its own category's. A
- * frame the plan runs beside the callees on one of their contracts, a value send's `receive()`, counts among the
- * contract's masters, and a callee that runs after it starts from the views it left.
+ * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that sends value,
+ * co-spends a side-car or writes a chunking value its artifact does not state, which only its own close sizes; a
+ * frame that only reads a node an earlier frame created; reaches of one collection one transaction cannot carry; and
+ * a deployment entered twice whose frames name data records that no order of its block keeps side by side. A site,
+ * of the entry or of a callee frame, whose argument reads an earlier call's result stops the plan before it
+ * (`blocked`), and a call the entry guards on one is stated from the results the plan was made from
+ * (`conditionalProducers`): the call plans again once the frames of the earlier calls answered. Two deployments of
+ * one contract are two blocks, each its own category's. A frame the plan runs beside the callees on one of their
+ * contracts, a value send's `receive()`, counts among the contract's masters, and a callee that runs after it starts
+ * from the views it left.
  */
 
 import { hexToBin } from '@bitauth/libauth';
@@ -55,7 +59,7 @@ import {
   entryRecordReadUnlock, eventCloseOf, eventLockingBytecode, eventSentinel, readComputedDeclaration,
   stateRecordUnlockingBytecode, type PerCallDeploymentSet,
 } from '../deploy/index.js';
-import { calleeSettleOrder } from '../proxy/deploy.js';
+import { calleeSettleOrder, calleeValueWitnesses, placeOwnWrites } from '../proxy/deploy.js';
 import { sharedNodeId } from '../proxy/entry-writes.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
 import {
@@ -224,18 +228,17 @@ function calleeEventSentinels(callee: HopCallee, maximumCommitmentBytes: number)
 }
 
 /**
- * True when a callee frame touches chunk records: a dynamic value's run, on its own or beside a mapping write, or a
- * mapping whose values chunk. Its other mapping nodes are what this path plans.
+ * True when a callee frame's own writes lay chunk records: a dynamic value's run, written or read beside them, on
+ * its own or beside a mapping write, or the chunks a mapping value takes. Such a frame's writes are declared each in
+ * its own segment, as the hop declares its callee's; a frame that writes nodes alone lands them in the one segment
+ * its artifact publishes for its mapping writes (`mappingWriteSegment`).
  */
-function touchesChunks(callee: HopCallee): boolean {
+function laysChunks(callee: HopCallee): boolean {
   const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
-  const chunking = new Set((callee.artifact.stateLayout?.collections ?? [])
-    .filter((collection) => collection.chunkableValue === true).map((collection) => collection.name));
   const dynamic = (abi?.dynamicReads ?? []).length + (abi?.dynamicWrites ?? []).length > 0;
   const writes = callee.entryWrites;
-  return (writes !== undefined && (writes.collection === undefined || dynamic
-    || writes.reachWrites.some((write) => write.chunkable)))
-    || callee.readNodes.some((node) => chunking.has(node.collection));
+  return writes !== undefined && (writes.collection === undefined || dynamic
+    || writes.reachWrites.some((write) => write.chunkable));
 }
 
 /** The ABI entry a contract's fallback is published under, which a call routed to it names. */
@@ -298,8 +301,11 @@ function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefine
   }
   const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
   if ((abi?.transferCount ?? 0) > 0) return `${label} sends value, which this call path does not plan yet`;
-  if (touchesChunks(callee)) {
-    return `${label} touches a dynamic value's or a mapping value's chunks, which this call path does not plan yet`;
+  // A chunking value its artifact does not state is sized only from the frame's own close, which the hop plans the
+  // write again from (`planCalleeWrites`) and this path does not yet.
+  if (callee.entryWrites?.awaitsValue === true) {
+    return `${label} writes a chunking value its artifact does not state, so the run of chunk records the write `
+      + 'takes cannot be sized from the call alone';
   }
   if (sideCars) return `${label} co-spends a side-car, which this call path does not plan yet`;
   if (publishedLoopEffects(callee.artifact, callee.entry) !== undefined) {
@@ -307,7 +313,7 @@ function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefine
       + 'yet';
   }
   if (publishedWrites(callee.artifact, callee.entry) === undefined
-    || (callee.entryWrites !== undefined && mappingWriteSegment(callee) === undefined)) {
+    || (callee.entryWrites?.collection !== undefined && mappingWriteSegment(callee) === undefined)) {
     return `${label} writes in a segment its artifact does not fix, which this call path does not plan yet`;
   }
   return undefined;
@@ -454,7 +460,8 @@ export interface CalleeFrames {
  * writes is declared kept up to the segment the artifact publishes for the write, unstated there for the derivation
  * to learn, and carried on after it. A frame that makes `k` calls closes `k + 1` segments. The mapping nodes it only
  * reads follow its records, kept, and the nodes its write touches follow them, declared where the write lands and
- * kept on either side of it. Its event outputs and created nodes take the trailing indices the caller hands it.
+ * kept on either side of it; the chunk records a write lays follow them, each declared where its own write lands.
+ * Its event outputs and created records take the trailing indices the caller hands it.
  */
 export function calleeFrames(options: {
   readonly planned: PlannedCallees;
@@ -474,6 +481,11 @@ export function calleeFrames(options: {
   readonly maximumCommitmentBytes: number;
   /** The value each callee frame takes as `msg.value`, by master: what the call that enters it carries. */
   readonly callValues?: ReadonlyMap<string, bigint>;
+  /**
+   * The lock the chunks a callee's write leaves past its dynamic value's width are paid to, as the hop pays them: the
+   * caller's, whose coin enters. Absent, such a write is refused by name.
+   */
+  readonly releasedLock?: Uint8Array;
   /**
    * The frames the plan runs beside the callees on a callee's deployment: how many masters each block adds, and,
    * by callee master and record id, the view a record starts from in a frame that runs after one of them wrote it.
@@ -536,14 +548,16 @@ export function calleeFrames(options: {
       return options.eventBase + eventOutputs.length - 1;
     });
     // The frame's mapping write, authorized by its own master, its created nodes past the frames laid before it.
+    const createdBase = options.createdBase + createdOutputs.length;
     const laid = callee.entryWrites?.lay({
       indexOf,
       proxyMasterIndex: indexOf(callee.master),
-      createdBase: options.createdBase + createdOutputs.length,
+      createdBase,
       recordAmount: callee.records[0]?.satoshis ?? options.recordAmount,
       category: callee.category,
       learnedViews: values.views.get(callee.master) ?? [],
       continuedOutputOf: (collection, slot) => createdElsewhere.get(createdNodeKey(callee.category, collection, slot)),
+      ...(options.releasedLock === undefined ? {} : { releasedLock: options.releasedLock }),
     });
     for (const node of laid?.createdNodes ?? []) {
       createdElsewhere.set(createdNodeKey(callee.category, node.collection, node.slot), node.out);
@@ -551,6 +565,11 @@ export function calleeFrames(options: {
     createdOf.set(callee.block, [...(createdOf.get(callee.block) ?? []), ...(laid?.createdOutputs ?? [])]);
     createdOutputs.push(...(laid?.trailingOutputs ?? []));
     Object.assign(inputs, laid?.inputs ?? {});
+    // A write that lays chunk records is declared in the segment its artifact publishes for that write, as the hop
+    // declares its callee's (`placeOwnWrites`): a run lands beside the batch it is written with, and a run the frame
+    // only reads keeps its place among them. Any other frame's nodes land in its one mapping-write segment.
+    const byWrite = laid !== undefined && callee.entryWrites !== undefined && laysChunks(callee)
+      ? { laid, writes: callee.entryWrites } : undefined;
     const landing = mappingWriteSegment(callee) ?? 0;
     // A node two groups declare, a target that is also another target's relinked predecessor, is written once in its
     // final form: the later declaration continues from the view the first one leaves, which is learned with it.
@@ -602,8 +621,21 @@ export function calleeFrames(options: {
         return { in: index, out: index, viewIn: 'carried', viewOut: 'carried' };
       }),
       ...readEntries,
-      ...writesAt(position),
+      ...(byWrite === undefined ? writesAt(position) : []),
     ]);
+    if (byWrite !== undefined) {
+      try {
+        placeOwnWrites(segments, {
+          artifact: callee.artifact, functionName: callee.entry, label: `the callee "${callee.functionName}"`,
+          laid: { ...byWrite.laid, entries: writeEntries }, writes: byWrite.writes, indexOf,
+          category: callee.category, createdBase, calls: callee.calls.length,
+          ...(callee.truncated === true ? { truncated: true } : {}),
+        });
+      } catch (error) {
+        if (!(error instanceof PerCallProxyDeployError)) throw error;
+        throw new PerCallCalleeError(error.message);
+      }
+    }
     // A record this frame writes ends where its last write leaves it: the placeholder the composer declares for that
     // segment's unstated end, at the record's own place among the segment's entries.
     declared.forEach((record, entryIndex) => {
@@ -611,6 +643,8 @@ export function calleeFrames(options: {
       if (written.length === 0) return;
       chainEnds.set(record.id, unstatedViewPlaceholder(callee.master, Math.max(...written), entryIndex));
     });
+    // The long values the body reads from its frame, one per value-witness slot, as the hop lists its callee's.
+    const valueWitnesses = calleeValueWitnesses(callee.readNodes, laid);
     return {
       master: callee.master,
       contract: callee.block,
@@ -633,6 +667,7 @@ export function calleeFrames(options: {
         ? values.retvals.get(callee.master) ?? calleeRetvalPlaceholder(callee)
         : new Uint8Array(0),
       segments,
+      ...(valueWitnesses === undefined ? {} : { values: valueWitnesses }),
       events,
       sends: [],
       // The frame's call data is the pushes of the call that reaches it.

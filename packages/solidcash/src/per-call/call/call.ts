@@ -1347,6 +1347,7 @@ async function callInShape(
       createdBase: calleeCreatedBase, recordAmount: validator.satoshis,
       maximumCommitmentBytes, beside: besideCallees,
       callValues: new Map([...typedCallValues].map(([position, amount]) => [typedCalls[position]!.callee, amount])),
+      releasedLock: options.callerLockingBytecode,
     });
     // The calls its body makes, each value call into a contract where the body sends.
     const valueCalls = payees.map((payee, index): DraftCall => ({

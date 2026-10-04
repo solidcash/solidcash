@@ -3154,8 +3154,9 @@ function adjacentRecordState(
  * A body that reads a value its node's tail cannot hold takes the value itself from its frame's block, so the
  * frame's witness block declares the whole value the hop joined from the deployment's chunks. The frame's own
  * writes already state theirs; the nodes the frame only reads add theirs here, and the two lists overlay by slot.
+ * The plain call path lists its callee frames' so too.
  */
-function calleeValueWitnesses(
+export function calleeValueWitnesses(
   readNodes: readonly HopCalleeReadNode[], laidWrites: LaidHopEntryWrites | undefined,
 ): readonly Uint8Array[] | undefined {
   const bySlot = new Map<number, Uint8Array>();

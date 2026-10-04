@@ -133,7 +133,12 @@ export function seedComposeComputedClaims(
     ? { repairs: 0, rounds: 0, outputs: [] as number[] }
     : convergeMessageBusComputedResourceOutputs(provisional);
   const valueChunkConvergence = convergeMessageBusComputedValueChunkOutputs(provisional);
-  const dynamicChunkConvergence = convergeMessageBusComputedDynamicChunkOutputs(provisional);
+  // Recipe mode cannot apply VM-mined chunk repairs. Intermediate semantic graphs are provisional, so
+  // validating every one repeats an expensive full-graph VM pass without changing any claim. The stable
+  // graph is still checked for incomplete chunks and the final admit validates every chunk covenant.
+  const dynamicChunkConvergence = isVmValidationOnly()
+    ? { repairs: 0, rounds: 0, ownedOutputs: [], authenticatedOutputs: [], outputs: [] }
+    : convergeMessageBusComputedDynamicChunkOutputs(provisional);
   if (seededComputedResource || seededComputedValueChunk
     || resourceConvergence.repairs > 0 || valueChunkConvergence.repairs > 0
     || dynamicChunkConvergence.repairs > 0) {

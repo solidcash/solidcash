@@ -21,8 +21,10 @@ import {
 import { seedComposeComputedClaims } from './compose-seed-computed-claims.js';
 import { freezeStaticcallParticipantOutputs } from './compose-participant-helpers.js';
 import {
+  convergeMessageBusComputedDynamicChunkOutputs,
   dynamicChunkPlaceholdersRemain,
 } from './computed-dynamic-chunks.js';
+import { isVmValidationOnly } from './materialization-mode.js';
 import {
   finalizeAtomicInvocationGraph,
   type AtomicDeploymentSlotEffect,
@@ -321,8 +323,14 @@ export async function runComposeSemanticClaimLoop(
       }
       // Local builders freeze `00` placeholders; complete-graph OTC convergence above may already have
       // replaced them. Only fail closed when a placeholder still remains on the owned trailing chunk run.
+      // Intermediate recipe graphs do not run the dynamic-chunk validator. An incomplete stable graph
+      // still needs its authenticated output set before we decide whether a placeholder is reachable.
+      const stableDynamicChunkConvergence = isVmValidationOnly()
+        && assembled.incompleteDynamicChunks.length > 0
+        ? convergeMessageBusComputedDynamicChunkOutputs(provisional)
+        : dynamicChunkConvergence;
       if (dynamicChunkPlaceholdersRemain(
-        provisional, dynamicChunkConvergence, assembled.incompleteDynamicChunks,
+        provisional, stableDynamicChunkConvergence, assembled.incompleteDynamicChunks,
       )) {
         const detail = assembled.incompleteDynamicChunks.map((item) =>
           `${item.participant}:${item.variable} (${item.resolved}/${item.total})`).join(', ');

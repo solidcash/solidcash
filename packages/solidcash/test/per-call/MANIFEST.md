@@ -38,7 +38,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 211 |
-| `packages/solidcash/test/per-call/call/` | `solidcash` | 330 (326 by default, 4 skipped) |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 332 (328 by default, 4 skipped) |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 12 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 171 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 93 |
@@ -50,7 +50,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/ahead/` | `solidcash` | 174, under `PER_CALL_AHEAD=1` |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 11 |
 
-Total: 2749 checks (119 + 1054 + 1565 + 11). Twelve cases in a default `solidcash` run are skipped and run under
+Total: 2751 checks (119 + 1054 + 1567 + 11). Twelve cases in a default `solidcash` run are skipped and run under
 `PER_CALL_FULL=1` instead: three in `primitives/many-masters.test.ts` (the nine-entry composition and its refusal,
 which `shapes/deep-arbitration.test.ts` covers by default, and the twenty-four-master composition, which takes about
 twenty-eight seconds to derive), the shipped data contract's clock-stamped append
@@ -59,9 +59,9 @@ behind its proxy and takes about three and a half minutes, `pw7-measure.test.ts`
 the `validator/`, `conformance/` and `call/` rows show. The `ahead/` row's 174 run under `PER_CALL_AHEAD=1`. The
 package totals are full-config runs of
 `vitest.per-call.config.ts`: `solidc` 1054 is the four rows above it (122 files),
-`solidcash` 1565 is the rows above it from `validator/` down, `ahead/` excepted (284 files), every row above
+`solidcash` 1567 is the rows above it from `validator/` down, `ahead/` excepted (285 files), every row above
 re-measured 2026-10-03 by rerunning its own directory in the same sweep (the `call/` and `conformance/` rows then
-counted forward by the cases PL1 to PL5 added and merged), and `@solidcash/testing` is its own row
+counted forward by the cases PL1 to PL5 and VC3 added and merged), and `@solidcash/testing` is its own row
 and drives the layer's public entry points rather than the SDK's.
 The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`. It was refreshed
 2026-10-03 by rerunning the directory (28 files / 184 cases, all green), and counted forward by the ten cases

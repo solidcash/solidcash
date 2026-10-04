@@ -1,12 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { SignatureTemplate } from '../../../src/index.js';
-import { callPerCallEntry } from '../../../src/per-call/call/index.js';
 import { PerCallProxyDeployError, callPerCallProxyEntry } from '../../../src/per-call/proxy/index.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { alicePriv } from '../../fixture/vars.js';
-import {
-  USER_LOCK, compilePerCall, deployPlain, deployProxied, newWorld, refusedVerdicts, type World,
-} from './composition-world.js';
+import { USER_LOCK, compilePerCall, deployPlain, deployProxied, newWorld, type World } from './composition-world.js';
 
 /**
  * Walls ahead: a typed call carrying value, `IWrapper(w).deposit{value: v}()`, beside the caller's own write. A DEX
@@ -14,8 +11,10 @@ import {
  *
  * The compiler serves it: the call's record carries the value, the caller's site holds the record's `value` to the
  * amount its code computes, the validator holds the callee's frame value to the record (V5), and the value rule charges
- * the caller's containers and credits the callee's (V7, or the head of a frame that settles alone). What stands is the
- * builders' plan: both call paths plan a typed callee with no value (`call/callees.ts`), so the caller's own frame
+ * the caller's containers and credits the callee's (V7, or the head of a frame that settles alone). The plain call
+ * path plans it: the record's value is learned from the caller's own close at the site and planned as the callee's
+ * `msg.value`, paid into a container of its own (`call/typed-call-value.test.ts`). What stands is the hop's plan: it
+ * states a typed callee with no value (`proxy/external-calls.ts`, `buildHopPlan`), so the implementation's frame
  * refuses at the call site, where the record does not carry the amount its code computed.
  *
  * The case pins what is met today; its title says what should settle once served. The file runs only under
@@ -52,8 +51,8 @@ async function spent(world: World, txid: string, vout: number): Promise<boolean>
 }
 
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a typed call carrying value', () => {
-  it('serves the caller\'s entry, whose frame the call paths still plan with no value at the call (should settle '
-    + 'once the builders plan the value a typed call carries)', async () => {
+  it('serves the caller\'s entry, whose frame the hop still plans with no value at the call (should settle once '
+    + 'the hop plans the value a typed call carries)', async () => {
     const units = compilePerCall(SOURCE);
     expect(units.Router!.composition?.refusedEntries ?? []).toStrictEqual([]);
     const world = await newWorld(0x5c);
@@ -74,17 +73,5 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a typed call carrying
     expect(hop!.message).toBe('the implementation\'s "depositVia" entry did not settle through the proxy: frame '
       + `"implementation-master" ${AT_CALL_SITE}`);
     expect(await spent(world, hopCoin.txid, hopCoin.vout)).toBe(false);
-
-    // Deployed plain, the call path plans the same frame, which its master refuses at the call.
-    const plainRouter = await deployPlain(world, units.Router!);
-    const plainCoin = await world.userCoin();
-    const plain = await callPerCallEntry({
-      provider: world.network, artifact: plainRouter.artifact, categoryId: plainRouter.categoryId,
-      functionName: 'depositVia', args: [wrapper.address, VALUE], value: VALUE, externals, callerUtxo: plainCoin,
-      callerLockingBytecode: USER_LOCK, funder: FUNDER, changeAddress: world.changeAddress, vm: compositionMachine(),
-    });
-    expect(plain.broadcast).toBeUndefined();
-    expect(refusedVerdicts(plain)).toBe(`master: frame "master" ${AT_CALL_SITE}`);
-    expect(await spent(world, plainCoin.txid, plainCoin.vout)).toBe(false);
   }, 600_000);
 });

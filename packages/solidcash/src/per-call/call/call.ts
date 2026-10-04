@@ -49,8 +49,11 @@
  * or loop bound reads an earlier call's result, the entry's or a callee frame's, is planned once that call has
  * answered, as the hop plans one: the plan stops before the site, the frames of the earlier calls are settled on it,
  * and the call is planned again from what they returned. A call the entry guards on an earlier result is stated as
- * that result, learned the same way, decides the guard. The shapes `callees.ts` does not settle yet are refused by
- * name.
+ * that result, learned the same way, decides the guard. A typed call into a payable entry carries the value the
+ * caller's code computes in its own record (`deposit{value: v}()`): the record starts from none, a site that carries
+ * value closes its eight bytes against the amount the code computed, and the amount is learned and planned as the
+ * callee frame's `msg.value`, paid from the caller's value and containers into a container of the callee's own. The
+ * shapes `callees.ts` does not settle yet are refused by name.
  *
  * What is not covered: a returning entry reached through a proxy hop whose forwarded call records no result. The
  * generated closure shape forwards with a bare `delegatecall(input)` and drops the result, so the hop cannot express
@@ -128,6 +131,7 @@ import { deploymentStateValues } from '../proxy/external-calls.js';
 import { decodeReturnValues } from '../read/index.js';
 import {
   PerCallComposerError,
+  UNFILLED_CALLEE_REF,
   createComposedDerivationHost,
   deploymentBlockId,
   deriveComposition,
@@ -943,6 +947,14 @@ async function callInShape(
     );
   }
   const typedCalls = calleePlan?.calls ?? [];
+  // A typed call into a payable entry may carry value, which its own record holds to the amount the caller's code
+  // computes (spec 4b): each such call starts from none, and the amount a site that carries value closes against is
+  // learned, by the call's position among the typed calls.
+  const payableCalls = typedCalls.flatMap((call, position) => {
+    const callee = calleePlan?.callees.find((candidate) => candidate.master === call.callee);
+    const abi = callee?.artifact.abi.find((candidate) => candidate.name === callee.entry);
+    return (abi?.modifiers ?? []).includes('payable') ? [position] : [];
+  });
   const payeeCallsBefore = payees.map((payee) => sendCallsBefore?.[payee.transferPosition] ?? typedCalls.length);
   /** The position in the entry's calls of the call at `position` among the calls its body makes to typed entries. */
   const typedCallPosition = (position: number): number =>
@@ -1121,7 +1133,7 @@ async function callInShape(
   const readsBalance = (
     (artifact.composition as { balanceReaders?: readonly string[] } | undefined)?.balanceReaders ?? []
   ).includes(`${artifact.contractName}.${entry.name}()`);
-  const containers = entry.transfers.length > 0 || readsBalance
+  const containers = entry.transfers.length > 0 || readsBalance || payableCalls.length > 0
     ? await readSatoshiContainers(provider, categoryId)
     : [];
   /**
@@ -1261,6 +1273,7 @@ async function callInShape(
   const maximumAttempts = learningCandidates.length + emits.length + 2 * sendCount + payees.length
     + 2 * (payeeEventSentinels.flat().length + payeeCandidates.flat().length + 2 * payeeSendIndices.flat().length)
     + (calleePlan?.learnable ?? 0) * (sharesPayee ? 1 + payees.length : 1)
+    + payableCalls.length * (1 + (calleePlan?.learnable ?? 0))
     + (returnsValue ? 1 : 0) + 3;
 
   const buildPlan = (
@@ -1271,8 +1284,11 @@ async function callInShape(
     learnedCallAmounts: readonly (bigint | undefined)[],
     learnedPayees: readonly PayeeLearned[],
     learnedCallees: CalleeValues,
+    typedCallValues: ReadonlyMap<number, bigint>,
   ): CompositionDraftPlan => {
-    const paying = payFromContainers([...learnedSends.map((send) => send.amount), ...learnedCallAmounts]);
+    const paying = payFromContainers([
+      ...learnedSends.map((send) => send.amount), ...learnedCallAmounts, ...typedCallValues.values(),
+    ]);
     const callValue = (index: number): bigint => learnedCallAmounts[index] ?? CALL_VALUE_SENTINEL + BigInt(index);
     // Each paid contract that sends keeps what it does not send in the container its run starts with.
     const payeePayings = payees.map((payee, index) => (payee.sendCount === 0
@@ -1330,6 +1346,7 @@ async function callInShape(
       values: learnedCallees, eventBase: layout.participantCount + emits.length,
       createdBase: calleeCreatedBase, recordAmount: validator.satoshis,
       maximumCommitmentBytes, beside: besideCallees,
+      callValues: new Map([...typedCallValues].map(([position, amount]) => [typedCalls[position]!.callee, amount])),
     });
     // The calls its body makes, each value call into a contract where the body sends.
     const valueCalls = payees.map((payee, index): DraftCall => ({
@@ -1346,8 +1363,19 @@ async function callInShape(
         if (payeeCallsBefore[index] === position
           || (position === typedCalls.length && payeeCallsBefore[index]! > position)) rootCalls.push(valueCalls[index]!);
       });
-      if (position < typedCalls.length) rootCalls.push(typedCalls[position]!);
+      if (position < typedCalls.length) {
+        const carried = typedCallValues.get(position);
+        rootCalls.push(carried === undefined ? typedCalls[position]! : { ...typedCalls[position]!, value: carried });
+      }
     }
+    // Each typed call that carries value pays it into a container of the callee's contract, which the callee's frame
+    // takes as `msg.value`.
+    const calleeContainers: DraftSourceOutput[] = [...typedCallValues].map(([position, amount]) => ({
+      lockingBytecode: satoshiContainerLockingBytecode(
+        calleePlan!.callees.find((callee) => callee.master === typedCalls[position]!.callee)!.categoryId,
+      ),
+      valueSatoshis: amount,
+    }));
     // Each contract it pays: its events, listed right after the entry's, and the mapping nodes it creates.
     const payeeLaid = payees.map((payee, index) => ({
       events: payee.emits.map((_emit, position) => payeeEventBases[index]! + position),
@@ -1540,6 +1568,7 @@ async function callInShape(
         ...payees.flatMap((payee, index) => (payee.sendCount > 0 ? [] : [{
           lockingBytecode: satoshiContainerLockingBytecode(payee.categoryId), valueSatoshis: callValue(index),
         }])),
+        ...calleeContainers,
       ],
       validator: {
         id: VALIDATOR_ID,
@@ -1569,6 +1598,8 @@ async function callInShape(
     (stated.length === 0 ? stated : undefined));
   let learnedSends: readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[] = sendIndices.map(() => ({}));
   let learnedCallAmounts: readonly (bigint | undefined)[] = payees.map(() => undefined);
+  // The value each typed call carries, by its position among the typed calls, once its site's close handed it back.
+  let learnedTypedValues: ReadonlyMap<number, bigint> = new Map();
   let learnedPayees: readonly PayeeLearned[] = payees.map((_payee, index) => ({
     events: payeeEventSentinels[index]!.map(() => undefined),
     views: payeeCandidates[index]!.map(() => undefined),
@@ -1639,6 +1670,7 @@ async function callInShape(
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
     const plan = buildPlan(
       learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees, calleeValues,
+      learnedTypedValues,
     );
     const { host, draft: candidate } = createComposedDerivationHost({ vm: machine, artifacts: frameArtifacts, plan });
     // A plan stopped before a site states the calls before it only, of the entry and of every frame it stops inside,
@@ -1712,10 +1744,10 @@ async function callInShape(
         }
       }
     }
-    // A void entry that writes no mapping and emits nothing leaves nothing to learn: the plan is the one just
-    // derived, accepted or refused.
+    // A void entry that writes no mapping, emits nothing and calls no payable entry leaves nothing to learn: the plan
+    // is the one just derived, accepted or refused.
     if (!returnsValue && learningCandidates.length === 0 && emits.length === 0 && sendCount === 0
-      && payees.length === 0) {
+      && payees.length === 0 && payableCalls.length === 0) {
       settled = true;
       break;
     }
@@ -1769,6 +1801,23 @@ async function callInShape(
         // is learned again once the amount is known.
         if (sharesPayee) calleeValues = NO_CALLEE_VALUES;
         continue;
+      }
+      // A typed call's value is compared the same way, the record's eight bytes stating none until learned. The site
+      // is the last payable typed call the run bound, since a call is bound before its site's check runs, and the
+      // callees answer again: a frame computed from the value its call was planned with.
+      const typedAmount = vmNumberToBigInt(reading.declared, { requireMinimalEncoding: false });
+      if (typeof typedAmount === 'bigint' && typedAmount > 0n && reading.declared.length === 8
+        && bytesEqual(reading.computed, recordValueBytes(0n))) {
+        const calls = candidate.blockOf(MASTER_ID).calls;
+        const valued = learnedTypedValues;
+        const bound = payableCalls.filter((at) => !valued.has(at)
+          && (calls[typedCallPosition(at)]?.calleeRef ?? UNFILLED_CALLEE_REF) !== UNFILLED_CALLEE_REF);
+        const site = bound[bound.length - 1];
+        if (site !== undefined) {
+          learnedTypedValues = new Map([...learnedTypedValues, [site, typedAmount]]);
+          calleeValues = NO_CALLEE_VALUES;
+          continue;
+        }
       }
       const amountPosition = sendAmountSentinels.findIndex((sentinel) => bytesEqual(sentinel, reading.declared));
       const amount = vmNumberToBigInt(reading.computed);
@@ -1883,7 +1932,9 @@ async function callInShape(
     throw new PerCallCallError('the composer built no transaction for the call frame');
   }
   // The containers the sends are paid from sit after the caller's coin, and the machine is asked about them too.
-  const rootSpent = payFromContainers([...learnedSends.map((send) => send.amount), ...learnedCallAmounts]).spent;
+  const rootSpent = payFromContainers([
+    ...learnedSends.map((send) => send.amount), ...learnedCallAmounts, ...learnedTypedValues.values(),
+  ]).spent;
   const payeeSpentFinal = payees.flatMap((payee, index) => (payee.sendCount === 0 ? [] : payeePaying(
     index, learnedCallAmounts[index] ?? CALL_VALUE_SENTINEL + BigInt(index),
     learnedPayees[index]!.sends.map((send) => send.amount),

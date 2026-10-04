@@ -472,6 +472,8 @@ export function calleeFrames(options: {
   readonly recordAmount: bigint;
   /** The bound an event's sentinel payload is sized to. */
   readonly maximumCommitmentBytes: number;
+  /** The value each callee frame takes as `msg.value`, by master: what the call that enters it carries. */
+  readonly callValues?: ReadonlyMap<string, bigint>;
   /**
    * The frames the plan runs beside the callees on a callee's deployment: how many masters each block adds, and,
    * by callee master and record id, the view a record starts from in a frame that runs after one of them wrote it.
@@ -619,7 +621,10 @@ export function calleeFrames(options: {
         callerIsUser: false, originEqualsCaller: false, makesExternalCall: callee.calls.length > 0,
         mastersOfContract: mastersOf.get(callee.block) ?? 1,
       },
-      frame: { kind: callee.kind, sender: caller?.selfAddress ?? options.rootAddress, self: callee.selfAddress, value: 0n },
+      frame: {
+        kind: callee.kind, sender: caller?.selfAddress ?? options.rootAddress, self: callee.selfAddress,
+        value: options.callValues?.get(callee.master) ?? 0n,
+      },
       enteredBy: caller?.master ?? options.rootMaster,
       origin: options.origin,
       calls: callee.calls,

@@ -323,8 +323,16 @@ contract from the implementation's body (its call into the recipient's `receive(
 frame, which the hop does not plan). Served in `call/proxied-native-value.test.ts`, with forged values refused by the
 machine; the ahead replica is repointed at the send to a contract. Not served: value into a deployment's `initialize`;
 a contract behind a proxy paid by another (the value call would enter the proxy's fallback and delegate into the
-implementation's `receive()`, a frame pair neither call path plans for a paid contract); a typed call with value is
-refused at compile time (`support.ts` 3023, the direct path's value-transfer machinery).
+implementation's `receive()`, a frame pair neither call path plans for a paid contract). A typed call with value
+(`IWrapper(w).deposit{value: v}()`) compiles since VC2, its record carrying the value, and the plain call path plans
+it (agent VC3): a typed call into a payable entry starts its record from no value, the caller's own site closes the
+record's eight bytes against the amount its code computed, and `callInShape` learns that amount (the site is the last
+payable call the run bound), plans it as the callee frame's `msg.value` (`calleeFrames` `callValues`), pays it from the
+caller's value and containers and credits a container of the callee's, and has the callees answer again
+(`call/typed-call-value.test.ts`: the deposit settles, the wrapper's balance and container read back, and a record
+and wrapper frame carrying less than the router computed refused by the router's own frame). The hop still states a
+typed callee with no value (`buildHopPlan`, `proxy/deploy.ts`; pinned in `ahead/typed-call-value.test.ts`), and a
+callee frame's own value call is not learned yet, since only the root's closes are read for one.
 
 Replica (as first met): `proxied-native-value.test.ts` (3 cases). Value in is refused by the handle
 (`callPerCallProxyEntry` has no `value` option at all); a send out fails in the frame, which reads its send slot and
@@ -552,7 +560,7 @@ refusal past the alias, and the group form compiling past it.
 
 | Shape | Refused at | Likelihood | Note |
 | --- | --- | --- | --- |
-| a typed call with value (`IWETH(weth).deposit{value: v}()`) | `support.ts` 3030 ("direct path's return-event or value-transfer machinery") | M (DEX routers, wrappers) | compile refusal per entry |
+| a typed call with value (`IWETH(weth).deposit{value: v}()`) | `support.ts` 3030 ("direct path's return-event or value-transfer machinery") | M (DEX routers, wrappers) | compiled (VC2); plain path served (VC3), hop pinned in `ahead/typed-call-value` |
 | `msg.sender` as the call target (`ICallback(msg.sender).cb(...)`, V3-style callbacks) | `support.ts` 3095 | M-L | compile refusal |
 | try/catch whose callee reverts | `support.ts` `callCountRange` ("a catch block is not an executable path") | M-L | not a refusal: the catch never runs, the whole call fails closed with the callee's reason |
 | Multicall / any low-level call but a forwarding delegatecall | `support.ts` 2840 | M | pinned in `conformance/cross-contract-identity` (delegatecall row) |

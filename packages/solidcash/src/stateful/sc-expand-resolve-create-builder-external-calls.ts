@@ -76,12 +76,32 @@ function containsReturningExpression(value: unknown, seen = new Set<object>()): 
 }
 
 function exactRegisteredLockHex(value: string | Uint8Array): string | undefined {
-  const lock = tryCashAddressToLockScript(value);
+  let lock: Uint8Array | undefined;
+  try { lock = tryCashAddressToLockScript(value); } catch { return undefined; }
   if (lock) return binToHex(lock);
   if (typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/iu.test(value)) {
     return value.replace(/^0x/iu, '').toLowerCase();
   }
   return undefined;
+}
+
+function connectedContractAtExactLock(contract: unknown, lockHex: string): boolean {
+  if (typeof contract !== 'object' || contract === null) return false;
+  const connected = contract as {
+    inner?: { lockingBytecode?: string };
+    implementation?: { inner?: { lockingBytecode?: string } };
+    proxy?: { inner?: { lockingBytecode?: string }; _logicalAddress?: string };
+    _logicalAddress?: string;
+    address?: string;
+  };
+  return [
+    connected.inner?.lockingBytecode,
+    connected.implementation?.inner?.lockingBytecode,
+    connected.proxy?.inner?.lockingBytecode,
+    connected._logicalAddress,
+    connected.proxy?._logicalAddress,
+    connected.address,
+  ].some((identity) => identity !== undefined && exactRegisteredLockHex(identity) === lockHex);
 }
 
 /**
@@ -251,19 +271,22 @@ export async function expandResolveCreateBuilderExternalCalls(
       const ec = externalCalls[eci];
       // Array-element call: the callee instance was already resolved during expansion.
       if (presetResolved?.[eci]) { autoResolved.push(presetResolved[eci]!); continue; }
-      // A state-pinned target need not have been registered under its source interface name (e.g. an
-      // IERC20 value stored in a pool record). Resolve that authenticated address against deployments
-      // first; an interface-name registration is only a fallback when no pinned deployment is available.
+      // A published address is authoritative. A connected interface entry may still supply the instance,
+      // but only when its known physical or logical address is exactly the published target.
       let pinned: unknown;
       let registeredAtAddress: unknown;
-      if (ec.addressSource || ec.addressStateVar) {
+      const hasPublishedTarget = ec.addressSource !== undefined
+        || ec.addressStateVar !== undefined || ec.addressLiteral !== undefined;
+      if (hasPublishedTarget) {
         callerStateSnapshot ??= (await host.getFullState()).state;
         const address = ec.addressSource
           ? host.resolveExternalArgs(
             [ec.addressSource], args, artifact, callerStateSnapshot, abiFunction?.inputs,
             undefined, 0, false, publicSelfAddress,
           )?.[0]
-          : callerStateSnapshot[ec.addressStateVar!];
+          : ec.addressStateVar !== undefined
+            ? callerStateSnapshot[ec.addressStateVar]
+            : ec.addressLiteral;
         if (typeof address === 'string' || address instanceof Uint8Array) {
           pinned = host.getExternalDeploymentByAddressValue(address);
           const lockHex = exactRegisteredLockHex(address);
@@ -274,10 +297,15 @@ export async function expandResolveCreateBuilderExternalCalls(
               && entry.address.replace(/^0x/iu, '').toLowerCase() === lockHex
             ));
             if (matches.length === 1) registeredAtAddress = matches[0]!.instance;
+            if (!registeredAtAddress) {
+              const connected = host.getExternalRegistryEntry(ec.interfaceName);
+              if (connectedContractAtExactLock(connected, lockHex)) registeredAtAddress = connected;
+            }
           }
         }
       }
-      const registered = pinned ?? registeredAtAddress ?? host.getExternalRegistryEntry(ec.interfaceName);
+      const registered = pinned ?? registeredAtAddress
+        ?? (hasPublishedTarget ? undefined : host.getExternalRegistryEntry(ec.interfaceName));
       if (!registered) {
         canAutoResolve = false;
         break;

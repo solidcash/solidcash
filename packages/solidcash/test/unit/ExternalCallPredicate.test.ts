@@ -691,6 +691,38 @@ describe('conditional external-call topology', () => {
     }]);
   });
 
+  it('does not auto-bind a different interface contract for a published callee address', async () => {
+    const target = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x58), 0x87);
+    const other = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x59), 0x87);
+    const fn = {
+      name: 'run', inputs: [], externalCalls: [{
+        interfaceName: 'IData', functionName: 'ping', requiredDataNftIndices: [], argSources: [],
+        addressSource: { kind: 'expression', expression: { kind: 'state', name: 'target' } },
+      }],
+    } as unknown as Artifact['abi'][number];
+    const resolve = (connected: unknown, state: Record<string, unknown>) =>
+      expandResolveCreateBuilderExternalCalls({
+        getExternalTargetEntriesByInterface: () => [],
+        getExternalRegistryEntry: () => connected,
+        getExternalDeploymentByAddressValue: () => undefined,
+        getFullState: async () => ({ state }),
+        resolveExternalArgs: (...values: any[]) => (
+          evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+        )(...values),
+        evaluateExternalExpression: (...values: any[]) => (
+          evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+        )(...values),
+      }, fn, [], artifact, undefined, undefined);
+
+    const wrong = { inner: { lockingBytecode: binToHex(other) } };
+    expect((await resolve(wrong, { target })).resolvedExternalCalls).toBeUndefined();
+    expect((await resolve(wrong, {})).resolvedExternalCalls).toBeUndefined();
+    const exact = { inner: { lockingBytecode: binToHex(target) } };
+    expect((await resolve(exact, { target })).resolvedExternalCalls).toEqual([{
+      externalContract: exact, functionName: 'ping', args: [],
+    }]);
+  });
+
   it('retains earlier callees when a later require proves its unresolved call unreachable', async () => {
     const callee = { categoryId: 'ab'.repeat(32) };
     const guard: ExternalCallExpression = {

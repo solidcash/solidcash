@@ -19,13 +19,16 @@ import {
  * A record field written before a call, which a frame re-entering the writer below that call changes, where the
  * writer's body ends.
  *
- * The writer makes its one call on every path, so its record has two segments, and the field it wrote before the
- * call is the first one's: the second begins at the view the re-entered frame left. Where the end takes the record
- * as written, because another field is written past the call or because an arm writes the field there, the closed
- * field is that view's own. Rebuilding it from the value written before the call instead would accept the writer
- * declaring the record back at that value, which drops the re-entered change: that lost update is refused at the
- * writer. The EVM's outcome, the change kept, settles; so does the arm that writes past the call, and a callee that
- * does not re-enter.
+ * The writer makes its one call, so its record has two segments, and the field it wrote before the call is the
+ * first one's: the second begins at the view the re-entered frame left. Where the end takes the record as written,
+ * because another field is written past the call or because an arm writes the field there, the closed field is that
+ * view's own. Rebuilding it from the value written before the call instead would accept the writer declaring the
+ * record back at that value, which drops the re-entered change: that lost update is refused at the writer. The EVM's
+ * outcome, the change kept, settles; so does the arm that writes past the call, and a callee that does not re-enter.
+ *
+ * A writer that makes the call in a loop runs a number of calls only its execution counts, past which the compiler
+ * cannot tell by position which of its fields a call closed: it reads every pending field again after each call, so
+ * the same lost update is refused there and the change kept settles.
  */
 
 const LEDGER_LABEL = 'closed field across call ledger';
@@ -48,6 +51,8 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     if (amount > 10) { this.total = amount + 1; } require(true); }'
   + `   function setThenMarkQuietly(int amount) { this.total = amount; ISink(0x${QUIET}).take(); this.mark = 1;`
   + '     require(true); }'
+  + '   function setThenLoopMark(int amount, int turns) { this.total = amount;'
+  + `     for (int i = 0; i < turns; i = i + 1) { ISink(0x${SINK}).take(); } this.mark = 1; require(true); }`
   + '   function bump() { this.total = this.total + 100; require(true); }'
   + ' }';
 
@@ -60,12 +65,13 @@ type View = readonly [Uint8Array, Uint8Array];
 type Callee = 'Sink' | 'Quiet';
 
 /**
- * `entry(amount)` on the ledger, whose one call goes to `callee`: the sink calls back into `bump`, the quiet callee
- * does not. The writer declares its record `views.set`, one view pair per segment, and the re-entered frame
- * `views.bump`.
+ * `entry(amount)` on the ledger, or `entry(amount, turns)` for the loop, whose one call goes to `callee`: the sink calls
+ * back into `bump`, the quiet callee does not. The writer declares its record `views.set`, one view pair per segment,
+ * and the re-entered frame `views.bump`.
  */
 function plan(
   entry: string, amount: bigint, callee: Callee, views: { readonly set: readonly [View, View]; readonly bump?: View },
+  turns?: bigint,
 ): CompositionDraftPlan {
   const ledger = contracts.Ledger!;
   const target = contracts[callee]!;
@@ -80,7 +86,10 @@ function plan(
   const layout = layoutWithFacets(blocks);
   const index = participant(layout, 'record').index;
   const declared = ([viewIn, viewOut]: View): RecordEntry => ({ in: index, out: index, viewIn, viewOut });
-  const setPushes = [selectorOf(artifacts, 'Ledger', entry), encodeIntegerValue(amount)];
+  const setPushes = [
+    selectorOf(artifacts, 'Ledger', entry), ...(turns === undefined ? [] : [encodeIntegerValue(turns)]),
+    encodeIntegerValue(amount),
+  ];
   const takePushes = [selectorOf(artifacts, callee, 'take')];
   const bumpPushes = [selectorOf(artifacts, 'Ledger', 'bump')];
   const lock = stateRecordLockingBytecode(bytesToHex(ledger.category));
@@ -158,7 +167,7 @@ function plan(
  * the writer declares and the one its code computes at the close it fails on, or the record the transaction settles
  * when it is accepted.
  */
-function derive(entry: string, amount: bigint, callee: Callee, views: Parameters<typeof plan>[3]): {
+function derive(entry: string, amount: bigint, callee: Callee, views: Parameters<typeof plan>[3], turns?: bigint): {
   readonly code?: string;
   readonly report: CompositionRefusal;
   readonly close?: readonly [string, string];
@@ -166,7 +175,7 @@ function derive(entry: string, amount: bigint, callee: Callee, views: Parameters
 } {
   const compositionArtifacts = [artifacts.Ledger!, artifacts[callee]!];
   const { host, draft } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: compositionArtifacts, plan: plan(entry, amount, callee, views),
+    vm: compositionMachine(), artifacts: compositionArtifacts, plan: plan(entry, amount, callee, views, turns),
   });
   let code: string | undefined;
   try {
@@ -243,5 +252,23 @@ describe('a record field written before a call, changed by a frame that re-enter
     expect(outcome.code).toBeUndefined();
     expect(outcome.report.accepted).toBe(true);
     expect(BigInt(outcome.settled.total as bigint)).toBe(11n);
+  });
+
+  it('is refused declared back at the value written, past a loop whose call the writer is re-entered below', () => {
+    const outcome = derive('setThenLoopMark', 11n, 'Sink', {
+      set: [[BEFORE, record(11n)], [record(111n), record(11n, 1n)]], bump: [record(11n), record(111n)],
+    }, 1n);
+    // The call's own turn reads the field again from the view the segment past it begins at.
+    expectRefusedAtWriter(outcome, record(11n, 1n), record(111n, 1n));
+  });
+
+  it('settles with the re-entered change kept past a loop of calls', () => {
+    const outcome = derive('setThenLoopMark', 11n, 'Sink', {
+      set: [[BEFORE, record(11n)], [record(111n), record(111n, 1n)]], bump: [record(11n), record(111n)],
+    }, 1n);
+    expect(outcome.code).toBeUndefined();
+    expect(outcome.report.accepted).toBe(true);
+    expect(BigInt(outcome.settled.total as bigint)).toBe(111n);
+    expect(BigInt(outcome.settled.mark as bigint)).toBe(1n);
   });
 });

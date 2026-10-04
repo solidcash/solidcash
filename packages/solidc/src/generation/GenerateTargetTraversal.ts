@@ -1407,6 +1407,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private perCallFieldSegments: Map<string, PerCallFieldSegments> | undefined;
   /** The segments the code being emitted can run in, while `perCallFieldSegments` is followed. */
   private perCallReachedSegments: ReadonlySet<number> = new Set([0]);
+  /**
+   * True for a body whose calls vary and whose walk stops somewhere (`perCallFieldWalkStops`). Past that point
+   * `perCallStaleWrites` decides alone, and it is one answer for paths that made different calls since a field's
+   * write: a field a call closed on one of them would be rebuilt from the value written before that call, over the
+   * change a frame re-entering this one made below it. Such a body reads every pending field again after each call
+   * (`emitPerCallFieldsReread`), so none is ever closed where the code runs, and the set is right on every path.
+   */
+  private perCallFieldsAlwaysCurrent = false;
   /** The sends whose call into a contract the body makes where the source sends, so its end does not make it again. */
   private perCallValueCallsAtSource = new Set<number>();
   /** Set when the master reserves the validator program hash slot, i.e. it can be reached through a call. */
@@ -7836,6 +7844,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallStaleWrites = new Set();
     this.perCallFieldSegments = undefined;
     this.perCallReachedSegments = new Set([0]);
+    this.perCallFieldsAlwaysCurrent = false;
     this.perCallValueCallsAtSource = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
@@ -8574,6 +8583,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.perCallFieldSegments = new Map();
       this.perCallReachedSegments = new Set([0]);
     }
+    this.perCallFieldsAlwaysCurrent = this.perCallCallsMadeActive && this.perCallFieldWalkStops(node.body);
     // A body that emits, sends or hashes inside a loop binds each where it makes it, at the position its count of
     // them names, so it carries the counts from its start, before its own control flow, as it carries its calls.
     const looped = this.perCallMaster && !this.isDefineSubTraversal ? loopEffectKinds(node) : new Set<string>();
@@ -21884,6 +21894,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.perCallOrdinal += 1;
       for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
       this.perCallFieldsCalled();
+      if (this.perCallFieldsAlwaysCurrent) {
+        this.emitPerCallFieldsReread(node, { location: node.location, positionHint: PositionHint.END });
+      }
       return node;
     }
     // Do NOT visit categoryExpression or parameters here - they were resolved during
@@ -28319,7 +28332,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * times the walk does not count, calls or writes a field: a loop, a switch, or an expression arm.
    */
   private perCallFieldsLostIn(node: Node): void {
-    if (this.perCallFieldSegments === undefined) return;
+    if (this.perCallFieldSegments !== undefined && this.perCallTouchesFields(node)) this.perCallFieldSegments = undefined;
+  }
+
+  /** True when `node` calls, sends or writes a state field anywhere inside it. */
+  private perCallTouchesFields(node: Node | undefined): boolean {
     let touches = false;
     walkInvocationAst(node, (child) => {
       if (child instanceof ExternalFunctionCallNode || child instanceof LowLevelCallNode
@@ -28328,7 +28345,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         || child instanceof StateArrayPushNode || child instanceof StateArrayPopNode
         || child instanceof StateArrayAssignNode || child instanceof StateArrayDeleteNode) touches = true;
     });
-    if (touches) this.perCallFieldSegments = undefined;
+    return touches;
+  }
+
+  /**
+   * True when the walk stops following a body somewhere: a loop, a switch or a lazily evaluated operand that calls,
+   * sends or writes (`perCallFieldsLostIn`), or a send the body makes where its source sends.
+   */
+  private perCallFieldWalkStops(body: BlockNode | undefined): boolean {
+    let stops = false;
+    walkInvocationAst(body, (node) => {
+      if (stops) return;
+      if (isDirectOwnerTransferNode(node)) {
+        stops = true;
+      } else if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
+        || node instanceof SwitchNode) {
+        stops = this.perCallTouchesFields(node);
+      } else if (node instanceof BinaryOpNode
+        && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR)) {
+        stops = this.perCallTouchesFields(node.right);
+      } else if (node instanceof TernaryOpNode) {
+        stops = this.perCallTouchesFields(node.ifTrue) || this.perCallTouchesFields(node.ifFalse);
+      }
+    });
+    return stops;
+  }
+
+  /**
+   * Reads every pending field held whole in its record again, where a call has just closed the segment and opened
+   * the next (`perCallFieldsAlwaysCurrent`). Right after a call every field is closed on every path that made it, so
+   * the read is the field's value there whatever the body did before, and the field is current from here.
+   */
+  private emitPerCallFieldsReread(node: Node, loc: SingleLocationData): void {
+    for (const key of [...this.pendingStateWrites.keys()]) {
+      if (this.perCallRefreshable(key)) this.emitPerCallFieldRefresh(key, node, loc);
+    }
   }
 
   /**
@@ -37158,7 +37209,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const written = closes && this.readsRecordsFromFrame ? this.perCallRecordsWrittenHere(false) : [];
     this.emitPerCallSegmentClose(loc, false);
     this.emitPerCallReceiveCallSite(node, lock, amount, loc);
-    this.emitPerCallWrittenFieldsReread(written, node, loc);
+    if (this.perCallFieldsAlwaysCurrent) this.emitPerCallFieldsReread(node, loc);
+    else this.emitPerCallWrittenFieldsReread(written, node, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.perCallValueCallsAtSource.add(transferIndex);
   }

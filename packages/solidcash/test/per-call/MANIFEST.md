@@ -370,7 +370,7 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   plain path; keys read out of another mapping are served in `call/stored-value-keyed-write`), `proxied-native-value`
   (a send to a contract from a proxied root's body; value in and sends out through the proxy are served in
   `call/proxied-native-value`),
-  `role-admin-read-key` (role helpers that return and emit, and a role write the body skips; the keys are served in
+  `role-admin-read-key` (a role write the body skips; the helpers that return and emit are served, and the keys in
   `call/role-admin-read-key`), `root-reentry-receiver-hook` and `two-deployments-one-artifact`, with
   `composition-world.ts` as their shared harness; the reentrancy guard on a root that calls out
   (`guarded-vault-root`) is served and moved to `call/root-guard-across-call.test.ts`, a mapping key read from the

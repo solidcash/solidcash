@@ -10,28 +10,25 @@ import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedLi
 /**
  * Walls ahead: role-based access in the shape of an EVM access-control library, past the role keys
  * `call/role-admin-read-key` serves (a constant or `bytes32(0)` key, and a check against the admin role the body
- * reads out of storage).
+ * reads out of storage), and past the library's current helpers, which return whether they changed the role and
+ * emit (`_grantRole(...) internal returns (bool)`), served in `call/role-helpers-return-and-emit`.
  *
- * - The library's current helpers return whether they changed the role and emit an event
- *   (`_grantRole(...) internal returns (bool)`); code generation refuses a value-returning helper that emits, since
- *   its event would be dropped at the subroutine's exit (`EmittingStateHelperEventError`), so the unit does not
- *   compile.
- * - With void helpers the grants, revocations and renunciations settle, but a role write on a branch the body does
- *   not take (revoking it again, renouncing it again) does not: the hop plans every write the entry's accesses
- *   publish (`proxy/entry-writes.ts`, `planHopMappingBatches`), and an access does not say its write is guarded, so
- *   the frame that skips the write is refused by the machine.
+ * With void helpers the grants, revocations and renunciations settle, but a role write on a branch the body does
+ * not take (revoking it again, renouncing it again) does not: the hop plans every write the entry's accesses
+ * publish (`proxy/entry-writes.ts`, `planHopMappingBatches`), and an access does not say its write is guarded, so
+ * the frame that skips the write is refused by the machine.
  *
  * The file runs only under `PER_CALL_AHEAD=1`.
  */
 
-/** The access-control body, with helpers that return whether they changed the role or with void helpers. */
-function source(returning: boolean): string {
+/** The access-control body, with void helpers. */
+function source(): string {
   const helper = (name: string, guard: string, value: string, event: string): string[] => [
-    `  function ${name}(bytes32 role, address account) internal${returning ? ' returns (bool)' : ''} {`,
+    `  function ${name}(bytes32 role, address account) internal {`,
     `    if (${guard}hasRole(role, account)) {`,
     `      _roles[role].members[account] = ${value};`,
     `      emit ${event}(role, account, msg.sender);`,
-    ...(returning ? ['      return true;', '    }', '    return false;'] : ['    }']),
+    '    }',
     '  }',
   ];
   return [
@@ -83,7 +80,7 @@ let chainRun: Promise<Chain> | undefined;
 function chain(): Promise<Chain> {
   chainRun ??= (async (): Promise<Chain> => {
     const world = await newWorld(0x5d);
-    const guarded = await deployProxied(world, compilePerCall(source(false)).Guarded!, [USER_LOCK]);
+    const guarded = await deployProxied(world, compilePerCall(source()).Guarded!, [USER_LOCK]);
     return { world, guarded };
   })();
   return chainRun;
@@ -101,17 +98,6 @@ const unsettled = (entry: string): RegExp => new RegExp(`^the implementation's "
   + '\\(Program failed an OP_VERIFY operation\\.\\)$');
 
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: access-control role helpers and guarded role writes', () => {
-  it('refuses helpers that return whether they changed the role and emit, at compile time', () => {
-    let met: string | undefined;
-    try {
-      compilePerCall(source(true));
-    } catch (error) {
-      met = (error as Error).message;
-    }
-    recordMet('role-admin-read-key/returning-helpers', met);
-    expect(met).toMatch(/^Helper '_grantRole' emits an event and is invoked internally as a value-returning subroutine/);
-  });
-
   it('grants, revokes and renounces a role whose write the body makes (control)', async () => {
     const { world, guarded } = await chain();
     for (const [entry, args] of [

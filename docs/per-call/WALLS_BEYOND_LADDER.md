@@ -288,6 +288,16 @@ mapping reader `evalComputedKey` now takes. Served in `call/role-admin-read-key.
 repointed at the walls past it: helpers that return a bool and emit (refused at compile time, X118), and a role
 write on a branch the body skips.
 
+**Served** (agent AH1): helpers that return a bool and emit, the library's current `_grantRole` and `_revokeRole`.
+X118 refuses a value-returning helper that emits behind OP_INVOKE, where its event would be dropped at its exit, so
+such a helper has to be inlined, and `InlineReturningStateHelpers` inlines only a single tail return. The
+desugaring that gives a multi-return helper that touches a collection that shape (`DesugarNestedBranchReturn`)
+looked for a collection read, and these helpers only write and emit. It now also takes a helper that emits, in its
+body or through a function it calls. Served in `call/role-helpers-return-and-emit.test.ts` (a grant and a
+revocation with their events read back, the result discarded and returned); a grant to a holder, which neither
+writes nor emits, stays refused by the machine (a skipped write and a skipped event, agents GW1 and CE1). A helper
+that cannot be inlined (recursive, used as a value, called where its effects cannot be hoisted) keeps X118.
+
 Replica: `role-admin-read-key.test.ts` (4 cases). The member mapping inside a struct inside a mapping is served:
 `initialize` keyed by a role parameter deploys, and `grantByOwner(role, account)` settles. Then, in order: a
 contract constant as the key (`_roles[DEFAULT_ADMIN_ROLE]`; `_roles[MINTER]` with `MINTER = keccak256("MINTER")`

@@ -158,10 +158,10 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     }
   }
   // A return probe evaluates ONLY the contract input, so a callee's covenant never executes and its return
-  // event would keep the neutral placeholder the builder seeds (`setReturnEventOutput`), which a caller
-  // decoding a `bool` success reads as failure and answers with its library's catch path. Fabricate the value
-  // the same way the nested-call path does, and only for a probe: a broadcast transaction executes its
-  // callees and must not precompute.
+  // event would keep the neutral placeholder the builder seeds (`setReturnEventOutput`). Derive the actual
+  // value where possible, but never infer `true` merely from a bool result: a read-only callee may genuinely
+  // return false, and `writesState` is only the negation of a read-only proof, not proof of a successful write.
+  // A broadcast transaction executes its callees and must not precompute.
   let directPrecomputedReturn: Uint8Array | undefined;
   let resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<StateValue>) | undefined;
   let resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
@@ -204,12 +204,6 @@ export async function pushCreateBuilderDirectExternalCallGroup(
         if (precomputeValue !== undefined) directPrecomputedReturn = encode(precomputeValue as StateValue);
       } catch {
         directPrecomputedReturn = undefined;
-      }
-      // A state-writing callee has no executed transaction to read a value from. The compiler's convention for
-      // such a call is that the integrity check IS the success condition (an opaque return publishes a literal
-      // `true`), so a probe fabricates the same for a single `bool` result.
-      if (directPrecomputedReturn === undefined && precomputeAbi.outputs[0].type === 'bool') {
-        directPrecomputedReturn = encode(true);
       }
       if (ec.occurrence === 'loop' && ec.resultArrayOutput !== undefined) {
         resolveLoopReturnValue = async (occurrenceIndex: number): Promise<StateValue> => {

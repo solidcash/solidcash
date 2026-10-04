@@ -300,6 +300,7 @@ mapping reader `evalComputedKey` now takes. Served in `call/role-admin-read-key.
 repointed at the walls past it: helpers that return a bool and emit (refused at compile time, X118), and a role
 write on a branch the body skips. The skipped write and the event beside it are served (agents GW1 and CE1, both
 publishing the condition they run under): `call/guarded-mapping-write.test.ts`, `call/guarded-event.test.ts`.
+With the returning helpers served too (below), the replica pins no wall and is retired.
 
 **Served** (agent AH1): helpers that return a bool and emit, the library's current `_grantRole` and `_revokeRole`.
 X118 refuses a value-returning helper that emits behind OP_INVOKE, where its event would be dropped at its exit, so
@@ -483,7 +484,7 @@ today and its title says what should settle once served.
 | `state-keyed-mapping-write.test.ts` | 3 | 2.3, retired: served (`call/state-keyed-mapping-write.test.ts`) |
 | `stored-value-keyed-write.test.ts` | 3 | 2.4: struct record opened plain; ERC721 transfer flipped to served (control: mint; `call/written-node-keyed-write.test.ts`), the rest served (`call/stored-value-keyed-write.test.ts`) |
 | `proxied-native-value.test.ts` | 1 | 2.5 served (`call/proxied-native-value.test.ts`); repointed: a send to a contract |
-| `role-admin-read-key.test.ts` | 2 | 2.6 served, and the walls past it (`call/role-helpers-return-and-emit`, `call/guarded-event`): both cases settle |
+| `role-admin-read-key.test.ts` | 2 | 2.6, retired: served, with the walls past it (`call/role-helpers-return-and-emit`, `call/guarded-event`) |
 | `loop-counted-tail.test.ts` | 4 | 2.7, retired: served (`call/loop-turn-effects`, `call/proxied-native-value`) |
 | `root-reentry-receiver-hook.test.ts` | 3 | 2.8, retired: served (`call/root-reentry.test.ts`) |
 | `two-deployments-one-artifact.test.ts` | 3 | 2.9 (control: one token) |

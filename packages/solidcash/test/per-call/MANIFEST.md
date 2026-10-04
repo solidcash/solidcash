@@ -371,8 +371,10 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   in `call/stored-value-keyed-write`, and the ERC721 transfer keyed by a node it then writes in
   `call/written-node-keyed-write`), `proxied-native-value`
   (a send to a contract from a proxied root's body; value in and sends out through the proxy are served in
-  `call/proxied-native-value`) and `two-deployments-one-artifact`, with `composition-world.ts` as their shared
-  harness; the reentrancy guard on a root that calls out (`guarded-vault-root`) is served and moved to
+  `call/proxied-native-value`), `enumerable-set` (a member set's swap and pop removal, as contract state and per
+  group id, refused at compile as the swap-remove alias, beside the next wall of each form; adding members and the
+  views settle in `call/enumerable-set.test.ts`) and `two-deployments-one-artifact`, with `composition-world.ts` as
+  their shared harness; the reentrancy guard on a root that calls out (`guarded-vault-root`) is served and moved to
   `call/root-guard-across-call.test.ts`, a call back into the hop's own root (`root-reentry-receiver-hook`, a
   receiver's hook and a flash loan's repayment) to `call/root-reentry.test.ts`, the role keys, the helpers that
   return and emit and a role write the body skips (`role-admin-read-key`) to `call/role-admin-read-key`,

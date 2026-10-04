@@ -54,6 +54,7 @@ avoids it.
 | 8 | The root re-entered by a callback below a callee | NFT staking/escrow/listing that pulls with `safeTransferFrom(..., address(this), id)`, ERC-1155 receivers, flash-loan borrowers | `proxy/external-calls.ts` 1297 (`ctx.fixed`) | `root-reentry-receiver-hook` | named (already pinned bare in `conformance/cross-contract-identity`) |
 | 9 | Two deployments of one contract in one entry | swaps, pairs, two-token escrows, OTC | hop: no named refusal (bookkeeping keyed by contract NAME); plain: `call/callees.ts` 335 | `two-deployments-one-artifact` | unattributed (hop), named (plain) |
 | 10 | A read of the caller's own node beside an insert that splices through it | hand-written allowlists and admin sets (`require(members[msg.sender]); members[a] = true`); about half of all inserts into a one-member set | `proxy/deploy.ts` 4579 | `read-node-spent-by-insert` | named; a variant N1 does not cover |
+| 11 | Removing a member of an enumerable set: swap the last member in, pop, delete the position | OZ `EnumerableSet` users: AccessControlEnumerable, ERC721Enumerable, allowlist and staking sets | compiler `support.ts` 1193 (alias), then 386 (state form's key) | `enumerable-set` | named compile refusals |
 
 Also found: under the fixture's project options (`messageBus: true`) a plain escrow source does not compile at all:
 the message-bus route generated for `open(uint256,address,uint256)` fails its own type check (a route the per-call
@@ -449,6 +450,52 @@ depends on where the new address hashes. Fix sketch: when a read's node is a nod
 the batch's own group (its declared view in) instead of a second input: the same one-input-per-node rule N1 needs
 for two reads; not covered by N1 as assigned (N1 is two reads).
 
+### 2.11 An enumerable set's swap-and-pop removal (rank 11)
+
+**Scoped, not served** (agent SP1). OpenZeppelin's `EnumerableSet` keeps an array of members and a mapping of
+one-based positions. `add` (push, then record the pushed length) and the views `contains`, `at` and `length` settle
+behind the generated proxy in both forms: the set as contract state (one sorted batch beside one dynamic run) and per
+group id (an array per key beside a two-key mapping, two batches); `call/enumerable-set.test.ts`. `remove`
+(`values[i] = last; positions[last] = i + 1; values.pop(); delete positions[v];`) is refused at compile in both:
+
+```text
+the implementation's "remove" entry is refused by the compiler (MemberSet.remove()): the body writes a mapping at slot 1 that can alias another target at run time, so its record is not fixed
+```
+
+The walls, in order:
+
+1. **The swap-remove alias** (both forms). A write that a `delete` of another key of one mapping follows is marked
+   `aliasCondDeleteSlot` (`SymbolTableTraversal.ts` 11358); the direct convention gates the write off where the two
+   keys meet (GTT 25078), and a per-call master derives no batch with such a target (`support.ts` 983, 1193). In a
+   consistent set `if (valueIndex != lastIndex)` keeps the keys apart wherever the write runs; the compiler cannot
+   see that.
+2. **The state form's key**: the array's last element, whose bytes live in the frame's chunk run (`support.ts` 557-569;
+   the hop already evaluates the label from state, `route-expression-key.ts` 134-161). With the `delete` moved ahead
+   of the write, which no alias marks, the removal is refused there:
+   `... whose key 0 'map:_values(binop:-(unop:.length(state:_values),lit:1))' reads the state value '_values', ...`.
+   The group form compiles that way (its key reads the node its own batch writes); its hop run is not measured.
+3. **Removing the last member** (code read): the branch skips the write, but its key evaluates to the removed
+   member, so two targets of one batch name one slot. The planner refuses a repeated slot whether or not a target is
+   skipped (`composer/mapping-plan.ts` 418, "a sorted batch writes slot ... more than once"), a skipped target whose
+   key is held keeps that very node (463), and the distinct-target check compares every pair's derived slots
+   (GTT 29109). In a multi-slot batch a guarded write publishes no `activation`, and one that did not run declares
+   its node kept (GTT 43513-43525): here the node the delete rewrites. An alias-marked write takes no flag (43495).
+4. **Then, predicted**: the group form's overwrite and pop of `_values[group]` publishes no value, which the hop
+   learns from the body's close (`entry-writes.ts` 1157-1174); the state form's run shortens, sized from its record's
+   declared length (`planHopDynamicRun`).
+
+Plan: (a) admit `aliasCondDeleteSlot` in a per-call master (`support.ts` 983, 1193; `runtimeAliasPriorSlots` stays
+refused), the marked write a target its frame may skip; (b) skip the distinct-target comparison for a pair one of
+whose targets is declared skipped (`PredOut` -2; GTT 29109, the general arm); (c) let a skipped target whose slot
+another target writes keep the key's predecessor (`mapping-plan.ts` 418, 463), and have the hop declare the write
+skipped where the keys it resolves meet (`entry-writes.ts` 1129); (d) prove swap, remove-last and the unguarded
+`m[last] = v; delete m[k]` on the machine first (the `master/aliased-batch-targets` harness): the alias gate's no-op
+is then what the skipped group declares, so the delete wins as on the EVM. The state form also needs (e): the
+derivation reading the last element out of the frame's chunk run (`support.ts` 563).
+
+Replica: `enumerable-set.test.ts` (4 cases): both forms' removal refused through the hop, the state form's key
+refusal past the alias, and the group form compiling past it.
+
 ## 3. Predicted, not run (code only), most likely first
 
 | Shape | Refused at | Likelihood | Note |
@@ -458,7 +505,7 @@ for two reads; not covered by N1 as assigned (N1 is two reads).
 | try/catch whose callee reverts | `support.ts` `callCountRange` ("a catch block is not an executable path") | M-L | not a refusal: the catch never runs, the whole call fails closed with the callee's reason |
 | Multicall / any low-level call but a forwarding delegatecall | `support.ts` 2840 | M | pinned in `conformance/cross-contract-identity` (delegatecall row) |
 | a loop over a mapping's array calling out (refund every bidder of `bids[id]`) | `external-calls.ts` 618/710, or `support.ts` 1953 first | M | likely overlaps R12 (a call routed through the root's own mapping value) |
-| overwrite or remove an element of a mapping's array (`lists[user][i] = last; pop()`) | `entry-writes.ts` 1503 | M | swap-and-pop removal |
+| overwrite or remove an element of a mapping's array (`lists[user][i] = last; pop()`) | `entry-writes.ts` 1503 | M | swap-and-pop removal; the enumerable set meets the compiler first (2.11) |
 | two dynamic state values written by one entry; sorted collections beside a dynamic value | `entry-writes.ts` 1623, 1988 | M | |
 | a mapping write in a loop not over the caller's array (ERC-1155 `_update` over `ids`, two keys per turn) | `support.ts` 667, `entry-records.ts` 346-421 | M | |
 | a constructor/`initialize` key or value the arguments do not fix | `genesis.ts` 520, 603 | M | |
@@ -489,6 +536,7 @@ today and its title says what should settle once served.
 | `root-reentry-receiver-hook.test.ts` | 3 | 2.8, retired: served (`call/root-reentry.test.ts`) |
 | `two-deployments-one-artifact.test.ts` | 3 | 2.9 (control: one token) |
 | `read-node-spent-by-insert.test.ts` | 2 | 2.10 (control: head predecessor) |
+| `enumerable-set.test.ts` | 4 | 2.11 (adding and the views served in `call/enumerable-set.test.ts`) |
 
 Run: `PER_CALL_AHEAD=1 yarn workspace solidcash vitest run --config vitest.per-call.config.ts test/per-call/ahead/<file>`.
 `recordMet` writes the met text to `$AHEAD_OBSERVE_DIR/met.txt` when that is set (used for the unattributed walls).

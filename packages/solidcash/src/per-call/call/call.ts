@@ -106,7 +106,7 @@ import {
 } from '../deploy/index.js';
 import {
   chainSharedNodeViews, placeOwnWrites, producedCallResults, reachedCallResults, samePlannedSites, withChainEnds,
-  withCreatedChainEnds,
+  withCreatedChainEnds, type PlacedLaidWrite,
 } from '../proxy/deploy.js';
 import { hopEntryWrites, type HopEntryWrites, type LaidHopEntryWrites } from '../proxy/entry-writes.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
@@ -479,6 +479,11 @@ interface LaidEntryMapping {
    * states only the first calls of (`truncated`) declares a write past its last stated call in its last segment.
    */
   place(calls: number, callBases: readonly number[], truncated: boolean): DraftRecordEntry[][];
+  /**
+   * The segments each of `entries` lands in as `place` declares it: a write's records in the segment its artifact
+   * publishes for it, or a loop's turns, and undefined for a node the frame only reads apart.
+   */
+  spans(calls: number, callBases: readonly number[], truncated: boolean): readonly (LoopRecordSpan | undefined)[];
 }
 
 /** The mapping records one frame reads and writes, with the ids its plan places. */
@@ -612,6 +617,21 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
         return before === undefined ? entry : { ...entry, viewIn: before };
       });
       const mints = writes?.loopMints;
+      // Each write lands in the segment its artifact publishes, as the hop places its delegate frame's own.
+      const placeWrites = (
+        segments: DraftRecordEntry[][], calls: number, callBases: readonly number[], truncated: boolean,
+      ): readonly PlacedLaidWrite[] => {
+        if (laid === undefined || writes === undefined) return [];
+        try {
+          return placeOwnWrites(segments, {
+            artifact, functionName, label: `entry "${functionName}"`, laid: { ...laid, entries: written }, writes,
+            indexOf: context.indexOf, category, createdBase: context.createdBase, calls, callBases,
+            ...(truncated ? { truncated } : {}),
+          });
+        } catch (error) {
+          throw asCallRefusal(error, functionName);
+        }
+      };
       return {
         entries: [...read.entries, ...written],
         inputs: { ...read.inputs, ...laid?.inputs },
@@ -624,21 +644,16 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
           ],
         }),
         ...(laid?.values === undefined ? {} : { values: laid.values }),
-        // Each write lands in the segment its artifact publishes, as the hop places its delegate frame's own.
         place: (calls, callBases, truncated) => {
           const segments = Array.from({ length: calls + 1 }, (): DraftRecordEntry[] => [...read.entries]);
-          if (laid === undefined || writes === undefined) return segments;
-          try {
-            placeOwnWrites(segments, {
-              artifact, functionName, label: `entry "${functionName}"`, laid: { ...laid, entries: written }, writes,
-              indexOf: context.indexOf, category, createdBase: context.createdBase, calls, callBases,
-              ...(truncated ? { truncated } : {}),
-            });
-          } catch (error) {
-            throw asCallRefusal(error, functionName);
-          }
+          placeWrites(segments, calls, callBases, truncated);
           return segments;
         },
+        spans: (calls, callBases, truncated) => [
+          ...read.entries.map(() => undefined),
+          ...placeWrites(Array.from({ length: calls + 1 }, (): DraftRecordEntry[] => []), calls, callBases, truncated)
+            .map((placed) => placed.span),
+        ],
       };
     },
   };
@@ -1327,11 +1342,17 @@ async function callInShape(
     // A record's first segment starts from the commitment it was spent with, and each later one from the view the
     // segment before it ended at: a body that calls closes one segment per call, and the views chain across them. A
     // run of loops places its records by its turns, and a write beside the calls lands in the segment its artifact
-    // publishes for it.
+    // publishes for it - beside a run of loops too, even one that turns no time: a write declared in every segment
+    // would create its record again, or start its spent record over, in each segment after the one it lands in.
+    const truncated = calleePlan?.blocked !== undefined;
     const mappingSegments = laid === undefined ? undefined
-      : mappingSpans !== undefined ? placeRecordsBySpan(laid.entries, mappingSpans, segmentCount)
+      : mappingSpans !== undefined
+        ? placeRecordsBySpan(laid.entries, ((): readonly (LoopRecordSpan | undefined)[] => {
+          const placed = laid.spans(segmentCount - 1, callBases, truncated);
+          return mappingSpans.map((span, at) => span ?? placed[at]);
+        })(), segmentCount)
         : segmentCount > 1 && mappingRecords?.loopRun === undefined
-          ? laid.place(segmentCount - 1, callBases, calleePlan?.blocked !== undefined) : undefined;
+          ? laid.place(segmentCount - 1, callBases, truncated) : undefined;
     const segment = (_unused: unknown, position: number): DraftRecordEntry[] => [
       ...declared.map((record): DraftRecordEntry => {
         const index = recordIndex(record.id);

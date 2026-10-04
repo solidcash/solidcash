@@ -664,7 +664,8 @@ export function loopRecordSpans(options: {
  * Inside its span a record is declared as laid in the span's first segment and kept at the view it was written to
  * afterwards: a record the transaction creates is created once, and a later segment reads it at the output it was
  * created at. Outside its span a spent record is kept at the view before or after it, and a created one is left
- * out. A record without a span is declared as laid in every segment.
+ * out. A record its write consumes is gone once the span's first segment has run. A record without a span, a node
+ * the frame only reads, is declared as laid in every segment.
  */
 export function placeRecordsBySpan(
   entries: readonly DraftRecordEntry[],
@@ -674,6 +675,7 @@ export function placeRecordsBySpan(
   return Array.from({ length: segmentCount }, (_unused, segment) => entries.flatMap((entry, index) => {
     const span = spans[index];
     if (span === undefined) return [entry];
+    if (entry.out === INDEX_NONE && segment > span.least) return [];
     const viewIn = entry.viewIn;
     const viewOut = entry.viewOut ?? entry.viewIn;
     if (segment >= span.least && segment <= span.most) {

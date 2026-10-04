@@ -22,6 +22,7 @@ import { binToHex } from '@bitauth/libauth';
 import {
   STOP_SITE_METADATA_VERSION,
   validateStopSiteMetadata,
+  type PublishedLoopEffects,
   type PublishedPerCallStopSites,
   type PublishedWriteSegment,
   type StopSite,
@@ -93,7 +94,8 @@ export function entryStopSites(
  * nodes — also publishes the segment that write is declared in, which a builder places the records in rather than
  * declaring them in every segment. An entry that writes none publishes an empty list, and one whose write's segment
  * the source does not fix publishes nothing; a write set that does not share one segment publishes one fact per
- * write instead.
+ * write instead. An entry that emits, sends or hashes once per turn of a loop publishes the runs a builder lays
+ * those outputs and side-cars by (`loop-effects.ts`).
  */
 export function publishPerCallStopSites(
   contractName: string,
@@ -104,11 +106,14 @@ export function publishPerCallStopSites(
     readonly writeSegment?: number | 'last';
     readonly writeSegments?: readonly PublishedWriteSegment[];
     readonly sendCallsBefore?: readonly number[];
+    readonly loopEffects?: PublishedLoopEffects;
   }[],
 ): PublishedPerCallStopSites {
   return {
     version: 1,
-    entries: entries.map(({ entryName, calls, pathCount, writeSegment, writeSegments, sendCallsBefore }) => {
+    entries: entries.map(({
+      entryName, calls, pathCount, writeSegment, writeSegments, sendCallsBefore, loopEffects,
+    }) => {
       const functionName = entryFunctionName(contractName, entryName);
       return {
         functionName,
@@ -122,6 +127,7 @@ export function publishPerCallStopSites(
         ...(writeSegment === undefined ? {} : { writeSegment }),
         ...(writeSegments === undefined ? {} : { writeSegments }),
         ...(sendCallsBefore === undefined ? {} : { sendCallsBefore }),
+        ...(loopEffects === undefined ? {} : { loopEffects }),
         sites: entryStopSites(functionName, calls, pathCount),
       };
     }),

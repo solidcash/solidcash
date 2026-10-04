@@ -254,6 +254,16 @@ the implementation's "grantRole" entry reads mapping "_roles__adminRole" beside 
 
 ### 2.7 A loop that emits, hashes or pays per turn (rank 7)
 
+**Served** (agent LP1): a master with a body that emits or sends from a loop checks that region as a run of
+consecutive outputs and parks its first output and declared count; the body binds its k-th event or send at the run's
+k-th output and its k-th hash at the k-th side-car after its input, and pins the event and send counts where it ends.
+The compile publishes the order as runs per kind with each loop's recurrence (`loopEffects` on the stop-site row,
+`master/loop-effects.ts`), which the call path and the hop expand by the turns (`call/loop-turns.ts`). Served in
+`call/loop-turn-effects.test.ts` (an airdrop, an event batch, a path walk of keccak256, at 0, 1 and 3 turns, the
+batch and the walk through the hop too; forged counts refused). Still refused by name: a looped effect on a branch, in
+a nested or do-while loop, or in a loop no counted recurrence bounds; a callee or paid contract that loops them; a
+constructor that emits from a loop; and the hop's looped send, which meets rank 5 (the replica keeps that case).
+
 Replica: `loop-counted-tail.test.ts` (4 cases). The control (a loop over the caller's array writing a scalar)
 settles. Through the hop each entry is `the implementation's "<entry>" entry is refused by the compiler
 (Batcher.<entry>()): <reason>`, with these reasons for `announce`, `claim` and `refund`:

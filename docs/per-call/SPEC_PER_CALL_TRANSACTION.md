@@ -684,8 +684,10 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
 - The SDK spends live side-car UTXOs and refuses by name a pool that is short (`call/side-cars.ts`). A constructor's
   frame co-spends its side-cars the same way (`c937caa8f`). A preimage or digest the body computes is learned from
   the body's own bind (section 18).
-- A `keccak256` call or a recovery inside a loop would need a run-time number of side-cars, and is refused by name
-  (`solidc/src/per-call/master/support.ts`).
+- A recovery inside a loop would need a run-time number of side-car pairs, and is refused by name
+  (`solidc/src/per-call/master/support.ts`). A `keccak256` call inside a loop reads one side-car per turn: the body
+  counts the side-cars it has read, and the artifact publishes the loop's recurrence, by which the SDK counts the
+  side-cars it lays (`master/loop-effects.ts`, `call/loop-turns.ts`). An extra side-car is never read.
 
 ### 5.1 `ABBA` inputs
 
@@ -1641,8 +1643,13 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
 - **Side-cars.** No field names a compute side-car (section 5). The layout fixes where each one sits, so the body
   addresses it from its own input: for `r` recoveries and `p` of them projected to an EVM address, recovery `j`'s
   pair is at `OP_INPUTINDEX + 1 + 2j` and `+ 2 + 2j`, projection `j`'s keccak side-car at `+ 1 + 2r + j`, and the
-  `i`-th `keccak256` call's at `+ 1 + 2r + p + i` (`GenerateTargetTraversal.ts`). A side-car recreates itself at its
-  own index, so the same coordinate names its output.
+  `i`-th `keccak256` call's at `+ 1 + 2r + p + i` (`GenerateTargetTraversal.ts`). A body that hashes inside a loop
+  counts instead: its `k`-th call reads `+ 1 + 2r + p + k`. A side-car recreates itself at its own index, so the same
+  coordinate names its output.
+- **Runs.** A master with a body that emits or sends inside a loop reads that list as a run: the listed outputs must
+  be consecutive, its head checks every one, and the body binds its `k`-th event or send at the run's first output
+  plus `k` where it makes it and pins its count against the block's where it ends (`frame-tail.ts` `runSection`).
+  The order a builder lists them in is published per entry (section 18, `loopEffects`).
 - **Counts.** `segCount == callCount + 1`.
 - **Exactness.** Lengths are exact, and nothing follows the last field (T33).
 
@@ -1698,6 +1705,10 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
   - external calls, with their index, in call order: a call inside a loop is published once and marked `repeated`,
     and a call on a branch is marked `conditional`;
   - segment closes, one per segment, so an entry with `k` calls publishes `2k + 1` sites.
+  An entry that emits, sends or hashes inside a loop also publishes `loopEffects`: per kind, the runs its body makes
+  in execution order, each a list of emit or transfer indices (hashes: call positions), and a run a loop repeats
+  carries the loop's recurrence. A call lists one output or side-car per effect, each loop run once per turn its
+  recurrence counts against the call's own arguments and state (`call/loop-turns.ts`).
 - **No read site is published**, although the schema has the kind. A read's site would name the record it reads,
   which the compiler does not hold: the records a frame touches are its declaration (section 20). So the plan
   states each declared record's current commitment as its `viewIn` before the run.

@@ -24,11 +24,21 @@ const EVENT_CONTRACT = 'pragma solidcash ^0.13.0;'
   + '   function ping() { emit Ping(1); }'
   + ' }';
 
-/** An entry whose event count is the loop's trip count, which the head cannot fix. */
+/** An entry whose event count is the loop's trip count, which the head checks as a run the block declares. */
 const LOOP_EVENT_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' contract Repeated {'
   + '   event Ping(int indexed x);'
   + '   function ping(int n) { for (int i = 0; i < n; i = i + 1) { emit Ping(i); } }'
+  + ' }';
+
+/** An entry that emits on a branch beside a loop's emits, so the outputs it lists depend on the branch. */
+const BRANCHED_LOOP_EVENT_CONTRACT = 'pragma solidcash ^0.13.0;'
+  + ' contract Repeated {'
+  + '   event Ping(int indexed x);'
+  + '   function ping(int n) {'
+  + '     if (n > 2) { emit Ping(n); }'
+  + '     for (int i = 0; i < n; i = i + 1) { emit Ping(i); }'
+  + '   }'
   + ' }';
 
 /** Dynamic state stores its bytes in a run of chunk NFTs whose base a per-call frame cannot name. */
@@ -110,10 +120,20 @@ describe('the tail sections a compiled master fixes', () => {
     expect(artifact.composition?.convention).toBe('per-call');
   });
 
-  it('refuses an entry whose event count is a loop trip count, by name', () => {
+  it('serves an entry whose event count is a loop trip count, publishing the run its turns emit', () => {
+    // The head checks the listed outputs as one run, and a builder lists one per turn the recurrence counts.
+    const artifact = compileString(LOOP_EVENT_CONTRACT, { composition: 'per-call' });
+    expect(refusalMessageOf(LOOP_EVENT_CONTRACT)).toBe('');
+    const entry = artifact.composition?.stopSites?.entries.find((row) => row.functionName === 'Repeated.ping()');
+    expect(entry?.loopEffects?.events?.map((run) => [run.ids, run.iterationDomain?.counterName]))
+      .toStrictEqual([[[0], 'i']]);
+  });
+
+  it('refuses an entry that also emits on a branch beside the loop, by name', () => {
     // The entry is refused on its own and published with the reason; the contract's other bodies still compile.
-    expect(refusalOf(LOOP_EVENT_CONTRACT).code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusalMessageOf(LOOP_EVENT_CONTRACT)).toContain('loop');
+    expect(refusalOf(BRANCHED_LOOP_EVENT_CONTRACT).code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusalMessageOf(BRANCHED_LOOP_EVENT_CONTRACT)).toContain('an event emitted on a branch beside one in a '
+      + 'loop, so a builder cannot count the event outputs the body binds in turn');
   });
 
   // A value send is served: the body pins the lock it computed at the listed output. Its machine cases are in

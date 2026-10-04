@@ -147,12 +147,18 @@ export function callSectionWalkScript(): number[] {
  * it requires the no-index sentinel past them, so bodies may list different numbers. A master with no call, event
  * or send carries none of them. `valueWitnessCount` is the number of
  * value slots the head parks: the most value-witness slots any body the master runs reads.
+ *
+ * `eventRun` and `sendRun` park a region as a run instead, for a master with a body that emits or sends from a loop:
+ * the listed outputs must be consecutive, every one is checked, and the head parks only the first and the declared
+ * count, whatever the count. A body binds its k-th effect at the run's k-th output and pins how many it made.
  */
 export interface MasterTailShape {
   readonly segmentRecordCounts?: readonly number[];
   readonly maxEventCount: number;
   readonly sendCount: number;
   readonly valueWitnessCount?: number;
+  readonly eventRun?: boolean;
+  readonly sendRun?: boolean;
 }
 
 /** A tail carrying no events and no sends, with every segment declaring no record. */
@@ -242,8 +248,10 @@ export function verifyTailScript(
   bytes.push(...callWalkScript());
   bytes.push(...segmentCountCheckScript());
   bytes.push(...segmentLoopScript(keepsRecordIndices));
-  bytes.push(...eventSection(tail.maxEventCount, options.eventOwnerBelowTail === true));
-  bytes.push(...sendSection(tail.sendCount));
+  bytes.push(...(tail.eventRun === true
+    ? eventRunSection(options.eventOwnerBelowTail === true)
+    : eventSection(tail.maxEventCount, options.eventOwnerBelowTail === true)));
+  bytes.push(...(tail.sendRun === true ? sendRunSection() : sendSection(tail.sendCount)));
   bytes.push(...valueSection(tail.valueWitnessCount ?? 0));
   bytes.push(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
   return new Uint8Array(bytes);
@@ -603,6 +611,74 @@ function sendSection(count: number): number[] {
   // Park the declared count above the positions.
   bytes.push(Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK);
   return bytes;
+}
+
+/**
+ * Consumes the event list as a run, requiring every listed output to carry the records' owner's category with no
+ * capability, and parks the run's first output and the declared count.
+ *
+ * A body that emits from a loop emits as many events as the loop turns, so no fixed number of positions holds them:
+ * the listed outputs must be consecutive instead, and a body binds its k-th event at the run's first output plus
+ * `k`. Consecutive outputs are distinct and in order, which the fixed walk requires of its positions too. The owner
+ * is read as `eventSection` reads it.
+ */
+function eventRunSection(ownerBelowTail: boolean): number[] {
+  // `[owner, n, k, rest, out, category]`: the owner sits five items below the category just read.
+  const owner = ownerBelowTail
+    ? [...encodeDataPush(scriptNumber(5)), Opcodes.OP_PICK]
+    : [Opcodes.OP_INPUTINDEX];
+  return runSection([
+    Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
+    ...owner, Opcodes.OP_UTXOTOKENCATEGORY, ...encodeDataPush(scriptNumber(32)), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
+    Opcodes.OP_EQUALVERIFY,
+  ]);
+}
+
+/**
+ * Consumes the send list as a run, parking its first output and the declared count.
+ *
+ * A body that sends from a loop sends as many times as the loop turns, so the listed outputs must be consecutive and
+ * a body pins its k-th send at the run's first output plus `k`. What each output is, its lock and its value, only the
+ * body knows, so the walk checks the run's shape alone.
+ */
+function sendRunSection(): number[] {
+  return runSection([]);
+}
+
+/**
+ * Consumes a list of `u16` output indices that must be consecutive, running `check` on each, and parks the first
+ * index, or the no-index sentinel for an empty list, beneath the declared count.
+ *
+ * Entry `[..., tail]`, exit `[..., tail']`; `check` runs on `[..., n, k, rest, out]` and leaves it as it found it.
+ * The count is read unsigned, as the validator reads it, and bounds the walk; a list shorter than it declares fails
+ * the split that reads past its end.
+ */
+function runSection(check: readonly number[]): number[] {
+  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
+  return [
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, ...unsignedLength(), Opcodes.OP_SWAP,
+    // `[n, rest]`: the first index, read without consuming it, or the sentinel.
+    Opcodes.OP_OVER, Opcodes.OP_0, Opcodes.OP_GREATERTHAN, Opcodes.OP_IF,
+    Opcodes.OP_DUP, ...takeFixedWidthField(2), Opcodes.OP_DROP, Opcodes.OP_BIN2NUM,
+    Opcodes.OP_ELSE,
+    ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_BIN2NUM,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_TOALTSTACK,
+    // `[n, k, rest]`: every entry is checked and must be the first index plus its position.
+    Opcodes.OP_0, Opcodes.OP_SWAP,
+    ...num(2), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_GREATERTHAN, Opcodes.OP_IF,
+    Opcodes.OP_BEGIN,
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
+    ...check,
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK,
+    ...num(3), Opcodes.OP_PICK, Opcodes.OP_ADD, Opcodes.OP_NUMEQUALVERIFY,
+    Opcodes.OP_SWAP, Opcodes.OP_1ADD, Opcodes.OP_SWAP,
+    Opcodes.OP_OVER, ...num(3), Opcodes.OP_PICK, Opcodes.OP_GREATERTHANOREQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_ENDIF,
+    // Park the declared count above the first index.
+    Opcodes.OP_NIP, Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
+  ];
 }
 
 /**

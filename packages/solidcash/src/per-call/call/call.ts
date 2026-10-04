@@ -100,9 +100,13 @@ import {
 } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
 import {
+  PerCallLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
+} from './loop-turns.js';
+import {
   NO_CALLEE_VALUES, PerCallCalleeError, calleeFrames, calleeValuesOwed, calleeWrites, learnCalleeValue,
   planEntryCallees, type CalleeValues, type PlannedCallees,
 } from './callees.js';
+import { deploymentStateValues } from '../proxy/external-calls.js';
 import { decodeReturnValues } from '../read/index.js';
 import {
   PerCallComposerError,
@@ -592,6 +596,17 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   const argumentPushes = entry.name === FALLBACK_ENTRY
     ? [VALUE_SEND_CALL_DATA]
     : entryArgumentPushes(entry, args, structs, functionName);
+  // The events, sends and hashes a loop of the entry repeats, as many as the loop turns over the call's own facts.
+  let loopTurns: EntryLoopTurns;
+  try {
+    loopTurns = entryLoopTurns({
+      artifact, functionName, args, stateValues: deploymentStateValues(stateLayout, categoryId, deployment),
+      selfAddress: deployed.address, senderAddress: options.callerLockingBytecode,
+    });
+  } catch (error) {
+    if (error instanceof PerCallLoopTurnsError) throw new PerCallCallError(error.message);
+    throw error;
+  }
   // The compute side-cars the entry's keccak256 and recovery calls read, one per call after the master.
   const sideCars = await entrySideCars({
     provider,
@@ -599,6 +614,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     abiFunction: artifact.abi.find((candidate) => candidate.name === functionName)!,
     argumentPushes,
     leadingPushes: 1,
+    ...(loopTurns.hashes === undefined ? {} : { hashes: loopTurns.hashes }),
   });
 
   // Each send pays a user's lock as a listed send, or a contract through a call into its `receive()`: the body
@@ -610,9 +626,15 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     callerLock: options.callerLockingBytecode,
     state: records.map((record, nftIndex) => parsePushdataCommitment(binToHex(record.commitment), stateLayout, nftIndex)),
   };
-  const recipients = entry.transfers.map((transfer) => sendRecipient(transfer.recipientRecipe, recipientContext));
+  // A body that sends from a loop lists one send per send its turns make, each recipient a lock its own turn
+  // computes: the frame learns them as it learns any lock it does not state, and none of them is on a branch.
+  const recipients = loopTurns.sends === undefined
+    ? entry.transfers.map((transfer) => sendRecipient(transfer.recipientRecipe, recipientContext))
+    : Array.from({ length: loopTurns.sends }, (): Uint8Array | undefined => undefined);
   const listed = (lock: Uint8Array | undefined): boolean => lock === undefined || lock.length === 25;
-  const onBranch = entry.transfers.map((transfer) => transfer.condition !== undefined);
+  const onBranch = loopTurns.sends === undefined
+    ? entry.transfers.map((transfer) => transfer.condition !== undefined)
+    : recipients.map(() => false);
   const payable = await Promise.all(recipients.flatMap((lock, transferPosition) => {
     if (lock === undefined || lock.length === 25) return [];
     return [(async () => {
@@ -632,6 +654,10 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         + `${body.name === RECEIVE_ENTRY ? 'receive' : 'fallback'}()`;
       if (layout === undefined || (bodySites?.calls.length ?? 0) > 0) {
         throw new PerCallCallError(`${bodyLabel} makes a call, which this call path does not plan yet`);
+      }
+      if (publishedLoopEffects(external.artifact, body.name) !== undefined) {
+        throw new PerCallCallError(`${bodyLabel} emits, sends or hashes once per turn of a loop, which this call `
+          + 'path does not plan for a paid contract yet');
       }
       const recipientCategory = hexToBin(external.categoryId);
       const set = await readPerCallDeployment(provider, external.categoryId, layout);
@@ -833,7 +859,14 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   // computes, so the frame starts it from a sentinel the body's own comparison fails against and the derivation
   // learns what the body computed. An entry that emits nothing leaves the region to the created nodes, as before.
   const eventDefinitions = new Map((artifact.events ?? []).map((definition) => [definition.signature, definition]));
-  const emits = [...entry.emits].sort((left, right) => left.emitIndex - right.emitIndex);
+  // A body that emits from a loop lists one output per event it emits, in the order it emits them.
+  const emits = loopTurns.emits === undefined
+    ? [...entry.emits].sort((left, right) => left.emitIndex - right.emitIndex)
+    : loopTurns.emits.map((emitIndex) => {
+      const emit = entry.emits.find((candidate) => candidate.emitIndex === emitIndex);
+      if (emit === undefined) throw new PerCallCallError(`entry "${functionName}" publishes no emit ${emitIndex}`);
+      return emit;
+    });
   const maximumCommitmentBytes = Math.max(
     stateLayout.commitmentLimit ?? 0, provider.consensusLimits?.maximumNftCommitmentBytes ?? 0, 32,
   );

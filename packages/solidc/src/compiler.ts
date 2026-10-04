@@ -14497,6 +14497,7 @@ function compileResolvedAst(
     }
     const assessment = assessPerCallMasterShape({
       contract: ast.contract,
+      compilerOptions: mergedCompilerOptions,
       interfaces: ast.interfaceDefinitions,
       hasContractInstantiation,
       // A pointer that is only declared is lowered like any other; a body still holding one after that is refused

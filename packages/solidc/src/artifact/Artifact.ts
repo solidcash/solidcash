@@ -302,9 +302,12 @@ export const occurrenceInfoOf = (
  * Every identifier used by the recurrence is therefore replaced with its value at the loop entry. The only
  * identifier left live is the induction counter itself. Returning external calls are represented by their
  * already-assigned physical result identity; this metadata never clones an executable call node.
+ *
+ * `targets`, when given, names the nodes whose loops are read instead of the external calls, each by its own key:
+ * a per-call body's effects repeated per turn are counted by the same recurrence (`per-call/master/loop-effects.ts`).
  */
-const externalCallIterationDomains = (
-  fn: FunctionDefinitionNode, compilerOptions: CompilerOptions,
+export const externalCallIterationDomains = (
+  fn: FunctionDefinitionNode, compilerOptions: CompilerOptions, targets?: ReadonlyMap<Node, number>,
 ): ReadonlyMap<number, {
   counterName: string;
   initialValue: ExternalCallExpression;
@@ -312,7 +315,7 @@ const externalCallIterationDomains = (
   continueCondition: ExternalCallExpression;
   maximumIterations: number;
 }> => {
-  if (!fn.body || !fn.externalCalls?.length) return new Map();
+  if (!fn.body || (targets === undefined && !fn.externalCalls?.length)) return new Map();
   type Binding = ExternalCallExpression | undefined;
   type ReplayState = { bindings: Map<object | string, Binding> };
   const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
@@ -330,7 +333,7 @@ const externalCallIterationDomains = (
     const definition = identifier.definition?.definition;
     return definition && typeof definition === 'object' ? definition : `name:${identifier.name}`;
   };
-  const callByNode = new Map<Node, number>(fn.externalCalls
+  const callByNode = new Map<Node, number>((fn.externalCalls ?? [])
     .filter((call) => call.sourceCallNode !== undefined)
     .map((call) => [call.sourceCallNode!, call.slotIndex] as const));
   const skip = new Set([
@@ -355,7 +358,7 @@ const externalCallIterationDomains = (
   ): void => {
     if (!(value instanceof Node) || ancestors.has(value)) return;
     ancestors = new Set(ancestors).add(value);
-    const callsiteId = callByNode.get(value);
+    const callsiteId = (targets ?? callByNode).get(value);
     if (callsiteId !== undefined) loopContexts.set(callsiteId, stack);
     if (value instanceof BlockNode) {
       for (const [index, statement] of (value.statements ?? []).entries()) {
@@ -552,7 +555,9 @@ const externalCallIterationDomains = (
     continueCondition: ExternalCallExpression;
     maximumIterations: number;
   }>();
-  for (const call of fn.externalCalls) {
+  const sites = targets === undefined ? fn.externalCalls!
+    : [...targets].map(([sourceCallNode, slotIndex]) => ({ sourceCallNode, slotIndex }));
+  for (const call of sites) {
     const target = call.sourceCallNode;
     if (!target) continue;
     const enclosing = loopContexts.get(call.slotIndex) ?? [];

@@ -79,15 +79,26 @@ describe('a keccak compute side-car', () => {
     expect(refusal(source)).toBe('');
   });
 
-  it('is refused by name inside a loop: the loop reads a run-time number of side-cars', () => {
+  it('serves a call inside a loop, which reads one side-car per turn its recurrence counts', () => {
+    // The body reads the side-car its count of hashes names and the artifact publishes the loop's recurrence, so a
+    // call lays one side-car per turn; `call/loop-turn-effects` settles a path walk that hashes once per step.
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Hashes {'
       + '   bytes32 h;'
       + '   function f(bytes a, int n) { for (int i = 0; i < n; i = i + 1) { this.h = keccak256(a); } require(true); }'
       + ' }';
+    expect(refusal(source)).toBe('');
+  });
+
+  it('is refused by name inside a loop whose bound is no counted recurrence', () => {
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Hashes {'
+      + '   bytes32 h;'
+      + '   function f(bytes a, int n) { int left = n; while (left > 0) { this.h = keccak256(a); left = left / 2; } }'
+      + ' }';
     const message = refusal(source);
     expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(message).toContain('a keccak256 call inside a loop reads one compute side-car per turn');
+    expect(message).toContain('a keccak256 call in a loop whose counter or bound is not a recurrence');
   });
 });
 

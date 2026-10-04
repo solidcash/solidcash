@@ -23,6 +23,7 @@ import {
   type RecoveryAbiFunction,
   type RecoverySideCars,
 } from '../composer/index.js';
+import { PerCallLoopTurnsError } from './loop-turns.js';
 
 /** Raised when the network holds fewer side-car UTXOs than an entry co-spends. */
 export class PerCallSideCarPoolError extends Error {
@@ -39,18 +40,35 @@ export interface EntrySideCarOptions {
   /** The master the side-cars follow, which namespaces their ids. */
   readonly master: string;
   /** The entry's ABI row, which publishes the parameter each keccak256 and recovery call reads. */
-  readonly abiFunction: KeccakAbiFunction & RecoveryAbiFunction;
+  readonly abiFunction: KeccakAbiFunction & RecoveryAbiFunction & {
+    readonly name?: string;
+    readonly keccakInLoop?: boolean;
+  };
   /** The frame's argument pushes, in wire order. */
   readonly argumentPushes: readonly Uint8Array[];
   /** The pushes before the arguments: one when the call data leads with a dispatcher's selector. */
   readonly leadingPushes: number;
+  /**
+   * How many keccak256 side-cars the body reads, for a body that hashes in a loop (`entryLoopTurns`): one per call
+   * its execution makes, each preimage left to the body, which binds them in the order it makes the calls.
+   */
+  readonly hashes?: number;
 }
 
 /** The side-cars one frame co-spends, over live UTXOs, in the order its body reads them. */
 export async function entrySideCars(options: EntrySideCarOptions): Promise<RecoverySideCars> {
   const { provider, master, abiFunction, argumentPushes, leadingPushes } = options;
+  // A loop's hashes are as many as its turns, which only the frame's own planner counts.
+  if (options.hashes === undefined && abiFunction.keccakInLoop === true) {
+    throw new PerCallLoopTurnsError(
+      `entry "${abiFunction.name ?? master}" hashes inside a loop, and its frame here is laid without the turns `
+      + 'that count its side-cars',
+    );
+  }
   const calls = recoveryCallsOf(abiFunction, argumentPushes, leadingPushes);
-  const preimages = keccakPreimagesOf(abiFunction, argumentPushes, leadingPushes);
+  const preimages = options.hashes === undefined
+    ? keccakPreimagesOf(abiFunction, argumentPushes, leadingPushes)
+    : Array.from({ length: options.hashes }, (): Uint8Array | undefined => undefined);
   const salt = SHARED_LIBRARY_SALT;
   const projections = calls.filter((call) => call.evm).length;
   // The EVM projections' side-cars and the keccak256 calls' side-cars share the stateful keccak covenant's lock.

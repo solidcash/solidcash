@@ -1791,6 +1791,31 @@ export interface PublishedWriteTurns {
   readonly stride: number;
 }
 
+/** One run of a per-call entry's effects of one kind: see `PublishedLoopEffects`. */
+export interface PublishedLoopEffectRun {
+  /**
+   * The effects the run makes, in source order: emit indices for events, transfer indices for sends, and each
+   * keccak256 call's position among the body's calls for hashes.
+   */
+  readonly ids: readonly number[];
+  /** The loop's recurrence for a run a loop repeats once per turn; absent for a run the body makes once. */
+  readonly iterationDomain?: ExternalCallIterationDomainAbi;
+}
+
+/**
+ * The effects a per-call entry makes once per turn of a loop, as runs of each kind in execution order.
+ *
+ * The body binds each such effect where it makes it: the k-th event at the k-th event output its frame lists, the
+ * k-th send at the k-th send output, and the k-th hash at the k-th side-car after its own input. A builder expands
+ * each run by the turns its loop's recurrence counts against the entry's own facts. A kind the entry makes no looped
+ * effect of is absent, and its count is the one the entry's ABI row fixes.
+ */
+export interface PublishedLoopEffects {
+  readonly events?: readonly PublishedLoopEffectRun[];
+  readonly sends?: readonly PublishedLoopEffectRun[];
+  readonly hashes?: readonly PublishedLoopEffectRun[];
+}
+
 /** One per-call entry's stop sites, plus the call facts a driver resolves a callee through. */
 export interface PublishedEntryStopSites {
   /** The entry's identity, `Contract.entry()`, which a `FrameRequest.functionName` matches. */
@@ -1826,6 +1851,8 @@ export interface PublishedEntryStopSites {
    * Absent means the entry makes no send, or makes one whose place among its calls the source does not fix.
    */
   readonly sendCallsBefore?: readonly number[];
+  /** The effects the entry makes once per turn of a loop, when it makes any. */
+  readonly loopEffects?: PublishedLoopEffects;
   /** The sites in the order the driver reaches them, validated before publication. */
   readonly sites: StopSiteMetadata;
 }

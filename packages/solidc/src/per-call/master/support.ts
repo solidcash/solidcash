@@ -29,7 +29,7 @@ import {
   isDynamicStorageType,
   isOutputOnlyBlockSlot,
 } from '@solidcash/utils';
-import type { Type } from '@solidcash/utils';
+import type { CompilerOptions, PublishedLoopEffects, Type } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
 import {
   ArrayAccessNode,
@@ -47,7 +47,6 @@ import {
   ConstantDefinitionNode,
   ContractNode,
   DoWhileNode,
-  EmitStatementNode,
   ExpressionNode,
   ExternalCallMode,
   ExternalFunctionCallNode,
@@ -88,9 +87,10 @@ import {
 } from '../../ast/AST.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../../ast/Operator.js';
 import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
-import { countTransfersMinMax, isDirectOwnerTransferNode } from '../../semantic/branchOps.js';
+import { isDirectOwnerTransferNode } from '../../semantic/branchOps.js';
 import type { MasterCallSite, MasterTailShape, SiteArgument } from './frame-tail.js';
 import { BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName } from './batch-witness-derivation.js';
+import { bodyLoopEffects, loopEffectKinds } from './loop-effects.js';
 
 /**
  * Synthetic parameters that carry the direct path's transaction-level sender category.
@@ -1722,6 +1722,8 @@ export function derivableDynamicChunkNames(fn: FunctionDefinitionNode): Set<stri
 
 export interface PerCallMasterShapeInput {
   readonly contract: ContractNode;
+  /** The options the unit compiles with, which bound the recurrence a loop's effects are counted by. */
+  readonly compilerOptions?: CompilerOptions;
   /** Interface definitions in the compiled unit, for resolving the selector a call site names. */
   readonly interfaces: readonly InterfaceNode[];
   readonly hasContractInstantiation: boolean;
@@ -1766,6 +1768,8 @@ export interface PerCallEntryCallSites {
   readonly writeSegments?: readonly PerCallWriteSegmentFact[];
   /** For each value send, in transfer order, how many external calls the entry makes before it, when fixed. */
   readonly sendCallsBefore?: readonly number[];
+  /** The effects the entry makes once per turn of a loop, as runs a builder expands by the turns. */
+  readonly loopEffects?: PublishedLoopEffects;
 }
 
 export interface PerCallMasterShapeAssessment {
@@ -1932,6 +1936,8 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   const refuseBody = (fn: FunctionDefinitionNode, reason: string): void => {
     if (!refusals.has(fn.name)) refusals.set(fn.name, reason);
   };
+  // The effects each body makes once per turn of a loop, published beside its calls for a builder to lay.
+  const loopEffectsByEntry = new Map<string, PublishedLoopEffects>();
   const invokes = new Map<string, Set<string>>();
   for (const fn of entryBodies) invokes.set(fn.name, invokedFunctionNames(fn.body));
   // A body that is still invoked survives as its own subroutine definition, and a definition has no entry to bind
@@ -1980,24 +1986,30 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
       refuseBody(fn, `the body carries the hidden parameter '${hidden[0].name}', which the master head does not `
         + 'supply');
     }
-    // The head sizes its event and send regions by the bodies it serves, so a body whose own counts are
-    // not values the source fixes is refused on its own rather than refusing the contract's other bodies.
-    if ((fn.runtimeLoopEvents?.length ?? 0) > 0 || emitsFromLoop(fn)) {
-      refuseBody(fn, 'an event emitted from a loop makes the event count depend on the loop, so the master cannot '
-        + 'fix how many events the tail holds');
+    // An event, a send or a hash a loop repeats takes as many outputs or side-cars as the loop turns: the head checks
+    // the run of them the block lists, and the body binds each where it makes it and pins how many it made, so a
+    // builder only has to know their order. A body whose order no builder could reconstruct is refused on its own.
+    // A lowering that turns a loop into a counted trailing stream journals its effects for the direct convention,
+    // which a master does not read.
+    if ((fn.runtimeLoopEvents?.length ?? 0) > 0 || (fn.runtimeLoopTransfers?.length ?? 0) > 0) {
+      refuseBody(fn, 'a loop lowered into a counted trailing stream journals its events and sends for the direct '
+        + 'convention, which a master does not read');
     }
-    if ((fn.transferInfos?.length ?? 0) > 0 || (fn.runtimeLoopTransfers?.length ?? 0) > 0) {
-      const sends = sendCountRefusal(fn);
-      if (sends !== undefined) refuseBody(fn, sends);
+    const loopEffects = bodyLoopEffects(fn, input.compilerOptions ?? {});
+    if (loopEffects.reason !== undefined) refuseBody(fn, loopEffects.reason);
+    if (loopEffects.effects !== undefined) loopEffectsByEntry.set(fn.name, loopEffects.effects);
+    // A hash a loop reaches only through another function's body is one this body's own walk does not count.
+    if (fn.keccakCompute && fn.keccakInLoop === true && loopEffects.effects?.hashes === undefined) {
+      refuseBody(fn, 'a keccak256 call a loop reaches through another function reads one side-car per turn, which '
+        + 'the body\'s own count of side-cars does not include');
+    }
+    // A balance read takes out what each send statement's slot holds, which a loop's send overwrites per turn.
+    if (loopEffects.effects?.sends !== undefined && balanceReads(fn.body).own) {
+      refuseBody(fn, 'the body reads its contract\'s balance and sends from a loop, so the amount it has sent is no '
+        + 'sum of its send statements');
     }
     if (fn.usesBlockhash || contract.usesBlockhash) {
       refuseBody(fn, 'a blockhash read needs a co-spent oracle input the master head does not locate');
-    }
-    // A straight-line keccak256 call reads its compute side-car at a fixed step past the frame's own input; a call
-    // inside a loop reads as many as the loop turns.
-    if (fn.keccakCompute && fn.keccakInLoop === true) {
-      refuseBody(fn, 'a keccak256 call inside a loop reads one compute side-car per turn, which the master head does '
-        + 'not locate a run-time number of');
     }
     // A recovery loop reads its pair per iteration from a run-time counter, which the head would have to place a
     // variable number of inputs for; the straight-line per-call pair is what the head locates.
@@ -2141,7 +2153,10 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     bodies.some((body) => (body.emitInfos?.length ?? 0) > 0),
   );
   if (tail.reason !== undefined) return refuse(tail.reason);
-  const entryCalls = calls.entryCalls.filter((entry) => !refusals.has(entry.entryName));
+  const entryCalls = calls.entryCalls.filter((entry) => !refusals.has(entry.entryName)).map((entry) => {
+    const loopEffects = loopEffectsByEntry.get(entry.entryName);
+    return loopEffects === undefined ? entry : { ...entry, loopEffects };
+  });
   // The head fixes one call count for every body behind its dispatcher, and a refused body is emitted as a stub
   // that makes no call, so the count is the served bodies' bound rather than every entry the call-site pass
   // measured. Taking the unfiltered count would leave the head refusing the standalone frame a served master is
@@ -2350,6 +2365,10 @@ function unsupportedConstructorShape(
   if ((constructorDef.transferInfos?.length ?? 0) > 0 || (constructorDef.runtimeLoopTransfers?.length ?? 0) > 0) {
     return 'the constructor makes a value send, but the master head fixes one tail for every body it runs';
   }
+  // A genesis lists the events its constructor's source fixes, one per emit, and plans no loop's turns.
+  if ((constructorDef.runtimeLoopEvents?.length ?? 0) > 0 || loopEffectKinds(constructorDef).has('events')) {
+    return 'the constructor emits an event from a loop, whose turns its genesis does not count';
+  }
   if (constructorDef.usesBlockhash) {
     return 'the constructor reads a blockhash, which needs a co-spent oracle input the master head does not locate';
   }
@@ -2407,33 +2426,6 @@ export interface PerCallTailDerivation {
 }
 
 /**
- * Why a body's value sends cannot share the master's one send region, or undefined when they can.
- *
- * The head fixes one send region for every body it runs, so a send's position in it is a fact of the source
- * rather than of the execution. A send inside a loop makes as many as the loop turns and reaches no fixed
- * position, so it is refused. A send on one branch of a conditional keeps its position and simply does not happen
- * on the other arm: the body requires its slot to hold the no-index sentinel there, so the region states which
- * sends an execution actually made.
- */
-function sendCountRefusal(body: FunctionDefinitionNode): string | undefined {
-  if ((body.runtimeLoopTransfers?.length ?? 0) > 0 || sendsFromLoop(body)) {
-    return 'a value send inside a loop makes the send count depend on the loop, so the master cannot fix how many '
-      + 'sends the tail holds';
-  }
-  return undefined;
-}
-
-/** True when a value send sits inside a loop, so its position in the send region is not fixed by the source. */
-function sendsFromLoop(body: FunctionDefinitionNode): boolean {
-  let found = false;
-  walkInvocationAst(body.body, (node) => {
-    if (found || !(node instanceof WhileNode || node instanceof DoWhileNode)) return;
-    if (countTransfersMinMax(node).max > 0) found = true;
-  });
-  return found;
-}
-
-/**
  * The sends a body's region holds, in the order its transfer statements number them.
  *
  * A transfer statement is one slot whether or not the execution reaches it, so the region's size is the source's
@@ -2449,11 +2441,13 @@ function bodySendSlots(body: FunctionDefinitionNode): number {
  * A master has one head that parks a fixed-size event region, so the region is as large as the largest number of
  * events any body emits; each body pins its own emit count against the block's declared count, so two bodies may
  * emit different numbers. The constructor runs as one more body behind the head and counts here with the entries.
- * A body that emits from a loop leaves its count to the loop, which the head cannot fix. A listed send's recipient
- * lock is a run-time value, so the tail cannot check the output's shape; the body that computed the send pins the
- * lock and the value it computed at the listed output, and the region is as wide as the most sends any body lists.
- * A send inside a loop reaches no fixed position and is refused. Segments are not fixed here: the records a segment
- * touches are decided by settlement, so the head walks each segment's declared count.
+ * A listed send's recipient lock is a run-time value, so the tail cannot check the output's shape; the body that
+ * computed the send pins the lock and the value it computed at the listed output, and the region is as wide as the
+ * most sends any body lists. A body that emits or sends from a loop makes as many as the loop turns, so its master's
+ * head parks that region as a run instead: the first listed output and the declared count, the run checked whole,
+ * and each body binds its k-th effect at the run's k-th output. A loop a lowering turned into a counted trailing
+ * stream journals its effects for the direct convention, which no head reads. Segments are not fixed here: the
+ * records a segment touches are decided by settlement, so the head walks each segment's declared count.
  */
 export function derivePerCallTailShape(
   entryPoints: readonly FunctionDefinitionNode[],
@@ -2463,9 +2457,9 @@ export function derivePerCallTailShape(
   const bodies = constructorDef === undefined ? entryPoints : [...entryPoints, constructorDef];
   let maxEventCount = 0;
   for (const body of bodies) {
-    if ((body.runtimeLoopEvents?.length ?? 0) > 0 || emitsFromLoop(body)) {
-      return { reason: 'an event emitted from a loop makes the event count depend on the loop, so the master '
-        + 'cannot fix how many events the tail holds' };
+    if ((body.runtimeLoopEvents?.length ?? 0) > 0 || (body.runtimeLoopTransfers?.length ?? 0) > 0) {
+      return { reason: 'a loop lowered into a counted trailing stream journals its events and sends for the direct '
+        + 'convention, which a master does not read' };
     }
     maxEventCount = Math.max(maxEventCount, body.emitInfos?.length ?? 0);
   }
@@ -2473,34 +2467,20 @@ export function derivePerCallTailShape(
     return { reason: 'the contract emits an event that is not attributed to a body, so the master cannot fix '
       + 'how many events the tail holds' };
   }
-  for (const body of bodies) {
-    if ((body.transferInfos?.length ?? 0) > 0 || (body.runtimeLoopTransfers?.length ?? 0) > 0) {
-      const sends = sendCountRefusal(body);
-      if (sends !== undefined) return { reason: sends };
-    }
-  }
   // Every body's transfers take the region's first positions in their own source order, and a body that lists
   // fewer requires the no-index sentinel at the positions past its own, so bodies may list different numbers.
   const sendCount = Math.max(0, ...bodies.map((body) => bodySendSlots(body)));
   const valueWitnessCount = Math.max(0, ...bodies.map((body) => valueWitnessSlotsOf(body)));
-  return { tail: { maxEventCount, sendCount, valueWitnessCount } };
-}
-
-/**
- * True when the entry reaches an emit statement inside a loop, so the number of events it emits depends on the
- * loop's trip count. A source loop is a `while` or `do`/`while` node after parsing, and a lowering that turns one
- * into a counted trailing stream records it in `runtimeLoopEvents` instead.
- */
-function emitsFromLoop(entry: FunctionDefinitionNode): boolean {
-  let found = false;
-  walkInvocationAst(entry.body, (node) => {
-    const isLoop = node instanceof WhileNode || node instanceof DoWhileNode;
-    if (found || !isLoop) return;
-    walkInvocationAst(node, (inner) => {
-      if (inner instanceof EmitStatementNode && inner.runtimeLoopEvent === undefined) found = true;
-    });
-  });
-  return found;
+  const looped = bodies.map((body) => loopEffectKinds(body));
+  const eventRun = looped.some((kinds) => kinds.has('events'));
+  const sendRun = looped.some((kinds) => kinds.has('sends'));
+  return {
+    tail: {
+      maxEventCount, sendCount, valueWitnessCount,
+      ...(eventRun ? { eventRun: true } : {}),
+      ...(sendRun ? { sendRun: true } : {}),
+    },
+  };
 }
 
 /** The call sites each entry makes, or why the head cannot check them. */

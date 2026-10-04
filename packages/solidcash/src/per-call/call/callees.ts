@@ -56,6 +56,7 @@ import {
   type HopCallee, type HopCalleeRecord, type HopExternalPlan, type PerCallProxyExternal,
 } from '../proxy/external-calls.js';
 import { adjacentRecordOrder, frameDataRecordIndices, namedDataRecordIndices } from './entry-records.js';
+import { publishedLoopEffects } from './loop-turns.js';
 
 /** Raised when an entry's callee frames cannot be planned; `call.ts` rethrows it as the call's own error. */
 export class PerCallCalleeError extends Error {
@@ -268,6 +269,10 @@ function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefine
     return `${label} touches a dynamic value's or a mapping value's chunks, which this call path does not plan yet`;
   }
   if (sideCars) return `${label} co-spends a side-car, which this call path does not plan yet`;
+  if (publishedLoopEffects(callee.artifact, callee.entry) !== undefined) {
+    return `${label} emits, sends or hashes once per turn of a loop, which this call path does not plan for a callee `
+      + 'yet';
+  }
   if (publishedWrites(callee.artifact, callee.entry) === undefined
     || (callee.entryWrites !== undefined && mappingWriteSegment(callee) === undefined)) {
     return `${label} writes in a segment its artifact does not fix, which this call path does not plan yet`;

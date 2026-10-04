@@ -287,10 +287,11 @@ import { analyseContractInvocations, walkInvocationAst } from '../analysis/Invoc
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 import {
-  buildMasterHeadScript, callCountSlotName, categoryOwnerSlotName, eventCountSlotName, eventOutputSlotName,
-  recordInputIndexSlotName, recordOutputIndexSlotName, retvalSlotName, sendCountSlotName, sendOutputSlotName,
-  valueWitnessSlotName,
+  buildMasterHeadScript, callCountSlotName, categoryOwnerSlotName, eventBaseSlotName, eventCountSlotName,
+  eventOutputSlotName, recordInputIndexSlotName, recordOutputIndexSlotName, retvalSlotName, sendBaseSlotName,
+  sendCountSlotName, sendOutputSlotName, valueWitnessSlotName,
 } from '../per-call/master/master-head.js';
+import { loopEffectKinds } from '../per-call/master/loop-effects.js';
 import { callSiteCheckScript, sourceReadsCallResult } from '../per-call/master/call-site.js';
 import { dropFirstPushScript, dropLastPushScript, dropPrefix } from '../per-call/master/witness-reader.js';
 import {
@@ -1254,6 +1255,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly PER_CALL_CALLS_MADE = '__internal__perCallCallsMade';
   /** How many listed sends a per-call body's value sends have made, which names the next listed output. */
   private static readonly PER_CALL_SENDS_MADE = '__internal__perCallSendsMade';
+  /** How many events a per-call body that emits from a loop has emitted, which names its next listed output. */
+  private static readonly PER_CALL_EVENTS_MADE = '__internal__perCallEventsMade';
+  /** How many keccak256 side-cars a per-call body that hashes in a loop has read, which names the next one. */
+  private static readonly PER_CALL_HASHES_MADE = '__internal__perCallHashesMade';
+  /**
+   * True when the master's head parks its event (send) region as a run of consecutive outputs: the first output and
+   * the declared count, which a body indexes from. Set for a master with a body that emits (sends) from a loop.
+   */
+  private perCallEventRun = false;
+  private perCallSendRun = false;
+  /**
+   * True while the body being emitted makes events, sends or hashes inside a loop, so it binds each where its source
+   * makes it, at the position its count of them names, and pins the count where it ends (`loop-effects.ts`).
+   */
+  private perCallEventsAtSource = false;
+  private perCallSendsAtSource = false;
+  private perCallHashesAtSource = false;
   private perCallCallsMadeActive = false;
   private perCallSegmentIndex = 0;
   /**
@@ -2865,6 +2883,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEventOutputIndex(
     emitIndex: number, resolvedName: string | undefined, locationData: SingleLocationData,
   ): void {
+    // A body whose master parks its events as a run lists the `emitIndex`-th at the run's first output plus it.
+    if (resolvedName === undefined && this.perCallMaster && this.perCallEventRun) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(eventBaseSlotName()))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      if (emitIndex > 0) {
+        this.emit(encodeInt(BigInt(emitIndex)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+      return;
+    }
     const name = resolvedName ?? this.perCallEventOutputSlotName(emitIndex);
     if (name === undefined) {
       this.emitBlockSlotIndex('event', emitIndex, locationData);
@@ -3470,6 +3498,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallMaxEventCount = tail.tail.maxEventCount;
     this.perCallSendCount = tail.tail.sendCount;
     this.perCallValueWitnessCount = tail.tail.valueWitnessCount ?? 0;
+    this.perCallEventRun = tail.tail.eventRun === true;
+    this.perCallSendRun = tail.tail.sendRun === true;
     // A payable body lets a frame carry value, which the head then requires the master's containers to receive.
     const acceptsValue = [...served, ...(node.constructorDef ? [node.constructorDef] : [])]
       .some((body) => body.modifiers.includes(FunctionModifier.PAYABLE));
@@ -3503,8 +3533,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // A send's listed output index is left above the value slots and below the event region: the declared count,
     // then one slot per send position the entry fixes, registered in reverse so a body reads the `sendIndex`-th
-    // send's output at its own slot.
-    if (tail.tail.sendCount > 0) {
+    // send's output at its own slot. A run leaves its first output above the count instead.
+    if (this.perCallSendRun) {
+      this.pushToStack(sendCountSlotName());
+      this.pushToStack(sendBaseSlotName());
+    } else if (tail.tail.sendCount > 0) {
       this.pushToStack(sendCountSlotName());
       for (let index = tail.tail.sendCount - 1; index >= 0; index -= 1) {
         this.pushToStack(sendOutputSlotName(index));
@@ -3513,7 +3546,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Above them the head leaves the event region: the declared count, then one output slot per
     // position up to the region size, first position topmost. Registering the count first and the positions in
     // reverse lets an inlined body read the count it pins and each emit's listed output index at a fixed depth.
-    if (tail.tail.maxEventCount > 0) {
+    if (this.perCallEventRun) {
+      this.pushToStack(eventCountSlotName());
+      this.pushToStack(eventBaseSlotName());
+    } else if (tail.tail.maxEventCount > 0) {
       this.pushToStack(eventCountSlotName());
       for (let index = tail.tail.maxEventCount - 1; index >= 0; index -= 1) {
         this.pushToStack(eventOutputSlotName(index));
@@ -3898,13 +3934,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * is refused however the run reached its end.
    */
   private emitPerCallCallsMadeCheck(node: FunctionDefinitionNode): void {
+    this.emitPerCallMadeCheck(node, callCountSlotName(), GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE);
+  }
+
+  /** Pins a count the body made where it ends, `made`, to the count the block declares in `declared`. */
+  private emitPerCallMadeCheck(node: FunctionDefinitionNode, declared: string, made: string): void {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
-    this.emit(encodeInt(BigInt(this.getStackIndex(callCountSlotName()))), loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(declared))), loc);
     this.emit(Op.OP_PICK, loc);
     this.pushToStack('(value)');
-    this.emit(
-      encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE))), loc,
-    );
+    this.emit(encodeInt(BigInt(this.getStackIndex(made))), loc);
     this.emit(Op.OP_PICK, loc);
     this.pushToStack('(value)');
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
@@ -3922,6 +3961,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A body that sends pins the number of sends it listed where it makes them.
     if ((node.transferInfos?.length ?? 0) > 0) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    // A run lists no send for a body that makes none when its declared count is zero.
+    if (this.perCallSendRun && this.stack.includes(sendCountSlotName())) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(sendCountSlotName()))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      return;
+    }
     for (let position = node.transferInfos?.length ?? 0; this.stack.includes(sendOutputSlotName(position));
       position += 1) {
       this.requireSendSlotAbsent(position, loc);
@@ -3950,6 +3997,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitPerCallEventCountCheck(node: FunctionDefinitionNode): void {
     const slot = eventCountSlotName();
     if (!this.stack.includes(slot)) return;
+    // A body that emits from a loop knows how many it emitted only where it ends, so it pins the count there.
+    if (this.perCallEventsAtSource) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     this.emit(encodeInt(BigInt(this.getStackIndex(slot))), loc);
     this.emit(Op.OP_PICK, loc);
@@ -6664,19 +6713,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
         // The head parks one slot per event the region holds, so the body sees the whole region. The usage probe
         // compiles these bodies without a head, so `perCallMaxEventCount` is unset there; falling back to the
-        // body's own count keeps the probe's stack deep enough for the body to read its own emit slots.
-        const eventRegion = Math.max(this.perCallMaxEventCount, func.emitInfos?.length ?? 0);
+        // body's own count keeps the probe's stack deep enough for the body to read its own emit slots. A run is
+        // its first output above the count, and the probe takes a body that makes a run as making one.
+        const looped = loopEffectKinds(func);
+        subTraversal.perCallEventRun = this.perCallEventRun || looped.has('events');
+        subTraversal.perCallSendRun = this.perCallSendRun || looped.has('sends');
+        const eventRegion = subTraversal.perCallEventRun
+          ? 0 : Math.max(this.perCallMaxEventCount, func.emitInfos?.length ?? 0);
         for (let index = 0; index < eventRegion; index += 1) {
           subTraversal.stack.push(eventOutputSlotName(index));
         }
-        if (eventRegion > 0) subTraversal.stack.push(eventCountSlotName());
+        if (subTraversal.perCallEventRun) subTraversal.stack.push(eventBaseSlotName());
+        if (eventRegion > 0 || subTraversal.perCallEventRun) subTraversal.stack.push(eventCountSlotName());
         // The send region sits below the event region: one slot per position, first position topmost, then the
         // declared count. The usage probe falls back to the body's own count, as for events.
-        const sendRegion = Math.max(this.perCallSendCount, func.transferInfos?.length ?? 0);
+        const sendRegion = subTraversal.perCallSendRun
+          ? 0 : Math.max(this.perCallSendCount, func.transferInfos?.length ?? 0);
         for (let index = 0; index < sendRegion; index += 1) {
           subTraversal.stack.push(sendOutputSlotName(index));
         }
-        if (sendRegion > 0) subTraversal.stack.push(sendCountSlotName());
+        if (subTraversal.perCallSendRun) subTraversal.stack.push(sendBaseSlotName());
+        if (sendRegion > 0 || subTraversal.perCallSendRun) subTraversal.stack.push(sendCountSlotName());
         // The head parks one slot per long value a body reads, below the event region and above the frame values,
         // so a body that reads a mapping value's witness finds it where the head left it. Slot 0 is the topmost of
         // them, the order the head pops them back in.
@@ -7600,6 +7657,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
     this.perCallCallsMadeActive = false;
+    this.perCallEventsAtSource = false;
+    this.perCallSendsAtSource = false;
+    this.perCallHashesAtSource = false;
     this.perCallSegmentIndex = 0;
     this.perCallOrdinal = 0;
     this.perCallLoweredSites = new Set<ExternalFunctionCallNode>();
@@ -8351,6 +8411,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE);
     }
+    // A body that emits, sends or hashes inside a loop binds each where it makes it, at the position its count of
+    // them names, so it carries the counts from its start, before its own control flow, as it carries its calls.
+    const looped = this.perCallMaster && !this.isDefineSubTraversal ? loopEffectKinds(node) : new Set<string>();
+    this.perCallEventsAtSource = looped.has('events');
+    this.perCallSendsAtSource = looped.has('sends');
+    this.perCallHashesAtSource = looped.has('hashes');
+    for (const [atSource, counter] of [
+      [this.perCallEventsAtSource, GenerateTargetTraversalWithLocation.PER_CALL_EVENTS_MADE],
+      [this.perCallSendsAtSource, GenerateTargetTraversalWithLocation.PER_CALL_SENDS_MADE],
+      [this.perCallHashesAtSource, GenerateTargetTraversalWithLocation.PER_CALL_HASHES_MADE],
+    ] as const) {
+      if (!atSource) continue;
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(counter);
+    }
     // A per-call body pins the number of calls its own source makes against the count the block declares, and the
     // number of events it emits against the block's, before either is checked. A per-call master then derives the
     // sorted-batch operands its own body verification reads, from the witness block the head already walked. Those
@@ -8732,7 +8807,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const hasReturnEventB = node.returnTypes.length > 0 && node.isEntryPoint;
     const hasReturnEventA = (node.externalCalls ?? []).some((ec) => ec.hasReturnValues);
     const hasAnyStatefulAccess = this.hasStateAccess || hasEntryAccess || hasEventEmits || hasRuntimeLoopEvents
-      || hasRuntimeLoopTransfers
+      || hasRuntimeLoopTransfers || this.perCallEventsAtSource
       || hasTransfers || hasDeploys || hasTokenContainerAccess || hasExternalReads || hasExternalCalls
       || hasExternalOutStateReads || hasReturnEventB || hasReturnEventA;
 
@@ -8940,6 +9015,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.perCallMaster && this.perCallCallsMadeActive && node.isEntryPoint
         && !this.blockEndsWithRevert(node.body)) {
         this.emitPerCallCallsMadeCheck(node);
+      }
+      // A body that emits from a loop pins the number of events it emitted, here, where it has emitted them all.
+      if (this.perCallMaster && this.perCallEventsAtSource && !this.blockEndsWithRevert(node.body)) {
+        this.emitPerCallMadeCheck(node, eventCountSlotName(), GenerateTargetTraversalWithLocation.PER_CALL_EVENTS_MADE);
       }
       // A-side: verify return event UTXO from external function calls with return values. A per-call master takes
       // the result from its own witness record, not from a return-event output, so it has no return event to pin.
@@ -12567,9 +12646,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // recovery pair and its EVM keccak side-car first, then one keccak side-car per call in the order the body
         // makes them. A side-car recreates at its own index, so the input coordinate also reads the output.
         this.emit(Op.OP_INPUTINDEX, loc);
-        const step = 1 + 2 * (fn.ecrecoverCallCount ?? 0) + (fn.ecrecoverEvmCallCount ?? 0) + i;
+        const atSource = this.perCallHashesAtSource;
+        const step = 1 + 2 * (fn.ecrecoverCallCount ?? 0) + (fn.ecrecoverEvmCallCount ?? 0) + (atSource ? 0 : i);
         this.emit(encodeInt(BigInt(step)), loc);
         this.emit(Op.OP_ADD, loc);
+        // A body that hashes in a loop reads the next side-car by the count it has read, the input index above it.
+        if (atSource) {
+          const made = GenerateTargetTraversalWithLocation.PER_CALL_HASHES_MADE;
+          this.emit(encodeInt(BigInt(this.getStackIndex(made) + 1)), loc);
+          this.emit(Op.OP_PICK, loc);
+          this.emit(Op.OP_ADD, loc);
+        }
         return;
       }
       if (fn.blockLayout) { this.emitBlockSlotIndex('keccakSideCar', batchIndex, loc); return; }
@@ -12668,6 +12755,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_1ADD, loc);
       this.emitReplace(this.getStackIndex(this.keccakLoopCounterName) + 1, node);
+    }
+    if (this.perCallMaster && this.perCallHashesAtSource) {
+      const made = GenerateTargetTraversalWithLocation.PER_CALL_HASHES_MADE;
+      this.emit(encodeInt(BigInt(this.getStackIndex(made))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(hashes_made)');
+      this.emit(Op.OP_1ADD, loc);
+      this.emitReplace(this.getStackIndex(made), node);
+      this.popFromStack();
     }
     this.dropCapturedComputeSidecarBlockBase(capturedComputeBase, node);
     return node;
@@ -17299,6 +17395,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     });
 
+    if (this.perCallEventsAtSource) {
+      this.emitPerCallEventAtSource(eventDef, node, locationData);
+      return node;
+    }
+
     if (node.runtimeLoopEvent) {
       if (!this.runtimeLoopEventActive
         || !this.stack.includes(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_COUNT)) {
@@ -17385,6 +17486,80 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ]);
   }
 
+  /**
+   * Binds an event where a per-call body that emits from a loop emits it, at the frame's next listed event output.
+   *
+   * Entry `[..., payload]`, exit `[...]`. The output is the event run's first output plus the events the body has
+   * emitted so far, and it carries the payload as its commitment, at the event covenant of the records' owner, with
+   * the owner's category and no capability, no fungible amount and at most the dust bound: the checks the epilogue
+   * makes of a fixed emit's listed output. The payload is compared below the commitment the output carries, so a
+   * builder that lists a placeholder learns the payload the body computed. The count moves on, and the body pins it
+   * against the block's where it ends.
+   */
+  private emitPerCallEventAtSource(
+    eventDef: EventDefinitionNode, node: Node, locationData: SingleLocationData,
+  ): void {
+    const made = GenerateTargetTraversalWithLocation.PER_CALL_EVENTS_MADE;
+    const pick = (name: string): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+    };
+    // [payload] -> [output, payload, commitment] -> [output]
+    pick(eventBaseSlotName());
+    pick(made);
+    this.emit(Op.OP_ADD, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(event_output)');
+    this.emit(Op.OP_SWAP, locationData);
+    this.stack.splice(0, 2, this.stack[1]!, this.stack[0]!);
+    this.emit(Op.OP_OVER, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack();
+    // The covenant lock of the records' owner for this event.
+    this.emitRecordsCategoryBase(locationData, 0, true);
+    this.pushToStack('(event_category)');
+    this.emit(new Uint8Array([0xc0, 0xce, 0x01, 0x20, 0x7f, 0x7c, 0x20]), locationData);
+    this.pushToStack('(event_script)');
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(this.eventCovenantSuffix(eventDef), locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_HASH256, locationData);
+    this.emit(P2SH32_LBC_PREFIX, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(P2SH32_LBC_SUFFIX, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_OVER, locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack();
+    // The owner's category with no capability byte, no fungible amount, and the dust bound.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.pushToStack('(event_token)');
+    this.emitRecordsCategoryBase(locationData, 0, true);
+    this.pushToStack('(event_category)');
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emit(Op.OP_OUTPUTVALUE, locationData);
+    this.emit(encodeInt(1200n), locationData);
+    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
+    this.popFromStack();
+    pick(made);
+    this.emit(Op.OP_1ADD, locationData);
+    this.emitReplace(this.getStackIndex(made), node);
+    this.popFromStack();
+  }
+
   /** Push the exact P2SH32 lock for an event emitted by the active state owner. */
   private emitExpectedEventLockingBytecode(
     eventDef: EventDefinitionNode, locationData: SingleLocationData,
@@ -17431,6 +17606,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Preallocate both runtime-selected values shared by mutually-exclusive emit arms. */
   private preAllocateEmit(emitIndex: number, locationData: SingleLocationData): void {
+    // A per-call body that binds its events where it emits them keeps no value for the epilogue.
+    if (this.perCallEventsAtSource) return;
     this.emit(encodeInt(0n), locationData);
     this.pushToStack(`__internal__emit_${emitIndex}`);
     this.emit(encodeInt(0n), locationData);
@@ -33064,6 +33241,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // stateful and stateless reads use the same absolute-forward covenant (self-preserve via OP_INPUTINDEX).
   private emitLoopKeccakSetup(block: Node, loc: SingleLocationData): boolean {
     if (this.keccakLoopActive) return false;
+    // A per-call body counts the side-cars it reads from its own start, wherever its loops are.
+    if (this.perCallMaster) return false;
     // The kernel's row dispatcher is a transport loop, not a source-level repetition of the selected handler.
     // Semantic links from its typed handler call can make the recursive scan see a handler's keccak node; using
     // the row counter as a dynamic side-car ordinal then moves an ordinary fixed compute slot past blockSize.
@@ -36150,7 +36329,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, loc);
     this.emit(encodeInt(25n), loc);
     this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_NOTIF, loc);
+    // A body that sends from a loop lists a send to a user's lock where it makes it too, at its next listed output.
+    if (this.perCallSendsAtSource) {
+      this.emit(Op.OP_IF, loc);
+      this.emitPerCallListedSend(lock, amount, loc);
+      this.emit(Op.OP_ELSE, loc);
+    } else {
+      this.emit(Op.OP_NOTIF, loc);
+    }
     const closes = this.stateVariables.length > 0 || this.collectionCount > 0;
     const written = closes && this.readsRecordsFromFrame ? this.perCallRecordsWrittenHere(false) : [];
     this.emitPerCallSegmentClose(loc, false);
@@ -36194,9 +36380,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitPerCallValueSends(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
     const sendsMade = GenerateTargetTraversalWithLocation.PER_CALL_SENDS_MADE;
-    this.emit(Op.OP_0, loc);
-    this.pushToStack(sendsMade);
-    for (const transfer of this.pendingTransfers) {
+    // A body that sends from a loop made every send where its source made it, counting from its start.
+    if (!this.perCallSendsAtSource) {
+      this.emit(Op.OP_0, loc);
+      this.pushToStack(sendsMade);
+    }
+    for (const transfer of this.perCallSendsAtSource ? [] : this.pendingTransfers) {
       const { transferIndex, lockingBytecodeStackName: lock, amountStackName: amount } = transfer;
       if (this.getStackIndex(lock, true) < 0 || this.getStackIndex(amount, true) < 0) {
         throw new TransferFrameUnavailableError(node, transferIndex);
@@ -36240,14 +36429,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Pins the next listed output to a user's lock and amount, and counts the send. */
   private emitPerCallListedSend(lock: string, amount: string, loc: SingleLocationData): void {
     const sendsMade = GenerateTargetTraversalWithLocation.PER_CALL_SENDS_MADE;
-    // The output the next send is listed at: the region position the number of sends made names.
-    const base = this.getStackIndex(sendOutputSlotName(0));
-    this.emit(encodeInt(BigInt(this.getStackIndex(sendsMade))), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(encodeInt(BigInt(base)), loc);
-    this.emit(Op.OP_ADD, loc);
-    this.emit(Op.OP_PICK, loc);
-    this.pushToStack('(send_output)');
+    if (this.perCallSendRun) {
+      // The run's first output plus the number of sends made.
+      this.emit(encodeInt(BigInt(this.getStackIndex(sendBaseSlotName()))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(send_output)');
+      this.emit(encodeInt(BigInt(this.getStackIndex(sendsMade))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_ADD, loc);
+    } else {
+      // The output the next send is listed at: the region position the number of sends made names.
+      const base = this.getStackIndex(sendOutputSlotName(0));
+      this.emit(encodeInt(BigInt(this.getStackIndex(sendsMade))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(BigInt(base)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(send_output)');
+    }
     const pinned = (valueOf: () => void, outputOp: Op): void => {
       valueOf();
       this.emit(encodeInt(BigInt(this.getStackIndex('(send_output)'))), loc);
@@ -41523,7 +41722,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     // Leave one `allowed` boolean on top of [cat, base, j], then OP_VERIFY it.
     const perCallSlots = this.perCallMaster ? this.perCallEventOutputSlots(node.emitInfos?.length ?? 0) : undefined;
-    if (perCallSlots !== undefined) {
+    if (this.perCallMaster && this.perCallEventRun) {
+      // A run's listed outputs are the head's checked span, `[first, first + count)`.
+      this.emit(Op.OP_DUP, loc);                   // [cat, base, j, j]
+      this.emitPickTrackedFromBottom(eventBaseSlotName(), loc);
+      this.emitPickTrackedFromBottom(eventBaseSlotName(), loc);
+      this.emitPickTrackedFromBottom(eventCountSlotName(), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_WITHIN, loc);                // [cat, base, j, allowed]
+    } else if (perCallSlots !== undefined) {
       // A per-call master has no block layout: the event outputs are the ones the witness block lists, which the
       // head has already checked for category and capability, so those listed indices are the admitted ones.
       this.emit(encodeBool(false), loc);           // [cat, base, j, allowed]

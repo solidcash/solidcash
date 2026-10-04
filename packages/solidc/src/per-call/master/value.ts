@@ -96,6 +96,29 @@ export function containerGrowthScript(): number[] {
 }
 
 /**
+ * Leaves the value of a run of consecutive outputs: what a frame's sends pay when a loop makes them.
+ *
+ * Entry `[..., count, first]`, exit `[..., paid]`: the value of outputs `first` to `first + count - 1`, or zero for
+ * an empty run, whose first output is the no-index sentinel and is never read.
+ */
+export function sendRunValuesScript(): number[] {
+  return [
+    // [first, paid, left]
+    Opcodes.OP_0, Opcodes.OP_ROT,
+    Opcodes.OP_DUP, Opcodes.OP_0, Opcodes.OP_GREATERTHAN,
+    Opcodes.OP_IF,
+    Opcodes.OP_BEGIN,
+    Opcodes.OP_1SUB,
+    Opcodes.OP_DUP, Opcodes.OP_3, Opcodes.OP_PICK, Opcodes.OP_ADD, Opcodes.OP_OUTPUTVALUE,
+    Opcodes.OP_ROT, Opcodes.OP_ADD, Opcodes.OP_SWAP,
+    Opcodes.OP_DUP, Opcodes.OP_0, Opcodes.OP_LESSTHANOREQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_DROP, Opcodes.OP_NIP,
+  ];
+}
+
+/**
  * Leaves the value the frame's call records pass on: what the running master pays through its calls.
  *
  * Entry `[...]`, exit `[..., paid]`. Each record's `value` is bound at the site that made the call, so their sum is

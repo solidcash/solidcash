@@ -64,6 +64,10 @@ import {
   adjacentRecordOrder, frameDataRecordIndices, loopRecordSpans, namedDataRecordIndices, orderLoopKeyArgs,
 } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
+import {
+  PerCallLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
+} from '../call/loop-turns.js';
+import type { HopCallInputs } from './call-resolution.js';
 import { eventLockingBytecode, eventSentinel } from '../deploy/genesis.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import {
@@ -883,6 +887,7 @@ function callPushes(
  */
 async function implementationFrameSideCars(
   provider: NetworkProvider, artifact: Artifact, functionName: string, args: readonly FunctionArgument[],
+  loopHashes?: number,
 ): Promise<ReadonlyMap<string, RecoverySideCars>> {
   const abiFunction = artifact.abi.find((candidate) => candidate.name === functionName);
   if (abiFunction === undefined) return new Map();
@@ -895,6 +900,7 @@ async function implementationFrameSideCars(
   const frame = await entrySideCars({
     provider, master: IMPLEMENTATION_MASTER_ID, abiFunction,
     argumentPushes: callPushes(artifact, functionName, args), leadingPushes: 1,
+    ...(loopHashes === undefined ? {} : { hashes: loopHashes }),
   });
   return frame.ids.length === 0 ? new Map() : new Map([[IMPLEMENTATION_MASTER_ID, frame]]);
 }
@@ -1068,6 +1074,12 @@ export async function deployPerCallProxy(
   const retvalPlaceholder = (initializeEntry?.outputs ?? []).length > 0
     ? hopRetvalPlaceholder(implementationArtifact.contractName, options.initialize.functionName)
     : undefined;
+  // The events and hashes the entry's loops repeat, counted against the same facts its calls are resolved from.
+  const loopTurns = implementationLoopTurns({
+    artifact: implementationArtifact, functionName: options.initialize.functionName, args: initializeArgs,
+    stateValues: deploymentStateValues(proxyArtifact.stateLayout!, proxy.categoryId, deployment),
+    selfAddress: proxyMaster.address, senderAddress: options.callerLockingBytecode,
+  });
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
   // values, the proxy's own address for `address(this)`, and the deployer's lock for `msg.sender`.
@@ -1082,7 +1094,7 @@ export async function deployPerCallProxy(
     ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees }),
     ...(seed === undefined ? {} : { seed }),
     eventCommitments: hopEventSentinels(
-      implementationArtifact, options.initialize.functionName, proxyCategory, maximumCommitmentBytes,
+      implementationArtifact, options.initialize.functionName, proxyCategory, maximumCommitmentBytes, loopTurns.emits,
     ),
     ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.initialize.functionName),
@@ -1107,7 +1119,7 @@ export async function deployPerCallProxy(
       ...(externalPlan.heldContinuations === true ? { heldContinuations: true } : {}),
       maximumCommitmentBytes,
       eventOutputs: hopEventOutputs(
-        implementationArtifact, options.initialize.functionName, proxyCategory, eventCommitments,
+        implementationArtifact, options.initialize.functionName, proxyCategory, eventCommitments, loopTurns.emits,
       ),
       recordCategoryHex: options.proxyDeploy.fundingUtxo.txid,
       callerSatoshis: options.proxyDeploy.fundingUtxo.satoshis,
@@ -1122,7 +1134,7 @@ export async function deployPerCallProxy(
   });
   // The compute side-cars the implementation's own entry reads, built once over the live pool for the whole hop.
   const implementationSideCars = await implementationFrameSideCars(
-    provider, implementationArtifact, options.initialize.functionName, initializeArgs,
+    provider, implementationArtifact, options.initialize.functionName, initializeArgs, loopTurns.hashes,
   );
   const { externalPlan, settled } = await planAndSettleHop({
     plan: (externalReturns, reachedResults, calleeWriteViews, calleeWriteValues, heldContinuations, stopBefore) =>
@@ -2839,17 +2851,15 @@ function hopEventOutputs(
   functionName: string,
   category: Uint8Array,
   commitments: readonly Uint8Array[],
+  emits?: readonly number[],
 ): readonly HopEventOutput[] {
-  const entry = artifact.abi.find((candidate) => candidate.name === functionName);
   const definitions = new Map((artifact.events ?? []).map((definition) => [definition.signature, definition]));
-  return [...(entry?.emits ?? [])]
-    .sort((left, right) => left.emitIndex - right.emitIndex)
-    .map((emit, position) => ({
-      lockingBytecode: eventLockingBytecode(
-        category, emit.eventSignature, definitions.get(emit.eventSignature)?.anonymous === true,
-      ),
-      commitment: commitments[position] ?? new Uint8Array(0),
-    }));
+  return hopEmits(artifact, functionName, emits).map((emit, position) => ({
+    lockingBytecode: eventLockingBytecode(
+      category, emit.eventSignature, definitions.get(emit.eventSignature)?.anonymous === true,
+    ),
+    commitment: commitments[position] ?? new Uint8Array(0),
+  }));
 }
 
 /** The placeholder each of an entry's event outputs carries until the hop learns the payload it computed. */
@@ -2858,12 +2868,61 @@ function hopEventSentinels(
   functionName: string,
   category: Uint8Array,
   maximumCommitmentBytes: number,
+  emits?: readonly number[],
 ): readonly Uint8Array[] {
-  const entry = artifact.abi.find((candidate) => candidate.name === functionName);
-  return [...(entry?.emits ?? [])]
-    .sort((left, right) => left.emitIndex - right.emitIndex)
-    .map((_emit, position) =>
-      eventSentinel(category, artifact.contractName, position, maximumCommitmentBytes));
+  return hopEmits(artifact, functionName, emits).map((_emit, position) =>
+    eventSentinel(category, artifact.contractName, position, maximumCommitmentBytes));
+}
+
+/**
+ * The emits an entry's frame lists one output for, in the order its body makes them: each emit once, or, for a body
+ * that emits from a loop, the emit indices its turns make (`entryLoopTurns`). A frame laid without those turns is
+ * refused by name rather than listing one output for an emit a loop repeats.
+ */
+function hopEmits(
+  artifact: Artifact, functionName: string, emits: readonly number[] | undefined,
+): readonly NonNullable<Artifact['abi'][number]['emits']>[number][] {
+  const rows = artifact.abi.find((candidate) => candidate.name === functionName)?.emits ?? [];
+  if (emits === undefined) {
+    if (publishedLoopEffects(artifact, functionName)?.events !== undefined) {
+      throw new PerCallProxyDeployError(
+        `the ${entryLabelFor(functionName)} of "${artifact.contractName}" emits from a loop, whose turns the hop counts `
+        + 'for the implementation\'s own entry only',
+      );
+    }
+    return [...rows].sort((left, right) => left.emitIndex - right.emitIndex);
+  }
+  return emits.map((emitIndex) => {
+    const row = rows.find((candidate) => candidate.emitIndex === emitIndex);
+    if (row === undefined) {
+      throw new PerCallProxyDeployError(`the ${entryLabelFor(functionName)} publishes no emit ${emitIndex}`);
+    }
+    return row;
+  });
+}
+
+/**
+ * The events, sends and hashes the implementation's own entry repeats in a loop, counted against the hop's facts:
+ * its arguments, the proxy's records and the frame's addresses. The hop lists no send for the implementation's
+ * frame, so an entry whose loop sends is refused by name.
+ */
+function implementationLoopTurns(inputs: HopCallInputs): EntryLoopTurns {
+  let turns: EntryLoopTurns;
+  try {
+    turns = entryLoopTurns(inputs);
+  } catch (error) {
+    if (error instanceof PerCallLoopTurnsError) {
+      throw new PerCallProxyDeployError(`the implementation's ${error.message}`);
+    }
+    throw error;
+  }
+  if ((turns.sends ?? 0) > 0) {
+    throw new PerCallProxyDeployError(
+      `the implementation's ${entryLabelFor(inputs.functionName)} sends value from a loop, and the hop lists no send `
+      + 'for the implementation\'s frame',
+    );
+  }
+  return turns;
 }
 
 /**
@@ -4648,6 +4707,12 @@ export async function callPerCallProxyEntry(
     }
     return writes;
   };
+  // The events and hashes the entry's loops repeat, counted against the same facts its calls are resolved from.
+  const loopTurns = implementationLoopTurns({
+    artifact: implementationArtifact, functionName: options.functionName, args,
+    stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
+    selfAddress: proxyMaster.address, senderAddress: options.callerLockingBytecode,
+  });
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
   // values, the proxy's own address for `address(this)`, and the caller's lock for `msg.sender`.
@@ -4662,7 +4727,7 @@ export async function callPerCallProxyEntry(
     ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees }),
     ...(seed === undefined ? {} : { seed }),
     eventCommitments: hopEventSentinels(
-      implementationArtifact, options.functionName, proxyCategory, maximumCommitmentBytes,
+      implementationArtifact, options.functionName, proxyCategory, maximumCommitmentBytes, loopTurns.emits,
     ),
     ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.functionName),
@@ -4687,7 +4752,9 @@ export async function callPerCallProxyEntry(
       ...(externalPlan.sideCars.size === 0 ? {} : { sideCars: externalPlan.sideCars }),
       ...(externalPlan.heldContinuations === true ? { heldContinuations: true } : {}),
       maximumCommitmentBytes,
-      eventOutputs: hopEventOutputs(implementationArtifact, options.functionName, proxyCategory, eventCommitments),
+      eventOutputs: hopEventOutputs(
+        implementationArtifact, options.functionName, proxyCategory, eventCommitments, loopTurns.emits,
+      ),
       recordLockingBytecode: stateRecordLockingBytecode(options.proxyCategoryId),
       recordCategoryHex: options.proxyCategoryId,
       callerSatoshis: options.callerUtxo.satoshis,
@@ -4702,7 +4769,7 @@ export async function callPerCallProxyEntry(
   });
   // The compute side-cars the implementation's own entry reads, built once over the live pool for the whole hop.
   const implementationSideCars = await implementationFrameSideCars(
-    provider, implementationArtifact, options.functionName, args,
+    provider, implementationArtifact, options.functionName, args, loopTurns.hashes,
   );
   const { externalPlan, settled } = await planAndSettleHop({
     plan: (externalReturns, reachedResults, calleeWriteViews, calleeWriteValues, heldContinuations, stopBefore) =>

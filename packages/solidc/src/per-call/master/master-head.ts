@@ -54,7 +54,9 @@ import {
   type MasterCallSite,
   type MasterTailShape,
 } from './frame-tail.js';
-import { callValuesScript, containerGrowthScript, containerLockScript } from './value.js';
+import {
+  callValuesScript, containerGrowthScript, containerLockScript, sendRunValuesScript,
+} from './value.js';
 import { mastersRecreatedInPlaceScript } from './lifecycle.js';
 
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]); // u16 sentinel used by the frozen witness-block codec
@@ -90,6 +92,21 @@ export function sendOutputSlotName(sendIndex: number): string {
  */
 export function sendCountSlotName(): string {
   return '__internal__frameSendCount';
+}
+
+/**
+ * The tracked slot holding the first output of the send run, for a master whose sends a loop repeats.
+ *
+ * The head checks the listed sends as one run of consecutive outputs and parks its first output above the count, so
+ * a body pins its k-th send at this output plus `k`; the no-index sentinel stands in when the block lists none.
+ */
+export function sendBaseSlotName(): string {
+  return '__internal__frameSendBase';
+}
+
+/** The tracked slot holding the first output of the event run, as `sendBaseSlotName` holds the send run's. */
+export function eventBaseSlotName(): string {
+  return '__internal__frameEventBase';
 }
 
 /**
@@ -534,9 +551,17 @@ class HeadEmitter {
    *
    * The region is the declared count on top of exactly `sendCount` positions below it. The count comes back first
    * and is left deepest in the region, so the positions come back in reverse and the first position's index ends
-   * up topmost, above the frame values the checks left; that is the order the body's transfers number them.
+   * up topmost, above the frame values the checks left; that is the order the body's transfers number them. A
+   * run is the declared count with the run's first output below it, which comes back above the count.
    */
   private leaveSendSlots(): void {
+    if (this.tailShape.sendRun === true) {
+      this.emitOp(Opcodes.OP_FROMALTSTACK);
+      this.push(sendCountSlotName());
+      this.emitOp(Opcodes.OP_FROMALTSTACK);
+      this.push(sendBaseSlotName());
+      return;
+    }
     const count = this.tailShape.sendCount;
     if (count === 0) return;
     this.emitOp(Opcodes.OP_FROMALTSTACK);
@@ -554,9 +579,16 @@ class HeadEmitter {
    * The region is the declared count on top of exactly `maxEventCount` positions below it. The count is popped
    * first and left deepest in the region, so the positions come back in reverse and the first event's index ends
    * up topmost, above the frame values the checks left; that is the order the body's tracked slots are registered
-   * in.
+   * in. A run comes back as the send run does: the count, then the run's first output above it.
    */
   private leaveEventSlots(): void {
+    if (this.tailShape.eventRun === true) {
+      this.emitOp(Opcodes.OP_FROMALTSTACK);
+      this.push(eventCountSlotName());
+      this.emitOp(Opcodes.OP_FROMALTSTACK);
+      this.push(eventBaseSlotName());
+      return;
+    }
     const count = this.tailShape.maxEventCount;
     if (count === 0) return;
     this.emitOp(Opcodes.OP_FROMALTSTACK);
@@ -959,7 +991,20 @@ class HeadEmitter {
       ...containerLockScript(),
     ]));
     this.replaceTop('lock');
-    if (sends > 0) {
+    const run = this.tailShape.sendRun === true;
+    if (run) {
+      // The walk already required the run's outputs consecutive, so only the container before it is left to check.
+      this.emitBranch(
+        () => this.sendListedAt(0),
+        () => {
+          this.pick(sendBaseSlotName());
+          this.emitOp(Opcodes.OP_1SUB, Opcodes.OP_OUTPUTBYTECODE);
+          this.pick('lock');
+          this.equalVerify();
+        },
+        () => {},
+      );
+    } else if (sends > 0) {
       this.emitBranch(
         () => this.sendListedAt(0),
         () => {
@@ -988,11 +1033,20 @@ class HeadEmitter {
       () => {
         this.emitBytes(new Uint8Array(containerGrowthScript()));
         this.replaceTop('net');
-        if (sends > 0) {
+        if (sends > 0 || run) {
           this.emitBytes(new Uint8Array(callValuesScript()));
           this.emitOp(Opcodes.OP_ADD);
         }
-        for (let position = 0; position < sends; position += 1) {
+        if (run) {
+          this.pick(sendCountSlotName());
+          this.pick(sendBaseSlotName());
+          this.emitBytes(new Uint8Array(sendRunValuesScript()));
+          this.pop(2);
+          this.push('paid');
+          this.emitOp(Opcodes.OP_ADD);
+          this.pop(1);
+        }
+        for (let position = 0; position < (run ? 0 : sends); position += 1) {
           this.emitBranch(
             () => this.sendListedAt(position),
             () => {

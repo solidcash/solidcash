@@ -23,7 +23,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * node the key names through the shipped entry-commitment and pushdata decoders and folds the source's fields in
  * declaration order. A field the node does not hold, or a node whose value lives in continuation chunks the hop is
  * not handed, is refused by name rather than guessed. A field read of another key's node is declared kept beside the
- * write, and refused by name when that node is the one the write spends.
+ * write, and refused by name when its key is the one the write writes.
  *
  * The expectation is read back out of the node the call wrote with the same shipped decoder.
  */
@@ -307,12 +307,12 @@ describe('a proxied call whose mapping value is built from the node it writes', 
     expect([...read?.who as Uint8Array]).toStrictEqual([...HELD_ABOVE_DEPLOYER]);
   });
 
-  it('refuses a field read of the node its own write spends, rather than spending that node twice', async () => {
-    // The read key is the caller's, so the node the frame would declare kept is the one the batch rewrites.
+  it('refuses a field read under the key its own write writes, which the frame reads before the write', async () => {
+    // The read key is the caller's, which the batch rewrites: the frame would read it as its segment began.
     const { call } = await bumpDetached(DEPLOYER);
     await expect(call).rejects.toThrow(
-      'the implementation\'s "bump" entry reads mapping "members" at a node its batch also spends, which one '
-      + 'transaction cannot spend twice',
+      'the implementation\'s "bump" entry reads mapping "members" under a key its batch also writes, which its '
+      + 'frame reads as the segment began, before the write, whichever comes first in the source',
     );
   });
 });

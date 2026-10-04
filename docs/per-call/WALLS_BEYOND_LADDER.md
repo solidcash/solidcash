@@ -353,6 +353,23 @@ category (or `contract@category`); until then, port the plain path's named refus
 
 ### 2.10 A read of the caller's node beside an insert through it (rank 10)
 
+**Served** on the hop's root (agent RB1): a read whose node the entry's own batch spends, a predecessor its insert
+relinks or a target it rewrites, is declared at the batch's input, which `buildHopPlan` places once. The frame
+declares the node at the read's position ahead of the batch's groups, kept at the view the batch's own declaration
+starts the segment from (the spent view up to the write's segment, the written one after it), and the batch's
+transition follows; the frame proves the read's key and the insert's bracket against the node's first declaration in
+the segment, and the validator chains the two. A forged view is refused by the frame or the validator, as before.
+Served in `call/read-node-spent-by-insert.test.ts` (an allowlist insert through the caller's node, then another
+through the node it relinked, and beside a call on either side of the insert; role grants whose member's predecessor
+is the admin's node, and a non-admin's grant refused by the body's own check there); `call/proxied-read-beside-batch`
+settles its read of the written mapping at the node the batch spends. Still
+refused by name: a read under the very key the batch writes (`require(members[msg.sender]); members[a] = true` with
+`a` the caller), since the frame reads that key as its segment began and the artifact does not publish whether the
+source reads it before or after the write. Not served: the callee form (`external-calls.ts`, pinned in
+`ahead/hop-callee-read-beside-batch`) and the plain form (`call/entry-records.ts`); and an absent key the body
+reads past a call after an insert into the same gap below it, which the created node brackets by then: the read is
+declared at the relinked predecessor, which no longer brackets the key, so the frame refuses it.
+
 Replica: `read-node-spent-by-insert.test.ts` (2 cases). With one member, an insert whose key's slot falls below the
 caller's settles; one above it meets:
 

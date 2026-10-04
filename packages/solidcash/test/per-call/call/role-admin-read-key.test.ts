@@ -32,7 +32,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * and is read back through the views; a caller without the admin role is refused by the body's own check.
  *
  * The roles and accounts are chosen so that no insert's predecessor is a node its own frame reads: a read of a
- * node the batch also spends is a separate wall (`ahead/read-node-spent-by-insert`). A read beside a batch whose key
+ * node the batch also spends is served apart (`call/read-node-spent-by-insert`). A read beside a batch whose key
  * the hop cannot resolve at all is refused by that read's own reason.
  */
 

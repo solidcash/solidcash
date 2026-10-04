@@ -3308,9 +3308,16 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // The nodes the entry only reads sit after the data records, ahead of any write, as a callee frame's do. A node two
   // of its keys share is one input, placed once.
   const readNodes = options.readNodes ?? [];
+  // A node the entry's own batch also spends, a predecessor its insert relinks or a target it rewrites, is the
+  // batch's input: the read is declared there, ahead of the batch's groups, rather than placed a second time.
+  const batchInputs = new Map([...options.entryWrites?.spentUtxos ?? []]
+    .map(([id, utxo]) => [`${utxo.txid}:${utxo.vout}`, id] as const));
+  const batchInputOf = (node: HopCalleeReadNode): string | undefined =>
+    (node.utxo === undefined ? undefined : batchInputs.get(`${node.utxo.txid}:${node.utxo.vout}`));
   // A node an earlier reach created carries no input: the frame that created it places it as an output, so the
   // read that resolves to it declares it there rather than as a state input of its own.
-  const readNodeIds = [...new Set(readNodes.filter((node) => node.createdSlot === undefined).map((node) => node.id))];
+  const readNodeIds = [...new Set(readNodes.filter((node) => node.createdSlot === undefined
+    && batchInputOf(node) === undefined).map((node) => node.id))];
   const entryWriteIds = options.entryWrites?.participantIds ?? [];
   // A deployment owns one block, and every master the hop spends of it sits in that block in placement order; a
   // contract reached at several sites therefore contributes several masters to its one block, and its records are
@@ -3503,14 +3510,20 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     }),
   );
   // The nodes the entry only reads follow its data records in every segment, kept, ahead of any write: one record
-  // per key, at the position the frame reads that key from, so a node two keys share is declared at both.
-  for (const segment of implementationSegments) {
+  // per key, at the position the frame reads that key from, so a node two keys share is declared at both. A node the
+  // batch also spends is declared at the batch's input, and restated once the batch's own records are placed.
+  const batchSpentReads: {
+    readonly segment: DraftRecordEntry[]; readonly segmentIndex: number; readonly ordinal: number;
+  }[] = [];
+  implementationSegments.forEach((segment, segmentIndex) => {
     for (const node of readNodes) {
       if (node.createdSlot !== undefined) continue;
-      const index = participant(layout, node.id).index;
+      const batchInput = batchInputOf(node);
+      const index = participant(layout, batchInput ?? node.id).index;
+      if (batchInput !== undefined) batchSpentReads.push({ segment, segmentIndex, ordinal: segment.length });
       segment.push({ in: index, out: index, viewIn: node.commitment, viewOut: node.commitment });
     }
-  }
+  });
   // Every record a write transitions, laid by its own frame below. The shared-node walk reads it to tell the write
   // that establishes a created node's view from the frames that only hold it, so both the implementation's own
   // writes and the callees' have to be in it before either is chained.
@@ -3564,6 +3577,17 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     );
     for (const { entry } of placedWrites) writeTransitions.add(entry);
     placeLaidWrites(implementationSegments, placedWrites);
+    // A read of a node the batch spends keeps the view the batch's own declaration of the node starts each segment
+    // from: the spent view up to the write's segment, where the read is declared ahead of the transition, and the
+    // written view after it. The frame proves the key against the node's first declaration in its segment, and the
+    // validator chains the read into the batch's transition, so each proof holds against the node the chain carries.
+    for (const { segment, segmentIndex, ordinal } of batchSpentReads) {
+      const read = segment[ordinal]!;
+      const write = placedWrites.find((placed) => placed.entry.in === read.in);
+      if (write === undefined) continue;
+      const view = segmentIndex <= write.span.least ? write.entry.viewIn : write.entry.viewOut;
+      segment[ordinal] = { ...read, viewIn: view, viewOut: view };
+    }
   }
   const implementationValues = calleeValueWitnesses(readNodes, laidWrites);
   const proxyMasterDraft: DraftMaster = {
@@ -4073,8 +4097,10 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
           });
         return [masterEntry, ...recordEntries, ...readNodeEntries];
       })),
-      // The nodes the entry itself only reads, spent the same way at the proxy's category.
-      ...Object.fromEntries(readNodes.filter((node) => node.createdSlot === undefined).map((node) => {
+      // The nodes the entry itself only reads, spent the same way at the proxy's category; one its batch also spends
+      // is the batch's input.
+      ...Object.fromEntries(readNodes.filter((node) => node.createdSlot === undefined
+        && batchInputOf(node) === undefined).map((node) => {
         const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(options.recordCategoryHex, node.signature);
         return [node.id, {
           source: mutableSource(lockingBytecode, node.utxo!.satoshis, options.proxyCategory, node.commitment),
@@ -4799,8 +4825,10 @@ export async function callPerCallProxyEntry(
   // run it grows is re-planned from the commitment the plan states: the first attempt lays it at the live width,
   // the record's own close hands back the length the body wrote, and the run is laid at that length's chunks. A
   // chunkable mapping write whose value the artifact does not publish is re-planned the same way, from the value
-  // the body's own pin close exposed. A read whose node the batch also spends is refused by name, since one
-  // transaction cannot spend that node twice.
+  // the body's own pin close exposed. A read whose node the batch also spends is declared at the batch's own input
+  // (`buildHopPlan`). A read under a key the batch writes is refused by name: the frame reads it as its segment
+  // began, which is what the source sees only when it reads the key before writing it, and the artifact does not
+  // say which it does.
   const entryWritesFor = (
     commitments: readonly Uint8Array[], learnedValue?: Uint8Array,
   ): HopEntryWrites | undefined => {
@@ -4808,13 +4836,14 @@ export async function callPerCallProxyEntry(
       ...writesRequest, writtenCommitments: commitments,
       ...(learnedValue === undefined ? {} : { learnedValue }),
     });
-    const spent = new Set([...writes?.spentUtxos.values() ?? []].map((utxo) => `${utxo.txid}:${utxo.vout}`));
-    const shared = readNodes.find((node) => node.utxo !== undefined
-      && spent.has(`${node.utxo.txid}:${node.utxo.vout}`));
-    if (shared !== undefined) {
+    const written = new Set((writes?.reachWrites ?? []).flatMap((write) =>
+      write.targets.map((target) => `${write.collection}:${bytesToHex(target.slot)}`)));
+    const aliased = readNodes.find((node) => written.has(`${node.collection}:${bytesToHex(node.keySlot)}`));
+    if (aliased !== undefined) {
       throw new PerCallProxyDeployError(
-        `the implementation's ${entryLabelFor(options.functionName)} reads mapping "${shared.collection}" at a node `
-        + 'its batch also spends, which one transaction cannot spend twice',
+        `the implementation's ${entryLabelFor(options.functionName)} reads mapping "${aliased.collection}" under a `
+        + 'key its batch also writes, which its frame reads as the segment began, before the write, whichever '
+        + 'comes first in the source',
       );
     }
     return writes;

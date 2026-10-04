@@ -30,8 +30,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * long for the node's tail is witnessed from the chunks the deployment holds. The values the writes leave are read
  * back from the chain's nodes.
  *
- * A read of the written mapping settles at a node the batch does not spend, and is refused by name at one it does,
- * since one transaction cannot spend that node twice. A read the hop is made to declare against the wrong node, by a
+ * A read of the written mapping settles at a node the batch does not spend and at one it does, which is the batch's
+ * own input, and is refused by name under the very key the batch writes, which the frame reads as its segment began
+ * whichever comes first in the source. A read the hop is made to declare against the wrong node, by a
  * provider whose listing leaves a node of the read mapping out or misreports one, is refused: by the frame when the
  * node does not bracket the key, and by the validator when the node's declared view is not the one the transaction
  * spends.
@@ -336,7 +337,7 @@ describe('a proxied entry that reads one mapping beside the batch it writes', ()
     expect(error).toBeInstanceOf(PerCallProxyDeployError);
   }, 600_000);
 
-  it('reads the written mapping at a node its batch does not spend, and is refused at one it does', async () => {
+  it('reads the written mapping at a node its batch spends or not, and is refused under the key it writes', async () => {
     const world = await deployed();
 
     // bonus[BELOW] is inserted through the head, so the caller's node the read declares is spent by nothing else.
@@ -344,14 +345,18 @@ describe('a proxied entry that reads one mapping beside the batch it writes', ()
     expect(await held(world, world.ledger, 'bonus'))
       .toStrictEqual(new Map([...INITIAL_BONUS, [slotOf(BELOW), number(BONUS)]]));
 
-    // bonus[USER] is the node the batch rewrites, and bonus[ABOVE] is inserted through the caller's node.
-    const sameNode = 'the implementation\'s "shift" entry reads mapping "bonus" at a node its batch also spends, '
-      + 'which one transaction cannot spend twice';
+    // bonus[ABOVE] is inserted through the caller's node, which the read is declared at as the batch's own input.
     const fresh = await deployed();
-    for (const to of [USER, ABOVE]) {
-      expect(await expectRefused(fresh, fresh.ledger, 'shift', [USER, to], sameNode))
-        .toBeInstanceOf(PerCallProxyDeployError);
-    }
+    await settle(fresh, fresh.ledger, 'shift', [USER, ABOVE]);
+    expect(await held(fresh, fresh.ledger, 'bonus'))
+      .toStrictEqual(new Map([...INITIAL_BONUS, [slotOf(ABOVE), number(BONUS)]]));
+
+    // bonus[USER] is the key the batch rewrites, which the frame would read as its segment began.
+    const sameKey = 'the implementation\'s "shift" entry reads mapping "bonus" under a key its batch also writes, '
+      + 'which its frame reads as the segment began, before the write, whichever comes first in the source';
+    const again = await deployed();
+    expect(await expectRefused(again, again.ledger, 'shift', [USER, USER], sameKey))
+      .toBeInstanceOf(PerCallProxyDeployError);
   }, 600_000);
 
   it('is refused by the frame when the hop declares a node that does not bracket the key', async () => {

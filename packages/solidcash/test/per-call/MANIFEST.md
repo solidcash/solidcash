@@ -369,12 +369,13 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   `stored-value-keyed-write` (a mapping key read from another mapping), `proxied-native-value` (a send to a contract
   from a proxied root's body; value in and sends out through the proxy are served in `call/proxied-native-value`),
   `role-admin-read-key` (role helpers that return and emit, and a role write the body skips; the keys are served in
-  `call/role-admin-read-key`), `root-reentry-receiver-hook`, `two-deployments-one-artifact` and
-  `read-node-spent-by-insert`, with `composition-world.ts` as their shared harness; the reentrancy guard on a root
-  that calls out (`guarded-vault-root`) is served and moved to `call/root-guard-across-call.test.ts`, a mapping key
-  read from the contract's own scalar state (`state-keyed-mapping-write`) to
-  `call/state-keyed-mapping-write.test.ts`, and an event, hash or send per loop turn (`loop-counted-tail`) to
-  `call/loop-turn-effects.test.ts` and `call/proxied-native-value.test.ts`. The directory runs only under
+  `call/role-admin-read-key`), `root-reentry-receiver-hook` and `two-deployments-one-artifact`, with
+  `composition-world.ts` as their shared harness; the reentrancy guard on a root that calls out
+  (`guarded-vault-root`) is served and moved to `call/root-guard-across-call.test.ts`, a mapping key read from the
+  contract's own scalar state (`state-keyed-mapping-write`) to `call/state-keyed-mapping-write.test.ts`, an event,
+  hash or send per loop turn (`loop-counted-tail`) to `call/loop-turn-effects.test.ts` and
+  `call/proxied-native-value.test.ts`, and a read of the node an insert splices through
+  (`read-node-spent-by-insert`) to `call/read-node-spent-by-insert.test.ts`. The directory runs only under
   `PER_CALL_AHEAD=1`.
 
 ## Which refusals cover which attack

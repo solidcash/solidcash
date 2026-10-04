@@ -137,6 +137,8 @@ export interface HopCalleeReadNode {
   readonly signature: string;
   /** The entry-access slot the node is read at, which is its value-witness slot. */
   readonly slotIndex: number;
+  /** The slot the read's key hashes to: the node's own when the list holds the key, one it brackets otherwise. */
+  readonly keySlot: Uint8Array;
   /**
    * The whole value the node holds, when it crosses the inline limit and the body reads it by witness.
    *
@@ -1872,6 +1874,7 @@ function calleeReadNodes(options: {
       collection: node.collection,
       signature: node.signature,
       slotIndex: slot.slotIndex!,
+      keySlot: node.slot,
       ...(value === undefined ? {} : { value }),
       commitment,
       ...(resolved === undefined ? { utxo: node.utxo } : { createdSlot: resolved.slot }),

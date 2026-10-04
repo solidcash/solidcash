@@ -488,8 +488,11 @@ interface LaidEntryMapping {
 
 /** The mapping records one frame reads and writes, with the ids its plan places. */
 interface EntryMapping {
-  /** The first collection the frame writes, or the first one it reads when it writes none. */
-  readonly collection: string;
+  /**
+   * How a refusal names what the frame writes: the first collection it writes, or the first one it reads when it
+   * writes none, or the dynamic value it grows when it touches no collection.
+   */
+  readonly label: string;
   /** The participant ids the frame's block holds for the records it spends, in declaration order. */
   readonly participantIds: readonly string[];
   /** The live UTXO of each spent record, keyed by the participant id the frame places it under. */
@@ -534,9 +537,9 @@ function asCallRefusal(error: unknown, functionName: string): unknown {
 }
 
 /**
- * Plans the mapping records one frame of a call reads and writes, or `undefined` when it touches no sorted
- * collection: the node of each key it only reads (`callEntryReads`), then its writes as the hop plans a frame's own
- * (`hopEntryWrites`).
+ * Plans the mapping records one frame of a call reads and writes, and the run of chunk records a dynamic value it
+ * grows takes, or `undefined` when it touches neither: the node of each key it only reads (`callEntryReads`), then
+ * its writes as the hop plans a frame's own (`hopEntryWrites`).
  *
  * The hop's planner takes the frame as it takes a delegate frame, on the frame's own records, nodes, chunks and
  * category rather than a proxy's: one sorted batch per collection, keys from the arguments, the sender, the state and
@@ -556,13 +559,16 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
   });
   const fn = artifact.abi.find((candidate) => candidate.name === functionName);
   const batches = fn?.sortedBatchInfo ?? [];
-  const writesMapping = batches.length > 0
+  // A dynamic value's run of chunk records is the frame's own write as a batch is, so an entry that grows one is
+  // planned whether or not it writes a mapping beside it.
+  const grows = fn?.dynamicWrites ?? [];
+  const writesOwn = batches.length > 0 || grows.length > 0
     || (fn?.entryAccesses ?? []).some((access) => access.operations.some((operation) => operation !== 'read'));
   const category = new Uint8Array(hexToBin(categoryId));
   const several = new Set(batches.map((batch) => batch.collection)).size > 1;
   let writes: HopEntryWrites | undefined;
   try {
-    writes = !writesMapping ? undefined : hopEntryWrites({
+    writes = !writesOwn ? undefined : hopEntryWrites({
       artifact, functionName, args, callerLockingBytecode: request.senderLockingBytecode,
       liveDeployment: {
         category,
@@ -587,10 +593,11 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
     );
   }
   const collection = writes?.collection ?? reads.nodes[0]?.collection;
-  if (collection === undefined) return undefined;
+  const grown = writes === undefined ? undefined : grows[0];
+  if (collection === undefined && grown === undefined) return undefined;
   requireDistinctNodes(functionName, [...reads.nodes.map((node) => node.utxo), ...(writes?.spentUtxos.values() ?? [])]);
   return {
-    collection,
+    label: collection === undefined ? `dynamic "${grown!}"` : `mapping "${collection}"`,
     // The nodes it only reads come first, so they sit past the frame's data records where its code reads them.
     participantIds: [...reads.nodes.map((node) => node.id), ...(writes?.participantIds ?? [])],
     spentUtxos: new Map([...reads.nodes.map((node) => [node.id, node.utxo] as const), ...(writes?.spentUtxos ?? [])]),
@@ -780,6 +787,14 @@ async function callInShape(
   // The records the frame declares, and the transaction spends, in the order the entry's own code reads them.
   const declared = frameDataRecordIndices(artifact, entry.name).map((nftIndex) => records[nftIndex]!);
   const recordIds = declared.map((record) => record.id);
+  // A record the artifact publishes as written only after every call is kept in each segment before that last one, as
+  // a callee's record is kept before its first write (`calleeFrames`). A read the body makes before its calls, such as
+  // the width of a run it grows, read off the record's declared end, then reads the record as that segment holds it,
+  // not a placeholder only the segment's later close would replace.
+  const keptUntilLast = frameDataRecordIndices(artifact, entry.name).map((nftIndex) => {
+    const writes = (published?.writeSegments ?? []).filter((write) => write.record === nftIndex);
+    return writes.length > 0 && writes.every((write) => write.segment === 'last' && write.turns === undefined);
+  });
 
   // The mapping records the entry reads and writes, planned against the deployment's own classified inventory as the
   // proxy hop plans its frames' own (`entryMapping`): the frame declares the node a held key sits at, or the node a
@@ -947,7 +962,7 @@ async function callInShape(
   // segments placed, as one beside any call does.
   if (payees.length > 0 && mappingRecords !== undefined) {
     throw new PerCallCallError(
-      `entry "${functionName}" writes mapping "${mappingRecords.collection}" and makes `
+      `entry "${functionName}" writes ${mappingRecords.label} and makes `
       + `${(calleePlan?.calls.length ?? 0) + payees.length} external call(s), whose segments this call path does not `
       + 'place its writes in yet',
     );
@@ -1354,8 +1369,11 @@ async function callInShape(
         : segmentCount > 1 && mappingRecords?.loopRun === undefined
           ? laid.place(segmentCount - 1, callBases, truncated) : undefined;
     const segment = (_unused: unknown, position: number): DraftRecordEntry[] => [
-      ...declared.map((record): DraftRecordEntry => {
+      ...declared.map((record, at): DraftRecordEntry => {
         const index = recordIndex(record.id);
+        if (keptUntilLast[at] === true && position < segmentCount - 1) {
+          return { in: index, out: index, viewIn: record.commitment, viewOut: record.commitment };
+        }
         return { in: index, out: index, viewIn: position === 0 ? record.commitment : 'carried' };
       }),
       ...(mappingSegments?.[position] ?? laid?.entries ?? []),
@@ -1781,7 +1799,10 @@ async function callInShape(
     // A value the body computes reads a declaration and closes against it, and the failing close leaves the
     // declaration on the stack beside the value the body computed. The frame's `retval` is one such declaration —
     // whichever operand carries the candidate this call wrote — and a mapping node's end view is another, named by
-    // the candidate the close matched. Learning the value and rebuilding is what states it.
+    // the candidate the close matched. Learning the value and rebuilding is what states it. The root's program is read
+    // here, never resumed at a site, so the draft first learns the views it left unstated, as the hop does before it
+    // judges its own frame: otherwise the run stops on an unstated view's placeholder, a close this call cannot name.
+    candidate.learnUnstatedViews();
     const reading = readComputedDeclaration({
       vm: machine,
       program: candidate.programFor(MASTER_ID),
@@ -1931,8 +1952,8 @@ async function callInShape(
     }
     if (mappingRecords !== undefined && learnedViews.some((view) => view === undefined)) {
       throw new PerCallCallError(
-        `the call's write to mapping "${mappingRecords.collection}" did not hand back every node it rewrites, so the `
-        + 'frame cannot declare their commitments',
+        `the call's write to ${mappingRecords.label} did not hand back every record it rewrites, so the frame cannot `
+        + 'declare their commitments',
       );
     }
     if (learnedEvents.some((view) => view === undefined)) {

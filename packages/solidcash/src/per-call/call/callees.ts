@@ -800,8 +800,32 @@ function owesValue(callee: HopCallee, values: CalleeValues): boolean {
 }
 
 /**
+ * A callee's values with the views it still owes learned as the plan states them, when the machine accepts its frame;
+ * undefined when the frame refuses or owes no view.
+ *
+ * A node's learning candidate is the view its declaration starts from, and the body's close against it hands the
+ * computed view back. A chunking value the source states is planned whole, so the node it takes starts from the view
+ * the body computes: that close passes and hands nothing back. The callee would owe the view for good, and the plan
+ * would stop before reading the frames above it, the root's own `retval` among them. A frame that accepts declares
+ * every view as its body computes it, so what it still owes is what the plan states.
+ */
+function acceptedFrameViews(
+  callee: HopCallee,
+  values: CalleeValues,
+  vm: Parameters<typeof readComputedDeclaration>[0]['vm'],
+  program: Parameters<typeof readComputedDeclaration>[0]['program'],
+): CalleeValues | undefined {
+  const candidates = callee.entryWrites?.learningCandidates ?? [];
+  const views = values.views.get(callee.master) ?? [];
+  if (!candidates.some((_candidate, at) => views[at] === undefined)) return undefined;
+  if (vm.stateSuccess(vm.evaluate(program)) !== true) return undefined;
+  const stated = candidates.map((candidate, at) => views[at] ?? Uint8Array.from(candidate));
+  return { ...values, views: new Map([...values.views, [callee.master, stated]]) };
+}
+
+/**
  * The callee values a draft's own closes hand back with the first one learned, deepest first, or undefined when no
- * close does.
+ * close does. A frame the machine accepts hands back the views it still owes as the plan states them.
  *
  * A callee compares what its body computed against what its frame declares: the blob its `return` built against its
  * `retval`, a written node's end view against the view its segment declares, an event's payload against its output's
@@ -841,11 +865,16 @@ export function learnCalleeValue(options: {
   for (const index of ready) {
     const callee = callees[index]!;
     const { master } = callee;
+    const program = options.draft.programFor(master);
     const reading = readComputedDeclaration({
-      vm: options.vm, program: options.draft.programFor(master),
-      maximumCommitmentBytes: options.maximumCommitmentBytes,
+      vm: options.vm, program, maximumCommitmentBytes: options.maximumCommitmentBytes,
     });
-    if (!reading.ok) continue;
+    if (!reading.ok) {
+      // A frame the machine accepts has no close left to hand a value back, as the hop settles an accepting callee.
+      const stated = acceptedFrameViews(callee, values, options.vm, program);
+      if (stated !== undefined) return stated;
+      continue;
+    }
     // Whichever operand holds the candidate, the other is what the body built.
     const placeholder = calleeRetvalPlaceholder(callee);
     if (owesReturn(index) && bytesEqual(reading.computed, placeholder)) {

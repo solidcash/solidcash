@@ -1855,8 +1855,11 @@ export async function assembleAtomicComposition(
     // Embedded delegates can move selected read-only chunks into the state owner's trailing band after the
     // nested builder placed outputs. The union ABI may supply write-mode unlockers for these inputs, so use
     // selected handler effects (not the unlocker flag) to identify which unchanged twins must be restored.
-    const selectedHandlers = participant.invocations.map((index) =>
-      findMessageBusHandlerForInvocation(participant.artifact, plan.invocations[index]));
+    const selectedHandlers = participant.invocations.map((index) => {
+      const selected = findMessageBusHandlerForInvocation(participant.artifact, plan.invocations[index]);
+      return selected === undefined ? undefined : participant.artifact.abi.find((handler) =>
+        handler.selector?.toLowerCase() === selected.selector.toLowerCase());
+    });
     const selectedDynamicWrites = new Set(selectedHandlers.flatMap((handler) => handler?.dynamicWrites ?? []));
     const selectedReadOnlyDynamicLocks = [...new Set(selectedHandlers.flatMap((handler) =>
       handler?.dynamicReads ?? []))].flatMap((name) => {

@@ -77,6 +77,8 @@ interface JournalEntry {
   mutates: boolean;
   /** Exact source-argument guard for one conditional mutation; a skipped call must not dirty this cache. */
   activation?: ExternalCallExpression;
+  /** Exact guard for every source access; an inactive entry needs no physical preload. */
+  loadActivation?: ExternalCallExpression;
   /** Scope in which the source helper legally accessed an inherited private collection. */
   sourceScope?: string;
 }
@@ -208,7 +210,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
 
   constructor(private readonly enablePooledDynamicArrays = false) { super(); }
 
-  private journalMutationActivations(fn: FunctionDefinitionNode): ReadonlyMap<Node, ExternalCallExpression> {
+  private journalAccessActivations(fn: FunctionDefinitionNode): ReadonlyMap<Node, ExternalCallExpression> {
     const activations = new Map<Node, ExternalCallExpression>();
     if (!this.enablePooledDynamicArrays || !fn.body) return activations;
     const argumentsByName = stableKernelArgumentIndices(fn);
@@ -225,7 +227,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         }) : undefined, supported);
         return;
       }
-      if (representable && (node instanceof MappingAssignNode || node instanceof MappingDeleteNode)) {
+      if (representable && (node instanceof MappingAccessNode || node instanceof MappingAssignNode
+        || node instanceof MappingDeleteNode || node instanceof ArrayAccessNode
+        || node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode)) {
         if (activation !== undefined) activations.set(node, activation);
       }
       // These scopes can skip or repeat a write independently of the surrounding replayable argument guard.
@@ -499,13 +503,17 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         && other.name === access.name
         && other.keyParameters.length > access.keyParameters.length
         && access.keyParameters.every((key, index) => key === other.keyParameters[index]))) : [];
-      const mutationActivations = this.journalMutationActivations(fn);
+      const accessActivations = this.journalAccessActivations(fn);
       const mutationGuards = new Map<string, ExternalCallExpression[]>();
       const unguardedMutations = new Set<string>();
+      const accessGuards = new Map<string, ExternalCallExpression[]>();
+      const unguardedAccesses = new Set<string>();
       for (const access of leafAccesses) {
-        if (access.node instanceof MappingAccessNode || access.node instanceof ArrayAccessNode) continue;
         const identity = `${access.name}[${access.keyParameters.join(',')}]`;
-        const guard = mutationActivations.get(access.node);
+        const guard = accessActivations.get(access.node);
+        if (guard === undefined) unguardedAccesses.add(identity);
+        else accessGuards.set(identity, [...(accessGuards.get(identity) ?? []), guard]);
+        if (access.node instanceof MappingAccessNode || access.node instanceof ArrayAccessNode) continue;
         if (guard === undefined) unguardedMutations.add(identity);
         else mutationGuards.set(identity, [...(mutationGuards.get(identity) ?? []), guard]);
       }
@@ -537,6 +545,16 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       // A shared journal is dirty exactly when at least one of its guarded source mutation sites runs.
       // Any unguarded or unsupported site makes that condition unconditional instead.
       for (const [identity, entry] of distinct) {
+        if (!unguardedAccesses.has(identity)) {
+          const seenAccesses = new Set<string>();
+          for (const guard of accessGuards.get(identity) ?? []) {
+            const key = JSON.stringify(guard);
+            if (seenAccesses.has(key)) continue;
+            seenAccesses.add(key);
+            entry.loadActivation = entry.loadActivation === undefined ? guard
+              : { kind: 'binary', operator: '||', left: entry.loadActivation, right: guard };
+          }
+        }
         if (!entry.mutates || unguardedMutations.has(identity)) continue;
         const seen = new Set<string>();
         for (const guard of mutationGuards.get(identity) ?? []) {
@@ -1294,10 +1312,23 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       }
       runtimeSelections.push(...(selection.statements ?? []));
     }
-    const ordinaryLocals = [...new Map(callLocals
-      .filter((binding) => !binding.runtimeValueName)
-      .map((binding) => [binding.local.name, binding.local])).values()];
-    const loads = this.lazyMultiCaches ? ordinaryLocals.map(loadLocal) : [];
+    const ordinaryBindings = new Map<string, ActiveMultiCacheBinding[]>();
+    for (const binding of callLocals) {
+      if (binding.runtimeValueName) continue;
+      const group = ordinaryBindings.get(binding.local.name) ?? [];
+      group.push(binding);
+      ordinaryBindings.set(binding.local.name, group);
+    }
+    const loads = this.lazyMultiCaches ? [...ordinaryBindings.values()].map((bindings): StatementNode => {
+      const load = loadLocal(bindings[0].local);
+      if (bindings.some((binding) => binding.entry.loadActivation === undefined)) return load;
+      const guard = bindings.map((binding) => this.journalActivationAtCall(
+        binding.entry.loadActivation!, originalArgs, call,
+      )).reduce((left, right) => this.at(new BinaryOpNode(
+        left, BinaryOperator.OR, right,
+      ), call));
+      return this.at(new BranchNode(guard, this.at(new BlockNode([load]), call)), call);
+    }) : [];
     // A void pooled handler touching one entry still returns a single journal value, not a one-element tuple.
     let capture: StatementNode;
     if (dynamicLocals.length === 0 && callLocals.length === 1 && resultElements.length === 0) {

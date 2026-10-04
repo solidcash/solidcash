@@ -99,7 +99,7 @@ import {
   canonicalizeUpsertKeyExpression,
 } from './upsertKeySources.js';
 import { MAX_INPUT_BYTESIZE } from '../constants.js';
-import { hasEffectiveCallValue } from '../semantic/branchOps.js';
+import { hasEffectiveCallValue, isDirectOwnerTransferNode } from '../semantic/branchOps.js';
 import { checksTransactionSignature, inlinesSignatureChecks } from '../semantic/transactionSignatureCheck.js';
 import {
   deriveKernelJournalDispositionHandlerScope, isKernelReadCarrierBindingToken,
@@ -1112,6 +1112,34 @@ interface AliasedSortedWrite {
   readonly gate?: string | null;
 }
 
+/**
+ * The run-time segments a pending state field can be in where the code being emitted runs, split by whether its slot
+ * holds the field's value there (`current`: no call has run since the slot was set) or a call has closed the segment
+ * the slot was set in (`closed`).
+ */
+interface PerCallFieldSegments {
+  readonly current: ReadonlySet<number>;
+  readonly closed: ReadonlySet<number>;
+}
+
+/** The segments of every followed field, and the segments the code can run in, at one point of a per-call body. */
+interface PerCallFieldSnapshot {
+  readonly fields: ReadonlyMap<string, PerCallFieldSegments>;
+  readonly reached: ReadonlySet<number>;
+}
+
+/**
+ * A data record a per-call close takes as written in the segment it closes: its data-NFT index and block offset, and
+ * the run-time segments it is written in when only the paths reaching those were (`perCallRecordsWrittenHere`).
+ */
+type PerCallWrittenRecord = readonly [nftIdx: number, offset: number, segments?: readonly number[]];
+
+/**
+ * A record index no per-call declaration can name: a declared index is a two-byte field the frame reads as a script
+ * number, whose magnitude stays below this one.
+ */
+const PER_CALL_UNDECLARABLE_INDEX = 0x8000n;
+
 /** Where a sorted-mapping flow walk is: a branch arm or the code after an early return, and inside a loop. */
 interface SortedFlowScope {
   readonly arm?: 'branch' | 'early';
@@ -1357,6 +1385,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * declaration instead, until the body writes the field again, which makes the value current once more.
    */
   private perCallStaleWrites = new Set<string>();
+  /**
+   * For a body whose calls vary on its paths, the segments each pending state field can be in where the code being
+   * emitted runs; undefined in any other body, and from where the body leaves the shapes the walk follows (a loop, a
+   * switch or an expression arm that calls or writes, a send made where the source sends), past which
+   * `perCallStaleWrites` decides alone.
+   *
+   * That set is one answer for every path, so a call one arm makes, or a write one arm skips, leaves it wrong on the
+   * other: a record written before a guarded call was held kept at the end on the side that skips the call, where
+   * the epilogue rebuilds it. Each path has made its own number of calls, so where a field is current only in segments
+   * no path it is closed on reaches, the run's calls-made count tells the two apart (`perCallFieldState`).
+   */
+  private perCallFieldSegments: Map<string, PerCallFieldSegments> | undefined;
+  /** The segments the code being emitted can run in, while `perCallFieldSegments` is followed. */
+  private perCallReachedSegments: ReadonlySet<number> = new Set([0]);
   /** The sends whose call into a contract the body makes where the source sends, so its end does not make it again. */
   private perCallValueCallsAtSource = new Set<number>();
   /** Set when the master reserves the validator program hash slot, i.e. it can be reached through a call. */
@@ -7738,6 +7780,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !perCallBatchWriteFollowsEveryCall(node);
     this.perCallChainedLoop = undefined;
     this.perCallStaleWrites = new Set();
+    this.perCallFieldSegments = undefined;
+    this.perCallReachedSegments = new Set([0]);
     this.perCallValueCallsAtSource = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
@@ -8472,6 +8516,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.perCallCallsMadeActive) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE);
+      // Such a body's paths reach a point after different calls, so its fields are followed path by path.
+      this.perCallFieldSegments = new Map();
+      this.perCallReachedSegments = new Set([0]);
     }
     // A body that emits, sends or hashes inside a loop binds each where it makes it, at the position its count of
     // them names, so it carries the counts from its start, before its own control flow, as it carries its calls.
@@ -10021,6 +10068,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 2. Evaluate condition and branch (existing logic)
     node.condition = this.visit(node.condition);
     this.popFromStack();
+    // Each arm runs from here, so the fields' segments are restored for the second and joined past the branch.
+    const fieldsAtBranch = this.perCallFieldSnapshot();
 
     // Check if we're inside a return-type function AND a branch actually contains a return statement. Only then
     // does visitReturn modify the stack (NIPs out params), needing the save/restore tracker path below. When no
@@ -10052,6 +10101,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const stackAfterIf = [...this.stack];
       const segmentAfterIf = this.perCallSegmentIndex;
       const ordinalAfterIf = this.perCallOrdinal;
+      const fieldsAfterIf = this.perCallFieldSnapshot();
 
       // Representative post-branch stack. When one branch aborts via revert its stack is
       // irrelevant (execution never reaches the code after the branch on that path), so the
@@ -10066,6 +10116,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.stack = [...stackBeforeBranch];
         this.perCallSegmentIndex = segmentBeforeBranch;
         this.perCallOrdinal = ordinalBeforeBranch;
+        this.perCallFieldRestore(fieldsAtBranch);
         node.elseBlock = this.visit(node.elseBlock);
         const stackAfterElse = [...this.stack];
         this.joinPerCallPosition(node, segmentAfterIf, ordinalAfterIf);
@@ -10074,6 +10125,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           representative = stackAfterElse;
         }
       }
+      this.perCallFieldsAfterBranch(node, fieldsAtBranch, fieldsAfterIf);
 
       const endLocationData = {
         location: node.elseBlock ? node.elseBlock.location : node.ifBlock.location,
@@ -10089,6 +10141,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.ifBlock = this.visit(node.ifBlock);
       const segmentAfterIf = this.perCallSegmentIndex;
       const ordinalAfterIf = this.perCallOrdinal;
+      const fieldsAfterIf = this.perCallFieldSnapshot();
       this.removeScopedVariables(stackDepth, node.ifBlock);
       // A branch must leave the tracked stack at the height it found it, or every later read is compiled
       // against the wrong shape: the else arm below STARTS from this arm's model, and so does the code after
@@ -10109,6 +10162,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         stackDepth = this.stack.length;
         this.perCallSegmentIndex = segmentBeforeBranch;
         this.perCallOrdinal = ordinalBeforeBranch;
+        this.perCallFieldRestore(fieldsAtBranch);
         node.elseBlock = this.visit(node.elseBlock);
         this.joinPerCallPosition(node, segmentAfterIf, ordinalAfterIf);
         this.removeScopedVariables(stackDepth, node.elseBlock);
@@ -10120,6 +10174,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           );
         }
       }
+      this.perCallFieldsAfterBranch(node, fieldsAtBranch, fieldsAfterIf);
 
       const endLocationData = {
         location: node.elseBlock ? node.elseBlock.location : node.ifBlock.location,
@@ -10131,6 +10186,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.transferPreallocDepth -= 1;
     return node;
+  }
+
+  /**
+   * The fields' followed segments past a branch: those its arms that fall through leave, the else arm's being the
+   * branch point's when there is none.
+   */
+  private perCallFieldsAfterBranch(
+    node: BranchNode, atBranch: PerCallFieldSnapshot | undefined, afterIf: PerCallFieldSnapshot | undefined,
+  ): void {
+    const afterElse = node.elseBlock === undefined ? atBranch : this.perCallFieldSnapshot();
+    this.perCallFieldJoin([
+      ...(this.blockEndsInFailure(node.ifBlock) ? [] : [afterIf]),
+      ...(node.elseBlock !== undefined && this.blockEndsInFailure(node.elseBlock) ? [] : [afterElse]),
+    ]);
   }
 
   /**
@@ -11106,6 +11175,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack(stackName);
     this.pendingStateWrites.set(key, stackName);
     this.preAllocatedStateWrites.add(key);
+    this.perCallFieldSet(key);
   }
 
   /**
@@ -11261,6 +11331,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitDoWhile(node: DoWhileNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
+    this.perCallFieldsLostIn(node);
 
     // PRE-ALLOCATE: scan loop body and pre-allocate slots before OP_BEGIN
 
@@ -11431,6 +11502,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitWhile(node: WhileNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
+    this.perCallFieldsLostIn(node);
 
     // PRE-ALLOCATE: same as visitDoWhile - scan loop body and pre-allocate slots before OP_BEGIN
 
@@ -11616,6 +11688,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitCollectionIteration(node: CollectionIterationNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
+    this.perCallFieldsLostIn(node);
     const endLocationData = { location: node.location, positionHint: PositionHint.END };
     const iterIdx = node.collectionIterationIndex;
     const collection = node.collection!;
@@ -12300,6 +12373,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitSwitch(node: SwitchNode): Node {
     const ops = node.switchOps;
     const locationData = { location: node.location, positionHint: PositionHint.START };
+    this.perCallFieldsLostIn(node);
 
     // 1. PRE-ALLOCATE (same pattern as visitBranch)
     if (ops) {
@@ -15153,6 +15227,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const endLoc = { location: node.location, positionHint: PositionHint.END };
     node.left = this.visit(node.left);
     this.popFromStack(); // condition consumed by OP_IF
+    // The right operand runs on some paths only, which the fields' segments do not follow where it calls or writes.
+    this.perCallFieldsLostIn(node.right);
     this.emit(Op.OP_IF, startLoc);
     const snapshot = [...this.stack];
     if (node.operator === BinaryOperator.AND) {
@@ -15654,6 +15730,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Evaluate condition
     node.condition = this.visit(node.condition);
     this.popFromStack();
+    // An arm that calls or writes a field runs on some paths only, which the fields' segments do not follow.
+    this.perCallFieldsLostIn(node.ifTrue);
+    this.perCallFieldsLostIn(node.ifFalse);
 
     // OP_IF
     this.emit(Op.OP_IF, locationData);
@@ -16650,7 +16729,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
 
-    if (this.pendingStateWrites.has(key) && !this.perCallStaleWrites.has(key)) {
+    const fromSlot = (): void => {
       // Read from pre-allocated / previously written stack slot
       const stackName = this.pendingStateWrites.get(key)!;
       const stackIdx = this.getStackIndex(stackName);
@@ -16659,7 +16738,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The picked value is pushdata-encoded - for ArrayType, emitPushdataDecodeLastField is a no-op
       this.emitPushdataDecodeLastField(sv.type, locationData);
       this.pushToStack(stackLabel);
-    } else {
+    };
+    const fromState = (): void => {
       // Read from NFT commitment
       const fieldsInNft = this.stateVariables
         .filter((v) => v.nftIndex === sv.nftIndex)
@@ -16668,7 +16748,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitStateFieldRead(sv, sv.type, fieldsInNft, locationData);
 
       this.pushToStack(stackLabel);
-    }
+    };
+    const state = this.pendingStateWrites.has(key) ? this.perCallFieldState(key) : 'closed';
+    if (state === 'current') fromSlot();
+    else if (state === 'closed') fromState();
+    else this.emitPerCallBySegment(state, fromSlot, fromState, locationData);
   }
 
   /**
@@ -16706,6 +16790,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(stackName);
       this.pendingStateWrites.set(key, stackName);
     }
+    this.perCallFieldSet(key);
   }
 
   /**
@@ -21144,7 +21229,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // read from the stack-tracked value instead of re-reading from the input commitment.
     // This is critical for loops: each iteration must see the previous iteration's
     // written value, not the original input value.
-    if (this.pendingStateWrites.has(key) && !this.perCallStaleWrites.has(key)) {
+    const fromSlot = (): void => {
       const stackName = this.pendingStateWrites.get(key)!;
       const stackIdx = this.getStackIndex(stackName);
       this.emit(encodeInt(BigInt(stackIdx)), locationData);
@@ -21152,17 +21237,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The picked value is pushdata-encoded - decode it
       this.emitPushdataDecodeLastField(sv.type, locationData);
       this.pushToStack('(value)');
-      return node;
-    }
+    };
+    const fromState = (): void => {
+      // Get fields in same NFT, sorted by fieldIndex
+      const fieldsInNft = this.stateVariables
+        .filter((v) => v.nftIndex === sv.nftIndex)
+        .sort((a, b) => a.fieldIndex - b.fieldIndex);
 
-    // Get fields in same NFT, sorted by fieldIndex
-    const fieldsInNft = this.stateVariables
-      .filter((v) => v.nftIndex === sv.nftIndex)
-      .sort((a, b) => a.fieldIndex - b.fieldIndex);
+      this.emitStateFieldRead(sv, sv.type, fieldsInNft, locationData);
 
-    this.emitStateFieldRead(sv, sv.type, fieldsInNft, locationData);
-
-    this.pushToStack('(value)');
+      this.pushToStack('(value)');
+    };
+    const state = this.pendingStateWrites.has(key) ? this.perCallFieldState(key) : 'closed';
+    if (state === 'current') fromSlot();
+    else if (state === 'closed') fromState();
+    else this.emitPerCallBySegment(state, fromSlot, fromState, locationData);
     return node;
   }
 
@@ -21217,6 +21306,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // A fresh write makes the field current again, so a read resolves from the slot rather than the declaration.
     this.perCallStaleWrites.delete(key);
+    this.perCallFieldSet(key);
 
     if (this.pendingStateWrites.has(key)) {
       // The slot is already ON THE STACK (pre-allocated before a branch, OR pushed by an earlier write to this
@@ -21278,6 +21368,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(stackName);
       this.pendingStateWrites.set(key, stackName);
     }
+    this.perCallFieldSet(key);
 
     return node;
   }
@@ -21671,6 +21762,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.perCallSegmentIndex += 1;
       this.perCallOrdinal += 1;
       for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
+      this.perCallFieldsCalled();
       return node;
     }
     // Do NOT visit categoryExpression or parameters here - they were resolved during
@@ -23726,6 +23818,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.perCallSegmentIndex += 1;
       this.perCallOrdinal += 1;
       for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
+      this.perCallFieldsCalled();
       return node;
     }
 
@@ -23779,6 +23872,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.perCallSegmentIndex += 1;
       this.perCallOrdinal += 1;
       for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
+      this.perCallFieldsCalled();
       return node;
     }
 
@@ -27794,7 +27888,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.isDefineSubTraversal || (this.stateVariables.length === 0 && this.collectionCount === 0)) return;
     const node = this.currentFunction;
     const written = this.readsRecordsFromFrame ? this.perCallRecordsWrittenHere(atEnd) : [];
-    if (!atEnd) for (const [nftIdx, offset] of written) this.emitPerCallRecordRebuildCheck(nftIdx, offset, loc);
+    // A record written here only on the paths whose calls reach one of its segments is closed on those paths alone.
+    const onPathsWritten = (segments: readonly number[] | undefined, close: () => void): void => {
+      if (segments === undefined) {
+        close();
+        return;
+      }
+      this.emitPerCallInSegments(segments, loc);
+      this.emit(Op.OP_IF, loc);
+      this.popFromStack();
+      close();
+      this.emit(Op.OP_ENDIF, loc);
+    };
+    if (!atEnd) {
+      for (const [nftIdx, offset, segments] of written) {
+        onPathsWritten(segments, () => this.emitPerCallRecordRebuildCheck(nftIdx, offset, loc));
+      }
+    }
     // A run-time loop's own records are the ones at its collection's lock, so a record past the loop's slot at any
     // other lock, such as a run the body only reads, is held kept like the ones before it. The lock sits beneath.
     const loopLock = this.perCallLoopRecordLock(atEnd);
@@ -27805,13 +27915,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(loop_record_lock)');
       this.emitSortedEntryAddress(loopLock, loc);
     }
-    for (const [, offset] of written) {
-      for (const side of ['in', 'out'] as const) {
-        this.emitRecordBlockBase(side, loc);
-        this.emit(encodeInt(BigInt(offset)), loc);
-        this.emit(Op.OP_ADD, loc);
+    for (const [, offset, segments] of written) {
+      const exempt = (): void => {
+        for (const side of ['in', 'out'] as const) {
+          this.emitRecordBlockBase(side, loc);
+          this.emit(encodeInt(BigInt(offset)), loc);
+          this.emit(Op.OP_ADD, loc);
+          this.pushToStack('(kept_exempt)');
+        }
+      };
+      if (segments === undefined) {
+        exempt();
+        continue;
+      }
+      this.emitPerCallInSegments(segments, loc);
+      this.emit(Op.OP_IF, loc);
+      this.popFromStack();
+      exempt();
+      // On the other paths the record is held kept: its pair names no index a two-byte declared field holds.
+      this.emit(Op.OP_ELSE, loc);
+      this.popFromStack(2);
+      for (let pair = 0; pair < 2; pair += 1) {
+        this.emit(encodeInt(PER_CALL_UNDECLARABLE_INDEX), loc);
         this.pushToStack('(kept_exempt)');
       }
+      this.emit(Op.OP_ENDIF, loc);
     }
     const leadings: number[] = [];
     // The write's segment is the one whose own records, the groups and value chunks it declares, the batch walk
@@ -27914,19 +28042,197 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * A write since the segment's last call is the segment's own; one made before it was closed at that call. A
    * dynamic field's write lands where the epilogue pins its chunk run, the body's last segment, and takes its record
-   * with it.
+   * with it. A record whose fields are current only on some paths is written here on those alone, which the
+   * run-time segments it carries name.
    */
-  private perCallRecordsWrittenHere(atEnd: boolean): [number, number][] {
-    const written: [number, number][] = [];
+  private perCallRecordsWrittenHere(atEnd: boolean): PerCallWrittenRecord[] {
+    const written: PerCallWrittenRecord[] = [];
     for (const [nftIdx, offset] of this.compactOffsetMap) {
       const keys = this.stateVariables.filter((sv) => sv.nftIndex === nftIdx)
         .map((sv) => ({ key: `${sv.nftIndex}:${sv.fieldIndex}`, dynamic: sv.isDynamic === true }))
         .filter(({ key }) => this.pendingStateWrites.has(key));
       const dynamic = keys.some((field) => field.dynamic);
-      const fresh = keys.some(({ key }) => !this.perCallStaleWrites.has(key));
-      if (atEnd ? dynamic || fresh : fresh && !dynamic) written.push([nftIdx, offset]);
+      const states = keys.map(({ key }) => this.perCallFieldState(key));
+      const fresh = states.some((state) => state === 'current');
+      if (atEnd ? dynamic || fresh : fresh && !dynamic) {
+        written.push([nftIdx, offset]);
+        continue;
+      }
+      const segments = this.perCallSegmentsAnyCurrent(states);
+      if (!dynamic && segments.length > 0) written.push([nftIdx, offset, segments]);
     }
     return written;
+  }
+
+  /**
+   * Whether the end's close takes a record of these fields as written in the body's last segment: on every path
+   * (`'all'`), on none (`'none'`), or on the paths whose calls reach the run-time segments listed, as
+   * `perCallRecordsWrittenHere` decides there.
+   */
+  private perCallRecordWrittenAtEnd(fields: readonly StateVariableNode[]): 'all' | 'none' | readonly number[] {
+    const pending = fields.filter((sv) => this.pendingStateWrites.has(`${sv.nftIndex}:${sv.fieldIndex}`));
+    if (pending.some((sv) => sv.isDynamic === true)) return 'all';
+    const states = pending.map((sv) => this.perCallFieldState(`${sv.nftIndex}:${sv.fieldIndex}`));
+    if (states.some((state) => state === 'current')) return 'all';
+    const segments = this.perCallSegmentsAnyCurrent(states);
+    return segments.length > 0 ? segments : 'none';
+  }
+
+  /**
+   * Where the epilogue takes a pending field from the record's declaration rather than its slot: on the paths whose
+   * record the end's close does not hold kept and whose field a call closed, where the slot holds the value from
+   * before that call. Undefined where the walk tells no such path apart; `inSegments` is whether the declaration
+   * serves the segments listed or the others.
+   */
+  private perCallFieldDeclaredAtEnd(
+    key: string, record: 'all' | 'none' | readonly number[],
+  ): { readonly segments: readonly number[]; readonly inSegments: boolean } | undefined {
+    const state = this.perCallFieldState(key);
+    if (state === 'current' || record === 'none') return undefined;
+    if (record === 'all') return state === 'closed' ? undefined : { segments: state, inSegments: false };
+    const segments = state === 'closed' ? record : record.filter((segment) => !state.includes(segment));
+    return segments.length === 0 ? undefined : { segments, inSegments: true };
+  }
+
+  /** The run-time segments in which at least one of the field states is current, for a record none is current in. */
+  private perCallSegmentsAnyCurrent(states: readonly ('current' | 'closed' | readonly number[])[]): number[] {
+    return [...new Set(states.flatMap((state) => (typeof state === 'string' ? [] : state)))]
+      .sort((left, right) => left - right);
+  }
+
+  /**
+   * Whether a pending state field's slot holds its value where the code being emitted runs: on every path
+   * (`'current'`), on none (`'closed'`), or in the run-time segments listed, which no path it is closed on reaches. A
+   * field the walk does not follow, or one current and closed in a shared segment, takes `perCallStaleWrites`.
+   */
+  private perCallFieldState(key: string): 'current' | 'closed' | readonly number[] {
+    const segments = this.perCallFieldSegments?.get(key);
+    if (segments !== undefined) {
+      if (segments.closed.size === 0) return 'current';
+      if (segments.current.size === 0) return 'closed';
+      const current = [...segments.current].sort((left, right) => left - right);
+      if (current.every((segment) => !segments.closed.has(segment))) return current;
+    }
+    return this.perCallStaleWrites.has(key) ? 'closed' : 'current';
+  }
+
+  /** A pending field's slot set where the code being emitted runs: current in every segment the run can be in. */
+  private perCallFieldSet(key: string): void {
+    this.perCallFieldSegments?.set(key, { current: this.perCallReachedSegments, closed: new Set() });
+  }
+
+  /** A call made where the code being emitted runs: the run is one segment on, past every slot it set before. */
+  private perCallFieldsCalled(): void {
+    const fields = this.perCallFieldSegments;
+    if (fields === undefined) return;
+    const past = (segments: Iterable<number>): ReadonlySet<number> => new Set([...segments].map((at) => at + 1));
+    this.perCallReachedSegments = past(this.perCallReachedSegments);
+    for (const [key, { current, closed }] of fields) {
+      fields.set(key, { current: new Set(), closed: past([...current, ...closed]) });
+    }
+  }
+
+  /** The followed segments where the code being emitted runs, which a branch restores for its other arm. */
+  private perCallFieldSnapshot(): PerCallFieldSnapshot | undefined {
+    const fields = this.perCallFieldSegments;
+    return fields === undefined ? undefined : { fields: new Map(fields), reached: this.perCallReachedSegments };
+  }
+
+  private perCallFieldRestore(snapshot: PerCallFieldSnapshot | undefined): void {
+    this.perCallFieldSegments = snapshot === undefined ? undefined : new Map(snapshot.fields);
+    if (snapshot !== undefined) this.perCallReachedSegments = snapshot.reached;
+  }
+
+  /**
+   * The followed segments past a branch, from the paths its arms that fall through leave: a field is current in every
+   * segment it is current in on one of them, and closed likewise. A field one path does not follow is left to the
+   * static set, and an arm the walk stopped following stops it past the branch.
+   */
+  private perCallFieldJoin(paths: readonly (PerCallFieldSnapshot | undefined)[]): void {
+    if (paths.length === 0) return;
+    const followed = paths.filter((path): path is PerCallFieldSnapshot => path !== undefined);
+    if (followed.length < paths.length) {
+      this.perCallFieldSegments = undefined;
+      return;
+    }
+    const joined = new Map<string, PerCallFieldSegments>();
+    for (const key of new Set(followed.flatMap((path) => [...path.fields.keys()]))) {
+      const each = followed.map((path) => path.fields.get(key));
+      if (each.some((segments) => segments === undefined)) continue;
+      joined.set(key, {
+        current: new Set(each.flatMap((segments) => [...segments!.current])),
+        closed: new Set(each.flatMap((segments) => [...segments!.closed])),
+      });
+    }
+    this.perCallFieldSegments = joined;
+    this.perCallReachedSegments = new Set(followed.flatMap((path) => [...path.reached]));
+  }
+
+  /**
+   * Stops following the segments for the rest of the body where `node`, a construct whose code runs a number of
+   * times the walk does not count, calls or writes a field: a loop, a switch, or an expression arm.
+   */
+  private perCallFieldsLostIn(node: Node): void {
+    if (this.perCallFieldSegments === undefined) return;
+    let touches = false;
+    walkInvocationAst(node, (child) => {
+      if (child instanceof ExternalFunctionCallNode || child instanceof LowLevelCallNode
+        || child instanceof LowLevelCallStatementNode || isDirectOwnerTransferNode(child)
+        || child instanceof StateAssignNode || child instanceof DeleteStateNode
+        || child instanceof StateArrayPushNode || child instanceof StateArrayPopNode
+        || child instanceof StateArrayAssignNode || child instanceof StateArrayDeleteNode) touches = true;
+    });
+    if (touches) this.perCallFieldSegments = undefined;
+  }
+
+  /** Leaves whether the run's calls-made count is one of `segments`, tracked. Entry `[...]`, exit `[..., bool]`. */
+  private emitPerCallInSegments(segments: readonly number[], loc: SingleLocationData): void {
+    const callsMade = GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE;
+    const first = segments[0]!;
+    const last = segments[segments.length - 1]!;
+    this.emitPickTrackedFromBottom(callsMade, loc);
+    if (last - first + 1 === segments.length) {
+      if (segments.length === 1) {
+        this.emit(encodeInt(BigInt(first)), loc);
+        this.emit(Op.OP_NUMEQUAL, loc);
+      } else {
+        this.emit(encodeInt(BigInt(first)), loc);
+        this.emit(encodeInt(BigInt(last + 1)), loc);
+        this.emit(Op.OP_WITHIN, loc);
+      }
+      this.pushToStack('(in_segments)');
+      return;
+    }
+    // Segments with a gap: one equality each, any of them.
+    this.emit(encodeInt(BigInt(first)), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.pushToStack('(in_segments)');
+    for (const segment of segments.slice(1)) {
+      this.emitPickTrackedFromBottom(callsMade, loc);
+      this.emit(encodeInt(BigInt(segment)), loc);
+      this.emit(Op.OP_NUMEQUAL, loc);
+      this.emit(Op.OP_BOOLOR, loc);
+    }
+  }
+
+  /**
+   * Leaves the value `inSegments` leaves where the run's calls-made count is one of `segments`, and the one `elsewhere`
+   * leaves anywhere else. Each pushes one tracked item.
+   */
+  private emitPerCallBySegment(
+    segments: readonly number[], inSegments: () => void, elsewhere: () => void, loc: SingleLocationData,
+  ): void {
+    this.emitPerCallInSegments(segments, loc);
+    this.emit(Op.OP_IF, loc);
+    this.popFromStack();
+    const before = [...this.stack];
+    inSegments();
+    const after = [...this.stack];
+    this.emit(Op.OP_ELSE, loc);
+    this.stack = before;
+    elsewhere();
+    this.emit(Op.OP_ENDIF, loc);
+    this.stack = after;
   }
 
   /** True when the body writes a dynamic field, whose chunk run the epilogue pins in the body's last segment. */
@@ -27955,15 +28261,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const sv of fields) {
       const key = `${sv.nftIndex}:${sv.fieldIndex}`;
       const stackName = this.pendingStateWrites.get(key);
-      if (stackName !== undefined && !this.perCallStaleWrites.has(key)) {
-        this.emitPickSettlementValue(stackName, loc, this.currentFunction);
+      const fromSlot = (): void => {
+        this.emitPickSettlementValue(stackName!, loc, this.currentFunction);
         this.pushToStack('(value)');
-      } else {
+      };
+      const fromDeclaration = (): void => {
         const fieldType = this.physicalFieldType(sv);
         this.emitStateFieldRead(sv, fieldType, fields, loc);
         this.pushToStack('(value)');
         this.emitPushdataEncode(fieldType, loc);
-      }
+      };
+      const state = stackName === undefined ? 'closed' : this.perCallFieldState(key);
+      if (state === 'current') fromSlot();
+      else if (state === 'closed') fromDeclaration();
+      else this.emitPerCallBySegment(state, fromSlot, fromDeclaration, loc);
       if (!firstField) {
         this.emit(Op.OP_CAT, loc);
         this.popFromStack(2);
@@ -29098,11 +29409,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.pushToStack('(value)');
           firstField = false;
         }
+        const recordAtEnd = this.perCallMaster ? this.perCallRecordWrittenAtEnd(sortedFields) : 'all';
         for (const sv of sortedFields) {
           const key = `${sv.nftIndex}:${sv.fieldIndex}`;
           const stackName = this.pendingStateWrites.get(key);
+          const declared = stackName ? this.perCallFieldDeclaredAtEnd(key, recordAtEnd) : undefined;
 
-          if (stackName) {
+          if (stackName && declared !== undefined) {
+            // A field a call closed is the record's own declared value on the paths the end does not hold the record
+            // kept, where its slot is the value from before the call.
+            const fromSlot = (): void => {
+              this.emitPickSettlementValue(stackName, locationData, node);
+              this.pushToStack('(value)');
+            };
+            const fromDeclaration = (): void => {
+              const fieldType = this.physicalFieldType(sv);
+              this.emitStateFieldRead(sv, fieldType, sortedFields, locationData);
+              this.pushToStack('(value)');
+              this.emitPushdataEncode(fieldType, locationData);
+            };
+            if (declared.inSegments) {
+              this.emitPerCallBySegment(declared.segments, fromDeclaration, fromSlot, locationData);
+            } else {
+              this.emitPerCallBySegment(declared.segments, fromSlot, fromDeclaration, locationData);
+            }
+          } else if (stackName) {
             const dynamicBaseIndex = sv.isDynamic
               ? this.getStackIndex('__internal__dynamicChunkInputBase', true) : -1;
             if (dynamicBaseIndex >= 0 && this.isCompilerMessageBusRoute(node)) {
@@ -36528,6 +36859,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const lock = `__internal__transfer_lb_${transferIndex}`;
     const amount = `__internal__transfer_amt_${transferIndex}`;
     if (this.getStackIndex(lock, true) < 0 || this.getStackIndex(amount, true) < 0) return;
+    // A send to a contract is a call the recipient's lock decides at run time, which the fields' segments do not
+    // follow: the static set decides from here, as the send's own close and the reads after it always have.
+    this.perCallFieldSegments = undefined;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
     this.emit(encodeInt(BigInt(this.getStackIndex(lock))), loc);
     this.emit(Op.OP_PICK, loc);
@@ -36558,7 +36892,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The slot stays current, so a read resolves from it and the record is rebuilt from it where the next segment
    * closes; its value is now the one the frames that ran during the call left.
    */
-  private emitPerCallWrittenFieldsReread(written: readonly [number, number][], node: Node, loc: SingleLocationData): void {
+  private emitPerCallWrittenFieldsReread(
+    written: readonly PerCallWrittenRecord[], node: Node, loc: SingleLocationData,
+  ): void {
     for (const [nftIdx] of written) {
       const fields = this.stateVariables.filter((sv) => sv.nftIndex === nftIdx)
         .sort((a, b) => a.fieldIndex - b.fieldIndex);

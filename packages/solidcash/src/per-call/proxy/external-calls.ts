@@ -490,9 +490,11 @@ function conditionStateReads(condition: ExternalCallExpression): ReadonlyMap<str
  *
  * A read through a struct field is not such a read: the compiler publishes it where the condition itself stands,
  * folding every dominating write to that field into the expression, so a field read the expression still carries
- * is the value the frame starts with and the caller's incoming facts fix it. Only a read of a variable's own
- * value — a bare state read, or a whole element — is published as the raw pre-transaction read an earlier
- * statement can invalidate.
+ * is the value the frame starts with and the caller's incoming facts fix it. A bare read of a scalar variable is
+ * published the same way, its dominating writes folded in, and one whose write the compiler cannot follow is
+ * published as a `writtenState` node, which the planner refuses by name (`refuseUnfollowedState`). Only a read of
+ * a whole struct, array or dynamic value is published as the raw pre-transaction read an earlier statement can
+ * invalidate.
  *
  * `siteIndex` is the site's own position among the entry's calls. A write the artifact places after that position
  * cannot make the incoming state stale, so it does not force the site; a write placed at or before it, or one
@@ -506,7 +508,7 @@ function conditionReadsWrittenState(
   for (const [name, readFields] of conditionStateReads(condition)) {
     if (readFields.every((field) => field !== null)) continue;
     const variable = layout.variables.find((candidate) => candidate.name === name);
-    if (variable === undefined) continue;
+    if (variable === undefined || foldsDominatingWrites(variable, artifact)) continue;
     const dynamic = variable.dynamic === true;
     const recordSegments = writtenState.records.get(variable.nftIndex)?.get(name);
     const unnamedSegments = writtenState.unnamedRecords.get(variable.nftIndex);
@@ -516,6 +518,45 @@ function conditionReadsWrittenState(
       || writeCanPrecedeSite(variableSegments, dynamic, siteIndex)) return true;
   }
   return false;
+}
+
+/**
+ * True for a state variable whose bare reads the compiler publishes with the entry's own dominating writes folded
+ * in: one held whole in its record, neither a dynamic value nor a struct or array.
+ */
+function foldsDominatingWrites(
+  variable: NonNullable<Artifact['stateLayout']>['variables'][number], artifact: Artifact,
+): boolean {
+  const structs = artifact.structs ?? artifact.stateLayout?.structs ?? [];
+  return variable.dynamic !== true && !variable.type.endsWith(']')
+    && !structs.some((struct) => struct.name === variable.type);
+}
+
+/** The variable of the first `writtenState` node an expression carries: a read of state written before it. */
+function unfollowedStateRead(expression: unknown): string | undefined {
+  if (expression === null || typeof expression !== 'object') return undefined;
+  const node = expression as { readonly kind?: string; readonly name?: string };
+  if (node.kind === 'writtenState' && typeof node.name === 'string') return node.name;
+  for (const child of Object.values(expression as Record<string, unknown>)) {
+    const found = Array.isArray(child)
+      ? child.map(unfollowedStateRead).find((name) => name !== undefined)
+      : unfollowedStateRead(child);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+/**
+ * Refuses a site whose guard reads state the entry's own body writes before it in a way the compiler states no value
+ * for: the incoming value is not the one the body reads there, and stating the call would leave the run to skip it.
+ */
+function refuseUnfollowedState(condition: ExternalCallExpression | null | undefined, where: string): void {
+  const name = unfollowedStateRead(condition);
+  if (name === undefined) return;
+  throw new PerCallProxyDeployError(
+    `${where} is guarded by "${name}", which the entry's own body writes before the call in a way its published `
+    + 'facts do not state, so the hop cannot decide whether the call is made',
+  );
 }
 
 /** Every `producerResult`/`externalCall` node a condition or an argument source reads, at any nesting depth. */
@@ -586,8 +627,9 @@ function conditionExternalReturns(
  * entry's own body rewrites is not fixed by the incoming facts either: a write the artifact places at or before
  * the site can make it hold, so the plan states the record rather than dropping a call the body takes. A write the
  * artifact places after the site cannot make the incoming value stale, so such a condition is evaluated as it
- * stands. A read that goes solely through struct fields is fixed by the incoming facts, since the compiler folds
- * every dominating write to a field into the expression the condition carries.
+ * stands. A read that goes solely through struct fields, or a bare read of a scalar variable, is fixed by the
+ * incoming facts, since the compiler folds every dominating write to it into the expression the condition carries;
+ * a guard over a write the compiler cannot fold is refused by name.
  *
  * A condition over an earlier call's result is the exception: the caller's own facts do not fix it, but a later
  * planning pass does, because the result is learned when that call is settled. Such a site fills nothing in the
@@ -600,6 +642,7 @@ export function occurrenceCountOf(
   routing: readonly ExternalCallAbi[],
   producerResults: ReadonlyMap<number, FunctionArgument> | undefined,
 ): number {
+  refuseUnfollowedState(row.condition, where);
   if ((row.occurrence ?? 'once') !== 'loop') {
     if (row.condition === undefined || row.condition === null) return 1;
     if (conditionReadsWrittenState(row.condition, artifact, writtenState, siteIndex)) return 1;

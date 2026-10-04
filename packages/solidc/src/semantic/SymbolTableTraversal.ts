@@ -8636,6 +8636,108 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (write instanceof TupleAssignmentNode) return undefined;
         return null;
       };
+      // The state variables a statement writes, through the internal functions it calls.
+      const stateWritesOf = new Map<Node, ReadonlySet<string>>();
+      const writesState = (root: Node, name: string): boolean => {
+        let names = stateWritesOf.get(root);
+        if (names === undefined) {
+          const found = new Set<string>();
+          const seen = new Set<Node>();
+          const visit = (value: Node): void => {
+            if (seen.has(value)) return;
+            seen.add(value);
+            if (value instanceof StateAssignNode || value instanceof DeleteStateNode
+              || value instanceof StateArrayPushNode || value instanceof StateArrayPopNode
+              || value instanceof StateArrayAssignNode || value instanceof StateArrayDeleteNode) found.add(value.name);
+            const callee = value instanceof FunctionCallNode ? value.resolvedFunction
+              : value instanceof FunctionCallStatementNode ? value.call.resolvedFunction : undefined;
+            if (callee?.body !== undefined) visit(callee.body);
+            for (const [key, child] of Object.entries(value)) {
+              if ([
+                'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+                'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+              ].includes(key)) continue;
+              if (child instanceof Node) visit(child);
+              else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) visit(item);
+            }
+          };
+          visit(root);
+          names = found;
+          stateWritesOf.set(root, names);
+        }
+        return names.has(name);
+      };
+      // The loops around this call: a write in one runs before the call again on every turn after the first.
+      let loopsAroundCall: Node[] | undefined;
+      const loopsAround = (): Node[] => {
+        if (loopsAroundCall !== undefined) return loopsAroundCall;
+        const loops: Node[] = [];
+        const seen = new Set<Node>();
+        const visit = (value: Node): void => {
+          if (seen.has(value)) return;
+          seen.add(value);
+          if ((value instanceof WhileNode || value instanceof DoWhileNode || value instanceof CollectionIterationNode)
+            && containsNode(value, node)) loops.push(value);
+          for (const [key, child] of Object.entries(value)) {
+            if ([
+              'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+              'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+            ].includes(key)) continue;
+            if (child instanceof Node) visit(child);
+            else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) visit(item);
+          }
+        };
+        if (this.currentFunction?.body) visit(this.currentFunction.body);
+        loopsAroundCall = loops;
+        return loops;
+      };
+      // What a scalar state variable holds where it is read, under the per-call composition: `undefined` when no
+      // statement dominating the read writes it (the value the frame starts with, which a hop reads from the
+      // deployment), the value the dominating writes leave it at, or a `writtenState` node when a write cannot be
+      // followed, which a hop refuses by name rather than plan a call from a value the body has overwritten.
+      const followState = (read: StateAccessNode): ExternalCallExpression | undefined => {
+        if (this.compilerOptions.composition !== 'per-call') return undefined;
+        const variable = read.stateVariable;
+        const type = variable?.type;
+        if (variable === undefined || variable.isDynamic || type instanceof StructType || type instanceof ArrayType
+          || type instanceof MappingType) return undefined;
+        const unfollowed: ExternalCallExpression = { kind: 'writtenState', name: read.name };
+        if (loopsAround().some((loop) => writesState(loop, read.name))) return unfollowed;
+        const prior = priorStatements ?? [];
+        let last = prior.length - 1;
+        while (last >= 0 && !writesState(prior[last]!, read.name)) last -= 1;
+        if (last < 0) return undefined;
+        const before = prior.slice(0, last);
+        const write = prior[last]!;
+        const declaredType = type?.toString();
+        const typed = (value: ExternalCallExpression): ExternalCallExpression => (
+          value.type === undefined && declaredType !== undefined ? { ...value, type: declaredType } : value);
+        const at = (statements: StatementNode[], expression: ExpressionNode): ExternalCallExpression | undefined => {
+          const reading = priorStatements;
+          priorStatements = statements;
+          try {
+            return serializeExpression(expression, new Set());
+          } finally {
+            priorStatements = reading;
+          }
+        };
+        if (write instanceof StateAssignNode && write.name === read.name) {
+          const value = at(before, write.expression);
+          return value === undefined ? unfollowed : typed(value);
+        }
+        if (write instanceof BlockNode || write instanceof UncheckedNode) {
+          const block = write instanceof BlockNode ? write : write.block;
+          return at([...before, ...block.statements ?? []], read) ?? unfollowed;
+        }
+        if (write instanceof BranchNode) {
+          const condition = at(before, write.condition);
+          const ifTrue = at([...before, ...write.ifBlock.statements ?? []], read);
+          const ifFalse = at([...before, ...write.elseBlock?.statements ?? []], read);
+          if (condition === undefined || ifTrue === undefined || ifFalse === undefined) return unfollowed;
+          return typed({ kind: 'ternary', condition, ifTrue, ifFalse });
+        }
+        return unfollowed;
+      };
       writtenInPrefix = (identifier) => followable(identifier)
         && (priorStatements ?? []).some((statement) => writesLocal(statement, identifier.name, false));
       const definitionDependsOnProducer = (
@@ -8844,7 +8946,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           };
         }
         if (expression instanceof StateAccessNode) {
-          return { kind: 'state', name: expression.name };
+          return followState(expression) ?? { kind: 'state', name: expression.name };
         }
         if (expression instanceof CastNode) {
           const inner = serializeExpression(expression.expression, seen);

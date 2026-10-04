@@ -27,9 +27,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * proxied store `Journal`, which pushes the note and emits it. A struct field written earlier is forwarded by the
  * compiler to the value written, so the plan states it and the store keeps the right bytes: both gates settle, so
  * this is not the post's wall (`job-threads-and-refusals.test.ts` pins those). A plain state variable written
- * earlier is published as a pre-transaction read: the hop states the value the deployment held, so the entry is
- * refused unless the write left it unchanged. A packed `int` the compiler publishes without a width is refused as
- * well, beside its typed controls. The file runs only under `PER_CALL_AHEAD=1`.
+ * earlier is forwarded the same way, to the value its write leaves, so the plan states the gate or the key the entry
+ * wrote and the store keeps it, whatever the deployment held. A packed `int` the compiler publishes without a width
+ * is refused, beside its typed controls. The file runs only under `PER_CALL_AHEAD=1`.
  */
 
 /** A 32-byte value with varied bytes, `seed` chosen so each name is distinct. */
@@ -417,7 +417,7 @@ async function deployWorld(): Promise<World> {
 }
 
 describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a call argument read from the entry\'s own write', () => {
-  it('publishes a written struct field as its written value and a written state variable as a state read', () => {
+  it('publishes a written struct field and a written state variable as the values written', () => {
     const { Desk } = compiled();
     expect(Desk!.composition!.refusedEntries ?? []).toStrictEqual([]);
     // The post's own spelling: the storage-pointer field is published as `allowedWorkers_.length > 0`.
@@ -425,11 +425,15 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a call argument read 
     expect(noteData(post.Post, 'publishJobPost').args![1]).toStrictEqual(forwardedGate(1));
     expect(noteData(Desk, 'openConcat').args![1]).toStrictEqual(forwardedGate(2));
     expect(noteData(Desk, 'openPointer').args![1]).toStrictEqual(forwardedGate(1));
-    // A plain state variable written earlier is published as a read of the state itself.
-    expect(noteData(Desk, 'openFlag').args![1])
-      .toStrictEqual({ kind: 'abiEncodePacked', args: [{ kind: 'state', name: 'flag' }], fields: [''] });
-    expect((argumentSources(Desk, 'openCountId') as unknown[])[0])
-      .toStrictEqual({ kind: 'expression', expression: { kind: 'state', name: 'count' } });
+    // A plain state variable written earlier is published as the value written, the entry's own argument here.
+    expect(noteData(Desk, 'openFlag').args![1]).toStrictEqual({
+      kind: 'abiEncodePacked',
+      args: [{ kind: 'source', source: { kind: 'forward', paramIndex: 1 }, type: 'bool' }],
+      fields: [''],
+    });
+    expect((argumentSources(Desk, 'openCountId') as unknown[])[0]).toStrictEqual({
+      kind: 'expression', expression: { kind: 'source', source: { kind: 'forward', paramIndex: 1 }, type: 'int256' },
+    });
     // A computed `int` is published without a width; a cast carries one.
     expect(noteData(Desk, 'openLocal').fields).toStrictEqual(['']);
     expect(noteData(Desk, 'openLocalCast').fields).toStrictEqual(['int256']);
@@ -462,44 +466,37 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a call argument read 
     expectStored(world, await enter(world, 'openPointer', [TITLE, []]), { id: 6n, data: titleWith(false) });
   }, 600_000);
 
-  it('a state variable written with the value it already held settles, by coincidence', async () => {
-    // The plan states the pre-transaction `false`, which is also what the entry wrote.
+  it('a state variable written with the value it already held settles', async () => {
+    // The plan states the `false` the entry wrote, which is also what the deployment held.
     const outcome = await enter(world, 'openFlag', [TITLE, false]);
     expectStored(world, outcome, { id: 7n, data: titleWith(false) });
     expect(statedData(outcome)).toBe(titleWith(false));
   }, 300_000);
 
-  it('a state variable written with a new value is refused: the plan states the value it held', async () => {
+  it('a state variable written with a new value settles: the plan states the value written', async () => {
     const outcome = await enter(world, 'openFlag', [TITLE, true]);
-    // Owner: the compiler publishes the read as a pre-transaction `state` read
-    // (`SymbolTableTraversal.serializeExpression`, the `StateAccessNode` case, where the `FieldAccessNode` case
-    // forwards the dominating write), and the hop resolves it against the deployment's records
-    // (`proxy/call-resolution.ts`, `makeCallResolver`); the hop learns records, returns and events but never an
-    // argument, so the digest mismatch is final (`proxy/deploy.ts`).
-    expectDigestRefused(outcome, 'openFlag');
-    expect(statedData(outcome)).toBe(titleWith(false));
+    expectStored(world, outcome, { id: 8n, data: titleWith(true) });
+    expect(statedData(outcome)).toBe(titleWith(true));
   }, 300_000);
 
-  it('with the variable set beforehand, writing it back unchanged settles and changing it is refused', async () => {
+  it('with the variable set beforehand, changing it and writing it back unchanged both settle', async () => {
     const set = await enter(world, 'setFlag', [true]);
     expect(set.error).toBeUndefined();
     expect(set.coinLive).toBe(false);
     const changed = await enter(world, 'openFlag', [TITLE, false]);
-    // Owner: as above; the stated gate is now the `true` the deployment holds.
-    expectDigestRefused(changed, 'openFlag');
-    expect(statedData(changed)).toBe(titleWith(true));
+    expectStored(world, changed, { id: 9n, data: titleWith(false) });
+    expect(statedData(changed)).toBe(titleWith(false));
     const kept = await enter(world, 'openFlag', [TITLE, true]);
-    expectStored(world, kept, { id: 8n, data: titleWith(true) });
+    expectStored(world, kept, { id: 10n, data: titleWith(true) });
   }, 600_000);
 
   it('a written state variable passed as the call\'s own argument follows the same rule', async () => {
-    // The store key is `count`, which the deployment holds as 0: writing 0 settles and keys the note at 0.
+    // The store key is `count`, which the deployment holds as 0: the note is keyed at the value the entry wrote.
     const kept = await enter(world, 'openCountId', [TITLE, 0n]);
     expectStored(world, kept, { id: 0n, data: binToHex(utf8ToBin(TITLE)) });
     const changed = await enter(world, 'openCountId', [TITLE, 7n]);
-    // Owner: as the state-variable gate above.
-    expectDigestRefused(changed, 'openCountId');
-    expect(changed.stated.map((values) => values[0])).toStrictEqual([0n]);
+    expectStored(world, changed, { id: 7n, data: binToHex(utf8ToBin(TITLE)) });
+    expect(changed.stated.map((values) => values[0])).toStrictEqual([7n]);
   }, 600_000);
 
   it('a packed `int` computed from a parameter is refused: the plan packs it at 32 bytes', async () => {

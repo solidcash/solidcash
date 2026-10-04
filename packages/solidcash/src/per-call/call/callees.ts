@@ -399,12 +399,6 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
     const why = unservedCallee(callee, plan.sideCars.has(callee.master));
     if (why !== undefined) refuse(why);
   }
-  // A frame that only reads a node an earlier frame of its contract created names it at that frame's output.
-  const createdRead = plan.callees.find((callee) => callee.readNodes.some((node) => node.createdSlot !== undefined));
-  if (createdRead !== undefined) {
-    refuse(`the callee "${createdRead.functionName}" reads a mapping node an earlier frame of its contract created, `
-      + 'which this call path does not declare yet');
-  }
   // A deployment entered more than once is settled by the validator, which chains its records' views across its
   // frames: its data records here (`calleeFrames`), and the nodes its frames write over every frame of the call, as
   // the hop chains them (`call.ts`). Reaches of one collection one transaction cannot carry are refused by name, as
@@ -628,6 +622,17 @@ export function calleeFrames(options: {
       return [...kept].map(([index, view]) => ({ in: index, out: index, viewIn: view, viewOut: view }));
     };
     const readEntries = callee.readNodes.map((node): DraftRecordEntry => {
+      // A node an earlier frame of this contract created carries no input, so the frame names it at the output that
+      // frame created it at, as the hop names it: its kept declaration chains onto the creator's
+      // (`chainSharedNodeViews`), and the validator settles the output among that frame's created records.
+      if (node.createdSlot !== undefined) {
+        const out = createdElsewhere.get(createdNodeKey(callee.category, node.collection, node.createdSlot));
+        if (out === undefined) {
+          throw new PerCallCalleeError(`the callee "${callee.functionName}" reads a mapping node an earlier frame of `
+            + 'its contract created, but no frame of the call places an output for it');
+        }
+        return { in: INDEX_NONE, out, viewIn: node.commitment, viewOut: node.commitment };
+      }
       const index = indexOf(node.id);
       return { in: index, out: index, viewIn: node.commitment, viewOut: node.commitment };
     });

@@ -828,7 +828,7 @@ export async function expandCreateBuilderLateTransitive(
             graphPlanningResults,
             nested.callsiteId,
             childArgs,
-            undefined,
+            typedAddressTarget ?? callee.categoryId,
             false,
             evaluateReturn,
           );

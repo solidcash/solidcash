@@ -105,6 +105,54 @@ describe('provisional aggregate producer results', () => {
     expect(unresolved.derive).not.toHaveBeenCalled();
   });
 
+  it('separates cached producer results by dynamic callee target', async () => {
+    const artifact = { abi: [], constructorInputs: [] } as unknown as Artifact;
+    const provider = createTestProvider();
+    const firstDerive = vi.fn(async () => 11n);
+    const secondDerive = vi.fn(async () => 22n);
+    const callee = (lockingBytecode: string, derive: typeof firstDerive): StatefulContract => ({
+      inner: { artifact, lockingBytecode }, categoryId: lockingBytecode.repeat(32),
+      _deriveReturnValue: derive, _resolveExternalArgs: () => [],
+      _resolveCallAbi: () => ({ name: 'compute', inputs: [], outputs: [{ type: 'uint256' }] }),
+    }) as unknown as StatefulContract;
+    const first = callee('51', firstDerive);
+    const second = callee('52', secondDerive);
+    registerDeployment(provider, {
+      contractName: 'Source', address: 'first', lockingBytecode: '51', contract: first,
+    });
+    registerDeployment(provider, {
+      contractName: 'Source', address: 'second', lockingBytecode: '52', contract: second,
+    });
+    const owner = {
+      inner: { artifact }, _externalRegistry: new Map<string, StatefulContract>(),
+    } as unknown as StatefulContract;
+    const host: ResolveExternalExpressionReturnsHost & ResolveExternalArgsHost = {
+      inner: { artifact, encodedConstructorArgs: [], provider, lockingBytecode: '53' },
+      categoryId: '00'.repeat(32), externalRegistry: new Map(), asCallerContract: () => owner,
+      resolveExternalArgs: (...args) => resolveExternalArgs(host, ...args),
+      evaluateExternalExpression: (...args) => evaluateExternalExpression(host, ...args),
+    };
+    const expression: ExternalCallExpression = {
+      kind: 'producerResult', callsiteId: 0, resultIndex: 0, type: 'uint256',
+    };
+    const calls: ExternalCallAbi[] = [{
+      interfaceName: 'ISource', functionName: 'compute', callsiteId: 0,
+      addressSource: { kind: 'forward', paramIndex: 0 },
+      argSources: [], returnTypes: ['uint256'], hasReturnValues: true, requiredDataNftIndices: [],
+    }];
+    const context = createGraphPlanningProducerResultContext();
+    const resolve = async (target: number): Promise<FunctionArgument | undefined> => (
+      await resolveExternalExpressionReturns(host, [{ kind: 'expression', expression }],
+        [Uint8Array.of(target)], owner, {}, [], undefined, calls, false, context)
+    ).get(JSON.stringify(expression));
+
+    expect(await resolve(0x51)).toBe(11n);
+    expect(await resolve(0x52)).toBe(22n);
+    expect(await resolve(0x51)).toBe(11n);
+    expect(firstDerive).toHaveBeenCalledOnce();
+    expect(secondDerive).toHaveBeenCalledOnce();
+  });
+
   it('defers an unmaterializable transitive return probe only while graph planning is provisional', async () => {
     const unavailable = new DeferredTransitiveReturnProbeError('Transitive callback needs the aggregate graph');
     const test = fixture('uint256[5]', [], unavailable);

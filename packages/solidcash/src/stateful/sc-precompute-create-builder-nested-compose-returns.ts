@@ -140,7 +140,7 @@ export async function precomputeCreateBuilderNestedComposeReturns(
             graphPlanningResults,
             returnCallsiteId,
             row.args,
-            undefined,
+            callee.categoryId,
             false,
             evaluateReturn,
           );
@@ -242,7 +242,7 @@ export async function precomputeCreateBuilderNestedComposeReturns(
         graphPlanningResults,
         nested.callsiteId,
         nestedArgs,
-        undefined,
+        callee.categoryId,
         false,
         evaluateReturn as () => Promise<FunctionArgument | undefined>,
       ) as StateValue | undefined;

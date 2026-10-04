@@ -443,9 +443,9 @@ export async function resolveExternalExpressionReturns(
         planningContext,
         callsiteId,
         values,
-        // This cache is scoped to one compiler function and immutable state snapshot. The published callsite
-        // authenticates its target expression; arguments and provisional quality distinguish runtime seeds.
-        undefined,
+        // The same published callsite can execute against different runtime callees during graph planning.
+        // Keep the resolved target in the key even when its arguments and the state snapshot are unchanged.
+        target,
         allowProvisional,
         async () => {
           if (!rawFunction || !rawExecutionTarget) {

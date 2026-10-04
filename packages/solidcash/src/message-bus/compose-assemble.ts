@@ -68,6 +68,7 @@ import {
   evaluateComputeRecipeExpression,
   evaluateSignature65RecoveryArgument,
   PendingComputeProducerResult,
+  UnusableComputeSignature,
 } from './compute-recipe-evaluator.js';
 import { deriveDirectCollectionLengthResult } from './compute-recipe-producer-state.js';
 import {
@@ -1343,7 +1344,8 @@ export async function assembleAtomicComposition(
                 ? evaluateSignature65RecoveryArgument(recipe.hash, recipe.signature, recipeContext)
                 : evaluateArgs4RecoveryArgument(recipe.args, recipeContext));
             } catch (error) {
-              if (error instanceof PendingComputeProducerResult) recoveryArguments.push(null);
+              if (error instanceof PendingComputeProducerResult
+                || error instanceof UnusableComputeSignature) recoveryArguments.push(null);
               else throw error;
             }
           }

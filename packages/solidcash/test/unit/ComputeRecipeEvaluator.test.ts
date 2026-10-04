@@ -7,6 +7,7 @@ import {
   evaluateComputeRecipeExpression,
   evaluateSignature65RecoveryArgument,
   PendingComputeProducerResult,
+  UnusableComputeSignature,
 } from '../../src/message-bus/compute-recipe-evaluator.js';
 
 const artifact = {
@@ -53,6 +54,18 @@ describe('compute side-car recipe replay', () => {
     expect(blob[32]).toBe(27);
     expect(blob[33]).toBe(1);
     expect(blob[65]).toBe(2);
+  });
+
+  it('leaves malformed runtime signatures unresolved without manufacturing recovery arguments', () => {
+    for (const invalid of ['bchtest:not-a-byte-string', new Uint8Array(20),
+      Uint8Array.from([...sig.slice(0, 64), 29])]) {
+      expect(() => evaluateSignature65RecoveryArgument(outerHash, signature, {
+        ...ctx, args: [7n, invalid],
+      })).toThrow(UnusableComputeSignature);
+    }
+    const malformedRecipe: ExternalCallExpression = { kind: 'call', name: 'unknown', args: [] };
+    expect(() => evaluateSignature65RecoveryArgument(outerHash, malformedRecipe, ctx))
+      .toThrow(/unsupported compute recipe expression/);
   });
 
   it('reverses args4 scalar words under evmCompat without Solidity import mode', () => {

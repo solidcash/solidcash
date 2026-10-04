@@ -14,6 +14,13 @@ export class PendingComputeProducerResult extends Error {
   }
 }
 
+/** Runtime calldata can be malformed on a path that reverts before reaching recovery. */
+export class UnusableComputeSignature extends Error {
+  constructor() {
+    super('messageBus: compute recipe cannot bind a non-canonical runtime signature');
+  }
+}
+
 export interface ComputeRecipeContext {
   readonly artifact: Artifact;
   readonly args: readonly FunctionArgument[];
@@ -133,7 +140,20 @@ export function evaluateSignature65RecoveryArgument(
     throw new Error('messageBus: signature65 compute recipe requires EVM-compatible scalar encoding');
   }
   const digest = bytesOf(evaluateComputeRecipeExpression(hash, ctx), expressionType(hash, ctx));
-  const sig = bytesOf(evaluateComputeRecipeExpression(signature, ctx), expressionType(signature, ctx));
+  const runtimeSignature = signature.kind === 'source' && expressionType(signature, ctx) === 'bytes';
+  const signatureValue = evaluateComputeRecipeExpression(signature, ctx);
+  let sig: Uint8Array;
+  try {
+    sig = bytesOf(signatureValue, expressionType(signature, ctx));
+  } catch (error) {
+    if (runtimeSignature) {
+      throw new UnusableComputeSignature();
+    }
+    throw error;
+  }
+  if (runtimeSignature && (sig.length !== 65 || (sig[64] !== 27 && sig[64] !== 28))) {
+    throw new UnusableComputeSignature();
+  }
   if (digest.length !== 32 || sig.length !== 65 || (sig[64] !== 27 && sig[64] !== 28)) {
     throw new Error('messageBus: compute recipe requires a canonical 32-byte digest and 65-byte signature');
   }

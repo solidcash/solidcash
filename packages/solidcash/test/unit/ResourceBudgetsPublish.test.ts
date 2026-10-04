@@ -91,6 +91,26 @@ describe('published resource budgets/published semantic-derivation ceiling resou
     })).toThrow(/malformed replacement message bus capability/);
   });
 
+  it('rejects malformed kernel resource budgets at the capability reader', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        int x;
+        function set(int v) public { this.x = v; require(true); }
+      }`, KERNEL);
+    const capability = artifact.messageBus!;
+    const budgets = capability.resourceBudgets!;
+    for (const malformed of [
+      { ...budgets, version: 2 as never },
+      { ...budgets, maximumValueContinuationChunks: undefined as never },
+      { ...budgets, maximumRows: budgets.maximumRows + 1 },
+    ]) {
+      expect(() => assertMessageBusCapability({
+        ...artifact,
+        messageBus: { ...capability, resourceBudgets: malformed },
+      })).toThrow(/resourceBudgets/);
+    }
+  });
+
   it('authorizeComposeParticipantLayout fails closed when kernel requires published budgets', () => {
     clearComposeKernelAuthorityResults();
     expect(() => authorizeComposeParticipantLayout({

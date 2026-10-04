@@ -112,6 +112,29 @@ export function assertMessageBusCapability(artifact: Artifact): MessageBusVerifi
     || (route as { inputs: { name?: unknown; type?: unknown }[] }).inputs[0].type !== 'bytes') {
     throw new Error(`Contract '${artifact.contractName}' publishes malformed replacement message bus capability`);
   }
+  if (replacement.convention === 'kernel-row-loop') {
+    const published = replacement.resourceBudgets;
+    const axes = [
+      'maximumRows', 'maximumParticipants', 'maximumBlobBytes', 'maximumDynamicChunks',
+      'maximumValueContinuationChunks', 'maximumJournalRecords', 'maximumEvents',
+      'maximumTransfers', 'maximumReturnCarriers', 'maximumExternalEdges',
+      'maximumSemanticDerivationPasses',
+    ];
+    if (!published || typeof published !== 'object' || Array.isArray(published)
+      || (published as Record<string, unknown>).version !== 1
+      || axes.some((axis) => {
+        const value = (published as Record<string, unknown>)[axis];
+        return !Number.isSafeInteger(value) || (value as number) < 0;
+      })
+      || (published as Record<string, unknown>).maximumRows !== replacement.maximumRows
+      || (published as Record<string, unknown>).maximumBlobBytes !== replacement.maximumBlobBytes
+      || (published as Record<string, unknown>).maximumParticipants === 0
+      || ((published as Record<string, unknown>).maximumParticipants as number)
+        > ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS
+      || (published as Record<string, unknown>).maximumSemanticDerivationPasses === 0) {
+      throw new Error(`Contract '${artifact.contractName}' publishes malformed resourceBudgets`);
+    }
+  }
   const program = replacement.verifierProgram;
   if (!program) throw new Error(`Contract '${artifact.contractName}' publishes no message bus verifier program`);
   assertMessageBusVerifierProgram(program);

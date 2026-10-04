@@ -28,18 +28,36 @@ const HARDHAT_MODULE_IDS = new Set([
  *
  * A script that opens with `const { ethers } = require("hardhat")` never reaches the test runner's import aliases, so
  * the value is served straight from the loader: resolving it to a file instead would re-enter the ESM graph, which
- * Node refuses to load from CommonJS when it contains top-level await.
+ * Node refuses to load from CommonJS when it contains top-level await. The loader is also what answers the
+ * module-scope `require` a test runner hands a transformed module: Vitest passes `createRequire(file)`, which
+ * shadows `globalThis.require` but still loads through `Module._load`.
  */
-function installCommonJsAliases(modules: Record<string, unknown>): () => void {
+function installCommonJsAliases(modules: ReadonlyMap<string, unknown>): () => void {
   const loader = Module as unknown as {
     _load: (request: string, parent: unknown, isMain: boolean) => unknown;
   };
   const original = loader._load;
   loader._load = function patched(request: string, parent: unknown, isMain: boolean): unknown {
-    if (request in modules) return modules[request];
+    if (modules.has(request)) return modules.get(request);
     return original.call(this, request, parent, isMain);
   };
   return () => { loader._load = original; };
+}
+
+/**
+ * The ids a script's `require` is answered for ahead of the normal resolver: the caller's `modules`, and every
+ * Hardhat id with `hardhat`, or by default with the solidhat Hardhat module, the runtime the preset aliases those ids
+ * to for an ESM import. That module is imported by its path beside this file, not by the bare id: a bare `hardhat`
+ * goes through whatever resolver loaded this file, which outside the preset's pipeline is Node's own and finds no
+ * `hardhat`, or the real one. In the built package the sibling is the file the preset's alias names, loaded by the
+ * same loader as this file, so the script's ESM import and its `require` share one instance. `require('hardhat')` is
+ * a Hardhat 2 idiom (Hardhat 3 is ESM-only), and the Hardhat 3 module re-exports the same bindings anyway.
+ */
+async function commonJsModulesFor(hardhat: unknown, modules: Record<string, unknown>): Promise<Map<string, unknown>> {
+  const table = new Map<string, unknown>(Object.entries(modules));
+  const runtime = hardhat !== undefined ? hardhat : await import('./hardhat2.js');
+  for (const id of HARDHAT_MODULE_IDS) if (hardhat !== undefined || !table.has(id)) table.set(id, runtime);
+  return table;
 }
 
 interface PortedGlobals {
@@ -52,9 +70,10 @@ export interface RunPortedScriptOptions {
   /**
    * Value exposed to `require('hardhat')` and friends, matching Hardhat's script environment. CommonJS-style scripts
    * receive it verbatim, so pass an object carrying the fields they destructure (`ethers`, `upgrades`, `network`).
+   * Defaults to the solidhat Hardhat module, the runtime the vitest preset aliases `hardhat` to for ESM imports.
    */
   hardhat?: unknown;
-  /** Extra `require` ids the script may use, resolved before the normal module resolver. */
+  /** Extra `require` ids the script may use, answered before the normal module resolver. */
   modules?: Record<string, unknown>;
   /** How long to wait for the script to finish before failing the run (default 300s). */
   timeoutMs?: number;
@@ -98,6 +117,7 @@ export async function runPortedScript(
   options: RunPortedScriptOptions = {},
 ): Promise<PortedScriptResult> {
   const { timeoutMs = 300_000, captureOutput = true, hardhat, modules = {}, load } = options;
+  const commonJsModules = await commonJsModulesFor(hardhat, modules);
   const scriptRequire = createRequire(scriptPath);
   const globals = globalThis as PortedGlobals & { console: Console };
   const previousGlobals: PortedGlobals = {
@@ -127,11 +147,9 @@ export async function runPortedScript(
 
   globals.__filename = scriptPath;
   globals.__dirname = scriptPath.slice(0, Math.max(scriptPath.lastIndexOf('/'), scriptPath.lastIndexOf('\\')));
-  globals.require = (id: string): unknown => {
-    if (HARDHAT_MODULE_IDS.has(id) && hardhat !== undefined) return hardhat;
-    if (id in modules) return modules[id];
-    return scriptRequire(id) as unknown;
-  };
+  globals.require = (id: string): unknown => (
+    commonJsModules.has(id) ? commonJsModules.get(id) : scriptRequire(id) as unknown
+  );
   if (captureOutput) {
     console.log = (...args: unknown[]): void => { stdout.push(format(args)); };
     console.error = (...args: unknown[]): void => { stderr.push(format(args)); };
@@ -144,8 +162,6 @@ export async function runPortedScript(
     return undefined as never;
   }) as typeof process.exit;
   process.on('unhandledRejection', onUnhandled);
-  const commonJsModules: Record<string, unknown> = {};
-  if (hardhat !== undefined) for (const id of HARDHAT_MODULE_IDS) commonJsModules[id] = hardhat;
   const restoreCommonJsAliases = installCommonJsAliases(commonJsModules);
 
   try {

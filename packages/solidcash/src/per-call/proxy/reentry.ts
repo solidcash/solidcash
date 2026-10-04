@@ -211,6 +211,11 @@ function deriveRootUpToEntering(
  * of those derivations already runs it. A derivation that stops past the close it was run for has done its work, so
  * its stall is not the frame's verdict.
  *
+ * A writer derived whole can start from an earlier frame's unstated end in turn: the frames of one contract that each
+ * rewrite its record, a token's transfers reached through separate payers, chain the record through one another. The
+ * writers are followed back along that chain, so each is derived after the ones its own views start from, in the
+ * order the frames run, and the frame's own start is learned rather than left at a placeholder no run resolved.
+ *
  * A subtree that calls back into the hop's own root runs on the root's records, and the root encloses every frame:
  * when its own close is still to state a view, the root is derived first, up to the call that leads to the frame, so
  * the subtree and every writer between them start from what the root left there.
@@ -234,12 +239,22 @@ export function deriveReentryWriters(
     deriveRootUpToEntering(candidate, callees, index, root);
   }
   const named = new Set<string>();
-  for (const at of subtree) {
+  const scanned = new Set<number>();
+  const pending = [...subtree];
+  while (pending.length > 0) {
+    const at = pending.shift()!;
+    if (scanned.has(at)) continue;
+    scanned.add(at);
     for (const segment of candidate.draft.blockOf(callees[at]!.master).segments) {
       for (const entry of segment) {
         for (const view of [entry.viewIn, entry.viewOut]) {
           const writer = writerOf.get(bytesToHex(view));
-          if (writer !== undefined) named.add(writer);
+          if (writer === undefined || named.has(writer)) continue;
+          named.add(writer);
+          // A writer derived whole starts from the views its own subtree names, so their writers come first. One the
+          // frame runs inside is derived only up to the call that leads to the frame, which binds its earlier calls.
+          const writerAt = callees.findIndex((callee) => callee.master === writer);
+          if (writerAt >= 0 && !encloses(callees, writerAt, index)) pending.push(...subtreeOf(callees, writerAt));
         }
       }
     }

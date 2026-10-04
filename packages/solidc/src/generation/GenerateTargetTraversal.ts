@@ -10587,6 +10587,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.collectMappingSlots(stmt.body, writeSlots, deleteSlots, seenCallees);
       } else if (stmt instanceof UncheckedNode) {
         this.collectMappingSlots(stmt.block, writeSlots, deleteSlots, seenCallees);
+      } else if (stmt instanceof BlockNode) {
+        // A nested `{ ... }` scope (a source block, an inlined helper's body) runs in place, under the same arm.
+        this.collectMappingSlots(stmt, writeSlots, deleteSlots, seenCallees);
       } else if (stmt instanceof SwitchNode) {
         for (const c of stmt.cases) this.collectMappingSlots(c.body, writeSlots, deleteSlots, seenCallees);
         if (stmt.defaultCase) this.collectMappingSlots(stmt.defaultCase, writeSlots, deleteSlots, seenCallees);
@@ -10621,6 +10624,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.collectStateWriteKeys(stmt.body, keys);
       } else if (stmt instanceof UncheckedNode) {
         this.collectStateWriteKeys(stmt.block, keys);
+      } else if (stmt instanceof BlockNode) {
+        this.collectStateWriteKeys(stmt, keys);
       } else if (stmt instanceof SwitchNode) {
         for (const c of stmt.cases) this.collectStateWriteKeys(c.body, keys);
         if (stmt.defaultCase) this.collectStateWriteKeys(stmt.defaultCase, keys);
@@ -11302,6 +11307,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.collectEmitIndices(stmt.body, indices);
       } else if (stmt instanceof UncheckedNode) {
         this.collectEmitIndices(stmt.block, indices);
+      } else if (stmt instanceof BlockNode) {
+        this.collectEmitIndices(stmt, indices);
       } else if (stmt instanceof SwitchNode) {
         for (const c of stmt.cases) this.collectEmitIndices(c.body, indices);
         if (stmt.defaultCase) this.collectEmitIndices(stmt.defaultCase, indices);
@@ -11328,6 +11335,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.collectTokenContainerTransferIndices(stmt.body, indices);
       } else if (stmt instanceof UncheckedNode) {
         this.collectTokenContainerTransferIndices(stmt.block, indices);
+      } else if (stmt instanceof BlockNode) {
+        this.collectTokenContainerTransferIndices(stmt, indices);
       } else if (stmt instanceof SwitchNode) {
         for (const c of stmt.cases) this.collectTokenContainerTransferIndices(c.body, indices);
         if (stmt.defaultCase) this.collectTokenContainerTransferIndices(stmt.defaultCase, indices);

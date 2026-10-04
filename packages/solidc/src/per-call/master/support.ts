@@ -1333,6 +1333,8 @@ export function perCallBatchWriteSegment(entry: FunctionDefinitionNode): number 
       return joinCallRanges(thenRange, elseRange);
     }
     if (statement instanceof BlockNode) return walkBlock(statement, incoming);
+    // A write an `unchecked` block holds runs where the block stands, after the calls the walk had reached.
+    if (statement instanceof UncheckedNode) return walkBlock(statement.block, incoming);
     if (statement instanceof SwitchNode || statement instanceof CollectionIterationNode
       || statement instanceof WhileNode || statement instanceof DoWhileNode) {
       // A loop, switch or iteration makes a number of calls its own bound decides; a call-free one makes none, and a
@@ -1393,6 +1395,7 @@ export function perCallSendCallsBefore(entry: FunctionDefinitionNode): readonly 
       return joinCallRanges(thenRange, elseRange);
     }
     if (statement instanceof BlockNode) return walkBlock(statement, incoming);
+    if (statement instanceof UncheckedNode) return walkBlock(statement.block, incoming);
     if (statement instanceof SwitchNode || statement instanceof CollectionIterationNode
       || statement instanceof WhileNode || statement instanceof DoWhileNode) {
       if (sendsIn(statement) > 0) open = true;
@@ -1687,6 +1690,9 @@ function perCallWriteSteps(
       return joinCallRanges(thenRange, elseRange);
     }
     if (statement instanceof BlockNode) return walkBlock(statement, incoming, held);
+    // An `unchecked` block only drops overflow checks: its writes run in sequence with the code around it, so they
+    // are steps of the path the walk is on, held where the statement itself is.
+    if (statement instanceof UncheckedNode) return walkBlock(statement.block, incoming, held);
     if (statement instanceof SwitchNode || statement instanceof CollectionIterationNode
       || statement instanceof WhileNode || statement instanceof DoWhileNode) {
       // A loop, switch or iteration makes a number of calls its own bound decides; a call-free one makes none, and a

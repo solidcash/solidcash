@@ -127,7 +127,7 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
 import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
 import { evmResultMayNeedPreimage, externalResultEncoding } from './ExternalResultEncoding.js';
 import { cloneNode } from '../ast/clone.js';
-import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
+import { computeExpressionSiteKey, generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 import {
   computeBranchOps, countBranchOps, countTransfersMinMax, hasEffectiveCallValue, isDirectOwnerTransferNode,
 } from './branchOps.js';
@@ -9010,6 +9010,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           return values && {
             kind: 'call',
             name: expression.identifier.name,
+            ...((expression.identifier.name === GlobalFunction.KECCAK256
+              || expression.identifier.name === 'ECDSA.recover') && expression.location
+              && { computeSourceSite: computeExpressionSiteKey(expression.location) }),
             args: values,
             ...(expression.fieldNames && { fields: expression.fieldNames }),
             ...(expression.type || declaredStructType

@@ -48,6 +48,14 @@ export function sourceFileOf(location?: LocationI): string | undefined {
   return (location as Location | undefined)?.sourceFileId;
 }
 
+/** Stable source identity for matching a serialized compute expression to its emitted VM call site. */
+export function computeExpressionSiteKey(location: LocationI): string {
+  const source = sourceFileOf(location) ?? '';
+  const generated = generatedOriginOf(location) ?? '';
+  return `${source}\0${generated}\0${location.start.line}:${location.start.column}`
+    + `-${location.end.line}:${location.end.column}`;
+}
+
 export class Location implements LocationI {
   /** Set when this position is in compiler-generated source rather than in a file on disk. */
   generatedOrigin?: string;

@@ -575,6 +575,11 @@ export interface AbiFunction {
     collection: string;
     keyParams: readonly string[];
   };
+  /** Exact read-only `return mapping[keys...].length` over an authenticated mapping-array entry. */
+  directCollectionLengthReturn?: {
+    collection: string;
+    keyParams: readonly string[];
+  };
   /** Compiler proof that a source read-only body, after only pure address-target captures,
    * returns one external call's result unchanged. */
   directExternalReturn?: { callsiteId: number };
@@ -723,6 +728,8 @@ export interface AbiFunction {
   // Per ecrecoverPubKey call (in order), its [hash, v, r, s] parameter names.
   ecrecoverArgParams?: readonly (readonly (string | null)[])[];
   ecrecoverEvmFlags?: readonly boolean[]; // also identifies calls that need a keccak side-car
+  /** Closed, source-ordered compute operands, evaluated only from authenticated invocation values. */
+  computeSideCarRecipes?: ComputeSideCarRecipesAbi;
   ecrecoverLoopReads?: boolean; // dynamic ecrecover loop: the SDK co-spends one recovery pair per sig-array element
 }
 
@@ -1105,6 +1112,8 @@ export interface ArgSource {
 
 export interface ExternalCallExpression {
   kind: string;
+  /** Source-site identity for compiler-owned compute ordinal checks; has no replay semantics. */
+  computeSourceSite?: string;
   /** Closed typed fixed-effect predicate; callers without authenticated entry context must leave it unknown. */
   fixedEffectRecipe?: ChildDeploymentValueRecipe;
   name?: string;
@@ -1139,6 +1148,21 @@ export interface ExternalCallExpression {
   parameters?: readonly string[];
   /** Bounded statement program for a compiler-published pure helper body. */
   statements?: readonly ExternalCallStatement[];
+}
+
+/**
+ * Source-authored operands for compute side-cars in one physical handler invocation.
+ * Entries are in the same order as the handler's reserved Keccak and recovery calls. A missing entry is never
+ * permission to discover an operand from a VM trace: recipe-mode planners must leave it unresolved.
+ */
+export interface ComputeSideCarRecipesAbi {
+  version: 1;
+  keccak: readonly ExternalCallExpression[];
+  ecrecover: readonly (
+    | { kind: 'args4'; args: readonly [ExternalCallExpression, ExternalCallExpression,
+      ExternalCallExpression, ExternalCallExpression] }
+    | { kind: 'signature65'; hash: ExternalCallExpression; signature: ExternalCallExpression }
+  )[];
 }
 
 /**
@@ -1905,6 +1929,7 @@ export interface Artifact {
       ecrecoverArgParams?: readonly (readonly (string | null)[])[];
       /** One entry per transitive recovery call, including `false` for native/P2PKH projections. */
       ecrecoverEvmFlags?: readonly boolean[];
+      computeSideCarRecipes?: ComputeSideCarRecipesAbi;
       transfers?: readonly FixedBchTransferAbi[];
       /** Exact singular delegate-forwarding frame. Topology only; an ineligible handler remains refused. */
       delegateForwarding?: DelegateForwardingAbi;

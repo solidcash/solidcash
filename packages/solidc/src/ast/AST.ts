@@ -970,6 +970,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   keccakCompute?: boolean;      // keccak256 uses the compute-and-commit result-NFT model (side-car computes it)
   keccakPreimageParams?: (string | null)[]; // per keccak256 call (codegen emission order): the param feeding it
   // (SDK transparent co-spend); null = not a direct param
+  /** Source-site keys in exactly the order emitKeccakComputeCall reserved its ordinals. Compiler-internal. */
+  keccakComputeSites?: string[];
   keccakInLoop?: boolean;       // a keccak256 call is inside a loop -> runtime count exceeds the static count;
   // the SDK should foresee extra side-car strain (deploy more than the syntactic count)
   keccakLoopReads?: boolean;    // a stateful dynamic keccak loop reads N trailing side-cars (SDK progressively
@@ -2795,6 +2797,8 @@ export interface ExternalCallArgSource {
 
 export interface ExternalCallExpression {
   kind: string;
+  /** Compiler-internal source identity for compute-call association; ignored by SDK expression replay. */
+  computeSourceSite?: string;
   fixedEffectRecipe?: ChildDeploymentValueRecipe;
   name?: string;
   /** Physical producer/consumer lane after repeated-owner collapse. */

@@ -5,6 +5,7 @@ import {
   ValueProvenance, ValueProvenanceKind, ValueType,
   AddressType,
   abiTypeString, ChildDeploymentValueRecipe, FixedBchTransferAbi, ExternalResultConsumerAbi,
+  ComputeSideCarRecipesAbi,
   ATOMIC_MESSAGE_BUS_MAX_ROWS, computeErrorSignature, computeEventSignature,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
@@ -17,6 +18,7 @@ import {
   BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode,
   IntLiteralNode,
   ArrayNode, NewArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
+  SliceNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
@@ -34,6 +36,8 @@ import { externalResultEncoding } from '../semantic/ExternalResultEncoding.js';
 import {
   analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentValueRecipe,
 } from '../deploymentRecipes.js';
+import { computeExpressionSiteKey } from '../ast/Location.js';
+import { GlobalFunction } from '../ast/Globals.js';
 
 /** The mapping key type as the SDK must ENCODE it. An enum key is int-backed (the compiler stores/derives it as
  * its integer member value), so it encodes as 'bigint' - its VM representation - not the enum name. The enum
@@ -58,6 +62,218 @@ const safeSourceEffectOrdinal = (value: number | undefined): value is number =>
 /** Replay expressions are JSON-shaped; detach every nested node before publishing compiler metadata. */
 const cloneExternalCallExpression = (expression: ExternalCallExpression): ExternalCallExpression =>
   JSON.parse(JSON.stringify(expression)) as ExternalCallExpression;
+
+/** Source-call/outlined-call-edge witness for one signature65 recovery candidate. */
+const reachedSignature65Recovery = (func: FunctionDefinitionNode, sourceSite: string): boolean => {
+  const callsIn = (root: Node | undefined): FunctionCallNode[] => {
+    if (!root) return [];
+    const calls: FunctionCallNode[] = [];
+    const visited = new Set<Node>();
+    const walk = (node: Node): void => {
+      if (visited.has(node)) return;
+      visited.add(node);
+      if (node instanceof FunctionCallNode) calls.push(node);
+      for (const [key, value] of Object.entries(node)) {
+        if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection'].includes(key)) continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(root);
+    return calls;
+  };
+  const wrapperCalls = callsIn(func.body).filter((call) => call.identifier.name === 'ECDSA.recover'
+    && call.location && computeExpressionSiteKey(call.location) === sourceSite);
+  if (wrapperCalls.length !== 1) return false;
+  const wrapper = wrapperCalls[0];
+  const helper = wrapper.resolvedFunction;
+  if (!helper || wrapper.parameters.length !== 2 || helper.parameters.length !== 2
+    || helper.parameters[0].type.toString() !== 'bytes32'
+    || helper.parameters[1].type.toString() !== 'bytes'
+    || !helper.modifiers.includes(FunctionModifier.PURE)
+    || !helper.modifiers.includes(FunctionModifier.INTERNAL)) return false;
+  const recoverBuiltins = new Set([GlobalFunction.ECRECOVER_PUBKEY,
+    GlobalFunction.ECRECOVER_P2PKH, GlobalFunction.ECRECOVER_EVM]);
+  const found: number[] = [];
+  const reached = new Set<FunctionDefinitionNode>();
+  let hasSignatureLength65 = false;
+  let forwardingValid = true;
+  const signatureAssignments = new Map<string, ExpressionNode[]>();
+  const walkHelper = (current: FunctionDefinitionNode, base: number): void => {
+    if (reached.has(current)) { forwardingValid = false; return; }
+    reached.add(current);
+    const visit = (node: Node, visited = new Set<Node>()): void => {
+      if (visited.has(node)) return;
+      visited.add(node);
+      if (node instanceof IntLiteralNode && node.value === 65n) hasSignatureLength65 = true;
+      if (node instanceof AssignNode && ['r', 's', 'v'].includes(node.identifier.name)) {
+        const prior = signatureAssignments.get(node.identifier.name) ?? [];
+        prior.push(node.expression);
+        signatureAssignments.set(node.identifier.name, prior);
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection'].includes(key)) continue;
+        if (value instanceof Node) visit(value, visited);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) visit(item, visited);
+      }
+    };
+    visit(current.body);
+    for (const call of callsIn(current.body)) {
+      const ordinal = call.recoveryEffectOrdinal;
+      if (!Number.isSafeInteger(ordinal) || ordinal! < 0) continue;
+      const builtin = recoverBuiltins.has(call.identifier.name as GlobalFunction);
+      const next = call.resolvedFunction;
+      if (!builtin && (!next || (next.recoveryEffectCount ?? next.ecrecoverCallCount ?? 0) === 0)) continue;
+      // Every reached helper must forward the digest unchanged in its first formal argument. For a four-arg
+      // recovery call, the v/r/s locals must also be passed in that order; a same-name wrapper which hashes
+      // again or swaps r/s is not an admitted signature65 candidate.
+      if (!(call.parameters[0] instanceof IdentifierNode)
+        || call.parameters[0].name !== current.parameters[0]?.name) forwardingValid = false;
+      if (call.parameters.length === 4
+        && !call.parameters.slice(1).every((arg, index) => arg instanceof IdentifierNode
+          && arg.name === ['v', 'r', 's'][index])) forwardingValid = false;
+      if (builtin) {
+        found.push(base + ordinal!);
+      } else if (next) {
+        walkHelper(next, base + ordinal!);
+      }
+    }
+  };
+  const rootOrdinal = wrapper.recoveryEffectOrdinal;
+  if (!Number.isSafeInteger(rootOrdinal) || rootOrdinal! < 0) return false;
+  walkHelper(helper, rootOrdinal!);
+  const unwrapped = (value: ExpressionNode): ExpressionNode => {
+    let current = value;
+    while (current instanceof CastNode
+      || (current instanceof UnaryOpNode && current.operator === UnaryOperator.REVERSE)) {
+      current = current.expression;
+    }
+    return current;
+  };
+  const copiedSignatureAlias = (name: string): boolean => {
+    if (name === helper.parameters[1].name) return true;
+    if (!name.startsWith(`__memb_${helper.parameters[1].name}_`)) return false;
+    return [...reached].some((owner) => {
+      const declared = (owner.body?.statements ?? []).some((statement) => statement instanceof VariableDefinitionNode
+        && statement.name === name && statement.expression instanceof NewArrayNode
+        && statement.expression.size instanceof UnaryOpNode
+        && statement.expression.size.operator === UnaryOperator.SIZE
+        && statement.expression.size.expression instanceof IdentifierNode
+        && statement.expression.size.expression.name === helper.parameters[1].name);
+      const copied = (owner.body?.statements ?? []).some((statement) => {
+        if (!(statement instanceof WhileNode)) return false;
+        return (statement.block?.statements ?? []).some((write) => {
+          if (!(write instanceof ArrayAssignNode) || write.name !== name) return false;
+          const value = unwrapped(write.value);
+          return value instanceof ArrayAccessNode && value.array instanceof IdentifierNode
+            && value.array.name === helper.parameters[1].name;
+        });
+      });
+      return declared && copied;
+    });
+  };
+  const signatureWord = (name: 'r' | 's', start: bigint, end: bigint): boolean => {
+    const assignments = signatureAssignments.get(name);
+    if (assignments?.length !== 1) return false;
+    const value = unwrapped(assignments[0]);
+    return value instanceof SliceNode && value.start instanceof IntLiteralNode
+      && value.end instanceof IntLiteralNode && value.start.value === start && value.end.value === end
+      && value.element instanceof IdentifierNode && copiedSignatureAlias(value.element.name);
+  };
+  const signatureV = (): boolean => {
+    const assignments = signatureAssignments.get('v');
+    if (assignments?.length !== 1) return false;
+    const value = unwrapped(assignments[0]);
+    return value instanceof ArrayAccessNode && value.index instanceof IntLiteralNode
+      && value.index.value === 64n && value.array instanceof IdentifierNode
+      && copiedSignatureAlias(value.array.name);
+  };
+  // The source wrapper must map to exactly the first and only physical A/B pair. A same-name but unrelated
+  // helper or a repeated helper call cannot borrow this candidate. The VM still verifies the four decoded args.
+  return forwardingValid && hasSignatureLength65 && found.length === 1 && found[0] === 0
+    && func.ecrecoverCallCount === 1 && signatureWord('r', 0n, 32n)
+    && signatureWord('s', 32n, 64n) && signatureV();
+};
+
+/**
+ * Publish compute operands only when one source predicate carries the complete, unambiguous call family.
+ * `preCallRequires` are compiler-serialized from source `require` statements at their actual program point and
+ * their producerResult leaves are canonicalized by resultConsumers() before this runs. They are not SDK guesses.
+ * The nested Keccak traversal is PRE-order: codegen reserves an ordinal before visiting the call's argument.
+ */
+const computeSideCarRecipesOf = (
+  func: FunctionDefinitionNode, compilerOptions: CompilerOptions,
+): ComputeSideCarRecipesAbi | undefined => {
+  type ComputeExpression = ComputeSideCarRecipesAbi['keccak'][number];
+  const keccakCount = func.keccakPreimageParams?.length ?? 0;
+  const recoveryCount = func.ecrecoverCallCount ?? 0;
+  if ((keccakCount === 0 && recoveryCount === 0) || func.keccakInLoop || func.ecrecoverLoopReads) {
+    return undefined;
+  }
+  if (keccakCount > 0 && (func.keccakComputeSites?.length !== keccakCount
+    || new Set(func.keccakComputeSites).size !== keccakCount)) return undefined;
+  const replayable = (node: ComputeExpression | undefined): node is ComputeExpression => {
+    if (!node) return false;
+    if (node.kind === 'literal') return node.type !== undefined && node.value !== undefined;
+    if (node.kind === 'source') return node.source?.kind === 'forward'
+      && Number.isSafeInteger(node.source.paramIndex) && node.source.paramIndex! >= 0;
+    if (node.kind === 'producerResult') return Number.isSafeInteger(node.callsiteId)
+      && node.callsiteId! >= 0 && Number.isSafeInteger(node.resultIndex)
+      && node.resultIndex! >= 0;
+    if (node.kind === 'cast') return node.type !== undefined && replayable(node.expression);
+    if (node.kind === 'bytesConcat' || node.kind === 'abiEncode' || node.kind === 'abiEncodePacked') {
+      return node.args !== undefined && node.args.every(replayable);
+    }
+    return node.kind === 'call' && node.name === 'keccak256'
+      && node.args?.length === 1 && replayable(node.args[0]);
+  };
+  const candidates: ComputeSideCarRecipesAbi[] = [];
+  const seenPredicates = new Set<string>();
+  for (const call of func.externalCalls ?? []) {
+    for (const predicate of call.preCallRequires ?? []) {
+      const key = JSON.stringify(predicate);
+      if (seenPredicates.has(key)) continue;
+      seenPredicates.add(key);
+      const keccak: ComputeExpression[] = [];
+      const keccakSites: string[] = [];
+      const ecrecover: ComputeSideCarRecipesAbi['ecrecover'][number][] = [];
+      const visit = (node: ComputeExpression): void => {
+        if (node.kind === 'call' && node.name === 'keccak256' && node.args?.length === 1) {
+          keccak.push(node.args[0]);
+          keccakSites.push(node.computeSourceSite ?? '');
+        }
+        if ((compilerOptions.evmCompat || compilerOptions.solidityImportCompat)
+          && node.kind === 'call' && node.name === 'ECDSA.recover' && node.args?.length === 2
+          && node.computeSourceSite && reachedSignature65Recovery(func, node.computeSourceSite)) {
+          ecrecover.push({ kind: 'signature65', hash: node.args[0], signature: node.args[1] });
+        }
+        if (node.kind === 'call' && ['ecrecoverPubKey', 'ecrecoverP2pkh', 'ecrecoverEvm']
+          .includes(node.name ?? '') && node.args?.length === 4) {
+          ecrecover.push({ kind: 'args4', args: node.args as [ComputeExpression, ComputeExpression,
+            ComputeExpression, ComputeExpression] });
+        }
+        for (const child of [node.expression, node.left, node.right, node.condition,
+          node.ifTrue, node.ifFalse, ...(node.args ?? [])]) {
+          if (child) visit(child);
+        }
+      };
+      visit(predicate);
+      if (keccak.length !== keccakCount || ecrecover.length !== recoveryCount
+        || keccakSites.some((site, index) => !site || site !== func.keccakComputeSites?.[index])
+        || !keccak.every(replayable)
+        || !ecrecover.every((recipe) => recipe.kind === 'signature65'
+          ? replayable(recipe.hash) && replayable(recipe.signature)
+          : recipe.args.every(replayable))) continue;
+      candidates.push({ version: 1, keccak, ecrecover });
+    }
+  }
+  if (candidates.length === 0) return undefined;
+  const first = JSON.stringify(candidates[0]);
+  if (!candidates.every((candidate) => JSON.stringify(candidate) === first)) return undefined;
+  return candidates[0];
+};
 
 /** Fail-closed artifact publication gate for compiler-owned source-effect identities. */
 export const sourceEffectOrderForArtifact = (
@@ -2192,6 +2408,12 @@ function buildFunctionAbiMetadata(
       if (slot.condition) {
         slot.condition = canonicalize(slot.condition, slot.slotIndex, 'condition');
       }
+      if (slot.preCallRequires) {
+        // Compute recipes may reuse one of these source-point predicates. Give its producer leaves the same
+        // physical callsite, tuple-component, and repeated-owner source identity as every other graph use.
+        slot.preCallRequires = slot.preCallRequires.map((predicate) =>
+          canonicalize(predicate, slot.slotIndex, 'condition'));
+      }
       for (const domain of iterationDomains.get(slot.slotIndex) ?? []) {
         domain.initialValue = canonicalize(domain.initialValue, slot.slotIndex, 'iterationDomain');
         domain.stepValue = canonicalize(domain.stepValue, slot.slotIndex, 'iterationDomain');
@@ -2217,6 +2439,7 @@ function buildFunctionAbiMetadata(
       || (left.resultIndex ?? 0) - (right.resultIndex ?? 0));
   };
   const consumers = resultConsumers();
+  const computeSideCarRecipes = computeSideCarRecipesOf(func, compilerOptions);
   // X37. Both walks are paid for only by a function that has the construct they describe: a body with no
   // low-level call and no signature check resolves nothing and publishes nothing.
   const provenance = indexBody(func);
@@ -2644,6 +2867,28 @@ function buildFunctionAbiMetadata(
     }
     return keyParams.length > 0 ? { collection: returned[0].name, keyParams } : undefined;
   })();
+  const directCollectionLengthReturn = (() => {
+    if (!func.sourceReadOnly && !func.modifiers.includes(FunctionModifier.VIEW)
+      && !func.modifiers.includes(FunctionModifier.PURE)) return undefined;
+    if ((func.externalCalls?.length ?? 0) !== 0 || func.body?.statements?.length !== 1) return undefined;
+    const statement = func.body.statements[0];
+    if (!(statement instanceof ReturnNode) || statement.expressions.length !== 1) return undefined;
+    const length = statement.expressions[0];
+    if (!(length instanceof UnaryOpNode) || length.operator !== UnaryOperator.SIZE
+      || !(length.expression instanceof MappingAccessNode) || length.expression.arrayIndex) return undefined;
+    const mapping = length.expression;
+    if (!(mapping.collection?.innermostValueType instanceof ArrayType)
+      || mapping.keys.length === 0 || func.returnTypes.length !== 1
+      || !/^(?:u?int(?:\d+)?|bigint)$/.test(func.returnTypes[0].toString())) return undefined;
+    const keyParams: string[] = [];
+    for (const key of mapping.keys) {
+      if (!(key instanceof IdentifierNode)) return undefined;
+      const parameter = visibleParameters.find((candidate) => candidate.name === key.name);
+      if (!parameter || key.definition?.definition !== parameter) return undefined;
+      keyParams.push(key.name);
+    }
+    return { collection: mapping.name, keyParams };
+  })();
   const directExternalReturn = (() => {
     if (!func.modifiers.includes(FunctionModifier.VIEW)
       && !func.modifiers.includes(FunctionModifier.PURE)
@@ -2771,6 +3016,7 @@ function buildFunctionAbiMetadata(
     }),
     ...(publishedSourceEffectOrder !== undefined && { sourceEffectOrder: publishedSourceEffectOrder }),
     ...(directMappingReturn && { directMappingReturn }),
+    ...(directCollectionLengthReturn && { directCollectionLengthReturn }),
     ...(directExternalReturn && { directExternalReturn }),
     ...(func.emitInfos && func.emitInfos.length > 0 && {
       emits: func.emitInfos.map((ei) => ({
@@ -2943,6 +3189,7 @@ function buildFunctionAbiMetadata(
     ...(func.keccakInLoop && { keccakInLoop: true }),
     ...(func.keccakLoopReads && { keccakLoopReads: true }),
     ...(func.ecrecoverCompute && { ecrecoverCompute: true }),
+    ...(computeSideCarRecipes && { computeSideCarRecipes }),
     ...(func.ecrecoverArgParams && func.ecrecoverArgParams.length > 0
       && { ecrecoverArgParams: func.ecrecoverArgParams }),
     ...((func.ecrecoverEvmFlags?.length || func.ecrecoverClosureEvmFlags?.length) && {

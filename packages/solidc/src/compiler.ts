@@ -16805,6 +16805,8 @@ function compileResolvedAst(
               ? { ecrecoverArgParams: sourceAbi.ecrecoverArgParams } : {}),
             ...(sourceAbi?.ecrecoverEvmFlags?.length
               ? { ecrecoverEvmFlags: sourceAbi.ecrecoverEvmFlags } : {}),
+            ...(sourceAbi?.computeSideCarRecipes
+              ? { computeSideCarRecipes: sourceAbi.computeSideCarRecipes } : {}),
           };
         })(),
         eligible: fn.messageBusEligible === true,

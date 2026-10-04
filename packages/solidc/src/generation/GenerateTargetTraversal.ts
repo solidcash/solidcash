@@ -221,6 +221,7 @@ import {
 import AstTraversal from '../ast/AstTraversal.js';
 import { GlobalFunction, Class } from '../ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { computeExpressionSiteKey } from '../ast/Location.js';
 import {
   compileBinaryOp,
   compileAddressToEvmIdentity,
@@ -1646,6 +1647,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private repeatedSortedUpsertLoopTotals = new Map<string, {
     inputName: string; outputName: string;
   }>();
+
   private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
   private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
   private ecrecoverLoopCounterName: string = '(loop_ecrecover_counter)'; // recovery pairs read-so-far (dynamic loop)
@@ -6065,7 +6067,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.functionHasReturnInLoop = node.body ? this.hasReturnInLoop(node.body, false) : false;
     // Rebuilt fresh each codegen pass (this node is revisited across derivation/subroutine sub-traversals);
     // emitKeccakComputeCall pushes one entry per keccak256 call in emission order (its per-call slot index).
-    if (node.keccakCompute) node.keccakPreimageParams = [];
+    if (node.keccakCompute) { node.keccakPreimageParams = []; node.keccakComputeSites = []; }
     // Same for ecrecoverPubKey: emitEcrecoverComputeCall pushes one arg-param entry per call; without this reset the
     // index (its length) accumulates across passes and the second pass reads a nonexistent block slot (2*i overflow).
     if (node.ecrecoverCompute) { node.ecrecoverArgParams = []; node.ecrecoverEvmFlags = []; }
@@ -10613,6 +10615,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const paramName = argNode instanceof IdentifierNode && fn.parameters.some((p) => p.name === argNode.name)
       ? argNode.name : null;
     const i = (fn.keccakPreimageParams ??= []).length;
+    (fn.keccakComputeSites ??= []).push(computeExpressionSiteKey(node.location));
     const capturedComputeBase = this.captureComputeSidecarBlockBase(
       loc, `(__keccak_compute_base_${i})`,
     );

@@ -1,37 +1,31 @@
 /**
- * The mapping records a user-entered call must declare.
+ * The mapping nodes a user-entered call reads, and the facts its writes are planned from.
  *
  * A per-call body that touches a sorted mapping does not read one value in place: the mapping is a chain of entry
- * NFTs, so the frame's segment has to declare every node the body's group walk reads. A target the inventory holds
- * is rewritten in place, so its group is one record; a target the inventory does not hold is spliced in, so its
- * group is the relinked predecessor followed by a created node. The created node has no input, so it is a trailing
- * output, and its commitment carries the value the body computes — which no caller can state in advance. The node's
- * declaration therefore starts from a structural candidate, the slot and successor the planner computed with a
- * placeholder tail, which the body parses for its update/insert decision and then closes against, handing the value
- * it computed back to the caller.
+ * NFTs, so the frame's segment has to declare every node the body's group walk reads. A key an entry only reads is
+ * declared as its node, kept in place, ahead of the records its writes touch (`callEntryReads`). The nodes come from
+ * the deployment's own classification (`readPerCallDeployment`): the collection a read touches is the one its access
+ * names, and the lock every node is spent under is the entry covenant the collection's signature derives.
  *
- * The nodes and their commitments come from the deployment's own classification (`readPerCallDeployment`): the
- * collection a write touches is the one its access names, its inventory is that collection's live nodes, and the
- * lock every node is spent under is the entry covenant the collection's signature derives. The writes themselves
- * are planned by the shipped batch planner (`planMappingBatch`) against that inventory, so the groups the segment
- * declares are the ones the body's own batch derivation walks.
+ * The writes are not planned here. The call path plans them with the hop's own planner (`hopEntryWrites`): one
+ * sorted batch per collection, a value that chunks laid with its run of chunk records, and the nodes read here taken
+ * as the reads the frame declares. What this module states for them is what the artifact publishes for a write in a
+ * run-time loop (`planCallLoopWrites`), the order the loop's key array is walked in and the segments its records
+ * land in, which the hop's planner and the genesis share.
  *
- * A key an entry only reads is declared as its node, kept in place, ahead of any batch's groups. A shape this module
- * has no plan for is refused by name: a write to several collections, a write outside a sorted batch, a key the call
- * data does not resolve, a value type that chunks. Nothing here guesses at an ordinal the body does not read.
+ * A shape this module has no plan for is refused by name: a write outside a sorted batch, a key the call data does
+ * not resolve, a read of a value whose bytes sit in chunk records. Nothing here guesses at an ordinal the body does
+ * not read.
  */
 
-import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth';
 import {
   INDEX_NONE,
   VALUE_INLINE_LIMIT,
-  buildEntryNftCovenantScript,
   bytesEqual,
   bytesToHex,
   collectionChunksValue,
-  computeCollectionHash,
   parseArrayTypeString,
-  scriptToBytecode,
   type AbiFunction,
   type Artifact,
   type PublishedWriteTurns,
@@ -44,11 +38,8 @@ import {
 import type { Utxo } from '../../interfaces.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
-import { createUnlockingBytecode } from '../../utils.js';
-import type { DraftInput, DraftRecordEntry, DraftSourceOutput, DraftToken } from '../composer/draft.js';
-import { planMappingBatch, type MappingBatchPlan, type MappingNodePlacement } from '../composer/mapping-plan.js';
-import { entryRecordLockingBytecode, entryRecordReadUnlock } from '../deploy/records.js';
-import { writeRuns, type WriteActivationFacts } from '../proxy/write-activation.js';
+import type { DraftInput, DraftRecordEntry, DraftToken } from '../composer/draft.js';
+import { entryRecordReadUnlock } from '../deploy/records.js';
 
 /** Raised when a call's mapping records cannot be planned from the artifact and the deployment. */
 export class PerCallCallRecordError extends Error {
@@ -59,7 +50,7 @@ export class PerCallCallRecordError extends Error {
   }
 }
 
-/** The deployment facts and call data one entry's mapping records are planned from. */
+/** The deployment facts and call data the nodes one entry reads are planned from. */
 export interface CallEntryRecordsRequest {
   readonly artifact: Artifact;
   readonly functionName: string;
@@ -76,65 +67,11 @@ export interface CallEntryRecordsRequest {
   /** Each sorted collection's live nodes, as the deployment's own classification reports them. */
   readonly nodesByCollection: ReadonlyMap<string, readonly Utxo[]>;
   /**
-   * The frame's facts a write a branch guards is decided from, beside its arguments and its sender (`writeRuns`).
-   * Absent leaves every such write undecided: planned as written where the key's node exists, refused where not.
-   */
-  readonly activationFacts?: WriteActivationFacts;
-  /**
-   * The value a mapping collection's node holds for a key, read from the same deployment: a write keyed by a value the
-   * body reads out of another mapping (`map:<collection>(<keys>)`, a field of it) resolves against the node the frame
-   * declares for that read. Absent leaves such a key unresolved, which is refused by name.
+   * The value a mapping collection's node holds for a key, read from the same deployment: a key the body reads out
+   * of another mapping (`map:<collection>(<keys>)`, a field of it) resolves against the node that collection holds.
+   * Absent leaves such a key unresolved, which is refused by name.
    */
   readonly readMappingValue?: (collection: string, keys: readonly FunctionArgument[]) => FunctionArgument | undefined;
-}
-
-/** The coordinates and values one segment's mapping records need. */
-export interface CallEntryRecordsContext {
-  /** The first trailing output index, where a created node sits. */
-  readonly createdBase: number;
-  /** The frame's own input index, which a node's spend authorizes itself by. */
-  readonly masterIndex: number;
-  /** The satoshi value a created node output carries. */
-  readonly recordAmount: bigint;
-  /**
-   * The end commitment learned for each value-dependent node, in `learningCandidates` order.
-   *
-   * A node whose end commitment carries a value the body computes cannot be stated in advance, so the plan starts
-   * from a structural candidate — the node's own slot and successor with a placeholder tail — and the derivation
-   * replaces it with the value the body's close hands back. An entry that is still a candidate is the plan's.
-   */
-  readonly learnedViews: readonly (Uint8Array | undefined)[];
-  /** The input index of a participant id the layout placed. */
-  indexOf(id: string): number;
-}
-
-/** The records an entry's mapping writes contribute to a call. */
-export interface LaidCallEntryRecords {
-  /** The records to declare after the frame's own state records, in the order the body's group walk reads them. */
-  readonly entries: readonly DraftRecordEntry[];
-  /** The spent nodes' inputs, recreated from the learned declaration chain. */
-  readonly inputs: Readonly<Record<string, DraftInput>>;
-  /** One output per created node, at the index its declaration names. */
-  readonly trailingOutputs: readonly DraftSourceOutput[];
-  /** The output index of each created node, in created order, which a validator settles. */
-  readonly createdOutputs: readonly number[];
-  /** The structural candidate each value-dependent node's declaration starts from, in learning order. */
-  readonly learningCandidates: readonly Uint8Array[];
-  /** For a run of loops, the turn that mints each of `entries`, or undefined for a node the entry only reads. */
-  readonly entryMints?: readonly (LoopRecordMint | undefined)[];
-}
-
-/** The mapping records one entry reads or writes, with the ids its plan places. */
-export interface CallEntryRecords {
-  /** The collection the entry's batch writes, or the first one it reads when it writes none. */
-  readonly collection: string;
-  /** The participant ids the frame's block holds for the nodes the entry spends, in declaration order. */
-  readonly participantIds: readonly string[];
-  /** The live UTXO of each spent node, keyed by the participant id the frame places it under. */
-  readonly spentUtxos: ReadonlyMap<string, Utxo>;
-  /** The run-time loops that write the collection, in the order the body runs them, when loops write it. */
-  readonly loopRun?: readonly CallLoopWritePlan[];
-  lay(context: CallEntryRecordsContext): LaidCallEntryRecords;
 }
 
 /**
@@ -194,11 +131,6 @@ export function adjacentRecordOrder(
   return split < 0 ? ordered : refuse(split);
 }
 
-/** The participant id a spent mapping node is placed under, keyed by its slot so the live UTXO is findable again. */
-export function mappingNodeParticipantId(slot: Uint8Array): string {
-  return `mapping-node-${bytesToHex(slot)}`;
-}
-
 /** The entry's visible inputs, which a key label can be resolved against. */
 function visibleInputs(fn: AbiFunction): AbiFunction['inputs'] {
   return fn.inputs.filter((input) => !input.name.startsWith('__internal__'));
@@ -216,28 +148,6 @@ function encodedArgument(
   if (index < 0 || index >= args.length) return undefined;
   const encoded = encodeFunctionArgument(args[index], visible[index]!.type, structs);
   return encoded instanceof Uint8Array ? encoded : undefined;
-}
-
-/** One sorted batch an entry performs, planned against the collection's live inventory. */
-interface CallMappingBatch {
-  readonly collection: string;
-  readonly signature: string;
-  readonly plan: MappingBatchPlan;
-  /** The live UTXO of each held node, by slot: a spent node's input sits on it and keeps the value it holds. */
-  readonly utxoBySlot: ReadonlyMap<string, Utxo>;
-  /** True when the plan states every node's end view itself, so the body's close has none to hand back. */
-  readonly statedValue?: boolean;
-  /**
-   * True when the plan's writes are a run-time loop's turns.
-   *
-   * The loop's own body mints one node per turn - the target of an update, or a predecessor and its new node for an
-   * insert - and chains inserts in one gap by re-pointing the node it created the turn before, so each node is
-   * written once, in mint order. That is the plan's `written` list, while a verified batch declares its writes per
-   * target (`groups`), a target's predecessor standing again for every insert in its gap.
-   */
-  readonly loopWritten?: boolean;
-  /** For a loop's turns, the turn that mints each record of `written`, in its order. */
-  readonly loopMints?: readonly LoopRecordMint[];
 }
 
 /** The expression labels an artifact publishes for the frame's own caller. */
@@ -856,132 +766,16 @@ export function readEntryNode(request: KeyResolutionContext & {
   };
 }
 
-/** The writes one entry performs to its one sorted collection, in the batch's target order. */
-function planCallMappingBatch(
-  request: CallEntryRecordsRequest,
-  run?: readonly CallLoopWritePlan[],
-): CallMappingBatch | undefined {
-  // The loops that write one collection are one run of records, in the order the body runs them.
-  const loop = run?.[0];
-  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
-  if (fn === undefined) return undefined;
-  const accesses = fn.entryAccesses ?? [];
-  const batches = fn.sortedBatchInfo ?? [];
-  if (loop === undefined) {
-    if (accesses.length === 0) return undefined;
-    if (batches.length !== 1) {
-      throw new PerCallCallRecordError(
-        `entry "${request.functionName}" touches ${accesses.length} mapping entry(ies) across ${batches.length} `
-        + 'sorted batch(es), and a call declares one collection\'s writes',
-      );
-    }
-  }
-  const batch = batches[0];
-  const collectionName = loop?.collection ?? batch!.collection;
-  const collection = request.artifact.stateLayout?.collections
-    ?.find((candidate) => candidate.name === collectionName);
-  if (collection === undefined || collection.sorted !== true) {
-    throw new PerCallCallRecordError(
-      `entry "${request.functionName}" writes mapping "${collectionName}", which the artifact does not publish `
-      + 'as a sorted collection',
-    );
-  }
-  // A key the entry only reads beside the batch is a kept node of its own, planned by `planReadNodes`.
-  if (loop === undefined
-    && batch!.slotIndices.some((slotIndex) => !accesses.some((access) => access.slotIndex === slotIndex))) {
-    throw new PerCallCallRecordError(
-      `entry "${request.functionName}"'s sorted batch names a slot its entry accesses do not describe`,
-    );
-  }
-  if (collection.chunkableValue === true) {
-    throw new PerCallCallRecordError(
-      `entry "${request.functionName}" writes mapping "${collection.name}", whose values chunk, so the created `
-      + 'node\'s run of chunk records cannot be declared from the call alone',
-    );
-  }
-  const structs = request.artifact.structs ?? request.artifact.stateLayout?.structs;
-  const inventory: Uint8Array[] = [];
-  const utxoBySlot = new Map<string, Utxo>();
-  for (const node of request.nodesByCollection.get(collection.name) ?? []) {
-    const commitment = node.token?.nft?.commitment;
-    if (commitment === undefined) {
-      throw new PerCallCallRecordError(
-        `category ${request.categoryId} holds a mapping node of "${collection.name}" with no commitment`,
-      );
-    }
-    const bytes = new Uint8Array(hexToBin(commitment));
-    inventory.push(bytes);
-    utxoBySlot.set(bytesToHex(decodeEntryCommitment(bytes).slot), node);
-  }
-  // A literal value is stated rather than learned, so the loop's declarations carry their end views directly.
-  const stated = run !== undefined && run.every((each) => each.valueBool !== undefined || each.valueConst !== undefined);
-  const storedValue = (each: CallLoopWritePlan): Uint8Array => {
-    if (each.valueBool !== undefined) return each.valueBool ? new Uint8Array([1]) : new Uint8Array(0);
-    if (each.valueConst !== undefined) return bigIntToVmNumber(BigInt(each.valueConst));
-    return new Uint8Array(1);
-  };
-  // One target's write, the value a batch plans with a one-byte placeholder: only the plan's structure depends on it.
-  // A write a branch guards is declared only where its condition holds on the frame's facts; one those facts do not
-  // decide is planned as written, its node's end view learned from whichever check the body stops at, where the
-  // key's node exists, and refused below where it does not.
-  const undecided: Uint8Array[] = [];
-  const targetWrite = (slotIndex: number): { keys: Uint8Array[]; value: Uint8Array; skipped?: boolean } => {
-    const access = accesses.find((candidate) => candidate.slotIndex === slotIndex)!;
-    const operations = access.operations;
-    const changes = operations.filter((operation) => operation !== 'read');
-    if (changes.length !== 1 || changes[0] !== 'write') {
-      throw new PerCallCallRecordError(
-        `entry "${request.functionName}" touches mapping "${access.collection}" as ${operations.join('/')}, and a `
-        + 'call plans one write per target',
-      );
-    }
-    const keys = [...resolveKeys(request, fn, access, structs)];
-    const runs = writeRuns({
-      artifact: request.artifact, functionName: request.functionName, args: request.args,
-      senderAddress: request.callerLockingBytecode,
-      ...(request.activationFacts === undefined ? {} : { facts: request.activationFacts }),
-    }, access.activation);
-    if (runs === undefined) undecided.push(keyToSlotMulti(keys));
-    return { keys, value: new Uint8Array(1), ...(runs === false ? { skipped: true } : {}) };
-  };
-  const writes = run !== undefined
-    ? run.flatMap((each) => each.turns.map((turn) => ({ keys: [...turn.keys], value: storedValue(each) })))
-    : batch!.slotIndices.map((slotIndex) => targetWrite(slotIndex));
-  const absent = undecided.find((slot) => !inventory.some((commitment) =>
-    bytesEqual(decodeEntryCommitment(commitment).slot, slot)));
-  if (absent !== undefined) {
-    throw new PerCallCallRecordError(
-      `entry "${request.functionName}" writes mapping "${collection.name}" under a condition this call cannot decide `
-      + 'from the frame\'s facts, at a key the collection does not hold, so it cannot declare whether the write '
-      + 'creates the key\'s node',
-    );
-  }
-  // The value is the body's to compute, so a one-byte placeholder fixes only the plan's structure: the slots, the
-  // successor links and which targets are inserts. Every commitment that depends on the value is left unstated and
-  // learned from the body's own close.
-  const plan = planMappingBatch({ writes, inventory, encodeValue: (encoded: Uint8Array) => encoded });
-  // Loops whose turns the artifact publishes are placed segment by segment, by the turn that mints each record.
-  const turned = run !== undefined && publishedLoopTurns(request.artifact, request.functionName)
-    .some((turns) => turns.collection === collection.name);
-  return {
-    collection: collection.name,
-    signature: collection.signature,
-    plan,
-    utxoBySlot,
-    ...(stated ? { statedValue: true } : {}),
-    ...(run === undefined ? {} : { loopWritten: true }),
-    ...(turned ? { loopMints: loopRecordMints(request.functionName, run, plan.written) } : {}),
-  };
-}
-
 /** The token a mapping node carries: a mutable NFT of the contract's category. */
 function nodeToken(category: Uint8Array, commitment: Uint8Array): DraftToken {
   return { category, amount: 0n, nft: { capability: 'mutable', commitment } };
 }
 
 /** A node an entry reads and does not write, under the participant id its frame places it at. */
-interface ReadNode extends ReadEntryNode {
+export interface ReadNode extends ReadEntryNode {
   readonly id: string;
+  /** The entry-access slot the body reads the node at. */
+  readonly slotIndex: number;
 }
 
 /**
@@ -1045,7 +839,7 @@ function planReadNodes(
       );
     }
     // Two collections can hold the same slot, so the id names the collection too.
-    return { ...node, id: `mapping-read-${node.collection}-${bytesToHex(node.slot)}` };
+    return { ...node, id: `mapping-read-${node.collection}-${bytesToHex(node.slot)}`, slotIndex: slot.slotIndex! };
   });
 }
 
@@ -1053,7 +847,7 @@ function planReadNodes(
 function layReadNodes(
   request: CallEntryRecordsRequest,
   nodes: readonly ReadNode[],
-  context: CallEntryRecordsContext,
+  indexOf: (id: string) => number,
 ): { readonly entries: readonly DraftRecordEntry[]; readonly inputs: Readonly<Record<string, DraftInput>> } {
   const category = new Uint8Array(hexToBin(request.categoryId));
   const inputs: Record<string, DraftInput> = {};
@@ -1065,165 +859,44 @@ function layReadNodes(
     };
   }
   const entries = nodes.map((node): DraftRecordEntry => {
-    const index = context.indexOf(node.id);
+    const index = indexOf(node.id);
     return { in: index, out: index, viewIn: node.commitment, viewOut: node.commitment };
   });
   return { entries, inputs };
 }
 
-/** Refuses by name a node two of the entry's records would spend. */
-function requireDistinctNodes(request: CallEntryRecordsRequest, utxos: readonly Utxo[]): void {
+/** Refuses by name a node two of an entry's records would spend. */
+export function requireDistinctNodes(functionName: string, utxos: readonly Utxo[]): void {
   const outpoints = utxos.map((utxo) => `${utxo.txid}:${utxo.vout}`);
   if (new Set(outpoints).size !== outpoints.length) {
     throw new PerCallCallRecordError(
-      `entry "${request.functionName}" reads a key at a mapping node it also spends for another key, which a call `
+      `entry "${functionName}" reads a key at a mapping node it also spends for another key, which a call `
       + 'cannot spend twice',
     );
   }
 }
 
-/**
- * Plans the mapping records an entry reads or writes, or `undefined` when it touches no sorted collection: the node
- * of each key it only reads, then its batch's groups.
- */
-export function callEntryRecords(request: CallEntryRecordsRequest): CallEntryRecords | undefined {
-  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
-  if (fn === undefined) return undefined;
-  const loops = planCallLoopWrites(request) ?? [];
-  const loop = loops.find((candidate) => (fn.entryAccesses ?? []).some((access) => access.collection
-    === candidate.collection && access.operations.some((operation) => operation !== 'read')));
-  const reads = planReadNodes(request, fn, loop?.collection);
-  // Loops whose turns the artifact publishes write one run of records, every loop of the collection in turn.
-  const turned = loop !== undefined && publishedLoopTurns(request.artifact, request.functionName)
-    .some((turns) => turns.collection === loop.collection);
-  const run = loop === undefined ? undefined
-    : turned ? loops.filter((candidate) => candidate.collection === loop.collection) : [loop];
-  const batch = (fn.sortedBatchInfo ?? []).length > 0 || run !== undefined
-    ? planCallMappingBatch(request, run)
-    : undefined;
-  if (batch === undefined) {
-    if (reads.length === 0) return undefined;
-    requireDistinctNodes(request, reads.map((node) => node.utxo));
-    return {
-      collection: reads[0]!.collection,
-      participantIds: reads.map((node) => node.id),
-      spentUtxos: new Map(reads.map((node) => [node.id, node.utxo])),
-      lay: (context: CallEntryRecordsContext): LaidCallEntryRecords => ({
-        ...layReadNodes(request, reads, context), trailingOutputs: [], createdOutputs: [], learningCandidates: [],
-      }),
-    };
-  }
-  const spent = batch.plan.written.filter((node) => node.existed);
-  const created = batch.plan.written.filter((node) => !node.existed);
-  // A skipped write's group keeps its one record, whose end view the plan states.
-  const targetSlots = new Set(batch.plan.groups.filter((group) => group.skipped !== true)
-    .map((group) => bytesToHex(group.slot)));
-  const slotHex = (slot: Uint8Array): string => bytesToHex(slot);
-  const spentUtxos = new Map<string, Utxo>();
-  for (const node of spent) {
-    const utxo = batch.utxoBySlot.get(slotHex(node.slot));
-    if (utxo !== undefined) spentUtxos.set(mappingNodeParticipantId(node.slot), utxo);
-  }
-  requireDistinctNodes(request, [...reads.map((node) => node.utxo), ...spentUtxos.values()]);
-  const lock = entryRecordLockingBytecode(request.categoryId, batch.signature);
-  const covenant = scriptToBytecode(
-    buildEntryNftCovenantScript(hexToBin(request.categoryId), computeCollectionHash(batch.signature)),
-  );
-  return {
-    collection: batch.collection,
-    // The nodes it only reads come first, so they sit past the frame's data records where its code reads them.
-    participantIds: [...reads.map((node) => node.id), ...spent.map((node) => mappingNodeParticipantId(node.slot))],
-    spentUtxos: new Map([...reads.map((node) => [node.id, node.utxo] as const), ...spentUtxos]),
-    ...(turned ? { loopRun: run } : {}),
-    lay: (context: CallEntryRecordsContext): LaidCallEntryRecords => {
-      const read = layReadNodes(request, reads, context);
-      const placements = new Map<string, MappingNodePlacement>();
-      for (const node of spent) {
-        const index = context.indexOf(mappingNodeParticipantId(node.slot));
-        placements.set(slotHex(node.slot), { in: index, out: index });
-      }
-      created.forEach((node, position) => {
-        placements.set(slotHex(node.slot), { out: context.createdBase + position });
-      });
-
-      // A node the batch rewrites carries the value the body computes, so no caller can state its end commitment.
-      // Its declaration starts from a structural candidate — the slot and successor the planner computed, with a
-      // placeholder tail — which the body parses for the update/insert decision and then closes against, handing
-      // back the value it computed. A predecessor the batch only relinks keeps its value, so its end view is stated.
-      const entries: DraftRecordEntry[] = [];
-      const learningCandidates: Uint8Array[] = [];
-      const createdLearningIndex: number[] = [];
-      // A batch writes each node once, in its final form, but a node that is both a target and another target's
-      // relinked predecessor is declared once per group that names it. Every declaration of one node has to carry
-      // the same final form: the first continues from the inventory view, a later one continues from, and leaves,
-      // that final form. The final form is the value the body computes, learned at the node's first declaration.
-      const finalLearning = new Map<string, number>();
-      // A loop's turns write each node once, in the order its own body mints them, so its records are the plan's
-      // written list; a verified batch declares a record per target group instead.
-      const batchRecords = batch.loopWritten === true
-        ? batch.plan.written.map((node) => ({
-          slot: node.slot, existed: node.existed, viewIn: node.before, viewOut: node.after,
-        }))
-        : batch.plan.groups.flatMap((group) => group.records);
-      for (const record of batchRecords) {
-        const key = slotHex(record.slot);
-        const placed = placements.get(key);
-        const repeated = finalLearning.get(key);
-        if (repeated !== undefined) {
-          const final = context.learnedViews[repeated] ?? record.viewOut;
-          const input = placed?.in ?? INDEX_NONE;
-          entries.push({ in: input, out: placed?.out ?? input, viewIn: final, viewOut: final });
-          continue;
-        }
-        const valueDependent = (!record.existed || targetSlots.has(key)) && batch.statedValue !== true;
-        if (valueDependent) {
-          const learningIndex = learningCandidates.length;
-          learningCandidates.push(record.viewOut);
-          finalLearning.set(key, learningIndex);
-          if (!record.existed) createdLearningIndex.push(learningIndex);
-          entries.push({
-            in: record.existed ? placed?.in ?? INDEX_NONE : INDEX_NONE,
-            out: placed?.out ?? (record.existed ? placed?.in ?? INDEX_NONE : INDEX_NONE),
-            viewIn: record.viewIn,
-            viewOut: context.learnedViews[learningIndex] ?? record.viewOut,
-          });
-        } else {
-          const input = placed?.in ?? INDEX_NONE;
-          entries.push({ in: input, out: placed?.out ?? input, viewIn: record.viewIn, viewOut: record.viewOut });
-        }
-      }
-
-      const category = new Uint8Array(hexToBin(request.categoryId));
-      const unlockingBytecode = createUnlockingBytecode('p2sh32', covenant, [
-        encodeFunctionArgument(1n, 'bigint') as Uint8Array,
-        encodeFunctionArgument(BigInt(context.masterIndex), 'bigint') as Uint8Array,
-      ]);
-      const inputs: Record<string, DraftInput> = {};
-      for (const node of spent) {
-        const utxo = batch.utxoBySlot.get(slotHex(node.slot));
-        const source: DraftSourceOutput = {
-          lockingBytecode: lock,
-          valueSatoshis: utxo?.satoshis ?? context.recordAmount,
-          token: nodeToken(category, node.before),
-        };
-        inputs[mappingNodeParticipantId(node.slot)] = { source, unlockingBytecode };
-      }
-      const trailingOutputs = created.map((node, position): DraftSourceOutput => ({
-        lockingBytecode: lock,
-        valueSatoshis: context.recordAmount,
-        token: nodeToken(category, context.learnedViews[createdLearningIndex[position]!] ?? node.after),
-      }));
-      return {
-        // The read nodes lead the batch's groups, which its code counts past them.
-        entries: [...read.entries, ...entries],
-        inputs: { ...read.inputs, ...inputs },
-        trailingOutputs,
-        createdOutputs: created.map((_node, position) => context.createdBase + position),
-        learningCandidates,
-        ...(batch.loopMints === undefined ? {} : {
-          entryMints: [...read.entries.map(() => undefined), ...batch.loopMints],
-        }),
-      };
-    },
+/** The nodes one entry reads and does not write, and their kept declarations. */
+export interface CallEntryReads {
+  /** The nodes in declaration order: past the frame's data records, ahead of every record its writes touch. */
+  readonly nodes: readonly ReadNode[];
+  /** Each node's kept declaration and read-only spend, at the input `indexOf` places its id at. */
+  lay(indexOf: (id: string) => number): {
+    readonly entries: readonly DraftRecordEntry[];
+    readonly inputs: Readonly<Record<string, DraftInput>>;
   };
+}
+
+/**
+ * Plans the nodes an entry reads and does not write: the node of each key it only reads, beside the writes the call
+ * path plans with the hop's planner, which takes their slots as the reads the frame declares. A run-time loop's
+ * collection is the loop's to declare, so no read of it is planned here.
+ */
+export function callEntryReads(request: CallEntryRecordsRequest): CallEntryReads {
+  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
+  if (fn === undefined) return { nodes: [], lay: () => ({ entries: [], inputs: {} }) };
+  const loop = (planCallLoopWrites(request) ?? []).find((candidate) => (fn.entryAccesses ?? []).some((access) =>
+    access.collection === candidate.collection && access.operations.some((operation) => operation !== 'read')));
+  const nodes = planReadNodes(request, fn, loop?.collection);
+  return { nodes, lay: (indexOf) => layReadNodes(request, nodes, indexOf) };
 }

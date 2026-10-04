@@ -19,10 +19,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * S0 conformance, spec section 23 row 24: a `string => string` mapping set and delete.
  *
  * The contract keeps one `mapping(string => string)`, so a write stores the value in a node whose tail chunks: a
- * value over 60 bytes is held in a run of chunk records beside the node rather than in it. On the direct shipped
- * call path a write to such a collection is refused by name, because a call alone cannot declare the chunk run the
- * created node needs. The row's own contract is deployed behind a proxy, where the hop does declare it, so the
- * second case drives the set, the read-back, the delete and the second read-back through the shipped proxy path.
+ * value over 60 bytes is held in a run of chunk records beside the node rather than in it. The direct shipped call
+ * path plans such a write with the hop's own planner, which declares the chunk run the created node takes, so the
+ * first case drives the set, the read-back, the delete and the second read-back on a plain deployment, and the second
+ * case the same through the shipped proxy path.
  *
  * The observable is the node's value tail, decoded with the shipped `decodeEntryCommitment`: the set leaves the
  * encoded value, the delete leaves the value type's default, and the node keeps its slot and successor across both.
@@ -61,7 +61,7 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
     + '   function remove(string memory k) public { delete this.notes[k]; require(bytes(k).length != 0); }'
     + ' }';
 
-  /** The direct deployment both refusals enter, and the chain as it stood when it was done. */
+  /** The direct deployment the plain case enters, and the chain as it stood when it was done. */
   interface DirectDeployment {
     readonly provider: MockNetworkProvider;
     readonly artifact: Artifact;
@@ -70,9 +70,13 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
   }
   let directRun: Promise<DirectDeployment> | undefined;
 
-  /** A direct caller coin and a funder for the write the shipped call path is asked to plan, from one deployment. */
+  /**
+   * A direct caller coin and a funder for each write the shipped call path is asked to plan, from one deployment,
+   * and the value tail the deployment's node for the key holds.
+   */
   async function direct(): Promise<{
     readonly write: (entry: string, args: readonly string[]) => ReturnType<typeof callPerCallEntry>;
+    readonly held: () => Promise<string | undefined>;
   }> {
     directRun ??= (async (): Promise<DirectDeployment> => {
       const artifact = compileStringMulti(DIRECT_SOURCE, { composition: 'per-call', solidityImportCompat: true })
@@ -89,7 +93,7 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
       return { provider, artifact, categoryId: deployment.categoryId, snapshot: await provider.takeSnapshot() };
     })();
     const { provider, artifact, categoryId, snapshot } = await directRun;
-    // Each case starts from the chain the deployment left, so neither reads the other's broadcast.
+    // Each run starts from the chain the deployment left, so none reads another's broadcast.
     await snapshot.restore();
     const signature = new SignatureTemplate(alicePriv);
     const user = encodeLockingBytecodeP2pkh(alicePkh);
@@ -104,22 +108,23 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
           callerUtxo, callerLockingBytecode: user, funder: signature.unlockP2PKH(), vm: compositionMachine(),
         });
       },
+      held: () => heldValue(provider, categoryId, artifact.stateLayout!),
     };
   }
 
-  it('refuses the direct set by name: a chunkable value cannot be declared from the call alone', async () => {
+  it('sets, reads, deletes and reads again through the direct call path', async () => {
     const run = await direct();
-    await expect(run.write('set', [KEY, VALUE])).rejects.toThrow(
-      /entry "set" writes mapping "notes", whose values chunk/,
-    );
-  });
+    const set = await run.write('set', [KEY, VALUE]);
+    expect(set.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(set.broadcast).toBeDefined();
+    expect(await run.held()).toBe(bytesToHex(VALUE_TAIL));
 
-  it('refuses the direct delete by name, the same collection write', async () => {
-    const run = await direct();
-    await expect(run.write('remove', [KEY])).rejects.toThrow(
-      /entry "remove" writes mapping "notes", whose values chunk/,
-    );
-  });
+    // The delete rewrites the node where it stood to the default tail.
+    const removed = await run.write('remove', [KEY]);
+    expect(removed.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(removed.broadcast).toBeDefined();
+    expect(await run.held()).toBe(bytesToHex(EMPTY_TAIL));
+  }, 120_000);
 
   it('sets, reads, deletes and reads again through the shipped proxy path', async () => {
     const PROXY_SOURCE = 'pragma solidcash ^0.13.0;'

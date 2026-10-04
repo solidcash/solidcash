@@ -60,6 +60,7 @@ import {
 } from '@bitauth/libauth';
 import {
   FrameKind,
+  INDEX_NONE,
   bytesEqual,
   computeFunctionSelector,
   computeFunctionSignature,
@@ -93,12 +94,16 @@ import {
   satoshiContainerUnlockingBytecode,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
+  type PerCallDeploymentSet,
 } from '../deploy/index.js';
-import { skippedEmits } from '../proxy/write-activation.js';
+import { hopEntryWrites, type HopEntryWrites, type LaidHopEntryWrites } from '../proxy/entry-writes.js';
+import { PerCallProxyDeployError } from '../proxy/errors.js';
+import { skippedEmits, type WriteActivationFacts } from '../proxy/write-activation.js';
 import { deploymentActivationFacts } from './activation-facts.js';
 import {
-  adjacentRecordOrder, callEntryRecords, frameDataRecordIndices, loopRecordSpans, namedDataRecordIndices,
-  orderLoopKeyArgs, placeRecordsBySpan, type LaidCallEntryRecords, type LoopRecordSpan,
+  PerCallCallRecordError, adjacentRecordOrder, callEntryReads, frameDataRecordIndices, loopRecordSpans,
+  namedDataRecordIndices, orderLoopKeyArgs, placeRecordsBySpan, requireDistinctNodes, type CallLoopWritePlan,
+  type LoopRecordMint, type LoopRecordSpan,
 } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
@@ -420,6 +425,189 @@ function rawUnlocker(lockingBytecode: Uint8Array, unlockingBytecode: Uint8Array)
   };
 }
 
+/** The coordinates and values one frame's mapping records are laid at. */
+interface EntryMappingContext {
+  /** The first trailing output index of the frame's created records. */
+  readonly createdBase: number;
+  /** The frame's own input index, which a spent record's unlock names as its writer. */
+  readonly masterIndex: number;
+  /** The satoshi value a created record carries. */
+  readonly recordAmount: bigint;
+  /**
+   * The end commitment learned for each value-dependent record, in `learningCandidates` order.
+   *
+   * A record whose end commitment carries a value the body computes cannot be stated in advance, so the plan starts
+   * from a structural candidate and the derivation replaces it with the value the body's close hands back. An entry
+   * that is still a candidate is the plan's.
+   */
+  readonly learnedViews: readonly (Uint8Array | undefined)[];
+  /** The input index of a participant id the layout placed. */
+  indexOf(id: string): number;
+}
+
+/** The records one frame's mapping reads and writes contribute to a call. */
+interface LaidEntryMapping {
+  /** The records to declare after the frame's own state records, in the order the body's group walk reads them. */
+  readonly entries: readonly DraftRecordEntry[];
+  readonly inputs: Readonly<Record<string, DraftInput>>;
+  /** One output per created record, at the index its declaration names. */
+  readonly trailingOutputs: readonly DraftSourceOutput[];
+  /** The structural candidate each value-dependent record's declaration starts from, in learning order. */
+  readonly learningCandidates: readonly Uint8Array[];
+  /** For a run of loops, the turn that mints each of `entries`, or undefined for a record no turn mints. */
+  readonly entryMints?: readonly (LoopRecordMint | undefined)[];
+  /** The long mapping values the body reads, by value-witness slot, which the frame's block lists. */
+  readonly values?: readonly Uint8Array[];
+}
+
+/** The mapping records one frame reads and writes, with the ids its plan places. */
+interface EntryMapping {
+  /** The first collection the frame writes, or the first one it reads when it writes none. */
+  readonly collection: string;
+  /** The participant ids the frame's block holds for the records it spends, in declaration order. */
+  readonly participantIds: readonly string[];
+  /** The live UTXO of each spent record, keyed by the participant id the frame places it under. */
+  readonly spentUtxos: ReadonlyMap<string, Utxo>;
+  /** The run-time loops that write the collection, in the order the body runs them, when loops write it. */
+  readonly loopRun?: readonly CallLoopWritePlan[];
+  lay(context: EntryMappingContext): LaidEntryMapping;
+}
+
+/** The deployment and the facts one frame's mapping records are planned from. */
+interface EntryMappingRequest {
+  readonly artifact: Artifact;
+  readonly functionName: string;
+  readonly args: readonly FunctionArgument[];
+  /** The frame's `msg.sender`, as the lock it is. */
+  readonly senderLockingBytecode: Uint8Array;
+  readonly categoryId: string;
+  readonly deployment: PerCallDeploymentSet;
+  /** The frame's state, `address(this)` and nodes' values, which its keys and guarded writes are decided from. */
+  readonly facts: WriteActivationFacts;
+  /** The lock the chunks a write leaves past its value's width are paid to: the user's, whose coin enters. */
+  readonly releasedLock: Uint8Array;
+}
+
+/**
+ * The participant id a node a frame's write spends is placed under: its slot, and its collection too for an entry
+ * that writes several, since a slot is its key's alone and two collections can hold one.
+ */
+function writtenNodeId(slot: Uint8Array, collection?: string): string {
+  return `mapping-node-${collection === undefined ? '' : `${collection}-`}${binToHex(slot)}`;
+}
+
+/**
+ * A refusal of the hop's write planner, named as this path names the frame: the planner names a delegate frame's
+ * entry as the implementation's, and a frame here runs its own contract's entry.
+ */
+function asCallRefusal(error: unknown, functionName: string): unknown {
+  if (!(error instanceof PerCallProxyDeployError)) return error;
+  return new PerCallCallRecordError(error.message
+    .replaceAll(`the implementation's "${functionName}" entry`, `entry "${functionName}"`)
+    .replaceAll('this hop', 'this call'));
+}
+
+/**
+ * Plans the mapping records one frame of a call reads and writes, or `undefined` when it touches no sorted
+ * collection: the node of each key it only reads (`callEntryReads`), then its writes as the hop plans a frame's own
+ * (`hopEntryWrites`).
+ *
+ * The hop's planner takes the frame as it takes a delegate frame, on the frame's own records, nodes, chunks and
+ * category rather than a proxy's: one sorted batch per collection, keys from the arguments, the sender, the state and
+ * the nodes of other mappings, guarded writes decided from the frame's facts, and a value that chunks laid with its
+ * run of chunk records. A value-dependent record starts from a candidate the body's close hands the value back
+ * against. The nodes read apart are declared kept ahead of the writes, and the planner takes a read at their slots as
+ * declared. A chunkable value the artifact does not state is sized only from the body's own close, which this path
+ * does not plan again from, so it is refused by name.
+ */
+function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
+  const { artifact, functionName, args, categoryId, deployment, facts } = request;
+  const state = facts.stateValues as Readonly<Record<string, StateValue>>;
+  const valueReader = facts.readMappingValue === undefined ? {} : { readMappingValue: facts.readMappingValue };
+  const reads = callEntryReads({
+    artifact, functionName, args, state, callerLockingBytecode: request.senderLockingBytecode, categoryId,
+    nodesByCollection: deployment.nodesByCollection, ...valueReader,
+  });
+  const fn = artifact.abi.find((candidate) => candidate.name === functionName);
+  const batches = fn?.sortedBatchInfo ?? [];
+  const writesMapping = batches.length > 0
+    || (fn?.entryAccesses ?? []).some((access) => access.operations.some((operation) => operation !== 'read'));
+  const category = new Uint8Array(hexToBin(categoryId));
+  const several = new Set(batches.map((batch) => batch.collection)).size > 1;
+  let writes: HopEntryWrites | undefined;
+  try {
+    writes = !writesMapping ? undefined : hopEntryWrites({
+      artifact, functionName, args, callerLockingBytecode: request.senderLockingBytecode,
+      liveDeployment: {
+        category,
+        recordCommitments: deployment.records.map((record) => hexToBin(record.token?.nft?.commitment ?? '')),
+        chunks: [...deployment.chunks, ...deployment.collectionNodes],
+        nodesByCollection: deployment.nodesByCollection,
+        state,
+      },
+      declaredReadSlots: reads.nodes.map((node) => node.slotIndex),
+      nodeIdOf: (collection, slot) => writtenNodeId(slot, several ? collection : undefined),
+      activationFacts: facts,
+      ...valueReader,
+    });
+  } catch (error) {
+    throw asCallRefusal(error, functionName);
+  }
+  if (writes?.awaitsValue === true) {
+    const chunking = writes.reachWrites.find((write) => write.chunkable)?.collection ?? writes.collection;
+    throw new PerCallCallRecordError(
+      `entry "${functionName}" writes mapping "${chunking ?? ''}", whose values chunk, a value its artifact does not `
+      + 'state, so the run of chunk records the write takes cannot be sized from the call alone',
+    );
+  }
+  const collection = writes?.collection ?? reads.nodes[0]?.collection;
+  if (collection === undefined) return undefined;
+  requireDistinctNodes(functionName, [...reads.nodes.map((node) => node.utxo), ...(writes?.spentUtxos.values() ?? [])]);
+  return {
+    collection,
+    // The nodes it only reads come first, so they sit past the frame's data records where its code reads them.
+    participantIds: [...reads.nodes.map((node) => node.id), ...(writes?.participantIds ?? [])],
+    spentUtxos: new Map([...reads.nodes.map((node) => [node.id, node.utxo] as const), ...(writes?.spentUtxos ?? [])]),
+    ...(writes?.loopRun === undefined ? {} : { loopRun: writes.loopRun }),
+    lay: (context: EntryMappingContext): LaidEntryMapping => {
+      const read = reads.lay(context.indexOf);
+      let laid: LaidHopEntryWrites | undefined;
+      try {
+        laid = writes?.lay({
+          indexOf: context.indexOf, proxyMasterIndex: context.masterIndex, createdBase: context.createdBase,
+          recordAmount: context.recordAmount, category, learnedViews: context.learnedViews,
+          releasedLock: request.releasedLock,
+        });
+      } catch (error) {
+        throw asCallRefusal(error, functionName);
+      }
+      // A batch declares a node once per group that names it, and the body writes it once, in its final form: a later
+      // declaration continues from the view the one before it ends at, the value the body computed once it is learned.
+      const ends = new Map<number, Uint8Array>();
+      const written = (laid?.entries ?? []).map((entry): DraftRecordEntry => {
+        const record = entry.in === INDEX_NONE ? entry.out : entry.in;
+        const before = ends.get(record);
+        ends.set(record, entry.viewOut);
+        return before === undefined ? entry : { ...entry, viewIn: before };
+      });
+      const mints = writes?.loopMints;
+      return {
+        entries: [...read.entries, ...written],
+        inputs: { ...read.inputs, ...laid?.inputs },
+        trailingOutputs: laid?.trailingOutputs ?? [],
+        learningCandidates: writes?.learningCandidates ?? [],
+        // A loop's records lead its writes' declarations; a node read apart, and any record past them, no turn mints.
+        ...(mints === undefined ? {} : {
+          entryMints: [
+            ...read.entries.map(() => undefined), ...mints, ...written.slice(mints.length).map(() => undefined),
+          ],
+        }),
+        ...(laid?.values === undefined ? {} : { values: laid.values }),
+      };
+    },
+  };
+}
+
 /** Calls an entry on a deployed per-call contract, evaluates it, and broadcasts it when every participant agrees. */
 export async function callPerCallEntry(options: PerCallCallOptions): Promise<PerCallCallResult> {
   return callInShape(options, { listedSends: undefined, skippedPayees: new Set(), payeeListedSends: new Map() });
@@ -526,22 +714,14 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   const declared = frameDataRecordIndices(artifact, entry.name).map((nftIndex) => records[nftIndex]!);
   const recordIds = declared.map((record) => record.id);
 
-  // The mapping nodes the entry writes, planned against the deployment's own classified inventory: the frame
-  // declares the node a held key sits at, or the head sentinel a new key is spliced beside, exactly as the genesis
-  // and the proxy hop do. A key the body reads out of its own records resolves against the records it spends.
+  // The mapping records the entry reads and writes, planned against the deployment's own classified inventory as the
+  // proxy hop plans its frames' own (`entryMapping`): the frame declares the node a held key sits at, or the node a
+  // new key is spliced beside, one sorted batch per collection, with a value's run of chunk records. A key the body
+  // reads out of its own records, or out of another mapping, resolves against the records and nodes it spends.
   const activationFacts = deploymentActivationFacts(artifact, categoryId, deployment, deployed.address);
-  const mappingRecords = callEntryRecords({
-    artifact,
-    functionName,
-    args,
-    state: deploymentStateValues(stateLayout, categoryId, deployment) as Readonly<Record<string, StateValue>>,
-    callerLockingBytecode: options.callerLockingBytecode,
-    categoryId,
-    nodesByCollection: deployment.nodesByCollection,
-    activationFacts,
-    // A key the write reads out of another mapping is the value the deployment's node holds, the node the frame
-    // declares for that read.
-    readMappingValue: activationFacts.readMappingValue,
+  const mappingRecords = entryMapping({
+    artifact, functionName, args, senderLockingBytecode: options.callerLockingBytecode, categoryId, deployment,
+    facts: activationFacts, releasedLock: options.callerLockingBytecode,
   });
   const mappingIds = mappingRecords?.participantIds ?? [];
 
@@ -677,14 +857,11 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         selector: VALUE_SEND_CALL_DATA,
         emits: [...(body.emits ?? [])].sort((left, right) => left.emitIndex - right.emitIndex),
         // Its mapping writes, keyed by the paying contract, which is its `msg.sender`.
-        mapping: callEntryRecords({
-          artifact: external.artifact,
-          functionName: body.name,
-          args: [],
-          callerLockingBytecode: deployed.address,
-          categoryId: external.categoryId,
-          nodesByCollection: set.nodesByCollection,
-          activationFacts: deploymentActivationFacts(external.artifact, external.categoryId, set, lock),
+        mapping: entryMapping({
+          artifact: external.artifact, functionName: body.name, args: [], senderLockingBytecode: deployed.address,
+          categoryId: external.categoryId, deployment: set,
+          facts: deploymentActivationFacts(external.artifact, external.categoryId, set, lock),
+          releasedLock: options.callerLockingBytecode,
         }),
         segmentCount: bodySites?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1,
         transferPosition,
@@ -1015,7 +1192,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     (id: string): number => participant(layout, receiveNodeId(index, id)).index;
   const layPayee = (
     index: number, base: number, learnedViews: readonly (Uint8Array | undefined)[],
-  ): LaidCallEntryRecords | undefined =>
+  ): LaidEntryMapping | undefined =>
     payees[index]!.mapping?.lay({
       createdBase: base,
       masterIndex: participant(layout, receiveMasterId(index)).index,
@@ -1166,6 +1343,8 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       sends: sendIndices,
       argumentPushes,
       redeemScript: deployed.script,
+      // The long mapping values its writes read, which its block lists.
+      ...(laid?.values === undefined ? {} : { values: laid.values }),
       // A root that carries call data is one a dispatcher selects an entry of.
       dispatches: true,
     };
@@ -1201,6 +1380,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       sends: payeeSendIndices[index]!,
       argumentPushes: [payee.selector],
       redeemScript: payee.deployed.script,
+      ...(payeeLaid[index]!.mapping?.values === undefined ? {} : { values: payeeLaid[index]!.mapping!.values }),
     }));
 
     const inputs: Record<string, DraftInput> = {
@@ -1446,7 +1626,11 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         learnedRetval = Uint8Array.from(reading.computed);
         continue;
       }
-      const position = learningCandidates.findIndex((candidateView) => bytesEqual(candidateView, reading.declared));
+      // A view is matched as the plan now declares it, learned or still a candidate: two collections keyed alike can
+      // start two nodes from one candidate, and a close names the first one still declared at it.
+      const declaredViews = learnedViews;
+      const position = learningCandidates.findIndex((candidateView, index) =>
+        bytesEqual(declaredViews[index] ?? candidateView, reading.declared));
       if (position >= 0) {
         learnedViews = learnedViews.map((view, index) =>
           (index === position ? Uint8Array.from(reading.computed) : view));

@@ -14,9 +14,9 @@ import {
  *
  * The ERC721 transfer, whose key is read out of a node the same body then writes (`_balances[_ownerOf(id)] -= 1;
  * ... _owners[id] = to;`), is served (`call/written-node-keyed-write.test.ts`): the master derives the batch the key
- * reads out of first, then emits the key from that node's view as its group begins it, then derives the rest. One
- * wall stands: on the plain call path a struct record cannot be opened, since the value chunks and the call does not
- * declare the created node's chunk records, so a release keyed by the record's field has no deal to read there.
+ * reads out of first, then emits the key from that node's view as its group begins it, then derives the rest. A
+ * struct record, whose value chunks, is opened on the plain call path too, which plans its writes with the hop's own
+ * planner and so declares the created node's chunk records: every case here settles.
  *
  * The file runs only under `PER_CALL_AHEAD=1`.
  */
@@ -74,12 +74,12 @@ describe.runIf(process.env.PER_CALL_AHEAD === '1')('ahead: a write keyed by a va
     expect(moved.coinSpent).toBe(true);
   }, 600_000);
 
-  it('through the plain path: refuses to open a struct record (should settle once served)', async () => {
+  it('through the plain path: opens a struct record, whose value chunks', async () => {
     const world = await newWorld(0x54);
     const escrow = await deployPlain(world, compilePerCall(ESCROW).Escrow!);
     const opened = await enterPlain(world, escrow, 'open', [1n, USER_LOCK, 50n]);
-    expect(opened.error?.message).toBe('entry "open" writes mapping "deals", whose values chunk, so the created '
-      + 'node\'s run of chunk records cannot be declared from the call alone');
-    expect(opened.coinSpent).toBe(false);
+    expect(opened.error).toBeUndefined();
+    expect(refusedVerdicts(opened.result!)).toBeUndefined();
+    expect(opened.coinSpent).toBe(true);
   }, 600_000);
 });

@@ -123,6 +123,26 @@ describe('published resource budgets/published semantic-derivation ceiling resou
     })).toThrow(/maximumRows/);
   });
 
+  it('counts resolved local continuation bands even when provisional usage says zero', () => {
+    const base = {
+      participant: 0,
+      handlerSelector: 'aabbccdd',
+      publishedBase: 0,
+      claimCount: 1,
+      budgets: { maximumValueContinuationChunks: 1 },
+    };
+    expect(() => authorizeComposeParticipantLayout({
+      ...base,
+      valueChunkBands: [{ chunkCount: 2 }],
+      usage: { maximumValueContinuationChunks: 0 },
+    })).toThrow(/maximumValueContinuationChunks/);
+    expect(() => authorizeComposeParticipantLayout({
+      ...base,
+      valueChunkBands: [{ chunkCount: 1 }],
+      usage: { maximumValueContinuationChunks: 2 },
+    })).not.toThrow();
+  });
+
   it('assertWithinKernelBudgets still enforces plan-published axes', () => {
     // maximumSemanticDerivationPasses is compose-loop only; rows stay on KernelResourceBudget.
     const rowPlan = createKernelExecutionPlan({

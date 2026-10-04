@@ -66,6 +66,8 @@ export function authorizeComposeParticipantLayout(params: {
    * Silent SDK defaults are refuse — missing budgets fail closed.
    */
   requirePublishedBudgets?: boolean;
+  /** Physically resolved continuation bands; their widths, not a provisional route hint, set budget usage. */
+  valueChunkBands?: readonly { chunkCount: number }[];
   usage?: Partial<KernelResourceBudget>;
 }): ComposeKernelAuthorityResult {
   const handlerStable = requireStableId(
@@ -89,6 +91,12 @@ export function authorizeComposeParticipantLayout(params: {
     },
   });
   assertKernelPlanComplete(plan);
+  const valueContinuationChunks = params.valueChunkBands?.reduce((total, band) => {
+    if (!Number.isSafeInteger(band.chunkCount) || band.chunkCount < 1) {
+      throw new Error('kernel-plan: invalid resolved value-chunk band width');
+    }
+    return total + band.chunkCount;
+  }, 0);
   assertWithinKernelBudgets(plan, {
     maximumParticipants: (params.usage?.maximumParticipants ?? params.participant) + 1,
     maximumRows: params.usage?.maximumRows ?? 1,
@@ -96,6 +104,9 @@ export function authorizeComposeParticipantLayout(params: {
     maximumValueContinuationChunks: params.usage?.maximumValueContinuationChunks
       ?? (params.selectedResources?.length ?? 0),
     ...params.usage,
+    ...(valueContinuationChunks !== undefined && {
+      maximumValueContinuationChunks: valueContinuationChunks,
+    }),
   });
   const digest = digestKernelExecutionPlan(plan);
   // KernelExecutionPlan bytecode commitment: transplanting digest metadata

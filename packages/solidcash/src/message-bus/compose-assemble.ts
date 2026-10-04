@@ -1779,9 +1779,7 @@ export async function assembleAtomicComposition(
             maximumReturnCarriers: publishedBudgets.maximumReturnCarriers,
             maximumExternalEdges: publishedBudgets.maximumExternalEdges,
           },
-          usage: {
-            maximumValueContinuationChunks: pendingValueChunkClaim?.chunkCount ?? 0,
-          },
+          valueChunkBands,
         });
           // Stamp digest into relocation log so dropping authorizeComposeParticipantLayout breaks sync metadata.
         publishedRelocations.push({

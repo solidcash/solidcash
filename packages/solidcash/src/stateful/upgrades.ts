@@ -18,7 +18,7 @@ import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 import { deriveLogicalCreateAddress } from './logical-identity.js';
 import {
-  findDeploymentByAddress, registerDeployment, registeredValueAddressLockingBytecode,
+  findDeploymentByAddressValue, registerDeployment, registeredValueAddressLockingBytecode,
 } from './deployment-registry.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { proxySyntheticPaginationCollection } from './proxy-pagination.js';
@@ -364,7 +364,7 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
     }));
     const covenantArgs = implArgs.map((arg, index): FunctionArgument => {
       if (visibleInputs[index]?.type !== 'address' || typeof arg !== 'string') return arg;
-      const deployment = findDeploymentByAddress(this.proxy.inner.provider, arg);
+      const deployment = findDeploymentByAddressValue(this.proxy.inner.provider, arg);
       if (!deployment) return arg;
       const registered = deployment.contract as {
         _logicalAddress?: string;

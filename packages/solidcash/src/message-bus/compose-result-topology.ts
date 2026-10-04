@@ -567,6 +567,22 @@ async function rebuildCallTopology(
               }
               reachedCurrent.set(outerIndex, occurrence);
             }
+            // A hand-prepared edge with no result resolver is an exact claim, not a placeholder for graph
+            // discovery to silently replace. In particular, two same-schema producer lanes must not let a
+            // swapped sink argument or swapped concrete producer owner be repaired behind the caller's back.
+            // SDK-discovered edges carry producerPath; explicitly result-resolved edges opt into argument
+            // refresh, never into changing a concrete callee or source callsite. Both still face the final VM.
+            if (prior && prior.call.producerPath === undefined
+              && (prior.call.contract !== contract
+                || (prior.call.callsiteId !== undefined
+                  && prior.call.callsiteId !== template.callsiteId)
+                || (prior.call.selector !== undefined && prior.call.selector !== childFn.selector)
+                || (prior.call.resolveArgsFromResults === undefined
+                  && semanticJson(prior.call.args) !== semanticJson(childArgs)))) {
+              throw new Error(
+                `messageBus: prepared callsite ${String(template.callsiteId)} disagrees with the compiled result edge`,
+              );
+            }
             if (prior && prior.call.contract === contract && prior.call.selector === childFn.selector
               && prior.call.executor === executor) {
               const rebuilt = rebuildPreparedInvocation(prior.call, childArgs, undefined);

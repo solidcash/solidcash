@@ -280,8 +280,26 @@ export async function deriveReturnValue(
         const facadeHost = delegatedCall.contract as StatefulContract & {
           implementation?: StatefulContract;
         };
-        const facadeState = await (facadeHost.implementation ?? facadeHost).getState();
-        const stored = facadeState[addressStateVar];
+        const delegateSlot = delegatedCall.contract.inner.artifact.stateLayout?.variables.find((variable) => (
+          variable.name === addressStateVar
+        ));
+        const ownerSlot = host.inner.artifact.stateLayout?.variables.find((variable) => (
+          variable.name === addressStateVar
+        ));
+        const isDelegatedFacade = (abiFunction?.lowLevelCalls?.length ?? 0) === 1
+          && abiFunction?.lowLevelCalls?.[0]?.callMode === 'delegatecall'
+          && (calls?.filter((call) => call.type === 'stateful').length ?? 0) === 1;
+        // A delegate implementation reads the proxy's state category, not its own unused deployment state.
+        // Require the compiler-published field to occupy the same slot in both layouts before using the proxy
+        // as the source of the dynamic target. If the layouts disagree, retain the ordinary VM probe.
+        const ownerHoldsSlot = isDelegatedFacade && delegateSlot !== undefined && ownerSlot !== undefined
+          && delegateSlot.nftIndex === ownerSlot.nftIndex
+          && delegateSlot.fieldIndex === ownerSlot.fieldIndex
+          && delegateSlot.type === ownerSlot.type;
+        const facadeState = isDelegatedFacade
+          ? (ownerHoldsSlot ? await host.getState() : undefined)
+          : await (facadeHost.implementation ?? facadeHost).getState();
+        const stored = facadeState?.[addressStateVar];
         if (typeof stored === 'string' || stored instanceof Uint8Array) {
           storedTarget = stored;
           byAddress = findDeploymentByAddressValue(host.inner.provider, stored)?.contract;

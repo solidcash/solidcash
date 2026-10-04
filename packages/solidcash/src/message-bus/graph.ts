@@ -2844,7 +2844,10 @@ export function planCompiledGraph(
       if (callValueEffect) boundValueBits[child] = CALL_OPTION_VALUE;
       if (!callsite?.hasReturnValues) return;
       const produced = plannedBase[child].resultTypes;
-      if (produced.length === 0) {
+      // A low-level call returns `(success, bytes)` even when the invoked method is void: the authenticated
+      // result bytes are empty. This is the optional-return convention used by SafeERC20-style callers.
+      // Typed calls still require the producer schema promised by the compiler.
+      if (produced.length === 0 && !callsite.opaqueReturn) {
         throw new Error(
           `messageBus: invocation ${parent} consumes a result from void invocation ${child}`,
         );

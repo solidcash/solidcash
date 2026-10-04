@@ -33,6 +33,69 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 const slotHex = (key: bigint): string => binToHex(keyToSlotMulti([bigIntToVmNumber(key)]));
 
 describe('kernel selected event beside journal mutation under composition', () => {
+  it('skips unselected fixed event slots during semantic composition', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        event Touched(int indexed key);
+        function touch(int key) public {
+          emit Touched(key);
+          require(true);
+        }
+        function leaveUntouched() public { require(true); }
+      }`, KERNEL);
+    expect(storeArtifact.messageBus?.route.blockLayout?.slots.some((slot) => slot.kind === 'event'))
+      .toBe(true);
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IStore { function leaveUntouched() external; }
+      contract Caller() {
+        function poke(address store) public {
+          IStore(store).leaveUntouched();
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+    const callsiteId = callerArtifact.abi.find((entry) => entry.name === 'poke')
+      ?.externalCalls?.find((call) => call.functionName === 'leaveUntouched')?.callsiteId;
+    expect(callsiteId).toBeDefined();
+
+    const inspectedEventIndices: number[][] = [];
+    const discoverEvents = store._messageBusEventCommitmentsFromTransaction.bind(store);
+    store._messageBusEventCommitmentsFromTransaction = (...args) => {
+      inspectedEventIndices.push([...args[1]]);
+      return discoverEvents(...args);
+    };
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [{
+        contract: caller, functionName: 'poke', args: [store.inner.lockingBytecode],
+      }, {
+        contract: store, functionName: 'leaveUntouched', args: [], callsiteId,
+      }],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const builder = await composition.build();
+    expect(inspectedEventIndices).toEqual([]);
+    expect(vmAccepts(builder)).toBe(true);
+  }, 120_000);
+
   it.each([true, false])(
     'settles bool-param-selected emit beside mapping write when emitIt=%s',
     async (emitIt) => {

@@ -375,9 +375,22 @@ export function observeComposeSemanticEffects(
   });
   const derivedEventEffects: AtomicEventSlotEffect[] = [];
   const eventProgram = ctx.provisional.buildLibauthProgram();
+  const eventSlots = ctx.eventSlots();
+  const eventSlotsByParticipant = new Map<number, typeof eventSlots[number][]>();
+  for (const slot of eventSlots) {
+    const owned = eventSlotsByParticipant.get(slot.participant) ?? [];
+    owned.push(slot);
+    eventSlotsByParticipant.set(slot.participant, owned);
+  }
   const discoveredEvents = new Map<number, { commitment: string; lockingBytecode?: string }>();
   for (const participant of ctx.plan.participants) {
-    const ownedSlots = ctx.eventSlots().filter((slot) => slot.participant === participant.participant);
+    const selectedOffsets = selectedGraphEventOffsets(ctx.plan, participant);
+    // The compiler-published frame can reserve hundreds of inactive sites. Probing those sites makes the
+    // event trace report impossible missing commitments and triggers an unnecessary full VM fallback.
+    // Runtime-row slots and routes without a provable selected frame still require the complete probe.
+    const ownedSlots = (eventSlotsByParticipant.get(participant.participant) ?? [])
+      .filter((slot) => slot.runtimeRow !== undefined
+        || selectedOffsets === undefined || selectedOffsets.has(slot.offset));
     const participantBase = ctx.finalized.layout.participantInputs[participant.participant];
     const eventIndices = ownedSlots.map((slot) => participantBase + slot.offset);
     if (eventIndices.length === 0) continue;
@@ -390,13 +403,13 @@ export function observeComposeSemanticEffects(
   }
   // The route's unrolled dispatcher owns the physical event site. A compact local probe initially places
   // reached events by logical row, but those coordinates can differ when several selector arms share the
-  // route. The complete trace above is the compiler's authority: relocate the SDK's artifact-derived event
+  // route. The selected-site trace above is the compiler's authority: relocate the SDK's artifact-derived event
   // templates onto the exact event slots introspected by the covenant, and return every other reserved slot
   // to its canonical balanced-output shape. No contract-specific handler or event names participate.
   for (const participant of ctx.plan.participants) {
     const participantBase = ctx.finalized.layout.participantInputs[participant.participant];
     const selectedEventOffsets = selectedGraphEventOffsets(ctx.plan, participant);
-    const indices = ctx.eventSlots().filter((slot) => slot.participant === participant.participant)
+    const indices = (eventSlotsByParticipant.get(participant.participant) ?? [])
       .map((slot) => participantBase + slot.offset);
     if (indices.length === 0) continue;
     const eventLocks = ctx.eventLockingBytecodes(participant);
@@ -504,7 +517,7 @@ export function observeComposeSemanticEffects(
   // graph pass applies this compiler-authenticated semantic claim as a recipe, and the VM remains validation-only.
   const postEventResourceProposals = discoverMessageBusComputedResourceOutputs(ctx.provisional);
   refreshDiscoveredMutableResourceEffects(ctx, derivedResourceEffects, postEventResourceProposals);
-  for (const slot of ctx.eventSlots()) {
+  for (const slot of eventSlots) {
     const outputIndex = ctx.finalized.layout.participantInputs[slot.participant] + slot.offset;
     const output = ctx.provisional.outputs[outputIndex];
     if (!output) throw new Error(`messageBus: event slot ${slot.participant}:${slot.offset} has no output`);

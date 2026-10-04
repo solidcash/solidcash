@@ -3850,16 +3850,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const identityArguments = computesDigest ? this.perCallIdentityArguments(node, site, index) : [];
     if (computesTarget) this.emitPerCallComputedTarget(node);
+    // A call that carries value leaves the amount the code computes between the target and the digest: the check
+    // parks the digest, then the value, then the target, and holds the record's `value` to the amount.
+    const carriesValue = site.valueFromStack === true && node.callOptions?.value !== undefined;
+    if (carriesValue) this.visit(node.callOptions!.value!);
     if (computesDigest) this.emitPerCallArgumentDigest(node, site, locationData, identityArguments);
-    // The check parks both on the alternate stack and consumes them where their fields are, so they leave the
+    // The check parks them on the alternate stack and consumes them where their fields are, so they leave the
     // frame here even though the check itself is emitted as raw bytes.
     if (computesDigest) this.popFromStack();
+    if (carriesValue) this.popFromStack();
     if (computesTarget) this.popFromStack();
     // The site's raw script is emitted as script elements rather than a flat byte array, so its pushes stay whole:
     // a body that carries a bare push opcode as a number element reads the next opcode as that push's payload, and
     // the shared-span outliner that rewrites entry bodies would cut inside a push.
     this.emit(bytecodeToScript(callSiteCheckScript(site, recordIndex, usesResult, {
       digestFromStack: computesDigest, targetFromStack: computesTarget,
+      ...(carriesValue ? { valueFromStack: true } : {}),
       ...(runtimeIndex ? { indexFromStack: true } : {}),
       ...(identityArguments.length > 0 ? { identityArguments } : {}),
     })), locationData);

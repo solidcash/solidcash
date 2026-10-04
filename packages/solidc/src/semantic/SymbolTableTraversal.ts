@@ -4820,6 +4820,20 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
+  /**
+   * True for a typed call whose `{value:}` its own call record carries, rather than a transfer of the body's.
+   *
+   * In a per-call compile the caller's site holds the record's `value` to the amount its code computes, the validator
+   * holds the callee's frame value to the record (V5), and the value rule charges the caller's containers and credits
+   * the callee's (V7). The direct and message-bus conventions pay a call value as a transfer, and every convention
+   * pays a raw call's value and an empty-calldata value call that way, since those are sends.
+   */
+  private recordCarriesCallValue(node: Node | undefined): boolean {
+    return node instanceof ExternalFunctionCallNode && this.compilerOptions.composition === 'per-call'
+      && !node.rawValueTransferOnly && node.interfaceName !== '__raw__'
+      && hasEffectiveCallValue(node.callOptions?.value);
+  }
+
   private collectTransferStatements(
     node: Node, transferInfos: TransferInfo[], seen: WeakSet<Node> = new WeakSet<Node>(),
   ): void {
@@ -4863,8 +4877,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     // {value: X} call option on MethodCallStatementNode (pre-transformation)
     if (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value)) {
-      node.call.valueTransferIndex = transferInfos.length;
-      transferInfos.push({ transferIndex: node.call.valueTransferIndex });
+      if (this.recordCarriesCallValue(node.expression)) {
+        node.call.valueTransferIndex = -1;
+      } else {
+        node.call.valueTransferIndex = transferInfos.length;
+        transferInfos.push({ transferIndex: node.call.valueTransferIndex });
+      }
     }
     // Returning low-level expression: `(bool ok, bytes data) = target.call{value: amount}(payload)`.
     if (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
@@ -4873,8 +4891,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
       || hasEffectiveCallValue(node.callOptions?.value))) {
-      node.valueTransferIndex = transferInfos.length;
-      transferInfos.push({ transferIndex: node.valueTransferIndex });
+      if (this.recordCarriesCallValue(node)) {
+        node.valueTransferIndex = -1;
+      } else {
+        node.valueTransferIndex = transferInfos.length;
+        transferInfos.push({ transferIndex: node.valueTransferIndex });
+      }
     }
     // For branches: walk the longer branch to create entries, shorter to assign indices
     if (node instanceof BranchNode) {
@@ -5058,6 +5080,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       return startIndex + 1;
     }
     if (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value)) {
+      if (this.recordCarriesCallValue(node.expression)) {
+        node.call.valueTransferIndex = -1;
+        return startIndex;
+      }
       node.call.valueTransferIndex = startIndex;
       return startIndex + 1;
     }
@@ -5067,6 +5093,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
       || hasEffectiveCallValue(node.callOptions?.value))) {
+      if (this.recordCarriesCallValue(node)) {
+        node.valueTransferIndex = -1;
+        return startIndex;
+      }
       node.valueTransferIndex = startIndex;
       return startIndex + 1;
     }

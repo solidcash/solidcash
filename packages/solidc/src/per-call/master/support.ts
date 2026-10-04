@@ -3495,11 +3495,30 @@ function deriveEntryCallSites(
     }
     // The data-NFT inputs the direct convention co-spends for a callee are not part of the shape the site checks: a
     // site reads the callee's record out of the witness block, and the records the callee's own frame declares are
-    // settled by the segments rather than by a co-spent input this master locates. An opaque return and a call
-    // value are the direct path's own machinery, which a per-call body does not emit.
-    if (slot.opaqueReturn === true || slot.callValueEffect === true) {
+    // settled by the segments rather than by a co-spent input this master locates. An opaque return is the direct
+    // path's own machinery, which a per-call body does not emit.
+    if (slot.opaqueReturn === true) {
       return { calls: [], reason: `the call to '${slot.functionName}' takes the direct path's return-event or `
         + 'value-transfer machinery, which a per-call body does not emit' };
+    }
+    // A call value is carried by the site's own record, not by a transfer of the body's: the caller's code computes
+    // the amount where it calls and the site holds the record's `value` to it, the validator holds the callee's frame
+    // value to the record (V5), and the value rule charges it to the caller's containers and credits the callee's (V7,
+    // or the head of a frame that settles alone). A read takes no value; an amount computed by another call would bind
+    // that call's record out of the order the calls run in; and a value send of the body's own beside it is numbered
+    // over arms that still count the call's value, so each is refused by name.
+    const carriesValue = slot.callValueEffect === true;
+    if (carriesValue && isReadCall(slot, interfaces)) {
+      return { calls: [], reason: `the call to '${slot.functionName}' carries a value into a read, which a static `
+        + 'frame never takes' };
+    }
+    if (carriesValue && reachesAnyCall(slot.sourceCallNode?.callOptions?.value)) {
+      return { calls: [], reason: `the call to '${slot.functionName}' computes its value with another call, whose `
+        + 'record would be bound out of the order the calls run in' };
+    }
+    if (carriesValue && (entry.transferInfos?.length ?? 0) > 0) {
+      return { calls: [], reason: `the call to '${slot.functionName}' carries a value beside a value send of the `
+        + 'body\'s own, whose numbering a per-call body does not reconcile with the call\'s yet' };
     }
     const target = siteTarget(slot);
     if ('reason' in target) return { calls: [], reason: target.reason };
@@ -3518,6 +3537,7 @@ function deriveEntryCallSites(
       target: target.bytes,
       ...(slot.condition === undefined ? {} : { conditional: true }),
       ...(target.fromStack === true ? { targetFromStack: true } : {}),
+      ...(carriesValue ? { valueFromStack: true } : {}),
       ...(slot.sourceCallNode !== undefined && loopNested.has(slot.sourceCallNode) ? { repeats: true } : {}),
       interfaceName: slot.interfaceName,
       functionName: slot.functionName,

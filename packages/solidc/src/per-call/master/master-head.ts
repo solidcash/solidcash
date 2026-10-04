@@ -357,6 +357,8 @@ class HeadEmitter {
   private readonly acceptsValue: boolean;
   /** True when the master receives or pays value, so its frames are held against its containers. */
   private readonly handlesValue: boolean;
+  /** True when some call the master makes carries value, which its call records pass on. */
+  private readonly paysThroughCalls: boolean;
 
   constructor(options: MasterHeadOptions) {
     this.callSites = options.calls ?? [];
@@ -371,7 +373,8 @@ class HeadEmitter {
     this.keepsRecordIndices = options.keepsRecordIndices === true;
     this.returnsValue = options.returnsValue === true;
     this.acceptsValue = options.acceptsValue === true;
-    this.handlesValue = this.acceptsValue || this.tailShape.sendCount > 0;
+    this.paysThroughCalls = this.callSites.some((site) => site.valueFromStack === true);
+    this.handlesValue = this.acceptsValue || this.tailShape.sendCount > 0 || this.paysThroughCalls;
     // A master admits the standalone shape unless it is asked to do more: composed frames, a call, or a
     // validator to recognise.
     this.composed = this.reservesValidatorHashSlot
@@ -972,8 +975,8 @@ class HeadEmitter {
    * that does not is weighed by the validator with every other frame of its context (V7). Either way the output
    * before the first send is a container of the contract whose records the frame runs on, the caller's for a
    * delegate frame, and the sends follow it in a run, so two contracts' sends never overlap. A master that sends may
-   * pay a contract through a call into its `receive()`, whose record carries the value. Consumes the settle-alone
-   * flag and the records' owner.
+   * pay a contract through a call into its `receive()`, whose record carries the value, and a master whose calls
+   * carry value pays through their records the same way. Consumes the settle-alone flag and the records' owner.
    */
   private valueChecks(): void {
     const sends = this.tailShape.sendCount;
@@ -1033,7 +1036,7 @@ class HeadEmitter {
       () => {
         this.emitBytes(new Uint8Array(containerGrowthScript()));
         this.replaceTop('net');
-        if (sends > 0 || run) {
+        if (sends > 0 || run || this.paysThroughCalls) {
           this.emitBytes(new Uint8Array(callValuesScript()));
           this.emitOp(Opcodes.OP_ADD);
         }

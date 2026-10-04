@@ -103,6 +103,7 @@ import {
   PerCallCallRecordError, planCallLoopWrites, publishedLoopTurns, type CallLoopWritePlan, type CallLoopWriteTurn,
 } from '../call/entry-records.js';
 import { PerCallComposerError } from '../composer/refusals.js';
+import { frameRevertReason } from '../composer/refusal.js';
 import { readComputedDeclaration, type DeclarationReading } from './declaration.js';
 import { deployMaster, type DeployedMaster } from './material.js';
 import { chunkRecordLockingBytecode, entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
@@ -718,11 +719,13 @@ const UNPLANNED_LOOP_FACTS = [
  * or per element its guard array selects, keyed by that element. Against the empty list every turn inserts after
  * the head, and the body chains the new nodes through that one gap in the order it walks the caller's array: it
  * mints the relinked head at the first turn, each created node at the turn after its own and the last at the loop's
- * teardown, which is the plan's `written` order. Every turn runs and closes the node it writes, so a literal stored
- * under every key seeds the created nodes and any other value starts at its seed (`seedOf`) and is learned from the
- * body's close. A loop with no turns writes nothing. A second loop, a loop beside another mapping write, a loop
- * whose turns make calls, a turn set its array does not fix, keys out of slot order and a key two turns repeat are
- * refused by name.
+ * teardown, which is the plan's `written` order. A turn that repeats the key before it updates the node the chain
+ * holds in place, so the run creates one node per key and the body's own turns decide what a repeat does: the value
+ * it stores or adds, or a `require` that refuses it, as the EVM's loop does. Every turn runs and closes the node it
+ * writes, so a literal stored under every key seeds the created nodes and any other value starts at its seed
+ * (`seedOf`) and is learned from the body's close. A loop with no turns writes nothing. A second loop, a loop beside
+ * another mapping write, a loop whose turns make calls, a turn set its array does not fix and keys out of slot order
+ * are refused by name.
  */
 function planConstructorLoop(
   artifact: Artifact,
@@ -741,7 +744,7 @@ function planConstructorLoop(
     );
   }
   const unplanned = UNPLANNED_LOOP_FACTS.find((fact) => info[fact] !== undefined && info[fact] !== false);
-  if (unplanned !== undefined || (info.op !== 'set' && info.op !== 'delete')) {
+  if (unplanned !== undefined || (info.op !== 'set' && info.op !== '+' && info.op !== 'delete')) {
     throw new PerCallGenesisError(
       `the constructor of "${name}" writes mapping "${info.collection}" in a run-time loop over `
       + `"${info.varyingArrayParam}" whose ${unplanned ?? `'${info.op}' write`} decides its turns beyond the array, `
@@ -786,15 +789,16 @@ function planConstructorLoop(
     : loop.op === 'set' && loop.valueConst !== undefined ? bigIntToVmNumber(BigInt(loop.valueConst))
       : seedOf(artifact, collection).tail;
   const headBefore = headSentinelCommitment();
+  // In ascending order a repeated key follows its first turn, which holds the node the repeat updates in place.
+  const nodes = walk.filter((turn, at) => at === 0 || slotOf(turn) !== slotOf(walk[at - 1]!));
   let plan: MappingBatchPlan;
   try {
     plan = planMappingBatch({
-      writes: walk.map((turn) => ({ keys: [...turn.keys], value })),
+      writes: nodes.map((turn) => ({ keys: [...turn.keys], value })),
       inventory: [headBefore],
       encodeValue: (encoded) => encoded,
     });
   } catch (error) {
-    // Two turns that name one key write one node twice, which the loop's chain of inserts cannot declare.
     if (!(error instanceof PerCallComposerError)) throw error;
     throw new PerCallGenesisError(
       `the constructor of "${name}" writes mapping "${collection.name}" in a run-time loop over `
@@ -1267,6 +1271,7 @@ function deriveConstructorFrame(
       computedWitnesses: sideCars.computedWitnesses,
       sideCars: settledSideCars,
       readingBound,
+      revert: () => constructorRevert(artifact, master, vm, program),
     });
     viewOuts = learned.records;
     eventOuts = learned.events;
@@ -1372,6 +1377,8 @@ interface LearningStep {
   readonly sideCars: Readonly<Record<string, DraftSettledInput>>;
   /** The largest value the reading accepts, which admits a preimage wider than a commitment. */
   readonly readingBound: number;
+  /** The constructor's own reason for a stop that is not a declaration close, where its source names one. */
+  readonly revert: () => string | undefined;
 }
 
 /**
@@ -1390,7 +1397,8 @@ function learnDeclaration(step: LearningStep): LearnedDeclarations {
     vm: step.vm, program: step.program, maximumCommitmentBytes: step.readingBound,
   });
   if (!reading.ok) {
-    throw new PerCallGenesisError(genesisReadingMessage(reading));
+    throw new PerCallGenesisError((reading.reason === 'not-a-close' ? step.revert() : undefined)
+      ?? genesisReadingMessage(reading));
   }
   const { declared, computed } = reading;
   const witness = computedWitnesses.find((candidate) => bytesEqual(candidate.placeholder, declared));
@@ -1421,6 +1429,21 @@ function learnDeclaration(step: LearningStep): LearnedDeclarations {
   throw new PerCallGenesisError(
     `the constructor probe closed against a declaration no derivation wrote: ${binToHex(declared)}`,
   );
+}
+
+/**
+ * The constructor's own reason for refusing its frame: the message of the `require`, or the `revert` of a custom
+ * error, the machine stopped at, which the artifact's debug metadata names (`frameRevertReason`). A stop no source
+ * construct names, such as a check the compiler emits, has none.
+ */
+function constructorRevert(
+  artifact: Artifact, master: DeployedMaster, vm: VirtualMachine, program: VirtualMachineProgram,
+): string | undefined {
+  const stop = vm.evaluate(program) as { readonly ip?: number; readonly stack?: readonly Uint8Array[] };
+  const reason = frameRevertReason(artifact, master.script, stop.ip, '__construct', stop.stack);
+  if (reason.message === undefined) return undefined;
+  const line = reason.line === undefined ? '' : ` at line ${reason.line}`;
+  return `the constructor of "${artifact.contractName}" reverts${line}: ${reason.message}`;
 }
 
 /**

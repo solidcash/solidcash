@@ -7,7 +7,7 @@ import {
   asmToScript, buildEntryNftCovenantScript, computeCollectionHash, encodeChunkableValueTail, encodeIntegerValue,
   encodePushdataValue, scriptToBytecode, type Artifact,
 } from '@solidcash/utils';
-import type { FunctionArgument } from '../../solidcash/src/Argument.js';
+import { encodeFunctionArgument, type FunctionArgument } from '../../solidcash/src/Argument.js';
 import { derivePerCallGenesis } from '../../solidcash/src/per-call/deploy/index.js';
 import {
   bytesToSlotValue, decodeEntryCommitment, encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti,
@@ -30,7 +30,13 @@ import { compositionProvider } from './per-call/machine.js';
  * every input runs its own program. On the per-call convention the shipped genesis derivation runs the constructor
  * frame and refuses a frame the machine does not accept. Scalar writes the entry cache (`CacheMappingEntryInLoop`)
  * serves stand beside the shapes the kept values serve, and a read after a write the body keeps no value for is
- * refused at compile time, as is a read a loop's earlier turns may have written.
+ * refused at compile time, as is, on the direct convention, a read a loop's earlier turns may have written.
+ *
+ * On the per-call convention a read that the same turn's write of its entry follows is served: the genesis runs the
+ * loop's writes as one chain of inserts in ascending slot order, so the only node an earlier turn wrote under the key
+ * is the one the chain holds, which the read takes where it holds that key. A key two turns repeat is written in
+ * place, so a body that requires its entry unwritten (the multisig owner loop) refuses the repeat by its own reason,
+ * as the EVM's does, and one that adds to it mints the sum.
  *
  * An element read takes its element from the value the read sees: an index past that value's length fails, as the
  * EVM's does, so the deployment is refused rather than given a value.
@@ -158,6 +164,7 @@ const pairOf = (a: bigint, b: bigint): Uint8Array =>
   encodeChunkableValueTail(new Uint8Array([a, b].flatMap((field) => [...encodeDataPush(encodeIntegerValue(field))])));
 const PAIR = ' struct Pair { uint a; uint b; }';
 const TOTALS = ' mapping(uint => uint) totals;';
+const SEEN = ' mapping(uint => bool) seen;';
 const LOGS = ' mapping(uint => bytes4[]) logs;';
 const pushedLogs: Created = {
   collection: 'logs', keys: [K], tail: encodeChunkableValueTail(encodePushdataValue([KIND], 'bytes4[]')),
@@ -389,18 +396,23 @@ const REFUSED: readonly { readonly shape: string; readonly members: string; read
     message: readOf('totals[k]', 'totals[ks[i]]', 'in a loop'),
   },
   {
-    shape: 'a read before a loop\'s own write, which its earlier turns may have written',
-    members: `${TOTALS} constructor(uint[] memory ks, uint v, uint e) { uint c = 0;`
-      + ' for (uint i = 0; i < ks.length; i++) { if (this.totals[ks[i]] == 0) { c = c + 1; }'
-      + ' this.totals[ks[i]] = v; } require(c == e); }',
-    message: readOf('totals[ks[i]]', 'totals[ks[i]]', 'in an earlier turn of its loop'),
+    shape: 'a read of another key a loop\'s earlier turns may have written',
+    members: `${SEEN} constructor(uint[] memory ks, uint[] memory js) {`
+      + ' for (uint i = 0; i < ks.length; i++) { require(!this.seen[js[i]]); this.seen[ks[i]] = true; } }',
+    message: readOf('seen[js[i]]', 'seen[ks[i]]', 'in an earlier turn of its loop'),
   },
   {
-    shape: 'a loop that reads each key before writing it',
-    members: ' mapping(address => bool) isOwner; constructor(address[] memory owners) {'
-      + ' for (uint i = 0; i < owners.length; i++) { address o = owners[i]; require(!this.isOwner[o]);'
-      + ' this.isOwner[o] = true; } }',
-    message: readOf('isOwner[o]', 'isOwner[o]', 'in an earlier turn of its loop'),
+    shape: 'a read its turn may not go on to write, the write behind a guard',
+    members: `${SEEN} constructor(uint[] memory ks, uint[] memory fs) {`
+      + ' for (uint i = 0; i < ks.length; i++) { require(!this.seen[ks[i]]); if (fs[i] == 1) {'
+      + ' this.seen[ks[i]] = true; } } }',
+    message: readOf('seen[ks[i]]', 'seen[ks[i]]', 'in an earlier turn of its loop'),
+  },
+  {
+    shape: 'a read its turn may skip the write after, by a continue',
+    members: `${SEEN} constructor(uint[] memory ks) {`
+      + ' for (uint i = 0; i < ks.length; i++) { if (this.seen[ks[i]]) { continue; } this.seen[ks[i]] = true; } }',
+    message: readOf('seen[ks[i]]', 'seen[ks[i]]', 'in an earlier turn of its loop'),
   },
 ];
 
@@ -449,7 +461,6 @@ interface LoopCase {
   readonly minted: readonly (readonly [bigint, Uint8Array])[];
 }
 
-const SEEN = ' mapping(uint => bool) seen;';
 const SEEN_TRUE = Uint8Array.of(1);
 /** Three keys in the slot order a constructor's run of inserts walks, which its array has to be given in. */
 const [LOW, MID, HIGH] = [1n, 2n, 3n].sort((left, right) => (
@@ -500,6 +511,26 @@ const LOOPS: readonly LoopCase[] = [
     valueSource: 'lit:true', loop: { varyingArrayParam: 'ks', predicateArrayParam: 'fs', predicateEquals: '1' },
     args: [[MID, LOW, HIGH], [1n, 0n, 1n]], minted: [[MID, SEEN_TRUE], [HIGH, SEEN_TRUE]],
   },
+  {
+    name: 'a literal under a key two turns repeat, the second writing the node the run holds in place',
+    members: SEEN_LOOP,
+    valueSource: 'lit:true', loop: { varyingArrayParam: 'ks', valueConst: '1' },
+    args: [[LOW, LOW, MID]], minted: [[LOW, SEEN_TRUE], [MID, SEEN_TRUE]],
+  },
+  {
+    name: 'one more under each element of an array, a repeated key adding to the node the run holds',
+    members: `${TOTALS} constructor(uint[] memory ks) {`
+      + ' for (uint i = 0; i < ks.length; i++) { this.totals[ks[i]] += 1; } }',
+    valueSource: 'binop:+(entry,lit:1)', loop: { varyingArrayParam: 'ks', valueConst: '1', op: '+' },
+    args: [[LOW, LOW, LOW, HIGH]], minted: [[LOW, num(3n)], [HIGH, num(1n)]],
+  },
+  {
+    name: 'a value each turn computes from what the earlier turns left under its key',
+    members: `${TOTALS} constructor(uint[] memory ks) {`
+      + ' for (uint i = 0; i < ks.length; i++) { this.totals[ks[i]] = this.totals[ks[i]] * 2 + 1; } }',
+    valueSource: undefined, loop: { varyingArrayParam: 'ks', op: 'set' },
+    args: [[LOW, LOW, MID]], minted: [[LOW, num(3n)], [MID, num(1n)]],
+  },
 ];
 
 /** The nodes a per-call genesis mints for `members` with `args`, as their keys' slots to their value tails. */
@@ -541,22 +572,61 @@ describe('a constructor that writes a mapping in a loop', () => {
       .toContain('KERNEL_UNBOUNDED_KEY: the loop writes \'seen\' under the guard');
   });
 
-  it('refuses a loop that adds to keys an array may repeat, naming the read of an earlier turn\'s write', () => {
-    const members = `${TOTALS} constructor(uint[] memory ks) {`
-      + ' for (uint i = 0; i < ks.length; i++) { this.totals[ks[i]] += 1; } }';
-    expect(refusal(members, 'per-call'))
-      .toContain(readOf('totals[ks[i]]', 'totals[ks[i]]', 'in an earlier turn of its loop'));
-  });
-
-  it('refuses by name a key two turns of the loop repeat, which its run of inserts cannot write twice', () => {
-    expect(() => mintedNodes(SEEN_LOOP, [[3n, 3n]]))
-      .toThrow(/whose turns cannot be planned at genesis: PER_CALL_MAPPING_UNPLANNABLE: a sorted batch writes slot/);
-  });
-
   it('refuses by name an array out of slot order, which a constructor\'s body may also read, naming the order', () => {
     expect(() => mintedNodes(SEEN_LOOP, [[HIGH, LOW, MID]])).toThrow('writes mapping "seen" at element 1 of "ks" under a '
       + 'key below the one before it, and a run-time loop inserts its keys in ascending slot order only; a '
       + 'constructor\'s own array is not reordered for it, since its body may also store, emit or read the array: pass '
       + '"ks" as its elements [1, 2, 0], the order `orderLoopKeyArgs` gives');
+  });
+});
+
+/** A loop that counts the turns that found their key unwritten, then writes it. */
+const TURN_COUNTED = `${TOTALS} constructor(uint[] memory ks, uint v, uint e) { uint c = 0;`
+  + ' for (uint i = 0; i < ks.length; i++) { if (this.totals[ks[i]] == 0) { c = c + 1; }'
+  + ' this.totals[ks[i]] = v; } require(c == e); }';
+/** The multisig owner loop: each turn requires its owner set and not yet an owner, then makes it one. */
+const OWNERS = ' mapping(address => bool) isOwner; constructor(address[] memory owners) {'
+  + ' for (uint i = 0; i < owners.length; i++) { address o = owners[i];'
+  + ' require(o != address(0) && !this.isOwner[o], "owner not unique"); this.isOwner[o] = true; } }';
+const ownerSlot = (owner: Uint8Array): Uint8Array =>
+  keyToSlotMulti([encodeFunctionArgument(owner, 'address') as Uint8Array]);
+/** Three owners in the slot order the run of inserts walks. */
+const [OWNER_A, OWNER_B, OWNER_C] = [0x61, 0x62, 0x63]
+  .map((seed) => encodeLockingBytecodeP2pkh(distinctBytes(20, seed)))
+  .sort((left, right) => (bytesToSlotValue(ownerSlot(left)) < bytesToSlotValue(ownerSlot(right)) ? -1 : 1)) as
+  [Uint8Array, Uint8Array, Uint8Array];
+
+describe('a constructor read that the same turn\'s write of its entry follows', () => {
+  it('refuses the owner loop and a count of unwritten keys on the direct convention, naming the earlier turn', () => {
+    expect(refusal(OWNERS, 'direct')).toContain(readOf('isOwner[o]', 'isOwner[o]', 'in an earlier turn of its loop'));
+    expect(refusal(TURN_COUNTED, 'direct'))
+      .toContain(readOf('totals[ks[i]]', 'totals[ks[i]]', 'in an earlier turn of its loop'));
+  });
+
+  it('publishes the per-call owner loop: the array it walks and the literal it stores', () => {
+    const artifact = compileString(`${PRAGMA} contract Genesis {${OWNERS} function g() { require(true); } }`,
+      { composition: 'per-call' });
+    const constructor = artifact.abi.find((candidate) => candidate.name === '__construct')!;
+    expect(constructor.entryAccesses?.map((access) => access.valueSource)).toStrictEqual(['lit:true']);
+    expect(constructor.sortedUpsertLoopInfo).toHaveLength(1);
+    const loop = constructor.sortedUpsertLoopInfo![0] as unknown as Record<string, unknown>;
+    expect(Object.fromEntries(['collection', 'varyingArrayParam', 'valueConst', 'op'].map((fact) => [fact, loop[fact]])))
+      .toStrictEqual({ collection: 'isOwner', varyingArrayParam: 'owners', valueConst: '1', op: 'set' });
+  });
+
+  it('mints each owner once at a per-call genesis, and refuses a repeated owner by the body\'s own reason', () => {
+    expect(mintedNodes(OWNERS, [[OWNER_A, OWNER_B, OWNER_C]])).toStrictEqual(new Map([OWNER_A, OWNER_B, OWNER_C]
+      .map((owner) => [binToHex(ownerSlot(owner)), binToHex(SEEN_TRUE)])));
+    const repeated = 'the constructor of "Genesis" reverts at line 1: owner not unique';
+    expect(() => mintedNodes(OWNERS, [[OWNER_A, OWNER_A, OWNER_B]])).toThrow(repeated);
+    expect(() => mintedNodes(OWNERS, [[OWNER_A, OWNER_C, OWNER_C]])).toThrow(repeated);
+  });
+
+  it('counts the turns that found their key unwritten, a repeated key reading what its first turn wrote', () => {
+    const artifact = compileString(`${PRAGMA} contract Genesis {${TURN_COUNTED} function g() { require(true); } }`,
+      { composition: 'per-call' });
+    expect(settlePerCall(artifact, [[LOW, LOW, HIGH], 9n, 2n])).toBe(true);
+    expect(settlePerCall(artifact, [[LOW, LOW, HIGH], 9n, 3n])).toContain('PerCallGenesisError');
+    expect(settlePerCall(artifact, [[LOW, MID, HIGH], 9n, 3n])).toBe(true);
   });
 });

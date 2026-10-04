@@ -3,7 +3,6 @@ import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth
 import { bytesToHex, type Artifact } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { ConstructorStaleReadError } from '../../../../solidc/src/Errors.js';
 import { encodeFunctionArgument, type ConstructorArgument, type FunctionArgument } from '../../../src/Argument.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider, { type SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
@@ -26,12 +25,14 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * created node's value is learned from the body's own close, and a key the body writes only on a path the
  * deployment does not take holds the value it had before any write. The run of inserts walks its keys in slot
  * order, and a constructor's own array is not reordered for it, so an array out of that order is refused by name
- * and the deployer orders it with the shipped helper. Each replica here is deployed, its minted nodes are read back
- * from the chain, and an entry that reads them is called through the shipped call path beside a control the body's
- * own `require` refuses. The replicas: a committee's member set, an allowlist a flag array selects, opening
- * balances from two arrays, a count one key accumulates over a loop, and a token that mints to its deployer and
- * records it as an admin, which writes two collections. A member set is then deployed behind a generated proxy,
- * whose implementation's own genesis runs the constructor's loop.
+ * and the deployer orders it with the shipped helper. A key two turns repeat is written in place, so the body
+ * decides what the repeat does: the value it stores or the sum it adds, or a `require` that refuses it. Each replica
+ * here is deployed, its minted nodes are read back from the chain, and an entry that reads them is called through
+ * the shipped call path beside a control the body's own `require` refuses. The replicas: a committee's member set,
+ * an allowlist a flag array selects, opening balances from two arrays, counts keys accumulate over a loop, a token
+ * that mints to its deployer and records it as an admin, which writes two collections, and a multisig wallet whose
+ * owner loop requires each owner not yet an owner. A member set and the wallet are then deployed behind a generated
+ * proxy, whose implementation's own genesis runs the constructor's loop.
  */
 
 const CALLER = encodeLockingBytecodeP2pkh(alicePkh);
@@ -86,6 +87,36 @@ const TALLY = compileStringMulti(`${PRAGMA}`
   + '   function check(uint k, uint expected) { require(this.counts[k] == expected); }'
   + '   function ping() { require(true); }'
   + ' }', { composition: 'per-call' }).Tally!;
+
+const TALLIES = compileStringMulti(`${PRAGMA}`
+  + ' contract Tallies {'
+  + '   mapping(uint => uint) counts;'
+  + '   constructor(uint[] memory keys) { for (uint i = 0; i < keys.length; i++) { this.counts[keys[i]] += 1; } }'
+  + '   function check(uint k, uint expected) { require(this.counts[k] == expected); }'
+  + '   function ping() { require(true); }'
+  + ' }', { composition: 'per-call' }).Tallies!;
+
+/** The multisig owner loop: each turn requires its owner set and not yet an owner, then makes it one. */
+const OWNER_LOOP = ''
+  + '     for (uint i = 0; i < owners.length; i++) {'
+  + '       address o = owners[i];'
+  + '       require(o != address(0) && !this.isOwner[o], "owner not unique");'
+  + '       this.isOwner[o] = true;'
+  + '     }'
+  + '     require(quorum > 0 && quorum <= owners.length, "bad quorum");'
+  + '     this.required = quorum;';
+const WALLET_ENTRIES = ''
+  + '   function confirm() { require(this.isOwner[msg.sender], "not an owner"); this.confirmations += 1; }';
+
+const WALLET = compileStringMulti(`${PRAGMA}`
+  + ' contract Wallet {'
+  + '   uint public required;'
+  + '   uint public confirmations;'
+  + '   mapping(address => bool) isOwner;'
+  + `   constructor(address[] memory owners, uint quorum) { ${OWNER_LOOP} }`
+  + WALLET_ENTRIES
+  + '   function ping() { require(true); }'
+  + ' }', { composition: 'per-call' }).Wallet!;
 
 const TOKEN = compileStringMulti(`${PRAGMA}`
   + ' contract Token {'
@@ -211,12 +242,11 @@ describe('a constructor that writes a member set in a loop', () => {
     expect(await settles(deployed, 'confirm', [OTHER])).toMatch(REQUIRE_FAILED);
   });
 
-  it('refuses by name a member given twice, which the loop would write as one node twice', async () => {
+  it('mints one node for a member given twice, as the EVM\'s loop leaves it', async () => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    await expect(deploy(provider, COMMITTEE, [[lockOf(1), lockOf(1)], 1n])).rejects.toThrow(new RegExp(
-      'writes mapping "members" in a run-time loop over "owners" whose turns cannot be planned at genesis: '
-      + 'PER_CALL_MAPPING_UNPLANNABLE: a sorted batch writes slot [0-9a-f]{64} more than once',
-    ));
+    const categoryId = await deploy(provider, COMMITTEE, [[lockOf(1), lockOf(1)], 1n]);
+    expect(await nodeValues(provider, COMMITTEE, categoryId, 'members'))
+      .toStrictEqual(new Map([[slotOf(lockOf(1), 'address'), TRUE]]));
   });
 });
 
@@ -272,6 +302,11 @@ describe('a constructor that opens balances from two arrays', () => {
 });
 
 const tally = deployment(TALLY, [7n, 3n]);
+/** Two keys in the slot order the run of inserts walks, the first given three times. */
+const uintOrder = (key: bigint): bigint => bytesToSlotValue(hexToBin(slotOf(key, 'uint256')));
+const [LOW_KEY, HIGH_KEY] = [3n, 5n].sort((left, right) => (uintOrder(left) < uintOrder(right) ? -1 : 1)) as
+  [bigint, bigint];
+const tallies = deployment(TALLIES, [[LOW_KEY, LOW_KEY, LOW_KEY, HIGH_KEY]]);
 
 describe('a constructor that accumulates one key over a loop', () => {
   it('mints the count every turn added, which no one-turn recipe states', async () => {
@@ -289,18 +324,13 @@ describe('a constructor that accumulates one key over a loop', () => {
       .toStrictEqual(new Map([[slotOf(7n, 'uint256'), uintValue(0n)]]));
   });
 
-  it('refuses at compile time a loop that adds to keys an array may repeat, naming the read and the turn', () => {
-    const compile = (): unknown => compileStringMulti(`${PRAGMA}`
-      + ' contract Tally {'
-      + '   mapping(uint => uint) counts;'
-      + '   constructor(uint[] memory keys) {'
-      + '     for (uint i = 0; i < keys.length; i++) { this.counts[keys[i]] += 1; }'
-      + '   }'
-      + '   function ping() { require(true); }'
-      + ' }', { composition: 'per-call' });
-    expect(compile).toThrow(ConstructorStaleReadError);
-    expect(compile).toThrow('a read of `counts[keys[i]]` in the constructor after the write of `counts[keys[i]]` in an '
-      + 'earlier turn of its loop is not supported');
+  it('mints the sum each key of an array accumulated, a repeated key adding to its one node', async () => {
+    const deployed = await tallies();
+    expect(await nodeValues(deployed.provider, TALLIES, deployed.categoryId, 'counts')).toStrictEqual(new Map([
+      [slotOf(LOW_KEY, 'uint256'), uintValue(3n)], [slotOf(HIGH_KEY, 'uint256'), uintValue(1n)],
+    ]));
+    expect(await settles(deployed, 'check', [LOW_KEY, 3n])).toBe(true);
+    expect(await settles(deployed, 'check', [LOW_KEY, 1n])).toMatch(REQUIRE_FAILED);
   });
 });
 
@@ -321,6 +351,34 @@ describe('a constructor that mints to its deployer and records it as an admin, w
     const balances = await nodeValues(deployed.provider, TOKEN, deployed.categoryId, 'balances');
     expect(balances.get(slotOf(OTHER, 'address'))).toBe(uintValue(5n));
     expect(await settles(deployed, 'mint', [OTHER, 5n], OTHER, bobPriv)).toMatch(REQUIRE_FAILED);
+  });
+});
+
+const OWNER_SET = ascending([lockOf(10), CALLER, lockOf(11)]);
+const wallet = deployment(WALLET, [OWNER_SET, 2n]);
+/** The refusal a constructor's own `require` names, read from the artifact. */
+const NOT_UNIQUE = /the constructor of "Wallet" reverts at line [0-9]+: owner not unique/;
+
+describe('a multisig wallet whose owner loop requires each owner not yet an owner', () => {
+  it('mints one node per owner, and the quorum beside them', async () => {
+    const deployed = await wallet();
+    expect(await nodeValues(deployed.provider, WALLET, deployed.categoryId, 'isOwner'))
+      .toStrictEqual(new Map(OWNER_SET.map((owner) => [slotOf(owner, 'address'), TRUE])));
+    const state = await readPerCallState(deployed.provider, deployed.categoryId, WALLET.stateLayout!);
+    expect(state.byNft[0]).toMatchObject({ required: 2n, confirmations: 0n });
+  });
+
+  it('serves the entry an owner calls, and refuses a caller that is not one', async () => {
+    const deployed = await wallet();
+    expect(await settles(deployed, 'confirm', [])).toBe(true);
+    expect(await settles(deployed, 'confirm', [], OTHER, bobPriv)).toMatch(REQUIRE_FAILED);
+  });
+
+  it('refuses an owner given twice by the constructor\'s own reason, as the EVM reverts', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const [first, second] = ascending([lockOf(10), lockOf(11)]);
+    await expect(deploy(provider, WALLET, [[first!, first!, second!], 2n])).rejects.toThrow(NOT_UNIQUE);
+    await expect(deploy(provider, WALLET, [[first!, second!, second!], 2n])).rejects.toThrow(NOT_UNIQUE);
   });
 });
 
@@ -391,5 +449,89 @@ describe('a member set behind a generated proxy', () => {
     expect(await confirm(lockOf(9))).toBe(true);
     // A member of the implementation's own genesis is not one of the proxy's.
     expect(await confirm(lockOf(6))).toMatch(REQUIRE_FAILED);
+  }, 600_000);
+});
+
+/**
+ * The wallet behind a generated proxy: its constructor's owner loop runs at the implementation's genesis, and its
+ * initializer's through the proxy. The initializer records each owner without reading the entry first: a call's turn
+ * that reads the entry it then writes is not served on the call path yet.
+ */
+const PROXIED_WALLET = compileStringMulti(`${PRAGMA}`
+  + ' contract Wallet {'
+  + '   address public implementation;'
+  + '   uint public required;'
+  + '   uint public confirmations;'
+  + '   mapping(address => bool) isOwner;'
+  + `   constructor(address[] memory owners, uint quorum) { ${OWNER_LOOP} }`
+  + '   function initialize(address[] owners, uint quorum) {'
+  + '     for (uint i = 0; i < owners.length; i++) { require(owners[i] != address(0)); this.isOwner[owners[i]] = true; }'
+  + '     this.required = quorum;'
+  + '   }'
+  + WALLET_ENTRIES
+  + ' }', { composition: 'per-call' }).Wallet!;
+
+/** Deploys the proxied wallet with its genesis owners and the owners its initializer records. */
+async function proxiedWallet(
+  genesisOwners: readonly Uint8Array[], proxyOwners: readonly Uint8Array[],
+): Promise<{ provider: MockNetworkProvider; deployed: Awaited<ReturnType<typeof deployPerCallProxy>> }> {
+  const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+  const signature = new SignatureTemplate(alicePriv);
+  const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const implFunding = { txid: nextTxid(), vout: 0, satoshis: 500_000n };
+  const proxyFunding = { txid: nextTxid(), vout: 0, satoshis: 500_000n };
+  const hopUtxo = { txid: nextTxid(), vout: 0, satoshis: 200_000n };
+  await provider.addUtxo(funder.address, implFunding);
+  await provider.addUtxo(funder.address, proxyFunding);
+  await provider.addUtxo(binToHex(CALLER), hopUtxo);
+  await fundShippedFacets(provider);
+  const half = { funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address };
+  const deployed = await deployPerCallProxy({
+    provider,
+    implementationArtifact: PROXIED_WALLET,
+    implementationArgs: [[...genesisOwners], 1n],
+    implementationDeploy: { fundingUtxo: implFunding, ...half },
+    proxyDeploy: { fundingUtxo: proxyFunding, ...half },
+    initialize: { functionName: 'initialize', args: [[...proxyOwners], 2n] },
+    callerLockingBytecode: CALLER,
+    callerFunding: { utxo: hopUtxo, funder: signature.unlockP2PKH() },
+    vm: compositionMachine(),
+  });
+  return { provider, deployed };
+}
+
+describe('a multisig wallet behind a generated proxy', () => {
+  it('runs the owner loop at the implementation genesis and the initializer\'s through the proxy', async () => {
+    const genesisOwners = ascending([lockOf(12), lockOf(13)]);
+    const proxyOwners = [lockOf(14), CALLER, lockOf(15)];
+    const { provider, deployed } = await proxiedWallet(genesisOwners, proxyOwners);
+    expect(deployed.initialize.accepted).toBe(true);
+    expect(await nodeValues(provider, PROXIED_WALLET, deployed.implementation.categoryId, 'isOwner'))
+      .toStrictEqual(new Map(genesisOwners.map((owner) => [slotOf(owner, 'address'), TRUE])));
+    expect(await nodeValues(provider, PROXIED_WALLET, deployed.proxy.categoryId, 'isOwner'))
+      .toStrictEqual(new Map(proxyOwners.map((owner) => [slotOf(owner, 'address'), TRUE])));
+
+    const confirm = async (caller: Uint8Array, key: Uint8Array): Promise<true | string> => {
+      const callerUtxo = { txid: nextTxid(), vout: 0, satoshis: 200_000n };
+      await provider.addUtxo(binToHex(caller), callerUtxo);
+      try {
+        const result = await callPerCallProxyEntry({
+          provider, implementationArtifact: PROXIED_WALLET, proxyCategoryId: deployed.proxy.categoryId,
+          implementationCategoryId: deployed.implementation.categoryId, functionName: 'confirm', args: [],
+          callerUtxo, callerLockingBytecode: caller, funder: new SignatureTemplate(key).unlockP2PKH(),
+          vm: compositionMachine(),
+        });
+        return result.accepted || 'not accepted';
+      } catch (error) {
+        return String(error);
+      }
+    };
+    expect(await confirm(CALLER, alicePriv)).toBe(true);
+    expect(await confirm(OTHER, bobPriv)).toMatch(REQUIRE_FAILED);
+  }, 600_000);
+
+  it('refuses an owner the implementation genesis is given twice by the constructor\'s own reason', async () => {
+    const [first, second] = ascending([lockOf(12), lockOf(13)]);
+    await expect(proxiedWallet([first!, first!, second!], [CALLER])).rejects.toThrow(NOT_UNIQUE);
   }, 600_000);
 });

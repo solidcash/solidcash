@@ -1087,11 +1087,13 @@ interface DynamicWriteRunCoordinate {
 
 /**
  * How a constructor's read of a verified-mapping entry takes the value its own writes left: the last write naming the
- * read's entry with the same keys, if any, then each later write whose key may name it, compared by key hash.
+ * read's entry with the same keys, if any, then each later write whose key may name it, compared by key hash. A read
+ * its loop's write follows in the same turn then takes the node that loop holds, where it holds the read's key.
  */
 interface GenesisReadPlan {
   readonly base?: Node;
   readonly compared: readonly Node[];
+  readonly turn?: MappingAssignNode | MappingDeleteNode;
 }
 
 /** Where a sorted-mapping flow walk is: a branch arm or the code after an early return, and inside a loop. */
@@ -25311,31 +25313,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private namesChangedIn(fn: FunctionDefinitionNode): Set<string> {
     const changed = new Set<string>();
     const declared = new Set(fn.parameters.map((parameter) => parameter.name));
-    const declare = (name: string): void => {
-      if (declared.has(name)) changed.add(name);
+    this.forEachNameChange(fn.body, (name, declaration) => {
+      if (!declaration || declared.has(name)) changed.add(name);
       declared.add(name);
-    };
-    walkInvocationAst(fn.body, (candidate) => {
+    });
+    return changed;
+  }
+
+  /** The names some code assigns, deletes, steps, or declares. */
+  private namesChangedWithin(root: Node): Set<string> {
+    const changed = new Set<string>();
+    this.forEachNameChange(root, (name) => changed.add(name));
+    return changed;
+  }
+
+  /** Visits each name some code assigns, deletes or steps, or declares (`declaration`). */
+  private forEachNameChange(root: Node | undefined, visit: (name: string, declaration: boolean) => void): void {
+    walkInvocationAst(root, (candidate) => {
       if (candidate instanceof AssignNode || candidate instanceof DeleteLocalNode) {
-        changed.add(candidate.identifier.name);
+        visit(candidate.identifier.name, false);
       } else if (candidate instanceof ArrayAssignNode || candidate instanceof ArrayPushNode
         || candidate instanceof ArrayPopNode || candidate instanceof ArrayDeleteNode) {
-        changed.add(candidate.name);
+        visit(candidate.name, false);
       } else if (candidate instanceof VariableDefinitionNode) {
-        declare(candidate.name);
+        visit(candidate.name, true);
       } else if (candidate instanceof TupleAssignmentNode) {
         for (const element of candidate.elements) {
-          if (element.name === undefined || element.skip === true) continue;
-          if (element.existing === true) changed.add(element.name);
-          else declare(element.name);
+          if (element.name !== undefined && element.skip !== true) visit(element.name, element.existing !== true);
         }
       } else if (candidate instanceof UnaryOpNode
         && GenerateTargetTraversalWithLocation.STEP_OPERATORS.includes(candidate.operator)
         && candidate.expression instanceof IdentifierNode) {
-        changed.add(candidate.expression.name);
+        visit(candidate.expression.name, false);
       }
     });
-    return changed;
   }
 
   /** True when a cached value serves a read of the sorted slot at the code being emitted. */
@@ -25730,7 +25741,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * later write whose key hash equals its own. Each such write keeps its value, and its key hash where the read
    * compares. A write in a branch arm, a loop, the code after an early return or an outlined helper keeps nothing,
    * so a read it may reach is refused, and a loop's writes reach the reads of its later turns, before them in the
-   * body as well; keys that are distinct literals never name one entry.
+   * body as well; keys that are distinct literals never name one entry. On the per-call convention a read the same
+   * turn's write of its entry follows takes what the loop's earlier turns wrote from the node it holds instead
+   * (`genesisTurnWrites`).
    */
   private planGenesisReads(fn: FunctionDefinitionNode): void {
     this.genesisKeptWrites = new WeakSet();
@@ -25757,13 +25770,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && (node.arrayIndex !== undefined || node.arrayPush === true || node.arrayPop === true);
     const changed = this.namesChangedIn(fn);
     const chainLeft = new Map(this.sortedCompositeWritesRemaining);
+    const turnWrites = this.genesisTurnWrites(fn);
     const entryText = (node: Write | MappingAccessNode): string =>
       this.sortedEntryText(node.collection?.name ?? node.name, node.keys);
     const read = (node: MappingAccessNode, flow: Flow | undefined): void => {
       if (flow === undefined || node.isGenesisRead !== true || node.collection?.sorted !== true) return;
+      const turn = turnWrites.get(node);
       const reaching = (flow.get(node.collection.name) ?? [])
-        .filter((write) => !this.sortedKeysDistinct(write.node.keys, node.keys));
-      if (reaching.length === 0) return;
+        .filter((write) => !this.sortedKeysDistinct(write.node.keys, node.keys))
+        .filter((write) => write.earlier !== true || write.node !== turn);
+      if (reaching.length === 0) {
+        if (turn !== undefined) this.genesisReadPlans.set(node, { compared: [], turn });
+        return;
+      }
       const same = reaching.map((write) => this.sortedKeysSame(write.node.keys, node.keys, changed)).lastIndexOf(true);
       const live = same < 0 ? reaching : reaching.slice(same);
       const blocked = live.find((write) => write.shape !== undefined);
@@ -25778,7 +25797,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.genesisKeptWrites.add(write);
         this.genesisHashedWrites.add(write);
       }
-      this.genesisReadPlans.set(node, { base, compared });
+      this.genesisReadPlans.set(node, { base, compared, ...(turn === undefined ? {} : { turn }) });
     };
     const write = (node: Write, flow: Flow | undefined, scope: SortedFlowScope): Flow | undefined => {
       const arrayOp = isArrayOp(node);
@@ -25842,6 +25861,93 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return 'on an aliased entry';
     }
     return undefined;
+  }
+
+  /**
+   * The per-call constructor's reads that a loop's write of the same entry follows in the same turn, each with that
+   * write.
+   *
+   * A per-call genesis runs a loop's sorted writes as one chain of inserts from the empty list's head, in the order
+   * the loop walks its keys: a turn whose key is below the node the chain holds cannot be written, and one that
+   * repeats it updates that node in place. So when a turn goes on to write the key it reads, the only node an
+   * earlier turn wrote under that key is the held one, which the read takes where it holds the key, and the value
+   * from before the loop otherwise (`emitHeldTurnValue`). The read sits in the write's value, or in a statement
+   * before it in the block the write is a statement of, with no exit, loop or change to a name the keys spell from
+   * the read to the write; it spells the write's keys, and the value is one the held node keeps whole.
+   */
+  private genesisTurnWrites(fn: FunctionDefinitionNode): Map<Node, MappingAssignNode | MappingDeleteNode> {
+    const served = new Map<Node, MappingAssignNode | MappingDeleteNode>();
+    if (!this.perCallMaster || fn.body === undefined) return served;
+    const isLoop = (node: Node): boolean =>
+      node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode;
+    const barrier = (node: Node): boolean => {
+      let found = false;
+      walkInvocationAst(node, (candidate) => {
+        if (isLoop(candidate) || candidate instanceof ReturnNode || candidate instanceof BreakNode
+          || candidate instanceof ContinueNode) found = true;
+      });
+      return found;
+    };
+    const held = (node: Node): node is MappingAssignNode | MappingDeleteNode => {
+      if (!(node instanceof MappingAssignNode || node instanceof MappingDeleteNode) || node.collection?.sorted !== true
+        || (node instanceof MappingAssignNode
+          && (node.arrayIndex !== undefined || node.arrayPush === true || node.arrayPop === true))) return false;
+      const type = node.collection.innermostValueType;
+      const kind = this.sortedValueKind(type);
+      return kind === 'int' || (kind === 'rawbytes' && !this.isChunkableValue(type));
+    };
+    // The blocks one turn of a loop runs, without those of a loop nested in it, whose turns are its own.
+    const turnBlocks = (node: Node, out: BlockNode[]): BlockNode[] => {
+      if (node instanceof BlockNode) out.push(node);
+      for (const child of sortedFlowChildren(node)) if (!isLoop(child)) turnBlocks(child, out);
+      return out;
+    };
+    walkInvocationAst(fn.body, (loop) => {
+      if (!isLoop(loop)) return;
+      const body = loop instanceof CollectionIterationNode ? loop.body : (loop as WhileNode | DoWhileNode).block;
+      for (const block of turnBlocks(body, [])) {
+        const statements = block.statements ?? [];
+        statements.forEach((write, at) => {
+          if (!held(write)) return;
+          const changed = this.namesChangedWithin(write);
+          const serve = (root: Node): void => walkInvocationAst(root, (read) => {
+            if (read instanceof MappingAccessNode && read.isGenesisRead === true && read.arrayIndex === undefined
+              && read.collection?.name === write.collection!.name
+              && this.turnKeysAlike(read.keys, write.keys, changed)) served.set(read, write);
+          });
+          if (write instanceof MappingAssignNode) serve(write.expression);
+          for (let index = at - 1; index >= 0 && !barrier(statements[index]!); index -= 1) {
+            for (const name of this.namesChangedWithin(statements[index]!)) changed.add(name);
+            serve(statements[index]!);
+          }
+        });
+      }
+    });
+    return served;
+  }
+
+  /** True when two key lists spell the same expressions over names that `changed` leaves alone. */
+  private turnKeysAlike(left: readonly Node[], right: readonly Node[], changed: ReadonlySet<string>): boolean {
+    const alike = (key: Node, other: Node): boolean => {
+      if (key instanceof IdentifierNode) {
+        return other instanceof IdentifierNode && other.name === key.name && !changed.has(key.name);
+      }
+      if (key instanceof ArrayAccessNode) {
+        return other instanceof ArrayAccessNode && alike(key.array, other.array) && alike(key.index, other.index);
+      }
+      if (key instanceof NullaryOpNode) {
+        return other instanceof NullaryOpNode && other.operator === key.operator
+          && (key.operator === NullaryOperator.MSG_SENDER || key.operator === NullaryOperator.TX_ORIGIN);
+      }
+      if (key instanceof HexLiteralNode) {
+        return other instanceof HexLiteralNode && binToHex(other.value) === binToHex(key.value);
+      }
+      if (key instanceof IntLiteralNode || key instanceof BoolLiteralNode || key instanceof StringLiteralNode) {
+        return other.constructor === key.constructor && (other as typeof key).value === key.value;
+      }
+      return false;
+    };
+    return left.length === right.length && left.every((key, index) => alike(key, right[index]!));
   }
 
   /** True when two key lists differ in a position where both are literals, so they never name one entry. */
@@ -25931,7 +26037,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, loc);
     };
     const readHash = '(__genesis_read_hash)';
-    if (plan.compared.length > 0) {
+    const hashed = plan.compared.length > 0 || plan.turn !== undefined;
+    if (hashed) {
       this.emitGenesisKeyHash(node, loc);
       this.pushToStack(readHash);
     }
@@ -25949,12 +26056,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NIP, loc);
       this.emit(Op.OP_ENDIF, loc);
     }
-    if (plan.compared.length > 0) {
+    if (plan.turn !== undefined) this.emitHeldTurnValue(node, plan.turn, readHash, loc);
+    if (hashed) {
       this.emit(Op.OP_NIP, loc);
       this.removeFromStack(this.getStackIndex(readHash));
     }
     if (node.arrayIndex) this.emitArrayElementExtract(node, loc);
     return true;
+  }
+
+  /**
+   * Replaces the value a constructor read took with the one its loop's held node carries, when that node holds the
+   * read's key: what the loop's earlier turns wrote there, the default where they deleted it.
+   */
+  private emitHeldTurnValue(
+    node: MappingAccessNode, write: MappingAssignNode | MappingDeleteNode, readHash: string, loc: SingleLocationData,
+  ): void {
+    const context = this.sortedUpsertContextForWrite(write);
+    if (context === undefined || !context.pendActive || this.getStackIndex(context.pendSlotName, true) < 0) {
+      throw new ConstructorStaleReadError(node, this.sortedEntryText(node.collection?.name ?? node.name, node.keys),
+        this.sortedEntryText(write.collection?.name ?? write.name, write.keys), 'whose value it does not keep');
+    }
+    const pick = (name: string): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+      this.emit(Op.OP_PICK, loc);
+    };
+    const valueType = node.collection!.innermostValueType;
+    pick(readHash);
+    this.pushToStack('(__genesis_read_hash_copy)');
+    pick(context.pendSlotName);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.popFromStack();
+    if (context.op === 'delete') {
+      this.emitDefaultValue(loc, valueType);
+    } else {
+      pick(context.pendValName);
+      if (this.sortedValueKind(valueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
+    }
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /** Pushes a constructor read's masked key hash, untracked, as `emitSortedKeyHash` hashes a write's keys. */

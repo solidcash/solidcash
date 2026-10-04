@@ -32,14 +32,16 @@ function preparedArgsMatchAuthenticatedAddressTargets(
   const abi = supplied.artifact.abi.find((candidate) =>
     candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
   if (!abi) return false;
+  const plannedArgs = invocation.args;
+  if (plannedArgs === undefined) return false;
   const inputs = abi.inputs.filter((input) => !input.name.startsWith('__internal__'));
-  if (inputs.length !== supplied.args.length || inputs.length !== invocation.args.length) return false;
+  if (inputs.length !== supplied.args.length || inputs.length !== plannedArgs.length) return false;
   const structs = supplied.artifact.structs ?? supplied.artifact.stateLayout?.structs;
   let projectedAddressCount = 0;
   for (let argumentIndex = 0; argumentIndex < inputs.length; argumentIndex += 1) {
     const type = inputs[argumentIndex].type;
     const prepared = encodeFunctionArgument(supplied.args[argumentIndex], type, structs);
-    const planned = encodeFunctionArgument(invocation.args[argumentIndex], type, structs);
+    const planned = encodeFunctionArgument(plannedArgs[argumentIndex], type, structs);
     if (!(prepared instanceof Uint8Array) || !(planned instanceof Uint8Array)) return false;
     if (binToHex(prepared) === binToHex(planned)) continue;
     if (type !== 'address' && type !== 'address payable') return false;

@@ -43992,8 +43992,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Collect fixed sorted-write slots reached under a branch/switch arm, directly or through an inlined helper. Slots an
-   * OP_INVOKE subroutine writes go to `invokedWrites`.
+   * Collect fixed sorted-write slots reached under a branch/switch arm, directly, through a nested block, or through an
+   * inlined helper. Slots an OP_INVOKE subroutine writes go to `invokedWrites`.
    */
   private collectConditionalSortedWriteSlots(
     block: BlockNode, underConditional: boolean, out: Set<number>,
@@ -44041,6 +44041,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         walk(stmt.body, true);
       } else if (stmt instanceof UncheckedNode) {
         walk(stmt.block, underConditional);
+      } else if (stmt instanceof BlockNode) {
+        // A nested block (a source `{ ... }` scope, an inlined helper's body, a lowering's statement group) runs
+        // wherever the statement list holding it does, so a write inside it, or under a branch inside it, is
+        // conditional exactly where it would be outside it.
+        walk(stmt, underConditional);
       }
     }
   }

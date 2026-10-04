@@ -1703,11 +1703,19 @@ export async function assembleAtomicComposition(
         // the shared layout resolve below, are the authority for the absolute witness.
       }
       const valueChunkBands = pendingValueChunkClaim === undefined
-        ? localValueChunkBands : orderedContinuationClaims.map((claim) => ({
-          bandOffset: claim.bandOffset,
-          chunkCount: claim.chunkCount,
-          resourceIdentity: claim.producerClaim.resourceIdentity,
-        }));
+        ? localValueChunkBands : orderedContinuationClaims.length > 0
+          ? orderedContinuationClaims.map((claim) => ({
+            bandOffset: claim.bandOffset,
+            chunkCount: claim.chunkCount,
+            resourceIdentity: claim.producerClaim.resourceIdentity,
+          }))
+          // A local continuation has no transported resource claim. The validated physical run above
+          // is nevertheless an owned band and must participate in the same absolute layout resolve.
+          : [{
+            bandOffset: pendingValueChunkClaim.localSlotOffset,
+            chunkCount: pendingValueChunkClaim.chunkCount,
+            resourceIdentity: pendingValueChunkClaim.collection,
+          }];
       const firstValueChunkBand = valueChunkBands[0];
       if (
         masterUnlocker?.params !== undefined

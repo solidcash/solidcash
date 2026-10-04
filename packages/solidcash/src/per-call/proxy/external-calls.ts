@@ -1712,9 +1712,9 @@ function recordWrittenNodes(
  *
  * A body that writes a sorted mapping walks every group of its batch whichever path it takes, so a batch this planner
  * cannot state is refused by name, naming the callee, rather than left to a frame that cannot settle; so is a read
- * whose node the batch also spends, which one transaction cannot spend twice. A dynamic value's run is read only where
- * its write runs, so an entry that writes no batch keeps a plan without the run: a path that skips the write still
- * settles, and one that takes it is refused by the callee's own frame.
+ * naming a node the batch also spends by another id, which one transaction cannot spend twice. A dynamic value's run
+ * is read only where its write runs, so an entry that writes no batch keeps a plan without the run: a path that skips
+ * the write still settles, and one that takes it is refused by the callee's own frame.
  */
 function calleeEntryWrites(
   artifact: Artifact,
@@ -1753,9 +1753,14 @@ function calleeEntryWrites(
     throw new PerCallProxyDeployError(`the callee "${callee}" writes records this hop cannot declare: `
       + `${error instanceof Error ? error.message : String(error)}`);
   }
-  const spent = new Set([...writes?.spentUtxos.values() ?? []].map((utxo) => `${utxo.txid}:${utxo.vout}`));
-  const shared = readNodes.find((node) => node.utxo !== undefined
-    && spent.has(`${node.utxo.txid}:${node.utxo.vout}`));
+  // A node the batch spends and the entry also reads, an allowance a token reads before it rewrites it, is one input
+  // when both name it by its shared id: the read is declared kept ahead of the batch's transition of it, as the hop
+  // declares its own frame's (`batchSpentReads`). A read naming it by another id would spend it a second time.
+  const spentAs = new Map([...writes?.spentUtxos ?? []].map(([id, utxo]) => [`${utxo.txid}:${utxo.vout}`, id]));
+  const shared = readNodes.find((node) => {
+    const spentId = node.utxo === undefined ? undefined : spentAs.get(`${node.utxo.txid}:${node.utxo.vout}`);
+    return spentId !== undefined && spentId !== node.id;
+  });
   if (shared !== undefined) {
     throw new PerCallProxyDeployError(
       `the callee "${callee}" reads mapping "${shared.collection}" at a node its batch also spends, which one `

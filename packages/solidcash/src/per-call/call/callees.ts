@@ -17,9 +17,10 @@
  * data records and its nodes across its frames in the order the validator walks them: a frame starts from the view
  * the last write before it leaves, which is learned from that frame's own close before the frame is read, and names a
  * node an earlier frame created at that frame's output. The nodes are chained as the hop chains them. A write that
- * lays chunk records, a dynamic value's run or the chunks a long mapping value takes, is declared in the segment its
- * artifact publishes for that write, as the hop places its callee's (`placeOwnWrites`), and a long value the body
- * reads from its frame is listed in the frame's block, as the hop lists it (`calleeValueWitnesses`).
+ * lays chunk records, a dynamic value's run or the chunks a long mapping value takes, or whose artifact fixes no one
+ * segment for the frame's mapping writes, is declared in the segment its artifact publishes for that write, as the
+ * hop places its callee's (`placeOwnWrites`), and a long value the body reads from its frame is listed in the frame's
+ * block, as the hop lists it (`calleeValueWitnesses`).
  *
  * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that sends value,
  * co-spends a side-car or writes a chunking value its artifact does not state, which only its own close sizes; a
@@ -161,6 +162,13 @@ function publishedWrites(artifact: Artifact, functionName: string): readonly Pub
     .find((candidate) => candidate.functionName === identity)?.writeSegments;
 }
 
+/** The one segment an entry's artifact publishes for all of its writes, or undefined when it publishes none. */
+function publishedEntryWriteSegment(artifact: Artifact, functionName: string): number | 'last' | undefined {
+  const identity = `${artifact.contractName}.${functionName}()`;
+  return readPublishedStopSites(artifact).entries
+    .find((candidate) => candidate.functionName === identity)?.writeSegment;
+}
+
 /**
  * The data records an entry's own body writes, by record index, at every segment the artifact publishes for each;
  * the run's last segment is the one after the frame's `calls` calls.
@@ -183,9 +191,9 @@ function publishedRecordWrites(
  * The segment a callee frame's mapping write lands in, or undefined when its artifact does not fix one.
  *
  * The artifact publishes the segment of each collection's write; a frame that makes no call has one segment, so its
- * write can only land there. Writes the artifact places in several segments are not one landing, and are refused. A
- * frame a stopped plan states only the first calls of is never settled on that plan, so a write past its last stated
- * call is declared in its last segment, as the hop declares one.
+ * write can only land there. Writes the artifact places in several segments are not one landing, and are placed per
+ * write instead (`landsInOneSegment`). A frame a stopped plan states only the first calls of is never settled on that
+ * plan, so a write past its last stated call is declared in its last segment, as the hop declares one.
  */
 function mappingWriteSegment(callee: HopCallee): number | undefined {
   const segments = new Set((publishedWrites(callee.artifact, callee.entry) ?? [])
@@ -231,7 +239,7 @@ function calleeEventSentinels(callee: HopCallee, maximumCommitmentBytes: number)
  * True when a callee frame's own writes lay chunk records: a dynamic value's run, written or read beside them, on
  * its own or beside a mapping write, or the chunks a mapping value takes. Such a frame's writes are declared each in
  * its own segment, as the hop declares its callee's; a frame that writes nodes alone lands them in the one segment
- * its artifact publishes for its mapping writes (`mappingWriteSegment`).
+ * its artifact publishes for its mapping writes (`mappingWriteSegment`), when it publishes one (`landsInOneSegment`).
  */
 function laysChunks(callee: HopCallee): boolean {
   const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
@@ -239,6 +247,19 @@ function laysChunks(callee: HopCallee): boolean {
   const writes = callee.entryWrites;
   return writes !== undefined && (writes.collection === undefined || dynamic
     || writes.reachWrites.some((write) => write.chunkable));
+}
+
+/**
+ * True when a callee frame's artifact publishes its writes and its mapping writes share one segment the frame holds.
+ *
+ * Such a frame's nodes are declared in that one segment and kept on either side of it. Any other frame's writes are
+ * placed as the hop places its callee's (`placeOwnWrites`): each in the segment its artifact publishes for that write,
+ * else in the one it publishes for the whole entry, else in the only segment a frame that makes no call has. A body
+ * whose write the compiler's walk does not reach, such as one inside an `unchecked` block, publishes no list of its
+ * writes at all, while the segment it publishes for the whole entry still stands.
+ */
+function landsInOneSegment(callee: HopCallee): boolean {
+  return publishedWrites(callee.artifact, callee.entry) !== undefined && mappingWriteSegment(callee) !== undefined;
 }
 
 /** The ABI entry a contract's fallback is published under, which a call routed to it names. */
@@ -312,8 +333,11 @@ function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefine
     return `${label} emits, sends or hashes once per turn of a loop, which this call path does not plan for a callee `
       + 'yet';
   }
-  if (publishedWrites(callee.artifact, callee.entry) === undefined
-    || (callee.entryWrites?.collection !== undefined && mappingWriteSegment(callee) === undefined)) {
+  // A mapping write the artifact publishes no segment of its own for is placed as the hop places it
+  // (`landsInOneSegment`). A frame that lays no mapping write writes its data records alone, which then have no
+  // segment to land in, and so do the writes of a frame beside a call whose artifact publishes none for the entry.
+  if (publishedWrites(callee.artifact, callee.entry) === undefined && (callee.entryWrites === undefined
+    || (callee.calls.length > 0 && publishedEntryWriteSegment(callee.artifact, callee.entry) === undefined))) {
     return `${label} writes in a segment its artifact does not fix, which this call path does not plan yet`;
   }
   return undefined;
@@ -567,9 +591,10 @@ export function calleeFrames(options: {
     Object.assign(inputs, laid?.inputs ?? {});
     // A write that lays chunk records is declared in the segment its artifact publishes for that write, as the hop
     // declares its callee's (`placeOwnWrites`): a run lands beside the batch it is written with, and a run the frame
-    // only reads keeps its place among them. Any other frame's nodes land in its one mapping-write segment.
-    const byWrite = laid !== undefined && callee.entryWrites !== undefined && laysChunks(callee)
-      ? { laid, writes: callee.entryWrites } : undefined;
+    // only reads keeps its place among them. So is a write whose artifact fixes no one segment for the frame's
+    // mapping writes (`landsInOneSegment`). Any other frame's nodes land in its one mapping-write segment.
+    const byWrite = laid !== undefined && callee.entryWrites !== undefined
+      && (laysChunks(callee) || !landsInOneSegment(callee)) ? { laid, writes: callee.entryWrites } : undefined;
     const landing = mappingWriteSegment(callee) ?? 0;
     // A node two groups declare, a target that is also another target's relinked predecessor, is written once in its
     // final form: the later declaration continues from the view the first one leaves, which is learned with it.
@@ -635,6 +660,17 @@ export function calleeFrames(options: {
         if (!(error instanceof PerCallProxyDeployError)) throw error;
         throw new PerCallCalleeError(error.message);
       }
+    }
+    // A node the frame reads and its batch also spends is one input (`calleeEntryWrites`): the read keeps the view the
+    // batch's own declaration of the node starts each segment from, the spent view up to the write's segment and the
+    // written one after it, as the hop keeps its own frame's (`batchSpentReads`).
+    const groupsFrom = declared.length + readEntries.length;
+    for (const segment of segments) {
+      readEntries.forEach((read, ordinal) => {
+        const spent = segment.slice(groupsFrom).find((entry) => entry.in !== INDEX_NONE && entry.in === read.in);
+        if (!(spent?.viewIn instanceof Uint8Array)) return;
+        segment[declared.length + ordinal] = { ...read, viewIn: spent.viewIn, viewOut: spent.viewIn };
+      });
     }
     // A record this frame writes ends where its last write leaves it: the placeholder the composer declares for that
     // segment's unstated end, at the record's own place among the segment's entries.

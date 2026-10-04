@@ -34,9 +34,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * from the node the keeper's deployment holds for the key, in the form the node holds it, and a key it does not hold
  * reads as its type's default. A write the entry itself makes before the call leaves the key at the value the body then
  * reads: the value its published facts state is the one the call is planned from (a `Starter`'s initialize calls the
- * address it has just stored), one its body computes is refused by name, and a write after the call leaves the call
- * reading the deployment's own value. A value a listing misreports is planned from as reported, and the transaction is
- * refused for it.
+ * address it has just stored), one its body computes is learned from the entry's own close of the node
+ * (`root-computed-mapping-value`), and a write after the call leaves the call reading the deployment's own value. A
+ * value a listing misreports is planned from as reported, and the transaction is refused for it.
  *
  * `Relay` reaches the keeper twice in one hop. A node the first reach leaves is what the second reads, whether the
  * first created it or rewrote one the deployment holds: the value the first reach's facts state, or the view its settle
@@ -445,12 +445,11 @@ describe('a call a root entry routes through a value its own mapping holds', () 
     expect(await sinkView(world, 'pinged', [])).toBe(7n);
   }, 600_000);
 
-  it('refuses by name a call routed through a value its own write before the call computes', async () => {
+  it('forwards a value its own write before the call computes, as its own close of the node shows it', async () => {
     const world = await deployed();
     await settle(world, 'keeper', 'setAmount', [15n, 85n]);
-    await expectRefused(world, 'keeper', 'bumpThenRelay', [15n],
-      'the call to "ISink.takeAmount" reads mapping "amounts" at a key the entry\'s own write before the call leaves '
-      + 'at a value its published facts do not state, so the hop cannot state the call the body makes from it');
+    await settle(world, 'keeper', 'bumpThenRelay', [15n]);
+    expect(await sinkView(world, 'amountOf', [15n])).toBe(86n);
   }, 600_000);
 
   it('is refused for a value a listing misreports: the transaction spends the node as it is', async () => {

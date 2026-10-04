@@ -97,7 +97,9 @@ import { chainsEnclosedTouch } from './enclosed-reads.js';
 import { PerCallProxyDeployError } from './errors.js';
 import { reachedNodeValue } from './reached-values.js';
 import { lockOfIdentity } from './address-identity.js';
-import { statedMappingWrites, writeLandsBefore, type StatedMappingWrite } from './written-values.js';
+import {
+  EntryWriteValueAwaited, entryWriteValueKey, statedMappingWrites, writeLandsBefore, type StatedMappingWrite,
+} from './written-values.js';
 
 /** One contract the caller names for a call an implementation entry makes, keyed by the interface it calls. */
 export interface PerCallProxyExternal {
@@ -903,13 +905,16 @@ function wholeMappingReads(row: ExternalCallAbi): ReadonlySet<string> {
  * `base` reads a node as the frame starts, but a write the entry makes before the site leaves its key at the value
  * that write stores, which is the one the body reads there (`statedMappingWrites`): that value is read instead. A key
  * such a write leaves at a value its body computes, or one a write whose key the frame's facts do not determine may
- * have rewritten, is refused by name rather than read from the node as it was.
+ * have rewritten, is refused by name rather than read from the node as it was. The hop's own entry, whose site is
+ * `site`, awaits the bytes of a node every such write keys instead (`EntryWriteValueAwaited`), which the hop learns
+ * from the entry's own close of it.
  */
 function readerPastOwnWrites(
   base: MappingValueReader | undefined,
   artifact: Artifact,
   writes: readonly StatedMappingWrite[],
   where: string,
+  site?: number,
 ): MappingValueReader {
   return (name, keys) => {
     const collection = mappingCollectionOf(artifact, name);
@@ -921,10 +926,14 @@ function readerPastOwnWrites(
     const value = written[0]!.value;
     if (value === undefined || written.some((write) => write.slot === undefined || write.value === undefined
       || !bytesEqual(write.value, value))) {
-      throw new PerCallProxyDeployError(
-        `${where} reads mapping "${name}" at a key the entry's own write before the call leaves at a value its `
-        + 'published facts do not state, so the hop cannot state the call the body makes from it',
-      );
+      const refusal = `${where} reads mapping "${name}" at a key the entry's own write before the call leaves at a `
+        + 'value its published facts do not state, so the hop cannot state the call the body makes from it';
+      const slot = written[0]!.slot;
+      if (site !== undefined && slots !== undefined && slot !== undefined
+        && written.every((write) => write.slot !== undefined && bytesEqual(write.slot, slot))) {
+        throw new EntryWriteValueAwaited(refusal, site, name, slot);
+      }
+      throw new PerCallProxyDeployError(refusal);
     }
     return mappingValueOf(collection.valueType, value, artifact, artifact.structs);
   };
@@ -1091,7 +1100,8 @@ interface PlanContext {
    * The whole value a previous settle learned for a frame's chunkable mapping write, per frame master.
    *
    * A write whose value the artifact does not publish states its run unstated, so the first plan lays no chunk
-   * records; the frame's own close exposes the value, and every pass after that one sizes the run from it.
+   * records; the frame's own close exposes the value, and every pass after that one sizes the run from it. The bytes
+   * a settle of the hop's own entry learned its write leaves a node at are held under `entryWriteValueKey`.
    */
   readonly calleeWriteValues?: ReadonlyMap<string, Uint8Array>;
   /** Callee frames in placement order; a slot is reserved before the callee's own calls are planned. */
@@ -1285,8 +1295,11 @@ async function planEntryCalls(
   const writtenState = entryWrittenState(caller.artifact, caller.functionName);
   const known = knownResultsOf(ctx, caller.artifact, path);
   // The mapping writes the entry's own body makes: a site after one reads the value it leaves (`readerPastOwnWrites`).
+  // The hop's own entry states beside its facts the bytes a settle of it learned a write leaves (`written-values.ts`).
+  const root = path === '';
   const ownWrites = statedMappingWrites(
-    caller.artifact, caller.functionName, caller.args, caller.senderAddress, caller.stateValues);
+    caller.artifact, caller.functionName, caller.args, caller.senderAddress, caller.stateValues,
+    root ? (collection, slot) => ctx.calleeWriteValues?.get(entryWriteValueKey(collection, slot)) : undefined);
 
   // Pass one: resolve every site of this entry from the caller's own facts and the results learned for its earlier
   // calls, so the plan is refused for its own shape before any live record is read. A site that reads a result no
@@ -1326,7 +1339,9 @@ async function planEntryCalls(
     const writtenBefore = ownWrites.filter((write) => wholeReads.has(write.collection)
       && writeLandsBefore(published.writeSegments, write.collection, index));
     const siteCaller: HopCallInputs = writtenBefore.length === 0 ? caller : {
-      ...caller, readMappingValue: readerPastOwnWrites(caller.readMappingValue, caller.artifact, writtenBefore, where),
+      ...caller,
+      readMappingValue: readerPastOwnWrites(
+        caller.readMappingValue, caller.artifact, writtenBefore, where, root ? index : undefined),
     };
     const siteBase = siteCaller === caller ? resolver : makeCallResolver(siteCaller);
     const count = occurrenceCountOf(
@@ -2641,6 +2656,8 @@ export interface HopExternalPlanOptions {
    *
    * A write whose value the artifact does not publish states its run unstated; the frame's own close exposes the
    * value, and a later pass sizes the run from it. Absent leaves every such run unstated, which is the first pass.
+   * Under `entryWriteValueKey`, the bytes a settle of the entry itself learned its own write leaves a node at, which
+   * a site after the write is planned from (`EntryWriteValueAwaited`).
    */
   readonly calleeWriteValues?: ReadonlyMap<string, Uint8Array>;
   /**

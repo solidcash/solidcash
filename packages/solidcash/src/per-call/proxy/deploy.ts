@@ -107,6 +107,9 @@ import {
 import {
   declareUnstatedCalls, entryMeetsRefusedSite, entrySiteOf, planBeforeRefusedSite, planBeforeSite,
 } from './planning-refusal.js';
+import {
+  EntryWriteValueAwaited, EntryWriteValueLearned, entryWriteValueKey, settledWriteValue,
+} from './written-values.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
 export type PerCallProxyDeployHalf = Omit<DeployOptions, 'provider' | 'initialState'>;
@@ -1904,6 +1907,20 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   // declaration's identity, so a re-planned entry — one whose run the record's own length widened — keeps what an
   // earlier attempt learned.
   const learnedExtras = new Map<string, Uint8Array>();
+  // A plan stopped before a site that reads a node the entry's own write before it leaves at bytes no fact states
+  // (`EntryWriteValueAwaited`) is settled for those bytes alone. They are handed back as soon as the settle has them:
+  // the first close of the node is the one in the segment the write lands in, before the site, while the segments
+  // the stopped plan declares past it may close the node again. Bytes the entry's write plan states are handed back
+  // once the entry meets the stop.
+  const awaited = options.refusedSite instanceof EntryWriteValueAwaited ? options.refusedSite : undefined;
+  const awaitedLearned = (): EntryWriteValueLearned | undefined => {
+    if (awaited === undefined) return undefined;
+    const value = settledWriteValue(implementationArtifact, entryWrites,
+      (candidate) => learnedExtras.get(bytesToHex(candidate)), awaited.collection, awaited.slot);
+    if (value === undefined) return undefined;
+    if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-entry-write ${awaited.collection}`);
+    return new EntryWriteValueLearned(awaited.collection, awaited.slot, value);
+  };
   let maximumAttempts = MAXIMUM_HOP_ATTEMPTS;
   // The callees are settled first: the implementation frame's call records carry what each callee's own body
   // computed, so the plan cannot state the caller's records until the callees have answered.
@@ -2035,6 +2052,8 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
         if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-chunk-value len=${value.length}`);
         learnedValue = value;
         entryWrites = options.entryWritesFor?.(writtenCommitments, learnedValue) ?? entryWrites;
+        const ready = awaitedLearned();
+        if (ready !== undefined) throw ready;
         continue;
       }
       // The body computed a chunkable value the close did not expose, so the run's width stays unstated: refuse by
@@ -2066,7 +2085,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       // reaches it meets the failure there, and one that stops first is reported by its own stop below.
       if (options.refusedSite !== undefined && entryMeetsRefusedSite({
         draft: candidate.draft, vm, entry: IMPLEMENTATION_MASTER_ID, report: refusal,
-      })) throw options.refusedSite;
+      })) throw awaitedLearned() ?? options.refusedSite;
       const attributed = refusal.innermost === undefined
         ? describeReading(reading, writtenCommitments[0] ?? new Uint8Array(0))
         : describeInnermost(refusal.innermost);
@@ -2099,6 +2118,8 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     } else if (learnedExtra >= 0) {
       if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-write at=${learnedExtra}`);
       learnedExtras.set(bytesToHex(extras[learnedExtra]!), Uint8Array.from(reading.computed));
+      const ready = awaitedLearned();
+      if (ready !== undefined) throw ready;
     } else {
       if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-event at=${learnedEvent}`);
       writtenEvents = writtenEvents.map((candidate, emitIndex) =>
@@ -2123,7 +2144,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   }
   // A plan stopped before the site its failure is met at is never broadcast: an entry that settled on it did not
   // stop before that site, so the failure stands.
-  if (options.refusedSite !== undefined) throw options.refusedSite;
+  if (options.refusedSite !== undefined) throw awaitedLearned() ?? options.refusedSite;
   const { host, draft } = composed;
   // The entry's frame accepted against every value the plan learned, so a stall here is the hop's own shape: the
   // proxy's forwarded call records no result of its own, so it binds the call record's result to empty while the
@@ -2374,7 +2395,10 @@ function traceResultValue(value: unknown): string {
  * planner stops before the site, the frames of the calls it reads are settled on the plan made so far, their results
  * are decoded, and the hop is planned again from them. Each stop learns at least one result no earlier stop learned,
  * from a frame whose own inputs are the execution's, so a refusal there is that frame's own verdict and is reported
- * as it stands. What a stop's settle learned seeds the same frames' settle in every later plan.
+ * as it stands. What a stop's settle learned seeds the same frames' settle in every later plan. A site of the entry
+ * that reads a node the entry's own write before it leaves at bytes no published fact states waits the same way: the
+ * hop is planned stopped before the site, the entry is settled on that plan up to its close of the node, and the hop
+ * is planned again from the bytes that close rebuilt (`written-values.ts`).
  *
  * An arm gated on an earlier call's result is planned as before: the plan states the sites the caller's own facts
  * fix, the settle learns what each callee frame returned, and the next pass decides the gated arms from those
@@ -2428,7 +2452,8 @@ async function planAndSettleHop(options: {
     try {
       await options.settle(stopped, seedOf(learning, stopped.callees), true);
     } catch (error) {
-      return error;
+      // Bytes the entry's own write leaves are what the settle learned, not where the entry stops.
+      return error instanceof EntryWriteValueLearned ? failure : error;
     }
     return failure;
   };
@@ -2453,13 +2478,41 @@ async function planAndSettleHop(options: {
     const verdict = await settledBefore(failure, stopped);
     return verdict instanceof Error ? verdict : failure;
   };
-  /** The hop planned from what the settles so far learned, a planning refusal reported as the execution meets it. */
-  const planHop = async (heldContinuations: boolean | undefined): Promise<HopExternalPlan> => {
+  /**
+   * Learns the bytes the entry's own write before one of its sites leaves the node the site reads: the hop is planned
+   * stopped before the site and the entry is settled on that plan, which closes the node on its way there. A settle
+   * that hands no bytes back reports the entry's own stop before the site, or the site's refusal by name.
+   */
+  const learnEntryWriteValue = async (
+    awaited: EntryWriteValueAwaited, heldContinuations: boolean | undefined,
+  ): Promise<void> => {
+    const key = entryWriteValueKey(awaited.collection, awaited.slot);
+    const stopped = learning.writeValues.has(key)
+      ? undefined : await planBeforeSite(planStopped(heldContinuations), awaited.site, awaited);
+    if (stopped === undefined) throw await refusalMetFirst(awaited, heldContinuations);
     try {
-      return await options.plan(
-        externalReturns, reached, learning.writeViews, learning.writeValues, heldContinuations);
+      await options.settle(stopped, seedOf(learning, stopped.callees), true);
     } catch (error) {
-      throw await refusalMetFirst(error, heldContinuations);
+      if (!(error instanceof EntryWriteValueLearned)) throw error;
+      learning.writeValues.set(key, error.value);
+      return;
+    }
+    // A plan stopped before a site is never settled whole, so a settle that returns learned nothing either.
+    throw awaited;
+  };
+  /**
+   * The hop planned from what the settles so far learned, a planning refusal reported as the execution meets it and a
+   * site waiting on bytes the entry's own write leaves planned once a settle of the entry learned them.
+   */
+  const planHop = async (heldContinuations: boolean | undefined): Promise<HopExternalPlan> => {
+    for (;;) {
+      try {
+        return await options.plan(
+          externalReturns, reached, learning.writeViews, learning.writeValues, heldContinuations);
+      } catch (error) {
+        if (!(error instanceof EntryWriteValueAwaited)) throw await refusalMetFirst(error, heldContinuations);
+        await learnEntryWriteValue(error, heldContinuations);
+      }
     }
   };
   /** The cross-reach checks over a plan's frames, a refusal reported as the execution meets it. */

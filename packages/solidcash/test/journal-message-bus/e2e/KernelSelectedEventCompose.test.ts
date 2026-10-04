@@ -33,6 +33,75 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 const slotHex = (key: bigint): string => binToHex(keyToSlotMulti([bigIntToVmNumber(key)]));
 
 describe('kernel selected event beside journal mutation under composition', () => {
+  it('settles two emitting participants after the complete event frame is balanced', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const calleeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Callee() {
+        event Seen(int value);
+        function record(int value) public {
+          emit Seen(value);
+          require(true);
+        }
+      }`, KERNEL);
+    const calleeBase = new Contract(calleeArtifact, [], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const callee = StatefulContract.withCategory(
+      calleeBase.withCategory(hexToBin(calleeSetup.categoryId)), calleeSetup.categoryId,
+    );
+
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface ICallee { function record(int value) external; }
+      contract Caller() {
+        event Called(int value);
+        function trigger(address callee, int value) public {
+          emit Called(value);
+          ICallee(callee).record(value);
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('ICallee', callee);
+    const callsiteId = callerArtifact.abi.find((entry) => entry.name === 'trigger')
+      ?.externalCalls?.find((call) => call.functionName === 'record')?.callsiteId;
+    expect(callsiteId).toBeDefined();
+
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [{
+        contract: caller, functionName: 'trigger', args: [callee.inner.lockingBytecode, 7n],
+      }, {
+        contract: callee, functionName: 'record', args: [7n], callsiteId,
+      }],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    const builder = await composition.build();
+    expect(vmAccepts(builder)).toBe(true);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const called = callerArtifact.events!.find((event) => event.name === 'Called')!;
+    const seen = calleeArtifact.events!.find((event) => event.name === 'Seen')!;
+    const callerEvents = await readEventsFromChain(
+      provider, caller.getEventNftAddress(called.signature), callerSetup.categoryId,
+      called, callerArtifact.structs,
+    );
+    const calleeEvents = await readEventsFromChain(
+      provider, callee.getEventNftAddress(seen.signature), calleeSetup.categoryId,
+      seen, calleeArtifact.structs,
+    );
+    expect(callerEvents.some((event) => event.values.value === 7n)).toBe(true);
+    expect(calleeEvents.some((event) => event.values.value === 7n)).toBe(true);
+  }, 120_000);
+
   it('skips unselected fixed event slots during semantic composition', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const storeArtifact = compileString(`pragma solidcash >=0.8.0;

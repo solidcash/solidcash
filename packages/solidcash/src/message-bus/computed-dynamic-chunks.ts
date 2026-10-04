@@ -6,7 +6,6 @@ import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-
 import { parseChunkCommitment } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { generateLibauthSourceOutputs } from '../utils.js';
 import { gateWouldApplyRepairsIfRecipe } from './materialization-mode.js';
 import {
   MonotoneCell,
@@ -159,7 +158,7 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
   const maximumRounds = owners.size * 2 + 1;
   let repairs = 0;
   for (let round = 1; round <= maximumRounds; round += 1) {
-    const transaction = builder.buildLibauthTransaction();
+    const { transaction, sourceOutputs } = builder.buildLibauthProgram();
     // Earlier resource or event repairs can open a later chunk equality without changing this chunk's
     // placeholder. A chunk-only key would skip the newly reachable proof in the shared fixpoint session.
     const stateKey = dynamicChunkConvergenceStateKey(transaction, ownedOutputs);
@@ -187,45 +186,46 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
       });
     }
 
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const commitmentProposals = new Map<number, Uint8Array>();
     const inputIndices = new Set([...owners.values()].flatMap((indices) => [...indices]));
+    let observedInputIndex = -1;
+    const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
+      opcodes: new Set([Op.OP_OUTPUTTOKENCOMMITMENT]),
+      beforeOperation: (unknownState) => {
+        const state = unknownState as AuthenticationProgramStateCommon;
+        const opcode = state.instructions[state.ip]?.opcode;
+        const nextOpcode = state.instructions[state.ip + 1]?.opcode;
+        const tightEquality = nextOpcode === Op.OP_EQUALVERIFY
+          || (nextOpcode === Op.OP_EQUAL
+            && state.instructions[state.ip + 2]?.opcode === Op.OP_VERIFY);
+        if (opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
+          || !tightEquality
+          || state.controlStack.some((frame) => frame === false)
+          || state.stack.length < 2) return;
+        let outputIndex: number;
+        try {
+          outputIndex = Number(vmNumberToBigInt(state.stack[state.stack.length - 1]));
+        } catch { return; }
+        const expected = state.stack[state.stack.length - 2];
+        if (!owners.get(outputIndex)?.has(observedInputIndex)) return;
+        if (expected.length === 0 || expected.length > 128) return;
+        const expectedHex = binToHex(expected);
+        // Ordinal is relative to the contiguous owned run that contains this output.
+        let ordinalStart = outputIndex;
+        while (ordinalStart > 0 && owners.has(ordinalStart - 1)) ordinalStart -= 1;
+        // Reject non-chunk OTC pairs (scalar data-NFT lengths, empty pads) before they poison the run.
+        if (!isDynamicChunkCommitmentAtIndex(expectedHex, outputIndex - ordinalStart)) return;
+        const prior = commitmentProposals.get(outputIndex);
+        if (prior && binToHex(prior) !== expectedHex) {
+          throw new Error(
+            `messageBus: dynamic-chunk covenants disagree on output ${outputIndex} commitment`,
+          );
+        }
+        commitmentProposals.set(outputIndex, expected.slice());
+      },
+    });
     for (const inputIndex of inputIndices) {
-      const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
-        opcodes: new Set([Op.OP_OUTPUTTOKENCOMMITMENT]),
-        beforeOperation: (unknownState) => {
-          const state = unknownState as AuthenticationProgramStateCommon;
-          const opcode = state.instructions[state.ip]?.opcode;
-          const nextOpcode = state.instructions[state.ip + 1]?.opcode;
-          const tightEquality = nextOpcode === Op.OP_EQUALVERIFY
-            || (nextOpcode === Op.OP_EQUAL
-              && state.instructions[state.ip + 2]?.opcode === Op.OP_VERIFY);
-          if (opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
-            || !tightEquality
-            || state.controlStack.some((frame) => frame === false)
-            || state.stack.length < 2) return;
-          let outputIndex: number;
-          try {
-            outputIndex = Number(vmNumberToBigInt(state.stack[state.stack.length - 1]));
-          } catch { return; }
-          const expected = state.stack[state.stack.length - 2];
-          if (!owners.get(outputIndex)?.has(inputIndex)) return;
-          if (expected.length === 0 || expected.length > 128) return;
-          const expectedHex = binToHex(expected);
-          // Ordinal is relative to the contiguous owned run that contains this output.
-          let ordinalStart = outputIndex;
-          while (ordinalStart > 0 && owners.has(ordinalStart - 1)) ordinalStart -= 1;
-          // Reject non-chunk OTC pairs (scalar data-NFT lengths, empty pads) before they poison the run.
-          if (!isDynamicChunkCommitmentAtIndex(expectedHex, outputIndex - ordinalStart)) return;
-          const prior = commitmentProposals.get(outputIndex);
-          if (prior && binToHex(prior) !== expectedHex) {
-            throw new Error(
-              `messageBus: dynamic-chunk covenants disagree on output ${outputIndex} commitment`,
-            );
-          }
-          commitmentProposals.set(outputIndex, expected.slice());
-        },
-      });
+      observedInputIndex = inputIndex;
       vm.evaluate({ inputIndex, sourceOutputs, transaction });
     }
     for (const outputIndex of commitmentProposals.keys()) authenticatedOutputs.add(outputIndex);
@@ -243,8 +243,8 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
       changed = true;
     }
     if (!changed) {
-      const finalKey = dynamicChunkConvergenceStateKey(builder.buildLibauthTransaction(), ownedOutputs);
-      finalizeMonotonePass(commitmentLattice, finalKey);
+      // No output was rewritten, so the round's exact transaction key is already the final key.
+      finalizeMonotonePass(commitmentLattice, stateKey);
       return freezeGeometry({
         repairs,
         rounds: round,

@@ -236,7 +236,7 @@ export async function runComposeSemanticClaimLoop(
       assembled.incompleteDynamicChunks.map((item) => item.participant),
     );
     const missingReturnParticipants = new Set<number>();
-    const derivedResults = deriveReturnResults(
+    const { results: derivedResults, eventProbeProgram } = deriveReturnResults(
       finalized, provisional, claimedResults, missingReturnParticipants,
     );
     const previousResults = claimedResults;
@@ -278,6 +278,7 @@ export async function runComposeSemanticClaimLoop(
     } = observeComposeSemanticEffects(
       {
         provisional,
+        eventProbeProgram,
         finalized,
         plan,
         categories,

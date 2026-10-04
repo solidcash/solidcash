@@ -106,7 +106,7 @@ export interface ComposeAssemblyRuntime {
     provisional: TransactionBuilder,
     priorResults: Readonly<Record<number, string>>,
     missingParticipants: Set<number>,
-  ) => Record<number, string>;
+  ) => ReturnType<typeof deriveComposeReturnResults>;
   participantReturnBlob: (
     participant: number, results: Readonly<Record<number, string>>,
   ) => Uint8Array | undefined;
@@ -244,7 +244,7 @@ export function createComposeAssemblyRuntime(
   const deriveReturnResults = (
     graph: FinalizedGraph, provisional: TransactionBuilder,
     priorResults: Readonly<Record<number, string>>, missingParticipants: Set<number>,
-  ): Record<number, string> => deriveComposeReturnResults(
+  ): ReturnType<typeof deriveComposeReturnResults> => deriveComposeReturnResults(
     deriveReturnResultsContext(), graph, provisional, priorResults, missingParticipants,
   );
 

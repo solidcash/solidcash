@@ -323,7 +323,7 @@ export function mockProviderBlockFields(provider: {
 }
 
 type MockUtxoStorage = {
-  snapshot: () => { utxos: Map<string, {
+  getUtxoByOutpoint: (key: string) => {
     outpoint: { txid: string; vout: number };
     satoshis: bigint;
     scriptHash: string;
@@ -335,7 +335,7 @@ type MockUtxoStorage = {
       amount: bigint;
       nft?: { commitment: string; capability: 'none' | 'mutable' | 'minting' };
     };
-  }> };
+  } | undefined;
   _test?: {
     utxo: {
       add: (params: {
@@ -393,8 +393,10 @@ function replaceMockNftCommitment(
   storage: MockUtxoStorage, utxo: Utxo, commitment: string,
 ): boolean {
   const key = `${utxo.txid}:${utxo.vout}`;
-  const entry = storage.snapshot().utxos.get(key);
-  if (!entry?.tokenData?.nft || !storage._test) return false;
+  // A full storage snapshot clones every chain and mempool entry. The indexed outpoint reader returns the
+  // same confirmed NFT as an isolated copy, without cloning the whole chain for each oracle register.
+  const entry = storage.getUtxoByOutpoint(key);
+  if (!entry?.tokenData?.nft || entry.height <= 0 || !storage._test) return false;
   if (entry.tokenData.nft.commitment === commitment) return false;
   storage._test.utxo.remove({ txid: utxo.txid, vout: utxo.vout });
   storage._test.utxo.add({

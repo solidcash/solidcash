@@ -39,6 +39,7 @@ export interface ComposeSemanticEffectClaims {
 
 export interface ObserveComposeSemanticEffectsContext {
   provisional: TransactionBuilder;
+  eventProbeProgram?: ReturnType<TransactionBuilder['buildLibauthProgram']>;
   finalized: FinalizedGraph;
   plan: CompiledGraphPlan;
   categories: readonly string[];
@@ -374,7 +375,7 @@ export function observeComposeSemanticEffects(
     apply: (observed) => { claims.sidecarEffects = observed as AtomicSidecarSlotEffect[]; },
   });
   const derivedEventEffects: AtomicEventSlotEffect[] = [];
-  const eventProgram = ctx.provisional.buildLibauthProgram();
+  const eventProgram = ctx.eventProbeProgram ?? ctx.provisional.buildLibauthProgram();
   const eventSlots = ctx.eventSlots();
   const eventSlotsByParticipant = new Map<number, typeof eventSlots[number][]>();
   for (const slot of eventSlots) {
@@ -406,6 +407,7 @@ export function observeComposeSemanticEffects(
   // route. The selected-site trace above is the compiler's authority: relocate the SDK's artifact-derived event
   // templates onto the exact event slots introspected by the covenant, and return every other reserved slot
   // to its canonical balanced-output shape. No contract-specific handler or event names participate.
+  let eventFrameRelocated = false;
   for (const participant of ctx.plan.participants) {
     const participantBase = ctx.finalized.layout.participantInputs[participant.participant];
     const selectedEventOffsets = selectedGraphEventOffsets(ctx.plan, participant);
@@ -474,6 +476,7 @@ export function observeComposeSemanticEffects(
       throw new Error('messageBus: inactive event frame has no canonical empty output');
     }
     if (targets.length === 0 && active.length === 0) continue;
+    eventFrameRelocated = true;
     const template = inactive ?? ctx.provisional.outputs[targets[0]];
     if (!template) throw new Error('messageBus: active event frame has no output template');
     const targetTemplates = new Map(targets.map((target) => [target, ctx.provisional.outputs[target]]));
@@ -507,6 +510,10 @@ export function observeComposeSemanticEffects(
         },
       };
     });
+  }
+  // Relocation never probes or reads the fee tail between participants. Size and balance the complete final
+  // event frame once; reserializing the multi-thousand-input transaction after each owner is redundant.
+  if (eventFrameRelocated) {
     ctx.rebalanceFeeTail(ctx.provisional, 'relocated compiler-authenticated event outputs');
   }
   // Event slots are semantic prerequisites for implementations which both emit an event and update a mutable

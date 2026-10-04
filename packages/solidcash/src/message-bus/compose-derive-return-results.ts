@@ -36,7 +36,10 @@ export function deriveReturnResults(
   provisional: TransactionBuilder,
   priorResults: Readonly<Record<number, string>>,
   missingParticipants: Set<number>,
-): Record<number, string> {
+): {
+    results: Record<number, string>;
+    eventProbeProgram?: ReturnType<TransactionBuilder['buildLibauthProgram']>;
+  } {
   const derivedResults: Record<number, string> = { ...priorResults };
   let normalizedNativeReturnOutput = false;
   // Every participant probe observes the same immutable provisional transaction. Materialize its unlocking
@@ -203,5 +206,10 @@ export function deriveReturnResults(
     }
   }
   if (normalizedNativeReturnOutput) ctx.rebalanceFeeTail(provisional, 'canonicalized native return results');
-  return derivedResults;
+  return {
+    results: derivedResults,
+    // A normalized native return changes the transaction observed by the event covenant. Otherwise both
+    // probes consume the same immutable materialization, including its exact unlocking scripts and outputs.
+    ...(!normalizedNativeReturnOutput && { eventProbeProgram: probeProgram }),
+  };
 }

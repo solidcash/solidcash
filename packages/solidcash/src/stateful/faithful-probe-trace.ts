@@ -353,6 +353,8 @@ export class BoundedProbeTraceCollector {
   private sameStackAuthenticated = new Set<string>();
   private digestCache = new WeakMap<Uint8Array, string>();
   private hexCache = new WeakMap<Uint8Array, string>();
+  private scannedEvidenceItems = new WeakSet<Uint8Array>();
+  private longItemKeys = new WeakMap<Uint8Array, string>();
 
   reset(): void {
     this.awaitingVerification = false;
@@ -369,6 +371,8 @@ export class BoundedProbeTraceCollector {
     this.sameStackAuthenticated = new Set();
     this.digestCache = new WeakMap();
     this.hexCache = new WeakMap();
+    this.scannedEvidenceItems = new WeakSet();
+    this.longItemKeys = new WeakMap();
   }
 
   private digestOf(value: Uint8Array): string {
@@ -403,25 +407,46 @@ export class BoundedProbeTraceCollector {
       // VM operations replace byte arrays rather than mutating existing stack items, as required by the
       // shallow trace snapshots and digest cache above. Encode each authentication value once per probe,
       // but recompute stack membership: a previously seen value can acquire its digest in a later state.
-      const localDigests = new Set(stack.filter((item) => item.length === 32).map((item) => this.hexOf(item)));
+      const localDigests = new Set<string>();
+      const pendingLongAuthentication: Array<{ key: string; digest: string }> = [];
       for (const item of stack) {
+        if (item.length === 32) localDigests.add(this.hexOf(item));
+        // VM frames contain many small numeric operands. None can be a long preimage, its digest, a value
+        // tail, or a P2SH32 lock; do not track their identities or revisit them on every observed opcode.
+        if (item.length !== 32 && item.length !== 35
+          && (item.length <= 60 || item.length > maximumCandidateBytes)) continue;
         if (item.length > 60 && item.length <= maximumCandidateBytes) {
           const digest = this.digestOf(item);
-          const key = `${item.length}:${digest}`;
-          this.retainEvidence(key, item);
-          this.longItems.set(key, item);
-          if (localDigests.has(digest)) this.sameStackAuthenticated.add(key);
+          let key = this.longItemKeys.get(item);
+          if (key === undefined) {
+            key = `${item.length}:${digest}`;
+            this.longItemKeys.set(item, key);
+          }
+          if (!this.sameStackAuthenticated.has(key)) pendingLongAuthentication.push({ key, digest });
+          if (!this.scannedEvidenceItems.has(item)) {
+            this.retainEvidence(key, item);
+            this.longItems.set(key, item);
+          }
         }
+        // Evidence membership and authentication markers depend only on immutable item bytes. The co-presence
+        // check above remains live because a later stack may authenticate an already-observed long value.
+        if (this.scannedEvidenceItems.has(item)) continue;
+        this.scannedEvidenceItems.add(item);
         if (item.length === 64) {
           const storedLength = item[0]! | (item[1]! << 8) | (item[2]! << 16) | (item[3]! << 24);
           if (storedLength > 60) this.tailRootHexes.add(this.hexOf(item).slice(8, 72));
         }
-        if (isP2sh32LockingBytecode(item)) this.lockDigestHexes.add(this.hexOf(item).slice(4, 68));
-        if (item.length === 32 || item.length === 64 || isP2sh32LockingBytecode(item)) {
+        const isLock = isP2sh32LockingBytecode(item);
+        if (isLock) this.lockDigestHexes.add(this.hexOf(item).slice(4, 68));
+        if (item.length === 32 || item.length === 64 || isLock) {
           const key = `${item.length}:${this.hexOf(item)}`;
           this.retainEvidence(key, item);
           this.authItems.set(key, item);
         }
+      }
+      // Check after the one pass over the stack: the authenticating digest can precede or follow its value.
+      for (const { key, digest } of pendingLongAuthentication) {
+        if (localDigests.has(digest)) this.sameStackAuthenticated.add(key);
       }
     }
   }
@@ -558,9 +583,16 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
           : PROBE_TRACE_OPCODES,
     beforeOperation: (unknownState) => {
       const state = unknownState as AuthenticationProgramStateCommon;
-      const opcode = state.instructions[state.ip]?.opcode;
       const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } })
         .process?.env;
+      // The observer runs for every selected VM opcode. Keep ordinary probes clear of diagnostic range parsing;
+      // environment changes between evaluations still take effect when a diagnostic is enabled later.
+      if (!debugTraceOperations && debugEnv?.SOLIDC_DEBUG_SPAN_INSTRUCTIONS === undefined
+        && debugEnv?.SOLIDC_DEBUG_SPAN_CALLER_INSTRUCTIONS === undefined) {
+        cached.collector.observe(state);
+        return;
+      }
+      const opcode = state.instructions[state.ip]?.opcode;
       const debugFrom = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_FROM_IP ?? Number.NaN);
       const debugTo = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_TO_IP ?? Number.NaN);
       const debugInstructionCount = Number(

@@ -7,6 +7,7 @@ import { parseChunkCommitment } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { gateWouldApplyRepairsIfRecipe } from './materialization-mode.js';
+import { inputMayExecuteOutputTokenCommitment } from './executable-opcode-eligibility.js';
 import {
   MonotoneCell,
   finalizeMonotonePass,
@@ -225,6 +226,12 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
       },
     });
     for (const inputIndex of inputIndices) {
+      const source = sourceOutputs[inputIndex];
+      const input = transaction.inputs[inputIndex];
+      // Only a proven absence of the observed opcode can exclude an input. Unknown or malformed spends
+      // still run in the VM, and final preflight continues to validate every input independently.
+      if (source && input
+        && !inputMayExecuteOutputTokenCommitment(source.lockingBytecode, input.unlockingBytecode)) continue;
       observedInputIndex = inputIndex;
       vm.evaluate({ inputIndex, sourceOutputs, transaction });
     }

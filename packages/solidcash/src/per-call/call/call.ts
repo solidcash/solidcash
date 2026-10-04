@@ -1673,7 +1673,12 @@ async function callInShape(
       learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees, calleeValues,
       learnedTypedValues,
     );
-    const { host, draft: candidate } = createComposedDerivationHost({ vm: machine, artifacts: frameArtifacts, plan });
+    // A record's end view is learned up to the commitment the deployment itself holds: a contract compiled for a
+    // wider commitment keeps a record past the composer's default of 128 bytes, and a view the composer would not
+    // learn leaves the record's close comparing the body's commitment with a placeholder.
+    const { host, draft: candidate } = createComposedDerivationHost({
+      vm: machine, artifacts: frameArtifacts, plan, maximumCommitmentBytes,
+    });
     // A plan stopped before a site states the calls before it only, of the entry and of every frame it stops inside,
     // so their calls from there on are declared unbound: a body that holds its call count runs to the site and binds
     // the calls before it, as the execution does, and stops on the first unbound record.

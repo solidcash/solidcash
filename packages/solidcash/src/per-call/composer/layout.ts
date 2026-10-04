@@ -11,6 +11,7 @@
 
 /** A contract's block, in the order its members are placed. */
 export interface ContractBlock {
+  /** The block's identity: its contract's name, or a further deployment's qualified one (`deploymentBlockId`). */
   readonly contract: string;
   /** Masters in entry order, one per entry into the contract. */
   readonly masters: readonly string[];
@@ -139,6 +140,29 @@ export function layoutTransaction(
     participantCount: participants.length,
     funderInputBase: participants.length,
   };
+}
+
+/**
+ * The block a deployment's masters and records sit in, named once per category.
+ *
+ * A block is one deployment's: its masters come from that category's pool and its records are that category's state.
+ * The first deployment of a contract a composition names keeps the contract's name, so a composition of one
+ * deployment per contract names its blocks as before; a further deployment of the same contract, a second token
+ * compiled from one source, is its name qualified by its category. `named` holds the identity each category placed
+ * so far was given, and the one given here is added to it.
+ */
+export function deploymentBlockId(named: Map<string, string>, contract: string, categoryId: string): string {
+  const known = named.get(categoryId);
+  if (known !== undefined) return known;
+  const block = [...named.values()].includes(contract) ? `${contract}@${categoryId}` : contract;
+  named.set(categoryId, block);
+  return block;
+}
+
+/** The contract a block's identity names: the identity itself, or the name a further deployment's qualifies. */
+export function blockContractName(block: string): string {
+  const at = block.indexOf('@');
+  return at < 0 ? block : block.slice(0, at);
 }
 
 /** The identity of a validator's facet input at `head + k`; `k` counts from one. */

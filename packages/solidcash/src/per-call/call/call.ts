@@ -107,6 +107,7 @@ import { decodeReturnValues } from '../read/index.js';
 import {
   PerCallComposerError,
   createComposedDerivationHost,
+  deploymentBlockId,
   deriveComposition,
   describeRefusedFrame,
   layoutTransaction,
@@ -767,18 +768,22 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       startViews.set(frame.master, views);
     }
   });
+  // The block each paid body runs in, which is its deployment's: the callees' own block when they run on it too, and
+  // otherwise a block of its own, named apart from every other deployment of its contract (`deploymentBlockId`).
+  const blockNames = new Map((calleePlan?.callees ?? []).map((callee) => [callee.categoryId, callee.block] as const));
+  const payeeBlocks = payees.map((payee) => deploymentBlockId(blockNames, payee.artifact.contractName, payee.categoryId));
   // The callee blocks with each paid body that shares one: its master beside the callees', its records once. The
   // paid body reads the records its layout names from one base, as each callee does, so they are placed side by side
   // for every frame on the block (`adjacentRecordOrder`), or the call is refused by name.
   const calleeBlocks = (calleePlan?.blocks ?? []).map((block): ContractBlock => {
-    const index = payees.findIndex((payee) => payee.shared.length > 0
-      && payee.artifact.contractName === block.contract);
+    const index = payees.findIndex((payee, at) => payee.shared.length > 0 && payeeBlocks[at] === block.contract);
     if (index < 0) return block;
     const payee = payees[index]!;
     // The contract's records by data-record index, which the callees and the paid body share.
     const contractRecords = payee.shared[0]!.records;
     const frames = [...payee.shared, {
-      artifact: payee.artifact, entry: payee.entryName, functionName: `${block.contract}.${payee.entryName}()`,
+      artifact: payee.artifact, entry: payee.entryName,
+      functionName: `${payee.artifact.contractName}.${payee.entryName}()`,
     }];
     const state = adjacentRecordOrder(
       [...block.state, ...payeeRecordIds[index]!.filter((id) => !block.state.includes(id))],
@@ -795,8 +800,8 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   });
   const sharedPlan = calleePlan === undefined ? undefined : { ...calleePlan, blocks: calleeBlocks };
   const besideCallees = {
-    masters: new Map(payees.filter((payee) => payee.shared.length > 0)
-      .map((payee) => [payee.artifact.contractName, 1] as const)),
+    masters: new Map(payeeBlocks.filter((_block, index) => payees[index]!.shared.length > 0)
+      .map((block) => [block, 1] as const)),
     startViews,
   };
 
@@ -810,7 +815,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     state: [...recordIds, ...mappingIds],
     ...(sideCars.ids.length === 0 ? {} : { recovery: { [MASTER_ID]: sideCars.ids } }),
   }, ...calleeBlocks, ...payees.flatMap((payee, index) => (payee.shared.length > 0 ? [] : [{
-    contract: payee.artifact.contractName,
+    contract: payeeBlocks[index]!,
     masters: [receiveMasterId(index)],
     state: [
       ...payeeRecordIds[index]!,
@@ -1158,11 +1163,11 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     // own records.
     const payeeDrafts: DraftMaster[] = payees.map((payee, index) => ({
       master: receiveMasterId(index),
-      contract: payee.artifact.contractName,
+      contract: payeeBlocks[index]!,
       functionName: `${payee.artifact.contractName}.${payee.entryName}()`,
       program: payee.deployed.script,
       facts: {
-        contract: payee.artifact.contractName,
+        contract: payeeBlocks[index]!,
         functionName: payee.entryName,
         kind: FrameKind.CALL,
         callerIsUser: false,
@@ -1283,9 +1288,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       ],
       validator: {
         id: VALIDATOR_ID,
-        covers: [...new Set([
-          ...(calleePlan?.contracts ?? []), ...payees.map((payee) => payee.artifact.contractName),
-        ])],
+        covers: [...new Set([...(calleePlan?.contracts ?? []), ...payeeBlocks])],
         settles: callees?.settles ?? [],
         redeemScript: validatorRedeem,
       },

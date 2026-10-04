@@ -24,7 +24,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * `A.readTwice` enters B twice, on two masters of B's block, whose category the validator settles, and `A.sumThree`
  * enters it once per turn of a loop. `A.twice` enters B twice with frames that both write its record, the second
  * starting from what the first wrote. `A.notify` makes a `CALL` into `B.note`, whose event output follows the
- * root's. Two deployments of one contract are refused by name before anything is built.
+ * root's. `A.both` reaches two deployments of C, each its own block under its own category.
  */
 
 const SOURCE = 'pragma solidity ^0.8.0;'
@@ -193,12 +193,14 @@ describe('callee frames on the plain call path', () => {
     expect(await recordOf(chain, 'B')).toMatchObject({ total: 4n });
   });
 
-  it('refuses two deployments of one contract by name: its block and records are named by the contract', async () => {
+  it('serves two deployments of one contract, each its own block: both answer the contract that called them', async () => {
     const chain = await deployed();
-    await expect(enter(chain, 'both', [chain.locks.get('C2')!])).rejects.toThrow(
-      'entry "both" makes 2 external call(s): it reaches two deployments of "C", whose blocks and records this call '
-      + 'path does not tell apart yet',
-    );
+    const result = await enter(chain, 'both', [chain.locks.get('C2')!]);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.values.map((value) => roleOf(chain, value))).toStrictEqual(['A', 'A']);
+    // The first deployment's block keeps the contract's name, and the second's is qualified by its category.
+    expect(result.draft.layout.blocks.map((block) => block.contract))
+      .toStrictEqual(['A', 'C', `C@${chain.categories.get('C2')!}`]);
   });
 
   it('serves a callee that emits: its event output follows the root\'s, under its own category', async () => {

@@ -33,7 +33,7 @@ import {
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import { tryParseEventCommitment } from '../../stateful/StateReader.js';
-import type { CompositionDraft } from '../composer/index.js';
+import { blockContractName, type CompositionDraft } from '../composer/index.js';
 
 /** One decoded event log, the receipt shape a composition's declared event outputs are read back into. */
 export interface CompositionEventLog {
@@ -41,7 +41,7 @@ export interface CompositionEventLog {
   readonly eventName: string;
   /** The event's full signature, e.g. `Transfer(pubkey,int)`. */
   readonly eventSignature: string;
-  /** The emitting contract, as the plan named it. */
+  /** The emitting contract's name; `address` tells two deployments of it apart. */
   readonly contract: string;
   /** The execution whose frame listed the output: the root that emitted it, or a nested callee. */
   readonly emitter: string;
@@ -145,7 +145,9 @@ export function compositionEventLogs(
   for (const placed of emitters) {
     const listed = draft.blockOf(placed.id).events;
     if (listed.length === 0) continue;
-    const artifact = artifacts.find((candidate) => candidate.contractName === placed.contract);
+    // A further deployment's block qualifies its contract's name; the address below tells the deployments apart.
+    const contract = blockContractName(placed.contract);
+    const artifact = artifacts.find((candidate) => candidate.contractName === contract);
     if (artifact === undefined) continue;
     const category = program.sourceOutputs[placed.index]?.token?.category;
     if (category === undefined) continue;
@@ -165,7 +167,7 @@ export function compositionEventLogs(
       logs.push({
         eventName: decoded.definition.name,
         eventSignature: decoded.definition.signature,
-        contract: placed.contract,
+        contract,
         emitter: placed.id,
         address,
         outputIndex,

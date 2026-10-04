@@ -289,6 +289,13 @@ implementation pair. Known in the bare form (conformance rows "A -> B -> A.k() r
 
 ### 2.9 Two deployments of one contract (rank 9)
 
+**Served** on the hop and the plain call path (agent TD1): a block is a deployment's (`deploymentBlockId`
+keeps the contract's name for the first deployment of a name and qualifies a further one by its category), and
+record ids, master counts, draft masters, validator coverage and master-pool slots follow it; ids of a composition
+with one deployment per contract are unchanged. Served in `call/two-deployments-one-contract.test.ts`; the ahead
+replica keeps the off-chain read path's view over both deployments (`read/read.ts` resolves no target from the
+caller's state, and keys its blocks and records by name behind that).
+
 Replica: `two-deployments-one-artifact.test.ts` (3 cases). One token settles (control). Both tokens: the hop has
 no named refusal and the second token's frame fails; the plain path refuses by name:
 

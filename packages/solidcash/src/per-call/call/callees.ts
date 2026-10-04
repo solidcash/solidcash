@@ -18,11 +18,11 @@
  * before it leaves, which is learned from that frame's own close.
  *
  * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that touches a dynamic
- * value's or a mapping value's chunks, sends value or co-spends a side-car; a contract entered twice whose frames
- * write its mapping nodes or name data records that no order of its block keeps side by side, or reached at two of
- * its deployments; and a site that waits on an earlier call's result. A frame the plan runs beside the callees on
- * one of their contracts, a value send's `receive()`, counts among the contract's masters, and a callee that runs
- * after it starts from the views it left.
+ * value's or a mapping value's chunks, sends value or co-spends a side-car; a deployment entered twice whose frames
+ * write its mapping nodes or name data records that no order of its block keeps side by side; and a site that waits
+ * on an earlier call's result. Two deployments of one contract are two blocks, each its own category's. A frame the
+ * plan runs beside the callees on one of their contracts, a value send's `receive()`, counts among the contract's
+ * masters, and a callee that runs after it starts from the views it left.
  */
 
 import { hexToBin } from '@bitauth/libauth';
@@ -76,9 +76,9 @@ export interface PlannedCallees {
   readonly callees: readonly HopCallee[];
   /** The live UTXO of every callee participant, keyed by the id the plan places it under. */
   readonly utxos: ReadonlyMap<string, Utxo>;
-  /** One block per callee contract, in placement order: its masters and the records its frames declare. */
+  /** One block per callee deployment, in placement order: its masters and the records its frames declare. */
   readonly blocks: readonly ContractBlock[];
-  /** The callee contracts, each once, which the root's validator covers. */
+  /** The callee blocks, each once, which the root's validator covers. */
   readonly contracts: readonly string[];
   /** The artifacts the callee frames run, each once. */
   readonly artifacts: readonly Artifact[];
@@ -325,26 +325,22 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
     const why = unservedCallee(callee, plan.sideCars.has(callee.master));
     if (why !== undefined) refuse(why);
   }
-  // A contract entered more than once is settled by the validator, which chains its records' views across its
+  // A deployment entered more than once is settled by the validator, which chains its records' views across its
   // frames. Its data records are chained here (`calleeFrames`); a frame that writes its mapping nodes would need
-  // those chains stated too, which this path does not do yet.
-  const byContract = new Map<string, HopCallee[]>();
-  for (const callee of plan.callees) byContract.set(callee.contract, [...(byContract.get(callee.contract) ?? []), callee]);
-  for (const [contract, frames] of byContract) {
-    // A contract's block and its records' ids are named by the contract, so two deployments of it would share them.
-    if (new Set(frames.map((frame) => frame.categoryId)).size > 1) {
-      refuse(`it reaches two deployments of "${contract}", whose blocks and records this call path does not tell `
-        + 'apart yet');
-    }
+  // those chains stated too, which this path does not do yet. A block is a deployment's, so two deployments of one
+  // contract are two blocks, each with its own masters and records (`HopCallee.block`).
+  const byBlock = new Map<string, HopCallee[]>();
+  for (const callee of plan.callees) byBlock.set(callee.block, [...(byBlock.get(callee.block) ?? []), callee]);
+  for (const [block, frames] of byBlock) {
     if (frames.length > 1 && frames.some((frame) => frame.entryWrites !== undefined)) {
-      refuse(`it enters "${contract}" ${frames.length} times and a frame of it writes its mapping nodes, whose views `
+      refuse(`it enters "${block}" ${frames.length} times and a frame of it writes its mapping nodes, whose views `
         + 'across the frames this call path does not chain yet');
     }
   }
   // A contract's block holds the records its frames declare, then the nodes they only read, then the nodes their
   // writes spend, each once: the order each frame's own body reads them in. A frame reads the records its layout
   // names from one base, so they are placed side by side for every frame, or the call is refused by name.
-  const blocks = [...byContract].map(([contract, frames]): ContractBlock => {
+  const blocks = [...byBlock].map(([block, frames]): ContractBlock => {
     const state: string[] = [];
     const place = (id: string): void => {
       if (!state.includes(id)) state.push(id);
@@ -356,10 +352,10 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
     }
     const recordIndex = new Map(frames[0]!.records.map((record, nftIndex) => [record.id, nftIndex]));
     const ordered = adjacentRecordOrder(state, frames.map(namedRecordIds), recordIndex, (split) => refuse(
-      `the callee "${frames[split]!.functionName}" reads its data records of "${contract}" side by side, and no `
+      `the callee "${frames[split]!.functionName}" reads its data records of "${block}" side by side, and no `
       + 'order of the records the call\'s other frames of that contract name keeps them so',
     ));
-    return { contract, masters: frames.map((frame) => frame.master), state: ordered };
+    return { contract: block, masters: frames.map((frame) => frame.master), state: ordered };
   });
   const artifacts = [...new Set(plan.callees.map((callee) => callee.artifact))];
   const eventCount = plan.callees.reduce((total, callee) => total + emitsOf(callee).length, 0);
@@ -367,7 +363,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
     + (callee.entryWrites?.learningCandidates.length ?? 0), 0);
   return {
     calls: plan.calls, callBases: plan.callBases, callees: plan.callees, utxos: plan.utxos, blocks,
-    contracts: [...byContract.keys()], artifacts, eventCount, learnable,
+    contracts: [...byBlock.keys()], artifacts, eventCount, learnable,
   };
 }
 
@@ -420,7 +416,7 @@ export function calleeFrames(options: {
   /** The bound an event's sentinel payload is sized to. */
   readonly maximumCommitmentBytes: number;
   /**
-   * The frames the plan runs beside the callees on a callee's contract: how many masters each contract adds, and,
+   * The frames the plan runs beside the callees on a callee's deployment: how many masters each block adds, and,
    * by callee master and record id, the view a record starts from in a frame that runs after one of them wrote it.
    */
   readonly beside?: {
@@ -435,7 +431,7 @@ export function calleeFrames(options: {
     if (!callTo.has(call.callee)) callTo.set(call.callee, call);
   }
   const mastersOf = new Map<string, number>(options.beside?.masters ?? []);
-  for (const callee of callees) mastersOf.set(callee.contract, (mastersOf.get(callee.contract) ?? 0) + 1);
+  for (const callee of callees) mastersOf.set(callee.block, (mastersOf.get(callee.block) ?? 0) + 1);
   const indexOf = (id: string): number => participant(layout, id).index;
   // The master that writes each record, which the record's covenant names as the spend's authority.
   const writerOf = new Map<string, string>();
@@ -537,13 +533,13 @@ export function calleeFrames(options: {
     });
     return {
       master: callee.master,
-      contract: callee.contract,
+      contract: callee.block,
       functionName: callee.functionName,
       program: callee.deployed.script,
       facts: {
-        contract: callee.contract, functionName: callee.functionName, kind: callee.kind,
+        contract: callee.block, functionName: callee.functionName, kind: callee.kind,
         callerIsUser: false, originEqualsCaller: false, makesExternalCall: callee.calls.length > 0,
-        mastersOfContract: mastersOf.get(callee.contract) ?? 1,
+        mastersOfContract: mastersOf.get(callee.block) ?? 1,
       },
       frame: { kind: callee.kind, sender: caller?.selfAddress ?? options.rootAddress, self: callee.selfAddress, value: 0n },
       enteredBy: caller?.master ?? options.rootMaster,
@@ -606,7 +602,7 @@ export function calleeFrames(options: {
   const settles = planned.blocks
     .filter((block) => (mastersOf.get(block.contract) ?? 0) > 1)
     .map((block): PlannedSettlement => ({
-      category: callees.find((callee) => callee.contract === block.contract)!.category,
+      category: callees.find((callee) => callee.block === block.contract)!.category,
       stateInputs: block.state,
     }));
   return { masters, inputs, settles, eventOutputs, createdOutputs };

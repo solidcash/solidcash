@@ -22,9 +22,10 @@
  * fills none. A site the caller's own facts give no visits fills nothing and places no callee.
  *
  * Each record a site fills runs on a master of its own, because a master carries one call data and the argument
- * pushes a call carries are the callee's call data. A composition gives a contract one block, and that block holds
- * every master the transaction spends of the contract, so a contract reached at several sites takes a master from
- * its live pool for each reach and all of them sit in its one block. A callee behind its own proxy is two
+ * pushes a call carries are the callee's call data. A composition gives a deployment one block, and that block holds
+ * every master the transaction spends of the deployment, so a contract reached at several sites takes a master from
+ * its live pool for each reach and all of them sit in its one block, while two deployments of one contract are two
+ * blocks with their own pools and records, told apart by category. A callee behind its own proxy is two
  * contracts, so each reach takes a master of each: the proxy's fallback is what the caller records, and the
  * implementation's delegate frame is what carries that reach's call data. A reach either pool cannot serve — more
  * reaches than the deployment holds masters — is refused by name, as is a call that reaches the hop's own
@@ -75,7 +76,7 @@ import {
 import { externalReturnsForCallsites } from '../../stateful/external-returns-for-callsites.js';
 import { mappingKeySlotCandidates } from '../../stateful/mapping-key-lookup.js';
 import type { DraftCall } from '../composer/draft.js';
-import { readPublishedStopSites } from '../composer/index.js';
+import { deploymentBlockId, readPublishedStopSites } from '../composer/index.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import {
   chunkRecordLockingBytecode, readPerCallDeployment, stateRecordLockingBytecode,
@@ -158,6 +159,11 @@ export interface HopCalleeReadNode {
 export interface HopCallee {
   readonly master: string;
   readonly contract: string;
+  /**
+   * The block the frame's master sits in, which is its deployment's (`deploymentBlockId`): two deployments of one
+   * contract are two blocks, each with its own masters and records. A delegate frame's records sit in its owner's.
+   */
+  readonly block: string;
   /** The ABI name of the entry the call reaches. */
   readonly entry: string;
   /** The published entry identity, `Contract.entry()`, matching the stop-site table. */
@@ -1052,11 +1058,13 @@ interface PlanContext {
   readonly validatorProgram: Uint8Array;
   /** The contracts the hop's own root fixes at one master: its implementation, entered by its proxy. */
   readonly fixed: Set<string>;
-  /** How many masters of each contract the hop has taken from its live pool. */
+  /** How many masters of each callee category the hop has taken from that deployment's live pool. */
   readonly masterSlots: Map<string, number>;
+  /** The block each callee category's frames and records sit in, by category id (`deploymentBlockId`). */
+  readonly blocks: Map<string, string>;
   /** The live deployments already read, keyed by category id. */
   readonly deployments: Map<string, PerCallDeploymentSet>;
-  /** The records of each callee category, shared by every master the hop places for that contract. */
+  /** The records of each callee category, shared by every master the hop places for that deployment. */
   readonly records: Map<string, readonly HopCalleeRecord[]>;
   /**
    * Every node the reaches placed so far created, keyed by the category its ids are built with.
@@ -1902,14 +1910,15 @@ export function calleeReadNodesOrNone(options: Parameters<typeof calleeReadNodes
 }
 
 /**
- * The records a callee contract's masters read, one participant per data NFT, named for the contract.
+ * The records a callee deployment's masters read, one participant per data NFT, named for the deployment's block.
  *
- * A contract's records are the deployment's, not a frame's: every master the hop places for the contract reads
- * the same record inputs, so the ids are the contract's and the block places each record once.
+ * A contract's records are the deployment's, not a frame's: every master the hop places for the deployment reads
+ * the same record inputs, so the ids are its block's and the block places each record once. Two deployments of one
+ * contract hold two sets of records, which their blocks' names keep apart.
  */
 function calleeRecordSet(
   ctx: PlanContext,
-  contract: string,
+  block: string,
   categoryId: string,
   layout: StateLayout,
   deployment: PerCallDeploymentSet,
@@ -1925,7 +1934,7 @@ function calleeRecordSet(
       );
     }
     return {
-      id: `${contract}-record-${nftIndex}`,
+      id: `${block}-record-${nftIndex}`,
       commitment: new Uint8Array(hexToBin(commitment)),
       satoshis: utxo.satoshis,
       lockingBytecode: stateRecordLockingBytecode(categoryId),
@@ -1937,12 +1946,12 @@ function calleeRecordSet(
 }
 
 /**
- * Places one master per reach of a direct callee, all of them in the callee contract's one block.
+ * Places one master per reach of a direct callee, all of them in the callee deployment's one block.
  *
- * Each reach carries its own call data, so each takes a master of its own from the contract's live pool: the
- * pool's masters are ordered by outpoint, and the hop's running count of the masters it has taken for the
- * contract is the slot the next reach takes. A pool that cannot hold every reach is refused by name before any
- * frame is placed, so a plan is never half-stated for a pool that cannot serve it.
+ * Each reach carries its own call data, so each takes a master of its own from the deployment's live pool: the
+ * pool's masters are ordered by outpoint, and the hop's running count of the masters it has taken from the category
+ * is the slot the next reach takes. A pool that cannot hold every reach is refused by name before any frame is
+ * placed, so a plan is never half-stated for a pool that cannot serve it.
  */
 async function placeCalleeMasters(
   ctx: PlanContext,
@@ -1959,7 +1968,7 @@ async function placeCalleeMasters(
   const categoryId = external.categoryId;
   const layout = external.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
   const deployment = await deploymentOf(ctx, categoryId, layout);
-  const base = ctx.masterSlots.get(contract) ?? 0;
+  const base = ctx.masterSlots.get(categoryId) ?? 0;
   const needed = base + resolved.length;
   if (deployment.masters.length < needed) {
     throw new PerCallProxyDeployError(
@@ -1967,8 +1976,9 @@ async function placeCalleeMasters(
       + `${deployment.masters.length} master(s), so it cannot be entered ${needed} time(s)`,
     );
   }
-  ctx.masterSlots.set(contract, needed);
-  const records = calleeRecordSet(ctx, contract, categoryId, layout, deployment);
+  ctx.masterSlots.set(categoryId, needed);
+  const block = deploymentBlockId(ctx.blocks, contract, categoryId);
+  const records = calleeRecordSet(ctx, block, categoryId, layout, deployment);
   const stateValues = deploymentStateValues(layout, categoryId, deployment);
   const category = hexToBin(categoryId);
   const nodeIdOf = (collection: string, slot: Uint8Array): string => sharedNodeId(categoryId, collection, slot);
@@ -2008,6 +2018,7 @@ async function placeCalleeMasters(
     const frame: HopCallee = {
       master,
       contract,
+      block,
       entry: entry.name,
       functionName: `${contract}.${entry.name}()`,
       artifact: external.artifact,
@@ -2102,8 +2113,8 @@ async function placeProxiedCallee(
   };
   const proxyDeployment = await deploymentOf(ctx, external.categoryId, proxyReadLayout);
   const implementationDeployment = await deploymentOf(ctx, implementationCategoryId, implementationLayout);
-  const proxyBase = ctx.masterSlots.get(proxyContract) ?? 0;
-  const implementationBase = ctx.masterSlots.get(implementationContract) ?? 0;
+  const proxyBase = ctx.masterSlots.get(external.categoryId) ?? 0;
+  const implementationBase = ctx.masterSlots.get(implementationCategoryId) ?? 0;
   const needed = resolved.length;
   if (proxyDeployment.masters.length < proxyBase + needed) {
     throw new PerCallProxyDeployError(
@@ -2118,16 +2129,18 @@ async function placeProxiedCallee(
       + `entered ${implementationBase + needed} time(s)`,
     );
   }
-  ctx.masterSlots.set(proxyContract, proxyBase + needed);
-  ctx.masterSlots.set(implementationContract, implementationBase + needed);
+  ctx.masterSlots.set(external.categoryId, proxyBase + needed);
+  ctx.masterSlots.set(implementationCategoryId, implementationBase + needed);
+  const proxyBlock = deploymentBlockId(ctx.blocks, proxyContract, external.categoryId);
+  const implementationBlock = deploymentBlockId(ctx.blocks, implementationContract, implementationCategoryId);
 
   const proxyCategory = hexToBin(external.categoryId);
   const implementationCategory = hexToBin(implementationCategoryId);
   const proxyDeployed = deployMaster(proxyArtifact, proxyCategory, ctx.validatorProgram);
   const implementationDeployed = deployMaster(external.artifact, implementationCategory, ctx.validatorProgram);
-  // The proxy's records are the contract's, shared by every master the hop places for it; a delegate frame reads
+  // The proxy's records are the deployment's, shared by every master the hop places for it; a delegate frame reads
   // them without owning them, so none are placed for the implementation's own category.
-  const records = calleeRecordSet(ctx, proxyContract, external.categoryId, proxyLayout, proxyDeployment);
+  const records = calleeRecordSet(ctx, proxyBlock, external.categoryId, proxyLayout, proxyDeployment);
   const stateValues = deploymentStateValues(proxyLayout, external.categoryId, proxyDeployment);
   // Whether the entry the proxy forwards to returns a value, which the fallback frame records in its own `retval`.
   const returnsValue = (entry.outputs ?? []).length > 0;
@@ -2150,6 +2163,7 @@ async function placeProxiedCallee(
     const proxyBaseFrame: HopCallee = {
       master: proxyMaster,
       contract: proxyContract,
+      block: proxyBlock,
       entry: '__fallback',
       functionName: `${proxyContract}.__fallback()`,
       artifact: proxyArtifact,
@@ -2203,6 +2217,7 @@ async function placeProxiedCallee(
     const implementationBaseFrame: HopCallee = {
       master: implementationMaster,
       contract: implementationContract,
+      block: implementationBlock,
       entry: entry.name,
       functionName: `${implementationContract}.${entry.name}()`,
       artifact: external.artifact,
@@ -2721,6 +2736,7 @@ export async function planHopExternalCalls(
     validatorProgram: options.validatorProgram,
     fixed: new Set([options.artifact.contractName]),
     masterSlots: new Map(),
+    blocks: new Map(),
     deployments: new Map(),
     records: new Map(),
     writtenNodes: new Map(),

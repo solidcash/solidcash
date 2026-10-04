@@ -2919,14 +2919,14 @@ function calleeNamedRecordIds(callees: readonly HopCallee[], callee: HopCallee):
  * its records serves is refused by name (`adjacentRecordOrder`).
  */
 function adjacentRecordState(
-  callees: readonly HopCallee[], contract: string, state: readonly string[], recordIndex: ReadonlyMap<string, number>,
+  callees: readonly HopCallee[], block: string, state: readonly string[], recordIndex: ReadonlyMap<string, number>,
 ): readonly string[] {
   const frames = callees.filter((callee) =>
-    (callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!).contract === contract);
+    (callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!).block === block);
   return adjacentRecordOrder(state, frames.map((callee) => calleeNamedRecordIds(callees, callee)), recordIndex,
     (split) => {
       throw new PerCallProxyDeployError(
-        `the callee "${frames[split]!.functionName}" reads its data records of "${contract}" side by side, and no `
+        `the callee "${frames[split]!.functionName}" reads its data records of "${block}" side by side, and no `
         + 'order of the records the hop\'s other frames of that contract name keeps them so',
       );
     });
@@ -3192,19 +3192,19 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // read that resolves to it declares it there rather than as a state input of its own.
   const readNodeIds = [...new Set(readNodes.filter((node) => node.createdSlot === undefined).map((node) => node.id))];
   const entryWriteIds = options.entryWrites?.participantIds ?? [];
-  // A contract owns one block, and every master the hop spends of it sits in that block in placement order; a
+  // A deployment owns one block, and every master the hop spends of it sits in that block in placement order; a
   // contract reached at several sites therefore contributes several masters to its one block, and its records are
-  // placed once however many of its masters read them.
+  // placed once however many of its masters read them. Two deployments of one contract are two blocks (`block`).
   const calleeBlocks = new Map<
     string, { readonly contract: string; masters: string[]; state: string[]; readonly recovery: Record<string, readonly string[]> }
   >();
   // Each block's data records by participant id, with the data record each one is.
   const calleeRecordIndices = new Map<string, Map<string, number>>();
   for (const callee of callees) {
-    let block = calleeBlocks.get(callee.contract);
+    let block = calleeBlocks.get(callee.block);
     if (block === undefined) {
-      block = { contract: callee.contract, masters: [], state: [], recovery: {} };
-      calleeBlocks.set(callee.contract, block);
+      block = { contract: callee.block, masters: [], state: [], recovery: {} };
+      calleeBlocks.set(callee.block, block);
     }
     block.masters.push(callee.master);
     const sideCarIds = sideCars.get(callee.master)?.ids;
@@ -3212,7 +3212,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     // A delegate frame's records, the nodes it reads and the nodes its write touches all sit at its owner's
     // category, so they are placed in the owner's block; the owner is placed before the delegate.
     const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner]!;
-    const target = owner === undefined ? block : calleeBlocks.get(owner.contract);
+    const target = owner === undefined ? block : calleeBlocks.get(owner.block);
     if (target === undefined) continue;
     const owned = owner === undefined ? callee.records : owner.records;
     const indices = calleeRecordIndices.get(target.contract) ?? new Map<string, number>();
@@ -3234,8 +3234,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     }
   }
   // Each frame reads its named records from one base, so they must sit side by side (`adjacentRecordState`).
-  for (const [contract, block] of calleeBlocks) {
-    block.state = [...adjacentRecordState(callees, contract, block.state, calleeRecordIndices.get(contract) ?? new Map())];
+  for (const [id, block] of calleeBlocks) {
+    block.state = [...adjacentRecordState(callees, id, block.state, calleeRecordIndices.get(id) ?? new Map())];
   }
   const blocks: ContractBlock[] = [
     {
@@ -3496,11 +3496,11 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const everyCall = [...calls, ...callees.flatMap((callee) => callee.calls)];
   const callTo = new Map<string, DraftCall>();
   for (const call of everyCall) if (!callTo.has(call.callee)) callTo.set(call.callee, call);
-  // How many masters of each callee contract the hop spends: a contract reached at several sites contributes one
+  // How many masters of each callee deployment the hop spends: a contract reached at several sites contributes one
   // master per reach to its one block.
   const mastersPerContract = new Map<string, number>();
   for (const callee of callees) {
-    mastersPerContract.set(callee.contract, (mastersPerContract.get(callee.contract) ?? 0) + 1);
+    mastersPerContract.set(callee.block, (mastersPerContract.get(callee.block) ?? 0) + 1);
   }
   // A category is settled once, however many reaches produced the masters that read it: the hop's own proxy
   // category, each category a delegate frame runs on, each category two or more masters of it are spent under, and
@@ -3784,14 +3784,14 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     const valueWitnesses = calleeValueWitnesses(callee.readNodes, laidCalleeWrites?.laid);
     return {
       master: callee.master,
-      contract: callee.contract,
+      contract: callee.block,
       functionName: callee.functionName,
       program: callee.deployed.script,
       facts: {
-        contract: callee.contract, functionName: callee.functionName, kind: callee.kind,
+        contract: callee.block, functionName: callee.functionName, kind: callee.kind,
         callerIsUser: false, originEqualsCaller: false,
         makesExternalCall: callee.calls.length > 0,
-        mastersOfContract: mastersPerContract.get(callee.contract) ?? 1,
+        mastersOfContract: mastersPerContract.get(callee.block) ?? 1,
       },
       frame: { kind: callee.kind, sender, self: callee.selfAddress, value: 0n },
       enteredBy: callee.enteredBy === null ? IMPLEMENTATION_MASTER_ID : callees[callee.enteredBy]!.master,
@@ -3949,7 +3949,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     }),
     validator: {
       id: VALIDATOR_ID,
-      covers: [...new Set([implementationArtifact.contractName, ...callees.map((callee) => callee.contract)])],
+      covers: [...new Set([implementationArtifact.contractName, ...callees.map((callee) => callee.block)])],
       settles,
       redeemScript: validatorRedeemScript(options.proxyCategory, perCallValidator.buildValidatorProgram()),
     },

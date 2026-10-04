@@ -29,6 +29,7 @@ import {
 } from '@solidcash/utils';
 import { UNFILLED_CALLEE_REF, type CompositionDraft } from './draft.js';
 import { callTreeOf, executionRanks, frameMadeCall, frameStopOf, type FrameStop } from './execution-order.js';
+import { blockContractName } from './layout.js';
 
 type VirtualMachine = ReturnType<typeof createVirtualMachineBch2026>;
 
@@ -403,7 +404,7 @@ export function reportCompositionRefusal(options: CompositionRefusalOptions): Co
     stops.set(placed.id, frameStopOf(state));
     const typed = state as { readonly ip?: number; readonly error?: unknown; readonly stack?: readonly Uint8Array[] };
     const run = draft.runs.find((candidate) => candidate.master === placed.id);
-    const artifact = artifacts.find((candidate) => candidate.contractName === placed.contract);
+    const artifact = artifacts.find((candidate) => candidate.contractName === blockContractName(placed.contract));
     refusals.push({
       master: placed.id,
       contract: placed.contract,

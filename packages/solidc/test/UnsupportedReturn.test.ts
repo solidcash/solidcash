@@ -48,4 +48,33 @@ describe('a return no lowering can end a path at', () => {
       x = 1; return 5; } }`;
     expect(() => compile(source)).toThrow("Unsupported return: statements of 'f' after this return would still run");
   });
+
+  it('refuses stop() where statements of a function with results would run after it', () => {
+    // stop() halts with no data, which is no value of the results: it ends the function only at its tail.
+    const source = `${SOL} contract C { uint256 public x; function f(uint256 c) public returns (uint256) {
+      assembly { if c { stop() } } x = 3; return 7; } }`;
+    expect(() => compile(source)).toThrow(
+      "Unsupported return: statements of 'f' after this assembly return would still run",
+    );
+  });
+
+  it('refuses a call to a function holding an assembly return, which would only return to its caller', () => {
+    // The return halts the whole call on the EVM. A void helper is inlined, so its return is its caller's; this
+    // one returns a value, and the call stays a call.
+    const source = `${SOL} contract C { uint256 public x;
+      function halts(uint256 a) public returns (uint256) { assembly { mstore(0, a) return(0, 32) } }
+      function outer(uint256 a) public returns (uint256) { uint256 v = halts(a); x = v; return v + 1; } }`;
+    expect(() => compile(source)).toThrow(UnsupportedReturnError);
+    expect(() => compile(source)).toThrow("Unsupported return: statements of 'outer' after this call would still run: "
+      + "the assembly return in 'halts' halts the whole call, not only 'halts'");
+  });
+
+  it('refuses a function holding an assembly return as a function value', () => {
+    const source = `${SOL} contract C { uint256 public x;
+      function h(uint256 c) internal returns (uint256) { assembly { if c { mstore(0, 9) return(0, 32) } } return 1; }
+      function f(uint256 c) public returns (uint256) {
+        function (uint256) internal returns (uint256) p = h; uint256 v = p(c); x = v; return v + 1; } }`;
+    expect(() => compile(source)).toThrow('Unsupported return: statements after a call through this function value '
+      + "would still run: the assembly return in 'h' halts the whole call, not only 'h'");
+  });
 });

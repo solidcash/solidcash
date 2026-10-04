@@ -19,8 +19,13 @@ import {
   WhileNode,
   DoWhileNode,
   CollectionIterationNode,
+  RequireNode,
+  BoolLiteralNode,
+  FunctionCallNode,
+  FieldAccessNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { UnsupportedReturnError } from '../Errors.js';
 import { computeBranchOps } from './branchOps.js';
 
@@ -46,6 +51,7 @@ export default class EarlyReturnTransformation extends AstTraversal {
   constructor(private readonly canonicalizeScalarReturns = false) { super(); }
 
   visitSourceFile(node: SourceFileNode): Node {
+    refuseHaltingCalls(node);
     for (let i = 0; i < node.freeFunctions.length; i++) {
       node.freeFunctions[i] = this.visit(node.freeFunctions[i]) as FunctionDefinitionNode;
     }
@@ -123,6 +129,49 @@ export function holdsUnconfinedReturn(ast: SourceFileNode): boolean {
     contract.receiveDef].some((fn) => fn?.body !== undefined && !!firstUnconfinedReturn(fn.body.statements ?? []));
 }
 
+/**
+ * Refuses a call an assembly return in its callee would not end. `return(ptr, size)` and `stop()` halt the whole call
+ * on the EVM, the internal functions it runs through included, but a function called as a subroutine only returns,
+ * and its caller runs on. So a function holding one is called only where the halt ends no more than that function:
+ * by an external `this.f()` call, whose own frame is all it ends, or by a message-bus route, whose dispatches are
+ * frames of their own. One inlined into its caller is no call: its halt is the caller's return.
+ */
+export function refuseHaltingCalls(ast: SourceFileNode): void {
+  const { contract } = ast;
+  const functions = [...ast.freeFunctions, contract.constructorDef, ...contract.functions, contract.fallbackDef,
+    contract.receiveDef].filter((fn): fn is FunctionDefinitionNode => fn?.body !== undefined);
+  const halting = new Map(functions.filter((fn) => holdsAssemblyReturn(fn.body.statements ?? []))
+    .map((fn) => [`${fn.name}/${fn.parameters.length}`, fn]));
+  if (halting.size === 0) return;
+  const names = new Set([...halting.values()].map((fn) => fn.name));
+  const refuse = (node: Node, statements: string, callee: string): never => {
+    throw new UnsupportedReturnError(node, `${statements} would still run: the assembly return in '${callee}' halts `
+      + `the whole call, not only '${callee}'`);
+  };
+  for (const caller of functions) {
+    if (caller.messageBusRoute) continue;
+    // A call's own identifier, and a member read like `f.selector`, are no function value.
+    const named = new Set<Node>();
+    walkInvocationAst(caller.body, (node) => {
+      if (node instanceof FunctionCallNode) {
+        named.add(node.identifier);
+        const callee = halting.get(`${node.identifier.name}/${node.parameters.length}`);
+        if (callee && !node.fromThisCall) refuse(node, `statements of '${caller.name}' after this call`, callee.name);
+      } else if (node instanceof FieldAccessNode) {
+        named.add(node.expression);
+      } else if (node instanceof IdentifierNode && !named.has(node) && names.has(node.name)) {
+        refuse(node, 'statements after a call through this function value', node.name);
+      }
+    });
+  }
+}
+
+/** True when `statements` hold an assembly return in a list they run. */
+export function holdsAssemblyReturn(statements: StatementNode[]): boolean {
+  return statements.some((statement) => (statement instanceof ReturnNode && statement.isYulReturn)
+    || nestedStatementLists(statement).some(holdsAssemblyReturn));
+}
+
 /** The statement lists a statement runs its statements in: arms, blocks, a try block, cases and a loop's body. */
 export function nestedStatementLists(statement: StatementNode): StatementNode[][] {
   if (statement instanceof BranchNode) {
@@ -192,9 +241,9 @@ export function nestsReturnsToTail(statements: StatementNode[]): boolean {
     if (!holdsReturn(statement)) continue;
     const container = statement instanceof BranchNode || statement instanceof UncheckedNode
       || statement instanceof TryCatchNode || statement instanceof SwitchNode || statement instanceof BlockNode;
-    // One that returns on every path drops what follows it; after any other, what follows runs after its return.
+    // One that ends every path drops what follows it; after any other, what follows runs after its return.
     const followed = statements.slice(index + 1).some((next) => !(next instanceof ConsoleStatementNode));
-    if (!container || (followed && !endsWithReturn(statement))) return false;
+    if (!container || (followed && !endsEveryPath(statement))) return false;
     return nestedStatementLists(statement).every(nestsReturnsToTail);
   }
   return true;
@@ -366,8 +415,8 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
         stmt.tryBlock.statements = nestEarlyReturns(stmt.tryBlock.statements);
       }
       result.push(stmt);
-      // A container that returns on every path ends the list: what follows it is unreachable.
-      if (endsWithReturn(stmt)) break;
+      // A container that ends every path ends the list: what follows it is unreachable.
+      if (endsEveryPath(stmt)) break;
       continue;
     }
 
@@ -382,7 +431,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
         stmt.defaultCase.statements = nestEarlyReturns(stmt.defaultCase.statements);
       }
       result.push(stmt);
-      if (endsWithReturn(stmt)) break;
+      if (endsEveryPath(stmt)) break;
       continue;
     }
 
@@ -391,7 +440,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
     if (stmt instanceof BlockNode && holdsReturn(stmt)) {
       stmt.statements = nestEarlyReturns(stmt.statements ?? []);
       result.push(stmt);
-      if (endsWithReturn(stmt)) break;
+      if (endsEveryPath(stmt)) break;
       continue;
     }
 
@@ -405,7 +454,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
         stmt.block.statements = nestEarlyReturns(stmt.block.statements);
       }
       result.push(stmt);
-      if (endsWithReturn(stmt)) break;
+      if (endsEveryPath(stmt)) break;
       continue;
     }
 
@@ -430,6 +479,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
       newBranch.location = stmt.location;
       newBranch.branchOps = computeBranchOps(transformedIf, transformedElse);
       result.push(newBranch);
+      if (endsEveryPath(newBranch)) break;
       continue;
     }
 
@@ -439,38 +489,45 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
   return result;
 }
 
-export function blockEndsWithReturn(block: BlockNode): boolean {
+export function blockEndsWithReturn(block: BlockNode, failing = false): boolean {
   if (!block.statements || block.statements.length === 0) return false;
 
   const nonLogStatements = block.statements.filter((s) => !(s instanceof ConsoleStatementNode));
   if (nonLogStatements.length === 0) return false;
 
-  return endsWithReturn(nonLogStatements[nonLogStatements.length - 1]);
+  return endsWithReturn(nonLogStatements[nonLogStatements.length - 1], failing);
 }
 
-/** True when a statement returns or reverts on every path through it. */
-function endsWithReturn(last: StatementNode): boolean {
+/**
+ * True when a statement returns or reverts on every path through it. With `failing`, a `require(false)` ends its
+ * path too: the script fails there, as it does at the one an assembly `revert` or `invalid()` lowers to.
+ */
+function endsWithReturn(last: StatementNode, failing = false): boolean {
   if (last instanceof ReturnNode) return true;
   if (last instanceof RevertNode) return true;
+  if (failing && last instanceof RequireNode && last.expression instanceof BoolLiteralNode && !last.expression.value) {
+    return true;
+  }
 
   if (last instanceof BranchNode) {
-    const ifReturns = blockEndsWithReturn(last.ifBlock);
-    const elseReturns = last.elseBlock ? blockEndsWithReturn(last.elseBlock) : false;
+    const ifReturns = blockEndsWithReturn(last.ifBlock, failing);
+    const elseReturns = last.elseBlock ? blockEndsWithReturn(last.elseBlock, failing) : false;
     return ifReturns && elseReturns;
   }
 
   if (last instanceof TryCatchNode) {
-    return blockEndsWithReturn(last.tryBlock);
+    return blockEndsWithReturn(last.tryBlock, failing);
   }
 
   if (last instanceof UncheckedNode) {
-    return blockEndsWithReturn(last.block);
+    return blockEndsWithReturn(last.block, failing);
   }
 
   if (last instanceof BlockNode) {
-    return blockEndsWithReturn(last);
+    return blockEndsWithReturn(last, failing);
   }
 
+  // A switch is read without `failing`: code generation takes the stack its first case leaves as the one after it.
   if (last instanceof SwitchNode) {
     const casesReturn = last.cases.every((c) => blockEndsWithReturn(c.body));
     const defaultReturns = last.defaultCase ? blockEndsWithReturn(last.defaultCase) : false;
@@ -478,4 +535,12 @@ function endsWithReturn(last: StatementNode): boolean {
   }
 
   return false;
+}
+
+/**
+ * True when nothing after a statement runs: it returns or reverts on every path, or it holds a return and every
+ * path through it returns or fails (an assembly `switch` whose `revert` arm is a `require(false)` beside a return).
+ */
+function endsEveryPath(statement: StatementNode): boolean {
+  return endsWithReturn(statement) || (holdsReturn(statement) && endsWithReturn(statement, true));
 }

@@ -2794,9 +2794,13 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       if (e.name === 'invalid' && e.args.length === 0) {
         return loc(new RequireNode(loc(new BoolLiteralNode(false), stmt)), stmt);
       }
-      // stop(): halt execution successfully. A BCH function just ends; treat as a no-op (statements after a stop
-      // are dead in EVM but harmless here - this is the opcode-availability-test shape).
-      if (e.name === 'stop' && e.args.length === 0) return loc(new BlockNode([]), stmt);
+      // stop(): halt the call successfully with no data, as `return(0, 0)` does: nothing after it runs. It is that
+      // return's empty data, without the runtime buffer the general form slices it from.
+      if (e.name === 'stop' && e.args.length === 0) {
+        const ret = loc(new ReturnNode([loc(new HexLiteralNode(new Uint8Array(0)), stmt)]), stmt);
+        ret.isYulReturn = true;
+        return ret;
+      }
       // sstore(slot, v): write the word to that storage slot (a single var, or decomposed into packed vars),
       // or the synthesized __evm_storage[slot] register entry for an arbitrary (non-declared) slot.
       if (e.name === 'sstore' && e.args.length === 2) {

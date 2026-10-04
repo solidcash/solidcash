@@ -30,11 +30,11 @@ import {
   ExpressionNode,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
-import { AmbiguousInlineOverloadError } from '../Errors.js';
+import { AmbiguousInlineOverloadError, UnsupportedReturnError } from '../Errors.js';
 import { AddressType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
-import EarlyReturnTransformation from './EarlyReturnTransformation.js';
+import EarlyReturnTransformation, { holdsAssemblyReturn } from './EarlyReturnTransformation.js';
 
 /**
  * Inlines internal calls to VOID helper functions that make external calls. An external call is a co-spend
@@ -346,12 +346,20 @@ export default class InlineExternalCallHelpers extends AstTraversal {
           if (this.ambiguousInlineKeys.has(inlineKey(name, stmt.call.parameters.length))) {
             throw new AmbiguousInlineOverloadError(stmt.call, name, stmt.call.parameters.length);
           }
-          out.push(...this.inlineCall(
+          const frame = stmt.call.fromThisCall === true;
+          const inlined = this.inlineCall(
             helper,
             stmt.call.parameters,
             stack,
             stmt.call.sourceActivationConditions ?? conditions,
-          ));
+            frame,
+          );
+          // The helper's own assembly returns exit it in a frame of its own; one a call in it inlined would not.
+          if (frame && holdsAssemblyReturn(inlined)) {
+            throw new UnsupportedReturnError(stmt, `an assembly return in a function '${name}' calls would end the `
+              + 'caller of this call too, but this call is a frame of its own');
+          }
+          out.push(...inlined);
           continue;
         }
       }
@@ -461,10 +469,11 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     }
   }
 
-  // Produce [param-binding decls..., alpha-renamed helper body...] for one inlined call site.
+  // Produce [param-binding decls..., alpha-renamed helper body...] for one inlined call site. A `this.f()` call
+  // (`frame`) is a frame of its own: an assembly return in it ends only that frame.
   private inlineCall(
     helper: FunctionDefinitionNode, args: Node[], stack: string[],
-    conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+    conditions: readonly { expression: ExpressionNode; negated: boolean }[], frame = false,
   ): StatementNode[] {
     const n = this.counter++;
     const map = new Map<string, string>();
@@ -472,14 +481,16 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     for (const name of helper.returnNames) if (name) map.set(name, `${PREFIX}${n}_${name}`);
     // A void helper's `return;` exits the HELPER, not its caller. Normalize early returns before splicing so the
     // remaining helper statements sit in the appropriate else branch, then erase the now-terminal bare returns.
-    // Otherwise `accrue()`'s `if (elapsed == 0) return;` leaks into a uint-returning caller after inlining.
+    // Otherwise `accrue()`'s `if (elapsed == 0) return;` leaks into a uint-returning caller after inlining. An
+    // assembly return halts the whole call, as it does on the EVM, so it stays: it is the caller's return. In a
+    // frame of its own it ends that frame, so it exits the helper like the others.
     const normalized = cloneNode(helper) as FunctionDefinitionNode;
     this.prependCallActivations(normalized.body, conditions);
     normalized.accept(new EarlyReturnTransformation());
     const stripReturns = (block: BlockNode): void => {
       const kept: StatementNode[] = [];
       for (const statement of block.statements ?? []) {
-        if (statement instanceof ReturnNode) continue;
+        if (statement instanceof ReturnNode && (frame || !statement.isYulReturn)) continue;
         if (statement instanceof BranchNode) {
           stripReturns(statement.ifBlock);
           if (statement.elseBlock) stripReturns(statement.elseBlock);

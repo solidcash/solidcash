@@ -25,7 +25,7 @@ import {
 import { UnaryOperator } from '../ast/Operator.js';
 import { UnsupportedReturnError } from '../Errors.js';
 import {
-  firstUnconfinedReturn, holdsReturn, nestedStatementLists, nestsReturnsToTail,
+  firstUnconfinedReturn, holdsReturn, nestedStatementLists, nestsReturnsToTail, refuseHaltingCalls,
 } from './EarlyReturnTransformation.js';
 import { fixedForMaximum } from './FixedForLoop.js';
 import { yulWordAs } from './LowerInlineAssembly.js';
@@ -98,9 +98,11 @@ export function stashReturnValues(
 /**
  * Lowers the returns of every function whose returns EarlyReturnTransformation leaves statements after. A return
  * in a loop is lowered to a break before this runs, so one still there is refused by name, or left to that
- * transformation's own refusal when `lenient` is set.
+ * transformation's own refusal when `lenient` is set. That second run follows every lowering, so it also refuses a
+ * call an assembly return in its callee would not end, before the lowering here leaves that return no node.
  */
 export default function confineReturns(ast: SourceFileNode, lenient = false): SourceFileNode {
+  if (lenient) refuseHaltingCalls(ast);
   const confine = (fn: FunctionDefinitionNode | undefined): void => {
     if (fn) confineFunction(fn, lenient);
   };

@@ -95,6 +95,13 @@ import { checksTransactionSignature, namesCalledFrom } from './transactionSignat
  */
 const PREFIX = '__rh';
 
+/**
+ * Whether a statement is a source `return`, whose values are the helper's. An assembly return halts the whole call,
+ * so a helper ending in one has no value to capture, and its call stays one (refused unless `this.f()`).
+ */
+const isSourceReturn = (statement: StatementNode | undefined): statement is ReturnNode =>
+  statement instanceof ReturnNode && !statement.isYulReturn;
+
 const captureCallsiteActivationInNode = (
   value: Node,
   conditions: readonly { expression: ExpressionNode; negated: boolean }[],
@@ -625,10 +632,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (stmts.length < 2) return;
     const branch = stmts[stmts.length - 2];
     const tail = stmts[stmts.length - 1];
-    if (!(branch instanceof BranchNode) || branch.elseBlock || !(tail instanceof ReturnNode)
+    if (!(branch instanceof BranchNode) || branch.elseBlock || !isSourceReturn(tail)
       || tail.expressions.length !== 1) return;
     const arm = branch.ifBlock.statements ?? [];
-    if (arm.length !== 1 || !(arm[0] instanceof ReturnNode) || arm[0].expressions.length !== 1) return;
+    if (arm.length !== 1 || !isSourceReturn(arm[0]) || arm[0].expressions.length !== 1) return;
     const conditional = new TernaryOpNode(branch.condition, arm[0].expressions[0], tail.expressions[0]);
     conditional.location = branch.location;
     const ret = new ReturnNode([conditional]);
@@ -645,7 +652,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const bodyStatements = fn.body.statements ?? [];
     const stmts = this.effectiveStmts(bodyStatements);
     const last = stmts[stmts.length - 1];
-    if (!(last instanceof ReturnNode) || last.expressions.length !== 1) return;
+    if (!isSourceReturn(last) || last.expressions.length !== 1) return;
     const serial = this.counter++;
     const names = fn.returnTypes.map((_, i) => `${PREFIX}_forward_${serial}_${i}`);
     const capture = new TupleAssignmentNode(
@@ -676,7 +683,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE))) return false;
     const stmts = this.effectiveStmts(fn.body.statements ?? []);
     const last = stmts[stmts.length - 1];
-    if (!(last instanceof ReturnNode)) return false;
+    if (!isSourceReturn(last)) return false;
     if (last.expressions.length !== fn.returnTypes.length) return false;
     let returns = 0;
     for (const n of this.nodesOf(fn)) if (n instanceof ReturnNode) returns += 1;
@@ -1050,7 +1057,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       && (fn.visibility === 'internal' || fn.visibility === 'private'))) return false;
     const stmts = fn.body.statements ?? [];
     const last = stmts[stmts.length - 1];
-    if (!(last instanceof ReturnNode)) return false;
+    if (!isSourceReturn(last)) return false;
     if (last.expressions.length !== fn.returnTypes.length) return false;
     let returns = 0;
     for (const n of this.nodesOf(fn)) if (n instanceof ReturnNode) returns += 1;
@@ -1393,7 +1400,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       [parameter.name, cloneNode(args[index]) as ExpressionNode])));
     const stmts = this.effectiveStmts(cloned.body.statements ?? []);
     const tail = stmts.at(-1);
-    if (!(tail instanceof ReturnNode) || tail.expressions.length !== 1) return undefined;
+    if (!isSourceReturn(tail) || tail.expressions.length !== 1) return undefined;
     let expression = tail.expressions[0];
     if (expression instanceof IdentifierNode) {
       const target = expression.name;

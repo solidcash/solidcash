@@ -93,14 +93,19 @@ const RETURN_WALK_SKIP = new Set([
   'stateVariable',
 ]);
 
-/** Whether a statement holds a source `return;`. A Yul `return` ends the whole call frame and is not counted. */
-function containsSourceReturn(node: Node | undefined): boolean {
+/**
+ * Whether a statement holds a return that leaves the inlined helper: a source `return;`. A Yul `return` ends the
+ * whole call frame, so it is not counted, except in a helper called as a frame of its own (`this.f()`), all it ends.
+ */
+function containsSourceReturn(node: Node | undefined, frame = false): boolean {
   if (!node) return false;
-  if (node instanceof ReturnNode) return !node.isYulReturn;
+  if (node instanceof ReturnNode) return frame || !node.isYulReturn;
   for (const [key, value] of Object.entries(node)) {
     if (RETURN_WALK_SKIP.has(key)) continue;
-    if (value instanceof Node && containsSourceReturn(value)) return true;
-    if (Array.isArray(value) && value.some((item) => item instanceof Node && containsSourceReturn(item))) return true;
+    if (value instanceof Node && containsSourceReturn(value, frame)) return true;
+    if (Array.isArray(value) && value.some((item) => item instanceof Node && containsSourceReturn(item, frame))) {
+      return true;
+    }
   }
   return false;
 }
@@ -268,6 +273,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // pre-scan. This is Release 3's sound, non-aggregating token path.
       const hasTokenContainerEffects = this.hasTokenContainerEffects(fn);
       const hasPhysicalEffects = this.hasPhysicalEffects(fn);
+      // An assembly return halts the whole call. Inlined, it is the caller's return, as on the EVM; a subroutine
+      // would only return from it, so a call left to one is refused (refuseHaltingCalls).
+      const halts = this.holdsAssemblyReturn(fn);
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn)
           || delegateGuard
@@ -275,6 +283,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
             && (this.readsEntry(fn) || (this.touchesScalarState(fn) && !scalarJournalEligible)
               || hasTokenContainerEffects
               || hasPhysicalEffects
+              || halts
               || this.transitiveSortedWriters.has(fn.name)
               || checksSignature(fn)
               || (this.inlineSolidityInitializers && /^__.*_init(?:_unchained)?$/.test(fn.name)))))) {
@@ -283,6 +292,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         && !valueReferenced.has(fn.name)
         && (this.readsEntry(fn) || (this.touchesScalarState(fn) && !scalarJournalEligible)
           || hasPhysicalEffects
+          || halts
           || this.transitiveSortedWriters.has(fn.name)
           || (calledByName.has(fn.name) && checksSignature(fn)))) {
         this.inlinedFns.add(fn.name);
@@ -330,8 +340,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // split facet into its master.
     for (const fn of this.freeFns) {
       if (fn.modifiers.includes(FunctionModifier.DELEGATE)) continue;
-      if (fn.body && fn.returnTypes.length === 0
-        && (this.hasStoragePointerParam(fn) || this.hasPhysicalEffects(fn) || checksSignature(fn))) {
+      if (fn.body && fn.returnTypes.length === 0 && (this.hasStoragePointerParam(fn) || this.hasPhysicalEffects(fn)
+        || this.holdsAssemblyReturn(fn) || checksSignature(fn))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -471,7 +481,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // pointer has no runtime value, so `mapping(..) storage m = get()` must inline to the underlying mapping.
     if (!this.hasStoragePointerParam(fn) && !fn.returnTypes.some((t) => t instanceof MappingType)) return false;
     const stmts = (fn.body.statements ?? []).filter((s) => !(s instanceof ConsoleStatementNode));
-    return stmts.length === 1 && stmts[0] instanceof ReturnNode && stmts[0].expressions.length === 1;
+    // An assembly return halts the whole call: its data is no value of the call.
+    return stmts.length === 1 && stmts[0] instanceof ReturnNode && !stmts[0].isYulReturn
+      && stmts[0].expressions.length === 1;
   }
 
   // Replace a call to a value-returning storage-pointer function with its (substituted) return expression.
@@ -587,6 +599,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return this.nodesOf(fn).some((node) => node instanceof TokenContainerMethodStatementNode);
   }
 
+  private holdsAssemblyReturn(fn: FunctionDefinitionNode): boolean {
+    return this.nodesOf(fn).some((node) => node instanceof ReturnNode && node.isYulReturn);
+  }
+
   private hasPhysicalEffects(fn: FunctionDefinitionNode): boolean {
     return this.nodesOf(fn).some((node) => {
       if (node instanceof InstantiationNode
@@ -667,7 +683,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
           if (this.ambiguousInlineKeys.has(inlineKey(callee.name, args.length))) {
             throw new AmbiguousInlineOverloadError(stmt.call, callee.name, args.length);
           }
-          out.push(...this.inlineCall(callee, args, stack));
+          out.push(...this.inlineCall(callee, args, stack, stmt.call.fromThisCall === true));
           continue;
         }
       }
@@ -698,8 +714,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     }
   }
 
-  // Produce [value-param-binding decls..., renamed+substituted body...] for one inlined call site.
-  private inlineCall(callee: FunctionDefinitionNode, args: Node[], stack: string[]): StatementNode[] {
+  // Produce [value-param-binding decls..., renamed+substituted body...] for one inlined call site. A `this.f()` call
+  // (`frame`) is a frame of its own: an assembly return in it ends only that frame.
+  private inlineCall(callee: FunctionDefinitionNode, args: Node[], stack: string[], frame = false): StatementNode[] {
     const n = this.counter++;
     const cloned = cloneNode(callee) as FunctionDefinitionNode;
 
@@ -808,7 +825,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     });
     const inlined = this.inlineStatements(cloned.body.statements ?? [],
       [...stack, inlineKey(callee.name, callee.parameters.length)]);
-    return [...bindings, ...rmwPrologue, ...this.confineHelperReturns(inlined, n, callee), ...rmwEpilogue];
+    return [...bindings, ...rmwPrologue, ...this.confineHelperReturns(inlined, n, callee, frame), ...rmwEpilogue];
   }
 
   /**
@@ -816,14 +833,15 @@ export default class InlineStoragePointerCalls extends AstTraversal {
    * it left the caller instead: KashiPair's withdrawFees inlines accrue(), whose `if (elapsedTime == 0) return;`
    * then skipped the rest of withdrawFees. A body whose only return is its last statement drops it; otherwise each
    * return sets a fresh flag and every statement after it is gated on that flag. A Yul `return` ends the whole call
-   * frame, as it does on the EVM, so it stays.
+   * frame, as it does on the EVM, so it stays, unless the helper is a `frame` of its own: then it leaves the helper.
    */
   private confineHelperReturns(
-    stmts: StatementNode[], n: number, callee: FunctionDefinitionNode,
+    stmts: StatementNode[], n: number, callee: FunctionDefinitionNode, frame: boolean,
   ): StatementNode[] {
-    if (!stmts.some(containsSourceReturn)) return stmts;
+    const leaves = (statement: StatementNode): boolean => containsSourceReturn(statement, frame);
+    if (!stmts.some(leaves)) return stmts;
     const last = stmts[stmts.length - 1];
-    if (last instanceof ReturnNode && !last.isYulReturn && !stmts.slice(0, -1).some(containsSourceReturn)) {
+    if (last instanceof ReturnNode && (frame || !last.isYulReturn) && !stmts.slice(0, -1).some(leaves)) {
       return stmts.slice(0, -1);
     }
     const flag = `__internal__inlineReturned_${n}`;
@@ -832,16 +850,16 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     const declaration = new VariableDefinitionNode(PrimitiveType.BOOL, [], flag, unset);
     declaration.location = callee.location;
     declaration.allowUnused = true;
-    return [declaration, ...this.gateAfterHelperReturns(stmts, flag, callee)];
+    return [declaration, ...this.gateAfterHelperReturns(stmts, flag, callee, frame)];
   }
 
   private gateAfterHelperReturns(
-    stmts: StatementNode[], flag: string, callee: FunctionDefinitionNode,
+    stmts: StatementNode[], flag: string, callee: FunctionDefinitionNode, frame: boolean,
   ): StatementNode[] {
     const out: StatementNode[] = [];
     for (let index = 0; index < stmts.length; index += 1) {
       const statement = stmts[index];
-      if (statement instanceof ReturnNode && !statement.isYulReturn) {
+      if (statement instanceof ReturnNode && (frame || !statement.isYulReturn)) {
         const set = new BoolLiteralNode(true);
         set.location = statement.location;
         const target = new IdentifierNode(flag);
@@ -851,18 +869,18 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         out.push(assignment);
         return out; // the rest of this list is unreachable
       }
-      if (!containsSourceReturn(statement)) {
+      if (!containsSourceReturn(statement, frame)) {
         out.push(statement);
         continue;
       }
-      out.push(this.confineNestedHelperReturns(statement, flag, callee));
+      out.push(this.confineNestedHelperReturns(statement, flag, callee, frame));
       const rest = stmts.slice(index + 1);
       if (rest.length > 0) {
         const read = new IdentifierNode(flag);
         read.location = statement.location;
         const notReturned = new UnaryOpNode(UnaryOperator.NOT, read);
         notReturned.location = statement.location;
-        const gated = new BlockNode(this.gateAfterHelperReturns(rest, flag, callee));
+        const gated = new BlockNode(this.gateAfterHelperReturns(rest, flag, callee, frame));
         gated.location = statement.location;
         const gate = new BranchNode(notReturned, gated);
         gate.location = statement.location;
@@ -874,10 +892,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   }
 
   private confineNestedHelperReturns(
-    statement: StatementNode, flag: string, callee: FunctionDefinitionNode,
+    statement: StatementNode, flag: string, callee: FunctionDefinitionNode, frame: boolean,
   ): StatementNode {
     const lower = (block: BlockNode | undefined): void => {
-      if (block) block.statements = this.gateAfterHelperReturns(block.statements ?? [], flag, callee);
+      if (block) block.statements = this.gateAfterHelperReturns(block.statements ?? [], flag, callee, frame);
     };
     if (statement instanceof BranchNode) {
       lower(statement.ifBlock);

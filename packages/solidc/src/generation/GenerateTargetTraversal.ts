@@ -9925,7 +9925,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         node.elseBlock = this.visit(node.elseBlock);
         const stackAfterElse = [...this.stack];
         this.joinPerCallPosition(node, segmentAfterIf, ordinalAfterIf);
-        if (this.blockEndsWithRevert(node.ifBlock) && !this.blockEndsWithRevert(node.elseBlock)) {
+        // A `require(false)` fails as a revert does: an assembly `revert` arm beside a returning one is such an arm.
+        if (this.blockEndsInFailure(node.ifBlock) && !this.blockEndsInFailure(node.elseBlock)) {
           representative = stackAfterElse;
         }
       }
@@ -10033,6 +10034,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !!last.elseBlock && this.blockEndsWithRevert(last.elseBlock);
     }
     return false;
+  }
+
+  /**
+   * Whether every path through a block ends in a revert, or in a `require(false)`, which fails the same way, as the
+   * early-return nesting reads a block's end: through nested blocks, a try block and both arms of a branch.
+   */
+  private blockEndsInFailure(block: BlockNode): boolean {
+    const last = (block.statements ?? []).filter((s) => !(s instanceof ConsoleStatementNode)).at(-1);
+    if (last instanceof BlockNode) return this.blockEndsInFailure(last);
+    if (last instanceof UncheckedNode) return this.blockEndsInFailure(last.block);
+    if (last instanceof TryCatchNode) return this.blockEndsInFailure(last.tryBlock);
+    if (last instanceof BranchNode) {
+      return this.blockEndsInFailure(last.ifBlock) && !!last.elseBlock && this.blockEndsInFailure(last.elseBlock);
+    }
+    return last instanceof RevertNode
+      || (last instanceof RequireNode && last.expression instanceof BoolLiteralNode && !last.expression.value);
   }
 
   /**

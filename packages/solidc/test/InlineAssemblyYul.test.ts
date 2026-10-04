@@ -256,13 +256,34 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       { solidityImportCompat: true })).not.toThrow();
   });
 
-  it('lowers invalid() to require(false) and stop() to a no-op', () => {
+  it('lowers invalid() to require(false), and stop() to a halt nothing after runs', () => {
     expect(compileString('contract C() { function f() { assembly { invalid() } require(true); } }',
       { solidityImportCompat: true }).bytecode)
       .toBe(compileString('contract C() { function f() { require(false); require(true); } }',
         { solidityImportCompat: true }).bytecode);
-    expect(() => compileString('contract C() { function f() { assembly { stop() pop(add(0, 1)) } require(true); } }',
-      { solidityImportCompat: true })).not.toThrow();
+    // The dead `pc()` would leave the block unlowered, and the dead require would run, if either were kept.
+    expect(compileString('contract C() { function f() { assembly { stop() let x := pc() } require(true); } }',
+      { solidityImportCompat: true }).bytecode)
+      .toBe(compileString('contract C() { function f() { assembly { stop() } } }',
+        { solidityImportCompat: true }).bytecode);
+  });
+
+  it('ends the path of a switch arm that reverts, so the return in the other arm is the function\'s', () => {
+    // The arm lowers to require(false), which fails the script: the return beside it is the tail, as in the
+    // hand-written branch, and the dead require after the block is dropped. Before, the return was confined. Code
+    // generation reads the arm's end as the nesting does, through a nested block too.
+    const hand = compileString('contract C() { function f(uint c, uint a) returns (uint) {'
+      + ' if (uint(c) == uint(0)) { revert(); } else { return a; } } }', { solidityImportCompat: true });
+    for (const arm of ['revert(0, 0)', 'invalid()', '{ revert(0, 0) }']) {
+      const yul = compileString('contract C() { function f(uint c, uint a) returns (uint) { assembly {'
+        + ` mstore(0, a) switch c case 0 { ${arm} } default { return(0, 32) } } require(a > 1); } }`,
+      { solidityImportCompat: true });
+      expect(yul.bytecode).toBe(hand.bytecode);
+    }
+    // Raw bytes are no value of the results, so the confined form refused them; at the tail they are the result.
+    expect(() => compileString('contract C() { function f(uint c, uint n) returns (bytes memory) {'
+      + ' assembly { mstore(0, c) switch c case 0 { revert(0, 0) } default { return(0, n) } } } }',
+    { solidityImportCompat: true })).not.toThrow();
   });
 
   it('lowers a single-word return(p, 32) to a function return, byte-identical to `return v`', () => {

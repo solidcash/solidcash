@@ -66,4 +66,42 @@ describe('kernel multi-resource dynamic output layout', () => {
     expect(after.dynamicChunkUtxos?.second).toHaveLength(1);
     expect((await caller.proxy.getState()).count).toBe(1n);
   }, 180_000);
+
+  it('preserves both direct dynamic writes when the first in-place value shrinks', async () => {
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
+      contract Store {
+        bytes public first;
+        bytes public second;
+        function seed(bytes memory a, bytes memory b) public {
+          this.first = a;
+          this.second = b;
+        }
+        function shrink() public {
+          this.first = hex"01";
+          this.second = hex"02";
+        }
+      }`, {
+      forceStateful: true, solidityImportCompat: true, messageBus: true,
+      messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
+      suppressWarnings: true, optimizeForCompilationSpeed: true,
+    });
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x7d), provider);
+    for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const store = await getContractFactory(artifacts.Store, signer).deploy();
+    await store.call.seed(new Uint8Array(121).fill(0x41), Uint8Array.of(0x42)).send();
+    const before = await store.getFullState();
+    expect(before.dynamicChunkUtxos?.first).toHaveLength(2);
+    expect(before.dynamicChunkUtxos?.second).toHaveLength(1);
+
+    await store.call.shrink().send();
+    const state = await store.getState();
+    expect(state.first).toEqual(Uint8Array.of(0x01));
+    expect(state.second).toEqual(Uint8Array.of(0x02));
+    const after = await store.getFullState();
+    expect(after.dynamicChunkUtxos?.first).toHaveLength(1);
+    expect(after.dynamicChunkUtxos?.second).toHaveLength(1);
+  }, 180_000);
 });

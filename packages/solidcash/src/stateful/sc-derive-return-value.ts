@@ -16,8 +16,9 @@ import type { UnlockableUtxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { getNetworkPrefix } from '../utils.js';
 import {
+  connectedContractMatchesExactAddress,
   findDeploymentByAddress,
-  findDeploymentByLockingBytecode,
+  findDeploymentByAddressValue,
   findDeploymentByName,
 } from './deployment-registry.js';
 import {
@@ -269,12 +270,12 @@ export async function deriveReturnValue(
       ?? (/^I[A-Z]/.test(passthrough.interfaceName)
         ? findDeploymentByName(host.inner.provider, passthrough.interfaceName.slice(1))?.contract
         : undefined);
-    // A facade view which forwards to a stored-address target can have empty connect-time
-    // externals. Resolve the callee from the deployment registry by interface name, then by
-    // the compiler-described address state variable when present.
+    // The compiler-described stored address is authoritative for this forwarded read. A stale interface
+    // binding may only supply the handle if it identifies the same target.
     let byAddress: unknown;
+    let storedTarget: string | Uint8Array | undefined;
     const addressStateVar = passthrough.addressStateVar;
-    if (addressStateVar) {
+    if (addressStateVar !== undefined) {
       try {
         const facadeHost = delegatedCall.contract as StatefulContract & {
           implementation?: StatefulContract;
@@ -282,26 +283,27 @@ export async function deriveReturnValue(
         const facadeState = await (facadeHost.implementation ?? facadeHost).getState();
         const stored = facadeState[addressStateVar];
         if (typeof stored === 'string' || stored instanceof Uint8Array) {
-          const asHex = typeof stored === 'string' ? stored.replace(/^0x/i, '') : binToHex(stored);
-          byAddress = findDeploymentByLockingBytecode(host.inner.provider, asHex)?.contract
-            ?? (typeof stored === 'string'
-              ? findDeploymentByAddress(host.inner.provider, stored)?.contract
-              : undefined);
+          storedTarget = stored;
+          byAddress = findDeploymentByAddressValue(host.inner.provider, stored)?.contract;
         }
       } catch {
-        // Keep registry/name resolution only.
+        // Without the authenticated stored target, the passthrough cannot choose a callee by name.
       }
     }
-    // Prefer the address-linked deployment over a same-named registry entry: upgrade
-    // registers the proxy handle under the impl name, and a stale/empty-state twin can
-    // win findDeploymentByName while the facade's stored target address is authoritative.
     const delegatedRegistry = (delegatedCall.contract as unknown as {
       _externalRegistry: Map<string, StatefulContract>;
     })._externalRegistry;
-    const registered = (delegatedRegistry.get(passthrough.interfaceName)
-      ?? host.externalRegistry.get(passthrough.interfaceName)
-      ?? byAddress
-      ?? byName) as unknown;
+    const connectedCandidates = [
+      delegatedRegistry.get(passthrough.interfaceName),
+      host.externalRegistry.get(passthrough.interfaceName),
+      byName,
+    ];
+    const authenticatedTarget = storedTarget;
+    const registered = addressStateVar !== undefined
+      ? byAddress ?? (authenticatedTarget === undefined ? undefined : connectedCandidates.find((candidate) => (
+        connectedContractMatchesExactAddress(candidate, authenticatedTarget)
+      )))
+      : connectedCandidates.find((candidate) => candidate !== undefined);
     const facadeDeployment = findDeploymentByAddress(host.inner.provider, host.target);
     const facadeSelfAddress = hexToBin(
       String(facadeDeployment?.lockingBytecode ?? host.inner.lockingBytecode),

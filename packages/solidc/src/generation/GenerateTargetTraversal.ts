@@ -1933,6 +1933,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private pendingDynamicWrites: Map<string, {
     valueStackName: string; sv: StateVariableNode; knownEmpty?: boolean;
   }> = new Map();
+
+  /**
+   * The value each dynamic variable held where a per-call frame pre-allocated its write, with a call able to follow,
+   * by the tracked name of the copy kept until the end (`emitPerCallDynamicOriginChecks`).
+   */
+  private perCallDynamicOrigins = new Map<string, string>();
   private valueChunkTrailingCountActive = false;
   private static readonly VALUE_CHUNK_TRAILING_COUNT = '__internal__valueChunkTrailingCount';
   private runtimeLoopEntryInputCountActive = false;
@@ -7872,6 +7878,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallValueCallsAtSource = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
+    this.perCallDynamicOrigins = new Map();
     this.valueChunkTrailingCountActive = false;
     this.runtimeLoopEntryInputCountActive = false;
     this.runtimeLoopEntryJournalCountActive = false;
@@ -9107,6 +9114,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           if (w) this.coSpendPreservedDynValues.add(w.valueStackName);
         }
       }
+      // A per-call frame's dynamic write pre-allocated before a call: its run begins the last segment as it was read.
+      if (this.perCallDynamicOrigins.size > 0) this.emitPerCallDynamicOriginChecks(node);
       // Dynamic-storage writes: verify trailing chunk outputs (and consume old chunk inputs).
       // Local dynamic writes on a DELEGATE impl (Marketplace.jobs) must still verify even when the
       // function also contains nested delegatecalls — otherwise only the SDK layout is constrained.
@@ -11366,6 +11375,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Keep the established journal bank order: A$len above its dynamic value.
     this.emit(Op.OP_SWAP, locationData);
     [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
+    // A per-call frame pins the run in its last segment. Where a call can follow, it keeps the value read here, which
+    // the run must still hold where that segment begins (`emitPerCallDynamicOriginChecks`).
+    if (this.perCallDynamicOriginNeeded()) {
+      const originStackName = `__internal__dynwrite_origin_${sv.name}`;
+      this.emit(Op.OP_OVER, locationData);
+      this.pushToStack(originStackName);
+      this.perCallDynamicOrigins.set(sv.name, originStackName);
+    }
 
     this.pendingStateWrites.set(key, stateWriteStackName);
     this.preAllocatedStateWrites.add(key);
@@ -11374,6 +11391,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.preAllocatedDynamicWrites.add(sv.name);
     const writes = (this.currentFunction.dynamicWrites ??= []);
     if (!writes.includes(sv.name)) writes.push(sv.name);
+  }
+
+  /**
+   * True where a per-call frame pre-allocates a dynamic write that a call can follow: a body whose calls vary, or one
+   * whose fixed calls are not all made before this point. The run is pinned in the frame's last segment, so a frame
+   * running during such a call may rewrite it between the read here and the pin.
+   */
+  private perCallDynamicOriginNeeded(): boolean {
+    return this.perCallMaster && this.readsRecordsFromFrame && !this.isDefineSubTraversal
+      && (this.perCallCallsMadeActive || this.perCallSegmentIndex < this.perCallExecutionCallCount());
+  }
+
+  /**
+   * Requires each dynamic value whose write a per-call frame pre-allocated before a call (`perCallDynamicOrigins`) to
+   * begin the frame's last segment, where the frame pins its run, as it was where the frame read it.
+   *
+   * The frame's code reads the value where it pre-allocates the write, and an arm that does not run the write pins
+   * that value back. A frame that re-enters this contract during the call and rewrites the value leaves the last
+   * segment beginning at its own run, which the pin would write back over: the change is lost, as a write that did
+   * run but was pinned past the call loses it too. Read from the last segment's own declaration, the run must be the
+   * one the frame read, and each copy leaves the stack here.
+   */
+  private emitPerCallDynamicOriginChecks(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    for (const [name, origin] of this.perCallDynamicOrigins) {
+      const sv = this.stateVariables.find((variable) => variable.name === name)!;
+      this.emitDynamicReadLoop(sv, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(origin))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(dyn_origin)');
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.popFromStack(2);
+      const index = this.getStackIndex(origin);
+      this.emit(encodeInt(BigInt(index)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(index);
+    }
+    this.perCallDynamicOrigins = new Map();
   }
 
   /**

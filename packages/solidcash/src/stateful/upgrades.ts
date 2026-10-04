@@ -23,7 +23,8 @@ import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 import { deriveLogicalCreateAddress } from './logical-identity.js';
 import {
-  findDeploymentByAddress, registerDeployment, registeredPhysicalLockingBytecode,
+  findDeploymentByAddress, findDeploymentByAddressValue, findDeploymentBySolidityAddressPayload,
+  registerDeployment, registeredPhysicalLockingBytecode,
 } from './deployment-registry.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { proxySyntheticPaginationCollection } from './proxy-pagination.js';
@@ -1101,17 +1102,63 @@ function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact): void {
   }
 }
 
+const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+function isProxyHandle(value: unknown): value is ProxyContract {
+  return value instanceof ProxyContract || (typeof value === 'object' && value !== null
+    && typeof (value as { forwardShape?: { mode?: unknown } }).forwardShape?.mode === 'string');
+}
+
+/**
+ * The proxy an upgrade targets: the handle itself, or (as OpenZeppelin accepts) the address of a proxy deployed on
+ * the network the upgrade runs on, or a contract handle carrying that address. Anything else is refused at once,
+ * naming the address and the network: an address taken from another network's config names nothing here, and the
+ * upgrade must fail rather than proceed with nothing.
+ */
+function resolveUpgradeTarget(target: unknown, runner: ContractRunner | undefined): ProxyContract {
+  if (isProxyHandle(target)) return target;
+  const provider = runner instanceof Signer ? runner.provider : runner;
+  const network = provider?.network ?? 'the connected network';
+  const carried = typeof target === 'object' && target !== null
+    ? [(target as { target?: unknown }).target, (target as { address?: unknown }).address]
+      .find((value): value is string => typeof value === 'string')
+    : undefined;
+  const address = typeof target === 'string' ? target.trim() : carried;
+  if (address === undefined || address === '') {
+    const got = typeof target === 'string' ? 'an empty address'
+      : target === null || typeof target !== 'object' ? String(target) : 'an object without an address';
+    throw new Error(`upgradeProxy: expected a deployed proxy or its address, got ${got}`);
+  }
+  const deployment = provider === undefined ? undefined : findDeploymentByAddressValue(provider, address)
+    ?? (EVM_ADDRESS.test(address)
+      ? findDeploymentBySolidityAddressPayload(provider, hexToBin(address.slice(2)))
+      : undefined);
+  if (deployment === undefined) throw new Error(`upgradeProxy: no proxy is deployed at ${address} on ${network}`);
+  if (!isProxyHandle(deployment.contract)) {
+    throw new Error(
+      `upgradeProxy: the contract deployed at ${address} on ${network} ('${deployment.contractName}') is not a `
+      + 'proxy; deploy it with upgrades.deployProxy to make it upgradeable.',
+    );
+  }
+  return deployment.contract;
+}
+
 /**
  * OZ-shaped `upgrades.upgradeProxy(proxy, NewImplFactory)` for **param-mode** proxies (implementation is a
- * call argument). Re-wraps the same state-holding proxy with a newly deployed implementation; no on-chain
+ * call argument). `proxy` is the proxy handle or its address; an address with no proxy deployed on the network
+ * is refused at once. Re-wraps the same state-holding proxy with a newly deployed implementation; no on-chain
  * proxy mutation. Default baked `SolidCashProxy` refuses — its implementation lock is a constructor pin, so
  * same-address upgrade requires a new P2SH (migrate) or a param-mode custom proxy.
  */
 export async function upgradeProxy<TImpl extends Artifact>(
-  proxy: ProxyContract,
+  proxyOrAddress: ProxyContract | string,
   newImplementationFactory: ContractFactory<TImpl>,
   options: UpgradeProxyOptions = {},
 ): Promise<ProxyContract<TImpl>> {
+  const proxy = resolveUpgradeTarget(
+    proxyOrAddress,
+    options.runner ?? (newImplementationFactory as { runner?: ContractRunner } | undefined)?.runner,
+  );
   if (proxy.forwardShape.mode !== 'param') {
     throw new Error(
       `upgrades.upgradeProxy only supports param-mode proxies (forwarder takes address impl). `

@@ -7,8 +7,8 @@
  * one script, turns `process.exit` into a completion signal, and restores everything afterwards, so a deployment
  * script can be exercised in-process against the same mock chain and offline services as the suite around it.
  *
- * The script is responsible for its own async `main()`; completion is reported by `process.exit`, by an unhandled
- * rejection from the script, or by the caller's timeout.
+ * The script is responsible for its own async `main()`; completion is reported by `process.exit`, by the script
+ * setting `process.exitCode`, by an unhandled rejection from the script, or by the caller's timeout.
  */
 import Module from 'node:module';
 import { createRequire } from 'node:module';
@@ -88,7 +88,7 @@ export interface RunPortedScriptOptions {
 }
 
 export interface PortedScriptResult {
-  /** Code passed to `process.exit`, when the script called it. */
+  /** Code passed to `process.exit` or set as `process.exitCode`, when the script did either. */
   exitCode?: number;
   /** Error the script rejected with, when it failed. */
   error?: unknown;
@@ -130,8 +130,9 @@ export async function runPortedScript(
   const previousError = console.error;
   const stdout: string[] = [];
   const stderr: string[] = [];
+  // An Error's message and stack are not enumerable, so JSON would print a script's failure as `{}`.
   const format = (args: unknown[]): string => args.map((value) => (
-    typeof value === 'string' ? value : (() => {
+    typeof value === 'string' ? value : value instanceof Error ? (value.stack ?? String(value)) : (() => {
       try {
         return JSON.stringify(value);
       } catch {
@@ -144,6 +145,9 @@ export async function runPortedScript(
   const finished = new Promise<PortedScriptResult>((resolve) => { settle = resolve; });
   const onUnhandled = (reason: unknown): void => settle({ error: reason, stdout, stderr });
   let exitCode: number | undefined;
+  let printedError: unknown;
+  const previousExitCode = process.exitCode;
+  process.exitCode = undefined;
 
   globals.__filename = scriptPath;
   globals.__dirname = scriptPath.slice(0, Math.max(scriptPath.lastIndexOf('/'), scriptPath.lastIndexOf('\\')));
@@ -152,8 +156,20 @@ export async function runPortedScript(
   );
   if (captureOutput) {
     console.log = (...args: unknown[]): void => { stdout.push(format(args)); };
-    console.error = (...args: unknown[]): void => { stderr.push(format(args)); };
+    console.error = (...args: unknown[]): void => {
+      printedError = args.find((value) => value instanceof Error) ?? printedError;
+      stderr.push(format(args));
+    };
   }
+  // Hardhat's script template ends `main().catch((error) => { console.error(error); process.exitCode = 1; })`. That
+  // handles the failure, so neither `process.exit` nor an unhandled rejection reports it, and the run would wait out
+  // the whole timeout. Watch the value, so the run ends as soon as the script records its outcome.
+  const exitCodeWatch = setInterval(() => {
+    if (process.exitCode === undefined || process.exitCode === null) return;
+    const code = Number(process.exitCode);
+    settle({ exitCode: code, ...(code !== 0 && printedError !== undefined ? { error: printedError } : {}), stdout, stderr });
+  }, 20);
+  exitCodeWatch.unref?.();
   // Scripts conventionally end `main()` with `process.exit(0)` without awaiting `main()`. Record the code and
   // return normally: throwing here would surface as an unhandled rejection inside the import.
   process.exit = ((code?: number): never => {
@@ -174,6 +190,9 @@ export async function runPortedScript(
     const result = await Promise.race([finished, timeout]);
     return { exitCode, ...result, stdout, stderr };
   } finally {
+    clearInterval(exitCodeWatch);
+    // The script's exit code belongs to the script, not to the process hosting it (a test worker, say).
+    process.exitCode = previousExitCode;
     restoreCommonJsAliases();
     process.off('unhandledRejection', onUnhandled);
     process.exit = previousExit;

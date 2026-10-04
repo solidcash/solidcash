@@ -28,11 +28,14 @@ describe('transitive external target resolution', () => {
       _externalRegistry: new Map(),
       inner: { provider, artifact: { abi: [] } as unknown as Artifact, lockingBytecode: '51' },
       getState: async () => ({ target: address.address }),
+      _hydrateExternalPredicateState: async (_expressions: unknown, _args: unknown,
+        _artifact: unknown, state: Record<string, unknown>) => state,
       _resolveExternalArgs: resolveArgs,
     } as unknown as TransitiveExternalContract;
     expect(await resolveTransitiveExternalContract(caller, edge, [], abi)).toBe(callee);
     expect(resolveArgs).toHaveBeenCalledWith(
       [edge.addressSource], [], caller.inner.artifact, { target: address.address }, abi.inputs,
+      undefined, 0, false, hexToBin('51'),
     );
   });
 
@@ -53,7 +56,30 @@ describe('transitive external target resolution', () => {
       _externalRegistry: new Map(),
       inner: { provider, artifact: { abi: [] } as unknown as Artifact, lockingBytecode: '51' },
       getState: async () => ({ target: payload }),
+      _hydrateExternalPredicateState: async (_expressions: unknown, _args: unknown,
+        _artifact: unknown, state: Record<string, unknown>) => state,
       _resolveExternalArgs: () => [payload],
+    } as unknown as TransitiveExternalContract;
+    expect(await resolveTransitiveExternalContract(caller, edge, [], abi)).toBeUndefined();
+  });
+
+  it('does not select a typed callee from a matching address suffix', async () => {
+    const provider = createTestProvider();
+    const lock = hexToBin(`76a914${'31'.repeat(20)}88ac`);
+    const address = lockingBytecodeToCashAddress({ bytecode: lock, prefix: 'bchtest' });
+    if (typeof address === 'string') throw new Error(address);
+    const callee = { categoryId: '01'.repeat(32) } as TransitiveExternalContract;
+    registerDeployment(provider, {
+      contractName: 'Target', address: address.address, lockingBytecode: binToHex(lock), contract: callee,
+    });
+    const unrelated = `not-a-cashaddr:${address.address.slice(-20)}`;
+    const caller = {
+      _externalRegistry: new Map(),
+      inner: { provider, artifact: { abi: [] } as unknown as Artifact, lockingBytecode: '51' },
+      getState: async () => ({ target: unrelated }),
+      _hydrateExternalPredicateState: async (_expressions: unknown, _args: unknown,
+        _artifact: unknown, state: Record<string, unknown>) => state,
+      _resolveExternalArgs: () => [unrelated],
     } as unknown as TransitiveExternalContract;
     expect(await resolveTransitiveExternalContract(caller, edge, [], abi)).toBeUndefined();
   });

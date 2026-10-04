@@ -84,7 +84,7 @@ export function findDeploymentByCategory(
   return undefined;
 }
 
-export function findDeploymentByAddress(
+function findDeploymentByExactAddress(
   provider: NetworkProvider, address: string,
 ): RegisteredDeployment | undefined {
   const current = deployments.get(provider) ?? [];
@@ -101,7 +101,17 @@ export function findDeploymentByAddress(
         if (binToHex(addressToLockScript(registered)) === wanted) return current[index];
       } catch { /* not a cashaddr */ }
     }
-  } catch { /* keep the string fallback below */ }
+  } catch { /* not a canonical cashaddr */ }
+  return undefined;
+}
+
+export function findDeploymentByAddress(
+  provider: NetworkProvider, address: string,
+): RegisteredDeployment | undefined {
+  const exact = findDeploymentByExactAddress(provider, address);
+  if (exact) return exact;
+  const current = deployments.get(provider) ?? [];
+  const addr = String(address ?? '');
   // Fuzzy: cashaddr prefix variants / trailing payload match (MistSwap MasterChef lp.address forms).
   if (addr.length > 12) {
     const tail = addr.slice(-20);
@@ -210,7 +220,7 @@ export function findDeploymentByAddressValue(
   provider: NetworkProvider, value: string | Uint8Array,
 ): RegisteredDeployment | undefined {
   const exact = typeof value === 'string'
-    ? findDeploymentByAddress(provider, value) ?? findDeploymentByLockingBytecode(provider, value)
+    ? findDeploymentByExactAddress(provider, value) ?? findDeploymentByLockingBytecode(provider, value)
     : findDeploymentByLockingBytecode(provider, binToHex(value));
   if (exact) return exact;
   const payload = typedSolidityAddressPayload(value);

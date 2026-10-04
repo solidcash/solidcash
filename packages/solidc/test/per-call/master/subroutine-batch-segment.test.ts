@@ -3,14 +3,20 @@ import { compileStringMulti } from '../../../src/compiler.js';
 import { publishedRefusals } from './refused-entry.js';
 
 /**
- * The segment a self-called body's sorted-batch write lands in.
+ * A public body that writes a sorted mapping, reached by a `this.` self-call, is refused by name.
  *
- * A body that writes a sorted mapping derives its batch operands from the witness block's segment list, and the
- * segment it reads is the number of external calls its own code makes before the write. A `this.f()` self-call is
- * a subroutine rather than a record - it closes no segment - so the body's own count is right exactly while the
- * frame that invokes it has made no external call; a caller that makes one lands the write in a later segment than
- * the derivation reads. The admission refuses that shape by the name of the call rather than composing a frame
- * that cannot settle, and leaves the call-free caller composed.
+ * Such a body compiles as a subroutine of the body that self-calls it, and a subroutine returns at the body's values
+ * before the sorted-batch transition epilogue and the segment close run. So the predecessor relink of an insert, the
+ * distinct-target check and the collection's node-count census are never emitted in the caller's frame, and the
+ * caller carries none of the callee's writes (its own accesses name the call, not the mapping nodes). Only the
+ * inline per-target output pin the body emits survives, which proves each written node's own commitment but not the
+ * topology around it. A forged segment could then settle two nodes for one key, or a node the sorted list skips. The
+ * admission refuses the writing body by name, whatever its caller's calls, and the caller with it; called directly,
+ * the body's own entry frame emits the transition and settles it.
+ *
+ * Before this, a caller that made no external call before the invocation, or one whose only call came after it,
+ * composed the unverified frame; only a call that preceded the invocation refused it, and then for the wrong reason
+ * (the segment the write lands in, rather than the transition never being emitted at all).
  */
 
 const SOURCE = (call: 'none' | 'before' | 'after' | 'conditionalBefore'): string => 'pragma solidcash ^0.13.0;'
@@ -31,40 +37,21 @@ const SOURCE = (call: 'none' | 'before' | 'after' | 'conditionalBefore'): string
   + '     require(true); }'
   + ' }';
 
-describe('a self-called body that writes a sorted mapping', () => {
-  it('is composed when the frame that invokes it makes no external call', () => {
-    const artifacts = compileStringMulti(SOURCE('none'), { composition: 'per-call' });
-    expect(publishedRefusals(artifacts)).toStrictEqual([]);
-  });
+/** The refusal a self-called sorted-mapping writer carries: its transition is never emitted in the caller's frame. */
+const TRANSFER_REASON = 'the body derives a sorted-mapping write and is run as a subroutine by a self-call, whose '
+  + 'frame never emits the batch transition that proves the write\'s topology (the predecessor relink, the '
+  + 'distinct-target check and the node count); call it directly so its own entry frame proves it';
+/** The caller is refused with it: it runs the refused body. */
+const SWEEP_REASON = `it runs 'transfer', which the master cannot serve: ${TRANSFER_REASON}`;
 
-  it('is composed when the caller\'s own call comes after the invocation', () => {
-    // The write precedes the caller's call, so the segment it lands in is still the one the invocation ran in: the
-    // admission refuses only a call the caller has already made.
-    const artifacts = compileStringMulti(SOURCE('after'), { composition: 'per-call' });
-    expect(publishedRefusals(artifacts)).toStrictEqual([]);
-  });
-
-  it('is refused when only some paths have called before the invocation', () => {
-    // The call stands on one arm of a branch, so the execution that takes that arm reaches the invocation in the
-    // segment after it while an execution that does not stays in the first one: the write lands in a later segment
-    // than the derivation reads on that path, and a body composed for both would be wrong on one of them.
-    const refusals = publishedRefusals(compileStringMulti(SOURCE('conditionalBefore'), { composition: 'per-call' }));
-    expect(refusals.map((refused) => refused.functionName).sort())
-      .toStrictEqual(['Ledger.sweep()', 'Ledger.transfer()']);
-    expect(refusals.find((refused) => refused.functionName === 'Ledger.transfer()')!.reason)
-      .toBe('the body derives a verified-mapping write and is invoked by \'sweep\' after an external call: a '
-        + 'subroutine reads the segment its own code names, and the caller\'s call puts the write in a later one');
-  });
-
-  it('is refused by name, with its caller, when the caller calls before invoking it', () => {
-    const refusals = publishedRefusals(compileStringMulti(SOURCE('before'), { composition: 'per-call' }));
-    expect(refusals.map((refused) => refused.functionName).sort())
-      .toStrictEqual(['Ledger.sweep()', 'Ledger.transfer()']);
-    const transfer = refusals.find((refused) => refused.functionName === 'Ledger.transfer()')!;
-    expect(transfer.reason).toBe('the body derives a verified-mapping write and is invoked by \'sweep\' after an '
-      + 'external call: a subroutine reads the segment its own code names, and the caller\'s call puts the write in '
-      + 'a later one');
-    expect(refusals.find((refused) => refused.functionName === 'Ledger.sweep()')!.reason)
-      .toMatch(/it runs 'transfer', which the master cannot serve/);
-  });
+describe('a public body that writes a sorted mapping, reached by a self-call', () => {
+  for (const call of ['none', 'after', 'before', 'conditionalBefore'] as const) {
+    it(`refuses the writing body by name, with its caller (${call})`, () => {
+      const refusals = publishedRefusals(compileStringMulti(SOURCE(call), { composition: 'per-call' }));
+      expect(refusals.map((refused) => refused.functionName).sort())
+        .toStrictEqual(['Ledger.sweep()', 'Ledger.transfer()']);
+      expect(refusals.find((refused) => refused.functionName === 'Ledger.transfer()')!.reason).toBe(TRANSFER_REASON);
+      expect(refusals.find((refused) => refused.functionName === 'Ledger.sweep()')!.reason).toBe(SWEEP_REASON);
+    });
+  }
 });

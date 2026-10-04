@@ -2593,30 +2593,24 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     const shape = unsupportedReturnShape(entry);
     if (shape !== undefined) refuseBody(entry, shape);
   }
-  // A body the master serves as a subroutine derives its own sorted-batch operands from the segment its own code's
-  // calls name, and a call closes the segment the code before it runs in. A self-call is a subroutine rather than a
-  // record, so it closes no segment: the body's count is right exactly while the frame that invokes it is in the
-  // segment that count names. A caller that has already made an external call invokes it in a later one, so the
-  // body is refused by the name of the call rather than composed into a frame that cannot settle. A call the
-  // caller makes *after* the invocation does not move the write, and a body whose own write precedes every call of
-  // its own is placed by its own code alone; a body that reads the frame's whole declared call count instead needs
-  // the whole frame to make no further call, which no caller can show here, so it is refused wherever the caller's
-  // calls sit.
-  for (const [caller, names] of invokes) {
-    const callerBody = entryPoints.find((entry) => entry.name === caller);
-    if (callerBody === undefined || refusals.has(caller) || !reachesExternalCall(callerBody.body)) continue;
-    for (const name of names) {
-      const fn = entryPoints.find((entry) => entry.name === name);
-      if (fn === undefined || refusals.has(name)) continue;
-      if (derivableBatchWitnessNames(fn, constants) === undefined) continue;
-      const placedByItsOwnCode = perCallBatchWriteSegment(fn) !== undefined;
-      if (placedByItsOwnCode && !invokeFollowsCall(callerBody, new Set([name]))) continue;
-      refuseBody(fn, placedByItsOwnCode
-        ? `the body derives a verified-mapping write and is invoked by '${caller}' after an external call: a `
-          + 'subroutine reads the segment its own code names, and the caller\'s call puts the write in a later one'
-        : `the body derives a verified-mapping write whose segment is the frame's whole call count, and is invoked `
-          + `by '${caller}', which makes external calls`);
-    }
+  // A body the master serves as a subroutine - a `this.f()` self-call - compiles as a define sub-traversal, which
+  // returns at the body's values and never reaches the sorted-batch transition epilogue or the segment close
+  // (GenerateTargetTraversal.visitFunctionDefinition). Its caller carries none of the callee's writes either: the
+  // caller's own accesses name the call, not the mapping nodes the callee writes. So a sorted-mapping write the
+  // callee derives keeps only the inline per-target output pin its body emits, while the predecessor relink of an
+  // insert, the distinct-target check and the collection's node-count census go unproven - a forged segment could
+  // settle two nodes for one key, or a node the list skips. Where the write's segment lands does not matter, because
+  // no transition is emitted in any of these frames. Refuse such a body by name, whatever its caller's calls; called
+  // directly, its own entry frame emits the transition and settles it.
+  const subroutineNames = new Set<string>();
+  for (const names of invokes.values()) for (const name of names) subroutineNames.add(name);
+  for (const name of subroutineNames) {
+    const fn = entryPoints.find((entry) => entry.name === name);
+    if (fn === undefined || refusals.has(name)) continue;
+    if (derivableBatchWitnessNames(fn, constants) === undefined) continue;
+    refuseBody(fn, 'the body derives a sorted-mapping write and is run as a subroutine by a self-call, whose frame '
+      + 'never emits the batch transition that proves the write\'s topology (the predecessor relink, the '
+      + 'distinct-target check and the node count); call it directly so its own entry frame proves it');
   }
   // An entry that reaches a body the master cannot serve is refused itself: the body it would run is a refusal, so
   // the entry could never settle. The reach is what makes this a closure rather than a list. The constructor is
@@ -2717,61 +2711,6 @@ function renderRefusals(
 interface RefusedBody {
   readonly name: string;
   readonly reason: string;
-}
-
-/**
- * True when a body reaches a call to one of `callees` after making an external call on some path.
- *
- * A subroutine derives its sorted-batch operands from the segment its own code's call count names, which is the
- * segment the invocation runs in. A call the caller has already made closes that segment, so the write lands in a
- * later one; a call the caller makes after the invocation leaves the write where the invocation ran, which is why
- * only the calls that precede the site decide it. A call only some paths take still counts: the execution that took
- * that arm reaches the invocation in the later segment. The walk joins a branch's arms and treats a loop or switch
- * that reaches a call as an open count, the same way the write's own segment is walked.
- */
-function invokeFollowsCall(entry: FunctionDefinitionNode, callees: ReadonlySet<string>): boolean {
-  let found = false;
-  const walkBlock = (block: BlockNode | undefined, incoming: CallRange): CallRange => {
-    let range = incoming;
-    for (const statement of block?.statements ?? []) {
-      if (found) return range;
-      range = walkStatement(statement, range);
-    }
-    return range;
-  };
-  const walkStatement = (statement: Node, incoming: CallRange): CallRange => {
-    if (statement instanceof FunctionCallStatementNode) {
-      const callee = statement.call.resolvedFunction?.name;
-      // Any path that could have made a call already moves the write, so a call that only some paths take refuses
-      // the body too: the range is joined over a branch's arms, and `most` is what some path reached.
-      if (callee !== undefined && callees.has(callee)
-        && (incoming === undefined || incoming.most >= 1)) {
-        found = true;
-      }
-      return advanceCallRange(incoming, statement);
-    }
-    if (statement instanceof BranchNode) {
-      const afterCondition = advanceCallRange(incoming, statement.condition);
-      const thenRange = walkBlock(statement.ifBlock, afterCondition);
-      const elseRange = statement.elseBlock === undefined
-        ? afterCondition
-        : walkBlock(statement.elseBlock, afterCondition);
-      return joinCallRanges(thenRange, elseRange);
-    }
-    if (statement instanceof BlockNode) return walkBlock(statement, incoming);
-    if (statement instanceof SwitchNode || statement instanceof CollectionIterationNode
-      || statement instanceof WhileNode || statement instanceof DoWhileNode) {
-      // A loop, switch or iteration makes a number of calls its own bound decides; a call-free one makes none.
-      return reachesExternalCall(statement) ? undefined : incoming;
-    }
-    if (statement instanceof TryCatchNode) {
-      // A catch block is not an executable path, matching the invocation walk.
-      return walkBlock(statement.tryBlock, advanceCallRange(incoming, statement.expression));
-    }
-    return advanceCallRange(incoming, statement);
-  };
-  walkBlock(entry.body, { least: 0, most: 0 });
-  return found;
 }
 
 /**

@@ -306,6 +306,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       externals,
       validatorProgram: options.validatorProgram,
       stateValues: deploymentStateValues(layout, options.categoryId, options.deployment),
+      entryDeployment: { categoryId: options.categoryId, deployment: options.deployment, layout },
       selfAddress: options.selfAddress,
       senderAddress: options.senderAddress,
     });

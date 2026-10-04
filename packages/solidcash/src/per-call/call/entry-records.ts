@@ -275,6 +275,21 @@ function resolveKeys(
   });
 }
 
+/** The slot one mapping access's key(s) hash to, resolved as `resolveKeys` resolves them, or undefined for none. */
+export function accessKeySlot(
+  request: KeyResolutionContext & { readonly artifact: Artifact },
+  access: NonNullable<AbiFunction['entryAccesses']>[number],
+): Uint8Array | undefined {
+  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
+  if (fn === undefined) return undefined;
+  const structs = request.artifact.structs ?? request.artifact.stateLayout?.structs;
+  try {
+    return keyToSlotMulti([...resolveKeys(request, fn, access, structs)]);
+  } catch {
+    return undefined;
+  }
+}
+
 /** One turn of a write loop the entry's own source runs: its index and the keys it writes under. */
 export interface CallLoopWriteTurn {
   /** The position in the array the frame evaluates, which is the order the body walks the keys. */

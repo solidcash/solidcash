@@ -72,8 +72,10 @@ export default defineConfig(solidhatPreset(
       globalSetup: ['./scripts/marketplace-fixture-fresh.mjs'],
       // Kernel-mode history tests compose dozens of multi-participant BCH transactions serially. Keep the
       // unchanged upstream test bodies authoritative rather than aborting a healthy loop at the ten-minute mark.
-      testTimeout: 1_200_000,
-      hookTimeout: 1_200_000,
+      // The no-proxy twin's sanity titles run several reverting escrow calls through the plain path, which re-derives
+      // more than the hop does; two of them take 20-26 minutes on a loaded box, so the budget is 40 minutes.
+      testTimeout: 2_400_000,
+      hookTimeout: 2_400_000,
       fileParallelism: false,
       // The fixture retains several multi-megabyte covenant transactions. Avoid spending most of a full run in
       // major GC at Node's default ~4 GB worker ceiling, and expose per-test progress without SDK debug logging.

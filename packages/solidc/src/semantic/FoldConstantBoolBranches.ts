@@ -9,6 +9,7 @@ import {
   BoolLiteralNode,
   BranchNode,
   CastNode,
+  ContractNode,
   DeleteLocalNode,
   ExpressionNode,
   FunctionDefinitionNode,
@@ -33,13 +34,33 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
  * expect, and a compiler-owned flush whose absent arm must stay physically inactive is left alone.
  */
 export default class FoldConstantBoolBranches extends AstTraversal {
-  /** `literals` adds the literal-equality and zero-address rules; without it only boolean constants fold. */
-  constructor(private readonly literals = false) {
+  /** The constructor of the contract being visited. */
+  private constructorDef?: FunctionDefinitionNode;
+
+  /**
+   * `literals` adds the literal-equality and zero-address rules; without it only boolean constants fold.
+   * `'constructor'` adds them in a contract's constructor alone: its genesis keeps no value for a write in a branch
+   * arm, so a dead arm's write to an entry the body reads later (`_mint` inlines `_update(address(0), to, v)`) refuses
+   * the body, while the other bodies keep their shape.
+   */
+  constructor(private readonly literals: boolean | 'constructor' = false) {
     super();
   }
 
+  visitContract(node: ContractNode): Node {
+    const outer = this.constructorDef;
+    this.constructorDef = node.constructorDef;
+    try {
+      return super.visitContract(node);
+    } finally {
+      this.constructorDef = outer;
+    }
+  }
+
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
-    if (node.body) foldBlock(node.body, functionFacts(node, this.literals));
+    const literals = this.literals === true
+      || (this.literals === 'constructor' && node === this.constructorDef);
+    if (node.body) foldBlock(node.body, functionFacts(node, literals));
     return node;
   }
 }

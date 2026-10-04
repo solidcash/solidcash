@@ -13676,9 +13676,13 @@ function compileResolvedAst(
   if (needsCollectionJournal) ast = ast.accept(new LowerMappingStorageAlias()) as Ast;
 
   // A boolean literal substituted for a bool param at an inline site (`_refund(jobId, false)`) leaves an arm of the
-  // branch on it that never runs; drop it, so a write in that arm never reaches the entry's write analysis.
+  // branch on it that never runs; drop it, so a write in that arm never reaches the entry's write analysis. Per-call
+  // entries keep the arms only literals decide; a per-call constructor folds them too, as its genesis refuses a read
+  // after a branch arm's write to an entry the read may name (`_mint` inlines `_update(address(0), to, v)`).
   if (hasInternalHelpers) {
-    ast = ast.accept(new FoldConstantBoolBranches(mergedCompilerOptions.composition !== 'per-call')) as Ast;
+    ast = ast.accept(new FoldConstantBoolBranches(
+      mergedCompilerOptions.composition === 'per-call' ? 'constructor' : true,
+    )) as Ast;
   }
 
   // Re-run the fixed-bound unroll AFTER inlining: a `new T[](N)` literal substituted for an array param at an

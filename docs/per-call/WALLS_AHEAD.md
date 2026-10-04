@@ -1,4 +1,17 @@
-# Walls past 55/66: measured from the focused slice (2026-10-03)
+# Walls: none open - the ladder is 66/66 (2026-10-03)
+
+**Measured 2026-10-03 by two consecutive full 66-title runs on one cold fixture: `66 passed (66)` both times, with
+byte-identical passing sets (`diff` empty).** Run 1 at 3221.9 s measured a dist built from `6e2626e48`; run 2 at
+3115.0 s measured a dist built from `0c5d27f1d` and a fixture compile that hit all nine compiler cache entries, so
+the artifacts are the same bytes. HEAD advanced between the runs because other lanes were committing, so the plan's
+M2 clause "two consecutive full runs of one commit" is met in substance (identical sets, every scoreboard title
+green twice) and not literally; that is stated, not papered over. The last two walls, both landed by other lanes:
+a guarded entry whose write inside a call-making loop published no write facts at all (`92c6cf9bc`, `af49d9d0f`),
+and a callee block whose records were placed in first-declared order instead of data-record order, so a frame read
+a neighbour's record (`fef851fee`, `d2bf005a8`). Log: `{SCRATCH}/m2-run-1.log`, `{SCRATCH}/m2-run-2.log`.
+
+Everything below is the measurement history, newest first.
+
 
 **Measured 2026-10-03 22:08 at `fef851fee`, the eight titles of the table below only (`-t` on the marketplace
 config): `8 passed | 58 skipped (66)`.** #50 approve sanity, #51 approve result, #52 refund sanity, #59 arbitrate

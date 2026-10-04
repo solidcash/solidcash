@@ -28,6 +28,11 @@
  * A `delete m[k]` compiles to an in-place write of the value type's default, so that too is one write per target
  * with the target's commitment learned from the body's close.
  *
+ * A write a branch guards publishes the condition it runs under, which the hop decides from the frame's facts as it
+ * decides a conditional call site (`write-activation.ts`): a skipped write keeps its node, or its absent key's
+ * predecessor, as the frame's one record for it. One the facts do not decide is planned as written where the key's
+ * node exists, its end view learned from whichever check the body stops at, and refused by name where it does not.
+ *
  * A caller that declares the node of each key the entry only reads, kept and ahead of the batch's groups as a callee
  * frame's read nodes are, names their slots, and a read at one of them is planned beside the batch, not refused.
  *
@@ -101,6 +106,7 @@ import {
 import { PerCallProxyDeployError } from './errors.js';
 import { hopTrace, hopTraceOn } from './hop-trace.js';
 import { reachedNodeValue } from './reached-values.js';
+import { writeRuns, type WriteActivationFacts } from './write-activation.js';
 
 /** The participant id a hop's layout holds for a collection's empty head sentinel. */
 const MAPPING_HEAD_PREFIX = 'mapping-head-';
@@ -279,6 +285,11 @@ export interface HopEntryWritesRequest {
    * states them only when it knows something the artifact does not.
    */
   readonly stateLengthDeltas?: Readonly<Record<string, bigint>>;
+  /**
+   * The frame's facts a write a branch guards is decided from, beside its arguments and its sender (`writeRuns`).
+   * Absent leaves every such write undecided: planned as written where the key's node exists, refused where not.
+   */
+  readonly activationFacts?: WriteActivationFacts;
 }
 
 /** The live deployment a call's hop reads its writes against, from the deployment's own classification. */
@@ -1077,6 +1088,8 @@ function planHopCollectionBatch(
   };
 
   let unstatedValue = false;
+  // The slots of writes a branch guards whose condition the frame's facts do not decide.
+  const undecided: Uint8Array[] = [];
   const writes = targets.map(({ access, keys, value }) => {
     if (keyTypes.length !== access.keyParams.length) {
       throw new PerCallProxyDeployError(
@@ -1095,6 +1108,26 @@ function planHopCollectionBatch(
         `the implementation's "${request.functionName}" entry touches mapping "${access.collection}" as `
         + `${access.operations.join('/')}, and this hop plans one write per target`,
       );
+    }
+    // A write a branch guards is declared only where its condition holds on the frame's facts: a skipped one keeps
+    // its node, or its absent key's predecessor. One those facts do not decide is planned as written, its node's end
+    // view learned from whichever check the body stops at, the write's close or the arm not taken's; a node it would
+    // create cannot be so declared, and is refused once the inventory shows the key absent.
+    const runs = writeRuns({
+      artifact: request.artifact, functionName: request.functionName, args,
+      senderAddress: request.callerLockingBytecode,
+      ...(request.activationFacts === undefined ? {} : { facts: request.activationFacts }),
+    }, access.activation);
+    if (runs === false) return { keys: [...keys], value: new Uint8Array(0), stated: false, skipped: true };
+    if (runs === undefined) {
+      if (chunkable) {
+        throw new PerCallProxyDeployError(
+          `the implementation's "${request.functionName}" entry writes mapping "${access.collection}", whose values `
+          + 'chunk, under a condition this hop cannot decide from the frame\'s facts, so it cannot size the run of '
+          + 'chunk records the write may take',
+        );
+      }
+      undecided.push(keyToSlotMulti([...keys]));
     }
     // A per-call body compiles `delete m[k]` as an upsert of the value type's default, so the node stays in place
     // and takes the default tail. The commitment is the body's to compute and is learned from its close, so only
@@ -1215,6 +1248,15 @@ function planHopCollectionBatch(
     );
   }
   for (const commitment of continuedBySlot.values()) inventory.push(reached(commitment));
+  const absent = undecided.find((slot) => !inventory.some((commitment) =>
+    bytesEqual(decodeEntryCommitment(commitment).slot, slot)));
+  if (absent !== undefined) {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${request.functionName}" entry writes mapping "${collection.name}" under a condition `
+      + 'this hop cannot decide from the frame\'s facts, at a key the collection does not hold, so it cannot declare '
+      + 'whether the write creates the key\'s node',
+    );
+  }
   const plan = planMappingBatch({
     writes, inventory,
     encodeValue: chunkable ? encodeChunkableValueTail : (encoded: Uint8Array) => encoded,
@@ -1234,8 +1276,10 @@ function planHopCollectionBatch(
   }
 
   // A node the batch creates, and a target it rewrites, carry the value the body computed; a node it only relinks
-  // keeps its own value, so its end view is stated by the planner and restated from the chain (`relinked`).
-  const writtenSlots = new Set(plan.groups.map((group) => bytesToHex(group.slot)));
+  // keeps its own value, so its end view is stated by the planner and restated from the chain (`relinked`), as is
+  // the node a skipped write keeps.
+  const writing = plan.groups.filter((group) => group.skipped !== true);
+  const writtenSlots = new Set(writing.map((group) => bytesToHex(group.slot)));
   const learningSlots: Uint8Array[] = [];
   const learningCandidates: Uint8Array[] = [];
   const learned = new Set<string>();
@@ -1257,8 +1301,8 @@ function planHopCollectionBatch(
   }
   // The key each write targets, and the node it splices through when the list did not hold it. The plan's groups
   // are in write order, so each target reads its own group; a group the list did not hold names its predecessor
-  // first.
-  const writeTargets = plan.groups.map((group): ReachWriteTarget => ({
+  // first. A skipped write targets nothing.
+  const writeTargets = writing.map((group): ReachWriteTarget => ({
     collection: collection.name,
     slot: group.slot,
     ...(group.existed

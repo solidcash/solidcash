@@ -19,7 +19,7 @@
  *   Extra     the records the segment declares past the groups, which only the value chunks the body pins may be
  */
 
-import { encodeDataPush, Opcodes } from '@bitauth/libauth';
+import { bigIntToVmNumber, encodeDataPush, Opcodes } from '@bitauth/libauth';
 import {
   WITNESS_BLOCK_HEADER_LENGTH,
   dropPrefix,
@@ -46,6 +46,9 @@ export function batchDerivationSlotName(kind: BatchDerivationSlot, slotIndex: nu
 
 /** The tracked name of the records the segment declares past the groups: the value chunks the body must pin. */
 export const BATCH_EXTRA_RECORDS_SLOT = '__internal__vmapBatchExtraRecords';
+
+/** The `PredOut` of a target whose skipped write its group declares as one kept record: an inactive row's. */
+export const SKIPPED_TARGET_SENTINEL = -2n;
 
 /** The u16 index the codec reserves for a record with no input or no output, as a script number. */
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]);
@@ -98,6 +101,14 @@ export interface BatchTargetsDerivationOptions {
    * walk then steps over that many segments instead of a compile-time count. Mutually exclusive with `segmentIndex`.
    */
   readonly segmentFromDeclaredCallCount?: boolean;
+  /**
+   * The positions, in target order, of the targets whose write a branch guards, which a frame may skip.
+   *
+   * A frame that skips such a write declares its group as one kept record that is not the target's node: the node
+   * itself for a key the list holds reads as an update, so the record is the key's predecessor, kept as the proof of
+   * its absence. Its `PredOut` is the `-2` an inactive row carries, which the write site refuses if the write runs.
+   */
+  readonly skippableTargets?: readonly number[];
 }
 
 /**
@@ -253,7 +264,34 @@ class BatchTargetsDerivationBuilder {
     this.pick(`slot_${target}`);
     this.binary(Opcodes.OP_EQUAL, 'rewritten_in_place');
 
-    this.branch(() => this.deriveUpdate(target), () => this.deriveInsert(target));
+    if (!(this.options.skippableTargets ?? []).includes(target)) {
+      this.branch(() => this.deriveUpdate(target), () => this.deriveInsert(target));
+      return;
+    }
+    // A skippable target's other record is either an insert's relinked predecessor, which changes, or the kept
+    // predecessor of a write the frame skipped.
+    this.branch(() => this.deriveUpdate(target), () => {
+      this.pick(`view_in0_${target}`);
+      this.pick(`view_out0_${target}`);
+      this.binary(Opcodes.OP_EQUAL, 'kept');
+      this.branch(() => this.deriveSkipped(target), () => this.deriveInsert(target));
+    });
+  }
+
+  /** One kept record that is not the target's node: the write was skipped, and the record proves the key absent. */
+  private deriveSkipped(target: number): void {
+    this.pushProofCoordinate(target);
+    this.pushRecordsOwner('records_owner');
+    this.binary(Opcodes.OP_SUB, 'proof');
+    this.toAlt(`proof_${target}`);
+    this.pick(`view_out0_${target}`);
+    this.takeSuccessor();
+    this.toAlt(`next_${target}`);
+    this.raw(encodeDataPush(bigIntToVmNumber(SKIPPED_TARGET_SENTINEL)));
+    this.main.unshift('skipped_sentinel');
+    this.toAlt(`pred_out_${target}`);
+    this.drop(); // the compared viewOut copy
+    for (let field = 0; field < 4; field += 1) this.nip(); // in0, out0, viewIn0, viewOut0
   }
 
   /**
@@ -344,8 +382,9 @@ class BatchTargetsDerivationBuilder {
       this.main[0] = 'trailing';
     }
 
-    // The groups consumed the frame's own state records, then one record per update and two per insert. What the
-    // segment declares past them is left as `Extra`, never negative, for the body to hold to its value chunks.
+    // The groups consumed the frame's own state records, then one record per update or skipped write and two per
+    // insert. What the segment declares past them is left as `Extra`, never negative, for the body to hold to its
+    // value chunks.
     this.fromAlt();
     this.unary(Opcodes.OP_BIN2NUM, 'declared_count');
     this.num((this.options.leadingRecords ?? 0) + count);

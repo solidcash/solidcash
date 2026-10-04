@@ -43,6 +43,7 @@ import {
   mappingChunkOutputUnavailable,
   mappingIndexUnavailable,
   mappingPredecessorMissing,
+  mappingSkippedWriteKeepsWrittenNode,
 } from './refusals.js';
 
 /** A node's commitment is a 32-byte slot followed by a 32-byte successor link, then the value tail. */
@@ -326,6 +327,11 @@ export function layOutMappingWrites(
 export interface MappingBatchWrite<V> {
   readonly keys: readonly Uint8Array[];
   readonly value: V;
+  /**
+   * True for a write a branch guards that the frame skips: it changes nothing, so its group is one kept record, the
+   * node the list holds for the key or, for a key it does not hold, the predecessor that proves the key absent.
+   */
+  readonly skipped?: boolean;
 }
 
 /** The writes one body makes to one collection, which its sorted batch verifies as one transition. */
@@ -375,6 +381,8 @@ export interface MappingBatchRecord {
 export interface MappingBatchGroup {
   readonly slot: Uint8Array;
   readonly existed: boolean;
+  /** True for a skipped write, whose one record is kept: the target's node, or its absent key's predecessor. */
+  readonly skipped?: true;
   readonly records: readonly MappingBatchRecord[];
 }
 
@@ -394,13 +402,15 @@ export interface MappingBatchPlan {
  * predecessor, which links to the lowest of them, and the new nodes form one ascending chain ending at the gap's old
  * successor. An updated target keeps its link unless it is also such a predecessor. Each node is written once, in
  * its final form: a node's first declaration continues from the commitment the inventory holds, and a later group
- * that declares it again continues from, and leaves, that final form.
+ * that declares it again continues from, and leaves, that final form. A skipped write writes nothing: its group keeps
+ * the node it names, or the predecessor of a key the list does not hold.
  */
 export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBatchPlan {
   const nodes = readInventory(request.inventory);
   const targets = request.writes.map((write) => ({
     slot: keyToSlotMulti([...write.keys]),
     value: request.encodeValue(write.value),
+    skipped: write.skipped === true,
   }));
   const seen = new Set<string>();
   for (const target of targets) {
@@ -413,7 +423,7 @@ export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBat
   const predecessorOf = new Map<string, MappingNode>();
   const insertsAfter = new Map<string, Uint8Array[]>();
   for (const target of targets) {
-    if (findNode(nodes, target.slot) !== undefined) continue;
+    if (target.skipped || findNode(nodes, target.slot) !== undefined) continue;
     const predecessor = requirePredecessor(nodes, target.slot);
     predecessorOf.set(bytesToHex(target.slot), predecessor);
     const key = bytesToHex(predecessor.slot);
@@ -426,7 +436,8 @@ export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBat
     nextOf.set(key, chain[0]!);
     chain.forEach((slot, index) => nextOf.set(bytesToHex(slot), chain[index + 1] ?? predecessor.nextKey));
   }
-  const valueOf = new Map(targets.map((target) => [bytesToHex(target.slot), target.value]));
+  const valueOf = new Map(targets.filter((target) => !target.skipped)
+    .map((target) => [bytesToHex(target.slot), target.value]));
   const finalOf = (slot: Uint8Array, held: MappingNode | undefined): Uint8Array => {
     const key = bytesToHex(slot);
     return encodeEntryCommitment(slot, nextOf.get(key) ?? held!.nextKey, valueOf.get(key) ?? held!.value);
@@ -448,6 +459,11 @@ export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBat
   };
   const groups = targets.map((target): MappingBatchGroup => {
     const held = findNode(nodes, target.slot);
+    if (target.skipped) {
+      const kept = held ?? requirePredecessor(nodes, target.slot);
+      if (!bytesEqual(finalOf(kept.slot, kept), kept.commitment)) throw mappingSkippedWriteKeepsWrittenNode(kept.slot);
+      return { slot: target.slot, existed: held !== undefined, skipped: true, records: [declare(kept.slot, kept)] };
+    }
     if (held !== undefined) {
       return { slot: target.slot, existed: true, records: [declare(target.slot, held)] };
     }
@@ -459,6 +475,7 @@ export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBat
     };
   });
   const chunks = request.chunkable === undefined ? [] : request.writes.flatMap((write, position) => {
+    if (write.skipped === true) return [];
     const raw = request.chunkable!(write.value);
     if (raw.length <= VALUE_INLINE_LIMIT) return [];
     const root = sha256(raw);

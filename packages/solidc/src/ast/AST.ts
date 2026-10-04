@@ -294,6 +294,7 @@ export interface EntryAccessInfo {
   /**
    * Optional fixed-chunkable activation recipe. Absent means the write is unconditional. When present, the SDK
    * evaluates it against authenticated row arguments and omits continuation bands / write planning when false.
+   * A per-call write a branch guards publishes the condition it runs under (`per-call/master/write-activation.ts`).
    */
   activation?: ExternalCallExpression;
 }

@@ -36,7 +36,8 @@ import {
 } from '@bitauth/libauth';
 import {
   FrameKind, INDEX_NONE, VALUE_INLINE_LIMIT, buildEntryNftCovenantScript, bytesEqual, bytesToHex,
-  computeCollectionHash, decodeTranscript, dynamicChunkSignature, frameKindName, sha256, validatorRedeemScript,
+  computeCollectionHash, decodeTranscript, dynamicChunkSignature, frameKindName, getDefaultStateValue, sha256,
+  validatorRedeemScript,
   type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
@@ -85,6 +86,7 @@ import {
   calleeReadNodesOrNone,
   chainedNodeIds,
   deploymentStateValues,
+  liveMappingValueReader,
   planCalleeWrites,
   planHopExternalCalls,
   reachedResultKey,
@@ -1003,6 +1005,20 @@ export async function deployPerCallProxy(
     functionName: options.initialize.functionName,
     ...(initializeArgs.length === 0 ? {} : { args: initializeArgs }),
     callerLockingBytecode: options.callerLockingBytecode,
+    // A write a branch guards is decided against the state the proxy's genesis mints: every field at its default
+    // but the implementation's address, and every collection empty.
+    activationFacts: {
+      stateValues: {
+        ...Object.fromEntries((implementationArtifact.stateLayout?.variables ?? []).map((variable) => [
+          variable.name, getDefaultStateValue(variable.type, implementationArtifact.stateLayout?.structs),
+        ])),
+        implementation: implementationMaster.address,
+      },
+      selfAddress: proxyMaster.address,
+      readMappingValue: liveMappingValueReader(implementationArtifact, {
+        category: proxyCategory, recordCommitments: [], chunks: [], nodesByCollection: new Map(),
+      }, implementationArtifact.structs),
+    },
   });
   // A head is minted only at genesis and a call never creates one. A delegate frame writes the proxy's records, so
   // the proxy's genesis mints the empty head of every sorted collection the implementation declares, whether or not
@@ -4754,24 +4770,30 @@ export async function callPerCallProxyEntry(
   // The live deployment: the record's commitments give a dynamic value's length, and the category's chunk UTXOs
   // are both a dynamic value's chunks and a mapping value's continuation chunks. `collectionNodes` holds the
   // latter — a mapping node's value chunks sit at their own root-salted covenant, not at the collection's.
+  const liveDeployment = {
+    category: proxyCategory,
+    recordCommitments,
+    chunks: [...proxyPools.chunks, ...proxyPools.collectionNodes],
+    nodesByCollection: proxyPools.nodesByCollection,
+    // A key the entry's write publishes as a state read is the value the delegate frame itself reads on the
+    // proxy's own records, so those records are decoded into the same view its data slots carry.
+    state: deploymentStateValues(proxyArtifact.stateLayout!, options.proxyCategoryId, proxyPools) as
+      Readonly<Record<string, StateValue>>,
+  };
   const writesRequest = {
     artifact: implementationArtifact,
     functionName: options.functionName,
     ...(args.length === 0 ? {} : { args }),
     callerLockingBytecode: options.callerLockingBytecode,
-    liveDeployment: {
-      category: proxyCategory,
-      recordCommitments,
-      chunks: [...proxyPools.chunks, ...proxyPools.collectionNodes],
-      nodesByCollection: proxyPools.nodesByCollection,
-      // A key the entry's write publishes as a state read is the value the delegate frame itself reads on the
-      // proxy's own records, so those records are decoded into the same view its data slots carry.
-      state: deploymentStateValues(proxyArtifact.stateLayout!, options.proxyCategoryId, proxyPools) as
-        Readonly<Record<string, StateValue>>,
-    },
+    liveDeployment,
     // A key the entry only reads beside its batch is one of `readNodes`, which the frame declares kept ahead of the
     // batch's groups, so the batch planner takes a read at its slot as declared rather than refusing it.
     declaredReadSlots: readNodes.map((node) => node.slotIndex),
+    // A write a branch guards is decided from the proxy's records and nodes, the delegate frame's own.
+    activationFacts: {
+      stateValues: liveDeployment.state, selfAddress: proxyMaster.address,
+      readMappingValue: liveMappingValueReader(implementationArtifact, liveDeployment, implementationArtifact.structs),
+    },
   } as const;
   // An entry whose element the artifact cannot state still writes the value's byte length into the record, so the
   // run it grows is re-planned from the commitment the plan states: the first attempt lays it at the live width,

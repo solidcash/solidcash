@@ -309,8 +309,10 @@ import {
   ORIGIN_FRAME_SLOT, SENDER_FRAME_SLOT,
 } from '../per-call/master/support.js';
 import {
-  BATCH_DERIVATION_SLOT_ORDER, BATCH_EXTRA_RECORDS_SLOT, batchDerivationSlotName, buildBatchTargetsDerivationScript,
+  BATCH_DERIVATION_SLOT_ORDER, BATCH_EXTRA_RECORDS_SLOT, SKIPPED_TARGET_SENTINEL, batchDerivationSlotName,
+  buildBatchTargetsDerivationScript,
 } from '../per-call/master/batch-witness-derivation.js';
+import { isAlwaysActive, perCallWriteActivation } from '../per-call/master/write-activation.js';
 import { assertP2pkhShapeScript, countMastersScript, type MasterCallSite } from '../per-call/master/frame-tail.js';
 import { genesisSpendCheck } from '../per-call/master/prologue.js';
 
@@ -2141,6 +2143,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Fixed sorted-write slots under a branch/switch arm (or a helper reached from one). Each carries a runtime "write
   // ran" flag, and the epilogue preserves the co-spent node where the write did not run. Direct convention only.
   private conditionalSortedWriteFlagSlots: Set<number> = new Set();
+  // The flagged slots of a per-call master whose write the body does not make wherever it reaches it: a frame may
+  // declare such a write skipped, and its access publishes the condition it runs under.
+  private perCallSkippableSlots: Set<number> = new Set();
   // Multi-slot sorted batches (`m[a] -= v; m[b] += v`) under a branch arm, keyed by lowest slot -> target slots. The
   // topology verifier pins slot/next, not value, and the per-slot flag above cannot follow a relinked predecessor, so
   // one "batch ran" flag gates whole-batch node preservation on the arm not taken: the direct epilogue, or a per-call
@@ -4121,9 +4126,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       leadingRecords: this.perCallRecordsBeforeGroups(),
       ...(ownerOrdinal === undefined ? {} : { recordsOwnerOrdinal: ownerOrdinal }),
     };
+    // A target whose write a branch guards may be declared skipped, as one kept record that is not its node.
+    const skippableTargets = slots.flatMap((slot, position) => (this.perCallSkippableSlots.has(slot) ? [position] : []));
     const script = buildBatchTargetsDerivationScript({
       keyDepths,
       ...derivation,
+      ...(skippableTargets.length === 0 ? {} : { skippableTargets }),
       ...(this.perCallBatchWriteRuntime
         ? { segmentFromDeclaredCallCount: true }
         : { segmentIndex: this.perCallBatchWriteSegment }),
@@ -7782,6 +7790,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.transfersPreallocatedAtFunctionStart = false;
     this.condDeleteSlots = new Set();
     this.conditionalSortedWriteFlagSlots = new Set();
+    this.perCallSkippableSlots = new Set();
     this.conditionalSortedBatchFlags = new Map();
     this.preAllocatedDynamicWrites = new Set();
     this.conditionalTransferIndices = new Set();
@@ -25019,9 +25028,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // that hash even though the write body (which normally consumes it) is skipped. Leaving it behind widens
         // the runtime stack and eventually corrupts the caller's frame. Balance the guard at its source.
         this.emit(Op.OP_ELSE, loc);
-        if (keptValue) {
-          // The hash holds the kept value's place, and the arm fails: a per-call frame derives every target's
-          // predecessor output, which never reads as an inactive row, so no read can take the hash as the value.
+        if (keptValue || this.perCallSkippableSlots.has(slotIndex)) {
+          // The hash holds the kept value's place, and the arm fails: a per-call frame derives an inactive row only
+          // for a write a branch guards whose group its frame declares skipped, so a write that runs refuses that
+          // declaration, and no read can take the hash as the value.
           this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc);
         } else {
           this.emit(Op.OP_DROP, loc);
@@ -28498,6 +28508,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * view the target's group begins with, read once. An update keeps the node's link. An insert's relink is the end
    * view the segment declares at the predecessor's output, which sits at the collection's covenant, carries the
    * contract's mutable token, and keeps the proof's slot and value with the target as its successor.
+   *
+   * A write a branch guards may not run. Its node is then kept, and a key the list does not hold gets no node: the
+   * group declares the kept predecessor alone, which the derivation reads as skipped, and an insert is refused.
    */
   private emitPerCallSingleTargetTransition(
     slot: number, collectionHash: Uint8Array, loc: SingleLocationData,
@@ -28513,6 +28526,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(field === 'next' ? Op.OP_DROP : Op.OP_NIP, loc);
     };
     const predOut = `__internal__vmapBatchPredOut_${slot}`;
+    // A write a branch guards carries a flag the write sets, and where the body does not make it wherever it reaches
+    // it, its group may declare it skipped.
+    const flagIndex = this.conditionalSortedWriteFlagSlots.has(slot)
+      ? this.getStackIndex(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot), true) : -1;
+    const skippable = flagIndex >= 0 && this.perCallSkippableSlots.has(slot);
+    if (skippable) {
+      // A group declared skipped is one kept record, whose write site refuses it where the write ran.
+      arg(predOut); this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc); this.emit(Op.OP_NUMEQUAL, loc);
+      this.emit(Op.OP_NOTIF, loc);
+    }
     arg(`__internal__vmapBatchProof_${slot}`);
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_ADD, loc);
@@ -28524,36 +28547,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // UPDATE: no predecessor is relinked.
     arg(predOut); this.emit(Op.OP_1NEGATE, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
     // A conditional write that did not run (its flag clear) leaves the node it spends unchanged.
-    if (this.conditionalSortedWriteFlagSlots.has(slot)) {
-      const flagIndex = this.getStackIndex(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot), true);
-      if (flagIndex >= 0) {
-        this.emit(encodeInt(BigInt(flagIndex)), loc);
-        this.emit(Op.OP_PICK, loc);
-        this.emit(Op.OP_NOTIF, loc);
-        // The node is the one the group's proof names, not whichever record the frame's declaration happens to put
-        // at the slot's position: a target the frame continues is named by the output it was created at, and the
-        // group's own proof carries that coordinate. A node the frame spends is held to the commitment it was spent
-        // with; one it continues has no input, so its output is held to the view the declaration gives the node.
-        arg(`__internal__vmapBatchProof_${slot}`);
-        this.emitMasterInputIndex(loc);
-        this.emit(Op.OP_ADD, loc);
-        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
-        this.emit(Op.OP_IF, loc);
-        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc);
-        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
-        this.emit(Op.OP_SWAP, loc);
-        this.emit(bytecodeToScript(declaredRecordFirstViewByNameScript(this.declaredViewCounts(loc))), loc);
-        this.emit(Op.OP_EQUALVERIFY, loc);
-        this.emit(Op.OP_ELSE, loc);
-        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-        this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
-        this.emit(Op.OP_EQUALVERIFY, loc);
-        this.emit(Op.OP_ENDIF, loc);
-        this.emit(Op.OP_ENDIF, loc);
-      }
+    if (flagIndex >= 0) {
+      this.emit(encodeInt(BigInt(flagIndex)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_NOTIF, loc);
+      // The node is the one the group's proof names, not whichever record the frame's declaration happens to put
+      // at the slot's position: a target the frame continues is named by the output it was created at, and the
+      // group's own proof carries that coordinate. A node the frame spends is held to the commitment it was spent
+      // with; one it continues has no input, so its output is held to the view the declaration gives the node.
+      arg(`__internal__vmapBatchProof_${slot}`);
+      this.emitMasterInputIndex(loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc);
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(bytecodeToScript(declaredRecordFirstViewByNameScript(this.declaredViewCounts(loc))), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_ENDIF, loc);
     }
     this.emit(Op.OP_ELSE, loc);
-    // INSERT: the predecessor's output, at the collection's covenant with the contract's mutable token.
+    // INSERT: the predecessor's output, at the collection's covenant with the contract's mutable token. A write
+    // that did not run creates no node.
+    if (skippable) {
+      this.emit(encodeInt(BigInt(flagIndex)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_VERIFY, loc);
+    }
     arg(predOut); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);
     this.emit(Op.OP_OUTPUTBYTECODE, loc);
@@ -28570,6 +28594,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
+    if (skippable) this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -42709,6 +42734,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slotIndex));
       this.conditionalSortedWriteFlagSlots.add(slotIndex);
+      // A per-call frame may skip a flagged write the body does not make wherever it reaches it, so its access
+      // publishes the condition the write runs under. A constructor arm completes only in the genesis derivation
+      // (no spend of a live master is its category's genesis), which mints a key no run wrote at its unwritten
+      // value, so it keeps the transition that allows it.
+      const activation = this.perCallMaster && node.name !== '__construct'
+        ? perCallWriteActivation(node, slotIndex, this.constantExpressions) : undefined;
+      if (activation !== undefined && !isAlwaysActive(activation)) {
+        info.activation = activation;
+        this.perCallSkippableSlots.add(slotIndex);
+      }
     }
   }
 

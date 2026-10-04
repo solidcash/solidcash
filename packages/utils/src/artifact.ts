@@ -1096,6 +1096,12 @@ export interface EntryAccessAbi {
   /**
    * Optional fixed-chunkable activation recipe. Absent means the write is unconditional. When present, the SDK
    * evaluates it against authenticated row arguments and omits continuation bands / write planning when false.
+   *
+   * A per-call body publishes one for a write a branch guards, which its frame lets the body skip: the predicates
+   * on the write's path, read where each branch starts, in a call site's `condition` language. A builder decides it
+   * from the frame's own facts and declares the write only where it runs; a skipped write keeps its node, or its
+   * absent key's predecessor. `{ kind: 'unsupported' }` marks a write the frame may skip under a condition those
+   * facts do not decide.
    */
   activation?: ExternalCallExpression;
 }

@@ -93,6 +93,7 @@ import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
 } from '../deploy/index.js';
+import { deploymentActivationFacts } from './activation-facts.js';
 import {
   adjacentRecordOrder, callEntryRecords, frameDataRecordIndices, loopRecordSpans, namedDataRecordIndices,
   orderLoopKeyArgs, placeRecordsBySpan, type LaidCallEntryRecords, type LoopRecordSpan,
@@ -534,6 +535,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     callerLockingBytecode: options.callerLockingBytecode,
     categoryId,
     nodesByCollection: deployment.nodesByCollection,
+    activationFacts: deploymentActivationFacts(artifact, categoryId, deployment, deployed.address),
   });
   const mappingIds = mappingRecords?.participantIds ?? [];
 
@@ -676,6 +678,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
           callerLockingBytecode: deployed.address,
           categoryId: external.categoryId,
           nodesByCollection: set.nodesByCollection,
+          activationFacts: deploymentActivationFacts(external.artifact, external.categoryId, set, lock),
         }),
         segmentCount: bodySites?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1,
         transferPosition,

@@ -36,10 +36,10 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * entry up to the call, reads what its close of the node rebuilt (or the whole value its write plan states, or its
  * chunk pin exposed), and plans the call again from it. The bytes only fill the plan: the entry's own close compares
  * the node it rebuilds with the view the transaction declares and its own call data with the record the call carries,
- * so a forged value is refused. A write on the side of a branch the entry takes is served; the side that skips it
- * never closes the node the plan writes, so it keeps its refusal by name. `Relay`, which reaches the ledger as a
- * callee, keeps the ledger's own computed write refused by name too: only the hop's own entry is settled up to a site
- * before the site is planned.
+ * so a forged value is refused. A write on either side of a branch is served: the write publishes the condition it
+ * runs under, so the side that skips it plans no write and the call reads the value the node keeps. `Relay`, which
+ * reaches the ledger as a callee, keeps the ledger's own computed write refused by name: only the hop's own entry is
+ * settled up to a site before the site is planned.
  */
 
 /** A 32-byte category or txid that is neither one repeated byte nor a palindrome, taken from its label. */
@@ -424,15 +424,18 @@ describe('a call a root entry routes through a mapping value its own body comput
     expect(await sinkView(world, 'amountOf', [12n])).toBe(5n);
   }, 600_000);
 
-  it('serves a write on the side of a branch the entry takes, and refuses by name the side it skips', async () => {
+  it('serves a write on the side of a branch the entry takes, and the side it skips', async () => {
     const world = await deployed();
     await settle(world, 'setAmount', [5n, 40n]);
     await settle(world, 'maybeBumpThenRelay', [5n, true]);
     expect(await sinkView(world, 'amountOf', [5n])).toBe(41n);
     expect(await ledgerValue(world, 'amounts', [5n])).toBe(41n);
-    // The arm that skips the write never closes the node the plan writes, so its settle shows no bytes for it.
-    await expectRefused(world, 'maybeBumpThenRelay', [5n, false], unstatedWriteRefusal('ISink.takeAmount', 'amounts'));
-    expect(await ledgerValue(world, 'amounts', [5n])).toBe(41n);
+    // The write publishes the condition it runs under, so the arm that skips it plans no write and the call reads
+    // the value the node keeps.
+    await settle(world, 'setAmount', [6n, 60n]);
+    await settle(world, 'maybeBumpThenRelay', [6n, false]);
+    expect(await sinkView(world, 'amountOf', [6n])).toBe(60n);
+    expect(await ledgerValue(world, 'amounts', [6n])).toBe(60n);
   }, 600_000);
 
   it('refuses a forged value: the entry closes the node it rebuilt and checks its own call data', async () => {

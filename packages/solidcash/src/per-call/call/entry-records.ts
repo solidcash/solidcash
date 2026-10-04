@@ -48,6 +48,7 @@ import { createUnlockingBytecode } from '../../utils.js';
 import type { DraftInput, DraftRecordEntry, DraftSourceOutput, DraftToken } from '../composer/draft.js';
 import { planMappingBatch, type MappingBatchPlan, type MappingNodePlacement } from '../composer/mapping-plan.js';
 import { entryRecordLockingBytecode, entryRecordReadUnlock } from '../deploy/records.js';
+import { writeRuns, type WriteActivationFacts } from '../proxy/write-activation.js';
 
 /** Raised when a call's mapping records cannot be planned from the artifact and the deployment. */
 export class PerCallCallRecordError extends Error {
@@ -74,6 +75,11 @@ export interface CallEntryRecordsRequest {
   readonly categoryId: string;
   /** Each sorted collection's live nodes, as the deployment's own classification reports them. */
   readonly nodesByCollection: ReadonlyMap<string, readonly Utxo[]>;
+  /**
+   * The frame's facts a write a branch guards is decided from, beside its arguments and its sender (`writeRuns`).
+   * Absent leaves every such write undecided: planned as written where the key's node exists, refused where not.
+   */
+  readonly activationFacts?: WriteActivationFacts;
 }
 
 /** The coordinates and values one segment's mapping records need. */
@@ -909,7 +915,11 @@ function planCallMappingBatch(
     return new Uint8Array(1);
   };
   // One target's write, the value a batch plans with a one-byte placeholder: only the plan's structure depends on it.
-  const targetWrite = (slotIndex: number): { keys: Uint8Array[]; value: Uint8Array } => {
+  // A write a branch guards is declared only where its condition holds on the frame's facts; one those facts do not
+  // decide is planned as written, its node's end view learned from whichever check the body stops at, where the
+  // key's node exists, and refused below where it does not.
+  const undecided: Uint8Array[] = [];
+  const targetWrite = (slotIndex: number): { keys: Uint8Array[]; value: Uint8Array; skipped?: boolean } => {
     const access = accesses.find((candidate) => candidate.slotIndex === slotIndex)!;
     const operations = access.operations;
     const changes = operations.filter((operation) => operation !== 'read');
@@ -919,11 +929,27 @@ function planCallMappingBatch(
         + 'call plans one write per target',
       );
     }
-    return { keys: [...resolveKeys(request, fn, access, structs)], value: new Uint8Array(1) };
+    const keys = [...resolveKeys(request, fn, access, structs)];
+    const runs = writeRuns({
+      artifact: request.artifact, functionName: request.functionName, args: request.args,
+      senderAddress: request.callerLockingBytecode,
+      ...(request.activationFacts === undefined ? {} : { facts: request.activationFacts }),
+    }, access.activation);
+    if (runs === undefined) undecided.push(keyToSlotMulti(keys));
+    return { keys, value: new Uint8Array(1), ...(runs === false ? { skipped: true } : {}) };
   };
   const writes = run !== undefined
     ? run.flatMap((each) => each.turns.map((turn) => ({ keys: [...turn.keys], value: storedValue(each) })))
     : batch!.slotIndices.map((slotIndex) => targetWrite(slotIndex));
+  const absent = undecided.find((slot) => !inventory.some((commitment) =>
+    bytesEqual(decodeEntryCommitment(commitment).slot, slot)));
+  if (absent !== undefined) {
+    throw new PerCallCallRecordError(
+      `entry "${request.functionName}" writes mapping "${collection.name}" under a condition this call cannot decide `
+      + 'from the frame\'s facts, at a key the collection does not hold, so it cannot declare whether the write '
+      + 'creates the key\'s node',
+    );
+  }
   // The value is the body's to compute, so a one-byte placeholder fixes only the plan's structure: the slots, the
   // successor links and which targets are inserts. Every commitment that depends on the value is left unstated and
   // learned from the body's own close.
@@ -1083,7 +1109,9 @@ export function callEntryRecords(request: CallEntryRecordsRequest): CallEntryRec
   }
   const spent = batch.plan.written.filter((node) => node.existed);
   const created = batch.plan.written.filter((node) => !node.existed);
-  const targetSlots = new Set(batch.plan.groups.map((group) => bytesToHex(group.slot)));
+  // A skipped write's group keeps its one record, whose end view the plan states.
+  const targetSlots = new Set(batch.plan.groups.filter((group) => group.skipped !== true)
+    .map((group) => bytesToHex(group.slot)));
   const slotHex = (slot: Uint8Array): string => bytesToHex(slot);
   const spentUtxos = new Map<string, Utxo>();
   for (const node of spent) {

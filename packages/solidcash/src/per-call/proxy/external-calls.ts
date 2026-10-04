@@ -1307,7 +1307,8 @@ async function planEntryCalls(
   const root = path === '';
   const ownWrites = statedMappingWrites(
     caller.artifact, caller.functionName, caller.args, caller.senderAddress, caller.stateValues,
-    root ? (collection, slot) => ctx.calleeWriteValues?.get(entryWriteValueKey(collection, slot)) : undefined);
+    root ? (collection, slot) => ctx.calleeWriteValues?.get(entryWriteValueKey(collection, slot)) : undefined,
+    caller.readMappingValue);
 
   // Pass one: resolve every site of this entry from the caller's own facts and the results learned for its earlier
   // calls, so the plan is refused for its own shape before any live record is read. A site that reads a result no
@@ -1646,6 +1647,10 @@ function calleeEntryWrites(
       // A node is the contract's, not the reach's: every reach that touches it names the same participant.
       nodeIdOf: (collection, slot) => sharedNodeId(categoryId, collection, slot),
       ...(learnedValue === undefined ? {} : { learnedValue }),
+      // A write a branch guards is decided from the state and the nodes the reaches before this one left.
+      activationFacts: {
+        stateValues: live.state ?? {}, readMappingValue: liveMappingValueReader(artifact, live, artifact.structs),
+      },
     });
   } catch (error) {
     const fn = artifact.abi.find((candidate) => candidate.name === functionName);
@@ -2013,7 +2018,8 @@ async function placeCalleeMasters(
     // A node this reach creates is one the reaches placed after it have to be told about: it is in no deployment,
     // and only this frame's output carries it. A node it rewrites holds bytes the deployment does not.
     recordWrittenNodes(ctx, categoryId, writes, ctx.calleeWriteViews?.get(master), statedMappingWrites(
-      external.artifact, entry.name, call.argumentValues, caller.selfAddress, stateValues));
+      external.artifact, entry.name, call.argumentValues, caller.selfAddress, stateValues, undefined,
+      readMappingValue));
     await calleeSideCars(ctx, master, external.artifact, entry.name, call.argumentPushes);
     const frame: HopCallee = {
       master,
@@ -2212,7 +2218,8 @@ async function placeProxiedCallee(
     // A node this reach creates or rewrites is one the reaches placed after it have to be told about, as a call
     // frame's is, with the views a settle learned for the delegate frame that writes it.
     recordWrittenNodes(ctx, external.categoryId, implementationWrites, ctx.calleeWriteViews?.get(implementationMaster),
-      statedMappingWrites(external.artifact, entry.name, call.argumentValues, caller.selfAddress, stateValues));
+      statedMappingWrites(external.artifact, entry.name, call.argumentValues, caller.selfAddress, stateValues,
+        undefined, readMappingValue));
     await calleeSideCars(ctx, implementationMaster, external.artifact, entry.name, call.argumentPushes);
     const implementationBaseFrame: HopCallee = {
       master: implementationMaster,

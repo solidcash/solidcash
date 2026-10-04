@@ -28,8 +28,10 @@ import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js
 import { decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
 import { accessKeySlot, planCallLoopWrites, type CallLoopWritePlan } from '../call/entry-records.js';
+import type { MappingValueReader } from './call-resolution.js';
 import { isWholeNodeValue, type HopEntryWrites } from './entry-writes.js';
 import { PerCallProxyDeployError } from './errors.js';
+import { writeRuns } from './write-activation.js';
 
 /** One mapping write a frame's own entry makes, with the node it targets and the bytes it leaves there. */
 export interface StatedMappingWrite {
@@ -131,7 +133,8 @@ function loopValue(
 /**
  * Every mapping write a frame's own entry makes, with the slot each targets and the bytes each leaves, as the entry's
  * published accesses and loops state them from the frame's own arguments, sender and state, or, for a write they
- * leave unstated at a key they determine, as `learned` holds them.
+ * leave unstated at a key they determine, as `learned` holds them. A write a branch guards that those facts, and the
+ * mapping values `readMappingValue` reads, decide the body skips is no write: it leaves its node as it found it.
  */
 export function statedMappingWrites(
   artifact: Artifact,
@@ -140,6 +143,7 @@ export function statedMappingWrites(
   senderAddress: Uint8Array | undefined,
   state: Readonly<Record<string, unknown>>,
   learned?: LearnedWriteValue,
+  readMappingValue?: MappingValueReader,
 ): readonly StatedMappingWrite[] {
   const fn = artifact.abi.find((candidate) => candidate.name === functionName);
   if (fn === undefined) return [];
@@ -161,8 +165,13 @@ export function statedMappingWrites(
       return { collection: loop.collection, slot, ...(value === undefined ? {} : { value }) };
     });
   });
+  const frame = {
+    artifact, functionName, args, senderAddress: request.callerLockingBytecode,
+    facts: { stateValues: state, ...(readMappingValue === undefined ? {} : { readMappingValue }) },
+  };
   const accesses = (fn.entryAccesses ?? [])
     .filter((access) => access.operations.some((operation) => operation !== 'read'))
+    .filter((access) => writeRuns(frame, access.activation) !== false)
     .flatMap((access): StatedMappingWrite[] => {
       const slot = accessKeySlot(request, access);
       // A loop's access names its key by the loop's counter, so the loop's turns are its writes.

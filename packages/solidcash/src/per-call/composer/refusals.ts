@@ -123,6 +123,17 @@ export function mappingBatchWritesCreatedNode(slot: Uint8Array): PerCallComposer
   );
 }
 
+/**
+ * A skipped write keeps a node another write of its batch changes. Its group declares that node kept, so the
+ * batch would declare one node both kept and written.
+ */
+export function mappingSkippedWriteKeepsWrittenNode(slot: Uint8Array): PerCallComposerError {
+  return new PerCallComposerError(
+    'PER_CALL_MAPPING_UNPLANNABLE',
+    `a skipped mapping write keeps the node at slot ${bytesToHex(slot)}, which another write of its batch changes`,
+  );
+}
+
 /** A long value's chunk has no output in the layout to be created at. */
 export function mappingChunkOutputUnavailable(slot: Uint8Array, index: number): PerCallComposerError {
   return new PerCallComposerError(

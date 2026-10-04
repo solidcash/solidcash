@@ -188,18 +188,18 @@ export function findDeploymentByLockingBytecode(
 }
 
 /**
- * Resolve the canonical 20-byte address carried by imported-Solidity ABI values.
+ * Enumerate deployments matching the canonical 20-byte address carried by imported-Solidity ABI values.
  *
  * This is intentionally separate from `findDeploymentByLockingBytecode`: a 20-byte Solidity identity is not a
- * Bitcoin Cash locking bytecode. More than one matching deployment is ambiguous and therefore unresolved.
+ * Bitcoin Cash locking bytecode. Callers must not silently choose one of multiple matching deployments.
  */
-export function findDeploymentBySolidityAddressPayload(
+export function matchingDeploymentsBySolidityAddressPayload(
   provider: NetworkProvider, payload: Uint8Array,
-): RegisteredDeployment | undefined {
-  if (payload.length !== 20) return undefined;
+): RegisteredDeployment[] {
+  if (payload.length !== 20) return [];
   const wanted = binToHex(payload);
   const current = deployments.get(provider) ?? [];
-  const matches = current.filter((deployment) => {
+  return current.filter((deployment) => {
     const candidates = new Set<string | undefined>([
       registeredExecutionLockingBytecode(deployment), deployment.lockingBytecode,
     ]);
@@ -212,6 +212,13 @@ export function findDeploymentBySolidityAddressPayload(
       return narrowed !== undefined && binToHex(narrowed) === wanted;
     });
   });
+}
+
+/** Resolve one unambiguous registered deployment for a Solidity ABI address. */
+export function findDeploymentBySolidityAddressPayload(
+  provider: NetworkProvider, payload: Uint8Array,
+): RegisteredDeployment | undefined {
+  const matches = matchingDeploymentsBySolidityAddressPayload(provider, payload);
   return matches.length === 1 ? matches[0] : undefined;
 }
 

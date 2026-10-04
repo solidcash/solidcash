@@ -1,4 +1,5 @@
-import type { ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression, StructDefinitionInfo } from '@solidcash/utils';
+import { binToHex } from '@bitauth/libauth';
+import { hash160, type ArgSource, type Artifact, type ExternalCallAbi, type ExternalCallExpression, type StructDefinitionInfo } from '@solidcash/utils';
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import type { FunctionArgument } from '../../src/Argument.js';
 import { evaluateExternalExpression } from '../../src/stateful/sc-evaluate-external-expression.js';
@@ -7,6 +8,7 @@ import {
   resolveExternalExpressionReturns, type ResolveExternalExpressionReturnsHost,
 } from '../../src/stateful/sc-resolve-external-expression-returns.js';
 import { createGraphPlanningProducerResultContext } from '../../src/stateful/graph-planning-producer-result.js';
+import { registerDeployment } from '../../src/stateful/deployment-registry.js';
 import {
   DeferredTransitiveReturnProbeError,
 } from '../../src/stateful/sc-discover-create-builder-transitive-external-calls.js';
@@ -17,23 +19,29 @@ type ProvisionalFixture = {
   derive: Mock<() => Promise<FunctionArgument>>;
   resolve: (provisional?: boolean) => Promise<FunctionArgument | undefined>;
   unavailable: Error;
+  provider: ReturnType<typeof createTestProvider>;
+  producer: StatefulContract;
 };
 
 function fixture(
   type: string, structs: StructDefinitionInfo[] = [],
   unavailable: Error = new Error('Could not derive the return value of the selected producer'),
+  target?: Uint8Array,
+  calleeLockingBytecode = '51',
+  unresolvedTarget = false,
 ): ProvisionalFixture {
   const artifact = { abi: [], constructorInputs: [], structs } as unknown as Artifact;
   const derive = vi.fn(async (): Promise<FunctionArgument> => { throw unavailable; });
   const producer = {
-    inner: { artifact, lockingBytecode: '51' }, categoryId: '01'.repeat(32),
+    inner: { artifact, lockingBytecode: calleeLockingBytecode }, categoryId: '01'.repeat(32),
     _deriveReturnValue: derive, _resolveExternalArgs: () => [],
     _resolveCallAbi: () => ({ name: 'compute', inputs: [], outputs: [{ type }] }),
   } as unknown as StatefulContract;
   const registry = new Map([['ISource', producer]]);
   const owner = { inner: { artifact }, _externalRegistry: registry } as unknown as StatefulContract;
+  const provider = createTestProvider();
   const host: ResolveExternalExpressionReturnsHost & ResolveExternalArgsHost = {
-    inner: { artifact, encodedConstructorArgs: [], provider: createTestProvider(), lockingBytecode: '51' },
+    inner: { artifact, encodedConstructorArgs: [], provider, lockingBytecode: '51' },
     categoryId: '00'.repeat(32), externalRegistry: registry, asCallerContract: () => owner,
     resolveExternalArgs: (...args) => resolveExternalArgs(host, ...args),
     evaluateExternalExpression: (...args) => evaluateExternalExpression(host, ...args),
@@ -42,14 +50,17 @@ function fixture(
   const sources: ArgSource[] = [{ kind: 'expression', expression }];
   const calls: ExternalCallAbi[] = [{
     interfaceName: 'ISource', functionName: 'compute', callsiteId: 0,
+    ...(unresolvedTarget
+      ? { addressSource: { kind: 'constructorArg' as const, paramName: 'missing' } }
+      : target ? { addressSource: { kind: 'forward' as const, paramIndex: 0 } } : {}),
     argSources: [], returnTypes: [type], hasReturnValues: true, requiredDataNftIndices: [],
   }];
   const context = createGraphPlanningProducerResultContext();
   const resolve = async (provisional = true): Promise<FunctionArgument | undefined> => (
-    await resolveExternalExpressionReturns(host, sources, [], owner, {}, [], undefined,
+    await resolveExternalExpressionReturns(host, sources, target ? [target] : [], owner, {}, [], undefined,
       calls, provisional, context)
   ).get(JSON.stringify(expression));
-  return { derive, resolve, unavailable };
+  return { derive, resolve, unavailable, provider, producer };
 }
 
 describe('provisional aggregate producer results', () => {
@@ -58,6 +69,40 @@ describe('provisional aggregate producer results', () => {
     expect(await test.resolve()).toEqual([0n, 0n, 0n]);
     await expect(test.resolve(false)).rejects.toBe(test.unavailable);
     expect(test.derive).toHaveBeenCalledTimes(2);
+  });
+
+  it('respects explicit callee address identity when probing producer results', async () => {
+    const unknown = fixture('uint256', [], new Error('wrong callee was probed'), Uint8Array.of(0x52));
+    expect(await unknown.resolve(false)).toBeUndefined();
+    expect(unknown.derive).not.toHaveBeenCalled();
+
+    const matchedError = new Error('matched callee was probed');
+    const matched = fixture('uint256', [], matchedError, Uint8Array.of(0x51));
+    await expect(matched.resolve(false)).rejects.toBe(matchedError);
+    expect(matched.derive).toHaveBeenCalledOnce();
+
+    const p2sh32 = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87);
+    const projectedError = new Error('projected callee was probed');
+    const projected = fixture('uint256', [], projectedError, hash160(p2sh32), binToHex(p2sh32));
+    await expect(projected.resolve(false)).rejects.toBe(projectedError);
+    expect(projected.derive).toHaveBeenCalledOnce();
+
+    const ambiguous = fixture('uint256', [], new Error('ambiguous callee was probed'),
+      hash160(p2sh32), binToHex(p2sh32));
+    const payload = binToHex(hash160(p2sh32));
+    registerDeployment(ambiguous.provider, {
+      contractName: 'Source', address: 'first', lockingBytecode: binToHex(p2sh32), contract: ambiguous.producer,
+    });
+    registerDeployment(ambiguous.provider, {
+      contractName: 'Other', address: 'second', lockingBytecode: `a914${payload}87`, contract: {},
+    });
+    expect(await ambiguous.resolve(false)).toBeUndefined();
+    expect(ambiguous.derive).not.toHaveBeenCalled();
+
+    const unresolved = fixture('uint256', [], new Error('unresolved callee was probed'),
+      undefined, '51', true);
+    expect(await unresolved.resolve(false)).toBeUndefined();
+    expect(unresolved.derive).not.toHaveBeenCalled();
   });
 
   it('defers an unmaterializable transitive return probe only while graph planning is provisional', async () => {

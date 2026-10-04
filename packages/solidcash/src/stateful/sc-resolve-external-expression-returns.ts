@@ -17,10 +17,11 @@ import {
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { visitExternalExpressionEvaluationPath } from '../message-bus/result-evaluation-path.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { lockingBytecodeToSolidityAddressPayload, tryCashAddressToLockScript } from '../utils.js';
 import {
-  findDeploymentByAddress,
-  findDeploymentByLockingBytecode,
+  findDeploymentByAddressValue,
   findDeploymentByName,
+  matchingDeploymentsBySolidityAddressPayload,
 } from './deployment-registry.js';
 import { DeferredTransitiveReturnProbeError } from './sc-discover-create-builder-transitive-external-calls.js';
 import { encodeExternalReturnValues } from './external-return-encoding.js';
@@ -43,6 +44,55 @@ function isStatefulContract(value: unknown): value is StatefulContract {
     && 'categoryId' in value
     && typeof (value as { _deriveReturnValue?: unknown })._deriveReturnValue === 'function'
     && typeof (value as { _resolveExternalArgs?: unknown })._resolveExternalArgs === 'function';
+}
+
+function addressBytes(value: string | Uint8Array): Uint8Array | undefined {
+  if (value instanceof Uint8Array) return value;
+  try {
+    const cashaddr = tryCashAddressToLockScript(value);
+    if (cashaddr) return cashaddr;
+  } catch { return undefined; }
+  return /^(?:0x)?(?:[0-9a-f]{2})+$/iu.test(value)
+    ? hexToBin(value.replace(/^0x/iu, '')) : undefined;
+}
+
+function solidityPayload(bytes: Uint8Array): Uint8Array | undefined {
+  if (bytes.length === 20) return bytes;
+  if (bytes.length === 32 && bytes.subarray(0, 12).every((byte) => byte === 0)) {
+    return bytes.subarray(12);
+  }
+  return undefined;
+}
+
+function connectedContractMatchesAddress(contract: unknown, target: string | Uint8Array): boolean {
+  if (typeof contract !== 'object' || contract === null) return false;
+  const wanted = addressBytes(target);
+  if (!wanted) return false;
+  const connected = contract as {
+    inner?: { lockingBytecode?: string };
+    implementation?: { inner?: { lockingBytecode?: string } };
+    proxy?: { inner?: { lockingBytecode?: string }; _logicalAddress?: string };
+    _logicalAddress?: string;
+    address?: string;
+  };
+  const identities = [
+    connected.inner?.lockingBytecode,
+    connected.implementation?.inner?.lockingBytecode,
+    connected.proxy?.inner?.lockingBytecode,
+    connected._logicalAddress,
+    connected.proxy?._logicalAddress,
+    connected.address,
+  ];
+  const payload = solidityPayload(wanted);
+  const wantedHex = binToHex(wanted);
+  const payloadHex = payload && binToHex(payload);
+  return identities.some((identity) => {
+    const bytes = identity && addressBytes(identity);
+    if (!bytes) return false;
+    if (binToHex(bytes) === wantedHex) return true;
+    const projected = payload && lockingBytecodeToSolidityAddressPayload(bytes);
+    return projected !== undefined && binToHex(projected) === payloadHex;
+  });
 }
 
 export interface ResolveExternalExpressionReturnsHost {
@@ -149,16 +199,28 @@ export async function resolveExternalExpressionReturns(
   ): StatefulContract | {
       forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
     } | undefined => {
-    const deploymentAtTarget = typeof target === 'string'
-      ? (findDeploymentByAddress(host.inner.provider, target)
-        ?? findDeploymentByLockingBytecode(host.inner.provider, target))?.contract
-      : target instanceof Uint8Array
-        ? findDeploymentByLockingBytecode(host.inner.provider, binToHex(target))?.contract
-        : undefined;
-    return (deploymentAtTarget
-      ?? (registryOwner as unknown as { _externalRegistry: Map<string, StatefulContract> })
-        ._externalRegistry.get(interfaceName)
-      ?? host.externalRegistry.get(interfaceName)
+    const connected = [
+      (registryOwner as unknown as { _externalRegistry: Map<string, StatefulContract> })
+        ._externalRegistry.get(interfaceName),
+      host.externalRegistry.get(interfaceName),
+    ];
+    // A published target address is authoritative. An interface-name binding may supply the instance only
+    // when it identifies that same address; otherwise a return probe would execute an unrelated callee.
+    if (target !== undefined) {
+      if (typeof target !== 'string' && !(target instanceof Uint8Array)) return undefined;
+      const deployed = findDeploymentByAddressValue(host.inner.provider, target);
+      if (deployed) return deployed.contract as StatefulContract;
+      const targetBytes = addressBytes(target);
+      const payload = targetBytes && solidityPayload(targetBytes);
+      if (payload && matchingDeploymentsBySolidityAddressPayload(host.inner.provider, payload).length > 1) {
+        return undefined;
+      }
+      return connected.find((candidate) => connectedContractMatchesAddress(candidate, target)) as StatefulContract | {
+        forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
+      } | undefined;
+    }
+    return (connected[0]
+      ?? connected[1]
       ?? findDeploymentByName(host.inner.provider, interfaceName)?.contract) as StatefulContract | {
       forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
     } | undefined;
@@ -211,6 +273,8 @@ export async function resolveExternalExpressionReturns(
         : ec.addressStateVar !== undefined
           ? fnState?.[ec.addressStateVar] as FunctionArgument | undefined
           : ec.addressLiteral;
+      if ((ec.addressSource || ec.addressStateVar !== undefined || ec.addressLiteral !== undefined)
+        && resolvedTarget === undefined) return undefined;
       const child = registeredTarget(ec.interfaceName, resolvedTarget);
       // One unresolvable participant makes the whole frame unrepresentable: a partial list would leave that
       // slot's coordinates at the sentinel AND shift every later participant's physical block.
@@ -358,7 +422,11 @@ export async function resolveExternalExpressionReturns(
           occurrenceIndex, false, executionSelfAddress,
           executionCallerAddress,
         )?.[0]
-        : undefined;
+        : producer.addressStateVar !== undefined
+          ? state?.[producer.addressStateVar] as FunctionArgument | undefined
+          : producer.addressLiteral;
+      if ((producer.addressSource || producer.addressStateVar !== undefined
+        || producer.addressLiteral !== undefined) && target === undefined) return undefined;
       const rawTarget = producer.interfaceName === '__raw__'
         ? registeredTarget(producer.interfaceName, target) : undefined;
       const rawExecutionTarget = rawTarget && typeof rawTarget === 'object' && 'proxy' in rawTarget
@@ -460,6 +528,7 @@ export async function resolveExternalExpressionReturns(
       occurrenceIndex, false, executionSelfAddress,
       undefined, undefined, false, executionCallerAddress,
     );
+    if (expression.target && target === undefined) return;
     const value = await derive(
       interfaceName, functionName, values as FunctionArgument[], target,
       expression.type ? [expression.type] : undefined,

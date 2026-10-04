@@ -47,7 +47,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 81 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | 125 (124 by default, 1 under `PER_CALL_FULL=1`) |
 | `packages/solidcash/test/per-call/pw7-measure.test.ts` | `solidcash` | 2, under `PER_CALL_FULL=1` |
-| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 143, under `PER_CALL_AHEAD=1` |
+| `packages/solidcash/test/per-call/ahead/` | `solidcash` | 184, under `PER_CALL_AHEAD=1` |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 11 |
 
 Total: 2453 checks (115 + 983 + 1344 + 11), with four more cases that run under
@@ -362,7 +362,14 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   changes applied in `2a85cd76f`), `pushed-struct-fields-and-event.test.ts` (a wide struct appended with every field
   written and one payload event, the same entry with a whitelist write its call does not take, and the same entry
   with no guarded write) and `push-length-keyed-mapping-write.test.ts` (a loop write whose key the entry's own push
-  computes). The directory runs only under `PER_CALL_AHEAD=1`.
+  computes). The walls beyond the ladder (`docs/per-call/WALLS_BEYOND_LADDER.md`, agent W2) each pin today's
+  refusal, titled with what should settle once served: `plain-root-calls`, `plain-root-writes` and
+  `plain-genesis-writes` (a contract deployed without a proxy), `guarded-vault-root` (a reentrancy guard on a
+  root that calls out), `state-keyed-mapping-write` and `stored-value-keyed-write` (a mapping key read from
+  state), `proxied-native-value`, `role-admin-read-key` (role mappings keyed by constants and stored values),
+  `loop-counted-tail` (an event, hash or send per loop turn), `root-reentry-receiver-hook`,
+  `two-deployments-one-artifact` and `read-node-spent-by-insert`, with `composition-world.ts` as their shared
+  harness. The directory runs only under `PER_CALL_AHEAD=1`.
 
 ## Which refusals cover which attack
 

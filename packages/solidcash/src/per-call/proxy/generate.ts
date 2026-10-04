@@ -46,6 +46,18 @@ function carriesDelegateReturn(implementationArtifact: Artifact): boolean {
     entry.name !== '__construct' && (entry.outputs ?? []).length > 0);
 }
 
+/**
+ * True when some entry a caller can reach through the proxy is payable.
+ *
+ * A delegate frame carries its caller's value (spec V5), so value reaches a payable entry only through a fallback
+ * that takes it, as an EVM proxy's payable fallback forwards it; the entry's own body still refuses value it does
+ * not take. A proxy with no payable entry behind it keeps a fallback that takes none, and its head no value checks.
+ */
+function takesDelegatedValue(implementationArtifact: Artifact): boolean {
+  return implementationArtifact.abi.some((entry) =>
+    entry.name !== '__construct' && (entry.modifiers ?? []).includes('payable'));
+}
+
 /** The base identifier of a possibly-array type: `Outer[2]` and `Outer` both name `Outer`. */
 function baseTypeName(type: string): string {
   const bracket = type.indexOf('[');
@@ -166,10 +178,11 @@ export function generateProxySource(implementationArtifact: Artifact): string {
   // implementation whose entries all record nothing the fallback records nothing either, keeps no return slot, and
   // the pin is never emitted. The void form still binds the delegated result — the frame keeps a call record for it
   // — and consumes the binding with a size test so nothing is left unused.
+  const takesValue = takesDelegatedValue(implementationArtifact) ? ' payable' : '';
   lines.push(carriesDelegateReturn(implementationArtifact)
-    ? `  fallback(bytes input) external returns (bytes) { (bool ok, bytes returned) = `
+    ? `  fallback(bytes input) external${takesValue} returns (bytes) { (bool ok, bytes returned) = `
       + `this.${IMPLEMENTATION_FIELD}.delegatecall(input); require(ok); return returned; }`
-    : `  fallback(bytes input) external { (bool ok, bytes returned) = `
+    : `  fallback(bytes input) external${takesValue} { (bool ok, bytes returned) = `
       + `this.${IMPLEMENTATION_FIELD}.delegatecall(input); require(ok); require(returned.length >= 0); }`);
   lines.push('}');
   return lines.join('\n');

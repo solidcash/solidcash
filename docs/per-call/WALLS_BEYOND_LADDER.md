@@ -219,8 +219,24 @@ composition is per-call, or fix the route's hidden-parameter arity.
 
 ### 2.5 Native value through a proxy (rank 5)
 
-Replica: `proxied-native-value.test.ts` (3 cases). Value in is refused by the handle (`callPerCallProxyEntry` has
-no `value` option at all); a send out fails in the frame, which reads its send slot and finds the no-index sentinel:
+**Served** for the hop's root (agent NV1), as spec 4b, V5 and V7 already state it: the proxy's root frame takes the
+call's value (`callPerCallProxyEntry` `value`, and a handle's `withValue`), paid by the caller into a satoshi
+container of the proxy, and the delegate frame carries the same value as its `msg.value`; the implementation's sends,
+a send per loop turn among them, follow a container of the proxy in a run and are paid from the proxy's containers,
+each lock and amount learned from the body's own pin as the plain path learns them (`proxy/hop-value.ts`). A send on a
+branch is listed when the run makes it, and a balance reader spends every container of the proxy. The generated
+proxy's fallback is `payable` when an entry behind it is, as an EVM proxy's is. Refused by name: value for an entry
+that is not payable, a send the proxy's containers cannot cover, a proxy whose fallback is not payable, and a send to a
+contract from the implementation's body (its call into the recipient's `receive()` is the plain path's paid-contract
+frame, which the hop does not plan). Served in `call/proxied-native-value.test.ts`, with forged values refused by the
+machine; the ahead replica is repointed at the send to a contract. Not served: value into a deployment's `initialize`;
+a contract behind a proxy paid by another (the value call would enter the proxy's fallback and delegate into the
+implementation's `receive()`, a frame pair neither call path plans for a paid contract); a typed call with value is
+refused at compile time (`support.ts` 3023, the direct path's value-transfer machinery).
+
+Replica (as first met): `proxied-native-value.test.ts` (3 cases). Value in is refused by the handle
+(`callPerCallProxyEntry` has no `value` option at all); a send out fails in the frame, which reads its send slot and
+finds the no-index sentinel:
 
 ```text
 a call to "deposit" through a proxy carries no value: a delegate frame takes none yet
@@ -278,7 +294,7 @@ The compile publishes the order as runs per kind with each loop's recurrence (`l
 `call/loop-turn-effects.test.ts` (an airdrop, an event batch, a path walk of keccak256, at 0, 1 and 3 turns, the
 batch and the walk through the hop too; forged counts refused). Still refused by name: a looped effect on a branch, in
 a nested or do-while loop, or in a loop no counted recurrence bounds; a callee or paid contract that loops them; a
-constructor that emits from a loop; and the hop's looped send, which meets rank 5 (the replica keeps that case).
+constructor that emits from a loop. The hop's looped send is served with rank 5 (agent NV1), so the replica is retired.
 
 Replica: `loop-counted-tail.test.ts` (4 cases). The control (a loop over the caller's array writing a scalar)
 settles. Through the hop each entry is `the implementation's "<entry>" entry is refused by the compiler
@@ -384,9 +400,9 @@ today and its title says what should settle once served.
 | `guarded-vault-root.test.ts` | 5 | 2.2, retired: served (`call/root-guard-across-call.test.ts`) |
 | `state-keyed-mapping-write.test.ts` | 3 | 2.3, retired: served (`call/state-keyed-mapping-write.test.ts`) |
 | `stored-value-keyed-write.test.ts` | 5 | 2.4: both spellings compile, hop and plain refusals (control: open) |
-| `proxied-native-value.test.ts` | 3 | 2.5 |
+| `proxied-native-value.test.ts` | 1 | 2.5 served (`call/proxied-native-value.test.ts`); repointed: a send to a contract |
 | `role-admin-read-key.test.ts` | 3 | 2.6 served; repointed: returning helpers, a skipped role write |
-| `loop-counted-tail.test.ts` | 4 | 2.7 (control: scalar loop) |
+| `loop-counted-tail.test.ts` | 4 | 2.7, retired: served (`call/loop-turn-effects`, `call/proxied-native-value`) |
 | `root-reentry-receiver-hook.test.ts` | 3 | 2.8 |
 | `two-deployments-one-artifact.test.ts` | 3 | 2.9 (control: one token) |
 | `read-node-spent-by-insert.test.ts` | 2 | 2.10 (control: head predecessor) |

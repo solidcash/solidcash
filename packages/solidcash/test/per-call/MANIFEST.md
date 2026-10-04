@@ -366,14 +366,15 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   computes). The walls beyond the ladder (`docs/per-call/WALLS_BEYOND_LADDER.md`, agent W2) each pin today's
   refusal, titled with what should settle once served: `plain-root-calls` and `plain-root-writes` (a contract
   deployed without a proxy; its two-mapping constructor deploys since `deploy/constructor-loop-writes`),
-  `stored-value-keyed-write` (a mapping key read from another mapping), `proxied-native-value`,
+  `stored-value-keyed-write` (a mapping key read from another mapping), `proxied-native-value` (a send to a contract
+  from a proxied root's body; value in and sends out through the proxy are served in `call/proxied-native-value`),
   `role-admin-read-key` (role helpers that return and emit, and a role write the body skips; the keys are served in
-  `call/role-admin-read-key`), `loop-counted-tail` (an event, hash or send per loop turn),
-  `root-reentry-receiver-hook`, `two-deployments-one-artifact` and `read-node-spent-by-insert`, with
-  `composition-world.ts` as their shared harness; the reentrancy guard on a root that calls out
-  (`guarded-vault-root`) is served and moved to `call/root-guard-across-call.test.ts`, and a mapping key read from
-  the contract's own scalar state (`state-keyed-mapping-write`) to `call/state-keyed-mapping-write.test.ts`. The
-  directory runs only under
+  `call/role-admin-read-key`), `root-reentry-receiver-hook`, `two-deployments-one-artifact` and
+  `read-node-spent-by-insert`, with `composition-world.ts` as their shared harness; the reentrancy guard on a root
+  that calls out (`guarded-vault-root`) is served and moved to `call/root-guard-across-call.test.ts`, a mapping key
+  read from the contract's own scalar state (`state-keyed-mapping-write`) to
+  `call/state-keyed-mapping-write.test.ts`, and an event, hash or send per loop turn (`loop-counted-tail`) to
+  `call/loop-turn-effects.test.ts` and `call/proxied-native-value.test.ts`. The directory runs only under
   `PER_CALL_AHEAD=1`.
 
 ## Which refusals cover which attack
@@ -417,6 +418,7 @@ listed under the table, and none of those is claimed anywhere else.
 | Two frames that list the same event output | `shared-event-output.test.ts` (the composer refuses the plan's shared list, and a mutation of the assembled spend is refused by the derivation and the program alike) |
 | A payment to a contract made without the recipient's master: a plain output at its address listed as a send, the call record kept without the recipient's master, a send listed to a P2SH32 lock the body pays through a call, another contract or another body taking the value, or a payer claiming to stand alone while it makes the call (T35) | `contract-payment-plain-output.test.ts` (seven cases, beside the composed payment every input accepts) and `solidc/test/per-call/master/value-receive-call.test.ts` (the stand-alone payer) |
 | A value call made where the payer sends, before a call that reads the paid contract, with another amount than the payer sent, its value paid elsewhere than the recipient's containers, or recorded after the read | `value-call-order.test.ts` (one case of three changes, beside the composed payment every input accepts) |
+| Value through a proxy forged: claimed by the frames but not taken into the proxy's containers, claimed by the delegate frame above its caller's (T40), the proxy's containers drained past what the delegate frame pays, or a send paid to another lock or amount than its pin, or after another contract's container | `call/proxied-native-value.test.ts` (five cases beside the deposit and withdrawal every input accepts: the validator's value rule, its edge rule, and the delegate frame's own pins) |
 | A frame entered by the contract's own validator or data-record lock, posing as the contract (T19) | `standalone-caller-contract.test.ts` (each lock refused beside an accepted control) and `validator/script.test.ts` (a root and a called master, refused at the validator) |
 | A caller whose signature hash type does not commit to the whole transaction: `0xC1`, `0xC3`, `0x42`, `0x43`, `0xE1` (T20) | `standalone-caller-contract.test.ts` (standalone) and `caller-lock-binding.test.ts` (composed root, the validator still accepting) |
 | A facet not recreated, recreated lighter, moved to read another head's transcript, or reading a transcript pushed ahead of its head's | `validator-facets.test.ts` (four cases; a transcript only the facet refuses is the premise) |

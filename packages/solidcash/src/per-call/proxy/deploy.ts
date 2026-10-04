@@ -101,6 +101,10 @@ import {
   type PerCallProxyExternal,
 } from './external-calls.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
+import {
+  hopContainerId, hopContainerInputs, hopPaying, hopValueOutputs, learnHopSend, madeHopSends, planHopValue,
+  unlearnedHopSends, type HopSend, type HopValue,
+} from './hop-value.js';
 import { carriedFromChain, deriveReentryWriters, reentrySettleBefore, withReentryFrames } from './reentry.js';
 import {
   EnclosingValueLearned, enclosingCandidateCount, inlineValueAt, learnEnclosingValues,
@@ -1080,6 +1084,13 @@ export async function deployPerCallProxy(
     stateValues: deploymentStateValues(proxyArtifact.stateLayout!, proxy.categoryId, deployment),
     selfAddress: proxyMaster.address, senderAddress: options.callerLockingBytecode,
   });
+  // A deployment's hop carries no value, and the proxy it just minted holds no container to pay a send from.
+  if ((loopTurns.sends ?? 0) > 0) {
+    throw new PerCallProxyDeployError(
+      `the implementation's ${entryLabelFor(options.initialize.functionName)} sends value from a loop, and the hop `
+      + 'lists no send for the implementation\'s frame',
+    );
+  }
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
   // values, the proxy's own address for `address(this)`, and the deployer's lock for `msg.sender`.
@@ -1262,6 +1273,8 @@ interface SettledHop {
   readonly calleeWriteValues: ReadonlyMap<string, Uint8Array>;
   /** The entry's own writes as the settled plan states them, whose participant ids the broadcast reads back. */
   readonly entryWrites?: HopEntryWrites;
+  /** The sends the settled plan lists for the implementation's frame, each lock and amount its body computed. */
+  readonly sends?: readonly HopSend[];
 }
 
 /** Everything one attempt at a hop reads, and how to rebuild the plan once a record's computed value is learned. */
@@ -1303,7 +1316,16 @@ interface SettleHopOptions {
   readonly seed?: CalleeSettlement;
   /** The entry, for the refusal's own words, e.g. `"initialize" entry`. */
   readonly entryLabel: string;
-  /** The plan for a given set of per-record, per-entry-write, per-event and `retval` candidate end values. */
+  /**
+   * The value the hop carries and the sends the implementation's frame pays (`hop-value.ts`), absent for neither:
+   * the plan starts each send's lock and amount from a sentinel the body's own pin fails against, and the settle
+   * learns what the body computed.
+   */
+  readonly value?: HopValue;
+  /**
+   * The plan for a given set of per-record, per-entry-write, per-event and `retval` candidate end values, and the
+   * sends the implementation's frame lists (every one the entry can make, none learned, when absent).
+   */
   readonly planFor: (
     writtenCommitments: readonly Uint8Array[],
     entryWrites: HopEntryWrites | undefined,
@@ -1314,6 +1336,7 @@ interface SettleHopOptions {
     calleeWriteViews: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>,
     calleeWriteValues: ReadonlyMap<string, Uint8Array>,
     calleeEvents: ReadonlyMap<string, readonly Uint8Array[]>,
+    sends?: readonly HopSend[],
   ) => CompositionDraftPlan;
   /**
    * Records a callee's refusal instead of throwing it and derives the entry anyway. Set by the fallback for a hop
@@ -1902,7 +1925,8 @@ function learnedValueFromClose(vm: Machine, program: ShippedVmProgram): Uint8Arr
  * compares each event payload against its output's commitment and compares what its own `return` built against the
  * `retval` slot, so a failed comparison leaves both the declaration and the computed value on the stack. Each
  * attempt rebuilds the plan with the value that was read, so a writing, emitting or returning entry converges in one
- * step per value it computes and a read-only entry is accepted on the first attempt.
+ * step per value it computes and a read-only entry is accepted on the first attempt. Each send the entry pays is
+ * learned the same way, its lock and its amount from the body's own pin.
  */
 async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   const { vm, proxyArtifact, implementationArtifact } = options;
@@ -1910,6 +1934,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   let writtenCommitments = [...options.recordCommitments];
   let writtenEvents = [...options.eventCommitments];
   let learnedRetval = options.retvalPlaceholder;
+  let learnedSends = unlearnedHopSends(options.value);
   // The value a chunkable mapping write computed, once the body's own pin close exposed it; absent until learned.
   let learnedValue: Uint8Array | undefined;
   let entryWrites = options.entryWritesFor === undefined
@@ -1960,12 +1985,14 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     maximumAttempts = Math.max(
       MAXIMUM_HOP_ATTEMPTS,
       writtenCommitments.length + extras.length + writtenEvents.length
-        + (options.retvalPlaceholder === undefined ? 0 : 1) + 1,
+        + (options.retvalPlaceholder === undefined ? 0 : 1) + 1
+        // A lock and an amount per send, and the attempt that drops the sends a branch skipped.
+        + (options.value === undefined ? 0 : 2 * options.value.sendCount + 1),
     );
     if (attempt >= maximumAttempts) break;
     const plan = options.planFor(
       writtenCommitments, entryWrites, writtenExtras, writtenEvents, learnedRetval ?? new Uint8Array(0),
-      calleeRetvals, calleeWriteViews, calleeWriteValues, calleeEvents);
+      calleeRetvals, calleeWriteViews, calleeWriteValues, calleeEvents, learnedSends);
     const candidate = createComposedDerivationHost({ vm, artifacts, plan });
     // A plan stopped before the site its failure is met at states only the calls before it, so the entry's calls
     // from that site on are declared unbound: a body that holds its call count runs to its own stop.
@@ -2054,11 +2081,15 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     const learnedEvent = reading.ok && learned < 0 && learnedExtra < 0
       ? writtenEvents.findIndex((candidate) => bytesEqual(reading.declared, candidate))
       : -1;
+    // A send's pin compares the lock and the amount the body computed with the output the plan listed for it.
+    const sendsLearned = reading.ok && learned < 0 && learnedExtra < 0 && learnedEvent < 0 && options.value !== undefined
+      ? learnHopSend(options.value, learnedSends, reading)
+      : undefined;
     // A chunkable mapping write whose value the artifact does not publish: the plan states no run, so the body's
     // own pin stops on the chunk count it computed, and the value and its digest are operands at that stop. Learn
     // the value and re-plan the write, which then lays the run of chunk records the value's length names.
     if (reading.ok && learnedValue === undefined && entryWrites?.awaitsValue === true
-      && learned < 0 && learnedExtra < 0 && learnedEvent < 0) {
+      && learned < 0 && learnedExtra < 0 && learnedEvent < 0 && sendsLearned === undefined) {
       const value = learnedValueFromClose(vm, readingProgram);
       if (value !== undefined) {
         if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-chunk-value len=${value.length}`);
@@ -2076,7 +2107,15 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
         + 'chunks',
       );
     }
-    if (!reading.ok || (learned < 0 && learnedExtra < 0 && learnedEvent < 0)) {
+    // A run that left no close to read and made fewer sends than the plan lists stopped at its count: the sends past
+    // the ones it pinned are on branches it did not take, and the plan drops them.
+    const madeSends = !reading.ok && options.value !== undefined ? madeHopSends(options.value, learnedSends) : undefined;
+    if (madeSends !== undefined) {
+      if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=made-sends count=${madeSends.length}`);
+      learnedSends = madeSends;
+      continue;
+    }
+    if (!reading.ok || (learned < 0 && learnedExtra < 0 && learnedEvent < 0 && sendsLearned === undefined)) {
       // The entry's frame refused before it closed anything, so the reading only says where it stopped. The
       // machine's verdict is paired with the artifacts' own publication to attribute the entry's reason: the
       // refusing frame is named, and for a dispatched body its `debug.functionDebug` requirement is the message.
@@ -2132,10 +2171,13 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       learnedExtras.set(bytesToHex(extras[learnedExtra]!), Uint8Array.from(reading.computed));
       const ready = awaitedLearned();
       if (ready !== undefined) throw ready;
-    } else {
+    } else if (learnedEvent >= 0) {
       if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-event at=${learnedEvent}`);
       writtenEvents = writtenEvents.map((candidate, emitIndex) =>
         (emitIndex === learnedEvent ? Uint8Array.from(reading.computed) : candidate));
+    } else {
+      if (trace) hopTrace(`stop entry=${IMPLEMENTATION_MASTER_ID} reason=learned-send`);
+      learnedSends = sendsLearned!;
     }
   }
   if (composed === undefined) {
@@ -2186,7 +2228,13 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   }
 
   const program = draft.programFor(PROXY_MASTER_ID);
-  const verdicts = draft.layout.participants.map((placed): InitializeVerdict => {
+  // The proxy's containers the implementation's sends are paid from follow the caller's coin, and the machine is
+  // asked about them too.
+  const containerInputs = options.value === undefined ? []
+    : hopPaying(options.value, learnedSends, proxyArtifact.contractName).spent.map((_utxo, position) => ({
+      id: hopContainerId(position), index: draft.layout.participantCount + 1 + position,
+    }));
+  const verdicts = [...draft.layout.participants, ...containerInputs].map((placed): InitializeVerdict => {
     const state = vm.evaluate({
       inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
     });
@@ -2210,6 +2258,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     retval: learnedRetval ?? new Uint8Array(0),
     calleeRetvals, calleeWriteViews, calleeWriteValues,
     ...(entryWrites === undefined ? {} : { entryWrites }),
+    ...(options.value === undefined ? {} : { sends: learnedSends }),
   };
 }
 
@@ -2825,6 +2874,11 @@ interface HopPlanOptions {
   /** One output per event the entry emits, in emit order, with the commitment it carries. */
   readonly eventOutputs: readonly HopEventOutput[];
   /**
+   * The value the hop carries and the sends the implementation's frame lists, each lock and amount as learned so
+   * far (`hop-value.ts`); absent for a hop that carries none and pays nothing.
+   */
+  readonly value?: { readonly hop: HopValue; readonly sends: readonly HopSend[] };
+  /**
    * True for a plan stopped before one of its sites (`HopExternalPlan.blocked`): it states the entry's calls up to
    * that point only, so it settles the callee frames before it and is never derived or broadcast as a whole.
    */
@@ -2903,26 +2957,17 @@ function hopEmits(
 
 /**
  * The events, sends and hashes the implementation's own entry repeats in a loop, counted against the hop's facts:
- * its arguments, the proxy's records and the frame's addresses. The hop lists no send for the implementation's
- * frame, so an entry whose loop sends is refused by name.
+ * its arguments, the proxy's records and the frame's addresses.
  */
 function implementationLoopTurns(inputs: HopCallInputs): EntryLoopTurns {
-  let turns: EntryLoopTurns;
   try {
-    turns = entryLoopTurns(inputs);
+    return entryLoopTurns(inputs);
   } catch (error) {
     if (error instanceof PerCallLoopTurnsError) {
       throw new PerCallProxyDeployError(`the implementation's ${error.message}`);
     }
     throw error;
   }
-  if ((turns.sends ?? 0) > 0) {
-    throw new PerCallProxyDeployError(
-      `the implementation's ${entryLabelFor(inputs.functionName)} sends value from a loop, and the hop lists no send `
-      + 'for the implementation\'s frame',
-    );
-  }
-  return turns;
 }
 
 /**
@@ -3340,6 +3385,17 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     trailingCursor += eventOutputs.length;
     return { category, eventOutputs, eventIndices: eventOutputs.map((_output, position) => base + position) };
   });
+  // The value the call carries is the proxy's root frame's, and its delegate frame passes it through as its own
+  // `msg.value` (V5). The implementation's sends follow every frame's events, a container of the proxy first, and
+  // the records the frames create follow them (spec 4b).
+  const value = options.value?.hop.value ?? 0n;
+  const listedSends = options.value?.sends ?? [];
+  const paying = options.value === undefined
+    ? undefined : hopPaying(options.value.hop, listedSends, proxyArtifact.contractName);
+  const valueOutputs = options.value === undefined || paying === undefined
+    ? undefined : hopValueOutputs(options.value.hop, listedSends, paying);
+  const sendIndices = listedSends.map((_send, position) => trailingCursor + 1 + position);
+  trailingCursor += valueOutputs?.run.length ?? 0;
   const recordIndices = recordIds.map((id) => participant(layout, id).index);
   // Every record kept where the proxy read it before the call, and left where the entry's write leaves it. The
   // delegate frame's segment chains each record's kept view to its written one, and the proxy's own later segment
@@ -3500,13 +3556,14 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     functionName: entryName(proxyArtifact, '__fallback'),
     program: proxyMaster.script,
     facts: factsOf(proxyArtifact, '__fallback', FrameKind.ROOT, true),
-    frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: proxyMaster.address, value: 0n },
+    frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: proxyMaster.address, value },
     enteredBy: USER_ID,
     origin: USER_ID,
     calls: [{
       kind: FrameKind.DELEGATE,
       callee: IMPLEMENTATION_MASTER_ID,
       target: implementationMaster.address,
+      // A delegatecall passes no value of its own: its callee carries the caller's.
       value: 0n,
       argumentPushes: pushes,
     }],
@@ -3530,7 +3587,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     program: implementationMaster.script,
     facts: factsOf(
       implementationArtifact, options.entry.functionName, FrameKind.DELEGATE, calls.length > 0),
-    frame: { kind: FrameKind.DELEGATE, sender: options.callerLockingBytecode, self: proxyMaster.address, value: 0n },
+    frame: { kind: FrameKind.DELEGATE, sender: options.callerLockingBytecode, self: proxyMaster.address, value },
     enteredBy: PROXY_MASTER_ID,
     origin: USER_ID,
     // The calls the entry's own body makes, in the order it reaches them: the plan states one record per call,
@@ -3545,7 +3602,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     segments: implementationSegments,
     ...(implementationValues === undefined ? {} : { values: implementationValues }),
     events: eventIndices,
-    sends: [],
+    // Its sends pay from the containers of the proxy whose records it runs on, the first one after a container.
+    sends: sendIndices,
     argumentPushes: pushes,
     redeemScript: implementationMaster.script,
   };
@@ -3913,9 +3971,16 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const proxyMasterAmount = options.proxyMasterAmount;
   const implementationMasterAmount = options.implementationMasterAmount;
   const proxyRecordAmount = options.validatorAmount;
+  // The proxy's containers the sends are paid from follow the caller's coin, each opened by the proxy's master.
+  const containerSpends = paying?.spent ?? [];
   const plan: CompositionDraftPlan = {
     blocks,
-    userInputs: [{ id: USER_ID, index: layout.participantCount }],
+    userInputs: [
+      { id: USER_ID, index: layout.participantCount },
+      ...containerSpends.map((_utxo, position) => ({
+        id: hopContainerId(position), index: layout.participantCount + 1 + position,
+      })),
+    ],
     masters: chained.masters,
     // The chain's own time, read from the provider: a body that reads the transaction's locktime sees it.
     locktime: providerUnixLocktime(options.provider as { getBlockTime?: () => number }),
@@ -4005,6 +4070,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       ...Object.assign({}, ...calleeTrailing.map((written) => written?.laid?.inputs ?? {})),
       // Every side-car the hop's frames co-spend, placed in their own block after the master that reads them.
       ...sideCarInputs,
+      ...(options.value === undefined ? {} : hopContainerInputs(options.value.hop, containerSpends, proxyMasterIndex)),
     }),
     validator: {
       id: VALIDATOR_ID,
@@ -4035,10 +4101,14 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
           },
         }),
       )),
+      // The implementation's sends follow the events: a container of the proxy, then one output per send.
+      ...valueOutputs?.run ?? [],
       ...withCreatedChainEnds(laidWrites?.trailingOutputs ?? [], createdBase, chained.createdEnds),
       // Each callee frame's own created records follow the root entry's, in the order the frames are placed.
       ...calleeTrailing.flatMap((written) => withCreatedChainEnds(
         written.laid?.trailingOutputs ?? [], written.createdBase, chained.createdEnds)),
+      // The proxy's container, when no send precedes it: the value the call brings, or the change it leaves.
+      ...valueOutputs?.kept ?? [],
     ],
     // The witnesses the frames' own bodies compute for their side-cars, each learned from the body's own bind.
     ...(computedWitnesses.length === 0 ? {} : { computedWitnesses }),
@@ -4094,6 +4164,8 @@ interface BroadcastHopOptions {
    * rather than have the rebuild search the category for it again.
    */
   readonly spentUtxos?: ReadonlyMap<string, Utxo>;
+  /** The proxy's containers the implementation's sends are paid from, at the indices after the caller's coin. */
+  readonly containerInputs?: readonly { readonly index: number; readonly utxo: Utxo }[];
 }
 
 /** The live UTXO a participant sits on, read back by category so no genesis output index is assumed. */
@@ -4462,6 +4534,15 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   }
   hopTrace(`caller input ${callerFunding.utxo.txid}:${callerFunding.utxo.vout} ${callerFunding.utxo.satoshis}`);
   builder.addInput(callerFunding.utxo, callerFunding.funder);
+  // The proxy's containers follow the caller's coin, each with the unlocking the derived hop carries.
+  for (const { index, utxo } of options.containerInputs ?? []) {
+    const source = program.sourceOutputs[index];
+    const unlockingBytecode = program.transaction.inputs[index]?.unlockingBytecode;
+    if (source === undefined || unlockingBytecode === undefined) {
+      throw new PerCallProxyDeployError(`the derived hop carries no container input at ${index}`);
+    }
+    builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode));
+  }
 
   // Every participant recreates in place, so its output index is its input index; anything the composer placed
   // after them (events, sends, created records) is trailing. The funders' recreations are replaced by the
@@ -4518,6 +4599,11 @@ export interface PerCallProxyCallOptions {
   /** The contracts the entry's published call sites reach, keyed by the interface the site calls. */
   readonly externals?: Readonly<Record<string, PerCallProxyExternal>>;
   readonly vm?: Machine;
+  /**
+   * The value the call carries, in satoshis: the proxy's root frame's, paid by the caller into a container of the
+   * proxy, which the implementation's frame takes as `msg.value`. Only a payable entry takes one.
+   */
+  readonly value?: bigint;
 }
 
 /** A proxied call's outcome, shaped the way the direct call path's is so a handle can treat them alike. */
@@ -4559,6 +4645,10 @@ export interface PerCallProxyCallResult {
  * body computed back out of that close, and the call result reports it decoded through the shipped decoder. The
  * value travels in the caller's call record, so the proxy's fallback has to carry the delegated call's result; a
  * proxy whose fallback drops it (the generated closure shape) is refused by name rather than losing the value.
+ *
+ * A call may carry value into a payable entry, as an EVM proxy's payable fallback forwards it: the proxy's root
+ * frame takes it, paid into a container of the proxy, and the delegate frame sees it as `msg.value`. An entry that
+ * sends pays from the proxy's containers, the address that holds the balance (`hop-value.ts`).
  */
 export async function callPerCallProxyEntry(
   options: PerCallProxyCallOptions,
@@ -4713,6 +4803,20 @@ export async function callPerCallProxyEntry(
     stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
     selfAddress: proxyMaster.address, senderAddress: options.callerLockingBytecode,
   });
+  // The value the call carries and the sends the entry pays, from the containers of the proxy, which holds the
+  // balance: the delegate frame's `msg.value` is its caller's (V5), and its sends pay from its caller's containers.
+  const hopValue = await planHopValue({
+    provider, artifact: implementationArtifact, functionName: options.functionName, args,
+    value: options.value ?? 0n, loopSends: loopTurns.sends, categoryId: options.proxyCategoryId,
+    callerLockingBytecode: options.callerLockingBytecode,
+    state: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools) as Readonly<Record<string, StateValue>>,
+  });
+  if ((hopValue?.value ?? 0n) > 0n
+    && !(proxyArtifact.abi.find((entry) => entry.name === '__fallback')?.modifiers ?? []).includes('payable')) {
+    throw new PerCallProxyDeployError(
+      `the fallback of proxy "${proxyArtifact.contractName}" is not payable, so a call through it carries no value`,
+    );
+  }
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
   // values, the proxy's own address for `address(this)`, and the caller's lock for `msg.sender`.
@@ -4732,9 +4836,10 @@ export async function callPerCallProxyEntry(
     ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.functionName),
     ...(externalPlan.blocked?.refusal === undefined ? {} : { refusedSite: externalPlan.blocked.refusal }),
+    ...(hopValue === undefined ? {} : { value: hopValue }),
     planFor: (
       writtenCommitments, attemptWrites, entryWriteViews, eventCommitments, implementationRetval, calleeRetvals,
-      calleeWriteViews, calleeWriteValues, calleeEventCommitments,
+      calleeWriteViews, calleeWriteValues, calleeEventCommitments, sends,
     ) => buildHopPlan({
       provider,
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
@@ -4765,6 +4870,7 @@ export async function callPerCallProxyEntry(
       callerLockingBytecode: options.callerLockingBytecode,
       entry: { functionName: options.functionName, args },
       ...(externalPlan.blocked === undefined ? {} : { truncated: true }),
+      ...(hopValue === undefined ? {} : { value: { hop: hopValue, sends: sends ?? unlearnedHopSends(hopValue) } }),
     }),
   });
   // The compute side-cars the implementation's own entry reads, built once over the live pool for the whole hop.
@@ -4820,6 +4926,11 @@ export async function callPerCallProxyEntry(
           ...externalPlan.utxos,
         ]),
       }),
+    // The proxy's containers the settled sends are paid from, as the settled plan spent them.
+    ...(hopValue === undefined ? {} : {
+      containerInputs: hopPaying(hopValue, settled.sends ?? [], proxyArtifact.contractName).spent
+        .map((utxo, position) => ({ index: settled.draft.layout.participantCount + 1 + position, utxo })),
+    }),
   });
 
   const retval = settled.retval;

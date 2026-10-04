@@ -178,14 +178,10 @@ export class PerCallFunctionCall {
   ): Promise<PerCallCallResult> {
     const { artifact, categoryId, proxyImplementationCategoryId } = this.contract;
     if (proxyImplementationCategoryId !== undefined) {
-      if (this.value > 0n) {
-        throw new PerCallCallError(
-          `a call to "${this.functionName}" through a proxy carries no value: a delegate frame takes none yet`,
-        );
-      }
       // The hop delegates into the implementation frame: a returning entry's value is recorded in that frame's
       // `retval` and reported back through the proxy hop, or refused by name when the proxy's forwarded call
-      // records no result for it to travel in.
+      // records no result for it to travel in. The call's value is paid into the proxy, whose delegate frame takes
+      // it as `msg.value`.
       return callPerCallProxyEntry({
         provider,
         implementationArtifact: artifact,
@@ -197,6 +193,7 @@ export class PerCallFunctionCall {
         callerLockingBytecode: signer.getLockingBytecode(),
         funder: signer.unlockP2PKH(),
         changeAddress: signer.getAddress(),
+        ...(this.value > 0n ? { value: this.value } : {}),
       });
     }
     return callPerCallEntry({

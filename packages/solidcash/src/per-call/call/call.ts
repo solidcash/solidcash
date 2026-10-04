@@ -68,7 +68,6 @@ import {
   validatorAddress,
   validatorRedeemScript,
   type Artifact,
-  type ChildDeploymentValueRecipe,
   type ExternalResultEncoding,
   type FixedBchTransferAbi,
   type StateValue,
@@ -99,6 +98,7 @@ import {
   orderLoopKeyArgs, placeRecordsBySpan, type LaidCallEntryRecords, type LoopRecordSpan,
 } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
+import { sendRecipient, type RecipientContext } from './send-recipient.js';
 import {
   PerCallLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
 } from './loop-turns.js';
@@ -269,43 +269,6 @@ function recordValueBytes(value: bigint): Uint8Array {
     rest >>= 8n;
   }
   return bytes;
-}
-
-/** What a send's recipe reads, before the frame runs. */
-interface RecipientContext {
-  readonly args: readonly FunctionArgument[];
-  readonly inputs: readonly { readonly type: string }[];
-  readonly structs: readonly StructDefinitionInfo[] | undefined;
-  readonly callerLock: Uint8Array;
-  readonly state: readonly Record<string, StateValue>[];
-}
-
-/** The lock a send pays, from its published recipe, or undefined when only the running code holds it. */
-function sendRecipient(
-  recipe: ChildDeploymentValueRecipe | undefined, context: RecipientContext,
-): Uint8Array | undefined {
-  switch (recipe?.kind) {
-    case 'logicalCaller':
-      return context.callerLock;
-    case 'handlerInput': {
-      const argument = context.args[recipe.inputIndex];
-      const input = context.inputs[recipe.inputIndex];
-      if (argument === undefined || input === undefined) return undefined;
-      return argument instanceof Uint8Array
-        ? argument
-        : encodeFunctionArgument(argument, input.type, context.structs) as Uint8Array;
-    }
-    case 'bytesLiteral':
-      return hexToBin(recipe.value);
-    case 'cast':
-      return sendRecipient(recipe.operand, context);
-    case 'state': {
-      const held = context.state.find((values) => values[recipe.name] instanceof Uint8Array);
-      return held?.[recipe.name] as Uint8Array | undefined;
-    }
-    default:
-      return undefined;
-  }
 }
 
 /** The record identity for data-NFT index `nftIndex`. */

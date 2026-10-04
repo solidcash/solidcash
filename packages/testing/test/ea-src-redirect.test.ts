@@ -16,6 +16,15 @@ describe('marketplace EA src redirect', () => {
     expect(redirected?.replace(/\\/g, '/')).toMatch(/examples\/effectiveacceleration\/src\/utils\/ui\.ts$/);
   });
 
+  it('rewrites the no-proxy twin src onto the same copy the proxied project decodes with', () => {
+    const plain = redirectEffectiveAccelerationSrc(
+      '/Code/effectiveacceleration.ai/contract-noproxy/src/utils/decodeData.ts',
+    );
+    const proxied = redirectEffectiveAccelerationSrc('/Code/effectiveacceleration.ai/contract/src/utils/decodeData.ts');
+    expect(plain?.replace(/\\/g, '/')).toMatch(/examples\/effectiveacceleration\/src\/utils\/decodeData\.ts$/);
+    expect(plain).toBe(proxied);
+  });
+
   it('leaves unrelated paths alone', () => {
     expect(redirectEffectiveAccelerationSrc('/tmp/other/src/utils/ui.ts')).toBeUndefined();
   });

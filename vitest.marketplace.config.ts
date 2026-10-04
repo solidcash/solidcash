@@ -9,10 +9,18 @@ const worktreeRoot = fileURLToPath(new URL('.', import.meta.url));
 const bchCompatSrc = fileURLToPath(new URL('examples/effectiveacceleration/src', import.meta.url));
 process.env.SOLIDCASH_PROJECT_ROOT = worktreeRoot;
 
-/** Relative imports skip Vite aliases; remap the Ethereum EA src onto the BCH-aware copy. */
+/**
+ * Relative imports skip Vite aliases; remap the Ethereum EA src onto the BCH-aware copy. The no-proxy twin's src is
+ * the same source as the proxied project's, so a run retargeted onto it decodes with the same copy: both lanes
+ * publish the same payload (a packed `uint160(address)` is the lock), and only the copy reads the lock back.
+ */
 export function redirectEffectiveAccelerationSrc(id: string): string | undefined {
   const normalized = id.replace(/\\/g, '/');
-  for (const marker of ['/.marketplace/project/src/', '/effectiveacceleration.ai/contract/src/']) {
+  const markers = [
+    '/.marketplace/project/src/', '/effectiveacceleration.ai/contract/src/',
+    '/effectiveacceleration.ai/contract-noproxy/src/',
+  ];
+  for (const marker of markers) {
     const index = normalized.indexOf(marker);
     if (index < 0) continue;
     return path.join(bchCompatSrc, normalized.slice(index + marker.length));

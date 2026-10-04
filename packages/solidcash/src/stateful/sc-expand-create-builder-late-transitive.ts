@@ -16,7 +16,7 @@ import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
 import { MessageBusDiagnosticError } from '../message-bus/diagnostics.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
-import { addressToLockScript, tryCashAddressToLockScript } from '../utils.js';
+import { addressToLockScript } from '../utils.js';
 import {
   createDataNftUnlocker,
   createEntryNftUnlocker,
@@ -39,6 +39,8 @@ import {
   memoizeGraphPlanningProducerResult,
 } from './graph-planning-producer-result.js';
 import {
+  connectedContractMatchesExactAddress,
+  exactAddressLockingBytecodeHex,
   findDeploymentByAddressValue,
   findDeploymentByName,
   registeredAddressValueLockingBytecode,
@@ -264,43 +266,65 @@ export async function expandCreateBuilderLateTransitive(
         nested.addressSource ? [nested.addressSource] : undefined, logicalParentArgs, preparedAtomicNodes !== undefined,
         iterationIndex,
       );
+      const addressParamIndex = nested.addressParam === undefined ? -1
+        : parentFn.inputs.filter((input) => !input.name.startsWith('__internal__'))
+          .findIndex((input) => input.name === nested.addressParam);
       const resolvedAddressTarget = nested.addressSource
         ? logicalParentContract._resolveExternalArgs(
           [nested.addressSource], logicalParentArgs, logicalParentArtifact, parentState,
           parentFn.inputs, addressReturns, iterationIndex, false, parentOutgoingSelfAddress,
           parentIncomingCallerAddress,
         )?.[0]
-        : nested.addressStateVar
+        : nested.addressStateVar !== undefined
           ? parentState[nested.addressStateVar] as FunctionArgument | undefined
-          : undefined;
+          : nested.addressLiteral !== undefined
+            ? nested.addressLiteral
+            : addressParamIndex >= 0
+              ? logicalParentArgs[addressParamIndex]
+              : undefined;
+      const hasPublishedTarget = nested.addressSource !== undefined
+        || nested.addressStateVar !== undefined || nested.addressLiteral !== undefined
+        || nested.addressParam !== undefined;
       const typedAddressTarget = typeof resolvedAddressTarget === 'string'
         || resolvedAddressTarget instanceof Uint8Array ? resolvedAddressTarget : undefined;
+      const exactTargetLockHex = typedAddressTarget === undefined ? undefined
+        : exactAddressLockingBytecodeHex(typedAddressTarget);
       const deployment = typedAddressTarget === undefined ? undefined
         : findDeploymentByAddressValue(host.inner.provider, typedAddressTarget);
       const resolvedTargetLockingBytecode = typedAddressTarget === undefined ? undefined
         : registeredAddressValueLockingBytecode(host.inner.provider, typedAddressTarget)
-          ?? tryCashAddressToLockScript(typedAddressTarget);
-      let registered = deployment?.contract ?? logicalParentContract._externalRegistry.get(nested.interfaceName)
-        ?? parentContract._externalRegistry.get(nested.interfaceName)
-        ?? host.externalRegistry.get(nested.interfaceName)
-        ?? findDeploymentByName(host.inner.provider, nested.interfaceName)?.contract
-        ?? (/^I[A-Z]/.test(nested.interfaceName)
-          ? findDeploymentByName(host.inner.provider, nested.interfaceName.slice(1))?.contract : undefined);
+          ?? (exactTargetLockHex === undefined ? undefined : hexToBin(exactTargetLockHex));
+      const connectedCandidates = [
+        logicalParentContract._externalRegistry.get(nested.interfaceName),
+        parentContract._externalRegistry.get(nested.interfaceName),
+        host.externalRegistry.get(nested.interfaceName),
+        findDeploymentByName(host.inner.provider, nested.interfaceName)?.contract,
+        /^I[A-Z]/.test(nested.interfaceName)
+          ? findDeploymentByName(host.inner.provider, nested.interfaceName.slice(1))?.contract : undefined,
+      ];
+      let registered = deployment?.contract ?? connectedCandidates.find((candidate) => candidate !== undefined
+        && (!hasPublishedTarget || (typedAddressTarget !== undefined
+          && connectedContractMatchesExactAddress(candidate, typedAddressTarget))));
       // A lowered Address/SafeERC20 edge deliberately has no source interface name. Resolve it from the
       // authenticated computed address first, then from an already co-spent deployment advertising the
       // compiler-decoded selector. Skipping this edge leaves the parent's extcall/return witnesses at -1;
       // guessing by `__raw__` in the registry can instead redirect the call to an unrelated deployment.
       if (!registered && nested.interfaceName === '__raw__') {
-        const rawTargetHex = resolvedTargetLockingBytecode && binToHex(resolvedTargetLockingBytecode);
         registered = externalCallUtxoGroups
           .map((candidate) => candidate.externalContract as any)
           .find((candidate) => {
-            if (rawTargetHex && candidate.inner.lockingBytecode !== rawTargetHex) return false;
+            if (hasPublishedTarget && (typedAddressTarget === undefined
+              || !connectedContractMatchesExactAddress(candidate, typedAddressTarget))) return false;
             return (candidate.inner.artifact.abi as readonly AbiFunction[]).some((fn) => (
               (nested.rawFunctionName !== undefined && fn.name === nested.rawFunctionName)
               || (nested.rawSelector !== undefined && fn.selector === nested.rawSelector)
             ));
           });
+      }
+      if (!registered && typedAddressTarget !== undefined && hasPublishedTarget) {
+        throw new Error(`Late external callsite ${nested.callsiteId ?? '?'} published target `
+          + `${exactTargetLockHex ?? String(typedAddressTarget)} `
+          + `does not match a connected ${nested.interfaceName} callee.`);
       }
       if (!registered) continue;
       const registeredCallee = registered as unknown as any | {

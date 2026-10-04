@@ -131,6 +131,19 @@ function preparation(groups: ExternalCallUtxoGroup[]): {
   return { groups, nodes, host, params, expand: () => expandCreateBuilderLateTransitive(host, params) };
 }
 
+function addressedLateFixture(target: Uint8Array) {
+  const call = {
+    ...edge('Sink'),
+    addressSource: { kind: 'expression' as const, expression: { kind: 'state', name: 'target' } },
+  };
+  const first = withExpressionResolution(contract(1, [handler('run', [call])]));
+  const sink = contract(2, [handler('run', [], true)]);
+  Object.assign(first, { getState: async () => ({ target }) });
+  first._externalRegistry.set('Sink', sink);
+  const fixture = preparation([group(first)]);
+  return { fixture, sink };
+}
+
 describe('late transitive call preparation', () => {
   it.each([true, false])('preserves declared late return-slot ownership (return slot %s)', async (hasReturn) => {
     const sink = contract(2, [{ ...handler('run', [], true), blockLayout: {
@@ -150,6 +163,24 @@ describe('late transitive call preparation', () => {
 
     expect(fixture.groups[1].blockInputs).toHaveLength(2);
     expect(fixture.groups[1].returnEventInBlock).toBe(hasReturn);
+  });
+
+  it('prepares a late callee whose connected identity matches its published target', async () => {
+    const { fixture, sink } = addressedLateFixture(Uint8Array.of(0x51));
+    await fixture.expand();
+    expect(fixture.groups[1].externalContract).toBe(sink);
+  });
+
+  it('rejects a late callee whose published target differs from its connected binding', async () => {
+    const { fixture } = addressedLateFixture(Uint8Array.of(0x52));
+    await expect(fixture.expand()).rejects.toThrow('published target');
+    expect(fixture.groups).toHaveLength(1);
+
+    const literalParent = contract(3, [handler('run', [{ ...edge('Sink'), addressLiteral: '52' }])]);
+    literalParent._externalRegistry.set('Sink', contract(4, [handler('run', [], true)]));
+    const literalFixture = preparation([group(literalParent)]);
+    await expect(literalFixture.expand()).rejects.toThrow('published target');
+    expect(literalFixture.groups).toHaveLength(1);
   });
 
   it.each(['enabled', 'disabled', 'missing'] as const)(

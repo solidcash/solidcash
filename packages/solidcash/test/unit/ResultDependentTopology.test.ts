@@ -219,6 +219,42 @@ describe('result-dependent topology propagation', () => {
       .toEqual([0, 1, 2]);
   });
 
+  it('ignores unrelated repeated results while retaining scalar ambiguity for a real consumer', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0];
+    const literal = (value: number): ExternalCallExpression => ({
+      kind: 'literal', type: 'bigint', value: String(value),
+    });
+    const domain = (sourceLoopId: number, counterName: string, count: number):
+    NonNullable<ExternalCallAbi['iterationDomain']> => ({
+      sourceLoopId, counterName, initialValue: literal(0), stepValue: literal(1),
+      maximumIterations: count,
+      continueCondition: { kind: 'binary' as const, operator: '<',
+        left: { kind: 'identifier' as const, name: counterName }, right: literal(count) },
+    });
+    root.artifact.abi[0]!.externalCalls = [
+      { callsiteId: 1, interfaceName: 'ISource', functionName: 'read',
+        requiredDataNftIndices: [], hasReturnValues: true, returnTypes: ['uint256'],
+        sourceEffectOrdinal: 0, occurrence: 'loop', maximumOccurrences: 2,
+        iterationDomain: domain(0, 'i', 2), argSources: [] },
+      { callsiteId: 2, interfaceName: 'IGood', functionName: 'run',
+        requiredDataNftIndices: [], sourceEffectOrdinal: 1,
+        occurrence: 'loop', maximumOccurrences: 1, iterationDomain: domain(1, 'j', 1),
+        preCallRequires: [{ kind: 'literal', type: 'bool', value: true }], argSources: [] },
+    ];
+    const selected = await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf);
+    expect(selected.calls.filter((call) => call.callsiteId === 2)).toHaveLength(1);
+
+    root.artifact.abi[0]!.externalCalls![1]!.condition = {
+      kind: 'producerResult', callsiteId: 1, resultIndex: 0, type: 'uint256',
+    };
+    root.artifact.abi[0]!.resultConsumers = [{
+      consumerCallsiteId: 2, producerCallsiteId: 1, resultIndex: 0, condition: true,
+    }];
+    await expect(discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf))
+      .rejects.toThrow(/cannot select among 2 authenticated producer occurrences at lane 0:1/);
+  });
+
   it('does not seed a view after an earlier write to its participant', async () => {
     const ctx = fixture();
     const root = ctx.descriptors[0];

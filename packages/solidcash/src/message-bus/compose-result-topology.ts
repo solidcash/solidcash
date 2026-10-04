@@ -300,9 +300,13 @@ async function rebuildCallTopology(
                   callsiteId: condition.callsiteId, resultConsumers: fn.resultConsumers, lane: 'condition',
                 }, outerIndex);
             }
+            // A repeated producer has no scalar result. Select its source occurrence only when this
+            // expression actually consumes it; unrelated repeated calls must not make an independent
+            // loop guard or argument ambiguous. externalReturnsForCallsites validates the selected lane.
+            const consumedCallsites = producerResultCallsites(argSources);
             const selected = new Map<number, FunctionArgument>();
             for (const producer of sources) {
-              if (producer.callsiteId === undefined) continue;
+              if (producer.callsiteId === undefined || !consumedCallsites.has(producer.callsiteId)) continue;
               const producerDomain = producer.iterationDomain ?? producer.nestedIterationDomains?.[0];
               const sharesOuterDomain = outerDomainKey !== undefined && producerDomain !== undefined
                 && semanticJson(producerDomain) === outerDomainKey;

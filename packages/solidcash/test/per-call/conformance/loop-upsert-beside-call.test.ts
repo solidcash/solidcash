@@ -299,9 +299,10 @@ describe('a run-time loop upsert beside a call, through the shipped proxy path',
     };
     const implementation = answered.verdicts.find((verdict) => verdict.id.includes('implementation'));
     expect(implementation?.accepted).toBe(true);
-    // Every participant whose own verdict was accepted is asked again about the mutated spend. The record the entry
-    // computed is the frame's own close, and the covenant of that record is what holds it to the value the body
-    // computed: the participant named for it is the one that has to refuse.
+    // Every participant whose own verdict was accepted is asked again about the mutated spend. This second call writes
+    // the value the record already holds, and the entry lands a write of it, so the record is spent on the write path
+    // whatever its end view: the validator, which ties every declared record's end to the output it creates, is the
+    // participant that has to refuse.
     const vm = compositionMachine();
     const refused = answered.verdicts
       .filter((verdict) => verdict.accepted)
@@ -312,7 +313,7 @@ describe('a run-time loop upsert beside a call, through the shipped proxy path',
         }).error ?? ''),
       }))
       .filter((verdict) => verdict.error !== '');
-    expect(refused.map((verdict) => verdict.id)).toContain('proxy-record-0');
+    expect(refused.map((verdict) => verdict.id)).toContain('validator');
   });
 });
 

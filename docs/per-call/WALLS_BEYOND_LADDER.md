@@ -113,6 +113,12 @@ deployment's state, which `call.ts` does not pass.
 
 ### 2.2 `nonReentrant` on a proxied root (rank 2)
 
+**Served** (agent RG1): the root takes the records its delegate frame writes from the published write landings,
+as callee frames do, so a guard set before the call and cleared after it is declared changed in both segments. The
+replica is retired into `call/root-guard-across-call.test.ts` and `hostile/guard-view-across-call.test.ts` (a spend
+declaring the guard clear at the call is refused by the delegate frame; a call back into the guarded entry is
+refused by name, as rank 8 still stands).
+
 Replica: `guarded-vault-root.test.ts` (5 cases). Controls settle: the pull plus the credit, and the same behind a
 pause check. Both guarded variants fail (`deposit` stacks `nonReentrant whenNotPaused`):
 
@@ -333,7 +339,7 @@ today and its title says what should settle once served.
 | `plain-root-calls.test.ts` | 4 | 2.1: deposit, payout, sweep |
 | `plain-root-writes.test.ts` | 3 | 2.1: two collections, chunked string (control: mint) |
 | `plain-genesis-writes.test.ts` | 2 | 2.1: constructor writing two mappings (control: mint only) |
-| `guarded-vault-root.test.ts` | 5 | 2.2 (controls: plain, paused) |
+| `guarded-vault-root.test.ts` | 5 | 2.2, retired: served (`call/root-guard-across-call.test.ts`) |
 | `state-keyed-mapping-write.test.ts` | 3 | 2.3 (control: parameter key) |
 | `stored-value-keyed-write.test.ts` | 5 | 2.4: bus-route defect, codegen crash, hop and plain refusals (control: open) |
 | `proxied-native-value.test.ts` | 3 | 2.5 |

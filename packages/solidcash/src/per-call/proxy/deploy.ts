@@ -3248,8 +3248,19 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const recordAfter = entries(
     (nftIndex) => options.writtenCommitments[nftIndex]!, (nftIndex) => options.writtenCommitments[nftIndex]!,
   );
+  // The segments each record the entry's own body writes lands in, as the artifact publishes them per write.
+  const recordLandings = new Map<number, number[]>();
+  for (const [nftIndex, published] of publishedRecordWrites(implementationArtifact, options.entry.functionName)) {
+    const landings = [...new Set(published.map((segment) => (segment === 'last' ? calls.length : segment)))]
+      .filter((segment) => segment >= 0 && segment <= calls.length)
+      .sort((left, right) => left - right);
+    if (landings.length > 0) recordLandings.set(nftIndex, landings);
+  }
+  // A record the body writes is one the artifact lands a write of, as a callee frame's is, whatever its end view: a
+  // guard set before a call and cleared after it ends where it started and still changes in both segments. An
+  // artifact that publishes no landing for a record leaves the end commitment the settle learned to tell.
   const writes = options.recordCommitments.map((commitment, nftIndex) =>
-    !bytesEqual(commitment, options.writtenCommitments[nftIndex]!));
+    recordLandings.has(nftIndex) || !bytesEqual(commitment, options.writtenCommitments[nftIndex]!));
   const proxyMasterIndex = participant(layout, PROXY_MASTER_ID).index;
   // The proxy's own master declares every record of its layout; the delegate frame declares those of the
   // implementation's records its entry's block layout names, as a callee frame does, because a body addresses each
@@ -3282,13 +3293,6 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // several segments declares it changed in every one of them, each change continuing from the last one's end: the
   // body computes each change's end view, so all but the last are handed back for the derivation to learn and only
   // the last carries the commitment the settle stated.
-  const recordLandings = new Map<number, number[]>();
-  for (const [nftIndex, published] of publishedRecordWrites(implementationArtifact, options.entry.functionName)) {
-    const landings = [...new Set(published.map((segment) => (segment === 'last' ? calls.length : segment)))]
-      .filter((segment) => segment >= 0 && segment <= calls.length)
-      .sort((left, right) => left - right);
-    if (landings.length > 0) recordLandings.set(nftIndex, landings);
-  }
   const implementationSegments: DraftRecordEntry[][] = Array.from({ length: calls.length + 1 },
     (_unused, segmentIndex) => frameDataRecordIndices(implementationArtifact, options.entry.functionName)
       .filter((nftIndex) => nftIndex < implementationRecords).map((nftIndex): DraftRecordEntry => {
@@ -3828,7 +3832,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
           options.writtenCommitments[nftIndex]!,
         ),
         // The covenant's write path names the master of the record's category that authorizes the spend; a record
-        // the entry leaves unchanged is spent on the read-only path, which needs no master.
+        // the entry does not write is spent on the read-only path, which needs no master.
         unlockingBytecode: stateRecordUnlockingBytecode(
           options.recordCategoryHex, proxyMasterIndex, writes[nftIndex]! ? 1 : 0,
         ),

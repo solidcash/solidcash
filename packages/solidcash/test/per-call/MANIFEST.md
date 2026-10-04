@@ -365,12 +365,13 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   with no guarded write) and `push-length-keyed-mapping-write.test.ts` (a loop write whose key the entry's own push
   computes). The walls beyond the ladder (`docs/per-call/WALLS_BEYOND_LADDER.md`, agent W2) each pin today's
   refusal, titled with what should settle once served: `plain-root-calls`, `plain-root-writes` and
-  `plain-genesis-writes` (a contract deployed without a proxy), `guarded-vault-root` (a reentrancy guard on a
-  root that calls out), `state-keyed-mapping-write` and `stored-value-keyed-write` (a mapping key read from
-  state), `proxied-native-value`, `role-admin-read-key` (role mappings keyed by constants and stored values),
-  `loop-counted-tail` (an event, hash or send per loop turn), `root-reentry-receiver-hook`,
-  `two-deployments-one-artifact` and `read-node-spent-by-insert`, with `composition-world.ts` as their shared
-  harness. The directory runs only under `PER_CALL_AHEAD=1`.
+  `plain-genesis-writes` (a contract deployed without a proxy), `state-keyed-mapping-write` and
+  `stored-value-keyed-write` (a mapping key read from state), `proxied-native-value`, `role-admin-read-key` (role
+  mappings keyed by constants and stored values), `loop-counted-tail` (an event, hash or send per loop turn),
+  `root-reentry-receiver-hook`, `two-deployments-one-artifact` and `read-node-spent-by-insert`, with
+  `composition-world.ts` as their shared harness; the reentrancy guard on a root that calls out
+  (`guarded-vault-root`) is served and moved to `call/root-guard-across-call.test.ts`. The directory runs only under
+  `PER_CALL_AHEAD=1`.
 
 ## Which refusals cover which attack
 
@@ -401,6 +402,7 @@ listed under the table, and none of those is claimed anywhere else.
 | A read-only frame whose call carries value or names a frame that is not read-only | `validator-read-only-calls.test.ts` (three cases) |
 | A record declaration that reads a view an intervening write has already passed (a stale read) | `stale-view.test.ts` (one case) |
 | A record declared changed in a segment its frame's code does not write it in: a data record, another key's mapping node, a batch node outside its write's segment, or a guard shown unset between its two writes (T43, T44) | `unwritten-record-change.test.ts` (five cases) and `shapes/mapping-write-beside-calls.test.ts` (five cases) |
+| A reentrancy guard shown clear while the call it guards runs, so a frame re-entering the contract below that call would pass it: on the hop's own spend of a root behind its proxy, and on a composed callee that calls back into a guarded entry | `guard-view-across-call.test.ts` (two cases: refused at the delegate frame alone, beside the settled hop every input accepts, and at the outer frame; the honest re-entry is refused in the re-entered frame by the guard's own reason) |
 | A standalone master whose reserved address slot is filled with an address its category does not derive | `standalone-address-slot.test.ts` (one case refused; a slot and a presented address that agree on a foreign address are accepted there, which is the residual only the deployment gate recomputes) |
 | One contract's masters split across two validators | `validator-split-view.test.ts` (one case, with a second validator input beside the first) |
 | An extra call naming an already-used signed input (the call-receipt residual) | `reused-signature.test.ts` (recorded as accepted, so adopting receipts flips it) |

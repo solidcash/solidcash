@@ -694,10 +694,12 @@ interface EarlierResults {
   readonly reached: ReadonlyMap<string, FunctionArgument>;
   readonly returns: ReadonlyMap<number, FunctionArgument>;
   readonly passes: number;
+  /** The whole values callee frames' chunkable writes stored, by master, as their closes exposed them. */
+  readonly writeValues: ReadonlyMap<string, Uint8Array>;
 }
 
 /** No earlier result learned: a call's first plan. */
-const NO_EARLIER_RESULTS: EarlierResults = { reached: new Map(), returns: new Map(), passes: 0 };
+const NO_EARLIER_RESULTS: EarlierResults = { reached: new Map(), returns: new Map(), passes: 0, writeValues: new Map() };
 
 /** A call planned with the sends `shape` declares, and from the results `prior` holds. */
 async function callInShape(
@@ -816,6 +818,7 @@ async function callInShape(
         deployment, selfAddress: deployed.address, senderAddress: options.callerLockingBytecode,
         ...(prior.reached.size === 0 ? {} : { reachedResults: prior.reached }),
         ...(returns.size === 0 ? {} : { externalReturns: returns }),
+        ...(prior.writeValues.size === 0 ? {} : { calleeWriteValues: prior.writeValues }),
       });
     } catch (error) {
       if (error instanceof PerCallCalleeError) throw new PerCallCallError(error.message);
@@ -1746,6 +1749,13 @@ async function callInShape(
         planned: calleePlan, draft: candidate, vm: machine, maximumCommitmentBytes, values: calleeValues,
       });
       if (answered !== undefined) {
+        // A chunking value a callee's close exposed sizes the run of chunk records its write takes, so the call is
+        // planned again from it, as the hop plans its callee's write again (`planCalleeWrites`). A value an earlier
+        // pass already planned from is not planned from twice: its frame then refuses as it stands.
+        const exposed = [...answered.writeValues ?? []].filter(([master]) => !prior.writeValues.has(master));
+        if (exposed.length > 0) {
+          return callInShape(options, shape, { ...prior, writeValues: new Map([...prior.writeValues, ...exposed]) });
+        }
         calleeValues = answered;
         continue;
       }

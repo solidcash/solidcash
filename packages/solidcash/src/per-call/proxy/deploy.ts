@@ -1988,9 +1988,10 @@ async function settleHopCallees(
  * carries a chunk NFT at the address that digest names. When the plan states no run — the value's width is not
  * known yet — the pin stops on the count it computed, and both the bytes and the digest are still operands on the
  * machine there. So the value is the stack operand whose sha256 is another operand, and the read is fail-closed:
- * an absent or ambiguous pair yields nothing, and the write keeps its unstated run and is refused as before.
+ * an absent or ambiguous pair yields nothing, and the write keeps its unstated run and is refused as before. The plain
+ * call path reads its callee frames' so too (`learnCalleeValue`).
  */
-function learnedValueFromClose(vm: Machine, program: ShippedVmProgram): Uint8Array | undefined {
+export function learnedValueFromClose(vm: Machine, program: ShippedVmProgram): Uint8Array | undefined {
   const machine = vm as unknown as {
     boundedDebug?: (p: ShippedVmProgram) => readonly { error?: string; stack: readonly Uint8Array[] }[];
     debug: (p: ShippedVmProgram) => readonly { error?: string; stack: readonly Uint8Array[] }[];

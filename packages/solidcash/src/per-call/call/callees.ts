@@ -20,10 +20,11 @@
  * lays chunk records, a dynamic value's run or the chunks a long mapping value takes, or whose artifact fixes no one
  * segment for the frame's mapping writes, is declared in the segment its artifact publishes for that write, as the
  * hop places its callee's (`placeOwnWrites`), and a long value the body reads from its frame is listed in the frame's
- * block, as the hop lists it (`calleeValueWitnesses`).
+ * block, as the hop lists it (`calleeValueWitnesses`). A chunking value its artifact does not state is read from the
+ * frame's own close, and the call is planned again from it, as the hop plans its callee's (`planCalleeWrites`).
  *
  * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that sends value,
- * co-spends a side-car or writes a chunking value its artifact does not state, which only its own close sizes; a
+ * or co-spends a side-car; a
  * frame that only reads a node an earlier frame created; reaches of one collection one transaction cannot carry; and
  * a deployment entered twice whose frames name data records that no order of its block keeps side by side. A site,
  * of the entry or of a callee frame, whose argument reads an earlier call's result stops the plan before it
@@ -60,7 +61,7 @@ import {
   entryRecordReadUnlock, eventCloseOf, eventLockingBytecode, eventSentinel, readComputedDeclaration,
   stateRecordUnlockingBytecode, type PerCallDeploymentSet,
 } from '../deploy/index.js';
-import { calleeSettleOrder, calleeValueWitnesses, placeOwnWrites } from '../proxy/deploy.js';
+import { calleeSettleOrder, calleeValueWitnesses, learnedValueFromClose, placeOwnWrites } from '../proxy/deploy.js';
 import { sharedNodeId } from '../proxy/entry-writes.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
 import {
@@ -123,6 +124,12 @@ export interface CalleeValues {
   readonly events: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>;
   /** Each value-dependent node's end view, in its write's learning order; one not learned yet is its candidate. */
   readonly views: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>;
+  /**
+   * The whole value a frame's chunkable mapping write stores, which the plan states with its run unstated
+   * (`awaitsValue`): read from the close the frame's own chunk pin stops at, and planned from on the call's next pass
+   * (`CalleePlanOptions.calleeWriteValues`).
+   */
+  readonly writeValues?: ReadonlyMap<string, Uint8Array>;
 }
 
 /** No callee value learned yet. */
@@ -146,6 +153,11 @@ export interface CalleePlanOptions {
   readonly reachedResults?: ReadonlyMap<string, FunctionArgument>;
   /** The results the entry's own guards read, by callsite id, as the callees of an earlier plan returned them. */
   readonly externalReturns?: ReadonlyMap<number, FunctionArgument>;
+  /**
+   * The whole value each callee frame's chunkable mapping write stores, by master, as an earlier plan's frame exposed
+   * it (`CalleeValues.writeValues`): the write is planned from it, which sizes its run of chunk records.
+   */
+  readonly calleeWriteValues?: ReadonlyMap<string, Uint8Array>;
 }
 
 /** The keys the root and the caller's named deployments are handed to the planner under, which no interface can be. */
@@ -322,12 +334,6 @@ function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefine
   }
   const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
   if ((abi?.transferCount ?? 0) > 0) return `${label} sends value, which this call path does not plan yet`;
-  // A chunking value its artifact does not state is sized only from the frame's own close, which the hop plans the
-  // write again from (`planCalleeWrites`) and this path does not yet.
-  if (callee.entryWrites?.awaitsValue === true) {
-    return `${label} writes a chunking value its artifact does not state, so the run of chunk records the write `
-      + 'takes cannot be sized from the call alone';
-  }
   if (sideCars) return `${label} co-spends a side-car, which this call path does not plan yet`;
   if (publishedLoopEffects(callee.artifact, callee.entry) !== undefined) {
     return `${label} emits, sends or hashes once per turn of a loop, which this call path does not plan for a callee `
@@ -379,6 +385,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       senderAddress: options.senderAddress,
       ...(options.reachedResults === undefined ? {} : { reachedResults: options.reachedResults }),
       ...(options.externalReturns === undefined ? {} : { externalReturns: options.externalReturns }),
+      ...(options.calleeWriteValues === undefined ? {} : { calleeWriteValues: options.calleeWriteValues }),
     });
   } catch (error) {
     if (!(error instanceof PerCallProxyDeployError)) throw error;
@@ -908,6 +915,15 @@ export function learnCalleeValue(options: {
       const events = payloads.map((_payload, at) => known[at]);
       events[event.position] = event.payload;
       return { ...values, events: new Map([...values.events, [master, events]]) };
+    }
+    // A chunkable mapping write whose value the artifact does not publish states no run, so the frame's own pin stops
+    // on the chunk count its body computed, with the value and its digest operands at that stop. The value is read
+    // there, as the hop reads its callee's, and the call plans the write again from it (`calleeWriteValues`).
+    if (callee.entryWrites?.awaitsValue === true && !(values.writeValues?.has(master) ?? false)) {
+      const value = learnedValueFromClose(options.vm, program);
+      if (value !== undefined) {
+        return { ...values, writeValues: new Map([...values.writeValues ?? [], [master, value]]) };
+      }
     }
   }
   return undefined;

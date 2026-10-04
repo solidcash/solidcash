@@ -513,6 +513,15 @@ function keyOperandUnavailable(
       if (current.isPackedStateArrayAccess !== true && current.entrySlotIndex < 0) {
         return `the mapping entry '${current.name}'`;
       }
+      // The entry is read where the derivation runs from the node the frame declares for it, and the read proves that
+      // node is the one at its key. A node the body's own batch also writes is read through the operands the
+      // derivation produces, so the derivation cannot read it before it runs.
+      const slot = current.entrySlotIndex;
+      if (current.isPackedStateArrayAccess !== true
+        && (entry.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slot))) {
+        return `the mapping entry '${current.name}' at a node the body also writes, which is read through the `
+          + 'operands the derivation produces';
+      }
       for (const key of current.keys) {
         const inner = walk(key, underField);
         if (inner !== undefined) return inner;

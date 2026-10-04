@@ -103,6 +103,7 @@ import {
 import {
   loopRecordMints, planCallLoopWrites, publishedLoopTurns, type CallLoopWritePlan, type LoopRecordMint,
 } from '../call/entry-records.js';
+import type { MappingValueReader } from './call-resolution.js';
 import { PerCallProxyDeployError } from './errors.js';
 import { hopTrace, hopTraceOn } from './hop-trace.js';
 import { reachedNodeValue } from './reached-values.js';
@@ -290,6 +291,15 @@ export interface HopEntryWritesRequest {
    * Absent leaves every such write undecided: planned as written where the key's node exists, refused where not.
    */
   readonly activationFacts?: WriteActivationFacts;
+  /**
+   * The value a mapping collection's node holds for a key, as the frame reads it on the deployment it runs on.
+   *
+   * A write keyed by a value the body reads out of another mapping (`owed[deals[id].payee]`, published as
+   * `field:payee(map:deals(id:id))`) is keyed by that node's value, or the type's default for a key no node holds;
+   * the frame declares the node it reads and the body proves it before it hashes the key. Absent leaves such a key
+   * unresolved, which is refused by name.
+   */
+  readonly readMappingValue?: MappingValueReader;
 }
 
 /** The live deployment a call's hop reads its writes against, from the deployment's own classification. */
@@ -963,7 +973,10 @@ function requireHopCollection(request: HopEntryWritesRequest, name: string): Art
   return collection;
 }
 
-/** Resolves one access's key(s) from the frame's own arguments, its sender, or a compile-time expression. */
+/**
+ * Resolves one access's key(s) from the frame's own arguments, its sender, a compile-time expression, or a value it
+ * reads out of another mapping's node.
+ */
 function resolveHopKey(
   request: HopEntryWritesRequest,
   fn: AbiFunction,
@@ -980,7 +993,7 @@ function resolveHopKey(
   // imported interface publishes `msg.sender` as an expression label rather than as the `msgSender` kind.
   if (label !== undefined && CALLER_VALUE_LABELS.has(label)) return request.callerLockingBytecode;
   const evaluated = evalComputedKey(
-    label, args, visible, request.liveDeployment?.state, request.stateLengthDeltas,
+    label, args, visible, request.liveDeployment?.state, request.stateLengthDeltas, request.readMappingValue,
   );
   if (evaluated !== undefined) return evaluated;
   const byName = encodedArgument(fn, args, label ?? '', structs);

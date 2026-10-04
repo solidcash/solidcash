@@ -4806,6 +4806,9 @@ export async function callPerCallProxyEntry(
     state: deploymentStateValues(proxyArtifact.stateLayout!, options.proxyCategoryId, proxyPools) as
       Readonly<Record<string, StateValue>>,
   };
+  // The values the proxy's nodes hold, which the delegate frame reads: the facts a guarded write is decided from, and
+  // the key a write reads out of another mapping.
+  const readMappingValue = liveMappingValueReader(implementationArtifact, liveDeployment, implementationArtifact.structs);
   const writesRequest = {
     artifact: implementationArtifact,
     functionName: options.functionName,
@@ -4816,10 +4819,9 @@ export async function callPerCallProxyEntry(
     // batch's groups, so the batch planner takes a read at its slot as declared rather than refusing it.
     declaredReadSlots: readNodes.map((node) => node.slotIndex),
     // A write a branch guards is decided from the proxy's records and nodes, the delegate frame's own.
-    activationFacts: {
-      stateValues: liveDeployment.state, selfAddress: proxyMaster.address,
-      readMappingValue: liveMappingValueReader(implementationArtifact, liveDeployment, implementationArtifact.structs),
-    },
+    activationFacts: { stateValues: liveDeployment.state, selfAddress: proxyMaster.address, readMappingValue },
+    // A key the write reads out of another mapping is the value the proxy's node holds, the node `readNodes` declares.
+    readMappingValue,
   } as const;
   // An entry whose element the artifact cannot state still writes the value's byte length into the record, so the
   // run it grows is re-planned from the commitment the plan states: the first attempt lays it at the live width,

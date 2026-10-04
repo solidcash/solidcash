@@ -47,7 +47,7 @@ avoids it.
 | 1 | The plain call path is not the hop: a contract deployed WITHOUT a proxy cannot make a call beside its own mapping write, call one token twice, pass an earlier call's result, write two collections, store a string per key, or have a constructor that writes two mappings | every non-upgradeable dApp contract that touches a token (vaults, staking, escrows, marketplaces, fee splits, sweeps) and every token whose constructor mints and records an admin | `call/call.ts` 584, `call/callees.ts` 318/339, `call/entry-records.ts` 762/786, `deploy/genesis.ts` 548 | `plain-root-calls`, `plain-root-writes`, `plain-genesis-writes` | named refusals |
 | 2 | `nonReentrant` on a proxied ROOT that calls out: a record field set before the call and restored after it | every OZ-style upgradeable entry that pulls or pays a token under ReentrancyGuard | `proxy/deploy.ts` 2113 (cause: 3249) | `guarded-vault-root` | unattributed (exhausted settle) |
 | 3 | A mapping write keyed by a scalar state variable: the id counter (`items[nextId]`, OZ v5 `_nextTokenId++`) and the stored recipient (`credit[treasury]`) | listings, escrows, proposals, NFT mints, fee crediting | compiler, `support.ts` 353 (`resolveBatchKey` -> `keyOperandUnavailable`) | `state-keyed-mapping-write` | named compile refusal; served (SK1) |
-| 4 | A mapping write keyed by a value read from another mapping ("credit the party the record names": `owed[deal.payee]`, `proceeds[listing.seller]`, OZ ERC721 `_balances[_ownerOf(id)]`) | escrows, marketplaces, OZ ERC721 transfer/burn | memory-copy spelling: codegen crash in `GenerateTargetTraversal.emitPerCallBatchWitnessDerivation`; direct spelling: `proxy/entry-writes.ts` 977, `call/entry-records.ts` 271 | `stored-value-keyed-write` | crash, then named refusal |
+| 4 | A mapping write keyed by a value read from another mapping ("credit the party the record names": `owed[deal.payee]`, `proceeds[listing.seller]`, OZ ERC721 `_balances[_ownerOf(id)]`) | escrows, marketplaces, OZ ERC721 transfer/burn | memory-copy spelling: codegen crash in `GenerateTargetTraversal.emitPerCallBatchWitnessDerivation`; direct spelling: `proxy/entry-writes.ts` 977, `call/entry-records.ts` 271 | `stored-value-keyed-write` | crash, then named refusal; served (SK1, MK1), a key from a node the body writes refused by name |
 | 5 | Native value through a proxy: no value in, no send out | payable entries of upgradeable contracts (sales, auctions, deposits, refunds in BCH) | `call/handle.ts` 182; implementation frame `value: 0n`, `sends: []` (`proxy/deploy.ts` 3414, 3429) | `proxied-native-value` | named (in), unattributed (out) |
 | 6 | AccessControl-shaped roles: a contract constant as a key, a `bytes32(0)` literal key, and the admin check whose key is a stored value | every OZ AccessControl user (`DEFAULT_ADMIN_ROLE`, `MINTER_ROLE`) - including its constructor or `initialize` | compiler `support.ts` 345; hop key evaluator (`stateful/route-expression-key.ts`, `evalComputedKey`); `proxy/entry-writes.ts` 920 | `role-admin-read-key` | named, unattributed, named |
 | 7 | A loop that emits, hashes or pays once per turn | batch airdrops/mints, Merkle-proof claims (`MerkleProof.verify`), refund loops | compiler `support.ts` 1972, 1985, 2404 | `loop-counted-tail` | named compile refusals |
@@ -57,7 +57,9 @@ avoids it.
 
 Also found: under the fixture's project options (`messageBus: true`) a plain escrow source does not compile at all:
 the message-bus route generated for `open(uint256,address,uint256)` fails its own type check (a route the per-call
-convention then discards). Pinned first in `stored-value-keyed-write`.
+convention then discards). Pinned first in `stored-value-keyed-write`. Root (2.4 (1)): the per-call type check leaves
+the derived sorted-batch operands out of every call, the route's too, which forwards one; the source compiles since
+SK1, at the admission ladder's narrower rung.
 
 Refuted predictions: an internal helper that returns a value and calls out, written with an early return
 (`if (asset == address(0)) return 1; return oracle.priceOf(asset);`), was predicted to be kept as an OP_INVOKE
@@ -182,12 +184,40 @@ ready: `evalComputedKey` resolves `state:` labels from the live record (`resolve
 
 ### 2.4 A mapping write keyed by a value read from another mapping (rank 4)
 
-**(1) and (2) served** (agent SK1): the derivation emits the key with the local `d` followed to `deals[id]`, so the
-memory-copy spelling compiles, keyed as the direct one (`field:payee(map:deals(id:id))`), and under the project options
-too: its bus-route failure came only with the codegen crash, while the direct spelling compiled there all along.
-(3) stands.
+**Served** (agents SK1, MK1), except a key read out of a node the same body writes:
 
-Replica: `stored-value-keyed-write.test.ts` (5 cases). Three walls stand in line:
+- (2) SK1: the derivation emits the key with the local `d` followed to `deals[id]` (`deriveKeyExpression`), so the
+  memory-copy spelling compiles, keyed as the direct one (`field:payee(map:deals(id:id))`).
+- (1) is no bus defect. Under `composition: 'per-call'` the type check resolves every call against the callee's
+  declared parameters, the derived sorted-batch operands left out (`TypeCheckTraversal.callSiteParameterTypes`), but
+  the kernel route forwards `__internal__vmapBatchTrailingCount` at the handler's own position, so each route call to
+  an entry that writes a sorted mapping fails it: the first rung and the full recompile fail for BOTH spellings, and
+  the admission ladder falls through to a narrower rung, which the direct spelling compiled at. The copy spelling
+  showed the error only because every narrower rung then met crash (2), so it compiles under the project options
+  since (2). A route call that keeps the operand (MK1, held apart) leaves the marketplace's bytecode, ABI and layouts
+  identical, changes only the `diagnostics` text of five artifacts, and takes its project compile from 87 s to 65 s.
+- (3) MK1: the write keys of the hop (`entry-writes.ts` `resolveHopKey`, given a `readMappingValue` by the
+  implementation frame in `deploy.ts` and by every callee frame in `external-calls.ts` `calleeEntryWrites`) and of
+  the plain path (`call.ts` -> `callEntryRecords`) evaluate `map:<collection>(<keys>)` with `liveMappingValueReader`
+  against the live deployment the frame is planned on: the node the frame declares for the read, a field of it, or
+  the type's default where no node holds the key. The master derives the slot where the body begins through the
+  body's own read, which proves the node is the one at the key, and the write binds its key's hash to the derived
+  slot, so a group at another party is refused by the frame and a declaration naming another payee by settlement.
+  Served in `call/stored-value-keyed-write.test.ts` (both spellings through the hop, an address-valued key through
+  the hop and the plain path, the forgeries) and `solidc/test/per-call/master/mapping-value-key-write.test.ts`.
+- Stands: a key read out of a node the same body writes, OZ ERC721's `_balances[_ownerOf(id)] -= 1; ...;
+  _owners[id] = to`. It compiled and failed `OP_VERIFY` at run time: a batch target is read through the operands
+  the derivation produces, so the derivation cannot read it before it runs. It is refused by name now
+  (`keyOperandUnavailable`). Serving it: derive the batch the key reads out of first, emit the key, then the rest.
+- Stands: the plain path cannot open a struct record (its value chunks, and the call does not declare the created
+  node's chunk records), so a struct-field key is served there once that lands (2.1).
+- Not served by name, liveness only: a key whose mapping read follows a call is derived from the node the first
+  segment declares; a frame the call re-enters that rewrites the node leaves the body's key off the derived slot,
+  and the frame refuses. Record reads take the segment the body reads them in (`deriveKeyExpression`); mapping reads
+  would take the same. The same release after a call settles through the hop when nothing rewrites the node.
+
+As W2 found it (`stored-value-keyed-write.test.ts`, 5 cases; it now pins the two that stand, in 3), three walls stood
+in line:
 
 1. Under the project options (`messageBus: true`) the unit does not compile (the message-bus route generated for
    `open`, which the per-call convention then discards, fails its own type check).
@@ -416,7 +446,7 @@ today and its title says what should settle once served.
 | `plain-genesis-writes.test.ts` | 2 | 2.1, retired: served (`deploy/constructor-loop-writes.test.ts`) |
 | `guarded-vault-root.test.ts` | 5 | 2.2, retired: served (`call/root-guard-across-call.test.ts`) |
 | `state-keyed-mapping-write.test.ts` | 3 | 2.3, retired: served (`call/state-keyed-mapping-write.test.ts`) |
-| `stored-value-keyed-write.test.ts` | 5 | 2.4: both spellings compile, hop and plain refusals (control: open) |
+| `stored-value-keyed-write.test.ts` | 3 | 2.4: ERC721 transfer refused by name (control: mint), struct record opened plain; the rest served (`call/stored-value-keyed-write.test.ts`) |
 | `proxied-native-value.test.ts` | 1 | 2.5 served (`call/proxied-native-value.test.ts`); repointed: a send to a contract |
 | `role-admin-read-key.test.ts` | 3 | 2.6 served; repointed: returning helpers, a skipped role write |
 | `loop-counted-tail.test.ts` | 4 | 2.7, retired: served (`call/loop-turn-effects`, `call/proxied-native-value`) |
@@ -440,12 +470,12 @@ replica above confirms it. The full table with every row and class is the append
 | 1 | solidcash `call/entry-records.ts` 762, 786 | plain root: two collections; chunked mapping value | H | conf. 2.1 |
 | 1 | solidcash `deploy/genesis.ts` 548 | constructor writing two collections | H | conf. 2.1 |
 | 1 | solidcash `call/callees.ts` 258-271 | plain root: callee behind a proxy / delegate / sending value / touching chunks / side-car / unfixed segment | H | code |
-| 1 | solidcash `call/entry-records.ts` 271, 818, 884, 897, 911, 947, 346-421, 582, 879 | plain root: key not from arguments; several writes per target; reads; loop writes | M-H | 271 conf. 2.4 |
+| 1 | solidcash `call/entry-records.ts` 271, 818, 884, 897, 911, 947, 346-421, 582, 879 | plain root: key not from arguments; several writes per target; reads; loop writes | M-H | 271 conf. 2.4; a key read out of another mapping served (MK1) |
 | 1 | solidcash `call/call.ts` 516, 622, 633, 661, 700, 717, 738, 742, 789, 991 | plain root: single-body contract; value-send combinations | M | code |
 | 2 | solidcash `proxy/deploy.ts` 2113 | hop root: a record restored to its start across a call (nonReentrant) | H | conf. 2.2 (no named refusal) |
 | 3 | solidc `master/support.ts` 353 | key reads a scalar state value / an unaddressed mapping entry / a computed value | H | scalar state served (SK1); the rest stands |
-| 4 | solidc `GenerateTargetTraversal.emitPerCallBatchWitnessDerivation` | key through a local copy of a mapping entry: codegen crash | H | compiles (SK1); 2.4 (3) stands |
-| 4 | solidcash `proxy/entry-writes.ts` 977 | hop root: key from another mapping's value | H | conf. 2.4 |
+| 4 | solidc `GenerateTargetTraversal.emitPerCallBatchWitnessDerivation` | key through a local copy of a mapping entry: codegen crash | H | compiles (SK1); served (MK1) |
+| 4 | solidcash `proxy/entry-writes.ts` 977 | hop root: key from another mapping's value | H | served (MK1); a key from a node the body writes refused by name (compiler) |
 | 5 | solidcash `call/handle.ts` 182 | value through a proxy | H | conf. 2.5 |
 | 5 | solidcash `proxy/deploy.ts` 3414, 3429 | hop: implementation frame sends (no named refusal) | H | conf. 2.5 |
 | 6 | solidc `master/support.ts` 345 | key is a contract constant (bare identifier) | H | conf. 2.6 |

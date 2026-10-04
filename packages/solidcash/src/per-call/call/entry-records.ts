@@ -80,6 +80,12 @@ export interface CallEntryRecordsRequest {
    * Absent leaves every such write undecided: planned as written where the key's node exists, refused where not.
    */
   readonly activationFacts?: WriteActivationFacts;
+  /**
+   * The value a mapping collection's node holds for a key, read from the same deployment: a write keyed by a value the
+   * body reads out of another mapping (`map:<collection>(<keys>)`, a field of it) resolves against the node the frame
+   * declares for that read. Absent leaves such a key unresolved, which is refused by name.
+   */
+  readonly readMappingValue?: (collection: string, keys: readonly FunctionArgument[]) => FunctionArgument | undefined;
 }
 
 /** The coordinates and values one segment's mapping records need. */

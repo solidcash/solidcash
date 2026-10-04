@@ -366,8 +366,10 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   computes). The walls beyond the ladder (`docs/per-call/WALLS_BEYOND_LADDER.md`, agent W2) each pin today's
   refusal, titled with what should settle once served: `plain-root-calls` and `plain-root-writes` (a contract
   deployed without a proxy; its two-mapping constructor deploys since `deploy/constructor-loop-writes`),
-  `stored-value-keyed-write` (a mapping key read from another mapping), `proxied-native-value` (a send to a contract
-  from a proxied root's body; value in and sends out through the proxy are served in `call/proxied-native-value`),
+  `stored-value-keyed-write` (an ERC721 transfer keyed by a node it then writes, and a struct record opened on the
+  plain path; keys read out of another mapping are served in `call/stored-value-keyed-write`), `proxied-native-value`
+  (a send to a contract from a proxied root's body; value in and sends out through the proxy are served in
+  `call/proxied-native-value`),
   `role-admin-read-key` (role helpers that return and emit, and a role write the body skips; the keys are served in
   `call/role-admin-read-key`), `root-reentry-receiver-hook` and `two-deployments-one-artifact`, with
   `composition-world.ts` as their shared harness; the reentrancy guard on a root that calls out

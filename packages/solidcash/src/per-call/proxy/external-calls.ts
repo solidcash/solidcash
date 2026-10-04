@@ -1636,6 +1636,8 @@ function calleeEntryWrites(
   learnedValue?: Uint8Array,
 ): HopEntryWrites | undefined {
   const callee = `${artifact.contractName}.${functionName}()`;
+  // The values the nodes hold as the reaches before this one left them.
+  const readMappingValue = liveMappingValueReader(artifact, live, artifact.structs);
   let writes: HopEntryWrites | undefined;
   try {
     writes = hopEntryWrites({
@@ -1648,11 +1650,11 @@ function calleeEntryWrites(
       declaredReadSlots: readNodes.map((node) => node.slotIndex),
       // A node is the contract's, not the reach's: every reach that touches it names the same participant.
       nodeIdOf: (collection, slot) => sharedNodeId(categoryId, collection, slot),
+      // A key the write reads out of another mapping is the value that node holds, the view its read node declares.
+      readMappingValue,
       ...(learnedValue === undefined ? {} : { learnedValue }),
       // A write a branch guards is decided from the state and the nodes the reaches before this one left.
-      activationFacts: {
-        stateValues: live.state ?? {}, readMappingValue: liveMappingValueReader(artifact, live, artifact.structs),
-      },
+      activationFacts: { stateValues: live.state ?? {}, readMappingValue },
     });
   } catch (error) {
     const fn = artifact.abi.find((candidate) => candidate.name === functionName);

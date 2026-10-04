@@ -4,6 +4,7 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
+import { lockingBytecodeToSolidityAddressPayload } from '../utils.js';
 import {
   encodeMessageBatch, encodeMessageBusArguments, preparedCallMatchesPlanInvocation,
 } from './message-bus.js';
@@ -14,6 +15,48 @@ import type { CallDescriptor } from './compose-prepared-invocation.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
+
+/**
+ * A Solidity address forwarded through another handler is an ABI word in that handler's decoded frame. The
+ * discovery descriptor can still hold its original native locking script. Accept that representation change
+ * only when the typed address is the exact authenticated target of this invocation's outgoing callsite.
+ */
+function preparedArgsMatchAuthenticatedAddressTargets(
+  plan: CompiledGraphPlan,
+  index: number,
+  supplied: CallDescriptor,
+): boolean {
+  if (supplied.artifact.compiler?.options?.solidityImportCompat !== true
+    && supplied.artifact.compiler?.options?.evmCompat !== true) return false;
+  const invocation = plan.invocations[index];
+  const abi = supplied.artifact.abi.find((candidate) =>
+    candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
+  if (!abi) return false;
+  const inputs = abi.inputs.filter((input) => !input.name.startsWith('__internal__'));
+  if (inputs.length !== supplied.args.length || inputs.length !== invocation.args.length) return false;
+  const structs = supplied.artifact.structs ?? supplied.artifact.stateLayout?.structs;
+  let projectedAddressCount = 0;
+  for (let argumentIndex = 0; argumentIndex < inputs.length; argumentIndex += 1) {
+    const type = inputs[argumentIndex].type;
+    const prepared = encodeFunctionArgument(supplied.args[argumentIndex], type, structs);
+    const planned = encodeFunctionArgument(invocation.args[argumentIndex], type, structs);
+    if (!(prepared instanceof Uint8Array) || !(planned instanceof Uint8Array)) return false;
+    if (binToHex(prepared) === binToHex(planned)) continue;
+    if (type !== 'address' && type !== 'address payable') return false;
+    if (planned.length !== 32 || !planned.subarray(0, 12).every((byte) => byte === 0)) return false;
+    const identity = lockingBytecodeToSolidityAddressPayload(prepared);
+    if (identity === undefined || binToHex(identity) !== binToHex(planned.subarray(12))) return false;
+    const callsiteIds = (abi.externalCalls ?? []).filter((call) =>
+      call.addressSource?.kind === 'forward' && call.addressSource.paramIndex === argumentIndex)
+      .map((call) => call.callsiteId);
+    const targets = plan.invocations.filter((child) => child.parent === index
+      && callsiteIds.includes(child.consumerCallsiteId));
+    if (targets.length === 0 || targets.some((child) =>
+      child.targetLockingBytecode?.toLowerCase() !== binToHex(prepared))) return false;
+    projectedAddressCount += 1;
+  }
+  return projectedAddressCount > 0;
+}
 
 /**
  * Fail closed when a prepared call disagrees with the plan on selector or (non-result-dependent) argsHex.
@@ -80,7 +123,8 @@ export function validateComposePreparedCallArguments(
     // descendants are re-derived by the compiler worklist too. Their discovery descriptors still describe the
     // preceding fixed-point pass, so comparing those stale bytes here would stop convergence before the
     // participant covenant can expose the next result. Calls outside such a dependency subtree remain strict.
-    if (suppliedRow.argsHex !== invocation.argsHex && !hasResultDependentAncestor(index)) {
+    if (suppliedRow.argsHex !== invocation.argsHex && !hasResultDependentAncestor(index)
+      && !preparedArgsMatchAuthenticatedAddressTargets(plan, index, supplied)) {
       throw new Error(
         `messageBus: prepared call ${index} '${invocation.function}' arguments disagree with compiler-derived `
         + `invocation arguments (prepared ${suppliedRow.argsHex}, derived ${invocation.argsHex})`,

@@ -11641,7 +11641,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const replaceLoopArgument = (index: number, value: FunctionArgument): void => {
           if (!upsertFrame.routed) {
             upsertFrame.args[index] = value;
-            finalArgs[index] = value;
+            // A promoted delegate entry encodes its own frame from entryArgs by name; the outer forwarder's
+            // arguments must keep their own ABI shape.
+            if (entryAbiFunction === abiFunction) finalArgs[index] = value;
             return;
           }
           const input = upsertFrame.abiFunction.inputs[index];

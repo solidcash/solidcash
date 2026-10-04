@@ -77,6 +77,28 @@ export function resolveDelegatePushValueWitness(
   return entryIndex < 0 ? new Uint8Array() : activeEntry!.args[entryIndex] ?? new Uint8Array();
 }
 
+/** Transaction-wide runtime-loop cardinality remainders: one input/output pair per mutated collection. */
+export function isRuntimeLoopCardinalityName(name: string): boolean {
+  return /^__internal__vmapRuntime(?:Input|Output)Count_/.test(name);
+}
+
+/**
+ * Resolve a direct delegate build's runtime-loop cardinality by name from the entry frame the builder planned
+ * (the summed loop widths a route would receive). Undefined when nothing was planned, so the caller fails closed.
+ */
+export function resolveDelegateRuntimeCardinality(
+  name: string,
+  activeEntry: {
+    inputs: readonly { name: string }[];
+    args: readonly FunctionArgument[];
+  } | undefined,
+): bigint | undefined {
+  if (!isRuntimeLoopCardinalityName(name)) return undefined;
+  const entryIndex = activeEntry?.inputs.findIndex((input) => input.name === name) ?? -1;
+  const planned = entryIndex < 0 ? undefined : activeEntry!.args[entryIndex];
+  return typeof planned === 'bigint' && planned >= 0n ? planned : undefined;
+}
+
 export type FixCreateBuilderDelegateUnlockersHost = {
   readonly categoryId: string;
   readonly selfContract: any;
@@ -753,6 +775,8 @@ export async function fixCreateBuilderDelegateUnlockers(
           }
           return callInputIndex;
         }
+        const runtimeCardinality = resolveDelegateRuntimeCardinality(inp.name, activeEntryDelegate);
+        if (runtimeCardinality !== undefined) return runtimeCardinality;
         throw new Error(`Unsupported SDK-filled delegate parameter '${inp.name}' on ${group.functionName}.`);
       });
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

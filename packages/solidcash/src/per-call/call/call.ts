@@ -548,8 +548,8 @@ function asCallRefusal(error: unknown, functionName: string): unknown {
 
 /**
  * Plans the mapping records one frame of a call reads and writes, and the run of chunk records a dynamic value it
- * grows takes, or `undefined` when it touches neither: the node of each key it only reads (`callEntryReads`), then
- * its writes as the hop plans a frame's own (`hopEntryWrites`).
+ * grows or only reads takes, or `undefined` when it touches neither: the node of each key it only reads
+ * (`callEntryReads`), then its writes as the hop plans a frame's own (`hopEntryWrites`).
  *
  * The hop's planner takes the frame as it takes a delegate frame, on the frame's own records, nodes, chunks and
  * category rather than a proxy's: one sorted batch per collection, keys from the arguments, the sender, the state and
@@ -573,7 +573,11 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
   // A dynamic value's run of chunk records is the frame's own write as a batch is, so an entry that grows one is
   // planned whether or not it writes a mapping beside it.
   const grows = fn?.dynamicWrites ?? [];
-  const writesOwn = batches.length > 0 || grows.length > 0
+  // A run the entry only reads is declared as the hop declares its delegate frame's (`planHopReadRuns`): each live
+  // chunk kept in place past the frame's records, where the body reads an element of it, before its calls or after.
+  // Left out, the body's read of the element finds no run there and fails.
+  const readOnly = (fn?.dynamicReads ?? []).filter((variable) => !grows.includes(variable));
+  const writesOwn = batches.length > 0 || grows.length > 0 || readOnly.length > 0
     || (fn?.entryAccesses ?? []).some((access) => access.operations.some((operation) => operation !== 'read'));
   const category = new Uint8Array(hexToBin(categoryId));
   const several = new Set(batches.map((batch) => batch.collection)).size > 1;
@@ -606,10 +610,11 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
   }
   const collection = writes?.collection ?? reads.nodes[0]?.collection;
   const grown = writes === undefined ? undefined : grows[0];
-  if (collection === undefined && grown === undefined) return undefined;
+  const readRun = writes?.readRunIds === undefined ? undefined : readOnly[0];
+  if (collection === undefined && grown === undefined && readRun === undefined) return undefined;
   requireDistinctNodes(functionName, [...reads.nodes.map((node) => node.utxo), ...(writes?.spentUtxos.values() ?? [])]);
   return {
-    label: collection === undefined ? `dynamic "${grown!}"` : `mapping "${collection}"`,
+    label: collection === undefined ? `dynamic "${grown ?? readRun!}"` : `mapping "${collection}"`,
     // The nodes it only reads come first, so they sit past the frame's data records where its code reads them.
     participantIds: [...reads.nodes.map((node) => node.id), ...(writes?.participantIds ?? [])],
     spentUtxos: new Map([...reads.nodes.map((node) => [node.id, node.utxo] as const), ...(writes?.spentUtxos ?? [])]),

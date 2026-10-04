@@ -39,6 +39,12 @@ export type ComposeKernelAuthorityResult = {
 /** Last authority results from compose (tests assert these are populated and digests match). */
 const lastResults: ComposeKernelAuthorityResult[] = [];
 
+const REQUIRED_PUBLISHED_BUDGET_AXES = [
+  'maximumRows', 'maximumParticipants', 'maximumBlobBytes', 'maximumDynamicChunks',
+  'maximumValueContinuationChunks', 'maximumJournalRecords', 'maximumEvents',
+  'maximumTransfers', 'maximumReturnCarriers', 'maximumExternalEdges',
+] as const satisfies readonly (keyof KernelResourceBudget)[];
+
 export function clearComposeKernelAuthorityResults(): void {
   lastResults.length = 0;
 }
@@ -77,6 +83,13 @@ export function authorizeComposeParticipantLayout(params: {
   );
   if (params.requirePublishedBudgets === true && params.budgets === undefined) {
     throw new Error('kernel-plan: resourceBudgets missing (compiler must publish multi-axis budgets)');
+  }
+  if (params.requirePublishedBudgets === true) {
+    for (const axis of REQUIRED_PUBLISHED_BUDGET_AXES) {
+      if (params.budgets?.[axis] === undefined) {
+        throw new Error(`kernel-plan: resourceBudgets missing ${axis}`);
+      }
+    }
   }
   const plan = createKernelExecutionPlan({
     handlerId: stableJoinKey(handlerStable),

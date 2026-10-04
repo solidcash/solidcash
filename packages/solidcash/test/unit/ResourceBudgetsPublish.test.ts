@@ -19,6 +19,22 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
+const publishedLayoutBudgets = (maximumRows: number) => {
+  const published = buildMessageBusResourceBudgets({ maximumRows });
+  return {
+    maximumRows: published.maximumRows,
+    maximumParticipants: published.maximumParticipants,
+    maximumBlobBytes: published.maximumBlobBytes,
+    maximumDynamicChunks: published.maximumDynamicChunks,
+    maximumValueContinuationChunks: published.maximumValueContinuationChunks,
+    maximumJournalRecords: published.maximumJournalRecords,
+    maximumEvents: published.maximumEvents,
+    maximumTransfers: published.maximumTransfers,
+    maximumReturnCarriers: published.maximumReturnCarriers,
+    maximumExternalEdges: published.maximumExternalEdges,
+  };
+};
+
 describe('published resource budgets/published semantic-derivation ceiling resourceBudgets publish + consume', () => {
   it('buildMessageBusResourceBudgets stamps multi-axis ceilings including semantic passes', () => {
     const budgets = buildMessageBusResourceBudgets({
@@ -86,22 +102,29 @@ describe('published resource budgets/published semantic-derivation ceiling resou
     })).toThrow(/resourceBudgets missing/);
   });
 
+  it('refuses an incomplete published kernel budget vector', () => {
+    const { maximumValueContinuationChunks, ...missing } = publishedLayoutBudgets(2);
+    expect(maximumValueContinuationChunks).toBe(256);
+    expect(() => authorizeComposeParticipantLayout({
+      participant: 0,
+      handlerSelector: 'aabbccdd',
+      publishedBase: 0,
+      claimCount: 1,
+      requirePublishedBudgets: true,
+      budgets: missing,
+    })).toThrow(/maximumValueContinuationChunks/);
+  });
+
   it('authorizeComposeParticipantLayout consumes published budgets and refuses over-budget usage', () => {
     clearComposeKernelAuthorityResults();
-    const published = buildMessageBusResourceBudgets({ maximumRows: 2 });
+    const budgets = publishedLayoutBudgets(2);
     const ok = authorizeComposeParticipantLayout({
       participant: 0,
       handlerSelector: 'aabbccdd',
       publishedBase: 0,
       claimCount: 1,
       requirePublishedBudgets: true,
-      budgets: {
-        maximumRows: published.maximumRows,
-        maximumParticipants: published.maximumParticipants,
-        maximumBlobBytes: published.maximumBlobBytes,
-        maximumDynamicChunks: published.maximumDynamicChunks,
-        maximumValueContinuationChunks: published.maximumValueContinuationChunks,
-      },
+      budgets,
       usage: { maximumRows: 1 },
     });
     expect(ok.plan.budgets?.maximumRows).toBe(2);
@@ -112,13 +135,7 @@ describe('published resource budgets/published semantic-derivation ceiling resou
       publishedBase: 0,
       claimCount: 1,
       requirePublishedBudgets: true,
-      budgets: {
-        maximumRows: published.maximumRows,
-        maximumParticipants: published.maximumParticipants,
-        maximumBlobBytes: published.maximumBlobBytes,
-        maximumDynamicChunks: published.maximumDynamicChunks,
-        maximumValueContinuationChunks: published.maximumValueContinuationChunks,
-      },
+      budgets,
       usage: { maximumRows: 3 },
     })).toThrow(/maximumRows/);
   });

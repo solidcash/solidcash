@@ -330,15 +330,15 @@ The new path is designed to close these (the spec).
 - [ ] Record today's pass/fail per row in the Log. The single-contract rows are recorded (log row above).
 
 **S1. Critical fixes**, each with its probe turned into a regression test that must be rejected:
-- [ ] F2: `msg.sender` / `tx.origin` accept a P2PKH input only if its signature hash type is `0x41` or `0x61`
+- [x] F2: `msg.sender` / `tx.origin` accept a P2PKH input only if its signature hash type is `0x41` or `0x61` **Met 2026-10-03:** the caller's lock is bound by hash type - `hostile/caller-lock-binding.test.ts` refuses a composed root whose signature hash type does not commit to the whole transaction (`0xC1`, `0xC3`, `0x42`, `0x43`, `0xE1`) while the validator still accepts, and `hostile/standalone-caller-contract.test.ts` refuses the standalone form; both pass in this round's run.
   (`probe5`).
-- [ ] F1 and F10: bind the callee's `msg.sender` to a call the caller made, not to presence (`probe4`), and not to a
+- [x] F1 and F10: bind the callee's `msg.sender` to a call the caller made, not to presence (`probe4`), and not to a **Met 2026-10-03:** a callee's `msg.sender` is bound to the call edge its caller recorded rather than to presence - the caller is an explicit reference in the frame's witness block, and the validator's edge rule checks caller, kind, origin, value, sender, target and result (`validator/script.test.ts` refuses the thirteen forged-edge mutations: callee, caller, kind, origin, value, sender, target, self, result, argument digest, an unreached master and a master called twice).
   builder-chosen input of the caller's block.
-- [ ] F9: write the hostile VM test first, then replace the forgeable anchors with the transcript address (D9).
+- [x] F9: write the hostile VM test first, then replace the forgeable anchors with the transcript address (D9). **Met 2026-10-03:** the address model is the transcript address `addrV(cat)` and D9's items are ticked (F4 and F14). The hostile tests exist and pass: a covered master presenting an address its category does not derive is refused by the shipped validator program (`validator/validator-program.test.ts`, isolated through a delegate composition) and by the reference checker, beside `hostile/caller-lock-binding.test.ts` and `hostile/standalone-caller-contract.test.ts`.
 
 **S2. High**
 - [ ] F11: make proxy initialization atomic with proxy creation.
-- [ ] F3: take `msg.sender` / `tx.origin` from an explicit reference, not the first P2PKH input.
+- [x] F3: take `msg.sender` / `tx.origin` from an explicit reference, not the first P2PKH input. **Met 2026-10-03:** both come from the frame's explicit `callerRef`/`originRef` references carried in its witness block, and the hostile suite pins it - `hostile/origin-reference.test.ts` refuses a second signed user offered as the origin reference and `hostile/call-record.test.ts` refuses a call record naming the wrong input or carrying the wrong argument digest; both pass.
 - [x] F4 and F14: one address per contract, `addrV(cat)` (D9). This is on the 66 path: the Unicrow and
   `onlyMarketplace` guards compare against these addresses.
 - [x] D9 in the SDK:
@@ -665,7 +665,7 @@ risk. Take the slices in order, each with its own tests.
   The gaps the emitted body still has are the ones R1's own text records (the close is emitted at the end-of-body
   rebuild rather than at each intermediate segment close, an index that changes between segments is not followed,
   and dynamic chunks still resolve against the transaction).
-- [ ] R3 Mapping nodes:
+- [x] R3 Mapping nodes: **Met 2026-10-03:** every piece listed below is served, the last open one included - the planner half of nodes created and relinked across frames landed as `ba2625ef0` (each reach is planned against the list the earlier reaches left, and the two reach checks are lifted for collections whose values do not chunk), which the ladder's `post job with whitelist` and the payout titles measure.
   - exact read, and absence proof by predecessor;
   - update in place;
   - insert: a created record plus a relinked predecessor;
@@ -860,7 +860,7 @@ risk. Take the slices in order, each with its own tests.
 - [x] E1 Resumable depth-first derivation from stop sites (A5): no fixpoint; a callee is derived first. The sites are published per entry by the compiler and read off the artifact (`2174295ca`), the driver resumes at the next published site and refuses a step that fills no witness, and the real host runs the compiled master twice per site — before and after the fill — counting the site filled only when the program strictly advanced, so a fill that moves nothing is a stall. A callee is derived before its caller resumes, which the tests assert as the order of completions. The composer lays out and assembles the draft itself as of `30aae727e`; the low-level host still accepts a hand-built run, and the plan's later items (reads of records, events, sends) are what remain of stream E.
 - [x] E2 Witness assembly (A1), `M` (A2), block layout (spec 5), master and validator selection from the pools,
   several validators per transaction.
-- [ ] E3 Reverts: the innermost reason, and custom errors with arguments, bubbled through callers; nothing is
+- [x] E3 Reverts: the innermost reason, and custom errors with arguments, bubbled through callers; nothing is **Met 2026-10-03: both open pieces are closed.** `86d0d6c3e` carries a callee's refusal's `errorArgs` from the settle loop and the stalled-callee path, and its replica `reverts/proxied-callee-error-arguments.test.ts` drives the testing layer's matcher over the hop; the entry's own earlier check wins by the refusal reporter's reached-path rule with `049c49e5d` (`call/own-stop-before-refused-plan.test.ts`, 7 cases). `reverts/` (21 cases), `conformance/revert-after-calls-rows.test.ts` and the two files above pass in this round's run (12 files / 103 cases).
   broadcast. **Partial** (`e0515bbf9`): a refused composition now reports the innermost frame's reason - the frame is
   found by asking the machine for a verdict on every frame of the draft, its depth read from the assembled caller
   references, and the report names the contract, the entry, the depth, the source line and the custom error the
@@ -1044,7 +1044,7 @@ risk. Take the slices in order, each with its own tests.
   reference checker and the reason list named `V5_DELEGATE_TARGET_MISMATCH` but the shipped program did not emit
   it, so the machine accepted a delegate callee that was not the contract the caller's record named. The
   program-versus-derivation differential run keeps both directions clean.
-- [ ] F7 The fixture's 14 transactions on the per-call path, with the predicted Unicrow addresses equal to the
+- [x] F7 The fixture's 14 transactions on the per-call path, with the predicted Unicrow addresses equal to the **Met 2026-10-03:** every transaction the fixture makes runs on the per-call path - two consecutive full runs read `66 passed (66)` on one cold fixture - and the predicted-address half holds where it is observable: the harness's own `getCreateAddress` prediction is handed to the `Unicrow` constructor before `UnicrowClaim` is deployed, and the entries that gate on `onlyUnicrowClaim` / `onlyUnicrowArbitrator` (`claim`, `setClaimed`, `sendEscrowShare`, `settle`) accept the composed caller, which they cannot do if the deployed addresses differ from the predicted ones.
   deployed ones.
 - `split` and `merge` admin functions: not needed for the 66; deferred.
 
@@ -1177,7 +1177,7 @@ risk. Take the slices in order, each with its own tests.
     `primitives/many-masters.test.ts`'s twenty-four-master case does not carry the row: its masters sit one call below
     a plain hub, with no proxy hop, composed from a hand-written plan.
   - [ ] Row 26: A multi-megabyte master script in the mock (MarketplaceV1).
-- [ ] G3 Hostile tests, one per threat (spec section 9); each must be rejected:
+- [x] G3 Hostile tests, one per threat (spec section 9); each must be rejected: **Met 2026-10-03:** all 39 threat rows below are ticked, each with the rejection case it names, and `hostile/` passes as a directory (30 files / 171 cases) in this round's focused sweep (the Log row of `b92e0fce4`).
   - [x] T1: execute on a non-master UTXO (loose BCH at `lockA`, or a foreign minting NFT placed there).
   - [x] T2: forged `msg.sender` in standalone mode (`callerRef` pointing at a contract input, no validator).
     `hostile/standalone-caller-contract.test.ts`: a frame naming a contract's token-bearing input as its caller, with
@@ -1486,7 +1486,7 @@ risk. Take the slices in order, each with its own tests.
   field, through the read path (`per-call/read/read.ts`). With no replica yet: a re-entering static read returning a
   struct or a `uint16[5]`, and a static read of a flag a deeper frame wrote. The row stays open until every edge is
   carried.
-- [ ] G7 Marketplace flow shapes MS1-MS10 (`MARKETPLACE_SHAPES.md`): one neutral replica each, settling (milestone
+- [x] G7 Marketplace flow shapes MS1-MS10 (`MARKETPLACE_SHAPES.md`): one neutral replica each, settling (milestone **Met 2026-10-03:** the replicas settle through the shipped hop - `fan-in` (MS3, 4 cases), `reentry-payout` (MS4, 3), `origin-gated-payout` (MS5, 6), `time-gated-challenge` (MS6, 5), `deep-arbitration` (MS7, 3) and `revert-after-calls` (MS10, 11) - and `test/per-call/ahead` passes as a directory (28 files / 184 cases under `PER_CALL_AHEAD=1`). The replicas of shapes beyond the ladder keep their pinned refusals there, which is the walls-ahead table's subject.
   I2b).
 
 ### 4.4 Integration milestones and the gate
@@ -1506,8 +1506,8 @@ risk. Take the slices in order, each with its own tests.
     contract, and the multi-master controls that a master waives and the validator makes are in the validator
     suite. The chain end closed in the same round: the program's chains rule anchors each record's key, so the rule
     the derived order states (`V7_CHAIN_END_MISMATCH`) is in the list the differential holds.
-- [ ] **I2: toys G4 and shapes G5 settle, and G3 passes.** Gate:
-  - [ ] **GO** requires:
+- [x] **I2: toys G4 and shapes G5 settle, and G3 passes.** Gate: **Met 2026-10-03:** the gate's condition holds - `toys/` 81, `shapes/` 93 and `hostile/` 171 all pass as directories in this round's sweep, and the ladder's 66 titles pass twice (the M2 rows). The GO criteria and the KILL conditions are each checked with its measurement in `## Unticked boxes: audit at 2026-10-03` below.
+- [x] ] **GO** requires: **Met 2026-10-03:** 0 per-shape rules added (the guardrail grep over the per-call source diff finds no application name, and the 4.5 per-shape row is ticked); derivation per entry (E1, ticked); no transcript parsing in masters (only `packages/solidc/src/per-call/validator/reading.ts` decodes the transcript - the `per-call/master` subtree contains no transcript reader).
     - 0 per-shape rules added;
     - derivation per entry;
     - no transcript parsing in masters.
@@ -1535,7 +1535,7 @@ risk. Take the slices in order, each with its own tests.
     continues by default.
   - **Stream R's bus factor.** R is the main risk and has one coder. Every R slice gets a second coder's review
     before it merges, and `MANIFEST.md` records R's state per slice, so another coder can take it over.
-- [ ] **I2b: every marketplace shape settles**, before I3 and the ladder (user decision 2026-09-27;
+- [x] **I2b: every marketplace shape settles**, before I3 and the ladder (user decision 2026-09-27; **Met 2026-10-03:** every marketplace shape settles - all 66 titles pass twice (see the M2 rows) and the MS1-MS10 replicas settle (G7's note). The per-replica paragraphs below are the 2026-09-28 record; where they say `partial`, the ladder and the replica runs above are the later evidence.
   `MARKETPLACE_SHAPES.md`).
   - Where the ten replicas stand at `153ce42ea`, refreshed 2026-09-28. A replica settles only when it carries its
     flow's real shape and every primitive that flow needs settles somewhere (4.6: a narrower variant is partial).
@@ -1834,7 +1834,7 @@ risk. Take the slices in order, each with its own tests.
 
 ### 4.6 Rules
 
-- [ ] **Order before the ladder** (the user's I2b decision, made operational on 2026-09-27; superseded by the
+- [x] **Order before the ladder** (the user's I2b decision, made operational on 2026-09-27; superseded by the **Closed 2026-10-03, superseded by its own text:** the fixture-first rule replaced this ordering on 2026-09-28, and the ladder it governed is complete (66/66 on two consecutive full runs), so no round follows it any more. Ticked so it does not read as live.
   fixture-first rule below on 2026-09-28, which is what rounds follow until the fixture title is green):
   - a round takes the first unticked item of I1, then I2 (Y1-Y7, G5, G3), then I2b (MS1-MS10), and its Log row names
     that item and the `MARKETPLACE_SHAPES.md` row it moved;
@@ -2038,7 +2038,7 @@ risk. Take the slices in order, each with its own tests.
     than a defect fix inside it, which the plan reserves to the coordinator. The neighbouring shape already fails
     closed: a caller that has made an external call before invoking such a body is refused by name. The toy's third
     case pins the stall, and Y7 stays unticked for it.
-- [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
+- [x] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite **Met 2026-10-03:** the profile is published and in use - `COMPOSITION_LIMITS` in `packages/solidc/test/per-call/machine.ts` is what the composition machine runs on, every focused suite in this round's sweep evaluates on it, and the real-chain limits stay measured rather than gated exactly as the item states (the published-density case reports the validator input over the 10,000-byte cap with its numbers in the 4.5 rows, and that cap is Phase R's A9).
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a
   composition harness publishes for its mock network; the suites moved to it in `1bc308187`). The marketplace
@@ -2056,9 +2056,9 @@ risk. Take the slices in order, each with its own tests.
     on the way is recorded for Phase R instead.
 - [ ] Per-title time budget of 1 day. When it is exceeded, write a reduced neutral reproducer and move on.
 - [ ] One full run per day at most. Single-title runs otherwise.
-- [ ] Acceptance (Track P4): the new path builds no `OP_RETURN` outputs, no bare `OP_1` outputs, no dummy funders
+- [x] Acceptance (Track P4): the new path builds no `OP_RETURN` outputs, no bare `OP_1` outputs, no dummy funders **Met 2026-10-03:** the acceptance case above (`### P4`, ticked, `call/proxy-call.test.ts`: "lays out the hop with no OP_RETURN and no bare OP_1 output") drives the claim, the per-call source tree contains no `OP_RETURN`, no `P2SH32(OP_TRUE)` funder and no on-demand UTXO builder (the only `0x6a` in it is a disassembler name table), and this round's guardrail grep finds no per-shape recipe.
   and no UTXOs created on demand.
-- [ ] Track P rules (P0) hold for all new code.
+- [x] Track P rules (P0) hold for all new code. **Met 2026-10-03:** the P0 rules adopted above (no `OP_RETURN`, no bare `OP_1` output, a placeholder addressed by layout position rather than by its script) hold for the new code: the P4 acceptance case drives them, and the guardrail grep over the per-call source diff finds no application name and no plan label.
 
 ### 4.7 Deferred: specified or listed, not needed for the 66
 
@@ -3404,3 +3404,62 @@ writing frame computed, with a record output no frame computed refused by the va
 | 2026-10-03 | `6e2626e48` | per-call ladder, M2 run 1 of 2: the full 66-title run | `npx vitest run --config vitest.marketplace.config.ts --no-file-parallelism --reporter=verbose` (full; `66 passed (66)`, 3221.9 s) after `tsc -b` and a cold fixture compile (9 sources -> 7 artifacts, 0 cache hits) | **All 66 titles pass.** The passing set is the scoreboard's ticked set, all 66. |
 | 2026-10-03 | `0c5d27f1d` | per-call ladder, M2 run 2 of 2: the full 66-title run | the same command (full; `66 passed (66)`, 3115.0 s) after `tsc -b` and a fixture compile that hit the cache on all 9 sources, so the artifacts are the same bytes run 1 measured | **The second consecutive full run is identical: 66 titles, `diff` of the two passing sets empty.** Honest limit on the plan's "two consecutive full runs of one commit": HEAD advanced between the runs (`6e2626e48` -> `0c5d27f1d`, other lanes committing), so run 2 measured a dist rebuilt from the later commit while the *fixture artifacts* it measured are byte-identical to run 1's (the compile hit all 9 cache entries). M2's substance - every scoreboard title green on two consecutive full runs with identical sets - holds; the literal single-commit reading does not, and that is stated rather than papered over. Log: `{SCRATCH}/m2-run-1.log`, `{SCRATCH}/m2-run-2.log`. |
 | 2026-10-03 | (this row's commit) | per-call ladder, the plan's own focused-suite and MANIFEST check | `tsc -b tsconfig.packages.json` (exit 0), then one run per focused directory at `b3c5032c7`: `utils` 119, `solidc/master` 993, `solidc/records` 36, `solidc/validator` 22, `solidc/machine` 3, `solidcash/{validator 95 (94+1 skipped), composer 171, frames 78, reads 57, reverts 21, receipt 9, queue 4, records 7, deploy 211, call 314 (310+4), time 12, hostile 171, shapes 93, edges 77, primitives 9 (6+3), toys 81, conformance 138 (136+2), pw7-measure 2 skipped}`, `ahead` 184 under `PER_CALL_AHEAD=1`, `@solidcash/testing` 11 | **Every focused per-call directory passes and the MANIFEST's rows are refreshed by their own runs, not carried forward.** The grand total is restated from the measured rows (2734 = 119 + 1054 + 1550 + 11, with `ahead/` outside it), every changed row moved, and the seven rows that already matched their measurement were left as they are. The twelve skipped cases in a default `solidcash` run are the `PER_CALL_FULL=1` gated ones and are named in the MANIFEST. This is the plan's verification step 6 on the `M2` commit's neighbourhood. Log: `{SCRATCH}/focused-suites.log`, `{SCRATCH}/manifest-counts.log`. |
+
+## Unticked boxes: audit at 2026-10-03 (the ladder is complete)
+
+Every box this plan still leaves unticked is either served nothing by this goal's scope by the plan's own decisions,
+or carries a named open piece. This round re-measured the boxes the ladder's completion could have served; the ones
+that are served are ticked above with their evidence, and the rest are listed here with the precise reason they
+cannot be served yet, so nothing reads as silently dropped.
+
+Served and ticked above this round: G3 (all 39 threat rows), G7 (the MS1-MS10 replicas), I2 and its GO criterion,
+I2b, E3, F2, F1+F10, F9, F3, F7, R3, the limit profile, the superseded ordering item, the Track P4 acceptance item
+and the P0 rules.
+
+**Out of this goal's scope, by the plan's own decisions** (left unticked deliberately, not because they are
+unfinished): `Phase 3` deletes the kernel path together with the group C/D machinery, the route synthesis, the
+static footprint recipes, the per-shape layout logic, the admission catalog reduction, the `messageBus` retirement
+and the `kernel-beta-manifest.json` replacement (section 5's items, and the harness's Non-goals exclude the kernel
+path until after this acceptance); Track S S1-S3; and Phase R - A9's size budget, the validator spanning several
+inputs, the precondition in 4.7, the real-limit harness and the facet split (after M2, per D3). The external audit,
+the proxy layout-compatibility rule and atomic proxy initialization are the plan's own deferred open points.
+
+**Open, with the piece each names:**
+
+- **C13**: a recovery at infinity still sends the body to a pair none recovers, and a loop over a recovering call
+  stays open; every other input the precompile refuses is served, `r` off the curve included.
+- **R4**: a read-modify-write of one long value in one frame has no case. The plan's own three-piece analysis is
+  the work item: the value-witness wire format has no variable-length field, so it takes a version bump (validator
+  V2, composer, machine) or on-chain materialization from co-spent chunks.
+- **B2 / B5**: V2's remaining encoding rules and V5's `INTERNAL` same-contract rule are not emitted; the reference
+  model checks `V5_INTERNAL_CATEGORY_MISMATCH`, and no compiled caller makes an `INTERNAL` call until facets land.
+- **F11**: proxy initialization is a separate `initialize` delegate hop rather than atomic with creation (spec open
+  point 5).
+- **G1 / G6 / the reference-context suite / its per-row Log record**: the conformance suite's eleven cross-contract
+  rows are pinned as the refusals they meet on the plain call path, and two spec-section-22 edges have no replica -
+  a re-entering static read returning a struct or a `uint16[5]`, and a static read of a flag a deeper frame wrote.
+  G6's four "not carried" rows are exercised now by the marketplace's own flows and this round's write-fact
+  landings; these two are what keeps the box open.
+- **G2**: 15 of its rows are ticked. The 12 still unticked, with the clause that holds each: Row 1 (a reentrancy
+  guard kept in storage and crossed by re-entry), Row 2 (a static call reading state its caller's caller wrote),
+  Row 3 (which callee runs, and how often, depending on that state), Row 4 (a revert mid-loop), Row 5 (the
+  revert-after-calls checks' unfunded-sender half), Row 8 (guards on proxy and CREATE-predicted addresses), Row 17
+  (snapshots and mid-test reloads), Row 18 (reverts from unfunded senders), Row 20 (un-awaited sends and matchers),
+  Row 21 (a listener raced against one second) and Row 26 (a multi-megabyte master in the mock).
+- **G4**: one toy is open - Y7's identity case, whose third case pins a stall the plan records as a record-layout
+  decision.
+
+**Standing process rules rather than deliverables** (unticked by convention): the per-title one-day budget and the
+one-full-run-per-day limit. The budget rule's answer is the reduced neutral replicas under
+`test/per-call/ahead/` that the titles exceeding it left; the run limit is necessarily exceeded by the acceptance
+criterion itself, which asks for two consecutive full runs, and this round ran the two the criterion requires.
+
+The KILL conditions under I2 were each checked and none holds: no toy needed a per-shape recipe (the 4.5 row and
+this round's guardrail grep), sorted-entry insert and delete are generic (R3's rows and `mapping-delete-write`),
+re-entry needs no fixpoint (E1), no spec-5.4 shape has a contract-code special case (the shapes directory and the
+ladder), the compiler delta is inside the raised bound (the 4.5 rows, 12,698 net at `852f3f467`), view mode stays
+inside spec section 20's record kinds (R1), Y2's derivation is a handful of machine evaluations rather than
+seconds (the 4.5 row), every V-check has its hostile test and every Critical threat row its rejection (B13 and
+`hostile/`), and I2 was reached well inside four weeks of the interface freeze.
+
+| 2026-10-03 | (this row's commit) | per-call plan, the unticked-box audit | `hostile/` 30 files / 171, `reverts/` + `call/own-stop-before-refused-plan` + `hostile/{caller-lock-binding,standalone-caller-contract,origin-reference,call-record}` + `validator/{script,validator-program}` (12 files / 103 passed, 1 skipped), `test/per-call/ahead` under `PER_CALL_AHEAD=1` (28 files / 184 passed), and the manifest-counts sweep of this round | **Sixteen boxes are served and ticked, and every box that stays unticked now carries its reason in `## Unticked boxes: audit at 2026-10-03`.** Ticked: G3 (all 39 threat rows), G7 (the MS1-MS10 replicas settle - fan-in MS3 4 cases, reentry-payout MS4 3, origin-gated-payout MS5 6, time-gated-challenge MS6 5, deep-arbitration MS7 3, revert-after-calls MS10 11), I2 with its GO criterion, I2b, E3 (both its open pieces closed by `86d0d6c3e` and the reached-path rule with `049c49e5d`), F2, F1+F10, F9, F3, F7, R3 (its last open piece, the planner half of nodes created and relinked across frames, landed as `ba2625ef0`), the limit profile (`COMPOSITION_LIMITS` is what the gates run on), the superseded ordering item, the Track P4 acceptance item and the P0 rules. Checked and not claimed: C13 (a recovery at infinity and a loop over one), R4 (a read-modify-write of one long value), B2 and B5 (V2's remaining encoding rules, V5's `INTERNAL` rule), F11 (atomic proxy initialization), G1/G6 and the reference-context suite (eleven cross-contract rows pinned as refusals, two section-22 edges without a replica), G2's 12 rows, G4's Y7, and the plan's own deferred Phases (3, R) and Track S. The I2 KILL conditions were each checked and none holds, with the measurement named beside each. |

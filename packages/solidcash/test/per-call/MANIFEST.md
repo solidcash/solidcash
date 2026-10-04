@@ -63,7 +63,7 @@ package totals are full-config runs of
 re-measured 2026-10-03 by rerunning its own directory in the same sweep, and `@solidcash/testing` is its own row
 and drives the layer's public entry points rather than the SDK's.
 The `ahead/` row is outside the totals: its cases are skipped unless `PER_CALL_AHEAD=1`. It was refreshed
-2026-10-03 (16 files / 184 cases, all green) by rerunning the directory.
+2026-10-03 by rerunning the directory (28 files / 184 cases, all green).
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.

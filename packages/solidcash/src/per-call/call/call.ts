@@ -1768,7 +1768,7 @@ async function callInShape(
     // from a candidate, so nothing is read from them and the machine's verdicts below name the frame that refused.
     if (calleePlan !== undefined) {
       const answered = learnCalleeValue({
-        planned: calleePlan, draft: candidate, vm: machine, maximumCommitmentBytes, values: calleeValues,
+        planned: calleePlan, draft: candidate, host, vm: machine, maximumCommitmentBytes, values: calleeValues,
       });
       if (answered !== undefined) {
         // A chunking value a callee's close exposed sizes the run of chunk records its write takes, so the call is

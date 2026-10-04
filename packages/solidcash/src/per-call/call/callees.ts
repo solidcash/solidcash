@@ -48,6 +48,7 @@ import {
   unstatedViewPlaceholder,
   type CompositionDraft,
   type ContractBlock,
+  type DerivationHost,
   type DraftCall,
   type DraftInput,
   type DraftMaster,
@@ -61,6 +62,7 @@ import {
   stateRecordUnlockingBytecode, type PerCallDeploymentSet,
 } from '../deploy/index.js';
 import { calleeSettleOrder, calleeValueWitnesses, learnedValueFromClose, placeOwnWrites } from '../proxy/deploy.js';
+import { EnclosingValueLearned, learnEnclosingValues } from '../proxy/enclosed-values.js';
 import { sharedNodeId } from '../proxy/entry-writes.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
 import {
@@ -536,8 +538,11 @@ export function calleeFrames(options: {
   // The master that writes each record, which the record's covenant names as the spend's authority.
   const writerOf = new Map<string, string>();
   // Each data record's view where the frames placed so far leave it. A contract's frames are placed in the order the
-  // validator walks them (V6), and none runs inside another of its own contract, so a frame starts from the view the
-  // last write before it leaves: that frame's unstated end, which the derivation learns from its own close.
+  // validator walks them (V6), and a data record is chained as though none runs inside another of its own contract,
+  // so a frame starts from the view the last write before it leaves: that frame's unstated end, which the derivation
+  // learns from its own close. A node is chained by the walk instead (`chain`), and a frame inside a writer of its
+  // contract starts from the view that writer's own run leaves it, learned before the frame is read
+  // (`learnCalleeValue`).
   const chainEnds = new Map<string, Uint8Array>();
   const inputs: Record<string, DraftInput> = {};
   const eventOutputs: DraftSourceOutput[] = [];
@@ -849,11 +854,14 @@ function acceptedFrameViews(
  * the body computed. A frame is read once every frame below it has answered its return, so what it computes is
  * computed from its callees' real results, and after every earlier frame that writes a node or a record it starts
  * from, in the order the hop settles its frames (`calleeSettleOrder`), so the view it starts from is the one the
- * writer's own close handed back.
+ * writer's own close handed back. A frame inside a writer of its own contract, which wrote a node before the call
+ * that leads to the frame, starts from the view that write left, learned first (`enclosingWriterValues`).
  */
 export function learnCalleeValue(options: {
   readonly planned: PlannedCallees;
   readonly draft: CompositionDraft;
+  /** The draft's host, which derives a writer up to the call that leads to a frame it encloses. */
+  readonly host: DerivationHost;
   readonly vm: Parameters<typeof readComputedDeclaration>[0]['vm'];
   readonly maximumCommitmentBytes: number;
   readonly values: CalleeValues;
@@ -879,6 +887,8 @@ export function learnCalleeValue(options: {
   if (ready.length === 0) return undefined;
   options.draft.learnUnstatedViews();
   for (const index of ready) {
+    const enclosing = enclosingWriterValues(options, index);
+    if (enclosing !== undefined) return enclosing;
     const callee = callees[index]!;
     const { master } = callee;
     const program = options.draft.programFor(master);
@@ -936,6 +946,44 @@ export function learnCalleeValue(options: {
     }
   }
   return undefined;
+}
+
+/**
+ * The callee values with what a writer frame `index` runs inside leaves it learned, or undefined when no such writer
+ * still owes it.
+ *
+ * A frame that runs inside a frame of its own contract, which wrote a node before the call that leads to the frame,
+ * reads or rewrites the view that write left (`enclosed-reads.ts`), and the walk chains its declaration onto the
+ * writer's. The writer is read only once the frames below it have answered their returns, so the frame would be read
+ * against the writer's candidate. The writer is derived up to that call and its own run read first, as the hop
+ * learns it (`learnEnclosingValues`): the view its close rebuilt is stated for it, and a value its write leaves to
+ * chunk is planned from again (`writeValues`), so the frame starts from what the writer computed.
+ */
+function enclosingWriterValues(
+  options: Parameters<typeof learnCalleeValue>[0], index: number,
+): CalleeValues | undefined {
+  const { values, vm, draft } = options;
+  const writeValues = values.writeValues ?? new Map<string, Uint8Array>();
+  try {
+    const learned = learnEnclosingValues({ draft, host: options.host }, options.planned.callees, index, writeValues,
+      values.views, {
+        valueAt: (master) => learnedValueFromClose(vm, draft.programFor(master)),
+        readingAt: (master) => readComputedDeclaration({
+          vm, program: draft.programFor(master), maximumCommitmentBytes: options.maximumCommitmentBytes,
+        }),
+      });
+    if (learned === undefined) return undefined;
+    const views = [...(values.views.get(learned.master) ?? [])];
+    while (views.length <= learned.at) views.push(undefined);
+    views[learned.at] = learned.view;
+    return { ...values, views: new Map([...values.views, [learned.master, views]]) };
+  } catch (error) {
+    if (error instanceof EnclosingValueLearned) {
+      return { ...values, writeValues: new Map([...writeValues, [error.master, error.value]]) };
+    }
+    if (error instanceof PerCallProxyDeployError) throw new PerCallCalleeError(error.message);
+    throw error;
+  }
 }
 
 /**

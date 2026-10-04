@@ -36,12 +36,14 @@
 
 import { hexToBin } from '@bitauth/libauth';
 import {
-  bytesEqual, bytesToHex, FrameKind, INDEX_NONE, sha256, type Artifact, type PublishedWriteSegment, type RecordEntry,
+  bytesEqual, bytesToHex, FrameKind, INDEX_NONE, sha256, witnessKindOf, type Artifact, type PublishedWriteSegment,
+  type RecordEntry,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import {
+  deriveComposition,
   findParticipant,
   participant,
   readPublishedStopSites,
@@ -49,11 +51,13 @@ import {
   type CompositionDraft,
   type ContractBlock,
   type DerivationHost,
+  type DerivationOptions,
   type DraftCall,
   type DraftInput,
   type DraftMaster,
   type DraftRecordEntry,
   type DraftSourceOutput,
+  type FrameRequest,
   type PlannedSettlement,
   type TransactionLayout,
 } from '../composer/index.js';
@@ -867,6 +871,94 @@ function acceptedFrameViews(
 }
 
 /**
+ * The callee frames `learnCalleeValue` reads, in the order it reads them.
+ *
+ * A frame whose callee still owes its return computed from a candidate, so it is not read yet; nor is one that starts
+ * from the view an earlier frame's write of a node leaves while that frame still owes it. The rest are read in the
+ * order the hop settles its frames.
+ */
+function readyCalleeFrames(planned: PlannedCallees, values: CalleeValues): readonly number[] {
+  const { callees } = planned;
+  const owesReturn = (index: number): boolean =>
+    callees[index]!.returns && !values.retvals.has(callees[index]!.master);
+  /** True when frame `inner` is entered, directly or not, by frame `outer`. */
+  const below = (inner: number, outer: number): boolean => {
+    for (let at = callees[inner]!.enteredBy; at !== null; at = callees[at]!.enteredBy) if (at === outer) return true;
+    return false;
+  };
+  const writersBefore = sharedNodeWritersBefore(callees);
+  return calleeSettleOrder(callees, callees.map((_callee, index) => index)
+    .filter((index) => owesValue(callees[index]!, values)
+      && !callees.some((_other, other) => owesReturn(other) && below(other, index)))
+    .sort((left, right) => depthOf(callees, right) - depthOf(callees, left)))
+    .filter((index) => !(writersBefore.get(index) ?? []).some((writer) => owesValue(callees[writer]!, values)));
+}
+
+/**
+ * The master of the callee frame `learnCalleeValue` judges first, when that frame can be judged from a composition
+ * derived only through it; undefined when no frame is to be read, or when the frame runs inside a callee frame that
+ * writes a node, whose own run is read before the frame is judged (`enclosingWriterValues`).
+ *
+ * A frame computes from what ran before it: its caller up to the call that enters it, the frames that ran before
+ * that, and its own subtree. Nothing that runs after it is read by it, so the frames the composition runs after it
+ * are not derived to judge it (`deriveThroughFrame`). Everything before it is derived exactly as the whole composition
+ * derives it, one continuous depth-first derivation: a record an earlier frame wrote is learned as it always is.
+ */
+export function scopedCalleeFrame(planned: PlannedCallees, values: CalleeValues): string | undefined {
+  const { callees } = planned;
+  const first = readyCalleeFrames(planned, values)[0];
+  if (first === undefined) return undefined;
+  for (let at = callees[first]!.enteredBy; at !== null; at = callees[at]!.enteredBy) {
+    if (callees[at]!.entryWrites !== undefined) return undefined;
+  }
+  return callees[first]!.master;
+}
+
+/** Ends a derivation the moment the frame it was scoped to has been derived (`deriveThroughFrame`). */
+class FrameDerived extends Error {}
+
+/**
+ * Derives `roots` depth-first, exactly as `deriveComposition` does, and stops as soon as the frame on `master` has
+ * been derived, its subtree with it; true when that frame was reached, false when the derivation never entered it.
+ *
+ * The driver derives a callee fully before its caller resumes, so the frame is done the moment a run is asked of a
+ * frame that is not inside it. That run, and every one after it, is not made. A stall inside the frame is the
+ * derivation's own business (`onCalleeStall`), as it is for the whole composition. A derivation that refuses before
+ * the frame is entered rethrows, as the whole one would.
+ */
+export function deriveThroughFrame(
+  roots: readonly FrameRequest[], host: DerivationHost, master: string, options: DerivationOptions = {},
+): boolean {
+  // The frames being derived, outermost first: a callee is pushed when its caller's run binds it, and a run asked of
+  // a frame below the top means every frame above it is done.
+  const stack: string[] = [];
+  let entered = false;
+  let derived = false;
+  const scoped: DerivationHost = {
+    sitesFor: (functionName) => host.sitesFor(functionName),
+    step: (request, site) => {
+      const at = stack.lastIndexOf(request.master);
+      const done = at >= 0 ? stack.splice(at + 1) : stack.splice(0);
+      if (at < 0) stack.push(request.master);
+      if (done.includes(master)) derived = true;
+      if (derived) throw new FrameDerived();
+      const outcome = host.step(request, site);
+      if (site.kind === 'call' && outcome.callee !== undefined && outcome.filled === witnessKindOf(site)) {
+        stack.push(outcome.callee.master);
+        if (outcome.callee.master === master) entered = true;
+      }
+      return outcome;
+    },
+  };
+  try {
+    deriveComposition(roots, scoped, options);
+  } catch (error) {
+    if (!(error instanceof FrameDerived)) throw error;
+  }
+  return entered;
+}
+
+/**
  * The callee values a draft's own closes hand back with the first one learned, deepest first, or undefined when no
  * close does. A frame the machine accepts hands back the views it still owes as the plan states them.
  *
@@ -887,28 +979,20 @@ export function learnCalleeValue(options: {
   readonly vm: Parameters<typeof readComputedDeclaration>[0]['vm'];
   readonly maximumCommitmentBytes: number;
   readonly values: CalleeValues;
+  /**
+   * Reads the frame judged first alone (`scopedCalleeFrame`): a draft derived only through that frame states nothing
+   * about the frames after it, so a frame after it is not read from it.
+   */
+  readonly firstOnly?: boolean;
 }): CalleeValues | undefined {
   const { callees } = options.planned;
   const { values } = options;
   const owesReturn = (index: number): boolean =>
     callees[index]!.returns && !values.retvals.has(callees[index]!.master);
-  /** True when frame `inner` is entered, directly or not, by frame `outer`. */
-  const below = (inner: number, outer: number): boolean => {
-    for (let at = callees[inner]!.enteredBy; at !== null; at = callees[at]!.enteredBy) if (at === outer) return true;
-    return false;
-  };
-  // A frame whose callee still owes its return computed from a candidate, so it is not read yet; nor is one that
-  // starts from the view an earlier frame's write of a node leaves while that frame still owes it. The rest are read
-  // in the order the hop settles its frames.
-  const writersBefore = sharedNodeWritersBefore(callees);
-  const ready = calleeSettleOrder(callees, callees.map((_callee, index) => index)
-    .filter((index) => owesValue(callees[index]!, values)
-      && !callees.some((_other, other) => owesReturn(other) && below(other, index)))
-    .sort((left, right) => depthOf(callees, right) - depthOf(callees, left)))
-    .filter((index) => !(writersBefore.get(index) ?? []).some((writer) => owesValue(callees[writer]!, values)));
+  const ready = readyCalleeFrames(options.planned, values);
   if (ready.length === 0) return undefined;
   options.draft.learnUnstatedViews();
-  for (const index of ready) {
+  for (const index of options.firstOnly === true ? ready.slice(0, 1) : ready) {
     const enclosing = enclosingWriterValues(options, index);
     if (enclosing !== undefined) return enclosing;
     const callee = callees[index]!;

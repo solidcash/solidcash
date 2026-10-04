@@ -126,8 +126,8 @@ import {
   PerCallLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
 } from './loop-turns.js';
 import {
-  NO_CALLEE_VALUES, PerCallCalleeError, calleeFrames, calleeValuesOwed, calleeWrites, learnCalleeValue,
-  planEntryCallees, type CalleeValues, type PlannedCallees,
+  NO_CALLEE_VALUES, PerCallCalleeError, calleeFrames, calleeValuesOwed, calleeWrites, deriveThroughFrame,
+  learnCalleeValue, planEntryCallees, scopedCalleeFrame, type CalleeValues, type PlannedCallees,
 } from './callees.js';
 import { deploymentStateValues } from '../proxy/external-calls.js';
 import { decodeReturnValues } from '../read/index.js';
@@ -1737,26 +1737,68 @@ async function callInShape(
   let armsDecided = false;
   const frameArtifacts = [artifact, ...(calleePlan?.artifacts ?? []), ...payees.map((payee) => payee.artifact)];
   let settled = false;
-  for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
-    const plan = buildPlan(
-      learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees, calleeValues,
-      learnedTypedValues,
-    );
-    // A record's end view is learned up to the commitment the deployment itself holds: a contract compiled for a
-    // wider commitment keeps a record past the composer's default of 128 bytes, and a view the composer would not
-    // learn leaves the record's close comparing the body's commitment with a placeholder.
-    const { host, draft: candidate } = createComposedDerivationHost({
+  // A record's end view is learned up to the commitment the deployment itself holds: a contract compiled for a wider
+  // commitment keeps a record past the composer's default of 128 bytes, and a view the composer would not learn leaves
+  // the record's close comparing the body's commitment with a placeholder.
+  const composeCandidate = (plan: CompositionDraftPlan): ReturnType<typeof createComposedDerivationHost> => {
+    const composed = createComposedDerivationHost({
       vm: machine, artifacts: frameArtifacts, plan, maximumCommitmentBytes,
     });
     // A plan stopped before a site states the calls before it only, of the entry and of every frame it stops inside,
     // so their calls from there on are declared unbound: a body that holds its call count runs to the site and binds
     // the calls before it, as the execution does, and stops on the first unbound record.
     if (calleePlan?.blocked !== undefined) {
-      declareUnstatedCalls(candidate, artifact, MASTER_ID);
+      declareUnstatedCalls(composed.draft, artifact, MASTER_ID);
       for (const callee of calleePlan.callees) {
-        if (callee.truncated === true) declareUnstatedCalls(candidate, callee.artifact, callee.master);
+        if (callee.truncated === true) declareUnstatedCalls(composed.draft, callee.artifact, callee.master);
       }
     }
+    return composed;
+  };
+  // While a callee still owes a value, the frame `learnCalleeValue` judges first is judged from the composition derived
+  // through that frame and no further (`scopedCalleeFrame`), as the hop judges each frame from its own derivation
+  // rather than the whole composition's (`settleCallees`): nothing that runs after the frame is read by it, so the
+  // frames after it are not derived again for each value it hands back. Up to the frame, the derivation is the one
+  // continuous depth-first derivation the whole composition makes, so a record a frame before it wrote is learned
+  // exactly as before. A frame that hands nothing back this way is judged again from the whole composition, as is
+  // every frame on the last attempt, whose draft the verdicts below read; such a frame is not scoped again.
+  const unscopedFrames = new Set<string>();
+  const scopedCalleeValue = (plan: CompositionDraftPlan): CalleeValues | undefined => {
+    if (calleePlan === undefined) return undefined;
+    const master = scopedCalleeFrame(calleePlan, calleeValues);
+    if (master === undefined || unscopedFrames.has(master)) return undefined;
+    let answered: CalleeValues | undefined;
+    try {
+      const { host, draft: scoped } = composeCandidate(plan);
+      if (deriveThroughFrame([...payeeRequests, root], host, master, { onCalleeStall: () => undefined })) {
+        answered = learnCalleeValue({
+          planned: calleePlan, draft: scoped, host, vm: machine, maximumCommitmentBytes, values: calleeValues,
+          firstOnly: true,
+        });
+      }
+    } catch {
+      // A refusal on the way is the whole composition's to name: it is derived below and refuses as it always did.
+      answered = undefined;
+    }
+    if (answered === undefined) unscopedFrames.add(master);
+    return answered;
+  };
+  for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+    const plan = buildPlan(
+      learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees, calleeValues,
+      learnedTypedValues,
+    );
+    const scopedAnswer = attempt < maximumAttempts - 1 ? scopedCalleeValue(plan) : undefined;
+    if (scopedAnswer !== undefined) {
+      // As below: a chunking value a callee's close exposed plans the call again from it.
+      const exposed = [...scopedAnswer.writeValues ?? []].filter(([master]) => !prior.writeValues.has(master));
+      if (exposed.length > 0) {
+        return callInShape(options, shape, { ...prior, writeValues: new Map([...prior.writeValues, ...exposed]) });
+      }
+      calleeValues = scopedAnswer;
+      continue;
+    }
+    const { host, draft: candidate } = composeCandidate(plan);
     draft = candidate;
     let stalled = false;
     try {

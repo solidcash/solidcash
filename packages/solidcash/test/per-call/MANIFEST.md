@@ -389,8 +389,8 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   `call/proxied-native-value.test.ts`, and a read of the node an insert splices through
   (`read-node-spent-by-insert`) to `call/read-node-spent-by-insert.test.ts`. A section 3 prediction settles with no
   replica: several dynamic values one entry writes, and one beside several sorted collections, are laid in the order
-  the artifact publishes for their runs (`dynamicWriteOrder`), in `call/dynamic-run-order.test.ts`; past it, a field
-  written before a call into the record those runs size is pinned in `field-before-call-beside-runs`. The directory
+  the artifact publishes for their runs (`dynamicWriteOrder`), in `call/dynamic-run-order.test.ts`, as is a field
+  written before a call into the record those runs size (`field-before-call-beside-runs`, retired). The directory
   runs only under `PER_CALL_AHEAD=1`.
 
 ## Which refusals cover which attack

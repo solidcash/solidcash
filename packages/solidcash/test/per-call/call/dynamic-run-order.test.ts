@@ -101,10 +101,38 @@ const SOURCE = [
   '  function count() external view returns (uint256) { return counts.length; }',
   '  function countAt(uint256 i) external view returns (uint256) { return counts[i]; }',
   '}',
+  'contract CountedJournal {',
+  '  address public implementation;',
+  '  address public sink;',
+  '  uint256 public entries;',
+  '  string[] notes;',
+  '  uint256[] stamps;',
+  '  function initialize(address sink_) public { sink = sink_; }',
+  '  function log(string calldata note, uint256 stamp) external {',
+  '    entries += 1;',
+  '    IPing(sink).ping(stamp);',
+  '    stamps.push(stamp);',
+  '    notes.push(note);',
+  '  }',
+  '  function noteAt(uint256 i) external view returns (string memory) { return notes[i]; }',
+  '  function stampAt(uint256 i) external view returns (uint256) { return stamps[i]; }',
+  '}',
+  'contract Enrolment {',
+  '  address public implementation;',
+  '  string[] names;',
+  '  uint256[] ages;',
+  '  function initialize() public {}',
+  '  function enrol(uint256 a) external { names.push(); ages.push(a); }',
+  '  function count() external view returns (uint256) { return names.length; }',
+  '  function nameAt(uint256 i) external view returns (string memory) { return names[i]; }',
+  '  function ageAt(uint256 i) external view returns (uint256) { return ages[i]; }',
+  '}',
 ].join('\n');
 
 const units = compilePerCall(SOURCE);
-const { Ledger, Roster, Labels, Sink, Journal, Tally } = units as Required<typeof units>;
+const {
+  Ledger, Roster, Labels, Sink, Journal, Tally, CountedJournal, Enrolment,
+} = units as Required<typeof units>;
 
 const BOB = encodeLockingBytecodeP2pkh(bobPkh);
 const CAROL = encodeLockingBytecodeP2pkh(carolPkh);
@@ -162,7 +190,15 @@ describe('several dynamic runs, and a run beside several sorted batches, behind 
     // A bare push states no element, only how many the write appends.
     const grow = Tally.abi.find((candidate) => candidate.name === 'grow')!;
     expect([grow.dynamicWriteSources, grow.dynamicWriteGrowth]).toStrictEqual([undefined, { counts: { elements: 2 } }]);
-    for (const unit of [Ledger, Roster, Labels, Sink, Journal, Tally]) {
+    expect(facts(Enrolment, 'enrol')).toStrictEqual([['names', 'ages'], ['names', 'ages']]);
+    // The count is written before the call, which closes its record there, and the runs that size it past the call.
+    const logged = CountedJournal.composition?.stopSites?.entries
+      .find((entry) => entry.functionName === 'CountedJournal.log()');
+    expect((logged?.writeSegments ?? []).filter((write) => write.record === 0)).toStrictEqual([
+      { record: 0, segment: 0, writtenVariables: ['entries'] },
+      { record: 0, segment: 'last', writtenVariables: ['stamps', 'notes'] },
+    ]);
+    for (const unit of [Ledger, Roster, Labels, Sink, Journal, Tally, CountedJournal, Enrolment]) {
       expect(unit.composition?.refusedEntries ?? []).toStrictEqual([]);
     }
   });
@@ -250,4 +286,41 @@ describe('several dynamic runs, and a run beside several sorted batches, behind 
     expect(await view(world, tally, 'countAt', [0n])).toBe(7n);
     expect(await view(world, tally, 'countAt', [4n])).toBe(0n);
   }, 600_000);
+
+  it('settles a count written before an external call beside two arrays appended past it, each read back, and '
+    + 'refuses the count\'s record declared kept before the call', async () => {
+    const world = await newWorld(0x76);
+    const sink = await deployPlain(world, Sink);
+    const journal = await deployProxied(world, CountedJournal, [sink.address]);
+    const externals = { IPing: { artifact: Sink, categoryId: sink.categoryId } };
+    await settle(world, journal, 'log', ['first note', 5n], externals);
+    const logged = await settle(world, journal, 'log', [LONG_NAME, 6n], externals);
+    expect(await view(world, journal, 'entries')).toBe(2n);
+    expect(await view(world, journal, 'noteAt', [1n])).toBe(LONG_NAME);
+    expect(await view(world, journal, 'stampAt', [1n])).toBe(6n);
+    expect(await view(world, sink, 'pinged')).toBe(6n);
+
+    // The record is declared written in the segment the call closes, then sized past the call; declared kept there
+    // instead, its count's write would be put off past the call, and the frame's own close at the call refuses it.
+    const { draft } = logged;
+    const master = draft.runs.find((run) => run.functionName === 'CountedJournal.log()')!.master;
+    expect(refusingParticipants(draft, master)).toStrictEqual([]);
+    const record = draft.blockOf(master).segments[0]![0]!;
+    expect(bytesEqual(record.viewIn, record.viewOut)).toBe(false);
+    record.viewOut = record.viewIn;
+    expect(refusingParticipants(draft, master)).toContain(master);
+  }, 600_000);
+
+  it('settles an array of framed elements grown by a bare push ahead of another appended array, each read back',
+    async () => {
+      const world = await newWorld(0x77);
+      const enrolment = await deployProxied(world, Enrolment, []);
+      await settle(world, enrolment, 'enrol', [30n]);
+      // The names' run, sized only by its record, is laid at the width the record declares, where the ages follow.
+      await settle(world, enrolment, 'enrol', [41n]);
+      expect(await view(world, enrolment, 'count')).toBe(2n);
+      expect(await view(world, enrolment, 'nameAt', [1n])).toBe('');
+      expect(await view(world, enrolment, 'ageAt', [0n])).toBe(30n);
+      expect(await view(world, enrolment, 'ageAt', [1n])).toBe(41n);
+    }, 600_000);
 });

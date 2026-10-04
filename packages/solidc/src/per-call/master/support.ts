@@ -1543,6 +1543,11 @@ interface PerCallWriteStep {
   /** The calls the path that reaches this write made before it, or undefined when the source does not fix them. */
   readonly calls: CallRange;
   /**
+   * The calls made before the frame first holds the write's field: before the outermost branch, switch or loop around
+   * the write, which holds every write inside it from its start, or before the write's own statement.
+   */
+  readonly heldFrom: CallRange;
+  /**
    * True when every call site of the body stands before this write, so the write runs after whatever calls the
    * execution made.
    *
@@ -1639,12 +1644,14 @@ function perCallWriteSteps(
   const steps: PerCallWriteStep[] = [];
   // The most calls any one path makes: a write the walk reaches with every one of them behind it follows them all.
   const mostCalls = callCountRange(entry.body, true)?.most;
-  const walkBlock = (block: BlockNode | undefined, incoming: CallRange): CallRange => {
+  // `held` is where the outermost construct around the statement started, which pre-allocates the writes inside it.
+  type Held = { readonly from: CallRange } | undefined;
+  const walkBlock = (block: BlockNode | undefined, incoming: CallRange, held: Held): CallRange => {
     let range = incoming;
-    for (const statement of block?.statements ?? []) range = walkStatement(statement, range);
+    for (const statement of block?.statements ?? []) range = walkStatement(statement, range, held);
     return range;
   };
-  const walkStatement = (statement: Node, incoming: CallRange): CallRange => {
+  const walkStatement = (statement: Node, incoming: CallRange, held: Held): CallRange => {
     if (writesEntryRecord(statement, batchSlots)) {
       // The write's own expression is emitted before the store, so a call the statement itself makes closes a
       // segment the write lands past: the calls before it are the ones the walk had reached, plus its own.
@@ -1652,36 +1659,38 @@ function perCallWriteSteps(
       steps.push({
         statement,
         calls: afterWrite,
+        heldFrom: held === undefined ? incoming : held.from,
         followsEveryCall: (mostCalls !== undefined && afterWrite !== undefined && afterWrite.most === mostCalls)
           || writeFollowsEveryCall(entry, statement),
       });
       return afterWrite;
     }
+    const opens: Held = held ?? { from: incoming };
     if (statement instanceof BranchNode) {
       const afterCondition = advanceCallRange(incoming, statement.condition);
-      const thenRange = walkBlock(statement.ifBlock, afterCondition);
+      const thenRange = walkBlock(statement.ifBlock, afterCondition, opens);
       const elseRange = statement.elseBlock === undefined
         ? afterCondition
-        : walkBlock(statement.elseBlock, afterCondition);
+        : walkBlock(statement.elseBlock, afterCondition, opens);
       return joinCallRanges(thenRange, elseRange);
     }
-    if (statement instanceof BlockNode) return walkBlock(statement, incoming);
+    if (statement instanceof BlockNode) return walkBlock(statement, incoming, held);
     if (statement instanceof SwitchNode || statement instanceof CollectionIterationNode
       || statement instanceof WhileNode || statement instanceof DoWhileNode) {
       // A loop, switch or iteration makes a number of calls its own bound decides; a call-free one makes none, and a
       // write inside it lands in the segment the code before it runs in, so the walk descends into it.
       const nested = callFreeNestedBlocks(statement);
       if (nested === undefined) return undefined;
-      for (const block of nested) walkBlock(block, incoming);
+      for (const block of nested) walkBlock(block, incoming, opens);
       return incoming;
     }
     if (statement instanceof TryCatchNode) {
       // A catch block is not an executable path, matching the invocation walk.
-      return walkBlock(statement.tryBlock, advanceCallRange(incoming, statement.expression));
+      return walkBlock(statement.tryBlock, advanceCallRange(incoming, statement.expression), held);
     }
     return advanceCallRange(incoming, statement);
   };
-  walkBlock(entry.body, { least: 0, most: 0 });
+  walkBlock(entry.body, { least: 0, most: 0 }, undefined);
   return steps;
 }
 
@@ -2140,14 +2149,19 @@ function preservedElementFields(entry: FunctionDefinitionNode, variableName: str
  * in both, whatever record it is. The segments are published in the order the writes land in, which is what a
  * builder needs to chain them — the value between two of them is not the plan's to state. A write to a field the
  * record only sizes takes the record with it into the run's last segment wherever the source makes it, because the
- * record is only rebuilt once the chunk run is written; such a record is declared written there and nowhere else.
- * A write the source does not locate leaves the whole entry unstated, which the builder refuses by name.
+ * record is only rebuilt once the chunk run is written there. A call the frame makes while it holds none of the
+ * record's dynamic fields still closes the record where its other fields' writes left it, so such a record is
+ * declared written in each segment one of those writes lands in before the frame first holds a dynamic field, and
+ * in the last. A write the source does not locate leaves the whole entry unstated, which the builder refuses by name.
  */
 function perCallRecordWriteSegments(
   steps: readonly PerCallWriteStep[],
   entry: FunctionDefinitionNode,
 ): PerCallRecordWriteSegments | undefined {
   const sized = new Set<number>();
+  // The fewest calls any path makes before the frame holds one of a record's dynamic fields; undefined where the
+  // place a dynamic write is held from is not fixed.
+  const dynamicHeld = new Map<number, number | undefined>();
   const variables = new Map<string, Set<string> | null>();
   const segments = new Map<number, Set<PerCallWriteSegment>>();
   const writtenVariables = new Map<number, Map<PerCallWriteSegment, Set<string>>>();
@@ -2157,6 +2171,11 @@ function perCallRecordWriteSegments(
     if (stateVariable === undefined) return undefined;
     if (stateVariable.isDynamic === true) {
       sized.add(stateVariable.nftIndex);
+      const held = step.heldFrom?.least;
+      const before = dynamicHeld.has(stateVariable.nftIndex)
+        ? dynamicHeld.get(stateVariable.nftIndex) : Number.POSITIVE_INFINITY;
+      dynamicHeld.set(stateVariable.nftIndex,
+        held === undefined || before === undefined ? undefined : Math.min(before, held));
       const names = writtenVariables.get(stateVariable.nftIndex) ?? new Map<PerCallWriteSegment, Set<string>>();
       const lastName = names.get('last') ?? new Set<string>();
       lastName.add(stateVariable.name);
@@ -2184,8 +2203,13 @@ function perCallRecordWriteSegments(
   const written = new Map<number, readonly PerCallWriteSegment[]>();
   for (const [record, at] of segments) {
     // Every segment the record's own writes land in is published, in segment order: the emitter closes a written
-    // record in each of them, so a builder places a record's declarations in all of them rather than in one.
-    written.set(record, sized.has(record) ? ['last'] : [...at].sort(segmentOrder));
+    // record in each of them, so a builder places a record's declarations in all of them rather than in one. A sized
+    // record is closed at a call only while the frame holds none of its dynamic fields.
+    const held = dynamicHeld.get(record);
+    written.set(record, sized.has(record)
+      ? [...[...at].filter((segment): segment is number => typeof segment === 'number' && held !== undefined
+        && segment < held).sort((left, right) => left - right), 'last']
+      : [...at].sort(segmentOrder));
   }
   for (const record of sized) if (!written.has(record)) written.set(record, ['last']);
   const dynamicWrites: PerCallDynamicWrite[] = [...variables].map(([name, fields]) =>

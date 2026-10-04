@@ -591,10 +591,15 @@ a framed array (a count, then the elements), while such an array is stored as th
 `call/dynamic-run-order.test.ts`. Past the lock fix, a field written before the call into the record the runs size
 (`entries += 1; ping(); stamps.push(); notes.push()`) is refused at the call: `... did not settle through the proxy:
 frame "implementation-master" of Journal.log() at line 56: no source message (Program failed an OP_VERIFY
-operation.)`. A record a dynamic write sizes is published as written in the last segment alone
-(`perCallRecordWriteSegments`), while the count is written before the call; pinned in
-`ahead/field-before-call-beside-runs.test.ts`. A callee frame states its records as the deployment holds them, so a
-callee that writes two dynamic values keeps a run another follows at the live width (predicted, not run).
+operation.)`. Served (agent DV3): the frame closes a record at each call while it holds none of the record's dynamic
+fields (`perCallRecordsWrittenHere`), so its close at the call held the count against a declaration the hop kept,
+because a record a dynamic write sizes was published as written in the last segment alone
+(`perCallRecordWriteSegments`). The record is now published written in each segment a write of its other fields lands
+in before the frame first holds a dynamic field of it (the outermost branch or loop around that write holds it from
+its start), and in the last; the hop chains the two declarations. A framed run grown by a bare `push()` that another
+run follows is laid at the width its record declares, as a stated one is. Still predicted, not run: a callee frame
+plans with its records as the deployment holds them and is not re-planned from the record its settle learns, so a
+callee that writes two dynamic values keeps a run another follows at the live width.
 
 ## 4. Replicas to land
 
@@ -617,7 +622,7 @@ today and its title says what should settle once served.
 | `two-deployments-one-artifact.test.ts` | 3 | 2.9 (control: one token) |
 | `read-node-spent-by-insert.test.ts` | 2 | 2.10 (control: head predecessor) |
 | `enumerable-set.test.ts` | 4 | 2.11 (adding and the views served in `call/enumerable-set.test.ts`) |
-| `field-before-call-beside-runs.test.ts` | 1 | section 3: a field written before a call into the record runs past it size (the runs alone served in `call/dynamic-run-order.test.ts`) |
+| `field-before-call-beside-runs.test.ts` | 1 | section 3, retired: served (`call/dynamic-run-order.test.ts`) |
 
 Run: `PER_CALL_AHEAD=1 yarn workspace solidcash vitest run --config vitest.per-call.config.ts test/per-call/ahead/<file>`.
 `recordMet` writes the met text to `$AHEAD_OBSERVE_DIR/met.txt` when that is set (used for the unattributed walls).

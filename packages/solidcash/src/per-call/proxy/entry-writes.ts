@@ -1728,9 +1728,9 @@ function planHopDynamicRuns(request: HopEntryWritesRequest, batchCount: number):
  *     in the body, which is what lets that first plan reach the close that sizes it.
  *
  * A run another run follows in the frame's order (`followed`) is where the frame finds that later run: a read of it
- * steps past the width this run's record declares, not the width a stated element gives. Until the record states the
- * written value's length, a stated run is laid at the width the record does state, so the frame's reads reach the
- * record's close and the derivation learns the length there.
+ * steps past the width this run's record declares, not the width a stated element or a growth floor gives. Until the
+ * record states the written value's length, such a run is laid at the width the record does state, so the frame's
+ * reads reach the record's close and the derivation learns the length there.
  *
  * The run's spent side is the live chunks, which the frame spends: those the written value still holds are recreated
  * in place, and a write that shortens the run consumes the rest with no successor. A live set that does not match
@@ -1783,10 +1783,14 @@ function planHopDynamicRun(
   // The element is unstated, but the artifact states how many elements the write appends, so the run's width is
   // at least the live value grown by those elements. When the element type packs at a fixed stride that bound is
   // exact; otherwise the body's own close names the exact width, and the bound is what lets the first plan reach
-  // that close instead of laying a run the body's own coordinate cannot read.
+  // that close instead of laying a run the body's own coordinate cannot read. A run another run follows is laid at
+  // the width its record declares instead, which is where the frame reads that later run past it.
   const recordLength = declaredRunLength(request, declared.name, declared.nftIndex);
   const growthFloor = source === undefined && growth !== undefined
     ? dynamicGrowthFloorLength(request, fn, growth, declared, spent) : undefined;
+  if (followed && recordLength !== undefined) {
+    return sizedDynamicRun(variable, declared.type, recordLength, spentChunks, spentParticipants, 'record');
+  }
   if (recordLength !== undefined || growthFloor !== undefined) {
     const length = Math.max(recordLength ?? 0, growthFloor ?? 0);
     return sizedDynamicRun(variable, declared.type, length, spentChunks, spentParticipants,

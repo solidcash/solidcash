@@ -4,8 +4,9 @@ import {
   disassembleAuthenticationInstructionMalformed, encodeAuthenticationInstructions, incrementOperationCount,
   isPayToScriptHash20, isPayToScriptHash32, isWitnessProgram, pushToStack, pushToStackChecked, pushToStackVmNumber,
   ripemd160, secp256k1, sha1, sha256, stackItemIsTruthy, useFourStackItems, useOneStackItem, useOneVmNumber,
-  useThreeStackItems, useTransactionOutput, useTransactionUtxo, useTwoStackItems,
+  useThreeStackItems, useTransactionInput, useTransactionOutput, useTransactionUtxo, useTwoStackItems,
 } from '@bitauth/libauth';
+import { AuthenticationErrorBch2025 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2025/bch-2025-errors.js';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { AuthenticationErrorBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-errors.js';
 import { createInstructionSetBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-instruction-set.js';
@@ -404,7 +405,9 @@ function installCachedInvokeEvaluator(
  * OP_ACTIVEBYTECODE as libauth builds it (`incrementOperationCount(conditionallyEvaluate(...))`), but encoding the
  * active instructions once per instruction array and code-separator offset instead of on every execution. The cached
  * evaluators above decode each program and OP_DEFINE body once, and nothing rewrites an instruction array in place.
- * Every push is a copy, so no stack item aliases the cache.
+ * The cached encoding itself is pushed, not a copy of it (22-140 KB per execution for an outlined contract): no
+ * operation writes a stack item in place, which libauth's own pushes already rely on, since they push the data of the
+ * cached redeem script's instructions to every run (see `installZeroCopyStackOperations`).
  */
 function installCachedActiveBytecode(
   instructionSet: ReturnType<typeof createInstructionSetBch2026>,
@@ -423,11 +426,108 @@ function installCachedActiveBytecode(
       bytecode = encodeAuthenticationInstructions(state.instructions.slice(state.lastCodeSeparator + 1));
       byOffset.set(state.lastCodeSeparator, bytecode);
     }
-    return pushToStackChecked(state, bytecode.slice(), { maximumStackItemLength });
+    return pushToStackChecked(state, bytecode, { maximumStackItemLength });
   };
   instructionSet.operations[OpcodesBch2026.OP_ACTIVEBYTECODE] = incrementOperationCount(
     conditionallyEvaluate(activeBytecode),
   ) as (typeof instructionSet.operations)[number];
+}
+
+/**
+ * OP_INPUTBYTECODE as libauth builds it (`incrementOperationCount(conditionallyEvaluate(...))`, the same length check
+ * and pushed-byte accounting), pushing the input's unlocking bytecode instead of a copy of it. A P2SH input's unlocking
+ * bytecode carries its whole redeem script, so the copy was the operation. The VM treats transaction bytecode as
+ * immutable (the P2SH evaluator above decodes the unlocking bytecode into views of it), the token commitment
+ * operations below push transaction bytes the same way, and no operation writes a stack item in place.
+ */
+function installZeroCopyInputBytecode(
+  instructionSet: ReturnType<typeof createInstructionSetBch2026>,
+  maximumStackItemLength: number | undefined,
+): void {
+  type State = Parameters<(typeof instructionSet.operations)[number]>[0];
+  instructionSet.operations[OpcodesBch2026.OP_INPUTBYTECODE] = incrementOperationCount(conditionallyEvaluate(
+    (state: State) => useTransactionInput(state, (next, [input]) =>
+      pushToStackChecked(next, input!.unlockingBytecode, { maximumStackItemLength })),
+  )) as (typeof instructionSet.operations)[number];
+}
+
+/**
+ * libauth's BCH-2026 check after every operation: the BCH-2025 checks (operation cost, hashing, stack depth, control
+ * stack depth, signature checks), then the memory-slot check, in that order and with libauth's messages. libauth runs
+ * it as two nested closures that read each limit off the consensus object and pass the costs through an options
+ * object on every operation; here the limits are read once, and an operation within all of them returns at once. One
+ * over a limit takes the cold path, which repeats libauth's checks one by one so the first failing check names the
+ * error. The fast path computes the same `operationCost`, in the same order, before any check reads it.
+ */
+function installOperationLimitCheck(
+  instructionSet: ReturnType<typeof createInstructionSetBch2026>,
+  consensus: typeof ConsensusBch2026,
+  standard: boolean,
+): void {
+  type State = Parameters<NonNullable<typeof instructionSet.every>>[0];
+  const { baseInstructionCost, signatureCheckCost, maximumStackDepth, maximumControlStackDepth } = consensus;
+  const hashDigestIterationCost = standard
+    ? consensus.hashDigestIterationCostStandard
+    : consensus.hashDigestIterationCostConsensus;
+  const { maximumMemorySlots } = consensus;
+  // libauth falls back to its own default for a cost the consensus leaves unset; keep its check then.
+  const limits = [baseInstructionCost, signatureCheckCost, hashDigestIterationCost, maximumStackDepth,
+    maximumControlStackDepth, maximumMemorySlots];
+  if (!limits.every((limit) => typeof limit === 'number')) return;
+  const exceeded2025 = (state: State): State => {
+    const { metrics } = state;
+    if (metrics.operationCost > metrics.maximumOperationCost) {
+      return applyError(state, AuthenticationErrorBch2025.excessiveOperationCost,
+        `Maximum operation cost: ${metrics.maximumOperationCost}`
+        + ` (density control length: ${metrics.densityControlLength});`
+        + ` operation cost following operation: ${metrics.operationCost}.`);
+    }
+    if (metrics.hashDigestIterations > metrics.maximumHashDigestIterations) {
+      return applyError(state, AuthenticationErrorBch2025.excessiveHashing,
+        `Maximum hash digest iterations: ${metrics.maximumHashDigestIterations}`
+        + ` (density control length: ${metrics.densityControlLength});`
+        + ` hash digest iterations following operation: ${metrics.hashDigestIterations}.`);
+    }
+    if (state.stack.length + state.alternateStack.length > maximumStackDepth) {
+      return applyError(state, AuthenticationErrorBch2025.exceededMaximumStackDepth,
+        `Maximum stack depth: ${maximumStackDepth} items.`);
+    }
+    if (state.controlStack.length > maximumControlStackDepth) {
+      return applyError(state, AuthenticationErrorBch2025.exceededMaximumControlStackDepth,
+        `Maximum control stack depth: ${maximumControlStackDepth}.`);
+    }
+    if (standard && metrics.signatureCheckCount > metrics.maximumSignatureCheckCount) {
+      return applyError(state, AuthenticationErrorBch2025.exceededMaximumSignatureCheckCount,
+        `Maximum signature check count: ${metrics.maximumSignatureCheckCount};`
+        + ` signature check count following operation: ${metrics.signatureCheckCount}.`);
+    }
+    return state;
+  };
+  const exceeded = (state: State): State => {
+    const next = exceeded2025(state);
+    return next.stack.length + next.alternateStack.length + next.functionCount > maximumMemorySlots
+      ? applyError(next, AuthenticationErrorBch2026.exceededMaximumMemorySlots,
+        `Maximum memory slots: ${maximumMemorySlots}.`)
+      : next;
+  };
+  instructionSet.every = (state: State): State => {
+    const { metrics } = state;
+    const operationCost = metrics.evaluatedInstructionCount * baseInstructionCost
+      + metrics.signatureCheckCount * signatureCheckCost
+      + metrics.hashDigestIterations * hashDigestIterationCost
+      + metrics.arithmeticCost
+      + metrics.stackPushedBytes;
+    metrics.operationCost = operationCost;
+    const depth = state.stack.length + state.alternateStack.length;
+    return operationCost > metrics.maximumOperationCost
+      || metrics.hashDigestIterations > metrics.maximumHashDigestIterations
+      || depth > maximumStackDepth
+      || state.controlStack.length > maximumControlStackDepth
+      || (standard && metrics.signatureCheckCount > metrics.maximumSignatureCheckCount)
+      || depth + state.functionCount > maximumMemorySlots
+      ? exceeded(state)
+      : state;
+  };
 }
 
 /**
@@ -482,7 +582,9 @@ function installZeroCopyStackOperations(instructionSet: ReturnType<typeof create
     // useOneStackItem/useOneVmNumber pop this stack in place, so the operands are captured before the nested calls.
     const operandIndex = state.stack[state.stack.length - 1];
     const operandItem = state.stack[state.stack.length - 2];
-    return useOneVmNumber(state, (next, value) => {
+    // libauth's `opSplit` reads the index as `Number([value])`, the one-item argument list, which converts through a
+    // decimal string on every split. A bigint's number is the same value.
+    return useOneVmNumber(state, (next, [value]) => {
       const index = Number(value);
       return useOneStackItem(next, (final, [item]) => {
         if (index < 0 || index > item!.length) {
@@ -534,7 +636,8 @@ function installZeroCopyStackOperations(instructionSet: ReturnType<typeof create
           return applyError(final, AuthenticationErrorCommon.invalidSplitIndex,
             `stack item length: ${item!.length}; requested split index: ${index}.`);
         }
-        return pushToStack(final, [item!.subarray(0, index), item!.subarray(index)]);
+        // The two parts are the whole item, which is the pushed-byte count libauth sums from them.
+        return pushToStack(final, [item!.subarray(0, index), item!.subarray(index)], { pushedBytes: item!.length });
       });
     });
   });
@@ -762,7 +865,9 @@ function buildVirtualMachineBch2026ForProvider(
     );
     installCachedInvokeEvaluator(instructionSet);
     installCachedActiveBytecode(instructionSet, consensus.maximumStackItemLength);
+    installZeroCopyInputBytecode(instructionSet, consensus.maximumStackItemLength);
     installZeroCopyStackOperations(instructionSet);
+    installOperationLimitCheck(instructionSet, consensus, standard);
 
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RUNTIME_ASSIGN === '1') {

@@ -77,6 +77,26 @@ function fixture(): ResultPropagationContext & {
 }
 
 describe('result-dependent topology propagation', () => {
+  it('does not prune a producer-result require from a provisional false seed', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0];
+    root.artifact.abi[0]!.externalCalls = [
+      { ...sources[0]!, hasReturnValues: true, sourceEffectOrdinal: 0 },
+      { ...sources[1]!, occurrence: 'conditional', condition: undefined,
+        preCallRequires: [producer], sourceEffectOrdinal: 1 },
+    ];
+    // The first return has no strict view proof, so discovery seeds its bool schema with false.
+    // That candidate must not become proof that the following source require failed.
+    const discovered = await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf);
+    expect(discovered.calls.map((call) => call.callsiteId)).toEqual([undefined, 0, 1]);
+
+    root.artifact.abi[0]!.externalCalls![1]!.preCallRequires = [{
+      kind: 'literal', type: 'bool', value: false,
+    }];
+    const rejected = await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf);
+    expect(rejected.calls.map((call) => call.callsiteId)).toEqual([undefined, 0]);
+  });
+
   it('omits an unresolved edge only when an earlier source require is provably false', async () => {
     const ctx = fixture();
     const root = ctx.descriptors[0];

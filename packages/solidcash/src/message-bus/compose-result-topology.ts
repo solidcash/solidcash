@@ -31,13 +31,16 @@ type Prepared = PreparedAtomicMessageBusCall;
 type Child = { call: Prepared; previous?: number };
 
 /** Initial graph discovery has the owner's pre-transaction state, not the caller's ordered writes. A
- * state-dependent require may turn true before this edge, so only frame-stable predicates can omit it. */
+ * state-dependent require may turn true before this edge, so only frame-stable predicates can omit it.
+ * Producer results may be schema-shaped convergence seeds, not observed return values, and cannot prove
+ * that a require failed even when their provisional value is false. */
 function stateIndependentPredicate(value: unknown, seen = new Set<object>()): boolean {
   if (value === null || typeof value !== 'object' || seen.has(value)) return true;
   seen.add(value);
   if (Array.isArray(value)) return value.every((item) => stateIndependentPredicate(item, seen));
   const record = value as Record<string, unknown>;
-  if (record.kind === 'state' || record.kind === 'stateAccess') return false;
+  if (record.kind === 'state' || record.kind === 'stateAccess'
+    || record.kind === 'producerResult' || record.kind === 'externalCall') return false;
   return Object.values(record).every((item) => stateIndependentPredicate(item, seen));
 }
 

@@ -14,7 +14,7 @@
  */
 
 import type { createVirtualMachineBch2026 } from '@bitauth/libauth';
-import { FrameKind, type Artifact } from '@solidcash/utils';
+import { FrameKind, INDEX_NONE, type Artifact } from '@solidcash/utils';
 import {
   UNFILLED_CALLEE_REF, frameReadsCallRecord, frameStopOf, readPublishedStopSites, readsUnfilledReference,
   type CompositionDraft, type CompositionRefusal,
@@ -94,11 +94,17 @@ export function entrySiteOf(plan: HopExternalPlan, frames: Iterable<number>): nu
 
 /**
  * Declares the calls the entry makes past the ones a stopped plan states, each as a record no callee stands behind,
- * beside a copy of the last segment for the segment it opens.
+ * beside the segment it opens, which holds what the last stated segment declares kept at the view it ends at.
  *
  * A body whose calls are fixed holds the count its block declares to its own before anything runs, so a block that
  * states only the calls before the stop would refuse there. Declared up to the count the entry publishes, the block
  * lets the body run to its own stop: the stated calls are read as before, and a site past them stops on its record.
+ *
+ * A frame that settles its own records walks every segment's declarations as one chain before its body runs, so a
+ * segment past the stop carries each record on from the view the last stated segment leaves it at, as the hop keeps
+ * a record past the segment its write lands in (`placeLaidWrites`): one naming that segment's start again would
+ * declare its write once more, and a record that segment creates or consumes is declared by it alone. Each segment
+ * holds entries of its own, so the view the derivation learns for the last stated segment is carried on by each.
  */
 export function declareUnstatedCalls(draft: CompositionDraft, artifact: Artifact, master: string): void {
   const run = draft.runs.find((candidate) => candidate.master === master);
@@ -107,13 +113,16 @@ export function declareUnstatedCalls(draft: CompositionDraft, artifact: Artifact
   if (published === undefined) return;
   const count = published.sites.sites.filter((site) => site.kind === 'segmentClose').length - 1;
   const block = draft.blockOf(master);
-  const opened = block.segments[block.segments.length - 1] ?? [];
+  const opened = (block.segments[block.segments.length - 1] ?? [])
+    .filter((entry) => entry.in !== INDEX_NONE && entry.out !== INDEX_NONE);
   while (block.calls.length < count) {
     block.calls.push({
       kind: FrameKind.CALL, target: new Uint8Array(0), value: 0n, calleeRef: UNFILLED_CALLEE_REF,
       argsHash: new Uint8Array(32), result: new Uint8Array(0),
     });
-    block.segments.push([...opened]);
+    block.segments.push(opened.map((entry) => ({
+      in: entry.in, out: entry.out, viewIn: entry.viewOut, viewOut: entry.viewOut,
+    })));
   }
 }
 

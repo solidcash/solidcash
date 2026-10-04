@@ -7,8 +7,8 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
   interface IToken { function transfer(address to, uint amount) external returns (bool); }
   interface IVault { function sendShare(address recipient, uint amount, address currency) external; }
   interface IClaim { function claim(address currency, address recipient) external returns (uint[5] memory); }
-  interface IArbitrator {
-    function arbitrate(address currency, address recipient) external returns (uint[5] memory);
+  interface IReferee {
+    function decide(address currency, address recipient) external returns (uint[5] memory);
   }
   contract Token {
     uint public totalSent;
@@ -52,8 +52,8 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       return amounts;
     }
   }
-  contract Arbitrator(address claim) {
-    function arbitrate(address currency, address recipient) public returns (uint[5] memory) {
+  contract Referee(address claim) {
+    function decide(address currency, address recipient) public returns (uint[5] memory) {
       uint[5] memory amounts = IClaim(claim).claim(currency, recipient);
       return amounts;
     }
@@ -61,8 +61,8 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
   contract Root {
     uint public result;
     function initialize() public { this.result = 0; }
-    function run(address arbitrator, address currency, address recipient) public {
-      uint[5] memory amounts = IArbitrator(arbitrator).arbitrate(currency, recipient);
+    function run(address referee, address currency, address recipient) public {
+      uint[5] memory amounts = IReferee(referee).decide(currency, recipient);
       this.result = amounts[0] + amounts[4];
     }
   }`, {
@@ -78,7 +78,7 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
 });
 
 describe('kernel nested raw token payout', () => {
-  it('accepts five low-level optional-bool transfers beneath a returned arbitration vector', async () => {
+  it('accepts five low-level optional-bool transfers beneath a returned decision vector', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x7f), provider);
     for (let index = 0; index < 40; index += 1) await provider.addUtxo(signer.getAddress(), {
@@ -87,21 +87,21 @@ describe('kernel nested raw token payout', () => {
     const token = await getContractFactory(artifacts.Token, signer).deploy();
     const vault = await getContractFactory(artifacts.Vault, signer).deploy();
     const claim = await getContractFactory(artifacts.Claim, signer).deploy(vault.inner.address);
-    const arbitrator = await getContractFactory(artifacts.Arbitrator, signer).deploy(claim.inner.address);
+    const referee = await getContractFactory(artifacts.Referee, signer).deploy(claim.inner.address);
     const root = await upgrades.deployProxy(getContractFactory(artifacts.Root, signer), []);
     vault._registerResolvedExternal('IToken', token);
     claim._registerResolvedExternal('IVault', vault);
-    arbitrator._registerResolvedExternal('IClaim', claim);
-    root.implementation._registerResolvedExternal('IArbitrator', arbitrator);
+    referee._registerResolvedExternal('IClaim', claim);
+    root.implementation._registerResolvedExternal('IReferee', referee);
 
-    await root.forward('run', [arbitrator.inner.address, token.inner.address, signer.getAddress()]).send();
+    await root.forward('run', [referee.inner.address, token.inner.address, signer.getAddress()]).send();
     expect((await token.getState()).totalSent).toBe(35n);
     expect((await vault.getState()).shares).toBe(5n);
     expect((await root.proxy.getState()).result).toBe(14n);
 
     const legacyToken = await getContractFactory(artifacts.LegacyToken, signer).deploy();
     vault._registerResolvedExternal('IToken', legacyToken);
-    await root.forward('run', [arbitrator.inner.address, legacyToken.inner.address, signer.getAddress()]).send();
+    await root.forward('run', [referee.inner.address, legacyToken.inner.address, signer.getAddress()]).send();
     expect((await token.getState()).totalSent).toBe(35n);
     expect((await legacyToken.getState()).totalSent).toBe(35n);
     expect((await vault.getState()).shares).toBe(10n);
@@ -110,7 +110,7 @@ describe('kernel nested raw token payout', () => {
     const rejectingToken = await getContractFactory(artifacts.RejectingToken, signer).deploy();
     vault._registerResolvedExternal('IToken', rejectingToken);
     await expect(root.forward('run', [
-      arbitrator.inner.address, rejectingToken.inner.address, signer.getAddress(),
+      referee.inner.address, rejectingToken.inner.address, signer.getAddress(),
     ]).send()).rejects.toThrow(/BCH-2026 preflight failed/);
     expect((await rejectingToken.getState()).attempted).toBe(0n);
     expect((await vault.getState()).shares).toBe(10n);

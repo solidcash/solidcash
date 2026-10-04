@@ -35,7 +35,7 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
     function distribute(uint amount) external;
   }
   interface ISettlementClaim { function claim() external returns (uint[5] memory); }
-  interface IArbitrator { function arbitrate(uint amount) external returns (uint[5] memory); }
+  interface IReferee { function decide(uint amount) external returns (uint[5] memory); }
   contract Vault {
     uint public total;
     function settle(uint amount) public { this.total += amount; }
@@ -52,8 +52,8 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       return amounts;
     }
   }
-  contract Arbitrator(address vault, address claim) {
-    function arbitrate(uint amount) public returns (uint[5] memory) {
+  contract Referee(address vault, address claim) {
+    function decide(uint amount) public returns (uint[5] memory) {
       IVault(vault).settle(amount);
       uint[5] memory amounts = ISettlementClaim(claim).claim();
       return amounts;
@@ -62,8 +62,8 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
   contract SettlementRoot {
     uint public result;
     function initialize() public { this.result = 0; }
-    function run(address arbitrator, uint amount) public {
-      uint[5] memory amounts = IArbitrator(arbitrator).arbitrate(amount);
+    function run(address referee, uint amount) public {
+      uint[5] memory amounts = IReferee(referee).decide(amount);
       this.result = amounts[0] + amounts[4];
     }
   }`, {
@@ -105,15 +105,15 @@ describe('kernel nested payout return', () => {
     });
     const vault = await getContractFactory(artifacts.Vault, signer).deploy();
     const claim = await getContractFactory(artifacts.SettlementClaim, signer).deploy(vault.inner.address);
-    const arbitrator = await getContractFactory(artifacts.Arbitrator, signer)
+    const referee = await getContractFactory(artifacts.Referee, signer)
       .deploy(vault.inner.address, claim.inner.address);
     const root = await upgrades.deployProxy(getContractFactory(artifacts.SettlementRoot, signer), []);
     claim._registerResolvedExternal('IVault', vault);
-    arbitrator._registerResolvedExternal('IVault', vault);
-    arbitrator._registerResolvedExternal('ISettlementClaim', claim);
-    root.implementation._registerResolvedExternal('IArbitrator', arbitrator);
+    referee._registerResolvedExternal('IVault', vault);
+    referee._registerResolvedExternal('ISettlementClaim', claim);
+    root.implementation._registerResolvedExternal('IReferee', referee);
 
-    await root.forward('run', [arbitrator.inner.address, 5n]).send();
+    await root.forward('run', [referee.inner.address, 5n]).send();
     expect((await vault.getState()).total).toBe(20n);
     expect((await root.proxy.getState()).result).toBe(9n);
   }, 180_000);

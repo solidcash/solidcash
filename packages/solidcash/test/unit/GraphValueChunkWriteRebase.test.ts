@@ -77,17 +77,17 @@ describe('graph value-chunk write rebasing', () => {
       getValueChunkRawCommitments: () => ['00'],
       getDerivedChunkOutputs: () => new Map(),
     } as unknown as Parameters<typeof hasMaterializedValueChunkWitness>[0];
-    expect(hasMaterializedValueChunkWitness(witnessBuilder, [{ id: 'escrowArbitrator' }], []))
+    expect(hasMaterializedValueChunkWitness(witnessBuilder, [{ id: 'delegatedOwner' }], []))
       .toBe(false);
   });
 
   it('activates only a concretely encoded continuation chunk', () => {
     const witnessBuilder = {
       hasStagedValueChunkOutputs: () => false,
-      getValueChunkRawCommitments: (id: string) => id === 'escrowArbitrator' ? ['0000aa'] : [],
+      getValueChunkRawCommitments: (id: string) => id === 'delegatedOwner' ? ['0000aa'] : [],
       getDerivedChunkOutputs: () => new Map(),
     } as unknown as Parameters<typeof hasMaterializedValueChunkWitness>[0];
-    expect(hasMaterializedValueChunkWitness(witnessBuilder, [{ id: 'escrowArbitrator' }], []))
+    expect(hasMaterializedValueChunkWitness(witnessBuilder, [{ id: 'delegatedOwner' }], []))
       .toBe(true);
     expect(hasMaterializedValueChunkWitness(witnessBuilder, [{ id: 'other' }], []))
       .toBe(false);

@@ -18,9 +18,9 @@ describe('compute side-car recipe replay', () => {
   const length: ExternalCallExpression = {
     kind: 'producerResult', callsiteId: 1, resultIndex: 0, type: 'uint256',
   };
-  const jobId: ExternalCallExpression = { kind: 'source', source: { kind: 'forward', paramIndex: 0 } };
+  const recordId: ExternalCallExpression = { kind: 'source', source: { kind: 'forward', paramIndex: 0 } };
   const signature: ExternalCallExpression = { kind: 'source', source: { kind: 'forward', paramIndex: 1 } };
-  const innerPreimage: ExternalCallExpression = { kind: 'abiEncode', args: [length, jobId] };
+  const innerPreimage: ExternalCallExpression = { kind: 'abiEncode', args: [length, recordId] };
   const innerHash: ExternalCallExpression = { kind: 'call', name: 'keccak256', args: [innerPreimage] };
   const prefix = '\x19Ethereum Signed Message:\n32';
   const outerPreimage: ExternalCallExpression = {

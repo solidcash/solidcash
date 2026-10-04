@@ -11,8 +11,8 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
     function sendShare(address recipient, uint amount, address currency) external;
   }
   interface IClaim { function claim(address currency, address recipient) external returns (uint[5] memory); }
-  interface IArbitrator {
-    function arbitrate(address currency, address recipient, uint amount) external returns (uint[5] memory);
+  interface IReferee {
+    function decide(address currency, address recipient, uint amount) external returns (uint[5] memory);
   }
   contract Token {
     uint public totalSent;
@@ -43,8 +43,8 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       return amounts;
     }
   }
-  contract Arbitrator(address vault, address claim) {
-    function arbitrate(address currency, address recipient, uint amount) public returns (uint[5] memory) {
+  contract Referee(address vault, address claim) {
+    function decide(address currency, address recipient, uint amount) public returns (uint[5] memory) {
       IVault(vault).settle(amount);
       uint[5] memory amounts = IClaim(claim).claim(currency, recipient);
       return amounts;
@@ -53,8 +53,8 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
   contract Root {
     uint public result;
     function initialize() public { this.result = 0; }
-    function run(address arbitrator, address currency, address recipient) public {
-      uint[5] memory amounts = IArbitrator(arbitrator).arbitrate(currency, recipient, 5);
+    function run(address referee, address currency, address recipient) public {
+      uint[5] memory amounts = IReferee(referee).decide(currency, recipient, 5);
       this.result = amounts[0] + amounts[4];
     }
   }`, {
@@ -70,7 +70,7 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
 });
 
 describe('kernel nested token payout', () => {
-  it('routes five dynamic-currency transfers beneath a returned arbitration vector', async () => {
+  it('routes five dynamic-currency transfers beneath a returned decision vector', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x7e), provider);
     for (let index = 0; index < 40; index += 1) await provider.addUtxo(signer.getAddress(), {
@@ -79,16 +79,16 @@ describe('kernel nested token payout', () => {
     const token = await getContractFactory(artifacts.Token, signer).deploy();
     const vault = await getContractFactory(artifacts.Vault, signer).deploy();
     const claim = await getContractFactory(artifacts.Claim, signer).deploy(vault.inner.address);
-    const arbitrator = await getContractFactory(artifacts.Arbitrator, signer)
+    const referee = await getContractFactory(artifacts.Referee, signer)
       .deploy(vault.inner.address, claim.inner.address);
     const root = await upgrades.deployProxy(getContractFactory(artifacts.Root, signer), []);
     vault._registerResolvedExternal('IToken', token);
     claim._registerResolvedExternal('IVault', vault);
-    arbitrator._registerResolvedExternal('IVault', vault);
-    arbitrator._registerResolvedExternal('IClaim', claim);
-    root.implementation._registerResolvedExternal('IArbitrator', arbitrator);
+    referee._registerResolvedExternal('IVault', vault);
+    referee._registerResolvedExternal('IClaim', claim);
+    root.implementation._registerResolvedExternal('IReferee', referee);
 
-    await root.forward('run', [arbitrator.inner.address, token.inner.address, signer.getAddress()]).send();
+    await root.forward('run', [referee.inner.address, token.inner.address, signer.getAddress()]).send();
     expect((await token.getState()).totalSent).toBe(35n);
     const decodedRecipient = decodeCashAddress(signer.getAddress());
     if (typeof decodedRecipient === 'string') throw new Error(decodedRecipient);

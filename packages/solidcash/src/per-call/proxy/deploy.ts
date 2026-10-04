@@ -1217,7 +1217,9 @@ export async function deployPerCallProxy(
       proxyMasterAmount: options.proxyDeploy.masterAmount ?? 1200n,
       implementationMasterAmount: options.implementationDeploy.masterAmount ?? 1200n,
       validatorAmount: recordAmount,
-      recordAmounts: recordCommitments.map(() => recordAmount),
+      // A record's covenant pins its value, and the genesis funds a wide record above the fixed amount, so each one
+      // is spent at what it holds.
+      recordAmounts: deployment.records.map((record) => record.satoshis),
       callerLockingBytecode: options.callerLockingBytecode,
       entry: { functionName: options.initialize.functionName, args: initializeArgs },
       ...(externalPlan.blocked === undefined ? {} : { truncated: true }),

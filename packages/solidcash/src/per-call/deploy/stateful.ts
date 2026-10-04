@@ -31,6 +31,7 @@ import { Contract } from '../../Contract.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { getNetworkPrefix } from '../../utils.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
+import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
 import { derivePerCallGenesis } from './genesis.js';
 import { resolveMasterPoolSize } from './pool.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
@@ -128,9 +129,15 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
     ...(options.maxFee === undefined ? {} : { maximumFeeSatoshis: options.maxFee }),
   });
   builder.addInput(options.fundingUtxo, options.funder);
+  // Every token output carries at least its own dust threshold: a wide record, chunk or event is worth more than the
+  // fixed amount, which covers only outputs up to 252 bytes. The change below is taken from the amounts added here.
+  const addFunded = (output: Parameters<typeof builder.addOutput>[0]): void => {
+    builder.addOutput(output.token === undefined
+      ? output : { ...output, amount: satoshisAtLeastDust(output.amount, output) });
+  };
 
   for (let index = 0; index < pool.masters; index += 1) {
-    builder.addOutput({
+    addFunded({
       to: genesis.master.lockingBytecode,
       amount: masterAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
@@ -139,7 +146,7 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   // The validator pool: `pool.validators` UTXOs at addrV(category), recreated in place by every composition, so
   // the pool bounds how many compositions the contract can root at once.
   for (let index = 0; index < pool.validators; index += 1) {
-    builder.addOutput({
+    addFunded({
       to: genesis.master.address,
       amount: dataNftAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
@@ -148,7 +155,7 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   // The facet pool: one tokenless UTXO per facet the validator program binds, at the facet's own lock. A facet
   // holds no token and pins no category, so a composition spends any UTXO of its code.
   for (const code of perCallValidator.buildValidatorFacets()) {
-    builder.addOutput({
+    addFunded({
       to: encodeLockingBytecodeP2sh32(hash256(code)),
       amount: FACET_SATOSHIS,
     });
@@ -157,7 +164,7 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   // trailing region, ahead of the records the genesis creates, which is the order a composition's outputs use; an
   // event output carries the contract's category with no capability.
   for (const event of genesis.events) {
-    builder.addOutput({
+    addFunded({
       to: event.lockingBytecode,
       amount: dataNftAmount,
       token: {
@@ -166,13 +173,22 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
       },
     });
   }
-  for (const commitment of genesis.commitments) {
-    builder.addOutput({
+  // A state record's covenant pins its value on every later spend, so no write can fund a record it widens: the
+  // genesis funds each one for the widest commitment its own variables pack to. A record holding a value with no
+  // bound (unbounded bytes, an unbounded or packed array, `int`) is funded for its genesis width and keeps that value.
+  genesis.commitments.forEach((commitment, nftIndex) => {
+    const bound = artifact.stateLayout === undefined
+      ? undefined : widestRecordCommitmentBytes(artifact.stateLayout, nftIndex);
+    const widest = '00'.repeat(Math.max(commitment.length / 2, bound ?? 0));
+    addFunded({
       to: recordLockingBytecode,
-      amount: dataNftAmount,
+      amount: satoshisAtLeastDust(dataNftAmount, {
+        to: recordLockingBytecode,
+        token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: widest } },
+      }),
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment } },
     });
-  }
+  });
   // The mapping nodes the constructor's frame materialized: the empty list's head sentinel and any node its writes
   // created. Each sits at its collection's entry covenant, so a composition spends and recreates it under the
   // covenant's own rules; the collection's signature derives that lock.
@@ -186,7 +202,7 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
         `genesis minted a node for collection "${entry.collection}", which the artifact does not publish`,
       );
     }
-    builder.addOutput({
+    addFunded({
       to: entryRecordLockingBytecode(categoryId, signature),
       amount: dataNftAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: entry.commitment } },
@@ -195,7 +211,7 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   // The chunk records the constructor's frame wrote, each at the value's own collection covenant carrying the
   // commitment the shipped chunk encoder produced for the value the constructor stored.
   for (const chunk of genesis.chunks) {
-    builder.addOutput({
+    addFunded({
       to: chunk.lockingBytecode,
       amount: dataNftAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: chunk.commitment } },
@@ -205,7 +221,7 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   // Immutable CREATE identity anchors: category-bearing discovery records the factory path expects to find at the
   // deploying account's logical address after the genesis.
   for (const anchor of options.identityAnchors ?? []) {
-    builder.addOutput({
+    addFunded({
       to: anchor.to,
       amount: anchor.amount ?? dataNftAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'none', commitment: anchor.commitment } },

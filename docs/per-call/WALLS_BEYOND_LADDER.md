@@ -100,7 +100,24 @@ planned again from them (`reachedResults`); each stop learns a result no earlier
 stopped plan lays a write past its last stated call in its last segment, as the hop's does (`truncated`). The sweep
 settles, and a result stated smaller in the vault's record and the read's `retval` alike is refused by the read's own
 frame (`call/plain-root-calls.test.ts`; the replica retired). A callee frame's own site that waits on a result, and a
-call guarded on an earlier result, are still refused by name (`call/callees.ts` 345, 348). A plain burn through
+call the root guards on an earlier result (agent PL5): a stop inside a callee frame declares that frame's calls from
+the site on unbound as well (every frame the plan is `truncated` in), a truncated frame owes no value and lays a
+write past its last stated call in its last segment, and the result is keyed by the waiting frame's path; a guarded
+call is stated as the results the plan was made from decide it (none at first), and once the callees answered,
+`callInShape` decides the guards again from what they returned (the hop's `producedCallResults`), keeping a plan
+whose sites that leaves unchanged (`samePlannedSites`) and planning again otherwise, at most once per result a guard
+reads. A sweep that transfers only a balance the read returned, skipping the transfer when there is none, and a
+keeper whose strategy sweeps its own balance settle, and a result stated otherwise in the caller's record and the
+read's `retval` alike is refused by the read's own frame (`call/plain-root-calls.test.ts`). Two plain-path walls
+stand. A frame that only reads a node an earlier frame created is refused by name (`call/callees.ts` 366): serving
+it means declaring the read at the creator's output as the hop does (`proxy/deploy.ts` 3975, beside `readEntries`,
+`call/callees.ts` 577), chaining that output's view from the creator's learned end, and the hop's held reading
+(`heldPlanOf`, `proxy/deploy.ts` 2709): the read and a rewrite state the same declaration until a settle, so the hop
+plans once more with `heldContinuations` and keeps that plan only when it settles. A mapping write beside a value
+call into a contract is refused by name (`call/call.ts` 929); the placement it needs is PL2's (`laid.place`, 1318),
+but the compiler fixes the segment of a write after a send only when it follows every call (a send widens the call
+range, `solidc/src/per-call/master/support.ts` 1258), and its test needs a funded container and a paid contract,
+which `ahead/composition-world.ts` `enterPlain` (215) does not carry (`call/value-harness.ts` does). A plain burn through
 OpenZeppelin v5's `_update` (`from` debited, `to` = address(0) skipped, its kept predecessor `from`'s node) needs no
 rule of its own: the plain path lays its batch with the hop's `layBatchRecords`, so the skipped group continues from
 the view the debit leaves (`withLearnedViews`, `proxy/entry-writes.ts` 1380), and `call.ts`'s own chaining of a
@@ -614,7 +631,7 @@ replica above confirms it. The full table with every row and class is the append
 | --- | --- | --- | --- | --- |
 | 1 | solidcash `call/call.ts` 584, 707 | plain root: mapping write beside a call | H | 584 served (PL2); 707, beside a value call into a contract, stands |
 | 1 | solidcash `call/callees.ts` 339 | plain root: one callee entered twice, a frame writing nodes | H | served (PL3) |
-| 1 | solidcash `call/callees.ts` 318, 321 | plain root: argument from, or call guarded on, an earlier result | H | 318 served (PL4); 321 stands |
+| 1 | solidcash `call/callees.ts` 318, 321 | plain root: argument from, or call guarded on, an earlier result | H | served (PL4, PL5) |
 | 1 | solidcash `call/entry-records.ts` 762, 786 | plain root: two collections; chunked mapping value | H | served (PL1) |
 | 1 | solidcash `deploy/genesis.ts` 548 | constructor writing two collections | H | conf. 2.1 |
 | 1 | solidcash `call/callees.ts` 258-271 | plain root: callee behind a proxy / delegate / sending value / touching chunks / side-car / unfixed segment | H | code |

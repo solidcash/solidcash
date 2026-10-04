@@ -46,9 +46,11 @@
  * the proxy hop plans its delegate frame's calls (`callees.ts`): the callee's return, its events' payloads and the
  * views of the mapping nodes it writes are learned from its own close, deepest first, before the entry that reads
  * it. Its event outputs follow the entry's own, and the nodes it creates follow the entry's. A call whose argument
- * or loop bound reads an earlier call's result is planned once that call has answered, as the hop plans one: the
- * plan stops before the site, the frames of the earlier calls are settled on it, and the call is planned again from
- * what they returned. The shapes `callees.ts` does not settle yet are refused by name.
+ * or loop bound reads an earlier call's result, the entry's or a callee frame's, is planned once that call has
+ * answered, as the hop plans one: the plan stops before the site, the frames of the earlier calls are settled on it,
+ * and the call is planned again from what they returned. A call the entry guards on an earlier result is stated as
+ * that result, learned the same way, decides the guard. The shapes `callees.ts` does not settle yet are refused by
+ * name.
  *
  * What is not covered: a returning entry reached through a proxy hop whose forwarded call records no result. The
  * generated closure shape forwards with a bare `delegatecall(input)` and drops the result, so the hop cannot express
@@ -100,7 +102,8 @@ import {
   type PerCallDeploymentSet,
 } from '../deploy/index.js';
 import {
-  chainSharedNodeViews, placeOwnWrites, reachedCallResults, withChainEnds, withCreatedChainEnds,
+  chainSharedNodeViews, placeOwnWrites, producedCallResults, reachedCallResults, samePlannedSites, withChainEnds,
+  withCreatedChainEnds,
 } from '../proxy/deploy.js';
 import { hopEntryWrites, type HopEntryWrites, type LaidHopEntryWrites } from '../proxy/entry-writes.js';
 import { PerCallProxyDeployError } from '../proxy/errors.js';
@@ -657,11 +660,22 @@ interface SendShape {
 }
 
 /**
- * A call planned with the sends `shape` declares, and with the results `reached` holds, keyed by `reachedResultKey`:
- * what the earlier calls a site of the entry reads returned, as a plan stopped before that site learned them.
+ * What earlier calls returned, as the plans of a call before this one learned it: the results the sites a plan stopped
+ * before read (`reached`, keyed by `reachedResultKey`), and the results the entry's own guards read (`returns`, by
+ * callsite id), with how many plans the guards were decided on again (`passes`).
  */
+interface EarlierResults {
+  readonly reached: ReadonlyMap<string, FunctionArgument>;
+  readonly returns: ReadonlyMap<number, FunctionArgument>;
+  readonly passes: number;
+}
+
+/** No earlier result learned: a call's first plan. */
+const NO_EARLIER_RESULTS: EarlierResults = { reached: new Map(), returns: new Map(), passes: 0 };
+
+/** A call planned with the sends `shape` declares, and from the results `prior` holds. */
 async function callInShape(
-  options: PerCallCallOptions, shape: SendShape, reached: ReadonlyMap<string, FunctionArgument> = new Map(),
+  options: PerCallCallOptions, shape: SendShape, prior: EarlierResults = NO_EARLIER_RESULTS,
 ): Promise<PerCallCallResult> {
   const { provider, artifact, categoryId, functionName } = options;
   const stateLayout = artifact.stateLayout;
@@ -759,18 +773,22 @@ async function callInShape(
   });
   const mappingIds = mappingRecords?.participantIds ?? [];
 
-  // The calls the entry makes and the callee frames they reach, each on a master of its own contract's pool.
-  let calleePlan: PlannedCallees | undefined;
-  try {
-    calleePlan = await planEntryCallees({
-      provider, artifact, functionName, args, externals: options.externals ?? {}, validatorProgram, categoryId,
-      deployment, selfAddress: deployed.address, senderAddress: options.callerLockingBytecode,
-      ...(reached.size === 0 ? {} : { reachedResults: reached }),
-    });
-  } catch (error) {
-    if (error instanceof PerCallCalleeError) throw new PerCallCallError(error.message);
-    throw error;
-  }
+  // The calls the entry makes and the callee frames they reach, each on a master of its own contract's pool, planned
+  // from the results earlier plans learned.
+  const planCallees = async (returns: ReadonlyMap<number, FunctionArgument>): Promise<PlannedCallees | undefined> => {
+    try {
+      return await planEntryCallees({
+        provider, artifact, functionName, args, externals: options.externals ?? {}, validatorProgram, categoryId,
+        deployment, selfAddress: deployed.address, senderAddress: options.callerLockingBytecode,
+        ...(prior.reached.size === 0 ? {} : { reachedResults: prior.reached }),
+        ...(returns.size === 0 ? {} : { externalReturns: returns }),
+      });
+    } catch (error) {
+      if (error instanceof PerCallCalleeError) throw new PerCallCallError(error.message);
+      throw error;
+    }
+  };
+  const calleePlan = await planCallees(prior.returns);
 
   // The fallback is reached by the call data of a value send, which no entry's selector names.
   const argumentPushes = entry.name === FALLBACK_ENTRY
@@ -1614,6 +1632,8 @@ async function callInShape(
   // What each callee's body computed, by master: the return the frames that call it read as the call's result, and
   // the payloads and node views its own frame declares.
   let calleeValues: CalleeValues = NO_CALLEE_VALUES;
+  // Whether the guards the entry's own conditions put on its calls are decided from the results this plan learned.
+  let armsDecided = false;
   const frameArtifacts = [artifact, ...(calleePlan?.artifacts ?? []), ...payees.map((payee) => payee.artifact)];
   let settled = false;
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
@@ -1621,10 +1641,15 @@ async function callInShape(
       learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees, calleeValues,
     );
     const { host, draft: candidate } = createComposedDerivationHost({ vm: machine, artifacts: frameArtifacts, plan });
-    // A plan stopped before a site states the entry's calls before it only, so its calls from that site on are
-    // declared unbound: a body that holds its call count runs to that site and binds the calls before it, as the
-    // execution does, and stops on the first unbound record.
-    if (calleePlan?.blocked !== undefined) declareUnstatedCalls(candidate, artifact, MASTER_ID);
+    // A plan stopped before a site states the calls before it only, of the entry and of every frame it stops inside,
+    // so their calls from there on are declared unbound: a body that holds its call count runs to the site and binds
+    // the calls before it, as the execution does, and stops on the first unbound record.
+    if (calleePlan?.blocked !== undefined) {
+      declareUnstatedCalls(candidate, artifact, MASTER_ID);
+      for (const callee of calleePlan.callees) {
+        if (callee.truncated === true) declareUnstatedCalls(candidate, callee.artifact, callee.master);
+      }
+    }
     draft = candidate;
     let stalled = false;
     try {
@@ -1651,20 +1676,40 @@ async function callInShape(
         settled = true;
         break;
       }
-      // A plan stopped before a site of the entry's own is settled up to that site only: the frames of the calls
-      // before it have answered, so the site's earlier results are decoded from what they returned and the call is
-      // planned again from them. Each stop learns a result no earlier one did, so the stops end.
+      // A plan stopped before a site is settled up to that site only: the frames of the calls before it have
+      // answered, so the site's earlier results are decoded from what they returned and the call is planned again
+      // from them. Each stop learns a result no earlier one did, so the stops end.
       const stop = calleePlan.blocked;
       if (stop !== undefined) {
         const results = reachedCallResults(calleePlan, stop, calleeValues.retvals);
-        if ([...results.keys()].every((key) => reached.has(key))) {
+        if ([...results.keys()].every((key) => prior.reached.has(key))) {
           throw new PerCallCallError(
             `entry "${functionName}": ${stop.where} reads the result of the earlier call(s) `
             + `${stop.producers.join(', ')}, and settling them returned nothing the call could decode, so the call `
             + 'cannot be planned from it',
           );
         }
-        return callInShape(options, shape, new Map([...reached, ...results]));
+        return callInShape(options, shape, { ...prior, reached: new Map([...prior.reached, ...results]) });
+      }
+      // A call the entry guards on an earlier call's result is stated as the results the plan was made from decide
+      // it: the first plan holds none and states no such call. Once the callees answered, what they returned decides
+      // the guards again, as the hop decides them (`planAndSettleHop`): a plan whose sites those results leave as they
+      // are is the execution's, and one they change is planned again from them, at most once per result a guard
+      // reads.
+      if (calleePlan.conditionalProducers.length > 0 && !armsDecided) {
+        const returns = producedCallResults(calleePlan, calleeValues.retvals);
+        const decided = await planCallees(returns);
+        if (decided !== undefined && decided.blocked === undefined && samePlannedSites(decided, calleePlan)) {
+          armsDecided = true;
+        } else {
+          if (prior.passes >= calleePlan.conditionalProducers.length) {
+            throw new PerCallCallError(
+              `entry "${functionName}": the calls an earlier call's result guards did not settle: the call was planned `
+              + `${prior.passes + 1} time(s) without its sites stopping`,
+            );
+          }
+          return callInShape(options, shape, { ...prior, returns, passes: prior.passes + 1 });
+        }
       }
     }
     // A void entry that writes no mapping and emits nothing leaves nothing to learn: the plan is the one just
@@ -1739,7 +1784,7 @@ async function callInShape(
           listedSends: sendCount,
           skippedPayees: new Set([...shape.skippedPayees, payable.indexOf(payees[passed]!)]),
           payeeListedSends: shape.payeeListedSends,
-        }, reached);
+        }, prior);
       }
     }
     // A contract it pays hands back what its own body computed from its own program's close.
@@ -1779,7 +1824,7 @@ async function callInShape(
           ...payees.flatMap((payee, index) => (payeeShort[index] ? [[payee.transferPosition, payeeMade[index]!] as const]
             : [])),
         ]),
-      }, reached);
+      }, prior);
     }
     // Otherwise it either converged, or refused before writing anything owed.
     settled = true;

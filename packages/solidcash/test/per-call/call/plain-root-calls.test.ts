@@ -30,8 +30,14 @@ import {
  * The vault sweeps its whole balance too: the transfer's amount is what the token's `balanceOf` returned to it a
  * call earlier, so the call is planned stopped before the transfer, the read is settled on that plan, and the call is
  * planned again from what it returned, as the hop plans one. A plan that states a smaller result, in the vault's
- * record of the read and in the read's own `retval` alike, is refused by the read's own frame. Every entry settles
- * and every balance is read back through the views.
+ * record of the read and in the read's own `retval` alike, is refused by the read's own frame.
+ *
+ * A sweep that guards its transfer on the balance read before it is stated as the result decides the guard: the first
+ * plan states no transfer, and the read's answer decides whether the call is planned again with it, as the hop decides
+ * an arm. A keeper whose strategy sweeps its own balance stops inside the strategy's frame instead: the site waiting
+ * on the read is the callee's, and the call is planned again from the result the strategy's read returned. A plan
+ * stating the read's result otherwise is refused by the read's own frame in each. Every entry settles and every
+ * balance is read back through the views.
  */
 
 const SOURCE = [
@@ -40,6 +46,9 @@ const SOURCE = [
   '  function transferFrom(address from, address to, uint256 amount) external;',
   '  function transfer(address to, uint256 amount) external;',
   '  function balanceOf(address who) external view returns (uint256);',
+  '}',
+  'interface IStrategy {',
+  '  function sweepTo(address to) external;',
   '}',
   'contract Token {',
   '  mapping(address => uint256) internal balances;',
@@ -77,6 +86,23 @@ const SOURCE = [
   '    uint256 held = token.balanceOf(address(this));',
   '    token.transfer(to, held);',
   '  }',
+  '  function sweepHeld(address to) external {',
+  '    uint256 held = token.balanceOf(address(this));',
+  '    if (held > 0) token.transfer(to, held);',
+  '  }',
+  '}',
+  'contract Strategy {',
+  '  IToken public token;',
+  '  constructor(IToken token_) { token = token_; }',
+  '  function sweepTo(address to) external {',
+  '    uint256 held = token.balanceOf(address(this));',
+  '    token.transfer(to, held);',
+  '  }',
+  '}',
+  'contract Keeper {',
+  '  IStrategy public strategy;',
+  '  constructor(IStrategy strategy_) { strategy = strategy_; }',
+  '  function harvest(address to) external { strategy.sweepTo(to); }',
   '}',
 ].join('\n');
 
@@ -92,7 +118,7 @@ interface Chain {
 }
 
 /** One token mint, which has to settle. */
-async function mint(c: Chain, to: Uint8Array, amount: bigint): Promise<void> {
+async function mint(c: Pick<Chain, 'world' | 'token'>, to: Uint8Array, amount: bigint): Promise<void> {
   const minted = await enterPlain(c.world, c.token, 'mint', [to, amount]);
   expect(minted.error).toBeUndefined();
   expect(refusedVerdicts(minted.result!)).toBeUndefined();
@@ -139,15 +165,48 @@ function sweepChain(): Promise<Chain> {
   return sweepRun;
 }
 
-/** One vault entry that has to settle: entered by the depositor, reaching the token, and broadcast. */
-async function settle(c: Chain, functionName: string, args: readonly FunctionArgument[]): Promise<PerCallCallResult> {
-  const outcome = await enterPlain(c.world, c.vault, functionName, args, {
-    Token: { artifact: c.token.artifact, categoryId: c.token.categoryId },
-  });
+interface KeeperChain {
+  readonly world: World;
+  readonly token: PlainDeployment;
+  readonly strategy: PlainDeployment;
+  readonly keeper: PlainDeployment;
+}
+
+let keeperRun: Promise<KeeperChain> | undefined;
+/** The harvests' chain: a strategy holding 20 of the token, and a keeper that has it sweep them. */
+function keeperChain(): Promise<KeeperChain> {
+  keeperRun ??= (async (): Promise<KeeperChain> => {
+    const world = await newWorld(0x55);
+    const token = await deployPlain(world, artifacts.Token!);
+    const strategy = await deployPlain(world, artifacts.Strategy!, [token.address]);
+    const keeper = await deployPlain(world, artifacts.Keeper!, [strategy.address]);
+    await mint({ world, token }, strategy.address, 20n);
+    return { world, token, strategy, keeper };
+  })();
+  return keeperRun;
+}
+
+/** One entry of `root` that has to settle: entered by the depositor, reaching the deployments named, and broadcast. */
+async function settleOn(
+  world: World, root: PlainDeployment, functionName: string, args: readonly FunctionArgument[],
+  reached: readonly PlainDeployment[],
+): Promise<PerCallCallResult> {
+  const outcome = await enterPlain(world, root, functionName, args, Object.fromEntries(reached.map((deployed) =>
+    [deployed.artifact.contractName, { artifact: deployed.artifact, categoryId: deployed.categoryId }])));
   expect(outcome.error).toBeUndefined();
   expect(refusedVerdicts(outcome.result!)).toBeUndefined();
   expect(outcome.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
   return outcome.result!;
+}
+
+/** One vault entry that has to settle: entered by the depositor, reaching the token, and broadcast. */
+function settle(c: Chain, functionName: string, args: readonly FunctionArgument[]): Promise<PerCallCallResult> {
+  return settleOn(c.world, c.vault, functionName, args, [c.token]);
+}
+
+/** The keeper's harvest to `to`, which has to settle: the strategy it calls sweeps its balance of the token there. */
+function harvest(k: KeeperChain, to: Uint8Array): Promise<PerCallCallResult> {
+  return settleOn(k.world, k.keeper, 'harvest', [to], [k.strategy, k.token]);
 }
 
 /** A view's value, read from a plain deployment's records and nodes through the read path. */
@@ -196,11 +255,32 @@ function withBlock(
   return forged;
 }
 
-/** Each holder's balance of the payout chain's token. */
-async function balances(c: Chain, holders: readonly Uint8Array[]): Promise<readonly unknown[]> {
+/** Each holder's balance of the chain's token. */
+async function balances(c: Pick<Chain, 'world' | 'token'>, holders: readonly Uint8Array[]): Promise<readonly unknown[]> {
   const read: unknown[] = [];
   for (const holder of holders) read.push(await view(c.world, c.token, 'balanceOf', [holder]));
   return read;
+}
+
+/** The master of the one frame of `result` that ran `entry`. */
+function frameOf(result: PerCallCallResult, entry: string): string {
+  const frames = result.completed.filter((frame) => frame.functionName.endsWith(`.${entry}()`));
+  expect(frames).toHaveLength(1);
+  return frames[0]!.master;
+}
+
+/**
+ * The settled transaction with the result of the first call `caller` made stated as `stated`, in the caller's record
+ * of it and in the `read` frame's own `retval` alike, so the two still agree.
+ */
+function withStatedResult(result: PerCallCallResult, caller: string, read: string, stated: Uint8Array): VmTransaction {
+  const readBlock = structuredClone(result.draft.blockOf(read)) as WitnessBlock;
+  const callerBlock = structuredClone(result.draft.blockOf(caller)) as WitnessBlock;
+  expect(callerBlock.calls[0]!.result).toStrictEqual(readBlock.retval);
+  expect(stated).not.toStrictEqual(readBlock.retval);
+  readBlock.retval = stated;
+  callerBlock.calls[0]!.result = stated;
+  return withBlock(result, caller, callerBlock, withBlock(result, read, readBlock));
 }
 
 describe('a plain root\'s own mapping write beside its call', () => {
@@ -292,5 +372,55 @@ describe('a plain root that sweeps what an earlier call returned', () => {
     vaultBlock.calls[0]!.result = forged;
     const transaction = withBlock(swept, 'master', vaultBlock, withBlock(swept, read!.master, readBlock));
     expect(refusedOn(swept, transaction)).toContain(read!.master);
+  }, 600_000);
+});
+
+describe('a plain root that guards its transfer on what an earlier call returned', () => {
+  it('transfers a balance only when the read before it returned one, each balance read back', async () => {
+    const c = await sweepChain();
+    // The sweeps above left the vault nothing, so the guard skips the transfer.
+    const skipped = await settle(c, 'sweepHeld', [USER_LOCK]);
+    expect(skipped.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['Token.balanceOf()', 'Vault.sweepHeld()']);
+    expect(await balances(c, [c.vault.address, USER_LOCK])).toStrictEqual([0n, 42n]);
+    await mint(c, c.vault.address, 9n);
+    const swept = await settle(c, 'sweepHeld', [USER_LOCK]);
+    expect(swept.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['Token.balanceOf()', 'Token.transfer()', 'Vault.sweepHeld()']);
+    expect(await balances(c, [c.vault.address, USER_LOCK])).toStrictEqual([0n, 51n]);
+  }, 600_000);
+
+  it('refuses at the balance read a plan that states the vault holds nothing, so the guard skips', async () => {
+    const c = await sweepChain();
+    await mint(c, c.vault.address, 6n);
+    const swept = await settle(c, 'sweepHeld', [FEE_LOCK]);
+    expect(refusedOn(swept, structuredClone(swept.transaction) as VmTransaction)).toStrictEqual([]);
+    expect(await balances(c, [c.vault.address, FEE_LOCK])).toStrictEqual([0n, 11n]);
+    const read = frameOf(swept, 'balanceOf');
+    const forged = withStatedResult(swept, 'master', read, encodeResultList([encodeIntegerValue(0n)]));
+    expect(refusedOn(swept, forged)).toContain(read);
+  }, 600_000);
+});
+
+describe('a plain root whose callee passes on what its own earlier call returned', () => {
+  it('has the strategy sweep the balance its read returned, each balance read back', async () => {
+    const k = await keeperChain();
+    const harvested = await harvest(k, USER_LOCK);
+    expect(harvested.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['Token.balanceOf()', 'Token.transfer()', 'Strategy.sweepTo()', 'Keeper.harvest()']);
+    expect(await balances(k, [k.strategy.address, USER_LOCK])).toStrictEqual([0n, 20n]);
+  }, 600_000);
+
+  it('refuses at the balance read a plan that states a smaller result for the strategy', async () => {
+    const k = await keeperChain();
+    await mint(k, k.strategy.address, 8n);
+    const harvested = await harvest(k, USER_LOCK);
+    expect(refusedOn(harvested, structuredClone(harvested.transaction) as VmTransaction)).toStrictEqual([]);
+    expect(await balances(k, [k.strategy.address, USER_LOCK])).toStrictEqual([0n, 28n]);
+    const read = frameOf(harvested, 'balanceOf');
+    const forged = withStatedResult(
+      harvested, frameOf(harvested, 'sweepTo'), read, encodeResultList([encodeIntegerValue(1n)]),
+    );
+    expect(refusedOn(harvested, forged)).toContain(read);
   }, 600_000);
 });

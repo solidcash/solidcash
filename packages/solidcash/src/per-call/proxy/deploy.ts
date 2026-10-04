@@ -2374,8 +2374,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
  * A producer whose site the plan stated no call for, or whose frame recorded nothing the entry declares, is left
  * out: the hop does not fabricate a result for a call it did not place.
  */
-function producedCallResults(
-  externalPlan: HopExternalPlan, settled: SettledHop,
+export function producedCallResults(
+  externalPlan: Pick<HopExternalPlan, 'conditionalProducers' | 'callsiteIds' | 'callBases' | 'calls' | 'callees'>,
+  calleeRetvals: ReadonlyMap<string, Uint8Array>,
 ): Map<number, FunctionArgument> {
   const results = new Map<number, FunctionArgument>();
   for (const callsiteId of externalPlan.conditionalProducers) {
@@ -2391,7 +2392,7 @@ function producedCallResults(
     // the result decodes against that frame's artifact and the entry it ran.
     const producer = callee.retvalFrom === undefined ? callee : externalPlan.callees[callee.retvalFrom];
     if (producer === undefined) continue;
-    const retval = settled.calleeRetvals.get(producer.master);
+    const retval = calleeRetvals.get(producer.master);
     if (retval === undefined) continue;
     const entry = producer.artifact.abi.find((candidate) => candidate.name === producer.entry);
     const values = decodeReturnValues(
@@ -2404,8 +2405,11 @@ function producedCallResults(
   return results;
 }
 
+/** What names the sites a plan states calls for: its calls, each site's first call and each site's callsite id. */
+type PlannedSites = Pick<HopExternalPlan, 'calls' | 'callBases' | 'callsiteIds'>;
+
 /** True when two plans state the same calls for the same sites, so nothing a further pass learns can move them. */
-function samePlannedSites(left: HopExternalPlan, right: HopExternalPlan): boolean {
+export function samePlannedSites(left: PlannedSites, right: PlannedSites): boolean {
   return left.calls.length === right.calls.length
     && left.callBases.length === right.callBases.length
     && left.callsiteIds.length === right.callsiteIds.length
@@ -2858,7 +2862,7 @@ async function planAndSettleHop(options: {
       const final = await settleHeld(externalPlan, settled);
       return settledHop(final.externalPlan, final.settled);
     }
-    externalReturns = producedCallResults(externalPlan, settled);
+    externalReturns = producedCallResults(externalPlan, settled.calleeRetvals);
     const next = await planHop(false);
     if (next.blocked === undefined && samePlannedSites(next, externalPlan)) {
       const final = await settleHeld(externalPlan, settled);

@@ -20,12 +20,13 @@
  *
  * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that touches a dynamic
  * value's or a mapping value's chunks, sends value or co-spends a side-car; a frame that only reads a node an
- * earlier frame created; reaches of one collection one transaction cannot carry; a deployment entered twice whose
- * frames name data records that no order of its block keeps side by side; and a callee frame's site that waits on an
- * earlier call's result. A site of the entry's own that does stops the plan before it (`blocked`), and the call plans
- * again once the frames of the earlier calls answered. Two deployments of one contract are two blocks, each its own
- * category's. A frame the plan runs beside the callees on one of their contracts, a value send's `receive()`, counts
- * among the contract's masters, and a callee that runs after it starts from the views it left.
+ * earlier frame created; reaches of one collection one transaction cannot carry; and a deployment entered twice whose
+ * frames name data records that no order of its block keeps side by side. A site, of the entry or of a callee frame,
+ * whose argument reads an earlier call's result stops the plan before it (`blocked`), and a call the entry guards on
+ * one is stated from the results the plan was made from (`conditionalProducers`): the call plans again once the
+ * frames of the earlier calls answered. Two deployments of one contract are two blocks, each its own category's. A
+ * frame the plan runs beside the callees on one of their contracts, a value send's `receive()`, counts among the
+ * contract's masters, and a callee that runs after it starts from the views it left.
  */
 
 import { hexToBin } from '@bitauth/libauth';
@@ -80,6 +81,13 @@ export interface PlannedCallees {
   readonly calls: readonly DraftCall[];
   /** For each published call site of the entry, the position of its first call in `calls`, or `-1` for none. */
   readonly callBases: readonly number[];
+  /** The callsite id of each published call site, parallel to `callBases`. */
+  readonly callsiteIds: readonly number[];
+  /**
+   * The callsite ids whose results a condition of the entry's own reads. A site such a condition guards is stated
+   * from the results the plan was made from (`externalReturns`): with none, the plan states no call for it.
+   */
+  readonly conditionalProducers: readonly number[];
   /** Every callee frame, in placement order: a frame sits after the frame that calls it. */
   readonly callees: readonly HopCallee[];
   /** The live UTXO of every callee participant, keyed by the id the plan places it under. */
@@ -95,9 +103,10 @@ export interface PlannedCallees {
   /** How many values the callee frames' bodies compute that the plan learns: returns, payloads and node views. */
   readonly learnable: number;
   /**
-   * The entry's site the plan stops before, for a site whose argument or loop bound reads earlier calls' results that
-   * `reachedResults` does not hold yet. Such a plan states the calls before the site only: enough to learn those
-   * results from the frames of the calls that return them, never enough to broadcast.
+   * The site the plan stops before, of the entry's own or of a callee frame's, for a site whose argument or loop bound
+   * reads earlier calls' results that `reachedResults` does not hold yet. Such a plan states the calls before the site
+   * only, and a frame it stops inside is `truncated`: enough to learn those results from the frames of the calls that
+   * return them, never enough to broadcast.
    */
   readonly blocked?: HopPlanBlock;
 }
@@ -130,6 +139,8 @@ export interface CalleePlanOptions {
   readonly senderAddress: Uint8Array;
   /** The results earlier calls returned, as a stopped plan's frames handed them back (`reachedResultKey`). */
   readonly reachedResults?: ReadonlyMap<string, FunctionArgument>;
+  /** The results the entry's own guards read, by callsite id, as the callees of an earlier plan returned them. */
+  readonly externalReturns?: ReadonlyMap<number, FunctionArgument>;
 }
 
 /** The keys the root and the caller's named deployments are handed to the planner under, which no interface can be. */
@@ -168,7 +179,9 @@ function publishedRecordWrites(
  * The segment a callee frame's mapping write lands in, or undefined when its artifact does not fix one.
  *
  * The artifact publishes the segment of each collection's write; a frame that makes no call has one segment, so its
- * write can only land there. Writes the artifact places in several segments are not one landing, and are refused.
+ * write can only land there. Writes the artifact places in several segments are not one landing, and are refused. A
+ * frame a stopped plan states only the first calls of is never settled on that plan, so a write past its last stated
+ * call is declared in its last segment, as the hop declares one.
  */
 function mappingWriteSegment(callee: HopCallee): number | undefined {
   const segments = new Set((publishedWrites(callee.artifact, callee.entry) ?? [])
@@ -176,7 +189,9 @@ function mappingWriteSegment(callee: HopCallee): number | undefined {
     .map((write) => (write.segment === 'last' ? callee.calls.length : write.segment)));
   if (segments.size === 0) return callee.calls.length === 0 ? 0 : undefined;
   const [segment] = [...segments];
-  return segments.size === 1 && segment! <= callee.calls.length ? segment : undefined;
+  if (segments.size !== 1) return undefined;
+  if (callee.truncated === true) return Math.min(segment!, callee.calls.length);
+  return segment! <= callee.calls.length ? segment : undefined;
 }
 
 /** The records one callee frame declares, in the order its entry's block layout names them. */
@@ -333,21 +348,16 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       selfAddress: options.selfAddress,
       senderAddress: options.senderAddress,
       ...(options.reachedResults === undefined ? {} : { reachedResults: options.reachedResults }),
+      ...(options.externalReturns === undefined ? {} : { externalReturns: options.externalReturns }),
     });
   } catch (error) {
     if (!(error instanceof PerCallProxyDeployError)) throw error;
     return refuse(error.message);
   }
   plan = withSpelledCalls(plan, options.artifact, options.functionName);
-  // A site of the entry's own that reads earlier calls' results stops the plan before it, and the call learns those
-  // results from the calls' own frames before planning again (`call.ts`); a site of a callee frame's that does is
-  // refused by name.
-  if (plan.blocked !== undefined && plan.blocked.path !== '') {
-    refuse(`${plan.blocked.where} reads an earlier call's result, which this call path does not plan yet`);
-  }
-  if (plan.conditionalProducers.length > 0) {
-    refuse('a call is guarded on an earlier call\'s result, which this call path does not plan yet');
-  }
+  // A site that reads earlier calls' results stops the plan before it, and a guard of the entry's own over one states
+  // the site from the results the plan was made from: the call learns those results from the calls' own frames and
+  // plans again (`call.ts`).
   for (const callee of plan.callees) {
     const why = unservedCallee(callee, plan.sideCars.has(callee.master));
     if (why !== undefined) refuse(why);
@@ -396,7 +406,8 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
   const learnable = eventCount + plan.callees.reduce((total, callee) => total + (callee.returns ? 1 : 0)
     + (callee.entryWrites?.learningCandidates.length ?? 0), 0);
   return {
-    calls: plan.calls, callBases: plan.callBases, callees: plan.callees, utxos: plan.utxos, blocks,
+    calls: plan.calls, callBases: plan.callBases, callsiteIds: plan.callsiteIds,
+    conditionalProducers: plan.conditionalProducers, callees: plan.callees, utxos: plan.utxos, blocks,
     contracts: [...byBlock.keys()], artifacts, eventCount, learnable,
     ...(plan.blocked === undefined ? {} : { blocked: plan.blocked }),
   };
@@ -797,7 +808,10 @@ export function learnCalleeValue(options: {
   return undefined;
 }
 
-/** True while a callee's body still owes a value, so a frame that reads its result or its writes cannot be trusted. */
+/**
+ * True while a callee's body still owes a value, so a frame that reads its result or its writes cannot be trusted. A
+ * frame a stopped plan states only the first calls of stops at the site the plan stops before, so it owes nothing.
+ */
 export function calleeValuesOwed(planned: PlannedCallees, values: CalleeValues): boolean {
-  return planned.callees.some((callee) => owesValue(callee, values));
+  return planned.callees.some((callee) => callee.truncated !== true && owesValue(callee, values));
 }

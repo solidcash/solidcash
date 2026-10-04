@@ -76,11 +76,13 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   // between the constructor and the initial state cannot see that this contract takes any: the values arrive as
   // `initArgs`. A caller that reaches `StatefulContract.deploy` directly passes them as the constructor args.
   const constructorValues = constructorArgs.length > 0 ? constructorArgs : (options.initArgs ?? []);
-  // The constructor's own frame is entered by the deployer, whose coin funds the genesis. A body that reads
-  // `msg.sender` therefore resolves to the funder's lock, not the placeholder a frame with no stated caller uses:
-  // a constructor that writes `balances[msg.sender]` (a token's mint) would otherwise seed the placeholder key.
+  // The constructor's own frame is entered by the deployer. A body that reads `msg.sender` therefore resolves to the
+  // deployer's lock, not the placeholder a frame with no stated caller uses: a constructor that writes
+  // `balances[msg.sender]` (a token's mint) or `owner = msg.sender` would otherwise seed the placeholder. The lock the
+  // deployment states wins - a Signer's own, which its later calls carry - so the coin that funds the genesis does
+  // not decide it; a deployment that states none takes the funder's lock when it is a P2PKH lock.
   const funderLock = options.funder.generateLockingBytecode();
-  const senderLockingBytecode = funderLock.length === 25 ? funderLock : undefined;
+  const senderLockingBytecode = options.senderLockingBytecode ?? (funderLock.length === 25 ? funderLock : undefined);
   // Every sorted collection an entry can write needs its empty head sentinel minted here, because a first insert
   // splices beside it and a head is minted only at genesis. A collection the constructor's own plan writes carries
   // the head that plan relinked, and the genesis filters that one out; a caller that names extra collections (a

@@ -15,6 +15,12 @@ export interface DeployOptions {
   provider: NetworkProvider;
   fundingUtxo: Utxo;
   funder: Unlocker;
+  /**
+   * The 25-byte P2PKH lock of the deployer, which a per-call constructor reads as `msg.sender`. A deployment made by
+   * a Signer states the Signer's own lock - the one its calls carry - whatever coin funds the genesis. Unset, the
+   * funder's lock stands in when it is a P2PKH lock.
+   */
+  senderLockingBytecode?: Uint8Array;
   initialState?: Record<string, StateValueType>;
   initArgs?: FunctionArgument[];  // arguments for constructor {} block
   /**

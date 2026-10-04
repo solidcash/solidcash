@@ -355,6 +355,9 @@ export class ContractFactory<T extends Artifact = Artifact> {
         fundingUtxo,
         funder,
         changeAddress,
+        // The deployer is the runner: its constructor reads the Signer's own lock as `msg.sender`, the lock every call
+        // it makes carries, whichever coin or funder pays for the genesis.
+        ...(signer === undefined ? {} : { senderLockingBytecode: signer.getLockingBytecode() }),
         initialState: overrides.initialState as DeployOptions['initialState'],
         fee: overrides.fee,
         addressType: overrides.addressType,

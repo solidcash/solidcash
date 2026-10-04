@@ -1665,20 +1665,24 @@ risk. Take the slices in order, each with its own tests.
   - [x] L5: fan-in (11): #42, 45, 46, 48, 49, 53, 54, 55, 57, 58, 65. All green in both full runs.
   - [x] L6: `approveResult` / `refund` re-entry: #50, 51, 52. Green in the focused slice of the then-failing titles and in both full runs.
   - [x] L7: `arbitrate` + integration: #59, 60, 61, 62, 66. Green in the same slice and in both full runs.
-  - [x] **M2: 66/66 on two consecutive full runs of the same commit**, and on that commit: **met 2026-10-03, with one
-    caveat stated rather than hidden.** Two consecutive full runs read `66 passed (66)` each with byte-identical
-    passing sets (3221.9 s and 3115.0 s; `{SCRATCH}/m2-run-1.log`, `m2-run-2.log`). HEAD advanced between them
-    (`6e2626e48` -> `0c5d27f1d` - other lanes were committing), so run 2 measured a dist rebuilt from the later
-    commit while the fixture artifacts it measured are the same bytes run 1 did (the second compile hit all nine
-    compiler cache entries). The sub-clauses, re-measured or carried from their own rows: **every G1-G6 directory
-    passes as a suite** in this round's focused sweep (`conformance` 125, `edges` 70, `hostile` 145, `toys` 81,
-    `shapes` 93, plus `utils` 119, `solidc` 1054, `solidcash` 1538 passed / 12 skipped, `ahead` 143, `testing` 11) -
-    which is the "G1..G6 green" this clause asks for - while the G1/G2/G4/G6 items' own row-coverage boxes stay
-    unticked where they record pinned refusals rather than settlements, since those rows are the streams' own
-    records and several name a wall this round did not touch. B14 is ticked with its model and differential, the I2
-    GO and KILL criteria are the ones the 4.5 rows record (no per-shape rule, no fixpoint, Y2's derivation measured
-    at 10 machine evaluations), and the compiler delta against the estimate stays in the 4.5 rows. 66/66 is a semantics result on the mock: not a security claim and not a
-    deployability claim (D3, `GATE_REPORT.md`).
+  - [x] **M2: 66/66 on two consecutive full runs of the same commit**, and on that commit: **met 2026-10-03, and its
+    literal reading is settled by a frozen pair.** Two consecutive full runs read `66 passed (66)` each with
+    byte-identical passing sets and **no rebuild between them**; a manifest of every input the harness measures (the
+    four packages' built `dist`, the compiled fixture artifacts, the BCH-aware EA source the harness redirects to,
+    and the fixture project's own source) hashes identically before the first run and after the second
+    (`c4e52b310a968c83bb1e8096eb94ef4ca104695a1dfccd085fcae3d1a6bf1012`), so both runs measured one build
+    (`{SCRATCH}/m2frozen-run-1.log` 3351 s, `m2frozen-run-2.log` 3318 s). HEAD's id advanced during that window
+    (`75bece1b8` -> `4ea730606`: other lanes committed compiler sources they did not rebuild into `dist`), which is
+    why the frozen-input hash and not the commit id is the evidence. An earlier pair at `6e2626e48` and
+    `0c5d27f1d`, and the focused slice of the then-failing titles, are in the rows above. The sub-clauses,
+    re-measured or carried from their own rows: **every G1-G6 directory passes as a suite** in this round's focused
+    sweep (`conformance` 138, `edges` 77, `hostile` 171, `toys` 81, `shapes` 93, plus `utils` 119, `solidc` 1054,
+    `solidcash` 1550 with 12 gated skips, `ahead` 28 files / 184, `testing` 11) - which is the "G1..G6 green" this
+    clause asks for - while the G1/G2/G4/G6 items' own row-coverage boxes stay unticked where they record pinned
+    refusals rather than settlements, and `## Unticked boxes: audit at 2026-10-03` names each. B14 is ticked with its
+    model and differential, the I2 GO and KILL criteria are checked one by one in that audit, and the compiler delta
+    against the estimate stays in the 4.5 rows. 66/66 is a semantics result on the mock: not a security claim and not
+    a deployability claim (D3, `GATE_REPORT.md`).
     - G1 (the conformance suite, S0: the acceptance test for D7), G2 (edge cases), G3 (hostile), G4 (toys), G5
       (shapes) and G6 (edge coverage) green, and B14 agreeing;
     - Track P4 conformance green (4.6);
@@ -3463,3 +3467,5 @@ seconds (the 4.5 row), every V-check has its hostile test and every Critical thr
 `hostile/`), and I2 was reached well inside four weeks of the interface freeze.
 
 | 2026-10-03 | (this row's commit) | per-call plan, the unticked-box audit | `hostile/` 30 files / 171, `reverts/` + `call/own-stop-before-refused-plan` + `hostile/{caller-lock-binding,standalone-caller-contract,origin-reference,call-record}` + `validator/{script,validator-program}` (12 files / 103 passed, 1 skipped), `test/per-call/ahead` under `PER_CALL_AHEAD=1` (28 files / 184 passed), and the manifest-counts sweep of this round | **Sixteen boxes are served and ticked, and every box that stays unticked now carries its reason in `## Unticked boxes: audit at 2026-10-03`.** Ticked: G3 (all 39 threat rows), G7 (the MS1-MS10 replicas settle - fan-in MS3 4 cases, reentry-payout MS4 3, origin-gated-payout MS5 6, time-gated-challenge MS6 5, deep-arbitration MS7 3, revert-after-calls MS10 11), I2 with its GO criterion, I2b, E3 (both its open pieces closed by `86d0d6c3e` and the reached-path rule with `049c49e5d`), F2, F1+F10, F9, F3, F7, R3 (its last open piece, the planner half of nodes created and relinked across frames, landed as `ba2625ef0`), the limit profile (`COMPOSITION_LIMITS` is what the gates run on), the superseded ordering item, the Track P4 acceptance item and the P0 rules. Checked and not claimed: C13 (a recovery at infinity and a loop over one), R4 (a read-modify-write of one long value), B2 and B5 (V2's remaining encoding rules, V5's `INTERNAL` rule), F11 (atomic proxy initialization), G1/G6 and the reference-context suite (eleven cross-contract rows pinned as refusals, two section-22 edges without a replica), G2's 12 rows, G4's Y7, and the plan's own deferred Phases (3, R) and Track S. The I2 KILL conditions were each checked and none holds, with the measurement named beside each. |
+
+| 2026-10-03 | `75bece1b8` (frozen build) | per-call ladder, the frozen M2 pair: two consecutive full runs on one build | `npx tsc -b` + `compile --jobs 4` once, then `npx vitest run --config vitest.marketplace.config.ts --no-file-parallelism --reporter=verbose` twice with no rebuild between them (`{SCRATCH}/m2frozen-run-1.log` `66 passed (66)` in 3351.0 s, `m2frozen-run-2.log` `66 passed (66)` in 3318.2 s) | **The literal same-commit reading of criterion 4 is settled, and settled on the measured inputs rather than on the commit id.** A manifest of every input the harness reads - `packages/{solidc,solidcash,utils,testing}/dist`, `.marketplace/artifacts`, `examples/effectiveacceleration/src` and `.marketplace/project/src` - hashes `c4e52b310a968c83bb1e8096eb94ef4ca104695a1dfccd085fcae3d1a6bf1012` both before the first run and after the second (`INPUTS IDENTICAL`), so both runs measured one build, and their passing sets are byte-identical (66 titles each). HEAD's id moved during the ~1.9 h (`75bece1b8` -> `4ea730606`) because other lanes kept landing per-call work (constructor loops, a keyed role mapping, a root's learned mapping write, a proxied root's guard, an assembly halt); none of them rebuilt `dist`, which is why the measured-input hash is unchanged and the commit id is not the right evidence. Log: `{SCRATCH}/frozen-before.txt`, `frozen-after.txt`, `frozen-commit.txt`, `frozen-commit-after.txt`. |

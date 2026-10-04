@@ -1201,6 +1201,8 @@ export function resolveParticipantAbsoluteWitnesses(params: {
 }): {
     layout: ResolvedLayout;
     dynamicChunkInputBase?: bigint;
+    /** Reserved for an independently proven physical output run; never inferred from the old input band. */
+    dynamicChunkOutputBase?: bigint;
     entryNewOutputBase?: bigint;
     valueChunkOutputBase?: bigint;
     predOuts: ReadonlyMap<string, bigint>;
@@ -1365,6 +1367,8 @@ export interface ComposeParticipantLayoutClaims {
 
 export type ComposeParticipantAbsoluteWitnesses = {
   dynamicChunkInputBase?: bigint;
+  /** The generic symbolic layout does not publish this without an exact materialized-output proof. */
+  dynamicChunkOutputBase?: bigint;
   entryNewOutputBase?: bigint;
   valueChunkOutputBase?: bigint;
   predOuts: ReadonlyMap<string, bigint>;
@@ -1628,6 +1632,7 @@ export function resolveComposeParticipantLayoutAuthority(params: {
   return {
     layout,
     dynamicChunkInputBase: projected.dynamicChunkInputBase,
+    dynamicChunkOutputBase: projected.dynamicChunkOutputBase,
     entryNewOutputBase: projected.entryNewOutputBase,
     valueChunkOutputBase: projected.valueChunkOutputBase,
     predOuts: projected.predOuts,
@@ -1644,6 +1649,7 @@ export function resolveTransactionLayoutWitnesses(
     layout: ResolvedLayout;
     witnessesByParticipant: ReadonlyMap<number, {
       dynamicChunkInputBase?: bigint;
+      dynamicChunkOutputBase?: bigint;
       entryNewOutputBase?: bigint;
       valueChunkOutputBase?: bigint;
       predOuts: ReadonlyMap<string, bigint>;
@@ -1655,6 +1661,7 @@ export function resolveTransactionLayoutWitnesses(
   });
   const witnessesByParticipant = new Map<number, {
     dynamicChunkInputBase?: bigint;
+    dynamicChunkOutputBase?: bigint;
     entryNewOutputBase?: bigint;
     valueChunkOutputBase?: bigint;
     predOuts: ReadonlyMap<string, bigint>;
@@ -1695,7 +1702,7 @@ export function applyParticipantAbsoluteWitnesses(args: {
   params: unknown[];
   witnesses: Pick<
   ParticipantAbsoluteWitnesses,
-  'dynamicChunkInputBase' | 'valueChunkOutputBase' | 'predOuts'
+  'dynamicChunkInputBase' | 'dynamicChunkOutputBase' | 'valueChunkOutputBase' | 'predOuts'
   >;
   participant?: number;
   /** Restrict an alias update to the witness slots it actually delegates to this resolve. */
@@ -1737,6 +1744,22 @@ export function applyParticipantAbsoluteWitnesses(args: {
           index, name: 'dynamicChunkInputBase', from: String(args.params[index]), to: next,
         });
       }
+      continue;
+    }
+    if (input.name === '__internal__dynamicChunkOutputBase') {
+      if (args.witnesses.dynamicChunkOutputBase === undefined) {
+        if (isInactiveSentinel(args.params[index])) continue;
+        throw new Error(formatLayoutInvariant({
+          invariantId: 'dynamic-chunk-output-base-unresolved',
+          participant: args.participant,
+          resource: 'dynamicChunkOutputBase',
+          detail: 'applyParticipantAbsoluteWitnesses: slot present but output witness missing',
+        }));
+      }
+      const next = args.witnesses.dynamicChunkOutputBase;
+      if (args.params[index] !== next) staged.push({
+        index, name: 'dynamicChunkOutputBase', from: String(args.params[index]), to: next,
+      });
       continue;
     }
     if (input.name === '__internal__valueChunkOutputBase') {

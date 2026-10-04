@@ -408,6 +408,7 @@ export async function fixCreateBuilderDelegateUnlockers(
         // Finalized after the builder has placed the exact selected chunk UTXOs. A sentinel is safe for an
         // empty persisted value because the generated loop performs no transaction introspection.
         if (inp.name === '__internal__dynamicChunkInputBase') return -1n;
+        if (inp.name === '__internal__dynamicChunkOutputBase') return -1n;
         // Standalone route execution has no atomic verifier region. The compiler uses the same negative
         // sentinel as _batchRaw to skip its optional verifier binder; graph composition replaces it with
         // the finalized verifier input through the complete compiler-owned argument vector above.

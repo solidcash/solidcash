@@ -1862,6 +1862,8 @@ export class StatefulTransactionBuilder {
 
   private _finalizeBuildStampHost(): FinalizeBuildStampHost {
     return {
+      categoryId: this.categoryId,
+      composedParticipant: this.composedParticipant,
       allInputs: this.allInputs,
       entryNfts: this.entryNfts,
       entryDeletes: this.entryDeletes,
@@ -1883,6 +1885,7 @@ export class StatefulTransactionBuilder {
       stripSurplusDerivedValueChunkLocks: (b) => { this._stripSurplusDerivedValueChunkLocks(b); },
       stripEmptyDuplicateEntryLocks: (b) => { this._stripEmptyDuplicateEntryLocks(b); },
       syncBuilderUnlockers: (b) => { this._syncBuilderUnlockers(b); },
+      syncRefreshedCarrierMasters: (b, carriers) => { this._syncRefreshedCarrierMasters(b, carriers); },
       dynamicChunkOutputCount: () => this._dynamicChunkOutputCount(),
       ensureAuthenticatedViewReturns: (b) => this._ensureAuthenticatedViewReturns(b),
       reconcileMaterializedReturnWitnesses: (b) => this._reconcileMaterializedReturnWitnesses(b),

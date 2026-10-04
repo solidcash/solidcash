@@ -28,7 +28,10 @@ function fixture(anchor: bigint, parameterName = '__internal__graphSelfIdentityI
     buildLibauthProgram: () => ({
       inputIndex: 0,
       sourceOutputs: Array.from({ length: 3 }, () => ({ lockingBytecode: new Uint8Array() })),
-      transaction: { inputs: [{ unlockingBytecode: bigIntToVmNumber(anchor) }] },
+      transaction: {
+        inputs: [{ unlockingBytecode: bigIntToVmNumber(anchor) }],
+        outputs: Array.from({ length: 3 }, () => ({ lockingBytecode: new Uint8Array() })),
+      },
     }),
   } as unknown as TransactionBuilder;
   return { builder, unlocker, localGenerator, routeFactory };
@@ -104,5 +107,18 @@ describe('participant probe input coordinates', () => {
     expect(() => buildParticipantProbeProgram(builder, 40)).toThrow(/outside its local probe/);
     expect(routeFactory).not.toHaveBeenCalled();
     expect(unlocker.params[0]).toBe(absolute);
+  });
+
+  it('rebases a dynamic output through its own prefix, not the input prefix', () => {
+    const { builder, unlocker, localGenerator } = fixture(62n, '__internal__dynamicChunkOutputBase');
+    buildParticipantProbeProgram(builder, 40, 60);
+    expect(localGenerator).toHaveBeenCalledWith(2n, 101n);
+    expect(unlocker.params[0]).toBe(62n);
+  });
+
+  it('refuses a positive dynamic output without an explicit output prefix', () => {
+    const { builder } = fixture(62n, '__internal__dynamicChunkOutputBase');
+    expect(() => buildParticipantProbeProgram(builder, 40))
+      .toThrow(/requires an explicit output base/);
   });
 });

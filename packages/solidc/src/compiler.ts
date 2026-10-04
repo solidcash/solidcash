@@ -10674,7 +10674,8 @@ function synthesizeMessageBusRoute(
                   || parameter.name.startsWith('__internal__completePushValue_')
                   || parameter.name === '__internal__vmapBatchTrailingCount'
                   || parameter.name === '__internal__valueChunkOutputBase'
-                  || parameter.name === '__internal__dynamicChunkInputBase') return parameter.name;
+                  || parameter.name === '__internal__dynamicChunkInputBase'
+                  || parameter.name === '__internal__dynamicChunkOutputBase') return parameter.name;
                 return tokenCategoryInputByHandler.get(fn)?.get(i)
                   ?? witnessByInput.get(i) ?? decodedName(i);
               })()),
@@ -15063,6 +15064,14 @@ function compileResolvedAst(
         dynamicBase.location = fn.location;
         fn.parameters.push(dynamicBase);
         fn.usesDynamicChunkInputBase = true;
+      }
+      // The input and output continuation bands can have different absolute bases. Output verification must
+      // consume the materialized output coordinate, not infer it from input space plus unrelated PredOuts.
+      if ((routeClone || fn.messageBusRoute === true) && routeDynamicResources.length > 0
+        && !fn.parameters.some((parameter) => parameter.name === '__internal__dynamicChunkOutputBase')) {
+        const dynamicOutputBase = new ParameterNode(PrimitiveType.BIGINT, '__internal__dynamicChunkOutputBase');
+        dynamicOutputBase.location = fn.location;
+        fn.parameters.push(dynamicOutputBase);
       }
       // fold-plan authority: inject completePushValue beside leadingPushValue after route synthesis (early inject broke
       // messageBus availability). Fold fills both leading and complete witnesses. Must also hit the

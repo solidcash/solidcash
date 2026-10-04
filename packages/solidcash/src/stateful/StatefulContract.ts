@@ -3368,6 +3368,7 @@ export function externalReturnParamSlot(
 export function isSdkResolvedExternalCallTopologyWitness(paramName: string): boolean {
   return paramName === '__internal__externalCallInputBase'
     || paramName === '__internal__dynamicChunkInputBase'
+    || paramName === '__internal__dynamicChunkOutputBase'
     || /^__internal__extcallMasterIdx\d*$/.test(paramName)
     || /^__internal__extcallAnchorIdx\d*$/.test(paramName);
 }

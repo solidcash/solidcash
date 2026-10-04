@@ -231,6 +231,11 @@ export async function completeCreateBuilderNestedUnlockers(
           ?? child.internalArgs?.[input.name]
           ?? -1n;
       }
+      if (input.name === '__internal__dynamicChunkOutputBase') {
+        return child.compilerRoute?.internalArgs?.[input.name]
+          ?? child.internalArgs?.[input.name]
+          ?? -1n;
+      }
       const routePushValue = resolveNestedRoutePushValueWitness(
         input.name,
         child.compilerRoute?.internalArgs,

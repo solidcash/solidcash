@@ -80,17 +80,6 @@ export function applyCreateBuilderPendingInputFills(params: {
         throw new Error('Selected dynamic-storage chunk input is absent from the finalized transaction');
       }
       const next = BigInt(inputIndex < 0 ? -1 : (overrides?.blockBase ?? 0) + inputIndex);
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_ORDER === '1') {
-        console.error('dynamic-chunk-input-base', JSON.stringify({
-          functionName,
-          blockBase: overrides?.blockBase ?? 0,
-          root: fill.root,
-          target: target === undefined ? undefined : `${target.txid.slice(0, 12)}:${target.vout}`,
-          inputIndex,
-          next: next.toString(),
-        }));
-      }
       if (fill.group.internalArgs?.__internal__dynamicChunkInputBase === next) continue;
       fill.group.refreshInternalArgs({ __internal__dynamicChunkInputBase: next });
       changed = true;

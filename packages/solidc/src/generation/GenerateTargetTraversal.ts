@@ -29578,6 +29578,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           .filter((slot) => slot.hasReturnValues && !slot.inlineLoopDispatch
           && !this.isExternalCallSlotLoopNested(slot));
         const explicitDynamicBase = this.getStackIndex('__internal__dynamicChunkInputBase', true);
+        const explicitDynamicOutputBase = this.getStackIndex('__internal__dynamicChunkOutputBase', true);
         if (this.usesDelegateTransactionSuffix()) {
         // Legacy delegate chunks are the last covenant-managed output family, immediately before the mandatory
         // change output. A compiler-owned route instead publishes a balanced participant block, so its chunks use
@@ -29651,6 +29652,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             emitReconstructedBase();
           }
         }
+        if (explicitDynamicOutputBase >= 0) {
+          // The materialized transaction publishes the first direct-dynamic write output independently of
+          // the old input coordinate. A fixed batch PredOut can occupy a reserved block slot (not shift this
+          // band), while another layout can place it immediately before the band. The witness encodes both.
+          this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkOutputBase', loc, 1);
+          this.emit(Op.OP_DUP, loc);
+          this.emit(encodeInt(0n), loc);
+          this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+          this.emit(Op.OP_IF, loc);
+          this.emit(Op.OP_SWAP, loc);
+          this.emit(Op.OP_DROP, loc);
+          this.emit(Op.OP_ELSE, loc);
+          this.emit(Op.OP_DROP, loc);
+        }
         if (!this.usesDelegateTransactionSuffix()) {
         // Returning-call bases include collection-iteration inputs within emitAfterReturnEvent above; an
         // explicit dynamic base already includes them and must not count them again.
@@ -29691,6 +29706,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.emit(Op.OP_ADD, loc);
           }
         }
+        if (explicitDynamicOutputBase >= 0) this.emit(Op.OP_ENDIF, loc);
         for (const pt of wPriorTempNames) {
           this.emit(encodeInt(BigInt(this.getStackIndex(pt) + 1)), loc); // +1: running outIdx-partial untracked
           this.emit(Op.OP_PICK, loc);
@@ -34865,7 +34881,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const site = this.computeBaseSiteOrdinal++;
     const neighbours = new Map<string, number>();
     for (const candidate of [
-      '__internal__proxyMasterIndex', '__internal__dynamicChunkInputBase', '__internal__messageBusOwnerInput',
+      '__internal__proxyMasterIndex', '__internal__dynamicChunkInputBase',
+      '__internal__dynamicChunkOutputBase', '__internal__messageBusOwnerInput',
       '__internal__lifecycleOwnerInput', '__internal__graphBlockSize', '__internal__graphFixedSize',
       '__internal__returnOutputIdx', '__internal__activeVerifierIndex',
     ]) {

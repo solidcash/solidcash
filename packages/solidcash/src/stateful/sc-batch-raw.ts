@@ -576,6 +576,7 @@ export function batchRaw(
       // Dynamic-storage inputs are likewise positioned only after the participant's complete physical block
       // is assembled. Nested and root builders replace this provisional sentinel by exact outpoint identity.
       if (input.name === '__internal__dynamicChunkInputBase') return -1n;
+      if (input.name === '__internal__dynamicChunkOutputBase') return -1n;
       if (input.name.startsWith('__internal__valueWitness_')
         || input.name.startsWith('__internal__leadingPushValue_')
         || input.name.startsWith('__internal__completePushValue_')

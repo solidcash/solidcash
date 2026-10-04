@@ -243,6 +243,9 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         bFinalArgs.push(group.ordinaryDynamicChunkInputs?.length
           ? BigInt(masterInputIndex + (group.blockInputs?.length ?? 1 + group.dataNftUtxos.length))
           : -1n);
+      } else if (paramName === '__internal__dynamicChunkOutputBase') {
+        // A nested route's final output coordinate is resolved by its physical layout authority.
+        bFinalArgs.push(-1n);
       } else if (paramName.startsWith('__internal__externalReturnOutputIdx')) {
         // Find child groups with return values, in order
         const children = getChildGroupIndices();

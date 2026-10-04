@@ -2269,6 +2269,8 @@ const evaluateEveryInput = (
           routeParams: failedUnlocker?.abiFunction?.inputs?.flatMap((input, index) => {
             if (!input.name.startsWith('__internal__graph')
               && !input.name.startsWith('__internal__vmapBatch')
+              && input.name !== '__internal__dynamicChunkInputBase'
+              && input.name !== '__internal__dynamicChunkOutputBase'
               && !input.name.startsWith('__internal__valueWitness')
               && !input.name.startsWith('__internal__leadingPushValue')) return [];
             const value = failedUnlocker.params?.[index];
@@ -3541,7 +3543,7 @@ export function mapMessageBusVmFailure(
   // "input 225 OP_VERIFY" carries participant/resource/expected-output context without a full operand dump.
   const layoutWitnesses = (unlockerParams?.abiFunction?.inputs && unlockerParams.params)
     ? unlockerParams.abiFunction.inputs.flatMap((entry, i) => {
-      if (!/valueChunkOutputBase|dynamicChunkInputBase|vmapBatchPredOut_/i.test(entry.name)) return [];
+      if (!/valueChunkOutputBase|dynamicChunk(Input|Output)Base|vmapBatchPredOut_/i.test(entry.name)) return [];
       return [`${entry.name.replace(/^__internal__/, '')}=${String(unlockerParams.params?.[i])}`];
     })
     : [];

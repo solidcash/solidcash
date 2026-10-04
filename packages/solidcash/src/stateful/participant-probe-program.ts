@@ -9,10 +9,10 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
  * The original covenant authenticates the same resources in both coordinate spaces.
  */
 export function buildParticipantProbeProgram(
-  builder: TransactionBuilder, blockBase: number,
+  builder: TransactionBuilder, blockBase: number, outputBase?: number,
 ): ReturnType<TransactionBuilder['buildLibauthProgram']> {
   const program = builder.buildLibauthProgram();
-  if (blockBase === 0) return program;
+  if (blockBase === 0 && (outputBase === undefined || outputBase === 0)) return program;
   for (const [inputIndex, input] of builder.inputs.entries()) {
     const { unlocker } = input;
     if (!isContractUnlocker(unlocker)) continue;
@@ -20,7 +20,8 @@ export function buildParticipantProbeProgram(
     let changed = false;
     for (const [parameterIndex, parameter] of unlocker.abiFunction.inputs.entries()) {
       const dynamic = parameter.name === '__internal__dynamicChunkInputBase';
-      if (!dynamic && parameter.name !== '__internal__graphSelfIdentityInput') continue;
+      const dynamicOutput = parameter.name === '__internal__dynamicChunkOutputBase';
+      if (!dynamic && !dynamicOutput && parameter.name !== '__internal__graphSelfIdentityInput') continue;
       const value = params[parameterIndex];
       if (typeof value !== 'bigint') continue;
       // Dynamic storage can retain its read coordinate while disabling broad writes: -(base + 3).
@@ -28,9 +29,14 @@ export function buildParticipantProbeProgram(
       const inactiveWrite = dynamic && value < -2n;
       if (value < 0n && !inactiveWrite) continue;
       const absoluteIndex = inactiveWrite ? -value - 3n : value;
-      const localIndex = absoluteIndex - BigInt(blockBase);
-      if (localIndex < 0n || localIndex >= BigInt(program.sourceOutputs.length)) {
-        throw new Error(`Participant ${parameter.name} is outside its local probe inputs`);
+      const coordinateBase = dynamicOutput ? outputBase ?? (blockBase === 0 ? 0 : undefined) : blockBase;
+      if (coordinateBase === undefined) {
+        throw new Error(`Participant ${parameter.name} requires an explicit output base for its local probe`);
+      }
+      const localIndex = absoluteIndex - BigInt(coordinateBase);
+      const limit = dynamicOutput ? program.transaction.outputs.length : program.sourceOutputs.length;
+      if (localIndex < 0n || localIndex >= BigInt(limit)) {
+        throw new Error(`Participant ${parameter.name} is outside its local probe ${dynamicOutput ? 'outputs' : 'inputs'}`);
       }
       params[parameterIndex] = inactiveWrite ? -(localIndex + 3n) : localIndex;
       changed = true;

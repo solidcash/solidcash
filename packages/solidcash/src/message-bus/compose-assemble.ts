@@ -10,13 +10,15 @@ import {
 } from '@solidcash/utils';
 import type { AbiFunction } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
+import type { ContractUnlocker, Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import { isContractUnlocker } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope } from '../Contract.js';
 import { addressToLockScript } from '../utils.js';
 import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
 import { reassertRoutedReadOnlyDynamicChunkTwins } from '../stateful/mutable-output-reassert.js';
+import { resolveMaterializedDynamicWriteOutputBase } from '../stateful/stb-reconcile-dynamic-chunk-output-witnesses.js';
+import { resolvePhysicalPredOutWitnesses } from './compose-predout-witness.js';
 import {
   chunksFromValue, persistValueChunkLock, valueChunkIndexFromCommitment, valueChunkWriteResourceIdentity,
 } from '../stateful/StatefulTransactionBuilder.js';
@@ -277,6 +279,66 @@ export async function assembleAtomicComposition(
     publishedRelocations: Array<{ name: string; from: string; to: string }>;
     resyncedIndices: number[];
   }> = [];
+  const pendingDynamicOutputWitnesses: Array<{
+    unlocker: ContractUnlocker;
+    index: number;
+    absolute: bigint;
+  }> = [];
+  const pendingPredOutWitnesses: Array<{
+    unlocker: ContractUnlocker;
+    index: number;
+    absolute: bigint;
+  }> = [];
+  const recordPhysicalPredOutWitnesses = (
+    routeInputOffset: number,
+    inputs: readonly UnlockableUtxo[],
+    outputs: readonly Output[],
+    categoryId: string,
+    physicalOutputBase: number,
+  ): void => {
+    const input = inputs[routeInputOffset];
+    if (!input || !isContractUnlocker(input.unlocker)) return;
+    const unlocker = input.unlocker;
+    for (const { index, localOutputIndex } of resolvePhysicalPredOutWitnesses({
+      routeInputs: unlocker.abiFunction.inputs,
+      params: unlocker.params,
+      routeInputOffset,
+      inputs,
+      outputs,
+      categoryId,
+    })) {
+      pendingPredOutWitnesses.push({
+        unlocker, index, absolute: BigInt(physicalOutputBase + localOutputIndex),
+      });
+    }
+  };
+  const recordPhysicalDynamicOutputWitness = (
+    input: UnlockableUtxo | undefined,
+    outputs: readonly Output[],
+    categoryId: string,
+    physicalOutputBase: number,
+  ): void => {
+    if (!input || !isContractUnlocker(input.unlocker)) return;
+    const unlocker = input.unlocker;
+    const route = unlocker.abiFunction;
+    const witnessIndex = route.inputs.findIndex((parameter) =>
+      parameter.name === '__internal__dynamicChunkOutputBase');
+    if (witnessIndex < 0) return;
+    const routeLayout = unlocker.contract.artifact.stateLayout;
+    if (!routeLayout) throw new Error(`messageBus: dynamic-output route ${route.name} has no state layout`);
+    const localOutputBase = resolveMaterializedDynamicWriteOutputBase({
+      route,
+      stateLayout: routeLayout,
+      contract: unlocker.contract,
+      categoryId,
+      outputs,
+    });
+    pendingDynamicOutputWitnesses.push({
+      unlocker,
+      index: witnessIndex,
+      absolute: BigInt(localOutputBase < 0 ? -1 : physicalOutputBase + localOutputBase),
+    });
+  };
   let deferredTransactionParticipants: readonly SymbolicParticipantLayout[] | undefined;
 
   // Resource locks each participant's own build published, tagged by resource family. A stall diagnostic
@@ -327,6 +389,9 @@ export async function assembleAtomicComposition(
         masterUnlocker.syncEncodedArgsFromParams!(hiddenIndices);
       }
       actualSizes.push(blockSize);
+      recordPhysicalDynamicOutputWitness(
+        local.inputs[0], local.outputs, categories[participant.participant], aggregate.outputs.length,
+      );
       for (let localIndex = 0; localIndex < local.inputs.length; localIndex += 1) {
         registerAggregateInput(local.inputs[localIndex], participant.participant, localIndex, 'direct participant block');
       }
@@ -1983,6 +2048,17 @@ export async function assembleAtomicComposition(
       ))];
     });
     reassertRoutedReadOnlyDynamicChunkTwins(local.outputs, local.inputs, selectedReadOnlyDynamicLocks);
+    const routeInputOffset = participant.executionKind === 1 ? participant.executorOffset : 0;
+    const routeInput = routeInputOffset === null ? undefined : local.inputs[routeInputOffset];
+    recordPhysicalDynamicOutputWitness(
+      routeInput, local.outputs, categories[participant.participant], aggregate.outputs.length,
+    );
+    if (participant.executionKind === 1 && routeInputOffset !== null) {
+      recordPhysicalPredOutWitnesses(
+        routeInputOffset, local.inputs, local.outputs,
+        categories[participant.participant], aggregate.outputs.length,
+      );
+    }
     for (let localIndex = 0; localIndex < local.inputs.length; localIndex++) {
       const input = local.inputs[localIndex];
       registerAggregateInput(input, participant.participant, localIndex, 'participant block');
@@ -2047,6 +2123,28 @@ export async function assembleAtomicComposition(
         pending.syncEncodedArgsFromParams?.(pending.resyncedIndices);
       }
     }
+  }
+  const publishedDynamicOutputByUnlocker = new Map<ContractUnlocker, bigint>();
+  for (const proof of pendingDynamicOutputWitnesses) {
+    const prior = publishedDynamicOutputByUnlocker.get(proof.unlocker);
+    if (prior !== undefined && prior !== proof.absolute) {
+      throw new Error(`messageBus: conflicting physical dynamic-output bases for ${proof.unlocker.abiFunction.name}`);
+    }
+    publishedDynamicOutputByUnlocker.set(proof.unlocker, proof.absolute);
+    if (proof.unlocker.params[proof.index] === proof.absolute) continue;
+    if (!proof.unlocker.syncEncodedArgsFromParams) {
+      throw new Error(`messageBus: dynamic-output route ${proof.unlocker.abiFunction.name} cannot resync its witness`);
+    }
+    proof.unlocker.params[proof.index] = proof.absolute;
+    proof.unlocker.syncEncodedArgsFromParams([proof.index]);
+  }
+  for (const proof of pendingPredOutWitnesses) {
+    if (proof.unlocker.params[proof.index] === proof.absolute) continue;
+    if (!proof.unlocker.syncEncodedArgsFromParams) {
+      throw new Error(`messageBus: predecessor route ${proof.unlocker.abiFunction.name} cannot resync its witness`);
+    }
+    proof.unlocker.params[proof.index] = proof.absolute;
+    proof.unlocker.syncEncodedArgsFromParams([proof.index]);
   }
 
   // PredOut preflight claims: publish compose PredOut claims for the default preflight layout assert.

@@ -206,11 +206,11 @@ describe('result-dependent topology propagation', () => {
     });
     (child as unknown as { _deriveReturnValue: unknown })._deriveReturnValue = async () => 7n;
     const discovered = await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf);
-    expect(discovered).toHaveLength(2);
-    expect(discovered[1]?.provisionalResultCommitment).toEqual(encodeExternalReturnValue(
+    expect(discovered.calls).toHaveLength(2);
+    expect(discovered.calls[1]?.provisionalResultCommitment).toEqual(encodeExternalReturnValue(
       7n, 'uint256', undefined, false,
     ));
-    expect(hasTransientConvergenceResultSeed(discovered[1]!)).toBe(true);
+    expect(hasTransientConvergenceResultSeed(discovered.calls[1]!)).toBe(true);
   });
 
   it('reuses a one-shot producer result across every guarded loop iteration', async () => {
@@ -397,8 +397,8 @@ describe('result-dependent topology propagation', () => {
       return 7n;
     };
     const discovered = await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf);
-    expect(discovered.map((call) => call.functionName)).toEqual(['run', 'transferFrom', 'read']);
-    expect(discovered[2]?.provisionalResultCommitment).toBeUndefined();
+    expect(discovered.calls.map((call) => call.functionName)).toEqual(['run', 'transferFrom', 'read']);
+    expect(discovered.calls[2]?.provisionalResultCommitment).toBeUndefined();
     expect(probes).toBe(0);
   });
 
@@ -618,6 +618,9 @@ describe('result-dependent topology propagation', () => {
     ctx.descriptors[2].args = [1n];
     ctx.descriptors[3].args = [2n];
     ctx.descriptors[3].resolveArgsFromResults = (_results, frame) => [2n * (frame![0] as bigint)];
+    // The published edge is authoritative when a refreshed parent is walked again: resolve it like the hand edge.
+    (ctx.descriptors[2].contract as unknown as { _resolveExternalArgs: unknown })._resolveExternalArgs =
+      (_sources: unknown, frame: readonly unknown[]): bigint[] => [2n * (frame[0] as bigint)];
     Object.assign(ctx.descriptors[2].artifact.abi[0], {
       inputs: [{ name: 'value', type: 'uint256' }],
       externalCalls: [{ callsiteId: 0, interfaceName: 'ILeaf', functionName: 'run',

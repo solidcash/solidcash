@@ -11404,6 +11404,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Pre-allocates a dynamic write no branch or loop pre-allocated, where a call can follow it
+   * (`perCallDynamicOriginNeeded`): the write's own read of the value then takes the slot, and the frame keeps the
+   * value it read, at which its last segment must begin the run it pins there (`emitPerCallDynamicOriginChecks`).
+   */
+  private perCallPreAllocateDynamicWrite(sv: StateVariableNode, loc: SingleLocationData): void {
+    const key = `${sv.nftIndex}:${sv.fieldIndex}`;
+    if (sv.isDynamic !== true || this.pendingStateWrites.has(key) || !this.perCallDynamicOriginNeeded()) return;
+    this.preAllocateDynamicWrite(sv, key, loc);
+  }
+
+  /**
    * Requires each dynamic value whose write a per-call frame pre-allocated before a call (`perCallDynamicOrigins`) to
    * begin the frame's last segment, where the frame pins its run, as it was where the frame read it.
    *
@@ -17169,6 +17180,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const fixedWidth = isFixedWidthType(elemType);
 
     // 1. Read array blob from state
+    this.perCallPreAllocateDynamicWrite(sv, locationData);
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length prefix: [blob] -> [length, elements_blob]
@@ -17216,6 +17228,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const fixedWidth = isFixedWidthType(elemType);
 
     // 1. Read array blob from state
+    this.perCallPreAllocateDynamicWrite(sv, locationData);
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length prefix: [blob] -> [length, elements_blob]
@@ -17324,6 +17337,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const fixedWidth = isFixedWidthType(elemType);
 
     // 1. Read array blob from state
+    this.perCallPreAllocateDynamicWrite(sv, locationData);
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length prefix: [blob] -> [length, elements_blob]
@@ -17433,6 +17447,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Delete(i) = swap element[i] with element[length-1], then pop last.
 
     // 1. Read array blob from state
+    this.perCallPreAllocateDynamicWrite(sv, locationData);
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length: [blob] -> [length, elements_blob]
@@ -21579,6 +21594,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // 1. Evaluate expression -> raw value bytes on top, then register the chunk write. A chunk-packed
       // array's on-stack form is `pushdata(count)++elems`; strip the count only for a fixed-width element
       // type (recoverable as A$len/width) - variable-width keeps it. Strings/bytes (non-array) never strip.
+      this.perCallPreAllocateDynamicWrite(sv, locationData);
       node.expression = this.visit(node.expression);
       const stripCount = sv.type instanceof ArrayType && isFixedWidthType((sv.type as ArrayType).elementType);
       this.emitRegisterDynamicWrite(sv, key, locationData, stripCount, node, knownEmpty);
@@ -21627,6 +21643,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The whole-array copy `d2 = d1` desugars to `delete d2; while (i < d1.length) d2.push(...)`, so this is
     // what made the copy append instead of replace.
     if (sv.isDynamic) {
+      this.perCallPreAllocateDynamicWrite(sv, locationData);
       this.emitDefaultValue(locationData, sv.type);
       this.pushToStack('(value)');
       const stripCount = sv.type instanceof ArrayType && isFixedWidthType(sv.type.elementType);

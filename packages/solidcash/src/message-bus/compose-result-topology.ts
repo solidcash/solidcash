@@ -6,6 +6,7 @@ import {
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';
 import {
+  connectedContractMatchesExactAddress, exactAddressLockingBytecodeHex,
   findDeploymentByAddressValue, registeredAddressValueLockingBytecode,
 } from '../stateful/deployment-registry.js';
 import { externalReturnsForCallsites } from '../stateful/external-returns-for-callsites.js';
@@ -17,7 +18,7 @@ import { discoveredReturnFollowsParticipantWrite } from '../stateful/sc-material
 import { encodeExternalReturnValue } from '../stateful/external-return-encoding.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
 import { deriveValueChunkProducerChildPath } from '../stateful/ValueChunkProducerIdentity.js';
-import { addressToLockScript, tryCashAddressToLockScript } from '../utils.js';
+import { addressToLockScript } from '../utils.js';
 import {
   projectMessageBusHandlerArguments, resolveMessageBusAbiFunction,
 } from './message-bus.js';
@@ -542,20 +543,29 @@ async function rebuildCallTopology(
             const sourceArgs = logical._resolveExternalArgs(argSources, [...args], artifact, state, fn.inputs,
               returns, iteration, false, self, incoming);
             if (!sourceArgs) { unresolved = true; break; }
+            const visibleInputs = fn.inputs.filter((input) => !input.name.startsWith('__internal__'));
             const target = template.addressSource
               ? logical._resolveExternalArgs([template.addressSource], [...args], artifact, state, fn.inputs,
                 returns, iteration, false, self, incoming)?.[0]
-              : template.addressParam ? args[fn.inputs.findIndex((input) => input.name === template.addressParam)]
-                : template.addressStateVar ? state[template.addressStateVar]
+              : template.addressParam ? args[visibleInputs.findIndex((input) => input.name === template.addressParam)]
+                : template.addressStateVar !== undefined ? state[template.addressStateVar]
                   : template.addressLiteral ?? (template.addressIsMsgSender ? incoming : undefined);
+            const hasPublishedTarget = template.addressSource !== undefined
+              || template.addressParam !== undefined || template.addressStateVar !== undefined
+              || template.addressLiteral !== undefined || template.addressIsMsgSender === true;
+            if (hasPublishedTarget && target === undefined) { unresolved = true; break; }
             const address = typeof target === 'string' || target instanceof Uint8Array ? target : undefined;
             const provider = call.contract.inner.provider;
+            const connectedCandidates = [
+              registeredExternal(logical, template.interfaceName),
+              registeredExternal(call.contract, template.interfaceName),
+              prior?.call.contract,
+            ];
             const registered = address === undefined
-              ? registeredExternal(logical, template.interfaceName)
-                ?? registeredExternal(call.contract, template.interfaceName) ?? prior?.call.contract
+              ? hasPublishedTarget ? undefined : connectedCandidates.find((candidate) => candidate !== undefined)
               : findDeploymentByAddressValue(provider, address)?.contract
-                ?? registeredExternal(logical, template.interfaceName)
-                ?? registeredExternal(call.contract, template.interfaceName) ?? prior?.call.contract;
+                ?? connectedCandidates.find((candidate) => candidate !== undefined
+                  && connectedContractMatchesExactAddress(candidate, address));
             if (!registered || typeof registered !== 'object') throw new Error(
               `messageBus: cannot resolve newly reached callsite ${String(template.callsiteId)}`,
             );
@@ -578,8 +588,10 @@ async function rebuildCallTopology(
               throw new Error('messageBus: raw calldata selector disagrees with compiler callsite');
             }
             const childArgs = decodedRaw?.args ?? sourceArgs;
+            const targetLockHex = address === undefined ? undefined : exactAddressLockingBytecodeHex(address);
             const targetLock = address === undefined ? undefined
-              : registeredAddressValueLockingBytecode(provider, address) ?? tryCashAddressToLockScript(address);
+              : registeredAddressValueLockingBytecode(provider, address)
+                ?? (targetLockHex === undefined ? undefined : hexToBin(targetLockHex));
             const snapshot = state;
             const resolveArgsFromResults: Prepared['resolveArgsFromResults'] = (updated, frame) => {
               const resolved = logical._resolveExternalArgs(argSources, [...(frame ?? args)], artifact,

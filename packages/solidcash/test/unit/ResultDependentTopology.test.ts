@@ -110,6 +110,26 @@ describe('result-dependent topology propagation', () => {
       .rejects.toThrow(/cannot resolve newly reached callsite 0/);
   });
 
+  it('keeps a compiler-published callee address authoritative in graph discovery', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0];
+    root.artifact.abi[0]!.externalCalls = [{
+      callsiteId: 0, interfaceName: 'ISource', functionName: 'read',
+      requiredDataNftIndices: [], argSources: [],
+      addressSource: { kind: 'forward', paramIndex: 0 },
+    }];
+    (root.contract as unknown as { _resolveExternalArgs: unknown })._resolveExternalArgs = (
+      argSources: readonly { kind: string; paramIndex?: number }[], args: readonly unknown[],
+    ) => argSources.map((source) => source.kind === 'forward' ? args[source.paramIndex!] : undefined);
+
+    root.args = [Uint8Array.of(0x51)];
+    expect((await discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf)).calls[1]?.contract)
+      .toBe(ctx.descriptors[1].contract);
+    root.args = [Uint8Array.of(0x52)];
+    await expect(discoverInitialCallTopology(root, new Uint8Array(), ctx.stateOf))
+      .rejects.toThrow(/cannot resolve newly reached callsite 0/);
+  });
+
   it('seeds a scalar leaf view without pinning its graph return', async () => {
     const ctx = fixture();
     const root = ctx.descriptors[0];

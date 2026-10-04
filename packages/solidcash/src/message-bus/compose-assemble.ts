@@ -819,8 +819,29 @@ export async function assembleAtomicComposition(
                 && output.token.nft?.capability === 'mutable'
                 && binToHex(lock) === binToHex(chunkLock) ? [index] : [];
           });
-          if (slots.length !== commitments.length) continue;
-          slots.forEach((slot, index) => {
+          if (slots.length < commitments.length || slots.some((slot, index) => index > 0
+            && slot !== slots[index - 1]! + 1)) continue;
+          const surplus = slots.slice(commitments.length);
+          const trailingOffsets = new Set(participant.blockLayout!.slots.filter((slot) =>
+            slot.kind === 'trailing').map((slot) => slot.offset));
+          // A proxy route may reserve more output-only continuation lanes than this selected handler needs.
+          // Retire only unused compiler-owned placeholders funded by token-free dummy inputs. A real old chunk,
+          // a non-placeholder commitment, or a non-trailing output is not a recipe-owned spare lane.
+          if (surplus.some((slot) => {
+            const input = target.inputs[slot];
+            const output = target.outputs[slot];
+            return !trailingOffsets.has(slot) || input?.token !== undefined
+              || !input || binToHex(input.unlocker.generateLockingBytecode())
+                !== BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX
+              || !output || output.token?.amount !== 0n
+              || (output.token?.nft?.commitment !== '00'
+                && output.token?.nft?.commitment !== '');
+          })) continue;
+          for (const slot of surplus) {
+            const output = target.outputs[slot]!;
+            target.outputs[slot] = { to: Uint8Array.of(0x51), amount: output.amount };
+          }
+          slots.slice(0, commitments.length).forEach((slot, index) => {
             target.outputs[slot]!.token!.nft!.commitment = commitments[index]!;
           });
         }

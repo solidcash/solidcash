@@ -28183,8 +28183,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           bin(Op.OP_ENDIF);
         }
       } else {
-      // Pack slot||plannedNext pairs while the main stack is clean, then keep the blob at the bottom of this
-      // batch's altstack frame. Reverse pushes make OP_CAT materialize declaration order.
+        if (this.readsRecordsFromFrame) this.emitPerCallDistinctBatchTargets(node, targets, loc);
+        // Pack slot||plannedNext pairs while the main stack is clean, then keep the blob at the bottom of this
+        // batch's altstack frame. Reverse pushes make OP_CAT materialize declaration order.
         for (const slot of [...targets].reverse()) {
           arg(`__internal__vmapBatchNext_${slot}`); bin(Op.OP_TOALTSTACK);
           arg(`__internal__vmapBatchSlot_${slot}`); bin(Op.OP_TOALTSTACK);
@@ -28543,6 +28544,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
+  }
+
+  /**
+   * Refuses a per-call batch run two of whose targets name one entry.
+   *
+   * Each target reads the first view its write segment declares for the node its proof names, and an update closes
+   * against the last view the segment declares there, so two targets whose keys agree at run time both start from the
+   * value the node held before the batch: `m[a] -= x; m[b] -= x` with `a == b` settled one debit where the EVM's
+   * second write takes the first's result, and two inserts of one key created two nodes. The direct convention's
+   * dense rows refuse such a pair by their strict order; here the targets' slot operands, the hashes of their
+   * run-time keys, are compared pairwise where the batch ran. A conditional batch that did not run keeps every node
+   * it spends, and keys that differ in a literal never agree.
+   */
+  private emitPerCallDistinctBatchTargets(
+    node: FunctionDefinitionNode, targets: readonly number[], loc: SingleLocationData,
+  ): void {
+    const keys = new Map<number, readonly Node[]>();
+    walkInvocationAst(node.body, (candidate) => {
+      if ((candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode
+        || candidate instanceof MappingDeleteNode) && targets.includes(candidate.entrySlotIndex)) {
+        keys.set(candidate.entrySlotIndex, candidate.keys);
+      }
+    });
+    const repr = Math.min(...targets);
+    const flag = GenerateTargetTraversalWithLocation.condSortedBatchFlagName(repr);
+    const ran = this.conditionalSortedBatchFlags.has(repr) && this.getStackIndex(flag, true) >= 0 ? flag : undefined;
+    targets.forEach((slot, at) => {
+      for (const other of targets.slice(at + 1)) {
+        if (this.sortedKeysDistinct(keys.get(slot) ?? [], keys.get(other) ?? [])) continue;
+        this.emitPickVMapWitness(`__internal__vmapBatchSlot_${slot}`, loc);
+        this.emitPickVMapWitness(`__internal__vmapBatchSlot_${other}`, loc, 1);
+        this.emit(Op.OP_EQUAL, loc);
+        if (ran !== undefined) {
+          this.emitPickTrackedFromBottom(ran, loc);
+          this.emit(Op.OP_BOOLAND, loc);
+        }
+        this.emit(Op.OP_NOT, loc);
+        this.emit(Op.OP_VERIFY, loc);
+      }
+    });
   }
 
   /**

@@ -1760,7 +1760,15 @@ async function callInShape(
     draft = candidate;
     let stalled = false;
     try {
-      completed = deriveComposition([...payeeRequests, root], host).completed;
+      // A callee whose own derivation stalls is left as far as it got and its caller resumes, as the hop settles its
+      // callees and keeps going past one that refuses (`settleCallees`): a frame the plan states past the entry's own
+      // revert closes nothing, and the entry still runs to that revert, binding the calls it makes before it, so the
+      // machine's verdict below names its reason rather than the first record the stall left unbound.
+      completed = deriveComposition([...payeeRequests, root], host, {
+        onCalleeStall: () => {
+          stalled = true;
+        },
+      }).completed;
     } catch (error) {
       // A body that refuses before its segment closes never hands the derivation a record view, so the driver stops.
       // The machine is asked about the draft as it stands below, and the refusing participant's verdict carries the

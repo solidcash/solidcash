@@ -21,7 +21,7 @@ import {
   validateStopSiteMetadata,
   witnessKindOf,
 } from '@solidcash/utils';
-import { derivationStalled } from './refusals.js';
+import { PerCallComposerError, derivationStalled } from './refusals.js';
 
 /** One execution's place in the derivation. */
 export interface FrameRequest {
@@ -70,11 +70,27 @@ export interface DerivationHost {
   step(request: FrameRequest, site: StopSite): StepOutcome;
 }
 
+/** How a derivation treats a callee whose own derivation stalls. */
+export interface DerivationOptions {
+  /**
+   * Told of each callee whose own derivation stalled; its caller then resumes from its next site. Absent, the stall
+   * ends the whole derivation.
+   *
+   * A frame stalls on a close only its own run can hand back, or on one no execution reaches: a call the plan states
+   * past the caller's own revert enters no frame. Its record still names it, as the caller bound it, so a caller that
+   * refuses on its own check runs to that check, binding the calls before it, rather than stopping on the first
+   * record a stalled callee left unbound below it.
+   */
+  readonly onCalleeStall?: (callee: FrameRequest, stall: PerCallComposerError) => void;
+}
+
 /** Derives one execution and everything it calls, depth-first, refusing a step that fills no witness. */
-export function deriveDepthFirst(root: FrameRequest, host: DerivationHost): DerivationResult {
+export function deriveDepthFirst(
+  root: FrameRequest, host: DerivationHost, options: DerivationOptions = {},
+): DerivationResult {
   const runs: DerivationRun[] = [];
   const completed: FrameRequest[] = [];
-  deriveExecution(root, host, runs, completed);
+  deriveExecution(root, host, runs, completed, options);
   return { runs, completed };
 }
 
@@ -83,6 +99,7 @@ function deriveExecution(
   host: DerivationHost,
   runs: DerivationRun[],
   completed: FrameRequest[],
+  options: DerivationOptions,
 ): void {
   const metadata = host.sitesFor(request.functionName);
   validateStopSiteMetadata(metadata);
@@ -116,7 +133,7 @@ function deriveExecution(
       if (site.kind === 'call') {
         // The call result is the callee's return value, so the callee is derived before this execution resumes.
         if (outcome.callee === undefined) throw derivationStalled(request, site);
-        deriveExecution(outcome.callee, host, runs, completed);
+        deriveCallee(outcome.callee, host, runs, completed, options);
       }
 
       visit += 1;
@@ -125,4 +142,25 @@ function deriveExecution(
   }
 
   completed.push(request);
+}
+
+/** Derives a callee before its caller resumes; a stall the options take leaves the callee as far as it got. */
+function deriveCallee(
+  callee: FrameRequest,
+  host: DerivationHost,
+  runs: DerivationRun[],
+  completed: FrameRequest[],
+  options: DerivationOptions,
+): void {
+  const { onCalleeStall } = options;
+  if (onCalleeStall === undefined) {
+    deriveExecution(callee, host, runs, completed, options);
+    return;
+  }
+  try {
+    deriveExecution(callee, host, runs, completed, options);
+  } catch (error) {
+    if (!(error instanceof PerCallComposerError) || error.code !== 'PER_CALL_DERIVATION_STALLED') throw error;
+    onCalleeStall(callee, error);
+  }
 }

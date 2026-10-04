@@ -1094,7 +1094,9 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
     // is parsed, compileWithExternalAdmissionFallback narrows graph-free contracts to direct-only compilation.
     messageBus: messageBusMode !== 'disabled',
     // An explicitly present `undefined` must not turn a default-on convention back into the legacy path.
-    messageBusKernel: options.messageBusKernel ?? true,
+    // An explicit message-bus opt-out uses direct lowering throughout. Auto-selection still keeps
+    // its existing kernel convention until the route has been chosen.
+    messageBusKernel: messageBusMode === 'disabled' ? false : options.messageBusKernel ?? true,
     __messageBusMode: messageBusMode,
     __messageBusExplicitlyDisabled: false,
     // Compiler-owned route locals are generated source and never user-actionable warning locations.

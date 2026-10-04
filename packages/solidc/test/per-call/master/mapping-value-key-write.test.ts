@@ -17,7 +17,8 @@ import { refusalMessageOf } from './refused-entry.js';
  * is the one at `id` before the derivation hashes its `payee`, and the write binds its own key's hash to the slot, so
  * the group the frame declares is held to the deal the frame reads. The memory copy crashed code generation
  * (`Expected variable 'd' does not exist on the stack`) while the key it handed the derivation still named the copy;
- * the derivation now follows it to `deals[id]`. A key read out of a node the same body writes is refused by name.
+ * the derivation now follows it to `deals[id]`. A key read out of a node the same body writes is derived once that
+ * node's own group is (`written-node-key-write.test.ts`).
  *
  * Each case compiles the source with the per-call convention, deploys the master the way a deployment does, and asks
  * the BCH-2026 machine for its verdict on the master's own input: the `deals` node kept ahead of the `owed` group.
@@ -112,18 +113,14 @@ describe('a per-call master keyed by a value it reads out of another mapping', (
 });
 
 describe('a per-call master keyed by a value it reads out of a node the same body writes', () => {
-  it('refuses the entry by name: the node is read through the operands the derivation produces', () => {
-    // An ERC721 transfer debits the owner its token record names and then moves the record.
+  it('serves the entry: the key is derived once the node\'s own group is (written-node-key-write)', () => {
+    // A transfer debits the holder its token record names and then moves the record.
     const ledger = 'pragma solidcash ^0.13.0;'
       + ' contract Ledger {'
       + '   mapping(uint => address) owners;'
       + '   mapping(address => uint) balances;'
       + '   function transfer(address to, uint id) { balances[owners[id]] -= 1; balances[to] += 1; owners[id] = to; }'
       + ' }';
-    expect(refusalMessageOf(ledger)).toBe('Ledger.transfer(): the body writes a mapping at slot 1 whose key 0 '
-      + '\'map:owners(id:id)\' reads the mapping entry \'owners\' at a node the body also writes, which is read '
-      + 'through the operands the derivation produces, and a master derives a target slot only from a bare '
-      + 'parameter, the frame\'s sender, a value of its own record, or a compile-time value the body holds at its '
-      + 'start');
+    expect(refusalMessageOf(ledger)).toBe('');
   });
 });

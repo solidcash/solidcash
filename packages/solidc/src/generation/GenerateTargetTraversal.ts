@@ -302,8 +302,9 @@ import {
 } from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
-  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, perCallBatchWriteFollowsEveryCall,
-  perCallBatchWriteSegment, perCallLoopChains, perCallRunApartFromBatch,
+  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchDerivationRounds, perCallBatchKeys,
+  perCallBatchWriteFollowsEveryCall, perCallBatchWriteSegment, perCallLoopChains, perCallRunApartFromBatch,
+  type PerCallBatchKey,
   callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER, hasForwardingFallback, isOwnAddress,
   isProxyFallbackContract,
   ORIGIN_FRAME_SLOT, SENDER_FRAME_SLOT,
@@ -1246,6 +1247,9 @@ function walkSortedFlow<F>(root: Node, start: F, hooks: SortedFlowHooks<F>): voi
 const isAggregate = (type: unknown): boolean =>
   type instanceof StructType || type instanceof ArrayType || type instanceof TupleType;
 
+/** The name a batch derivation's emitted key is tracked under: its target and its position among that target's keys. */
+const perCallBatchKeyName = (slot: number, keyIndex: number): string => `(per_call_batch_key_${slot}_${keyIndex})`;
+
 export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private locationData: FullLocationData = []; // detailed location data needed for sourcemap creation
   output: Script = [];
@@ -1302,6 +1306,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly PER_CALL_EVENTS_MADE = '__internal__perCallEventsMade';
   /** How many keccak256 side-cars a per-call body that hashes in a loop has read, which names the next one. */
   private static readonly PER_CALL_HASHES_MADE = '__internal__perCallHashesMade';
+  /** The rest of the record list a batch derivation round leaves for the round that continues its walk. */
+  private static readonly PER_CALL_BATCH_RECORDS = '(per_call_batch_records)';
+  /** The record count the batch's segment declares, as a derivation round leaves it for the next. */
+  private static readonly PER_CALL_BATCH_DECLARED = '(per_call_batch_declared)';
   /**
    * True when the master's head parks its event (send) region as a run of consecutive outputs: the first output and
    * the declared count, which a body indexes from. Set for a master with a body that emits (sends) from a loop.
@@ -4086,7 +4094,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * unchanged. A body that writes several collections derives them in one walk, in the order the frame declares
    * their records, because the trailing region the record count describes belongs to the body rather than to one
    * collection. The derivation is emitted at the top of the body, before the aliasing preflight snapshots the
-   * witnesses, because a key the body computes is a value only the running code holds.
+   * witnesses, because a key the body computes is a value only the running code holds. A key the body reads out of a
+   * node its own batch writes is read through the operands that node's group yields, so the walk runs in rounds
+   * (`perCallBatchDerivationRounds`): a round's keys are emitted once the rounds before it are derived, and it takes
+   * the record list up where the round before it left it.
    *
    * A key is a parameter the body holds, a frame value the head left (the sender or the origin), or an expression
    * over values the body holds at its start, its own record's among them. The last is emitted here and removed after
@@ -4129,36 +4140,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // is one walk, because the created-record count is the body's region rather than one collection's.
     const slots = batches.flatMap((batch) => batch.slotIndices);
     // One list of keys per target: a nested `m[a][b]` write carries two, and the slot hashes both.
-    const keys = slots.map((slot) => perCallBatchKeys(node, slot, constants) ?? []);
-    // A pushed key's name carries its target and its position, so a key two targets share is pushed once and
-    // found twice.
-    const pushedName = (slot: number, keyIndex: number): string => `(per_call_batch_key_${slot}_${keyIndex})`;
-    // Push every compile-time expression key first: each pushed value sits above the frame, so a depth read
-    // before a later push would be wrong. A parameter or frame key is already on the stack at its own depth.
-    const pushedKeys: { name: string }[] = [];
-    for (const [index, slot] of slots.entries()) {
-      for (const [keyIndex, key] of keys[index]!.entries()) {
-        if (key.expression === undefined) continue;
-        const before = this.stack.length;
-        this.emitPerCallKeyExpression(key.expression, key.stateSegment);
-        if (this.stack.length !== before + 1) {
-          throw new SolidcDiagnosticError(
-            'PER_CALL_CODEGEN_UNAVAILABLE',
-            `the per-call master cannot emit the key expression for slot ${slot} of '${node.name}': it does not `
-            + 'leave one value on the stack',
-            { function: node.name, slot },
-          );
-        }
-        // The visit tracks the value as a plain '(value)'; name it so its removal below can find it again.
-        const name = pushedName(slot, keyIndex);
-        this.stack[0] = name;
-        pushedKeys.push({ name });
-      }
+    const keys = new Map(slots.map((slot) => [slot, perCallBatchKeys(node, slot, constants) ?? []]));
+    // The write's segment declares the frame's own data-NFT state records, and the node of each key the body only
+    // reads, before any target's group, so the derivation steps over them; a delegate frame declares the records of
+    // the layout it mirrors, which is its caller's. A frame that runs on another contract's records addresses them
+    // from the input the head parked as their owner, so its proof operands are measured from that input too.
+    const ownerOrdinal = this.readsRecordsFromFrame && this.stack.includes(categoryOwnerSlotName())
+      ? this.stack.length - this.getStackIndex(categoryOwnerSlotName())
+      : undefined;
+    const derivation = {
+      leadingRecords: this.perCallRecordsBeforeGroups(),
+      ...(ownerOrdinal === undefined ? {} : { recordsOwnerOrdinal: ownerOrdinal }),
+      ...(this.perCallBatchWriteRuntime
+        ? { segmentFromDeclaredCallCount: true }
+        : { segmentIndex: this.perCallBatchWriteSegment }),
+    };
+    // A key read out of a node the body's batch also writes is read through the operands that node's group yields,
+    // so the walk runs in rounds, each round's keys emitted once the rounds before it are derived. A body whose keys
+    // read no such node is one round. The batches were declared in the rounds' order before the body was emitted
+    // (`stripFrameParameters`); a body they were not is refused rather than walked in another order than declared.
+    const rounds = perCallBatchDerivationRounds(node, constants);
+    if (rounds === undefined || rounds.flat().join() !== slots.join()) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the per-call master cannot derive the verified-mapping writes of '${node.name}' in the order its frame `
+        + 'declares them',
+        { function: node.name },
+      );
     }
-    const keyDepths = keys.map((targetKeys, index) => {
-      const slot = slots[index]!;
-      return targetKeys.map((key, keyIndex) => {
-        const name = key.expression !== undefined ? pushedName(slot, keyIndex)
+    const derived: number[] = [];
+    for (const [index, round] of rounds.entries()) {
+      // A later round's key reads a node the body reads and writes itself further on, so emitting it does not pass
+      // one of the body's own reads: a write of the node still keeps its value for the reads after it.
+      const readsAhead = index === 0 ? undefined : new Map(this.sortedReadsAhead);
+      const pushedKeys = this.emitPerCallBatchKeys(node, round, keys);
+      if (readsAhead !== undefined) this.sortedReadsAhead = readsAhead;
+      const keyDepths = round.map((slot) => keys.get(slot)!.map((key, keyIndex) => {
+        const name = key.expression !== undefined ? perCallBatchKeyName(slot, keyIndex)
           : key.frameSlot !== undefined ? this.frameValueSlotName(key.frameSlot) : key.paramName;
         const keyDepth = name === undefined ? -1 : this.getStackIndex(name, true);
         if (keyDepth < 0) {
@@ -4170,48 +4188,84 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           );
         }
         return keyDepth;
+      }));
+      const records = GenerateTargetTraversalWithLocation.PER_CALL_BATCH_RECORDS;
+      const declared = GenerateTargetTraversalWithLocation.PER_CALL_BATCH_DECLARED;
+      const resume = index === 0 ? undefined : {
+        recordsDepth: this.getStackIndex(records),
+        declaredDepth: this.getStackIndex(declared),
+        priorPredOutDepths: derived.map((slot) => this.getStackIndex(batchDerivationSlotName('PredOut', slot))),
+      };
+      const last = index === rounds.length - 1;
+      // A target whose write a branch guards may be declared skipped, as one kept record that is not its node.
+      const skippableTargets = round.flatMap((slot, position) => (this.perCallSkippableSlots.has(slot) ? [position] : []));
+      const script = buildBatchTargetsDerivationScript({
+        keyDepths,
+        ...derivation,
+        ...(skippableTargets.length === 0 ? {} : { skippableTargets }),
+        ...(resume === undefined ? {} : { resume }),
+        ...(last ? {} : { continues: true }),
       });
-    });
-    // The write's segment declares the frame's own data-NFT state records, and the node of each key the body only
-    // reads, before any target's group, so the derivation steps over them; a delegate frame declares the records of
-    // the layout it mirrors, which is its caller's. A frame that runs on another contract's records addresses them
-    // from the input the head parked as their owner, so its proof operands are measured from that input too.
-    const ownerOrdinal = this.readsRecordsFromFrame && this.stack.includes(categoryOwnerSlotName())
-      ? this.stack.length - this.getStackIndex(categoryOwnerSlotName())
-      : undefined;
-    const derivation = {
-      leadingRecords: this.perCallRecordsBeforeGroups(),
-      ...(ownerOrdinal === undefined ? {} : { recordsOwnerOrdinal: ownerOrdinal }),
-    };
-    // A target whose write a branch guards may be declared skipped, as one kept record that is not its node.
-    const skippableTargets = slots.flatMap((slot, position) => (this.perCallSkippableSlots.has(slot) ? [position] : []));
-    const script = buildBatchTargetsDerivationScript({
-      keyDepths,
-      ...derivation,
-      ...(skippableTargets.length === 0 ? {} : { skippableTargets }),
-      ...(this.perCallBatchWriteRuntime
-        ? { segmentFromDeclaredCallCount: true }
-        : { segmentIndex: this.perCallBatchWriteSegment }),
-    });
-    this.emit(bytecodeToScript(script), loc);
-    // Deepest first, so the tracked names line up with the values the script left above the frame.
-    for (const slot of slots) {
-      for (const kind of BATCH_DERIVATION_SLOT_ORDER) {
-        if (kind === 'Trailing') continue;
-        this.pushToStack(batchDerivationSlotName(kind, slot));
+      this.emit(bytecodeToScript(script), loc);
+      // The script took the record list and the declared count the round before it left.
+      if (resume !== undefined) for (const name of [records, declared]) this.removeFromStack(this.getStackIndex(name));
+      // Deepest first, so the tracked names line up with the values the script left above the frame.
+      for (const slot of round) {
+        for (const kind of BATCH_DERIVATION_SLOT_ORDER) {
+          if (kind === 'Trailing') continue;
+          this.pushToStack(batchDerivationSlotName(kind, slot));
+        }
+      }
+      if (last) {
+        this.pushToStack(batchDerivationSlotName('Trailing', 0));
+        this.pushToStack(BATCH_EXTRA_RECORDS_SLOT);
+      } else {
+        this.pushToStack(records);
+        this.pushToStack(declared);
+      }
+      // The script left the emitted key values beneath the operands. Remove each from where it sits and keep the
+      // tracked stack in step, so the body's own reads afterwards address the frame the runtime actually has.
+      for (const name of pushedKeys) {
+        const depth = this.getStackIndex(name);
+        this.emit(encodeInt(BigInt(depth)), loc);
+        this.emit(Op.OP_ROLL, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.removeFromStack(depth);
+      }
+      derived.push(...round);
+    }
+  }
+
+  /**
+   * Pushes the expression keys of one derivation round's targets and returns the names they are tracked under.
+   *
+   * Every expression key is pushed before the round's script runs: each pushed value sits above the frame, so a depth
+   * read before a later push would be wrong. A parameter or frame key is already on the stack at its own depth.
+   */
+  private emitPerCallBatchKeys(
+    node: FunctionDefinitionNode, round: readonly number[], keys: ReadonlyMap<number, readonly PerCallBatchKey[]>,
+  ): string[] {
+    const pushed: string[] = [];
+    for (const slot of round) {
+      for (const [keyIndex, key] of keys.get(slot)!.entries()) {
+        if (key.expression === undefined) continue;
+        const before = this.stack.length;
+        this.emitPerCallKeyExpression(key.expression, key.stateSegment);
+        if (this.stack.length !== before + 1) {
+          throw new SolidcDiagnosticError(
+            'PER_CALL_CODEGEN_UNAVAILABLE',
+            `the per-call master cannot emit the key expression for slot ${slot} of '${node.name}': it does not `
+            + 'leave one value on the stack',
+            { function: node.name, slot },
+          );
+        }
+        // The visit tracks the value as a plain '(value)'; name it so its removal can find it again.
+        const name = perCallBatchKeyName(slot, keyIndex);
+        this.stack[0] = name;
+        pushed.push(name);
       }
     }
-    this.pushToStack(batchDerivationSlotName('Trailing', 0));
-    this.pushToStack(BATCH_EXTRA_RECORDS_SLOT);
-    // The script left the emitted key values beneath the operands. Remove each from where it sits and keep the
-    // tracked stack in step, so the body's own reads afterwards address the frame the runtime actually has.
-    for (const { name } of pushedKeys) {
-      const depth = this.getStackIndex(name);
-      this.emit(encodeInt(BigInt(depth)), loc);
-      this.emit(Op.OP_ROLL, loc);
-      this.emit(Op.OP_DROP, loc);
-      this.removeFromStack(depth);
-    }
+    return pushed;
   }
 
   /**

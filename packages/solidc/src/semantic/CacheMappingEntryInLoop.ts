@@ -19,6 +19,7 @@ import {
   MappingFieldAssignNode,
   ArrayAccessNode,
   ArrayAssignNode,
+  ArrayDeleteNode,
   StateArrayAssignNode,
   ArrayPushNode,
   ArrayPopNode,
@@ -305,11 +306,15 @@ function mutatesExpressionDependency(root: Node, dependencies: ReadonlySet<strin
   let mutated = false;
   const scan = (node: Node): void => {
     if (mutated) return;
+    // A key that reads a mapping entry depends on that mapping: deleting or rewriting one of its entries in the body
+    // can change the key, as assigning it does (`balances[owners[id]] -= 1; delete owners[id]`).
     if ((node instanceof AssignNode && dependencies.has(node.identifier.name))
       || (node instanceof VariableDefinitionNode && dependencies.has(node.name))
       || (node instanceof ArrayAssignNode && dependencies.has(node.name))
       || (node instanceof ArrayPushNode && dependencies.has(node.name))
-      || (node instanceof ArrayPopNode && dependencies.has(node.name))) {
+      || (node instanceof ArrayPopNode && dependencies.has(node.name))
+      || ((node instanceof MappingAssignNode || node instanceof MappingDeleteNode
+        || node instanceof MappingFieldAssignNode || node instanceof ArrayDeleteNode) && dependencies.has(node.name))) {
       mutated = true;
       return;
     }

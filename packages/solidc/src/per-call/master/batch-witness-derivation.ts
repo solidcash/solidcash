@@ -109,6 +109,27 @@ export interface BatchTargetsDerivationOptions {
    * its absence. Its `PredOut` is the `-2` an inactive row carries, which the write site refuses if the write runs.
    */
   readonly skippableTargets?: readonly number[];
+  /**
+   * Where an earlier round of the same derivation stopped, when this round continues its walk.
+   *
+   * A key the body reads out of a node its own batch writes is read through the operands that node's group yields,
+   * so such a body is derived in rounds, and its code emits a round's keys once the rounds before it are derived. A
+   * later round takes the record list where the earlier one left it rather than walking the block again, and counts
+   * the trailing region over every round's targets, the earlier ones by their `PredOut` operands.
+   */
+  readonly resume?: {
+    /** Top-relative depth of the rest of the record list the earlier round left. */
+    readonly recordsDepth: number;
+    /** Top-relative depth of the record count the segment declares, as the earlier round took it. */
+    readonly declaredDepth: number;
+    /** Top-relative depths of every earlier round's `PredOut` operands, in group order. */
+    readonly priorPredOutDepths: readonly number[];
+  };
+  /**
+   * Whether a later round continues the walk: the script then leaves the rest of the record list and the declared
+   * count above its operands, the count on top, in place of `Trailing` and `Extra`.
+   */
+  readonly continues?: boolean;
 }
 
 /**
@@ -129,7 +150,8 @@ export interface BatchTargetsDerivationOptions {
  * records and the groups. Settlement admits a created record wherever a frame declares one, so the body holds
  * `Extra` to the value chunks it pins. The script never reorders the frame: operands are parked on the alternate
  * stack as they are found and moved back in ABI order at the end, and it consumes everything it pushes above the
- * frame.
+ * frame. A round that `resume`s an earlier one consumes the record list and count that round left, and a round that
+ * `continues` leaves them for the next.
  */
 export function buildBatchTargetsDerivationScript(options: BatchTargetsDerivationOptions): Uint8Array {
   const builder = new BatchTargetsDerivationBuilder(options);
@@ -148,24 +170,19 @@ class BatchTargetsDerivationBuilder {
   private alt: string[] = [];
   private fresh = 0;
 
-  /** How many items the modelled stack held before the script pushed anything: the frame, and nothing else. */
-  private readonly frameLength: number;
-
   constructor(private readonly options: BatchTargetsDerivationOptions) {
-    const depths = options.keyDepths.flat();
+    const resume = options.resume;
+    const depths = [
+      ...options.keyDepths.flat(),
+      ...(resume === undefined ? [] : [resume.recordsDepth, resume.declaredDepth, ...resume.priorPredOutDepths]),
+    ];
     const deepest = depths.reduce((max, depth) => Math.max(max, depth), 0);
     for (let depth = 0; depth <= deepest; depth += 1) this.main.push(`frame_${depth}`);
-    this.frameLength = this.main.length;
-  }
-
-  /** The number of items the script has pushed above the frame, which shifts every depth it reads from it. */
-  private pushedAboveFrame(): number {
-    return this.main.length - this.frameLength;
   }
 
   /** Picks the frame value a key sits at, by the depth it had when the script began. */
   private pickKey(depth: number, name: string): void {
-    this.num(depth + this.pushedAboveFrame());
+    this.num(this.main.indexOf(`frame_${depth}`));
     this.op(Opcodes.OP_PICK);
     this.main.unshift(`${name}~${this.fresh++}`);
   }
@@ -173,9 +190,11 @@ class BatchTargetsDerivationBuilder {
   build(): Uint8Array {
     const count = this.options.keyDepths.length;
     this.pushSlots(count);
-    this.readToRecordList();
+    if (this.options.resume === undefined) this.readToRecordList();
+    else this.resumeRecordList();
     for (let target = 0; target < count; target += 1) this.deriveTarget(target);
-    this.finish(count);
+    if (this.options.continues === true) this.carry(count);
+    else this.finish(count);
     return new Uint8Array(this.bytes);
   }
 
@@ -229,6 +248,23 @@ class BatchTargetsDerivationBuilder {
     this.toAlt('declared_records');
     this.skipLeadingStateRecords();
     this.main[0] = 'records';
+  }
+
+  /** Takes the record list and the declared count an earlier round left, where `readToRecordList` leaves them. */
+  private resumeRecordList(): void {
+    const resume = this.options.resume!;
+    this.rollFrame(resume.declaredDepth, 'declared_records');
+    this.toAlt('declared_records');
+    this.rollFrame(resume.recordsDepth, 'records');
+  }
+
+  /** Moves the frame item the script began with at `depth` to the top. */
+  private rollFrame(depth: number, name: string): void {
+    const index = this.main.indexOf(`frame_${depth}`);
+    this.num(index);
+    this.op(Opcodes.OP_ROLL);
+    this.main.splice(index, 1);
+    this.main.unshift(name);
   }
 
   /**
@@ -352,6 +388,21 @@ class BatchTargetsDerivationBuilder {
     for (let field = 0; field < 8; field += 1) this.nip(); // the four fields of each record
   }
 
+  /**
+   * Moves this round's operands back to the main stack in ABI order, as `finish` does, then leaves the rest of the
+   * record list and the declared count above them for the round that continues the walk.
+   */
+  private carry(count: number): void {
+    for (let slot = 0; slot < count; slot += 1) this.nip(); // the original slots beneath the record list
+    for (let parked = 0; parked < count * 4; parked += 1) this.fromAlt();
+    this.reverseTopBlock(count * 4);
+    this.num(this.main.indexOf('records'));
+    this.op(Opcodes.OP_ROLL);
+    this.main.splice(this.main.indexOf('records'), 1);
+    this.main.unshift('records');
+    this.fromAlt(); // the declared count
+  }
+
   /** Moves the batch's operands back to the main stack in ABI order and appends the distinct-predecessor count. */
   private finish(count: number): void {
     this.drop(); // the consumed record list
@@ -362,14 +413,19 @@ class BatchTargetsDerivationBuilder {
     // last target nearest the top, so the block is reversed before the trailing count is appended.
     this.reverseTopBlock(count * 4);
 
+    // The trailing region is the body's, so it counts every round's targets, an earlier round's first.
+    const predOuts = [
+      ...(this.options.resume?.priorPredOutDepths ?? []).map((depth) => `frame_${depth}`),
+      ...Array.from({ length: count }, (_unused, target) => `pred_out_${target}`),
+    ];
     this.pushConst('trailing', Opcodes.OP_0);
-    for (let target = 0; target < count; target += 1) {
-      this.pick(`pred_out_${target}`);
+    for (let target = 0; target < predOuts.length; target += 1) {
+      this.pick(predOuts[target]!);
       this.pushConst('zero', Opcodes.OP_0);
       this.binary(Opcodes.OP_GREATERTHANOREQUAL, 'rewrites_predecessor');
       for (let prior = 0; prior < target; prior += 1) {
-        this.pick(`pred_out_${target}`);
-        this.pick(`pred_out_${prior}`);
+        this.pick(predOuts[target]!);
+        this.pick(predOuts[prior]!);
         this.binary(Opcodes.OP_NUMNOTEQUAL, 'distinct');
         this.binary(Opcodes.OP_BOOLAND, 'rewrites_predecessor');
       }
@@ -387,10 +443,10 @@ class BatchTargetsDerivationBuilder {
     // value chunks.
     this.fromAlt();
     this.unary(Opcodes.OP_BIN2NUM, 'declared_count');
-    this.num((this.options.leadingRecords ?? 0) + count);
+    this.num((this.options.leadingRecords ?? 0) + predOuts.length);
     this.main.unshift('consumed');
-    for (let target = 0; target < count; target += 1) {
-      this.pick(`pred_out_${target}`);
+    for (const predOut of predOuts) {
+      this.pick(predOut);
       this.pushConst('zero', Opcodes.OP_0);
       this.binary(Opcodes.OP_GREATERTHANOREQUAL, 'inserts');
       this.binary(Opcodes.OP_ADD, 'consumed');

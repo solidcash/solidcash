@@ -217,6 +217,12 @@ export function stripFrameParameters(
       for (const batch of fn.sortedBatchInfo ?? []) {
         if (batch.slotIndices.length > 1 && batch.linear === true) batch.linear = undefined;
       }
+      // A batch whose node another batch's key reads is declared ahead of it, and the published batches carry that
+      // order to a builder, so the frame declares the groups in the order the derivation reads them.
+      const order = batchDerivationOrder(fn, constants);
+      if (order.kind === 'order' && order.batches.some((batch, index) => batch !== fn.sortedBatchInfo?.[index])) {
+        fn.sortedBatchInfo = [...order.batches];
+      }
     }
   }
   // The semantic pass supplied those arguments at internal calls (a `this.f()` included), so a call would otherwise
@@ -285,6 +291,11 @@ export interface PerCallBatchKey {
    * it reads them; absent for the first segment, where the derivation runs.
    */
   readonly stateSegment?: number;
+  /**
+   * The batch targets, by slot, whose node the expression reads: such a node is read through the operands its own
+   * group yields, so the derivation emits the key once that target is derived (`perCallBatchDerivationRounds`).
+   */
+  readonly targetReads?: readonly number[];
 }
 
 /**
@@ -391,7 +402,11 @@ function resolveBatchKey(
   }
   return {
     kind: 'key',
-    key: { expression: derived.expression, ...(derived.segment ? { stateSegment: derived.segment } : {}) },
+    key: {
+      expression: derived.expression,
+      ...(derived.segment ? { stateSegment: derived.segment } : {}),
+      ...(derived.targetReads === undefined ? {} : { targetReads: derived.targetReads }),
+    },
   };
 }
 
@@ -514,14 +529,9 @@ function keyOperandUnavailable(
         return `the mapping entry '${current.name}'`;
       }
       // The entry is read where the derivation runs from the node the frame declares for it, and the read proves that
-      // node is the one at its key. A node the body's own batch also writes is read through the operands the
-      // derivation produces, so the derivation cannot read it before it runs.
-      const slot = current.entrySlotIndex;
-      if (current.isPackedStateArrayAccess !== true
-        && (entry.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slot))) {
-        return `the mapping entry '${current.name}' at a node the body also writes, which is read through the `
-          + 'operands the derivation produces';
-      }
+      // node is the one at its key. A node the body's own batch also writes is read through the operands its group
+      // yields, so the key is derived after that group, from the value the node held before the body writes it
+      // (`deriveKeyExpression`, `batchDerivationOrder`).
       for (const key of current.keys) {
         const inner = walk(key, underField);
         if (inner !== undefined) return inner;
@@ -575,9 +585,17 @@ function isKeySizedStateValue(variable: StateVariableNode): boolean {
     || type instanceof FunctionType);
 }
 
-/** A key re-expressed where the derivation runs, and the segment its record reads resolve against. */
+/**
+ * A key re-expressed where the derivation runs, the segment its record reads resolve against, and the batch targets
+ * whose nodes it reads.
+ */
 type DerivedKeyExpression =
-  | { readonly kind: 'key'; readonly expression: ExpressionNode; readonly segment?: number }
+  | {
+    readonly kind: 'key';
+    readonly expression: ExpressionNode;
+    readonly segment?: number;
+    readonly targetReads?: readonly number[];
+  }
   | { readonly kind: 'refusal'; readonly reason: string };
 
 /**
@@ -591,6 +609,11 @@ type DerivedKeyExpression =
  * branch, a loop, a function the body invokes, or ahead of a call) is refused, as is one in a segment the source does
  * not fix, and so are reads in two segments, since the derivation reads its key in one. The expression is the body's
  * own node unless something was re-expressed, so a key that needs neither keeps the bytes it compiled to.
+ *
+ * A read of a node the body's own batch writes takes the view its target's group begins with, which is the value the
+ * body's read sees only where the body reads it before writing it, in the segment the batch's writes land in: a read
+ * the body makes after the node's write, or in another segment, is refused. Such a read is answered from the target's
+ * derived operands, so the key names the targets it reads (`batchDerivationOrder`).
  */
 function deriveKeyExpression(
   expression: ExpressionNode,
@@ -602,14 +625,18 @@ function deriveKeyExpression(
     && !constants.has(node.name) && !params.has(node.name);
   const readsRecord = (node: Node): node is StateAccessNode => node instanceof StateAccessNode
     && node.stateVariable !== undefined;
+  const targets = new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
+  const readsTarget = (node: Node): node is MappingAccessNode => node instanceof MappingAccessNode
+    && node.isPackedStateArrayAccess !== true && targets.has(node.entrySlotIndex);
   let needed = false;
   walkSyntax(expression, (node) => {
-    if (readsRecord(node) || isLocal(node)) needed = true;
+    if (readsRecord(node) || isLocal(node) || readsTarget(node)) needed = true;
     return !needed;
   });
   if (!needed) return { kind: 'key', expression };
   const places = bodyReadPlaces(entry);
   const segments = new Set<number>();
+  const targetReads = new Set<number>();
   const derive = (root: ExpressionNode, seen: ReadonlySet<string>): ExpressionNode | string => {
     const replacements = new Map<Node, ExpressionNode>();
     let refusal: string | undefined;
@@ -631,10 +658,33 @@ function deriveKeyExpression(
         else replacements.set(node, value);
         return false;
       }
+      if (readsTarget(node)) {
+        refusal = targetReadUnavailable(node);
+        targetReads.add(node.entrySlotIndex);
+      }
       return true;
     });
     if (refusal !== undefined) return refusal;
     return replacements.size === 0 ? root : cloneNodeReplacing(root, (candidate) => replacements.get(candidate));
+  };
+  // The body reads the node where its batch's writes land, before it writes the node: its own read takes the view
+  // the target's group begins with there, which is the view the derivation reads.
+  const writeSegment = perCallBatchWriteSegment(entry);
+  const targetReadUnavailable = (read: MappingAccessNode): string | undefined => {
+    const value = `the mapping entry '${read.name}' at a node the body also writes`;
+    const position = places.order.get(read);
+    const calls = places.calls.get(read);
+    if (position === undefined || calls === undefined || places.repeating.has(read) || writeSegment === undefined
+      || calls.least !== calls.most || calls.least !== writeSegment) {
+      return `${value}, outside the segment the body's batch writes land in, and a master reads such a node for a `
+        + 'key only in the segment it derives the batch from';
+    }
+    if ((places.mappingWrites.get(read.entrySlotIndex) ?? []).some((write) => write <= position)
+      || places.invocations.some(({ at, target }) => at <= position && reachesMappingWrite(target))) {
+      return `${value}, after the body writes it, and a master derives a key out of a node the body writes only from `
+        + 'the value the node holds before the write';
+    }
+    return undefined;
   };
   const readValue = (read: StateAccessNode, seen: ReadonlySet<string>): ExpressionNode | string => {
     const value = `the state value '${read.name}'`;
@@ -662,6 +712,8 @@ function deriveKeyExpression(
   };
   const derived = derive(expression, new Set());
   if (typeof derived === 'string') return { kind: 'refusal', reason: derived };
+  // A node the body writes is read in the segment its batch is declared in, so the key's record values are read there.
+  if (targetReads.size > 0) segments.add(writeSegment!);
   if (segments.size > 1) {
     return {
       kind: 'refusal',
@@ -669,7 +721,12 @@ function deriveKeyExpression(
     };
   }
   const [segment] = segments;
-  return { kind: 'key', expression: derived, ...(segment === undefined ? {} : { segment }) };
+  return {
+    kind: 'key',
+    expression: derived,
+    ...(segment === undefined ? {} : { segment }),
+    ...(targetReads.size === 0 ? {} : { targetReads: [...targetReads] }),
+  };
 }
 
 /** One straight-line statement of a body: what it may write, whether it is opaque, and the state assignment it is. */
@@ -685,7 +742,9 @@ interface StraightLineStatement {
  * `statements` and `positions` number the straight line as the published key labels number it, `calls` is how many
  * calls the path made before the node's statement (undefined where the source does not fix it), `repeating` holds
  * the nodes a loop can run again, `order` is each node's place in the walk, and `writes` is where each state value
- * is written: after the write's own operands, directly or through a function the body invokes.
+ * is written: after the write's own operands, directly or through a function the body invokes. `mappingWrites` is
+ * where the body writes each mapping entry slot and `invocations` where it invokes one of its contract's functions,
+ * both past their own operands.
  */
 interface BodyReadPlaces {
   readonly statements: readonly StraightLineStatement[];
@@ -694,6 +753,26 @@ interface BodyReadPlaces {
   readonly repeating: ReadonlySet<Node>;
   readonly order: ReadonlyMap<Node, number>;
   readonly writes: ReadonlyMap<string, readonly number[]>;
+  readonly mappingWrites: ReadonlyMap<number, readonly number[]>;
+  readonly invocations: readonly { readonly at: number; readonly target: FunctionDefinitionNode }[];
+}
+
+/** True for a write of a mapping entry. */
+function isMappingWrite(node: Node): node is MappingAssignNode | MappingDeleteNode | MappingFieldAssignNode {
+  return node instanceof MappingAssignNode || node instanceof MappingDeleteNode || node instanceof MappingFieldAssignNode;
+}
+
+/** True when a function writes a mapping entry, directly or through a function it invokes. */
+function reachesMappingWrite(fn: FunctionDefinitionNode, seen = new Set<FunctionDefinitionNode>()): boolean {
+  if (seen.has(fn)) return false;
+  seen.add(fn);
+  let writes = false;
+  walkInvocationAst(fn.body, (node) => {
+    if (writes) return;
+    const target = invokedFunction(node);
+    writes = isMappingWrite(node) || (target !== undefined && reachesMappingWrite(target, seen));
+  });
+  return writes;
 }
 
 /** The state value or local a node writes, by name, or undefined for a node that writes neither. */
@@ -816,6 +895,8 @@ function bodyReadPlaces(entry: FunctionDefinitionNode): BodyReadPlaces {
   // in the value a write stores is not behind it.
   const order = new Map<Node, number>();
   const writes = new Map<string, number[]>();
+  const mappingWrites = new Map<number, number[]>();
+  const invocations: { at: number; target: FunctionDefinitionNode }[] = [];
   const known = new Map<FunctionDefinitionNode, ReadonlySet<string>>();
   const seen = new Set<object>();
   const visit = (value: unknown): void => {
@@ -837,9 +918,13 @@ function bodyReadPlaces(entry: FunctionDefinitionNode): BodyReadPlaces {
     const target = invokedFunction(value);
     const written = [...(name === undefined ? [] : [name]), ...(target === undefined ? [] : stateWrittenBy(target, known))];
     for (const variable of written) writes.set(variable, [...(writes.get(variable) ?? []), order.size]);
+    if (isMappingWrite(value)) {
+      mappingWrites.set(value.entrySlotIndex, [...(mappingWrites.get(value.entrySlotIndex) ?? []), order.size]);
+    }
+    if (target !== undefined) invocations.push({ at: order.size, target });
   };
   visit(entry.body);
-  return { statements, positions, calls, repeating, order, writes };
+  return { statements, positions, calls, repeating, order, writes, mappingWrites, invocations };
 }
 
 /**
@@ -870,10 +955,11 @@ function assignedBefore(read: StateAccessNode, places: BodyReadPlaces): StateAss
  *
  * Every one of a body's entry accesses is one write to a distinct target with at most the read of that same
  * target beside it, each target's key is one value the body holds where the derivation runs (a bare parameter, the
- * frame's sender, a value of its own record, or a compile-time expression), and no target aliases another at run
- * time. Under those conditions the segment declares one record group per target, in the order the batches and their
- * targets are listed here, so the master can read each group back and derive that target's operands, and a read in
- * the same access resolves from the same group.
+ * frame's sender, a value of its own record, or a compile-time expression) or reads out of a node another target's
+ * group yields once derived (`batchDerivationOrder`), and no target aliases another at run time. Under those
+ * conditions the segment declares one record group per target, in the order the batches and their targets are listed
+ * here, so the master can read each group back and derive that target's operands, and a read in the same access
+ * resolves from the same group.
  *
  * A body may write several collections: `balances[to] += amount; allowances[owner][spender] -= amount` is one
  * execution over two of them, and the union of their created records is the trailing region the body declares. The
@@ -896,13 +982,98 @@ function derivableTargetBatches(
       if (!isOneWrite(access.operations)) return undefined;
       if (access.inLoop === true || access.aliasCondDeleteSlot !== undefined
         || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) return undefined;
-      if (resolveBatchKeys(entry, slot, constants).kind !== 'keys') return undefined;
     }
     derivable.push({
       slots: [...batch.slotIndices], collection: batch.collection, wasLinear: batch.linear === true,
     });
   }
+  // Every target's keys resolve, and a key that reads a node the body writes has an order to be derived after it.
+  if (batchDerivationOrder(entry, constants).kind === 'refusal') return undefined;
   return derivable;
+}
+
+/** One sorted batch as semantic analysis classified it. */
+type SortedBatch = NonNullable<FunctionDefinitionNode['sortedBatchInfo']>[number];
+
+/** The order a body's batches are declared and derived in, and the rounds the derivation runs, or why it has none. */
+type BatchDerivationOrder =
+  | {
+    readonly kind: 'order';
+    /** The batches in the order the frame declares their groups. */
+    readonly batches: readonly SortedBatch[];
+    /** The targets each round of the derivation derives, by slot: consecutive runs of the declared order. */
+    readonly rounds: readonly (readonly number[])[];
+  }
+  | { readonly kind: 'refusal'; readonly reason: string };
+
+/**
+ * The order a body's batches are declared and derived in, and the rounds the derivation runs.
+ *
+ * A key the body reads out of a node its own batch writes is read through the operands that node's group yields, so
+ * that group is derived first: the batch that writes the node is declared ahead of the batch whose key reads it, each
+ * batch keeping its own targets' order, and the derivation starts a new round at a target whose key reads a node the
+ * round it would join derives. Batches no key orders keep the order semantic analysis gave them, so a body whose keys
+ * read no such node is one round in that order. Keys that read each other's nodes, and a key that reads a node its own
+ * collection's batch declares at or after it, have no such order and are refused.
+ */
+function batchDerivationOrder(entry: FunctionDefinitionNode, constants: ReadonlySet<string>): BatchDerivationOrder {
+  const batches = entry.sortedBatchInfo ?? [];
+  const reads = new Map<number, ReadonlySet<number>>();
+  for (const slot of batches.flatMap((batch) => batch.slotIndices)) {
+    const resolved = resolveBatchKeys(entry, slot, constants);
+    if (resolved.kind === 'refusal') return resolved;
+    reads.set(slot, new Set(resolved.keys.flatMap((key) => key.targetReads ?? [])));
+  }
+  const readsOf = (slot: number): readonly number[] => [...(reads.get(slot) ?? [])];
+  const derivedFirst = 'and a master derives a key out of a node the body writes only once that node\'s group is derived';
+  for (const batch of batches) {
+    for (const [position, slot] of batch.slotIndices.entries()) {
+      const source = readsOf(slot).find((read) => batch.slotIndices.indexOf(read) >= position);
+      if (source !== undefined) {
+        return {
+          kind: 'refusal',
+          reason: `the body writes a mapping at slot ${slot} whose key reads the node it writes at slot ${source}, `
+            + `which the frame declares ${source === slot ? 'as that same target' : 'after it'}, ${derivedFirst}`,
+        };
+      }
+    }
+  }
+  // Each batch follows the batches whose nodes its keys read, and otherwise keeps its place.
+  const batchOf = (slot: number): number => batches.findIndex((batch) => batch.slotIndices.includes(slot));
+  const placed: number[] = [];
+  while (placed.length < batches.length) {
+    const next = batches.findIndex((batch, index) => !placed.includes(index) && batch.slotIndices.every((slot) =>
+      readsOf(slot).every((source) => batchOf(source) === index || placed.includes(batchOf(source)))));
+    if (next < 0) {
+      const unplaced = batches.filter((_batch, index) => !placed.includes(index));
+      return {
+        kind: 'refusal',
+        reason: `the body writes mappings ${unplaced.map((batch) => `'${batch.collection}'`).join(', ')} whose keys `
+          + `read each other's nodes, ${derivedFirst}`,
+      };
+    }
+    placed.push(next);
+  }
+  const ordered = placed.map((index) => batches[index]!);
+  const rounds: number[][] = [[]];
+  for (const slot of ordered.flatMap((batch) => batch.slotIndices)) {
+    if (readsOf(slot).some((source) => rounds.at(-1)!.includes(source))) rounds.push([]);
+    rounds.at(-1)!.push(slot);
+  }
+  return { kind: 'order', batches: ordered, rounds };
+}
+
+/**
+ * The rounds a per-call master derives a body's batch targets in, by slot, or undefined for a body it derives none
+ * for. The batches are declared in the derivation's order by then (`stripFrameParameters`), so each round is a run of
+ * the declared targets.
+ */
+export function perCallBatchDerivationRounds(
+  entry: FunctionDefinitionNode,
+  constants: ReadonlySet<string>,
+): readonly (readonly number[])[] | undefined {
+  const order = batchDerivationOrder(entry, constants);
+  return order.kind === 'order' ? order.rounds : undefined;
 }
 
 /**
@@ -1032,6 +1203,8 @@ function unsupportedBatchWriteShape(
       + `${outside.inLoop === true ? ' in a loop' : ''}, and a master derives the operands beside a key it only `
       + 'reads at a fixed slot';
   }
+  const order = batchDerivationOrder(entry, constants);
+  if (order.kind === 'refusal') return order.reason;
   return 'the body writes a mapping in a shape whose record the master cannot read back from its own frame: its '
     + 'segment would not fix which transition ran';
 }

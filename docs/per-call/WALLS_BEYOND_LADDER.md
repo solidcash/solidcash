@@ -47,7 +47,7 @@ avoids it.
 | 1 | The plain call path is not the hop: a contract deployed WITHOUT a proxy cannot make a call beside its own mapping write, call one token twice, pass an earlier call's result, write two collections, store a string per key, or have a constructor that writes two mappings | every non-upgradeable dApp contract that touches a token (vaults, staking, escrows, marketplaces, fee splits, sweeps) and every token whose constructor mints and records an admin | `call/call.ts` 584, `call/callees.ts` 318/339, `call/entry-records.ts` 762/786, `deploy/genesis.ts` 548 | `plain-root-calls`, `plain-root-writes`, `plain-genesis-writes` | named refusals |
 | 2 | `nonReentrant` on a proxied ROOT that calls out: a record field set before the call and restored after it | every OZ-style upgradeable entry that pulls or pays a token under ReentrancyGuard | `proxy/deploy.ts` 2113 (cause: 3249) | `guarded-vault-root` | unattributed (exhausted settle) |
 | 3 | A mapping write keyed by a scalar state variable: the id counter (`items[nextId]`, OZ v5 `_nextTokenId++`) and the stored recipient (`credit[treasury]`) | listings, escrows, proposals, NFT mints, fee crediting | compiler, `support.ts` 353 (`resolveBatchKey` -> `keyOperandUnavailable`) | `state-keyed-mapping-write` | named compile refusal; served (SK1) |
-| 4 | A mapping write keyed by a value read from another mapping ("credit the party the record names": `owed[deal.payee]`, `proceeds[listing.seller]`, OZ ERC721 `_balances[_ownerOf(id)]`) | escrows, marketplaces, OZ ERC721 transfer/burn | memory-copy spelling: codegen crash in `GenerateTargetTraversal.emitPerCallBatchWitnessDerivation`; direct spelling: `proxy/entry-writes.ts` 977, `call/entry-records.ts` 271 | `stored-value-keyed-write` | crash, then named refusal; served (SK1, MK1), a key from a node the body writes refused by name |
+| 4 | A mapping write keyed by a value read from another mapping ("credit the party the record names": `owed[deal.payee]`, `proceeds[listing.seller]`, OZ ERC721 `_balances[_ownerOf(id)]`) | escrows, marketplaces, OZ ERC721 transfer/burn | memory-copy spelling: codegen crash in `GenerateTargetTraversal.emitPerCallBatchWitnessDerivation`; direct spelling: `proxy/entry-writes.ts` 977, `call/entry-records.ts` 271 | `stored-value-keyed-write` | crash, then named refusal; served (SK1, MK1, NF1) |
 | 5 | Native value through a proxy: no value in, no send out | payable entries of upgradeable contracts (sales, auctions, deposits, refunds in BCH) | `call/handle.ts` 182; implementation frame `value: 0n`, `sends: []` (`proxy/deploy.ts` 3414, 3429) | `proxied-native-value` | named (in), unattributed (out) |
 | 6 | AccessControl-shaped roles: a contract constant as a key, a `bytes32(0)` literal key, and the admin check whose key is a stored value | every OZ AccessControl user (`DEFAULT_ADMIN_ROLE`, `MINTER_ROLE`) - including its constructor or `initialize` | compiler `support.ts` 345; hop key evaluator (`stateful/route-expression-key.ts`, `evalComputedKey`); `proxy/entry-writes.ts` 920 | `role-admin-read-key` | named, unattributed, named |
 | 7 | A loop that emits, hashes or pays once per turn | batch airdrops/mints, Merkle-proof claims (`MerkleProof.verify`), refund loops | compiler `support.ts` 1972, 1985, 2404 | `loop-counted-tail` | named compile refusals |
@@ -184,7 +184,7 @@ ready: `evalComputedKey` resolves `state:` labels from the live record (`resolve
 
 ### 2.4 A mapping write keyed by a value read from another mapping (rank 4)
 
-**Served** (agents SK1, MK1), except a key read out of a node the same body writes:
+**Served** (agents SK1, MK1, NF1):
 
 - (2) SK1: the derivation emits the key with the local `d` followed to `deals[id]` (`deriveKeyExpression`), so the
   memory-copy spelling compiles, keyed as the direct one (`field:payee(map:deals(id:id))`).
@@ -205,10 +205,22 @@ ready: `evalComputedKey` resolves `state:` labels from the live record (`resolve
   slot, so a group at another party is refused by the frame and a declaration naming another payee by settlement.
   Served in `call/stored-value-keyed-write.test.ts` (both spellings through the hop, an address-valued key through
   the hop and the plain path, the forgeries) and `solidc/test/per-call/master/mapping-value-key-write.test.ts`.
-- Stands: a key read out of a node the same body writes, OZ ERC721's `_balances[_ownerOf(id)] -= 1; ...;
-  _owners[id] = to`. It compiled and failed `OP_VERIFY` at run time: a batch target is read through the operands
-  the derivation produces, so the derivation cannot read it before it runs. It is refused by name now
-  (`keyOperandUnavailable`). Serving it: derive the batch the key reads out of first, emit the key, then the rest.
+- NF1: a key read out of a node the same body writes, OZ ERC721's `_balances[_ownerOf(id)] -= 1; ...;
+  _owners[id] = to`. A batch target is read through the operands its own group yields, so the derivation runs in
+  rounds (`support.ts` `batchDerivationOrder`, `buildBatchTargetsDerivationScript` `resume`/`continues`): the
+  batch that writes the node is declared ahead of the batch whose key reads it (the published `sortedBatchInfo`
+  carries the order to the hop's planner), a round derives the groups whose keys the body holds where it begins, the
+  next round's key is emitted from the node's view as its group begins it, and that round takes the record list up
+  where the last one left it. The view is the value the body's own read sees only where the body reads the node
+  before writing it, in the batch's segment, so a read after the write, a read in another segment, and keys that
+  read each other's nodes are refused by name. The hop keys the debit by `liveMappingValueReader`, which reads the
+  node as the deployment, or the reaches of the hop before the frame (`rewrittenNodes`), left it: the view the
+  frame's group begins with. Served in `call/written-node-keyed-write.test.ts` (mint, `transferFrom`,
+  `safeTransferFrom`, a debit moved to another party refused) and `solidc/test/per-call/master/
+  written-node-key-write.test.ts` (transfer in both spellings, burn, mint; forged debit and record refused).
+  Found on the way: the entry cache (`CacheMappingEntryInLoop`) took a key that reads a mapping as invariant when
+  the body deletes that mapping's entry (`balances[owners[id]] -= 1; delete owners[id]`), so it wrote the debit
+  back after the delete, keyed by the deleted value; a delete or a mapping write now counts as changing the key.
 - Stands: the plain path cannot open a struct record (its value chunks, and the call does not declare the created
   node's chunk records), so a struct-field key is served there once that lands (2.1).
 - Not served by name, liveness only: a key whose mapping read follows a call is derived from the node the first
@@ -216,8 +228,8 @@ ready: `evalComputedKey` resolves `state:` labels from the live record (`resolve
   and the frame refuses. Record reads take the segment the body reads them in (`deriveKeyExpression`); mapping reads
   would take the same. The same release after a call settles through the hop when nothing rewrites the node.
 
-As W2 found it (`stored-value-keyed-write.test.ts`, 5 cases; it now pins the two that stand, in 3), three walls stood
-in line:
+As W2 found it (`stored-value-keyed-write.test.ts`, 5 cases; it now pins the one that stands, beside the transfer
+flipped to served, in 3), three walls stood in line:
 
 1. Under the project options (`messageBus: true`) the unit does not compile (the message-bus route generated for
    `open`, which the per-call convention then discards, fails its own type check).
@@ -457,7 +469,7 @@ today and its title says what should settle once served.
 | `plain-genesis-writes.test.ts` | 2 | 2.1, retired: served (`deploy/constructor-loop-writes.test.ts`) |
 | `guarded-vault-root.test.ts` | 5 | 2.2, retired: served (`call/root-guard-across-call.test.ts`) |
 | `state-keyed-mapping-write.test.ts` | 3 | 2.3, retired: served (`call/state-keyed-mapping-write.test.ts`) |
-| `stored-value-keyed-write.test.ts` | 3 | 2.4: ERC721 transfer refused by name (control: mint), struct record opened plain; the rest served (`call/stored-value-keyed-write.test.ts`) |
+| `stored-value-keyed-write.test.ts` | 3 | 2.4: struct record opened plain; ERC721 transfer flipped to served (control: mint; `call/written-node-keyed-write.test.ts`), the rest served (`call/stored-value-keyed-write.test.ts`) |
 | `proxied-native-value.test.ts` | 1 | 2.5 served (`call/proxied-native-value.test.ts`); repointed: a send to a contract |
 | `role-admin-read-key.test.ts` | 2 | 2.6 served, and the walls past it (`call/role-helpers-return-and-emit`, `call/guarded-event`): both cases settle |
 | `loop-counted-tail.test.ts` | 4 | 2.7, retired: served (`call/loop-turn-effects`, `call/proxied-native-value`) |
@@ -486,7 +498,7 @@ replica above confirms it. The full table with every row and class is the append
 | 2 | solidcash `proxy/deploy.ts` 2113 | hop root: a record restored to its start across a call (nonReentrant) | H | conf. 2.2 (no named refusal) |
 | 3 | solidc `master/support.ts` 353 | key reads a scalar state value / an unaddressed mapping entry / a computed value | H | scalar state served (SK1); the rest stands |
 | 4 | solidc `GenerateTargetTraversal.emitPerCallBatchWitnessDerivation` | key through a local copy of a mapping entry: codegen crash | H | compiles (SK1); served (MK1) |
-| 4 | solidcash `proxy/entry-writes.ts` 977 | hop root: key from another mapping's value | H | served (MK1); a key from a node the body writes refused by name (compiler) |
+| 4 | solidcash `proxy/entry-writes.ts` 977 | hop root: key from another mapping's value | H | served (MK1); a key from a node the body writes served (NF1) |
 | 5 | solidcash `call/handle.ts` 182 | value through a proxy | H | conf. 2.5 |
 | 5 | solidcash `proxy/deploy.ts` 3414, 3429 | hop: implementation frame sends (no named refusal) | H | conf. 2.5 |
 | 6 | solidc `master/support.ts` 345 | key is a contract constant (bare identifier) | H | conf. 2.6 |

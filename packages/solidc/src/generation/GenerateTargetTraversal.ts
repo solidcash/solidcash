@@ -28947,20 +28947,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       // A per-call master has no generic epilogue: a conditional batch that did not run (its flag clear) leaves every
-      // node it spends unchanged, so bind each target's recreated record to the commitment it was spent with. A batch
-      // record is recreated where its proof spent it, so both sides take the proof's coordinate.
+      // node it spends unchanged. A target with a flag of its own, which stays clear wherever the batch's does, is
+      // bound where the general arm checks it (`emitPerCallKeptBatchTarget`); any other is bound here.
       const batchRepr = Math.min(...targets);
       if (this.readsRecordsFromFrame && this.conditionalSortedBatchFlags.has(batchRepr)) {
         const flagName = GenerateTargetTraversalWithLocation.condSortedBatchFlagName(batchRepr);
         const flagIndex = this.getStackIndex(flagName, true);
-        if (flagIndex >= 0) {
+        const generalArm = targets.length > 1 && !batch.linear && (aliasWrite === undefined || aliasOwner === undefined);
+        const unbound = [...targets].sort((a, b) => a - b).filter((slot) => !generalArm
+          || !this.conditionalSortedWriteFlagSlots.has(slot)
+          || this.getStackIndex(GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot), true) < 0);
+        if (flagIndex >= 0 && unbound.length > 0) {
           this.emit(encodeInt(BigInt(flagIndex)), loc); bin(Op.OP_PICK);
           bin(Op.OP_NOTIF);
-          for (const slot of [...targets].sort((a, b) => a - b)) {
-            this.emitEntryInputIndex(slot, loc, 0); bin(Op.OP_UTXOTOKENCOMMITMENT);
-            this.emitEntryOutputIndex(slot, loc, 1); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
-            bin(Op.OP_EQUALVERIFY);
-          }
+          for (const slot of unbound) this.emitPerCallKeptProofNode(slot, loc, false);
           bin(Op.OP_ENDIF);
         }
       }
@@ -29276,6 +29276,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Requires the write segment to end a per-call batch target's node at the view it began the node at, as a write
+   * that did not run leaves it.
+   *
+   * The node is the one the target's proof names, not whichever record the declaration puts at the slot's position: a
+   * node an earlier frame created is named `-(out + 1)` by the output it was created at, and declared there. Its end
+   * view is its last declaration's at that output, or at its input for a node the frame spends, where a batch
+   * recreates it. Another frame may write the node before this one or after it, so the transaction's input and output
+   * carry other frames' views, which settlement chains this frame's own to: a check against them would leave the end
+   * view a later frame reads bound to nothing, and refuse that frame's rewrite. With `parked`, the first view is the
+   * proof view on top of the alternate stack, which stays there.
+   */
+  private emitPerCallKeptProofNode(slot: number, loc: SingleLocationData, parked: boolean): void {
+    this.emitPickVMapWitness(`__internal__vmapBatchProof_${slot}`, loc);
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_ADD, loc);
+    if (parked) {
+      this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    } else {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(bytecodeToScript(declaredRecordFirstViewByNameScript(this.declaredViewCounts(loc))), loc);
+    }
+    this.emit(Op.OP_SWAP, loc); // [first view, name]
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc); this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc); this.emit(Op.OP_ENDIF, loc);
+    this.emitRecordCommitmentRead('out', loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+  }
+
+  /**
    * The one-target sorted-batch transition of a per-call frame, answered from its write segment's declarations.
    *
    * Another frame may write the proof node before this one or rewrite it after, so the spent input and the written
@@ -29326,25 +29355,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(flagIndex)), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_NOTIF, loc);
-      // The node is the one the group's proof names, not whichever record the frame's declaration happens to put
-      // at the slot's position: a target the frame continues is named by the output it was created at, and the
-      // group's own proof carries that coordinate. A node the frame spends is held to the commitment it was spent
-      // with; one it continues has no input, so its output is held to the view the declaration gives the node.
-      arg(`__internal__vmapBatchProof_${slot}`);
-      this.emitMasterInputIndex(loc);
-      this.emit(Op.OP_ADD, loc);
-      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
-      this.emit(Op.OP_IF, loc);
-      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc);
-      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
-      this.emit(Op.OP_SWAP, loc);
-      this.emit(bytecodeToScript(declaredRecordFirstViewByNameScript(this.declaredViewCounts(loc))), loc);
-      this.emit(Op.OP_EQUALVERIFY, loc);
-      this.emit(Op.OP_ELSE, loc);
-      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
-      this.emit(Op.OP_EQUALVERIFY, loc);
-      this.emit(Op.OP_ENDIF, loc);
+      this.emitPerCallKeptProofNode(slot, loc, true);
       this.emit(Op.OP_ENDIF, loc);
     }
     this.emit(Op.OP_ELSE, loc);

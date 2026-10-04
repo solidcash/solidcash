@@ -28,6 +28,44 @@ const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       uint[5] memory amounts = IClaim(claim).claim(amount);
       this.result = amounts[0] + amounts[4];
     }
+  }
+  interface IVault {
+    function settle(uint amount) external;
+    function read() external view returns (uint);
+    function distribute(uint amount) external;
+  }
+  interface ISettlementClaim { function claim() external returns (uint[5] memory); }
+  interface IArbitrator { function arbitrate(uint amount) external returns (uint[5] memory); }
+  contract Vault {
+    uint public total;
+    function settle(uint amount) public { this.total += amount; }
+    function read() public view returns (uint) { return this.total; }
+    function distribute(uint amount) public { this.total += amount; }
+  }
+  contract SettlementClaim(address vault) {
+    function claim() public returns (uint[5] memory) {
+      uint amount = IVault(vault).read();
+      uint[5] memory amounts = [amount, uint(1), uint(2), uint(3), uint(4)];
+      for (uint i = 0; i < 5; i = i + 1) {
+        if (amounts[i] > 0) IVault(vault).distribute(amounts[i]);
+      }
+      return amounts;
+    }
+  }
+  contract Arbitrator(address vault, address claim) {
+    function arbitrate(uint amount) public returns (uint[5] memory) {
+      IVault(vault).settle(amount);
+      uint[5] memory amounts = ISettlementClaim(claim).claim();
+      return amounts;
+    }
+  }
+  contract SettlementRoot {
+    uint public result;
+    function initialize() public { this.result = 0; }
+    function run(address arbitrator, uint amount) public {
+      uint[5] memory amounts = IArbitrator(arbitrator).arbitrate(amount);
+      this.result = amounts[0] + amounts[4];
+    }
   }`, {
   forceStateful: true,
   solidityImportCompat: true,
@@ -57,5 +95,26 @@ describe('kernel nested payout return', () => {
     expect((await payout.getState()).total).toBe(35n);
     expect((await claim.getState()).calls).toBe(1n);
     expect((await root.proxy.getState()).result).toBe(14n);
+  }, 180_000);
+
+  it('returns settlement amounts after a prior write, post-write getter, and five payouts', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x7d), provider);
+    for (let index = 0; index < 35; index += 1) await provider.addUtxo(signer.getAddress(), {
+      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
+    });
+    const vault = await getContractFactory(artifacts.Vault, signer).deploy();
+    const claim = await getContractFactory(artifacts.SettlementClaim, signer).deploy(vault.inner.address);
+    const arbitrator = await getContractFactory(artifacts.Arbitrator, signer)
+      .deploy(vault.inner.address, claim.inner.address);
+    const root = await upgrades.deployProxy(getContractFactory(artifacts.SettlementRoot, signer), []);
+    claim._registerResolvedExternal('IVault', vault);
+    arbitrator._registerResolvedExternal('IVault', vault);
+    arbitrator._registerResolvedExternal('ISettlementClaim', claim);
+    root.implementation._registerResolvedExternal('IArbitrator', arbitrator);
+
+    await root.forward('run', [arbitrator.inner.address, 5n]).send();
+    expect((await vault.getState()).total).toBe(20n);
+    expect((await root.proxy.getState()).result).toBe(9n);
   }, 180_000);
 });

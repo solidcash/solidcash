@@ -1,7 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../utils.js';
+import { addressToLockScript, lockingBytecodeToSolidityAddressPayload, tryCashAddressToLockScript } from '../utils.js';
 
 export interface RegisteredDeployment {
   contractName: string;
@@ -123,6 +123,42 @@ export function findDeploymentByAddress(
     }
   }
   return undefined;
+}
+
+/** Canonical native address or complete raw locking bytecode; never a partial suffix or ABI projection. */
+export function exactAddressLockingBytecodeHex(value: string | Uint8Array): string | undefined {
+  if (value instanceof Uint8Array) return binToHex(value);
+  try {
+    const cashaddr = tryCashAddressToLockScript(value);
+    if (cashaddr) return binToHex(cashaddr);
+  } catch { return undefined; }
+  return /^(?:0x)?(?:[0-9a-f]{2})+$/iu.test(value)
+    ? value.replace(/^0x/iu, '').toLowerCase() : undefined;
+}
+
+/** A connect-time binding may satisfy a published target only when one of its known identities matches exactly. */
+export function connectedContractMatchesExactAddress(
+  contract: unknown, target: string | Uint8Array,
+): boolean {
+  if (typeof contract !== 'object' || contract === null) return false;
+  const wanted = exactAddressLockingBytecodeHex(target);
+  if (wanted === undefined) return false;
+  const connected = contract as {
+    inner?: { lockingBytecode?: string };
+    implementation?: { inner?: { lockingBytecode?: string } };
+    proxy?: { inner?: { lockingBytecode?: string }; _logicalAddress?: string };
+    _logicalAddress?: string;
+    address?: string;
+  };
+  return [
+    connected.inner?.lockingBytecode,
+    connected.implementation?.inner?.lockingBytecode,
+    connected.proxy?.inner?.lockingBytecode,
+    connected._logicalAddress,
+    connected.proxy?._logicalAddress,
+    connected.address,
+  ].some((identity) => typeof identity === 'string'
+    && exactAddressLockingBytecodeHex(identity) === wanted);
 }
 
 /**

@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _createBuilder extract — nested-compose callee target + argument resolution.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import type {
   AbiFunction,
   ArgSource,
@@ -12,8 +12,9 @@ import type {
 import type { FunctionArgument } from '../Argument.js';
 import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { tryCashAddressToLockScript } from '../utils.js';
 import {
+  connectedContractMatchesExactAddress,
+  exactAddressLockingBytecodeHex,
   findDeploymentByAddressValue,
   findDeploymentByName,
   registeredAddressValueLockingBytecode,
@@ -135,26 +136,30 @@ export async function resolveCreateBuilderNestedComposeCallee(
     // Backward compatibility for artifacts which predate addressSource: addressStateVar names the
     // authenticated caller-state field, not a deployment-registry hint. Prefer it over interface-name
     // lookup so two different interfaces cannot accidentally collapse onto the same fallback callee.
-    : nested.addressStateVar
+    : nested.addressStateVar !== undefined
       ? onChainState.state[nested.addressStateVar] as FunctionArgument | undefined
-      : undefined;
+      : nested.addressLiteral;
   const addressParamIndex = nested.addressParam
-    ? delegateFn!.inputs.findIndex((input) => input.name === nested.addressParam)
+    ? delegateFn?.inputs.findIndex((input) => input.name === nested.addressParam) ?? -1
     : -1;
-  const addressValue = resolvedAddress
-    ?? (addressParamIndex >= 0 ? delegateVisibleArgs[addressParamIndex] : undefined);
+  const hasPublishedTarget = nested.addressSource !== undefined
+    || nested.addressStateVar !== undefined || nested.addressLiteral !== undefined
+    || nested.addressParam !== undefined;
+  const addressValue = nested.addressSource !== undefined || nested.addressStateVar !== undefined
+    || nested.addressLiteral !== undefined
+    ? resolvedAddress : addressParamIndex >= 0 ? delegateVisibleArgs[addressParamIndex] : undefined;
   const typedAddress = typeof addressValue === 'string' || addressValue instanceof Uint8Array
     ? addressValue : undefined;
+  const exactLockHex = typedAddress === undefined ? undefined : exactAddressLockingBytecodeHex(typedAddress);
   const resolvedTargetLockingBytecode = typedAddress === undefined ? undefined
     : registeredAddressValueLockingBytecode(host.provider, typedAddress)
-      ?? tryCashAddressToLockScript(typedAddress);
+      ?? (exactLockHex ? hexToBin(exactLockHex) : undefined);
   const deploymentAtAddress = typedAddress === undefined ? undefined
     : findDeploymentByAddressValue(host.provider, typedAddress)?.contract;
   // Hardhat-style factories connect externals on the public proxy
   // instance. A manually assembled delegate may instead connect them
-  // directly on the implementation. When the source supplies an address, that authenticated value
-  // identifies the instance; an interface-name registration is only a fallback. Otherwise a stale
-  // same-interface binding can silently redirect a state-pinned call to a different deployment.
+  // directly on the implementation. A published address selects the instance; a connect-time binding
+  // is eligible only when its known identity matches that address exactly.
   const rawCandidates = nested.interfaceName === '__raw__'
     ? [...new Set([
       ...host.calleeRegistryValues(callInfoContract),
@@ -167,18 +172,26 @@ export async function resolveCreateBuilderNestedComposeCallee(
         .some((fn) => (nested.rawFunctionName !== undefined && fn.name === nested.rawFunctionName)
           || (nested.rawSelector !== undefined && fn.selector === nested.rawSelector));
     }) : [];
-  if (rawCandidates.length > 1 && deploymentAtAddress === undefined) {
+  const addressMatches = (candidate: unknown): boolean => typedAddress !== undefined
+    && connectedContractMatchesExactAddress(candidate, typedAddress);
+  const eligibleRawCandidates = hasPublishedTarget
+    ? rawCandidates.filter(addressMatches) : rawCandidates;
+  if (eligibleRawCandidates.length > 1 && deploymentAtAddress === undefined) {
     throw new Error(
       `Delegate raw call '${nested.rawFunctionName}' matches more than one connected contract; `
       + 'pin its target address in the caller state or arguments.',
     );
   }
+  const namedCandidates = [
+    host.calleeRegistryGet(callInfoContract, nested.interfaceName),
+    host.callerRegistryGet(nested.interfaceName),
+    findDeploymentByName(host.provider, nested.interfaceName)?.contract,
+  ];
   const registeredCallee = (
     deploymentAtAddress
-    ?? rawCandidates[0]
-    ?? host.calleeRegistryGet(callInfoContract, nested.interfaceName)
-    ?? host.callerRegistryGet(nested.interfaceName)
-    ?? findDeploymentByName(host.provider, nested.interfaceName)?.contract
+    ?? eligibleRawCandidates[0]
+    ?? namedCandidates.find((candidate) => candidate !== undefined
+      && (!hasPublishedTarget || addressMatches(candidate)))
   ) as any | undefined;
   const proxyCallee = registeredCallee && 'proxy' in registeredCallee
     ? registeredCallee : undefined;

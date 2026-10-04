@@ -2,7 +2,6 @@
  * phase-boundary extract: SC _createBuilder extract — expand looped external calls and auto-resolve callees.
  */
 
-import { binToHex } from '@bitauth/libauth';
 import type {
   AbiFunction,
   ArgSource,
@@ -12,8 +11,8 @@ import type {
   StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { tryCashAddressToLockScript } from '../utils.js';
 import { ExternalExpressionUnresolvedConditionError } from '../message-bus/result-evaluation-path.js';
+import { connectedContractMatchesExactAddress, exactAddressLockingBytecodeHex } from './deployment-registry.js';
 
 /** Structural ExternalCallInfo to avoid importing StatefulContract through lifecycle types. */
 export type CreateBuilderResolvedExternalCall = {
@@ -73,35 +72,6 @@ function containsReturningExpression(value: unknown, seen = new Set<object>()): 
   return Object.values(value).some((child) => Array.isArray(child)
     ? child.some((item) => containsReturningExpression(item, seen))
     : containsReturningExpression(child, seen));
-}
-
-function exactRegisteredLockHex(value: string | Uint8Array): string | undefined {
-  let lock: Uint8Array | undefined;
-  try { lock = tryCashAddressToLockScript(value); } catch { return undefined; }
-  if (lock) return binToHex(lock);
-  if (typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/iu.test(value)) {
-    return value.replace(/^0x/iu, '').toLowerCase();
-  }
-  return undefined;
-}
-
-function connectedContractAtExactLock(contract: unknown, lockHex: string): boolean {
-  if (typeof contract !== 'object' || contract === null) return false;
-  const connected = contract as {
-    inner?: { lockingBytecode?: string };
-    implementation?: { inner?: { lockingBytecode?: string } };
-    proxy?: { inner?: { lockingBytecode?: string }; _logicalAddress?: string };
-    _logicalAddress?: string;
-    address?: string;
-  };
-  return [
-    connected.inner?.lockingBytecode,
-    connected.implementation?.inner?.lockingBytecode,
-    connected.proxy?.inner?.lockingBytecode,
-    connected._logicalAddress,
-    connected.proxy?._logicalAddress,
-    connected.address,
-  ].some((identity) => identity !== undefined && exactRegisteredLockHex(identity) === lockHex);
 }
 
 /**
@@ -289,17 +259,17 @@ export async function expandResolveCreateBuilderExternalCalls(
             : ec.addressLiteral;
         if (typeof address === 'string' || address instanceof Uint8Array) {
           pinned = host.getExternalDeploymentByAddressValue(address);
-          const lockHex = exactRegisteredLockHex(address);
+          const lockHex = exactAddressLockingBytecodeHex(address);
           if (lockHex) {
             const matches = host.getExternalTargetEntriesByInterface(ec.interfaceName).filter((entry) => (
               entry.instance !== undefined
               && (!entry.method || entry.method === ec.functionName)
-              && entry.address.replace(/^0x/iu, '').toLowerCase() === lockHex
+              && exactAddressLockingBytecodeHex(entry.address) === lockHex
             ));
             if (matches.length === 1) registeredAtAddress = matches[0]!.instance;
             if (!registeredAtAddress) {
               const connected = host.getExternalRegistryEntry(ec.interfaceName);
-              if (connectedContractAtExactLock(connected, lockHex)) registeredAtAddress = connected;
+              if (connectedContractMatchesExactAddress(connected, address)) registeredAtAddress = connected;
             }
           }
         }

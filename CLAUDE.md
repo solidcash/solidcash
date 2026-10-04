@@ -117,3 +117,13 @@ Shared across compiler and SDK: artifact types, ABI types, type system, script â
 - **Compiler tests** (`packages/solidc/test/`): compilation fixtures, AST tests, code generation tests, error case tests organized by error type
 - **SDK tests** (`packages/solidcash/test/`): contract instantiation, transaction building, e2e tests per contract type, network provider tests
 - Test framework: Vitest with projects-based monorepo config
+
+## Agent test discipline
+
+Agents working an item here must not run tests unnecessarily (the user's standing rule):
+
+- Work the fix out by reading the code. No reproduction or probe runs.
+- Run your own new or changed test file(s) ONCE, at the end. If that run fails, fix it by reading and report it as
+  unverified; do not run it again.
+- No suites, no neighbour lists, no corpus or marketplace compiles: whoever lands the change checks those.
+- Keep a simple item short (about 30 minutes). If it grows past the item, stop and report what you have.

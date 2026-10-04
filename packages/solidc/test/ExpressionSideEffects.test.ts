@@ -92,7 +92,7 @@ describe('a sequence expression', () => {
 
   it('has no comma form: a comma statement is a parse error, and a tuple for-header assigns the tuple', () => {
     expect(() => compileString(`${P} contract C { function f() external { uint a = 0; uint b = 0; (a = 1, b = 2);`
-      + ' require(a + b == 3); } }', { messageBus: false })).toThrow("Unexpected token ','");
+      + ' require(a + b == 3); } }', { messageBus: false })).toThrow("Mismatched input ',' expecting ')'");
     expectSettles('function f(uint e) external { uint i; uint j; uint s = 0;'
       + ' for ((i, j) = (0, 0); i < 3; (i, j) = (i + 1, j + 2)) { s = s + j; } require(s == e); }', 'tuple for header',
     [[6n]], [[3n]]);
